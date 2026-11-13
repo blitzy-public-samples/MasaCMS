@@ -199,7 +199,7 @@ export const REGISTRY_ROWS: readonly QueryResultRow[] = Object.freeze(
 );
 
 /** Answers every registry read of `@opt2/platform/tenancy` from REGISTRY_ROWS, by its WHERE clause. */
-function registryAnswer(sql: string, values: readonly unknown[]): QueryResultRow[] {
+export function registryAnswer(sql: string, values: readonly unknown[]): QueryResultRow[] {
   const [first] = values;
   const sorted = [...REGISTRY_ROWS].sort((a, b) => String(a.site_id).localeCompare(String(b.site_id), 'en'));
   let rows = sorted;

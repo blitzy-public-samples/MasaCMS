@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { Roles } from '@opt2/platform/auth';
 import { esignatureActions, esignatureScreens } from '@/screens/opt2/e-signature';
+import { CREATE_ROLES, LIST_ROLES, requestsScreen } from '@/screens/opt2/e-signature/requests';
 import { OPT2_NAV_MODULES } from '@/shell/nav';
 
 const SIGNER = Roles.esignatureSigner;
@@ -29,6 +30,11 @@ describe('e-signature barrel', () => {
     const def = esignatureActions.find((candidate) => candidate.action === action);
     expect(def).toMatchObject({ module: 'e-signature', service: 'e-signature', roles });
     expect(typeof def?.gate).toBe('function');
+  });
+
+  it('registers the landing requests.ts defines, whose list and create roles are the contract operations\'', () => {
+    expect(esignatureScreens.find((def) => def.screen === 'requests')).toBe(requestsScreen);
+    expect([LIST_ROLES, CREATE_ROLES]).toEqual([[SIGNER], [SIGNER]]);
   });
 
   it('registers each slug once, lower-case', () => {

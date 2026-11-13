@@ -1,0 +1,87 @@
+{
+  "capturedAt": "2026-06-30T12:00:00.000Z",
+  "fixtures": {
+    "available": true,
+    "reason": null
+  },
+  "origin": "legacy",
+  "scenarioId": "GS-CO-05",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {},
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "findone",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "contenthistid": "<id:1>",
+            "contentid": "<id:2>",
+            "entityname": "content",
+            "filename": "about-us",
+            "id": "<id:2>",
+            "parentid": "00000000000000000000000000000000001",
+            "siteid": "tenant-a",
+            "title": "About Us",
+            "type": "Page"
+          },
+          "method": "findOne"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "findone",
+        "routeKey": "api:content.findone",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "accept": "application/json"
+        },
+        "method": "GET",
+        "url": "/index.cfm/_api/json/v1/tenant-a/content/A1A1A1A1-1111-1111-1111111111111111"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "contenthistid": "<id:1>",
+            "contentid": "<id:2>",
+            "entityname": "content",
+            "filename": "about-us",
+            "id": "<id:2>",
+            "parentid": "00000000000000000000000000000000001",
+            "siteid": "tenant-a",
+            "title": "About Us",
+            "type": "Page"
+          },
+          "method": "findOne"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "5ab3a950dd90fdae6bca05c25f3790eb9f41d0152c867199ce81e42a43ed1b8f",
+        "status": 200
+      },
+      "routeKey": "api:content.findone"
+    }
+  ],
+  "tableVersion": null
+}

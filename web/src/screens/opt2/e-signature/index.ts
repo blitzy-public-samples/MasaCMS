@@ -2,20 +2,18 @@
 import type { Role } from '@opt2/platform/auth';
 import type { Opt2ActionDefinition, Opt2ScreenDefinition } from '../../registry';
 import { opt2Gate } from '../shared';
-import { loadAudit, renderAudit, type AuditData } from './audit';
+import { auditScreen } from './audit';
 import {
-  AUDIT_SCREEN,
   ESIGNATURE,
   READER_ROLES,
   REQUEST_SCREEN,
-  REQUESTS_SCREEN,
   SIGN_ACTION,
   SIGNER_ROLES,
   VERIFY_ACTION,
   VERIFY_SCREEN,
 } from './common';
 import { loadRequest, renderRequest, type RequestData } from './request';
-import { loadRequests, renderRequests, type RequestsData } from './requests';
+import { requestsScreen } from './requests';
 import { submitSign } from './sign';
 import { loadVerify, renderVerify, type VerifyData } from './verify';
 import { submitVerifyCopy } from './verify-copy';
@@ -25,26 +23,11 @@ function access(roles: readonly Role[]) {
   return { module: ESIGNATURE, service: ESIGNATURE, roles, gate: opt2Gate(roles) } as const;
 }
 
-// Auditors land here too: the list is read only for signers, and other readers get the request lookup form.
-const requestsScreen: Opt2ScreenDefinition<RequestsData> = Object.freeze({
-  ...access(READER_ROLES),
-  screen: REQUESTS_SCREEN,
-  load: loadRequests,
-  render: renderRequests,
-});
-
 const requestScreen: Opt2ScreenDefinition<RequestData> = Object.freeze({
   ...access(READER_ROLES),
   screen: REQUEST_SCREEN,
   load: loadRequest,
   render: renderRequest,
-});
-
-const auditScreen: Opt2ScreenDefinition<AuditData> = Object.freeze({
-  ...access(READER_ROLES),
-  screen: AUDIT_SCREEN,
-  load: loadAudit,
-  render: renderAudit,
 });
 
 const verifyScreen: Opt2ScreenDefinition<VerifyData> = Object.freeze({

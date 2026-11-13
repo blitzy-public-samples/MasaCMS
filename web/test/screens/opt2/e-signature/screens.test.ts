@@ -10,6 +10,8 @@ import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-clien
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { esignatureScreens } from '@/screens/opt2/e-signature';
+import { CREATE_REQUEST_FIELDS, renderRequestsView } from '@/screens/opt2/e-signature/requests';
+import { alertBox } from '@/screens/opt2/shared';
 import type { Opt2ScreenDefinition, ScreenContext } from '@/screens/registry';
 import { adminS2Request, anonymousRequest, makeAdminRequest, opt2RoleRequest } from '../../../helpers/admin-request';
 import { fragmentModel } from '../../../helpers/dom-model';
@@ -36,6 +38,7 @@ const SIGNED_ID = ESIGNATURE_IDS.signedRequest;
 const PENDING_ID = ESIGNATURE_IDS.pendingRequest;
 const SITE = SUBJECTS[SIGNER].site;
 const REQUESTS_PATH = '/v1/esignature/requests';
+const CREATE_ACTION_URL = `/opt2/admin-actions/e-signature/create-request?siteid=${SITE}`;
 const ADMIN_CSS = readFileSync(new URL('../../../../../admin/assets/css/admin.css', import.meta.url), 'utf8');
 
 type Rc = Readonly<Record<string, string>>;
@@ -240,7 +243,49 @@ describe('e-signature service calls', () => {
     expect(eSignatureCalls(ctx.gateway)).toEqual([
       { service: 'e-signature', method: 'GET', path: REQUESTS_PATH, query: { pageIndex: '1' } },
     ]);
-    expect($('form')).toHaveLength(0);
+    expect($('input[name="id"]')).toHaveLength(0);
+    expect($('form').toArray().map((el) => el.attribs.action)).toEqual([CREATE_ACTION_URL]);
+  });
+
+  it('offers a signer the new-request form of the contract fields with the CSRF pair of the list', async () => {
+    const ctx = contextFor([SIGNER]);
+    const $ = cheerio.load(await bodyOf('requests', ctx), null, false);
+    expect(csrfContexts(ctx.gateway)).toEqual(['']);
+    const form = $('form');
+    expect([form.attr('method'), form.attr('action')]).toEqual(['post', CREATE_ACTION_URL]);
+    const inputs = form.find('input:not([type="hidden"])').toArray();
+    expect(inputs.map((el) => [el.attribs.name, el.attribs.type, el.attribs.required])).toEqual(
+      CREATE_REQUEST_FIELDS.map((name) => [name, 'text', 'true']),
+    );
+    expect(form.find('input[type="hidden"]').toArray().map((el) => [el.attribs.name, el.attribs.value])).toEqual([
+      ['csrf_token', FIXED_CSRF.token],
+      ['csrf_token_expires', FIXED_CSRF.expires],
+    ]);
+    expect(form.find('button[type="submit"]').text()).toBe('Create');
+  });
+
+  it('re-renders the list below the create alert with the posted new-request values', async () => {
+    const ctx = contextFor([SIGNER]);
+    const values = { documentName: 'tenant-a-nda.pdf', documentBase64: 'JVBERi0=', signerUserId: ESIGNATURE_IDS.signer };
+    const view = await renderRequestsView(ctx, alertBox('Invalid parameters'), values);
+    expect(view.opt2Module).toBe('e-signature');
+    const markup = toString(view.body);
+    const model = fragmentModel(markup);
+    expect(model.alerts).toEqual([{ text: 'Invalid parameters', className: 'alert alert-error' }]);
+    expect(model.tables).toHaveLength(1);
+    const $ = cheerio.load(markup, null, false);
+    expect($('div.mura-header').next().is('div.alert.alert-error')).toBe(true);
+    for (const [name, value] of Object.entries(values)) expect($(`input[name="${name}"]`).attr('value')).toBe(value);
+    expect(eSignatureCalls(ctx.gateway)).toHaveLength(1);
+  });
+
+  it('lists no requests with the empty-list message', async () => {
+    const empty = { ...signatureRequestList, items: [], startindex: 1, endindex: 0, totalitems: 0, totalpages: 0 };
+    const ctx = contextFor([SIGNER], {}, { [key('GET', REQUESTS_PATH)]: { status: 200, body: empty } });
+    const $ = cheerio.load(await bodyOf('requests', ctx), null, false);
+    expect($('table.mura-table-grid')).toHaveLength(0);
+    expect($('div.help-block-empty').text()).toBe('There are no signature requests.');
+    expect($('form').attr('action')).toBe(CREATE_ACTION_URL);
   });
 
   it.each(['request', 'audit', 'verify'])('%s without an id asks nothing of e-signature', async (slug) => {

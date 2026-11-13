@@ -2,6 +2,7 @@
 /** Producer contract of `communications.message.delivery-status-changed.v1`: the schema's declarations and the envelopes real sends publish. */
 import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { compileTopicSchema, eventTypeOf, schemaVersionOf, topicMeta } from '@opt2/platform/events';
 import {
   ContractAssertionError,
   TENANT_A,
@@ -18,6 +19,8 @@ import {
   deliveryStatusChangedSchema,
 } from '../../src/events/delivery-status-changed.js';
 import { LOGIN_MAIL_TOPIC } from '../../src/events/login-mail.js';
+import { MESSAGE } from '../../src/repo/tables.js';
+import { FIXTURE_PREFIX } from '../../src/routes/fixture.js';
 import { buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 import { SAMPLE_IDS, envelopeFor, loginMailPayload } from '../helpers/payloads.js';
 
@@ -25,6 +28,7 @@ import { SAMPLE_IDS, envelopeFor, loginMailPayload } from '../helpers/payloads.j
 interface TopicSchemaFile {
   $comment: string;
   'x-opt2-kind'?: unknown;
+  'x-opt2-supersedes'?: unknown;
   additionalProperties?: unknown;
   required?: string[];
   properties?: Record<string, unknown>;
@@ -50,6 +54,13 @@ interface HistoryEntry {
 
 type CapturedEnvelope = PublishedEvent['envelope'];
 
+/** A send's answered message id and history, with the envelopes it published. */
+interface SendResult {
+  messageId: string;
+  history: HistoryEntry[];
+  envelopes: CapturedEnvelope[];
+}
+
 async function readJson<T>(relative: string): Promise<T> {
   return JSON.parse(await readFile(new URL(relative, import.meta.url), 'utf8')) as T;
 }
@@ -61,6 +72,8 @@ const pin = await readJson<{ sha: string }>('../../../../opt2/source-pin.json');
 const PAYLOAD_FIELDS = ['messageId', 'siteId', 'source', 'state', 'mailpitId', 'statusId', 'changedAt'] as const;
 const SITE = TENANT_A.siteId;
 const SENDER = 'communications.sender';
+const V1_MESSAGES = '/v1/messages';
+const FIXTURE_MESSAGES = `${FIXTURE_PREFIX}/messages`;
 const LITERAL = { to: 'member1@tenant-a.example', subject: 'Contract subject', bodyText: 'Contract body' };
 // The test app's identity double consumes any CSRF pair, so the sends reach the handler.
 const CSRF_HEADERS = { 'x-csrf_token': 'CONTRACT-TOKEN', 'x-csrf_token_expires': '260630120000000' } as const;
@@ -91,6 +104,22 @@ describe('communications.message.delivery-status-changed.v1 payload schema', () 
     expect(schema['x-opt2-kind']).toBe('state');
     expect(DELIVERY_STATUS_KIND).toBe('state');
     expect('x-opt2-tenant-fanout' in schema).toBe(false);
+    expect(schema['x-opt2-supersedes'] ?? false).toBe(false);
+  });
+
+  it('compiles with the platform validator as a non-superseding state topic', () => {
+    const { meta } = compileTopicSchema(schema);
+    expect(meta).toStrictEqual(topicMeta(schema));
+    expect(meta.kind).toBe('state');
+    expect(meta.fanout).toBeUndefined();
+    expect(meta.supersedes).toBeFalsy();
+  });
+
+  it('names the topic, its event type and version, and the message aggregate', () => {
+    expect(DELIVERY_STATUS_CHANGED_TOPIC).toBe('communications.message.delivery-status-changed.v1');
+    expect(eventTypeOf(DELIVERY_STATUS_CHANGED_TOPIC)).toBe('communications.message.delivery-status-changed');
+    expect(schemaVersionOf(DELIVERY_STATUS_CHANGED_TOPIC)).toBe('1.0.0');
+    expect(DELIVERY_STATUS_AGGREGATE_TYPE).toBe('message');
   });
 
   it('records the pinned source SHA', () => {
@@ -110,18 +139,19 @@ describe('communications.message.delivery-status-changed.v1 payload schema', () 
 
 describe('communications.message.delivery-status-changed.v1 envelopes captured from real sends', () => {
   let t: TestApp;
-  let delivered: { messageId: string; history: HistoryEntry[]; envelopes: CapturedEnvelope[] };
-  let failed: { messageId: string; envelopes: CapturedEnvelope[] };
+  let delivered: SendResult;
+  let viaFixture: SendResult;
+  let failed: SendResult;
   let loginMail: CapturedEnvelope[];
 
   const published = (): CapturedEnvelope[] =>
     t.publisher.published.filter(({ topic }) => topic === DELIVERY_STATUS_CHANGED_TOPIC).map(({ envelope }) => envelope);
 
-  /** Sends literal content through `/v1/messages` and returns the answered detail with the envelopes the send published. */
-  async function send(): Promise<{ messageId: string; history: HistoryEntry[]; envelopes: CapturedEnvelope[] }> {
+  /** Sends literal content to `path` and returns the answered detail with the envelopes the send published. */
+  async function send(path: string): Promise<SendResult> {
     const before = published().length;
-    const headers = { ...(await headersFor(SENDER)), ...CSRF_HEADERS };
-    const res = await t.app.inject({ method: 'POST', url: `/v1/messages?siteid=${SITE}`, headers, payload: LITERAL });
+    const headers = { ...(await headersFor(SENDER, { site: SITE })), ...CSRF_HEADERS };
+    const res = await t.app.inject({ method: 'POST', url: `${path}?siteid=${SITE}`, headers, payload: LITERAL });
     expect(res.statusCode, res.body).toBe(200);
     const { data } = res.json() as { data: { message_id: string; history: HistoryEntry[] } };
     return { messageId: data.message_id, history: data.history, envelopes: published().slice(before) };
@@ -129,9 +159,10 @@ describe('communications.message.delivery-status-changed.v1 envelopes captured f
 
   beforeAll(async () => {
     t = await buildTestApp();
-    delivered = await send();
+    delivered = await send(V1_MESSAGES);
+    viaFixture = await send(FIXTURE_MESSAGES);
     t.mail.fail(new Error('connection refused'));
-    failed = await send();
+    failed = await send(V1_MESSAGES);
     t.mail.fail(null);
     const before = published().length;
     const res = await pushTo(t.app, LOGIN_MAIL_SUBSCRIPTION, envelopeFor(LOGIN_MAIL_TOPIC, loginMailPayload()));
@@ -143,11 +174,21 @@ describe('communications.message.delivery-status-changed.v1 envelopes captured f
     await t?.app.close();
   });
 
-  const everyEnvelope = (): CapturedEnvelope[] => [...delivered.envelopes, ...failed.envelopes, ...loginMail];
+  const everyEnvelope = (): CapturedEnvelope[] => [...delivered.envelopes, ...viaFixture.envelopes, ...failed.envelopes, ...loginMail];
+
+  /** Each captured message id with the envelopes published for it, in publish order. */
+  const byMessage = (): (readonly [string, CapturedEnvelope[]])[] => [
+    [delivered.messageId, delivered.envelopes],
+    [viaFixture.messageId, viaFixture.envelopes],
+    [failed.messageId, failed.envelopes],
+    [SAMPLE_IDS.messageId, loginMail],
+  ];
 
   it('publishes one envelope per delivery-status row, in the order of the message history', () => {
-    expect(delivered.envelopes.map((envelope) => payloadOf(envelope).state)).toStrictEqual(['queued', 'sent', 'delivered']);
-    expect(delivered.envelopes.map((envelope) => payloadOf(envelope).statusId)).toStrictEqual(delivered.history.map((row) => row.status_id));
+    for (const sent of [delivered, viaFixture]) {
+      expect(sent.envelopes.map((envelope) => payloadOf(envelope).state)).toStrictEqual(['queued', 'sent', 'delivered']);
+      expect(sent.envelopes.map((envelope) => payloadOf(envelope).statusId)).toStrictEqual(sent.history.map((row) => row.status_id));
+    }
     expect(failed.envelopes.map((envelope) => payloadOf(envelope).state)).toStrictEqual(['queued', 'failed']);
     expect(loginMail.map((envelope) => payloadOf(envelope).state)).toStrictEqual(['queued', 'sent', 'delivered']);
   });
@@ -155,15 +196,20 @@ describe('communications.message.delivery-status-changed.v1 envelopes captured f
   it('captured envelopes validate against envelope and topic schema', () => {
     for (const envelope of everyEnvelope()) {
       expect(() => assertEventMatches(envelopeSchema, schema, envelope), `${payloadOf(envelope).messageId} ${payloadOf(envelope).state}`).not.toThrow();
+      expect(() => assertEventMatches(undefined, schema, envelope)).not.toThrow();
+    }
+  });
+
+  it("ends each message's version sequence at its stored row_version", () => {
+    // int8 arrives as a decimal string, as pg returns it.
+    const stored = new Map(t.db.rows(MESSAGE.table).map((row) => [row.message_id, Number(row.row_version)]));
+    for (const [messageId, envelopes] of byMessage()) {
+      expect(envelopes.at(-1)?.aggregateVersion, messageId).toBe(stored.get(messageId));
     }
   });
 
   it("names the message aggregate in the sender's tenant, its version rising with every status", () => {
-    for (const [messageId, envelopes] of [
-      [delivered.messageId, delivered.envelopes],
-      [failed.messageId, failed.envelopes],
-      [SAMPLE_IDS.messageId, loginMail],
-    ] as const) {
+    for (const [messageId, envelopes] of byMessage()) {
       for (const envelope of envelopes) {
         expect(envelope, messageId).toMatchObject({
           eventType: 'communications.message.delivery-status-changed',
@@ -182,11 +228,13 @@ describe('communications.message.delivery-status-changed.v1 envelopes captured f
   });
 
   it('carries the source and site of each send, and the Mailpit id only once the message is found', () => {
-    expect(delivered.envelopes.map(payloadOf).map(({ source, siteId }) => ({ source, siteId }))).toStrictEqual(
-      delivered.envelopes.map(() => ({ source: 'send', siteId: SITE })),
-    );
+    for (const sent of [delivered, viaFixture]) {
+      expect(sent.envelopes.map(payloadOf).map(({ source, siteId }) => ({ source, siteId }))).toStrictEqual(
+        sent.envelopes.map(() => ({ source: 'send', siteId: SITE })),
+      );
+      expect(sent.envelopes.map((envelope) => payloadOf(envelope).mailpitId)).toStrictEqual([null, null, sent.history[2]?.mailpit_id]);
+    }
     expect(loginMail.map((envelope) => payloadOf(envelope).source)).toStrictEqual(['login-mail', 'login-mail', 'login-mail']);
-    expect(delivered.envelopes.map((envelope) => payloadOf(envelope).mailpitId)).toStrictEqual([null, null, delivered.history[2]?.mailpit_id]);
     expect(failed.envelopes.map((envelope) => payloadOf(envelope).mailpitId)).toStrictEqual([null, null]);
   });
 

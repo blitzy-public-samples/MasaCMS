@@ -26,13 +26,13 @@ exports[`e-signature screen markup > audit renders the audit chain 1`] = `
   "tables": [
     {
       "headers": [
-        "Seq",
+        "Sequence",
         "Action",
         "Actor",
         "Detail",
         "At",
         "Previous Hash",
-        "Entry Hash",
+        "Hash",
       ],
       "rows": [
         [
@@ -211,12 +211,69 @@ exports[`e-signature screen markup > request renders a signed request with its s
 exports[`e-signature screen markup > requests renders the request list 1`] = `
 {
   "alerts": [],
-  "buttons": [],
-  "controls": [],
+  "buttons": [
+    {
+      "hasOnclick": false,
+      "text": "Create",
+      "type": "submit",
+    },
+  ],
+  "controls": [
+    {
+      "checked": false,
+      "name": "documentName",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "text",
+      "value": "",
+    },
+    {
+      "checked": false,
+      "name": "documentBase64",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "text",
+      "value": "",
+    },
+    {
+      "checked": false,
+      "name": "signerUserId",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "text",
+      "value": "",
+    },
+    {
+      "checked": false,
+      "name": "csrf_token",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "TESTCSRFTOKEN0000000000000000000",
+    },
+    {
+      "checked": false,
+      "name": "csrf_token_expires",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "260630150000000",
+    },
+  ],
   "headings": [
     "Signature Requests",
+    "New Signature Request",
   ],
-  "labels": [],
+  "labels": [
+    "Document Name",
+    "Document (Base64)",
+    "Signer User ID",
+  ],
   "links": [
     {
       "href": "/opt2/admin/e-signature/request?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",

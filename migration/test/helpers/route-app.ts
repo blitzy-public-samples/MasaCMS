@@ -31,14 +31,16 @@ import { parse } from 'yaml';
 import { createMigrationContext, type MigrationContext } from '../../src/context.js';
 import { createGatewayClient, currentAuthority } from '../../src/cutover/index.js';
 import { migrationEnvSchema } from '../../src/env.js';
-import { createBridgeClient, type LegacyDb, type SchedulerDescription } from '../../src/legacy/index.js';
+import { BRIDGE_JOBS, createBridgeClient, type LegacyDb, type SchedulerDescription } from '../../src/legacy/index.js';
 import { createBackgroundState } from '../../src/quiesce/index.js';
 import { createProjector, type StartupGuardRunner } from '../../src/reverse/index.js';
 import { AUTHORITY_ROUTES, registerAuthorityRoutes } from '../../src/routes/authority.js';
 import { BACKGROUND_ROUTES, registerBackgroundRoutes } from '../../src/routes/background.js';
+import { LEGACY_STEP_ROUTES, registerLegacyStepRoutes } from '../../src/routes/legacy-steps.js';
 import { PROJECTION_ROUTES, registerProjectionRoutes } from '../../src/routes/projection.js';
 import { SCHEDULER_ROUTES, registerSchedulerRoutes } from '../../src/routes/scheduler.js';
 import { SCHEDULER_STATE_TABLE, createSchedulerService } from '../../src/scheduler/index.js';
+import { createWindowService } from '../../src/windows/index.js';
 
 /** Service name, the audience of invocation credentials sent to the composed app. */
 export const SERVICE = 'migration';
@@ -46,15 +48,20 @@ export const SERVICE = 'migration';
 /** Origin of the legacy bridge double. */
 const LEGACY_ORIGIN = 'http://legacy.route-suites.test';
 
-/** The operations the four registrars declare, in registration order. */
-export const REGISTERED_OPERATIONS = Object.freeze([...AUTHORITY_ROUTES, ...BACKGROUND_ROUTES, ...PROJECTION_ROUTES, ...SCHEDULER_ROUTES]);
+/** The operations the composed registrars declare, in registration order. */
+export const REGISTERED_OPERATIONS = Object.freeze([
+  ...AUTHORITY_ROUTES,
+  ...BACKGROUND_ROUTES,
+  ...LEGACY_STEP_ROUTES,
+  ...PROJECTION_ROUTES,
+  ...SCHEDULER_ROUTES,
+]);
 
 /** Contract operations no registrar under `src/routes/` serves: the service has no `server.ts` composing their modules yet. */
 export const ABSENT_OPERATIONS = Object.freeze([
   'faultClear',
   'faultSet',
   'gatesList',
-  'legacyStepRun',
   'transitionGet',
   'transitionStart',
   'windowComplete',
@@ -453,6 +460,8 @@ export interface BoundaryState {
   checkpoints: CheckpointFixture[];
   /** `scheduler.describe` of the legacy bridge. */
   live: SchedulerDescription;
+  /** `jobs.cfm` answers every step with a 500, as a manager method that threw. */
+  jobsFailing: boolean;
 }
 
 /** The gateway's contract `CutoverStatus` for `tableVersion`. */
@@ -535,7 +544,18 @@ function legacyDouble(state: BoundaryState, counter: { reads: number }): LegacyD
   };
 }
 
-/** `scheduler.cfm` of the legacy bridge: verifies each single-use assertion as its guard does, refusing with an empty 403, and answers `describe`. */
+/** Wire time `jobs.cfm` answers a step with: legacy wall-clock time without an offset. */
+const JOBS_SERVER_TIME = '2026-06-30T12:00:00.123';
+
+/** A bridge JSON answer. */
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
+/**
+ * `scheduler.cfm` and `jobs.cfm` of the legacy bridge: verifies each single-use assertion as its guard does, refusing with an
+ * empty 403, and answers `scheduler.describe` and every `jobs.<step>` POST.
+ */
 function bridgeFetch(state: BoundaryState, counter: { calls: number }): typeof globalThis.fetch {
   const nonces = new MemoryNonceStore();
   return (input, init) => {
@@ -543,12 +563,16 @@ function bridgeFetch(state: BoundaryState, counter: { calls: number }): typeof g
     const url = new URL(input instanceof Request ? input.url : String(input));
     const headers = new Headers(init?.headers);
     const verdict = verifyBridgeAssertion(headers.get(BRIDGE_ASSERTION_HEADER) ?? '', BRIDGE_KEY, nonces);
-    const op = url.searchParams.get('op');
-    if (!verdict.ok || verdict.payload.op !== `scheduler.${String(op)}`) {
+    const page = /\/gateway\/legacy-bridge\/cfml\/(\w+)\.cfm$/.exec(url.pathname)?.[1];
+    const op = url.searchParams.get(page === 'jobs' ? 'job' : 'op');
+    if (!verdict.ok || verdict.payload.op !== `${String(page)}.${String(op)}`) {
       return Promise.resolve(new Response(null, { status: 403 }));
     }
-    if (url.pathname === '/gateway/legacy-bridge/cfml/scheduler.cfm' && op === 'describe' && init?.method === 'GET') {
-      return Promise.resolve(new Response(JSON.stringify(state.live), { status: 200, headers: { 'content-type': 'application/json' } }));
+    if (page === 'scheduler' && op === 'describe' && init?.method === 'GET') return Promise.resolve(jsonResponse(200, state.live));
+    if (page === 'jobs' && op !== null && (BRIDGE_JOBS as readonly string[]).includes(op) && init?.method === 'POST') {
+      if (state.jobsFailing) return Promise.resolve(jsonResponse(500, { error: 'server_error', message: `jobs.${op} failed` }));
+      const siteId = url.searchParams.get('siteid');
+      return Promise.resolve(jsonResponse(200, { job: op, ...(siteId === null ? {} : { siteId }), completed: true, serverTime: JOBS_SERVER_TIME }));
     }
     return Promise.reject(new Error(`The bridge double does not serve ${init?.method ?? 'GET'} ${url.pathname}?${url.searchParams.toString()}`));
   };
@@ -589,6 +613,7 @@ export function defaultBoundaryState(): BoundaryState {
     sites: ['default', 'tenant-a', 'tenant-b', 'umbrella'],
     checkpoints: [],
     live: { ping: false, siteMonitorTask: '/index.cfm/_api/sitemonitor/', tasks: [], serverTime: '2026-06-30 12:00:00' },
+    jobsFailing: false,
   };
 }
 
@@ -623,12 +648,12 @@ export async function buildRouteApp(options: BuildRouteAppOptions): Promise<Rout
   try {
     app = await createService({ name: SERVICE, version: '1.0.0', env, verifierOverride: testVerifier(SERVICE), logger });
     const background = createBackgroundState(ctx);
+    const projector = createProjector(ctx, { startupGuard: UNSTARTED_LOOP_GUARD });
     registerAuthorityRoutes(app, { authority: () => currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths }), catalog: ctx.catalog });
     registerBackgroundRoutes(app, { background });
-    registerProjectionRoutes(app, {
-      projector: createProjector(ctx, { startupGuard: UNSTARTED_LOOP_GUARD }),
-      defaultTimeoutMs: ctx.config.projection.defaultAwaitTimeoutMs,
-    });
+    // The route suites run no step whose units are target-authoritative, so no window ever opens over the in-memory schema.
+    registerLegacyStepRoutes(app, { windows: createWindowService(ctx, { projector }) });
+    registerProjectionRoutes(app, { projector, defaultTimeoutMs: ctx.config.projection.defaultAwaitTimeoutMs });
     registerSchedulerRoutes(app, { scheduler: createSchedulerService(ctx), background });
     options.extraRoutes?.(app);
     await app.ready();

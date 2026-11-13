@@ -2019,8 +2019,12 @@ paths:
         '404':
           $ref: '#/components/responses/NotFoundPage'
           description: The site 404 page for a non-UUID `fileid`, a size containing `.`, or an unknown file.
+        '500':
+          $ref: '#/components/responses/ErrorPage'
+          description: The ColdFusion error page for a known file whose stored object is absent, as legacy's streamFile fails on a missing file.
         '503':
           $ref: '#/components/responses/Unavailable'
+          description: Legacy-shaped 503 after a fail-closed or wait-timeout condition, including an image rendition of a custom size that was never stored, which only ColdFusion's image engine generates.
   /tasks/render/{size}:
     parameters:
       - $ref: '#/components/parameters/RenderSize'
@@ -2044,8 +2048,12 @@ paths:
         '404':
           $ref: '#/components/responses/NotFoundPage'
           description: The site 404 page for a non-UUID `fileid`, a size containing `.`, or an unknown file.
+        '500':
+          $ref: '#/components/responses/ErrorPage'
+          description: The ColdFusion error page for a known file whose stored object is absent, as legacy's streamFile fails on a missing file.
         '503':
           $ref: '#/components/responses/Unavailable'
+          description: Legacy-shaped 503 after a fail-closed or wait-timeout condition, including an image rendition of a custom size that was never stored, which only ColdFusion's image engine generates.
   /_api/resource/variation:
     get:
       operationId: resourceVariationGet
@@ -2695,6 +2703,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SignedUrl'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: A `variant` outside its pattern or a `method` outside its enum.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

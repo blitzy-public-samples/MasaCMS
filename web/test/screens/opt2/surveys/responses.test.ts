@@ -1,6 +1,8 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-// The surveys responses screen: DOM snapshot of single- and multi-site responses, paging, safe markup, denials.
+// The surveys responses screen: DOM snapshot of single- and multi-site responses, the empty list, whole answers,
+// paging, safe markup, denials and unavailability.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { GatewayUnavailableError } from '@/lib/gateway-client';
 import { SURVEY_IDS, surveyResponses } from '../../../fixtures/opt2/surveys';
 import type { DomModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
@@ -91,6 +93,40 @@ describe('surveys responses screen', () => {
       },
     ]);
     expect(csrfContexts(gateway)).toEqual([]);
+  });
+
+  it('shows the empty-list message when the survey has no responses', async () => {
+    const gateway = surveysGateway({ [RESPONSES_ROUTE]: { status: 200, body: { data: [], total: 0 } } });
+
+    const html = await bodyHtml('responses', managerRequest({ surveyid: MULTI }), gateway);
+
+    expect(html).toContain('<div class="help-block-empty">This survey has no responses.</div>');
+    expect(html).not.toContain('<table');
+    expect(html).not.toContain('Previous');
+  });
+
+  it('shows answers longer than 80 characters whole and unparsed', async () => {
+    const answers = `{"q1":"3","q2":"${'Approvals & reminders arrive late on "Fridays". '.repeat(4)}"}`;
+    const [response] = surveyResponses.multiSite;
+    const gateway = surveysGateway({
+      [RESPONSES_ROUTE]: { status: 200, body: { data: [{ ...response, answers }], total: 1 } },
+    });
+
+    const model = await bodyModel('responses', managerRequest({ surveyid: MULTI }), gateway);
+
+    expect(answers.length).toBeGreaterThan(80);
+    expect(model.tables[0]?.rows[0]?.[2]).toBe(answers);
+  });
+
+  it.each([
+    { label: 'survey read', route: routeKey('GET', 'surveys', `/v1/surveys/${MULTI}`) },
+    { label: 'responses read', route: RESPONSES_ROUTE },
+  ])('propagates an unavailable $label', async ({ route }) => {
+    const gateway = surveysGateway({ [route]: { status: 503 } });
+
+    const load = surveysScreen('responses').load(contextFor(managerRequest({ surveyid: MULTI }), gateway));
+
+    await expect(load).rejects.toBeInstanceOf(GatewayUnavailableError);
   });
 
   it('encodes stored answers as text', async () => {

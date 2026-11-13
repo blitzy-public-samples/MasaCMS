@@ -10,6 +10,7 @@ import {
   createMailpitDeliveryStatus,
   mailpitSearchUrl,
 } from '../../src/domain/delivery-status.js';
+import { buildTestApp, fakeMailpitFetch, fakeSleep, headersFor, type TestApp } from '../helpers/app.js';
 
 const timer = vi.hoisted(() => ({ delay: vi.fn<(ms: number) => Promise<void>>(async () => undefined) }));
 
@@ -35,17 +36,6 @@ function scriptFetch(...replies: [...Reply[], Reply]): string[] {
     }),
   );
   return urls;
-}
-
-/** Sleep that resolves at once and records each requested wait. */
-function recordingSleep(): { sleep: (ms: number) => Promise<void>; waits: number[] } {
-  const waits: number[] = [];
-  return {
-    waits,
-    sleep: async (ms) => {
-      waits.push(ms);
-    },
-  };
 }
 
 const found = (id: unknown): Reply => () => Response.json({ messages: [{ ID: id }] });
@@ -87,21 +77,23 @@ describe('mailpitSearchUrl', () => {
 
 describe('createMailpitDeliveryStatus', () => {
   it.each([1, 5, 10])('finds the message on lookup %i', async (k) => {
-    const urls = scriptFetch(...Array.from({ length: k - 1 }, () => empty), found(`MP-${k}`));
-    const { sleep, waits } = recordingSleep();
+    const mailpit = fakeMailpitFetch({ [MESSAGE_ID]: { foundOnTry: k, mailpitId: `MP-${k}` } }, { baseUrl: BASE });
+    vi.stubGlobal('fetch', mailpit.fetch);
+    const { sleep, delays } = fakeSleep();
 
     await expect(createMailpitDeliveryStatus({ baseUrl: `${BASE}/`, sleep }).confirm(MESSAGE_ID)).resolves.toBe(`MP-${k}`);
-    expect(urls).toEqual(Array.from({ length: k }, () => SEARCH_URL));
-    expect(waits).toEqual(Array.from({ length: k - 1 }, () => 500));
+    expect(mailpit.urls).toEqual(Array.from({ length: k }, () => SEARCH_URL));
+    expect(delays).toEqual(Array.from({ length: k - 1 }, () => 500));
   });
 
   it('returns null after 10 misses', async () => {
-    const urls = scriptFetch(empty);
-    const { sleep, waits } = recordingSleep();
+    const mailpit = fakeMailpitFetch({ [MESSAGE_ID]: 'never' }, { baseUrl: BASE });
+    vi.stubGlobal('fetch', mailpit.fetch);
+    const { sleep, delays } = fakeSleep();
 
     await expect(createMailpitDeliveryStatus({ baseUrl: BASE, sleep }).confirm(MESSAGE_ID)).resolves.toBeNull();
-    expect(urls).toEqual(Array.from({ length: 10 }, () => SEARCH_URL));
-    expect(waits).toEqual(Array.from({ length: 9 }, () => 500));
+    expect(mailpit.urls).toEqual(Array.from({ length: MAILPIT_CONFIRM_ATTEMPTS }, () => SEARCH_URL));
+    expect(delays).toEqual(Array.from({ length: MAILPIT_CONFIRM_ATTEMPTS - 1 }, () => MAILPIT_CONFIRM_INTERVAL_MS));
     expect(timer.delay).not.toHaveBeenCalled();
   });
 
@@ -113,7 +105,7 @@ describe('createMailpitDeliveryStatus', () => {
       () => new Response(null, { status: 404 }),
       found('MP-3'),
     );
-    const { sleep, waits } = recordingSleep();
+    const { sleep, delays: waits } = fakeSleep();
 
     await expect(createMailpitDeliveryStatus({ baseUrl: BASE, sleep }).confirm(MESSAGE_ID)).resolves.toBe('MP-3');
     expect(cancel).toHaveBeenCalledTimes(1);
@@ -123,7 +115,7 @@ describe('createMailpitDeliveryStatus', () => {
 
   it('retries after a rejected fetch', async () => {
     const urls = scriptFetch(() => Promise.reject(new TypeError('fetch failed')), found('MP-2'));
-    const { sleep, waits } = recordingSleep();
+    const { sleep, delays: waits } = fakeSleep();
 
     await expect(createMailpitDeliveryStatus({ baseUrl: BASE, sleep }).confirm(MESSAGE_ID)).resolves.toBe('MP-2');
     expect(urls).toEqual([SEARCH_URL, SEARCH_URL]);
@@ -140,7 +132,7 @@ describe('createMailpitDeliveryStatus', () => {
     ['a non-JSON body', () => new Response('not json', { status: 200 })],
   ])('treats %s as a miss', async (_label, miss) => {
     const urls = scriptFetch(miss, found('MP-2'));
-    const { sleep, waits } = recordingSleep();
+    const { sleep, delays: waits } = fakeSleep();
 
     await expect(createMailpitDeliveryStatus({ baseUrl: BASE, sleep }).confirm(MESSAGE_ID)).resolves.toBe('MP-2');
     expect(urls).toHaveLength(2);
@@ -159,7 +151,7 @@ describe('createMailpitDeliveryStatus', () => {
   it('gives each lookup its own 2 s deadline signal', async () => {
     const timeout = vi.spyOn(AbortSignal, 'timeout');
     scriptFetch(empty, empty, found('MP-3'));
-    const { sleep } = recordingSleep();
+    const { sleep } = fakeSleep();
 
     await expect(createMailpitDeliveryStatus({ baseUrl: BASE, sleep }).confirm(MESSAGE_ID)).resolves.toBe('MP-3');
     expect(timeout.mock.calls).toEqual([[2000], [2000], [2000]]);
@@ -175,7 +167,7 @@ describe('createMailpitDeliveryStatus', () => {
 
   it('counts a fetch still pending at its deadline as a miss', async () => {
     const urls = scriptFetch(pending, found('MP-2'));
-    const { sleep, waits } = recordingSleep();
+    const { sleep, delays: waits } = fakeSleep();
     const started = performance.now();
 
     await expect(createMailpitDeliveryStatus({ baseUrl: BASE, sleep }).confirm(MESSAGE_ID)).resolves.toBe('MP-2');
@@ -262,7 +254,7 @@ describe('createMailpitDeliveryStatus against a stalled Mailpit', () => {
 
   it.each<Behaviour>(['no-headers', 'partial-body'])('treats a %s stall as a miss and finds the third reply', async (stall) => {
     const { origin, paths } = await startMailpit(stall, stall, 'hit');
-    const { sleep, waits } = recordingSleep();
+    const { sleep, delays: waits } = fakeSleep();
 
     await expect(createMailpitDeliveryStatus({ baseUrl: origin, sleep }).confirm(MESSAGE_ID)).resolves.toBe('MP-3');
     expect(paths).toEqual([SEARCH_PATH, SEARCH_PATH, SEARCH_PATH]);
@@ -276,7 +268,7 @@ describe('createMailpitDeliveryStatus against a stalled Mailpit', () => {
   ])('finds a hit whose %i ms late %s arrives within the first lookup', async (lateMs, part) => {
     const timeout = vi.spyOn(AbortSignal, 'timeout');
     const { origin, paths } = await startMailpit({ lateMs, part });
-    const { sleep, waits } = recordingSleep();
+    const { sleep, delays: waits } = fakeSleep();
     const started = performance.now();
 
     await expect(createMailpitDeliveryStatus({ baseUrl: origin, sleep }).confirm(MESSAGE_ID)).resolves.toBe('MP-1');
@@ -290,7 +282,7 @@ describe('createMailpitDeliveryStatus against a stalled Mailpit', () => {
     const timeout = vi.spyOn(AbortSignal, 'timeout');
     const stalls = Array.from({ length: 10 }, (_, i): Behaviour => (i % 2 === 0 ? 'no-headers' : 'partial-body'));
     const { origin, paths } = await startMailpit(...stalls);
-    const { sleep, waits } = recordingSleep();
+    const { sleep, delays: waits } = fakeSleep();
     const started = performance.now();
 
     await expect(createMailpitDeliveryStatus({ baseUrl: origin, sleep }).confirm(MESSAGE_ID)).resolves.toBeNull();
@@ -301,5 +293,61 @@ describe('createMailpitDeliveryStatus against a stalled Mailpit', () => {
     expect(waits).toEqual(limits.map(() => MAILPIT_CONFIRM_INTERVAL_MS));
     expect(limits.every((ms) => ms === 1000 || ms === MAILPIT_LOOKUP_TIMEOUT_MS)).toBe(true);
     expect(limits.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(MAILPIT_CONFIRM_BUDGET_MS);
+  });
+});
+
+describe('fixture send confirmed through the Mailpit adapter', () => {
+  const MESSAGES = '/legacy-fixtures/cfml/api.cfm/communications/messages?siteid=tenant-a';
+  const CSRF_HEADERS = { 'x-csrf_token': 'CSRF-TOKEN', 'x-csrf_token_expires': '260630120000000' };
+  const SENDER_ID = '11111111-2222-3333-4444555566667777';
+  const RECIPIENT = 'member1@tenant-a.example';
+
+  interface SendBody {
+    method: string;
+    data: { message_id: string; state: string; history: { status: string; detail: string; mailpit_id: string }[] };
+  }
+
+  let built: Pick<TestApp, 'app'> | undefined;
+
+  afterEach(async () => {
+    await built?.app.close();
+    built = undefined;
+  });
+
+  // A message Mailpit never shows is recorded failed (mailpit-not-found), as communications.cfc sendMessage records it.
+  it('records failed mailpit-not-found after 10 empty searches', async () => {
+    const urls = scriptFetch(empty);
+    const { sleep, delays } = fakeSleep();
+    const ctx = await buildTestApp({ deliveryStatus: createMailpitDeliveryStatus({ baseUrl: BASE, sleep }) });
+    built = ctx;
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: MESSAGES,
+      headers: { ...(await headersFor('communications.sender', { sub: SENDER_ID })), ...CSRF_HEADERS },
+      payload: { to: RECIPIENT, subject: 'Hello', bodyText: 'Hi' },
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json<SendBody>();
+    expect(body).not.toHaveProperty('error');
+    expect(body).toMatchObject({ method: 'communications.messages', data: { to_address: RECIPIENT, state: 'failed' } });
+    const messageId = body.data.message_id;
+    expect(body.data.history.map(({ status, detail, mailpit_id }) => [status, detail, mailpit_id])).toEqual([
+      ['queued', '', ''],
+      ['sent', '', ''],
+      ['failed', 'mailpit-not-found', ''],
+    ]);
+
+    expect(ctx.db.rows('message')).toMatchObject([{ message_id: messageId, state: 'failed' }]);
+    expect(ctx.db.rows('delivery_status').map(({ status, detail, mailpit_id }) => [status, detail, mailpit_id])).toEqual([
+      ['queued', null, null],
+      ['sent', null, null],
+      ['failed', 'mailpit-not-found', null],
+    ]);
+    expect(ctx.mail.sent.map((mail) => mail.to)).toEqual([RECIPIENT]);
+    expect(urls).toEqual(Array.from({ length: MAILPIT_CONFIRM_ATTEMPTS }, () => mailpitSearchUrl(BASE, messageId)));
+    expect(urls[0]).toBe(`${BASE}/api/v1/search?query=message-id%3A${messageId}%40opt2.local`);
+    expect(delays).toEqual(Array.from({ length: MAILPIT_CONFIRM_ATTEMPTS - 1 }, () => MAILPIT_CONFIRM_INTERVAL_MS));
   });
 });

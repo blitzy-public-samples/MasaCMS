@@ -1,11 +1,12 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Consumer contracts of communications: the three topics it consumes against their producers' schemas, and its call of surveys' markReminderSent. */
+/** Consumer contracts of communications: the three topics it consumes against their producers' schemas, its surveys-launch tasks and its call of surveys' markReminderSent. */
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it } from 'vitest';
 import { serviceRole } from '@opt2/platform/auth';
-import { taskWireBody } from '@opt2/platform/tasks';
-import { SITE_CHANGED_TOPIC } from '@opt2/platform/tenancy';
+import { topicMeta, type TopicMeta } from '@opt2/platform/events';
+import { QUEUES, taskWireBody, type CreateTaskInput } from '@opt2/platform/tasks';
+import { SITE_CHANGED_TOPIC, tenantRegistryConsumer } from '@opt2/platform/tenancy';
 import {
   ContractAssertionError,
   TENANT_A,
@@ -26,9 +27,25 @@ import {
   SURVEY_SCHEDULED_SUBSCRIPTION,
   siteChangedSchema,
 } from '../../src/events/consumers.js';
-import { LOGIN_MAIL_TOPIC, loginMailSchema, type LoginMailRequestedPayload } from '../../src/events/login-mail.js';
-import { SURVEY_SCHEDULED_TOPIC, surveyScheduledSchema, type SurveyScheduledPayload } from '../../src/events/survey-scheduled.js';
-import { REMINDER_SENT_MATCH, buildTestApp, type TestApp } from '../helpers/app.js';
+import { LOGIN_MAIL_TOPIC, loginMailConsumer, loginMailSchema, type LoginMailRequestedPayload } from '../../src/events/login-mail.js';
+import {
+  SURVEY_SCHEDULED_TOPIC,
+  surveyScheduledConsumer,
+  surveyScheduledSchema,
+  type SurveyScheduledPayload,
+} from '../../src/events/survey-scheduled.js';
+import { reminderSentPath } from '../../src/domain/reminders.js';
+import { planSurveyTasks, taskPayload, taskTarget } from '../../src/domain/survey-tasks.js';
+import { REMINDER_TASK_PATH } from '../../src/tasks/reminder.js';
+import {
+  REMINDER_SENT_MATCH,
+  TEST_CLOCK,
+  buildTestApp,
+  createClientRecorder,
+  removeTestStateDir,
+  testEnv,
+  type TestApp,
+} from '../helpers/app.js';
 import {
   PRODUCER_SCHEMA_URLS,
   SAMPLE_IDS,
@@ -72,11 +89,16 @@ const PRODUCERS: Readonly<Record<ProducerTopic, Json>> = {
 };
 
 const SITE = TENANT_A.siteId;
+const LAUNCH_QUEUE = 'surveys-launch';
 const REMINDER_QUEUE = 'communications-reminders';
+const LAUNCH_TEMPLATE = '/internal/v1/tasks/surveys/{surveyId}/launch';
+const REMINDER_SENT_TEMPLATE = '/internal/v1/surveys/{surveyId}/reminders/{n}/sent';
 
-/** Every login-mail field communications stores or sends, with the JSON type it relies on. */
+/** Every login-mail field communications re-checks, stores or sends, with the JSON type it relies on. */
 const LOGIN_MAIL_FIELDS = {
   messageId: 'string',
+  userId: 'string',
+  kind: 'string',
   siteId: 'string',
   to: 'string',
   from: 'string',
@@ -154,6 +176,13 @@ const SUBSCRIPTIONS: Readonly<Record<ProducerTopic, string>> = {
 
 const TOPICS = Object.keys(PRODUCERS) as ProducerTopic[];
 
+/** Delivery declarations of each consumer communications registers; the definitions touch no dependency until they apply. */
+const DEFINITIONS: Readonly<Record<ProducerTopic, { topic: string; kind: string; fanout?: unknown; supersedes?: unknown }>> = {
+  [LOGIN_MAIL_TOPIC]: loginMailConsumer({} as never),
+  [SURVEY_SCHEDULED_TOPIC]: surveyScheduledConsumer({} as never),
+  [SITE_CHANGED_TOPIC]: tenantRegistryConsumer,
+};
+
 /** A mutated copy of a producer schema; `$id` is dropped because the shared Ajv registry already holds the original under it. */
 function mutatedProducer(topic: ProducerTopic, mutate: Mutation): Json {
   const copy = structuredClone(PRODUCERS[topic]);
@@ -206,18 +235,24 @@ describe('topics communications consumes, against their producers', () => {
     for (const sample of SAMPLES[topic]) expect(producerValidator(topic).validatePayload(sample).ok).toBe(true);
   });
 
-  it.each(TOPICS)('%s: declares no tenant fan-out, so deliveries apply in the envelope tenant only', (topic) => {
-    expect(PRODUCERS[topic]).not.toHaveProperty(['x-opt2-tenant-fanout']);
+  // No topic fans out, so every delivery applies in the envelope tenant only.
+  it.each<[ProducerTopic, TopicMeta]>([
+    [LOGIN_MAIL_TOPIC, { kind: 'process' }],
+    [SURVEY_SCHEDULED_TOPIC, { kind: 'process', supersedes: true }],
+    [SITE_CHANGED_TOPIC, { kind: 'state' }],
+  ])('%s: the producer declares %o', (topic, meta) => {
+    expect(topicMeta(PRODUCERS[topic])).toStrictEqual(meta);
+  });
+
+  it.each(TOPICS)("%s: the registered consumer declares the producer's topic and delivery semantics", (topic) => {
+    const { topic: consumed, kind, fanout, supersedes } = DEFINITIONS[topic];
+    expect({ topic: consumed, kind, fanout, supersedes }).toEqual({ topic, ...topicMeta(PRODUCERS[topic]) });
   });
 
   it('survey.scheduled: each reminder supplies the ordinal, offset and task name a reminder task is planned from', () => {
     expect(() =>
       assertProducerConsumerCompatible(reminderItemSchema(), { required: Object.keys(REMINDER_FIELDS), types: REMINDER_FIELDS }),
     ).not.toThrow();
-  });
-
-  it('survey.scheduled: declares that a later schedule version supersedes an earlier one', () => {
-    expect(PRODUCERS[SURVEY_SCHEDULED_TOPIC]['x-opt2-supersedes']).toBe(true);
   });
 
   it.each<[ProducerTopic, string, Mutation, ContractViolation['instancePath'], ContractViolation['keyword']]>([
@@ -342,6 +377,85 @@ function assertSchemaMatches(doc: OpenApiDoc, path: string, schema: unknown, val
   assertResponseMatchesOpenApi(probe, { method: 'POST', path, status: 200, contentType: 'application/json', body: value });
 }
 
+/** Asserts a `surveys-launch` task posts to surveys' launch operation at the configured surveys origin, with a body it accepts. */
+function assertLaunchTaskAccepted(input: CreateTaskInput, serviceUrls: Record<string, string>): void {
+  const base = serviceUrls[QUEUES[LAUNCH_QUEUE].targetService];
+  if (base === undefined) throw new TypeError('OPT2_SERVICE_URLS names no surveys URL');
+  const url = new URL(input.url);
+  expect(url.origin).toBe(new URL(base).origin);
+  expect(url.pathname).toBe(LAUNCH_TEMPLATE.replace('{surveyId}', SAMPLE_IDS.surveyId));
+  const match = findOperation(surveysDoc, 'POST', url.pathname);
+  expect(match.template).toBe(LAUNCH_TEMPLATE);
+  expect(() => assertSchemaMatches(surveysDoc, match.template, requestSchemaOf(surveysDoc, match), taskWireBody(input))).not.toThrow();
+}
+
+describe("communications' surveys-launch task against surveys launchSurveyTask (seam 2)", () => {
+  let t: TestApp | undefined;
+  let stateDir: string | undefined;
+
+  afterEach(async () => {
+    await t?.app.close();
+    t = undefined;
+    if (stateDir !== undefined) removeTestStateDir(stateDir);
+    stateDir = undefined;
+  });
+
+  it('targets the operation surveys runs on the cloud-tasks transport for tasks-invoker only', () => {
+    expect(QUEUES[LAUNCH_QUEUE].targetService).toBe('surveys');
+    const { template, operation } = findOperation(surveysDoc, 'POST', QUEUES[LAUNCH_QUEUE].targetPath);
+    expect(template).toBe(LAUNCH_TEMPLATE);
+    expect(operation).toMatchObject({
+      operationId: 'launchSurveyTask',
+      'x-opt2-transport': 'cloud-tasks',
+      'x-opt2-requires': [serviceRole('tasks-invoker')],
+      security: [{ tasksInvokerOidc: [] }],
+    });
+  });
+
+  it('plans one launch task whose URL and wire body surveys accepts', async () => {
+    const env = await testEnv();
+    stateDir = env.OPT2_STATE_DIR;
+    const payload = surveyScheduledPayload(1);
+    const launches = planSurveyTasks(payload, { now: TEST_CLOCK.now() }).filter((task) => task.kind === 'survey-launch');
+    expect(launches).toMatchObject([{ queue: LAUNCH_QUEUE, deadlineS: QUEUES[LAUNCH_QUEUE].deadlineS, surveyId: payload.surveyId }]);
+    const [task] = launches;
+    if (task === undefined) throw new TypeError('the plan holds no launch task');
+    assertLaunchTaskAccepted(
+      {
+        queue: task.queue,
+        name: task.portName,
+        scheduleTime: task.scheduleTime,
+        url: taskTarget({ queue: task.queue, surveyId: task.surveyId }, env.OPT2_SERVICE_URLS).url,
+        // A launch payload names no scheduled-task row.
+        body: taskPayload(task, ''),
+        deadlineS: task.deadlineS,
+        tenantId: TENANT_A.tenantId,
+      },
+      env.OPT2_SERVICE_URLS,
+    );
+  });
+
+  it('queues the launch and one reminder task per reminder of a delivered schedule', async () => {
+    t = await buildTestApp();
+    const payload = surveyScheduledPayload(1);
+    const res = await pushTo(t.app, SURVEY_SCHEDULED_SUBSCRIPTION, envelopeFor(SURVEY_SCHEDULED_TOPIC, payload));
+    expect(res.statusCode, res.body).toBe(204);
+    const [launch, ...others] = t.taskPort.byQueue(LAUNCH_QUEUE);
+    expect(others).toEqual([]);
+    if (launch === undefined) throw new TypeError('the schedule created no launch task');
+    expect(launch).toMatchObject({ tenantId: TENANT_A.tenantId, deadlineS: QUEUES[LAUNCH_QUEUE].deadlineS });
+    assertLaunchTaskAccepted(launch, t.env.OPT2_SERVICE_URLS);
+
+    const reminderTemplate = QUEUES[REMINDER_QUEUE].targetPath;
+    expect(REMINDER_TASK_PATH.replace(/:(\w+)/g, '{$1}')).toBe(reminderTemplate);
+    const reminders = t.taskPort.byQueue(REMINDER_QUEUE);
+    expect(reminders).toHaveLength(payload.reminders.length);
+    for (const reminder of reminders) {
+      expect(findOperation(ownDoc, 'POST', new URL(reminder.url).pathname).template).toBe(reminderTemplate);
+    }
+  });
+});
+
 describe("communications' call of surveys markReminderSent (seam 2)", () => {
   let t: TestApp | undefined;
 
@@ -378,11 +492,15 @@ describe("communications' call of surveys markReminderSent (seam 2)", () => {
     const [call, ...others] = ctx.client.requestsTo('surveys');
     expect(others).toEqual([]);
     if (call === undefined) throw new TypeError('no surveys call');
+    expect(call).toMatchObject({ method: 'POST', path: reminderSentPath(SAMPLE_IDS.surveyId, 1) });
     const match = findOperation(surveysDoc, call.method, call.path);
+    expect(match.template).toBe(REMINDER_SENT_TEMPLATE);
+    // The app's service client mints its invocation credential as OPT2_SERVICE_NAME.
+    expect(ctx.env.OPT2_SERVICE_NAME).toBe('communications');
     expect(match.operation).toMatchObject({
       operationId: 'markReminderSent',
       'x-opt2-transport': 'service',
-      'x-opt2-requires': [serviceRole('communications')],
+      'x-opt2-requires': [serviceRole(ctx.env.OPT2_SERVICE_NAME)],
       security: [{ invocationCredential: [] }],
     });
     // The operation accepts the invocation credential alone, so the system task forwards no user token.
@@ -394,6 +512,14 @@ describe("communications' call of surveys markReminderSent (seam 2)", () => {
       taskName: `opt2-survey-${SAMPLE_IDS.surveyId}-reminder-1`,
       scheduleVersion: 1,
     });
+  });
+
+  it("answers the reminder-sent call by default as surveys' contract does", async () => {
+    const path = reminderSentPath(SAMPLE_IDS.surveyId, 1);
+    const reply = await createClientRecorder().request({ service: 'surveys', method: 'POST', path, json: {} });
+    expect(() =>
+      assertResponseMatchesOpenApi(surveysDoc, { method: 'POST', path, status: reply.status, contentType: 'application/json', body: reply.body }),
+    ).not.toThrow();
   });
 
   it.each([true, false])("treats surveys' contract-valid 200 answer applied=%s as the reminder sent", async (applied) => {

@@ -32,6 +32,7 @@ import { mappings, units } from '../../src/migration/mappings/index.js';
 import { exportObjects } from '../../src/migration/objects.js';
 import { OWNER, SCHEMA, createContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
+import { registerFileRoutes } from '../../src/routes/files.js';
 import { registerFileLookupRoutes } from '../../src/routes/internal-file-lookup.js';
 import { registerMigrationObjectRoutes } from '../../src/routes/migration-objects.js';
 import { registerHeaderPromptRoutes } from '../../src/routes/v1/header-prompts.js';
@@ -459,7 +460,8 @@ export function testEnv(stateDir: string): Record<string, string> {
 
 /**
  * Builds strategies-content with every route its source registers: the header prompts, the people file lookup, the migration
- * object transfer, the platform migration handlers over the content mappings, the four push consumers and queue control.
+ * object transfer, the signed file downloads, the platform migration handlers over the content mappings, the four push consumers
+ * and queue control.
  */
 export async function buildContentApp(options: ContentTestAppOptions = {}): Promise<ContentTestApp> {
   const stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-strategies-content-gates-'));
@@ -485,6 +487,7 @@ export async function buildContentApp(options: ContentTestAppOptions = {}): Prom
     await registerHeaderPromptRoutes(app, { domain: { db, repository, clock: TEST_CLOCK } });
     await registerFileLookupRoutes(app, { db });
     registerMigrationObjectRoutes(app, { domain: { db, repository }, storage, clock: TEST_CLOCK });
+    registerFileRoutes(app, { domain: { db, repository }, storage, clock: TEST_CLOCK });
     registerMigrationHandlers(app, { owner: OWNER, repository: repository.platform, mappings, units, db, exportObjects });
     registerConsumers(app, { service: SERVICE, consumers: contentConsumers(repository), publisher, db });
     registerContentQueueControl(app, { port: taskPort, serviceUrls: env.OPT2_SERVICE_URLS, clock: TEST_CLOCK });

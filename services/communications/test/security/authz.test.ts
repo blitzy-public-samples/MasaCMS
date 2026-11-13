@@ -38,9 +38,11 @@ import { LOGIN_MAIL_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION, SURVEY_SCHEDULED_SU
 import { LOGIN_MAIL_TOPIC } from '../../src/events/login-mail.js';
 import { SURVEY_SCHEDULED_TOPIC } from '../../src/events/survey-scheduled.js';
 import { FIXTURE_ERROR_MAP } from '../../src/legacy/fixture-envelope.js';
+import type { ScheduledTaskRow } from '../../src/repo/tables.js';
 import { ADOPT_PATH, CANCEL_ADOPTED_PATH } from '../../src/routes/adoption.js';
 import { FIXTURE_PREFIX } from '../../src/routes/fixture.js';
 import { SCHEDULED_TASKS_PATH } from '../../src/routes/scheduled-tasks.js';
+import { REMINDER_TASK_PATH } from '../../src/tasks/reminder.js';
 import {
   TEST_CLOCK,
   buildTestApp,
@@ -220,6 +222,44 @@ const SWEEP: ProbeRequest = {
   payload: { queue: SWEEP_QUEUE, name: `${SWEEP_QUEUE}-authz-probe`, tenantId: null, payload: null },
 };
 
+const SUPERSEDED_TASK_ID = 'E5F6A7B8-0005-4000-8000000000000005';
+const SUPERSEDED_SURVEY_ID = 'F6A7B8C9-0006-4000-8000000000000006';
+const SEEDED_AT = TEST_CLOCK.now();
+
+/** A tenant-a reminder a later schedule version superseded; its queue task is already deleted, so no sweep recovery touches it. */
+const SUPERSEDED_REMINDER = {
+  tenant_id: TENANT_A.tenantId,
+  scheduled_task_id: SUPERSEDED_TASK_ID,
+  task_name: `opt2-survey-${SUPERSEDED_SURVEY_ID}-reminder-1`,
+  queue: REMINDER_QUEUE,
+  queue_task_name: `opt2-survey-${SUPERSEDED_SURVEY_ID}-reminder-1-v1`,
+  kind: 'survey-reminder',
+  source_type: 'survey',
+  source_id: SUPERSEDED_SURVEY_ID,
+  reminder_n: 1,
+  schedule_time: SEEDED_AT,
+  status: 'superseded',
+  target_route: REMINDER_TASK_PATH.replace(':scheduledTaskId', SUPERSEDED_TASK_ID),
+  schedule_version: 1,
+  origin: 'event',
+  enqueued_at: SEEDED_AT,
+  dequeued_at: SEEDED_AT,
+  created_at: SEEDED_AT,
+  updated_at: SEEDED_AT,
+} satisfies ScheduledTaskRow;
+
+/** The superseded reminder's task as Cloud Tasks delivers it. */
+const SUPERSEDED_DELIVERY: ProbeRequest = {
+  method: 'POST',
+  url: SUPERSEDED_REMINDER.target_route,
+  payload: {
+    queue: REMINDER_QUEUE,
+    name: SUPERSEDED_REMINDER.queue_task_name,
+    tenantId: TENANT_A.tenantId,
+    payload: { scheduledTaskId: SUPERSEDED_TASK_ID, surveyId: SUPERSEDED_SURVEY_ID, n: 1, scheduleVersion: 1 },
+  },
+};
+
 /** The stored reminder's task as Cloud Tasks delivers it: its target path and wire body. */
 function reminderTaskRequest(): ProbeRequest {
   if (reminderTask === undefined) throw new TypeError('beforeAll created no reminder task');
@@ -339,6 +379,8 @@ interface Effects {
   /** Write statements of the transactions run since the mark. */
   writes: string[];
   tasks: number;
+  /** Queue tasks deleted since the mark. */
+  deleted: number;
   calls: number;
   published: number;
   mails: number;
@@ -346,7 +388,7 @@ interface Effects {
 
 type Mark = Omit<Effects, 'writes'>;
 
-const NO_EFFECTS: Effects = { transactions: 0, writes: [], tasks: 0, calls: 0, published: 0, mails: 0 };
+const NO_EFFECTS: Effects = { transactions: 0, writes: [], tasks: 0, deleted: 0, calls: 0, published: 0, mails: 0 };
 
 const WRITE_STATEMENT = /\b(?:INSERT\s+INTO|DELETE\s+FROM|UPDATE\s+\S+(?:\s+AS\s+\S+)?\s+SET)\b/i;
 
@@ -354,6 +396,7 @@ function mark(): Mark {
   return {
     transactions: t.db.transactions.length,
     tasks: t.taskPort.tasks.length,
+    deleted: t.taskPort.deleted.length,
     calls: t.client.requests.length,
     published: t.publisher.published.length + t.publisher.raw.length,
     mails: t.mail.sent.length,
@@ -366,6 +409,7 @@ function effectsSince(from: Mark): Effects {
     transactions: transactions.length,
     writes: transactions.flatMap((tx) => tx.statements.map((statement) => statement.text).filter((text) => WRITE_STATEMENT.test(text))),
     tasks: t.taskPort.tasks.length - from.tasks,
+    deleted: t.taskPort.deleted.length - from.deleted,
     calls: t.client.requests.length - from.calls,
     published: t.publisher.published.length + t.publisher.raw.length - from.published,
     mails: t.mail.sent.length - from.mails,
@@ -463,7 +507,7 @@ function comparable(declared: Declared | RouteMatrixEntry): Record<string, unkno
 }
 
 beforeAll(async () => {
-  t = await buildTestApp();
+  t = await buildTestApp({ db: createRecordingDb({ scheduled_task: [SUPERSEDED_REMINDER] }) });
   // A sent message for the detail probes, and the sample survey's schedule for the listing and reminder-task probes.
   const sent = await t.app.inject({ method: 'POST', url: V1_SEND.url, headers: { ...CSRF_HEADERS, ...(await headersFor(SENDER)) }, payload: MESSAGE_BODY });
   expect(sent.statusCode, sent.body).toBe(200);
@@ -529,6 +573,17 @@ describe('managed credentials', () => {
     expect(res.statusCode, res.body).toBeLessThan(300);
   });
 
+  it('answers a superseded reminder task 2xx without calling surveys or sending mail', async () => {
+    const before = mark();
+    const res = await inject(SUPERSEDED_DELIVERY, { authorization: `Bearer ${await mintTasksInvokerToken({ audience: SERVICE })}` });
+    const effects = effectsSince(before);
+    expect({ status: res.statusCode, body: res.json() as unknown, effects: { ...effects, transactions: 0 } }).toEqual({
+      status: 200,
+      body: { status: 'superseded' },
+      effects: NO_EFFECTS,
+    });
+  });
+
   it.each([
     ['site.changed', SITE_CHANGED_SUBSCRIPTION, siteChangedEnvelope],
     ['login-mail.requested', LOGIN_MAIL_SUBSCRIPTION, loginMailEnvelope],
@@ -563,7 +618,14 @@ describe('transport separation', () => {
       { authorization: tasksToken, [INVOCATION_HEADER]: gatewayToken },
     ];
     for (const credentials of presented) {
-      for (const request of [V1_TEMPLATES, MIGRATION_POSITION, FIXTURE_LIST, FIXTURE_SEND, pushWithoutKey(LOGIN_MAIL_SUBSCRIPTION, loginMailEnvelope())]) {
+      for (const request of [
+        V1_TEMPLATES,
+        V1_SEND,
+        MIGRATION_POSITION,
+        FIXTURE_LIST,
+        FIXTURE_SEND,
+        pushWithoutKey(LOGIN_MAIL_SUBSCRIPTION, loginMailEnvelope()),
+      ]) {
         const { status, effects } = await outcomeOf(request, credentials);
         expect({ url: request.url, status, effects }).toEqual({ url: request.url, status: 401, effects: NO_EFFECTS });
       }
@@ -583,6 +645,7 @@ describe('transport separation', () => {
     const probes: [ProbeRequest, Record<string, string>][] = [
       [withPushKey(V1_TEMPLATES), {}],
       [withPushKey(V1_TEMPLATES), { [INVOCATION_HEADER]: gatewayToken }],
+      [withPushKey(V1_SEND), {}],
       [withPushKey(SWEEP), {}],
     ];
     for (const [request, credentials] of probes) {
@@ -591,8 +654,18 @@ describe('transport separation', () => {
     }
   });
 
+  it('answers the push key on a fixture route as an anonymous caller', async () => {
+    const { status, error, effects } = await outcomeOf(withPushKey(FIXTURE_SEND), {});
+    expect({ status, error, effects: { ...effects, transactions: 0 } }).toEqual({
+      status: 401,
+      error: errorBody(LEGACY_ERROR_MAP.authorization),
+      effects: NO_EFFECTS,
+    });
+  });
+
   it('refuses a wrong push key on the push routes', async () => {
     for (const [subscription, envelope] of [
+      [SITE_CHANGED_SUBSCRIPTION, siteChangedEnvelope()],
       [LOGIN_MAIL_SUBSCRIPTION, loginMailEnvelope()],
       [SURVEY_SCHEDULED_SUBSCRIPTION, surveyScheduledEnvelope()],
     ] as const) {
@@ -608,6 +681,12 @@ describe('site boundary', () => {
 
   it.each([V1_TEMPLATES, V1_SEND])('refuses a tenant-a sender token sent with siteid=tenant-b on $method $url', async (request) => {
     const outcome = await outcomeOf(toSiteB(request), await headersFor(SENDER, { site: SITE_A }));
+    expect(outcome).toEqual({ status: 403, error: errorBody(LEGACY_ERROR_MAP.authorization), effects: NO_EFFECTS });
+  });
+
+  it('refuses a tenant-a sender token whose POST /v1/messages body names siteid=tenant-b', async () => {
+    const request: ProbeRequest = { ...V1_SEND, url: '/v1/messages', payload: { ...MESSAGE_BODY, siteid: SITE_B } };
+    const outcome = await outcomeOf(request, await headersFor(SENDER, { site: SITE_A }));
     expect(outcome).toEqual({ status: 403, error: errorBody(LEGACY_ERROR_MAP.authorization), effects: NO_EFFECTS });
   });
 

@@ -2,6 +2,9 @@
 // The surveys schedule screen and its post action: DOM snapshot, service calls, CSRF forwarding, re-render, denials.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
+import { toString } from '@/lib/html';
+import { alertBox } from '@/screens/opt2/shared';
+import { scheduleBody } from '@/screens/opt2/surveys/schedule';
 import {
   SURVEY_IDS,
   invalidScheduleRequest,
@@ -9,7 +12,7 @@ import {
   scheduleRequest,
   surveyTasks,
 } from '../../../fixtures/opt2/surveys';
-import type { DomModel } from '../../../helpers/dom-model';
+import { fragmentModel, type DomModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
 import { routeKey } from '../../../helpers/fake-gateway';
 import { FIXED_CSRF, renderScreenPage } from '../../../helpers/screen-context';
@@ -35,7 +38,26 @@ const SINGLE = SURVEY_IDS.singleSiteSurvey;
 const SCHEDULE_PATH = `/v1/surveys/${MULTI}/schedule` as const;
 const SCHEDULE_ROUTE = routeKey('POST', 'surveys', SCHEDULE_PATH);
 const SURVEY_ROUTE = routeKey('GET', 'surveys', `/v1/surveys/${MULTI}` as const);
+const TASKS_ROUTE = routeKey('GET', 'surveys', `/v1/surveys/${MULTI}/tasks` as const);
 const CSRF_POSTED = { csrf_token: FIXED_CSRF.token, csrf_token_expires: FIXED_CSRF.expires };
+const NOT_FOUND_ENVELOPE = {
+  apiversion: 'v1',
+  method: 'surveys.get',
+  error: { message: 'The requested survey does not exist.', code: 'invalid_request' },
+};
+const errorAlert = (text: string) => ({ text, className: 'alert alert-error' });
+
+/** The body of a request naming no survey of the site: the header linking the list, then `alerts`. */
+const noSurveyModel = (alerts: DomModel['alerts']): DomModel => ({
+  title: '',
+  headings: ['Schedule'],
+  labels: [],
+  controls: [],
+  buttons: [],
+  links: [{ href: `/opt2/admin/surveys/surveys?siteid=${SITE}`, text: 'Surveys' }],
+  tables: [],
+  alerts,
+});
 const CSRF_HEADERS = { 'x-csrf_token': FIXED_CSRF.token, 'x-csrf_token_expires': FIXED_CSRF.expires };
 
 const control = (tag: 'input' | 'textarea', name: string, type: string, value: string) => ({
@@ -138,6 +160,83 @@ describe('surveys schedule screen', () => {
     expect(model.controls.slice(0, 2).map(({ value }) => value)).toEqual(['', '']);
     expect(model.tables).toEqual([]);
   });
+
+  it('shows the no-survey alert and asks no service when the request names no survey', async () => {
+    const gateway = surveysGateway();
+
+    const model = await bodyModel('schedule', managerRequest(), gateway);
+
+    expect(model).toEqual(noSurveyModel([{ text: 'No survey selected.', className: 'alert alert-info' }]));
+    expect(gateway.calls).toEqual([]);
+  });
+
+  it.each([
+    { name: 'an empty survey 404', route: SURVEY_ROUTE, reply: { status: 404 }, alert: 'Not Found', reads: 1 },
+    {
+      name: 'a survey 404 envelope',
+      route: SURVEY_ROUTE,
+      reply: { status: 404, body: NOT_FOUND_ENVELOPE },
+      alert: 'The requested survey does not exist.',
+      reads: 1,
+    },
+    {
+      name: 'a survey 400 envelope',
+      route: SURVEY_ROUTE,
+      reply: scheduleInvalid,
+      alert: 'Invalid parameters',
+      reads: 1,
+    },
+    { name: 'a tasks 404', route: TASKS_ROUTE, reply: { status: 404 }, alert: 'Not Found', reads: 2 },
+  ])('shows only the header and the envelope alert for $name', async ({ route, reply, alert, reads }) => {
+    const gateway = surveysGateway({ [route]: reply });
+
+    const model = await bodyModel('schedule', managerRequest({ surveyid: MULTI }), gateway);
+
+    expect(model).toEqual(noSurveyModel([errorAlert(alert)]));
+    expect(surveysCalls(gateway).map(({ path }) => path)).toEqual(
+      [`/v1/surveys/${MULTI}`, `/v1/surveys/${MULTI}/tasks`].slice(0, reads),
+    );
+  });
+
+  it.each([
+    { route: SURVEY_ROUTE, status: 503, error: GatewayUnavailableError },
+    { route: TASKS_ROUTE, status: 503, error: GatewayUnavailableError },
+    { route: SURVEY_ROUTE, status: 401, error: GatewayDenialError },
+    { route: TASKS_ROUTE, status: 500, error: Error },
+  ])('propagates a $status answer to $route', async ({ route, status, error }) => {
+    const gateway = surveysGateway({ [route]: { status } });
+
+    const model = bodyModel('schedule', managerRequest({ surveyid: MULTI }), gateway);
+
+    await expect(model).rejects.toBeInstanceOf(error);
+  });
+});
+
+describe('surveys scheduleBody', () => {
+  it('holds the given values, a missing field empty, under the alert', async () => {
+    const ctx = contextFor(managerRequest(), surveysGateway());
+
+    const body = await scheduleBody(ctx, MULTI, {
+      alert: alertBox('Check the launch time.', 'warning'),
+      values: { launch: '2026-08-01T10:00:00' },
+    });
+
+    const model = fragmentModel(toString(body));
+    expect(model.alerts).toEqual([{ text: 'Check the launch time.', className: 'alert alert-warning' }]);
+    expect(model.controls.slice(0, 2).map(({ name, value }) => ({ name, value }))).toEqual([
+      { name: 'launchAt', value: '2026-08-01T10:00:00' },
+      { name: 'reminders', value: '' },
+    ]);
+  });
+
+  it('holds the stored schedule without values', async () => {
+    const ctx = contextFor(managerRequest(), surveysGateway());
+
+    const model = fragmentModel(toString(await scheduleBody(ctx, MULTI)));
+
+    expect(model.alerts).toEqual([]);
+    expect(model.controls.slice(0, 2).map(({ value }) => value)).toEqual(['2026-07-01T09:00:00', '1440,4320']);
+  });
 });
 
 describe('surveys schedule action', () => {
@@ -217,6 +316,20 @@ describe('surveys schedule action', () => {
     expect(model).toMatchObject(formParts(invalidScheduleRequest.launchAt, '1440', '<token>', '<token>'));
     expect(model.headings).toEqual(['Schedule: Cross-program timesheet experience', 'Reminders', 'Tasks']);
     expect(csrfContexts(gateway)).toEqual([MULTI]);
+  });
+
+  it('re-renders only the header, the write alert and the read alert when the survey is gone', async () => {
+    const gateway = surveysGateway({
+      [SCHEDULE_ROUTE]: { status: 404, body: NOT_FOUND_ENVELOPE },
+      [SURVEY_ROUTE]: { status: 404 },
+    });
+
+    const result = await surveysAction('schedule').submit(contextFor(managerRequest(scheduleRc()), gateway));
+
+    expect(renderedModel(result)).toEqual(
+      noSurveyModel([errorAlert('The requested survey does not exist.'), errorAlert('Not Found')]),
+    );
+    expect(csrfContexts(gateway)).toEqual([]);
   });
 
   it('answers a refused user token with the login redirect error', async () => {

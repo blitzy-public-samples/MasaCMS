@@ -10,6 +10,7 @@ import {
   TENANT_A,
   TENANT_B,
   assertResponseMatchesOpenApi,
+  poolTenantExpectation,
   pushTo,
   registryPayloads,
   testEnvelope,
@@ -27,7 +28,7 @@ import {
 } from '../../src/events/consumers.js';
 import { mappings } from '../../src/migration/mappings/index.js';
 import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
-import { FAKE_XID, SERVICE, buildContentApp, serviceHeaders, userHeaders, type ContentTestApp } from '../helpers/app.js';
+import { FAKE_XID, SERVICE, TEST_CLOCK, buildContentApp, serviceHeaders, userHeaders, type ContentTestApp } from '../helpers/app.js';
 
 type Json = Record<string, unknown>;
 
@@ -52,6 +53,8 @@ const SERVED_OPERATIONS = [
   'migrationGate',
   'migrationPutObject',
   'migrationGetObject',
+  'getFileDownloadUrl',
+  'getLocalContentFile',
   'pushSiteChanged',
   'pushGroupChanged',
   'pushPermissionChanged',
@@ -371,6 +374,72 @@ describe('migration objects', () => {
     ['another service', () => serviceHeaders('people'), 403],
   ])('refuses %s with the contract %i', async (_label, headers, status) => {
     const res = await call({ method: 'POST', url: putUrl(), headers: { ...(await headers()), ...OCTET_TYPE }, payload: OBJECT_BYTES });
+    expect(res.statusCode).toBe(status);
+  });
+});
+
+describe('signed file downloads', () => {
+  const filePool = poolTenantExpectation(TENANT_A, 'file');
+  const key = `${filePool}/${FILE_A}.pdf`;
+  const downloadUrl = (fileId: string, query = ''): string => `/v1/sites/${SITE_A}/files/${fileId}/download-url${query}`;
+  const admin = () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.systemUser, Roles.siteAdmin] });
+  /** Answers the file read of FILE_A with a PDF named `report.pdf`. */
+  const seedFile = (): void => {
+    t.db.respond(/ FROM "content"\."file" WHERE /, [
+      { fileid: FILE_A, siteid: SITE_A, filename: 'report.pdf', contenttype: 'application', contentsubtype: 'pdf', fileext: 'pdf' },
+    ]);
+  };
+
+  it('issues a 900 s SignedUrl that streams the stored bytes under the signed disposition', async () => {
+    seedFile();
+    await t.storage.put(CONTENT_FILES_BUCKET, key, OBJECT_BYTES, { contentType: 'application/pdf' });
+    const res = await call({ method: 'GET', url: downloadUrl(FILE_A, '?method=inline'), headers: await admin() });
+    const body = res.json() as { url: string; expiresAt: string };
+    expect({ status: res.statusCode, expiresAt: body.expiresAt }).toEqual({
+      status: 200,
+      expiresAt: new Date(TEST_CLOCK.now().getTime() + 900_000).toISOString(),
+    });
+    expect(body.url.startsWith(`/opt2/files/content-files/${filePool}/${FILE_A}.pdf?expires=`)).toBe(true);
+
+    const file = await call({ method: 'GET', url: body.url });
+    expect({ status: file.statusCode, type: file.headers['content-type'], disposition: file.headers['content-disposition'], bytes: file.rawPayload }).toEqual({
+      status: 200,
+      type: 'application/pdf',
+      disposition: 'inline;filename="report.pdf"',
+      bytes: OBJECT_BYTES,
+    });
+  });
+
+  it.each<[string, () => void, string, number]>([
+    ['a file id no row records', () => undefined, downloadUrl(FILE_MISSING), 404],
+    ['a stored row whose rendition is not stored', seedFile, downloadUrl(FILE_A, '?variant=_small'), 404],
+    ['a file id that is not a CF UUID', () => undefined, downloadUrl('not-a-file-id'), 404],
+    ['a variant leaving the key’s directory', seedFile, downloadUrl(FILE_A, `?variant=${encodeURIComponent('_x/../y')}`), 400],
+    ['a method outside the enum', seedFile, downloadUrl(FILE_A, '?method=download'), 400],
+  ])('answers %s with the contract %i', async (_label, seed, url, status) => {
+    seed();
+    await t.storage.put(CONTENT_FILES_BUCKET, key, OBJECT_BYTES, { contentType: 'application/pdf' });
+    const res = await call({ method: 'GET', url, headers: await admin() });
+    expect(res.statusCode).toBe(status);
+  });
+
+  it.each<[string, () => Promise<Record<string, string>>, string, number]>([
+    ['no credential', async () => ({}), SITE_A, 401],
+    ['a system user without Site Manager access', () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.systemUser] }), SITE_A, 403],
+    ['a tenant-b site admin naming tenant-a', () => userHeaders({ sub: USER_ID, site: SITE_B, roles: [Roles.siteAdmin] }), SITE_A, 403],
+  ])('refuses %s with the contract %i', async (_label, headers, site, status) => {
+    const res = await call({ method: 'GET', url: `/v1/sites/${site}/files/${FILE_A}/download-url`, headers: await headers() });
+    expect(res.statusCode).toBe(status);
+  });
+
+  it.each<[string, () => Promise<string>, number]>([
+    ['a tampered signature', async () => (await t.storage.signedUrl(CONTENT_FILES_BUCKET, key)).replace(/sig=[0-9a-f]/, (m) => `sig=${m.endsWith('0') ? '1' : '0'}`), 403],
+    ['an expired signature', () => t.storage.signedUrl(CONTENT_FILES_BUCKET, key, { expiresS: -1 }), 403],
+    ['a malformed signature', async () => `/opt2/files/content-files/${key}?expires=1&sig=xyz`, 403],
+    ['a signed key that stores nothing', () => t.storage.signedUrl(CONTENT_FILES_BUCKET, `${filePool}/${FILE_MISSING}.pdf`), 404],
+  ])('answers getLocalContentFile for %s with the contract %i', async (_label, signed, status) => {
+    await t.storage.put(CONTENT_FILES_BUCKET, key, OBJECT_BYTES, { contentType: 'application/pdf' });
+    const res = await call({ method: 'GET', url: await signed() });
     expect(res.statusCode).toBe(status);
   });
 });

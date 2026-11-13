@@ -129,6 +129,17 @@ const STATE_URL = '/internal/v1/scheduler/state';
 const IMPORT_URL = '/internal/v1/scheduler/state:import';
 const SUSPEND_URL = '/internal/v1/background:suspend';
 const RESUME_URL = '/internal/v1/background:resume';
+const LEGACY_STEPS_URL = '/internal/v1/legacy-steps';
+
+const PROGRAMS_SITES: Presenter = { caller: 'programs-sites' };
+// The cursor in the legacy time mask; the deadline is wall-clock time, so it lies ahead of every case of the run.
+const STEP_RUN = {
+  theTime: '2026-06-30 12:00:00.000',
+  lastMonitored: '2026-06-30 11:45:00.000',
+  deadlineAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+};
+/** `serverTime` of a step the bridge double completed, with the offset its offset-free wire time lacks. */
+const STEP_SERVER_TIME = new Date('2026-06-30T12:00:00.123').toISOString();
 
 const CASES: readonly ResponseCase[] = [
   { operationId: 'healthz', status: 200, title: 'without a credential', method: 'GET', url: '/healthz', as: 'none', verify: (body) => expect(body).toEqual({ status: 'ok' }) },
@@ -170,6 +181,71 @@ const CASES: readonly ResponseCase[] = [
       t.state.gatewayDown = true;
     },
     outbound: ['gateway cutoverStatus'],
+  },
+  {
+    operationId: 'legacyStepRun',
+    status: 200,
+    title: 'for a step with no migration unit, without an authority read or a window',
+    method: 'POST',
+    url: LEGACY_STEPS_URL,
+    as: PROGRAMS_SITES,
+    payload: { step: 'purgeDisplayWindow', ...STEP_RUN },
+    outbound: [],
+    verify: (body, t) => {
+      expect(body).toEqual({ step: 'purgeDisplayWindow', completed: true, serverTime: STEP_SERVER_TIME });
+      expect(t.effects().bridgeCalls).toBe(1);
+    },
+  },
+  {
+    operationId: 'legacyStepRun',
+    status: 200,
+    title: 'for a per-site step whose units are legacy-authoritative, without a window',
+    method: 'POST',
+    url: LEGACY_STEPS_URL,
+    as: PROGRAMS_SITES,
+    payload: { step: 'trackBounces', siteId: 'tenant-a', ...STEP_RUN },
+    outbound: ['gateway cutoverStatus'],
+    verify: (body, t) => {
+      expect(body).toEqual({ step: 'trackBounces', completed: true, serverTime: STEP_SERVER_TIME, siteId: 'tenant-a' });
+      expect(t.effects().bridgeCalls).toBe(1);
+    },
+  },
+  {
+    operationId: 'legacyStepRun',
+    status: 400,
+    title: 'for a per-site step without a site',
+    method: 'POST',
+    url: LEGACY_STEPS_URL,
+    as: PROGRAMS_SITES,
+    payload: { step: 'feedAutoImport', ...STEP_RUN },
+    outbound: [],
+    verify: (_body, t) => expect(t.effects().bridgeCalls).toBe(0),
+  },
+  { operationId: 'legacyStepRun', status: 401, title: 'without a credential', method: 'POST', url: LEGACY_STEPS_URL, as: 'none', payload: { step: 'setCursor', ...STEP_RUN } },
+  { operationId: 'legacyStepRun', status: 403, title: 'for the gateway', method: 'POST', url: LEGACY_STEPS_URL, as: GATEWAY, payload: { step: 'setCursor', ...STEP_RUN } },
+  {
+    operationId: 'legacyStepRun',
+    status: 503,
+    title: 'when jobs.cfm does not complete the step',
+    method: 'POST',
+    url: LEGACY_STEPS_URL,
+    as: PROGRAMS_SITES,
+    payload: { step: 'clearOldCommands', ...STEP_RUN },
+    arrange: (t) => {
+      t.state.jobsFailing = true;
+    },
+    outbound: [],
+  },
+  {
+    operationId: 'legacyStepRun',
+    status: 504,
+    title: 'for a deadline that passed before the step ran',
+    method: 'POST',
+    url: LEGACY_STEPS_URL,
+    as: PROGRAMS_SITES,
+    payload: { step: 'setCursor', ...STEP_RUN, deadlineAt: '2000-01-01T00:00:00.000Z' },
+    outbound: [],
+    verify: (_body, t) => expect(t.effects().bridgeCalls).toBe(0),
   },
   {
     operationId: 'projectionAwait',

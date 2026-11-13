@@ -86,6 +86,7 @@ interface ExpectedRoute {
   transport: Transport;
   requires?: readonly Role[];
   public?: true;
+  siteCheck?: false;
   allow: readonly string[];
 }
 
@@ -102,6 +103,7 @@ const EXPECTED: readonly ExpectedRoute[] = [
   },
   { method: 'POST', url: '/internal/v1/background::resume', transport: 'service', requires: OPERATOR_ONLY, allow: ['service:operator'] },
   { method: 'POST', url: '/internal/v1/background::suspend', transport: 'service', requires: OPERATOR_ONLY, allow: ['service:operator'] },
+  { method: 'POST', url: '/internal/v1/legacy-steps', transport: 'service', requires: ['service:programs-sites'], siteCheck: false, allow: ['service:programs-sites'] },
   { method: 'POST', url: '/internal/v1/projection/await', transport: 'service', requires: ['service:gateway'], allow: THROUGH_GATEWAY },
   { method: 'GET', url: '/internal/v1/scheduler/state', transport: 'service', requires: OPERATOR_ONLY, allow: ['service:operator'] },
   { method: 'POST', url: '/internal/v1/scheduler/state::import', transport: 'service', requires: OPERATOR_ONLY, allow: ['service:operator'] },
@@ -115,6 +117,15 @@ const PROBE_INPUT: Readonly<Record<string, { query?: string; payload?: unknown }
   'POST /internal/v1/projection/await': { payload: { positions: { people: '100' }, timeoutMs: 2000 } },
   'POST /internal/v1/scheduler/state::import': { payload: { nativeTasks: [], ping: false } },
   'POST /internal/v1/background::suspend': { payload: SUSPENSION },
+  // A step with no migration unit runs on the bridge double without a window; the deadline lies ahead of the whole run.
+  'POST /internal/v1/legacy-steps': {
+    payload: {
+      step: 'purgeDisplayWindow',
+      theTime: '2026-06-30 12:00:00.000',
+      lastMonitored: '2026-06-30 11:45:00.000',
+      deadlineAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+    },
+  },
 };
 
 /** One concrete request; the subject's credentials are added when it is sent. */
@@ -311,7 +322,8 @@ async function gatewayInvocation(): Promise<string> {
 }
 
 const SERVICE_ROUTES = EXPECTED.filter((route) => route.public !== true);
-const OPERATOR_ROUTES = EXPECTED.filter((route) => route.requires === OPERATOR_ONLY);
+/** Routes the gateway's own invocation credential does not open, so a user token's claimed roles are all that could. */
+const NOT_GATEWAY_ROUTES = EXPECTED.filter((route) => route.public !== true && !route.allow.includes('service:gateway'));
 
 /** Credentials that must be refused before any handler runs, each on the routes it is presented to. */
 const REFUSALS: ReadonlyArray<{ title: string; routes: readonly ExpectedRoute[]; status: number; credentials: () => Promise<Record<string, string>>; query?: string }> = [
@@ -330,7 +342,7 @@ const REFUSALS: ReadonlyArray<{ title: string; routes: readonly ExpectedRoute[];
   },
   {
     title: 'a user token claiming workload roles beside the gateway invocation credential',
-    routes: OPERATOR_ROUTES,
+    routes: NOT_GATEWAY_ROUTES,
     status: 403,
     credentials: async () => ({ authorization: `Bearer ${await workloadClaimingUserToken()}`, [INVOCATION_HEADER]: await gatewayInvocation() }),
   },

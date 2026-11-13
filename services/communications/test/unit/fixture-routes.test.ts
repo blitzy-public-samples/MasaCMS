@@ -1,14 +1,14 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /**
  * registerFixtureRoutes through app.inject over in-memory domain doubles: declarations, method dispatch, tenancy, CSRF and envelopes;
- * then over PostgreSQL, values it cannot store.
+ * then over PostgreSQL, values it cannot store; then over the recording database, the wire envelope, error rows and api.cfm check order.
  */
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
-import { LegacyApiError } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_MAP, LEGACY_JSON_CONTENT_TYPE, LegacyApiError, cfHash, type LegacyErrorSpec } from '@opt2/platform/legacy-compat';
 import { createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import {
@@ -44,10 +44,12 @@ import {
   type MessageView,
 } from '../../src/domain/messages.js';
 import { createTemplate, listTemplates, type TemplatePage } from '../../src/domain/templates.js';
-import { FIXTURE_ERROR_MAP, FixtureApiError } from '../../src/legacy/fixture-envelope.js';
+import { FIXTURE_ROLES } from '../../src/legacy/fixture-auth.js';
+import { FIXTURE_ERROR_MAP, FixtureApiError, fixtureMethod, type FixtureErrorType } from '../../src/legacy/fixture-envelope.js';
 import { createCommunicationsRepository, type CommunicationsRepository } from '../../src/repo/repository.js';
 import { UNITS, type MessageTemplateRow } from '../../src/repo/tables.js';
 import { FIXTURE_PREFIX, registerFixtureRoutes } from '../../src/routes/fixture.js';
+import { TEST_CLOCK, buildTestApp, createRecordingDb, headersFor, type TestApp } from '../helpers/app.js';
 
 vi.mock('../../src/domain/templates.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/domain/templates.js')>()),
@@ -576,3 +578,421 @@ describe.skipIf(!available)('communications fixture routes over PostgreSQL', () 
     expect(await storedTemplates()).toBe(0);
   });
 });
+
+describe('communications fixture routes over the recording database', () => {
+  const SENDER_ID = '11111111-2222-3333-4444555566667777';
+  const TEMPLATE_A1 = 'A1000000-0000-0000-0000000000000001';
+  const TEMPLATE_A2 = 'A1000000-0000-0000-0000000000000002';
+  const TEMPLATE_B = 'B1000000-0000-0000-0000000000000001';
+  const MESSAGE_A = 'A2000000-0000-0000-0000000000000001';
+  const MESSAGE_B = 'B2000000-0000-0000-0000000000000001';
+  const UNKNOWN_ID = '00000000-0000-0000-0000000000000000';
+  const SITE_A = `?siteid=${TENANT_A.siteId}`;
+  const CSRF = { 'x-csrf_token': 'CSRF-TOKEN', 'x-csrf_token_expires': '260630120000000' };
+  const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
+  const WRITE_STATEMENT = /^(INSERT|UPDATE|DELETE)\b/i;
+  /** Headers onRequestStart_include.cfm adds to every legacy response. */
+  const LEGACY_HEADERS = { generator: 'Masa CMS 7.6.1', 'strict-transport-security': 'max-age=1200' };
+  const TEMPLATES_METHOD = fixtureMethod('templates');
+  const MESSAGES_METHOD = fixtureMethod('messages');
+
+  type Caller = 'sender' | 'senderB' | 'systemUser';
+  type ErrorType = FixtureErrorType | 'authorization' | 'invalidParameters' | 'invalidTokens' | 'server_error';
+
+  /** One injected request; no `as` sends it anonymously, a `body` is sent as JSON. */
+  interface Req {
+    method?: 'GET' | 'POST';
+    url: string;
+    as?: Caller;
+    body?: unknown;
+    headers?: Record<string, string>;
+  }
+
+  const at = (hours: number, minutes: number, seconds: number, ms = 0): Date => new Date(2026, 5, 30, hours, minutes, seconds, ms);
+
+  const templateRow = (site: TenantFixture, templateId: string, name: string, created: Date) => ({
+    tenant_id: site.tenantId,
+    template_id: templateId,
+    siteid: site.siteId,
+    name,
+    subject: 'Hello {{name}}',
+    body_text: 'Hi {{name}}',
+    body_html: '',
+    created,
+    lastupdate: null,
+  });
+  const messageRow = (site: TenantFixture, messageId: string) => ({
+    tenant_id: site.tenantId,
+    message_id: messageId,
+    siteid: site.siteId,
+    template_id: null,
+    to_address: 'ann@example.com',
+    from_address: 'noreply@opt2.local',
+    subject: 'Hello',
+    body_text: 'Hi',
+    body_html: '',
+    state: 'delivered',
+    created: at(9, 0, 0),
+    sent_at: at(9, 0, 1),
+    source: 'send',
+  });
+  const statusRow = (site: TenantFixture, statusId: string, messageId: string, status: string, recordedAt: Date, mailpitId: string | null = null) => ({
+    tenant_id: site.tenantId,
+    status_id: statusId,
+    message_id: messageId,
+    status,
+    detail: null,
+    mailpit_id: mailpitId,
+    recorded_at: recordedAt,
+    source: 'send',
+  });
+
+  /** envelope.cfc rows() of a seeded template: dates to the second, NULL lastupdate as ''. */
+  const templateView = (templateId: string, name: string, created: string) => ({
+    template_id: templateId,
+    siteid: TENANT_A.siteId,
+    name,
+    subject: 'Hello {{name}}',
+    body_text: 'Hi {{name}}',
+    body_html: '',
+    created,
+    lastupdate: '',
+  });
+  const messageView = (site: TenantFixture, messageId: string) => ({
+    message_id: messageId,
+    siteid: site.siteId,
+    template_id: '',
+    to_address: 'ann@example.com',
+    from_address: 'noreply@opt2.local',
+    subject: 'Hello',
+    body_text: 'Hi',
+    body_html: '',
+    state: 'delivered',
+    created: '2026-06-30T09:00:00',
+    sent_at: '2026-06-30T09:00:01',
+  });
+  const historyView = (statusId: string, messageId: string, status: string, recordedAt: string, mailpitId = '') => ({
+    status_id: statusId,
+    message_id: messageId,
+    status,
+    detail: '',
+    mailpit_id: mailpitId,
+    recorded_at: recordedAt,
+  });
+
+  /** The envelope.cfc respond() body: params suppressed, so apiversion, method, then data or error. */
+  const successBody = (method: string, data: unknown): string => JSON.stringify({ apiversion: 'v1', method, data });
+  const errorBody = (method: string, { code, message }: LegacyErrorSpec): string =>
+    JSON.stringify({ apiversion: 'v1', method, error: { code, message } });
+  /** The fixture error-map row of `type`: FIXTURE_ERROR_MAP for fixture-only types, LEGACY_ERROR_MAP for reused ones. */
+  const rowOf = (type: ErrorType): LegacyErrorSpec =>
+    Object.hasOwn(FIXTURE_ERROR_MAP, type) ? FIXTURE_ERROR_MAP[type as FixtureErrorType] : LEGACY_ERROR_MAP[type as Exclude<ErrorType, FixtureErrorType>];
+
+  let t: TestApp;
+  let tokens: Record<Caller, Record<string, string>>;
+
+  beforeAll(async () => {
+    const [templates, messages] = await Promise.all([
+      vi.importActual<typeof import('../../src/domain/templates.js')>('../../src/domain/templates.js'),
+      vi.importActual<typeof import('../../src/domain/messages.js')>('../../src/domain/messages.js'),
+    ]);
+    vi.mocked(listTemplates).mockImplementation(templates.listTemplates);
+    vi.mocked(createTemplate).mockImplementation(templates.createTemplate);
+    vi.mocked(listMessages).mockImplementation(messages.listMessages);
+    vi.mocked(submitMessage).mockImplementation(messages.submitMessage);
+    vi.mocked(getMessage).mockImplementation(messages.getMessage);
+    const db = createRecordingDb(
+      {
+        message_template: [
+          templateRow(TENANT_A, TEMPLATE_A1, 'Welcome', at(9, 0, 0)),
+          templateRow(TENANT_A, TEMPLATE_A2, 'Reminder', at(10, 0, 0)),
+          templateRow(TENANT_B, TEMPLATE_B, 'Welcome B', at(9, 0, 0)),
+        ],
+        message: [messageRow(TENANT_A, MESSAGE_A), messageRow(TENANT_B, MESSAGE_B)],
+        // Stored out of order, with a recorded_at tie that status_id breaks.
+        delivery_status: [
+          statusRow(TENANT_A, 'C3000000-0000-0000-0000000000000003', MESSAGE_A, 'delivered', at(9, 0, 1), 'MP-1'),
+          statusRow(TENANT_A, 'C1000000-0000-0000-0000000000000001', MESSAGE_A, 'queued', at(9, 0, 0)),
+          statusRow(TENANT_A, 'C2000000-0000-0000-0000000000000002', MESSAGE_A, 'sent', at(9, 0, 1)),
+          statusRow(TENANT_B, 'D1000000-0000-0000-0000000000000001', MESSAGE_B, 'queued', at(9, 0, 0)),
+        ],
+      },
+      { clock: TEST_CLOCK },
+    );
+    t = await buildTestApp({ db });
+    tokens = {
+      sender: await headersFor(FIXTURE_ROLES.sender, { sub: SENDER_ID }),
+      senderB: await headersFor(FIXTURE_ROLES.sender, { site: TENANT_B.siteId }),
+      systemUser: await headersFor(Roles.systemUser),
+    };
+  });
+
+  afterAll(async () => {
+    await t?.app.close();
+  });
+
+  /** Injects `req` and returns its wire view, the row-changing statements it ran and its identity CSRF consume calls. */
+  async function send({ method = 'GET', url, as, body, headers = {} }: Req) {
+    const mark = t.db.transactions.length;
+    const callMark = t.client.requests.length;
+    const res = await t.app.inject({
+      method,
+      url,
+      headers: { ...(as === undefined ? {} : tokens[as]), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
+      ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
+    });
+    return {
+      status: res.statusCode,
+      body: res.body,
+      headers: res.headers,
+      writes: t.db.transactions
+        .slice(mark)
+        .flatMap((tx) => tx.statements.map((statement) => statement.text))
+        .filter((text) => WRITE_STATEMENT.test(text)),
+      csrfCalls: t.client.requests.slice(callMark).filter((req) => req.path === CSRF_CONSUME_PATH).length,
+    };
+  }
+
+  type Sent = Awaited<ReturnType<typeof send>>;
+
+  /** Asserts envelope.cfc respond(): status, exact body, JSON content type, ETag = cfHash(body) and the legacy headers. */
+  function expectFixtureResponse(res: Sent, status: number, body: string): void {
+    expect(res.status).toBe(status);
+    expect(res.body).toBe(body);
+    expect(res.headers['content-type']).toBe(LEGACY_JSON_CONTENT_TYPE);
+    expect(res.headers['etag']).toBe(cfHash(res.body));
+    // ACF 2023 hash() defaults to SHA-256, so the legacy ETag is 64 hex digits rather than MD5's 32.
+    expect(res.headers['etag']).toMatch(/^[0-9A-F]{64}$/);
+    expect(res.headers).toMatchObject(LEGACY_HEADERS);
+  }
+
+  it('names the envelope methods as api.cfm does, without the id segment', () => {
+    expect([TEMPLATES_METHOD, MESSAGES_METHOD, fixtureMethod('Messages', '')]).toEqual([
+      'communications.templates',
+      'communications.messages',
+      'communications.messages',
+    ]);
+  });
+
+  describe('success envelope for a tenant-a sender', () => {
+    it('lists one page of the site templates in the paged-list shape', async () => {
+      const res = await send({ url: `${FIXTURE_PREFIX}/templates${SITE_A}&pageIndex=2&itemsPerPage=1`, as: 'sender' });
+      const data = { items: [templateView(TEMPLATE_A2, 'Reminder', '2026-06-30T10:00:00')], startindex: 2, endindex: 2, itemsperpage: 1, totalitems: 2, totalpages: 2, pageindex: 2 };
+
+      expectFixtureResponse(res, 200, successBody(TEMPLATES_METHOD, data));
+      expect(Object.keys(JSON.parse(res.body) as object)).toEqual(['apiversion', 'method', 'data']);
+      expect(res.writes).toEqual([]);
+    });
+
+    it('lists the site messages in the paged-list shape', async () => {
+      const res = await send({ url: `${FIXTURE_PREFIX}/messages${SITE_A}`, as: 'sender' });
+      const data = { items: [messageView(TENANT_A, MESSAGE_A)], startindex: 1, endindex: 1, itemsperpage: 50, totalitems: 1, totalpages: 1, pageindex: 1 };
+
+      expectFixtureResponse(res, 200, successBody(MESSAGES_METHOD, data));
+      expect(res.writes).toEqual([]);
+    });
+
+    it('reads a message detail with history ordered by recorded_at, then status_id', async () => {
+      const res = await send({ url: `${FIXTURE_PREFIX}/messages/${MESSAGE_A}${SITE_A}`, as: 'sender' });
+      const history = [
+        historyView('C1000000-0000-0000-0000000000000001', MESSAGE_A, 'queued', '2026-06-30T09:00:00'),
+        historyView('C2000000-0000-0000-0000000000000002', MESSAGE_A, 'sent', '2026-06-30T09:00:01'),
+        historyView('C3000000-0000-0000-0000000000000003', MESSAGE_A, 'delivered', '2026-06-30T09:00:01', 'MP-1'),
+      ];
+
+      expectFixtureResponse(res, 200, successBody(MESSAGES_METHOD, { ...messageView(TENANT_A, MESSAGE_A), history }));
+      expect(res.writes).toEqual([]);
+    });
+
+    it('stores a template once identity consumed the collection token, answering the stored row', async () => {
+      const body = { name: 'Digest', subject: 'Weekly {{week}}', bodyText: 'Week {{week}}' };
+      const res = await send({ method: 'POST', url: `${FIXTURE_PREFIX}/templates${SITE_A}`, as: 'sender', body, headers: CSRF });
+      const id = (JSON.parse(res.body) as { data: { template_id: string } }).data.template_id;
+      const view = {
+        template_id: id,
+        siteid: TENANT_A.siteId,
+        name: 'Digest',
+        subject: 'Weekly {{week}}',
+        body_text: 'Week {{week}}',
+        body_html: '',
+        created: '2026-06-30T12:00:00',
+        lastupdate: '2026-06-30T12:00:00',
+      };
+
+      expect(id).toMatch(CF_UUID);
+      expectFixtureResponse(res, 200, successBody(TEMPLATES_METHOD, view));
+      expect(res.csrfCalls).toBe(1);
+      expect(res.writes.map((text) => text.split(' (')[0])).toEqual(['INSERT INTO "communications"."message_template"', 'INSERT INTO "communications"."changelog"']);
+      expect(t.db.rows('message_template')).toContainEqual(expect.objectContaining({ tenant_id: TENANT_A.tenantId, template_id: id, name: 'Digest' }));
+    });
+
+    it('sends a templated message and answers its detail, history queued, sent, delivered, as a later read does', async () => {
+      const body = { templateId: TEMPLATE_A1, to: 'bob@example.com', variables: { name: 'Bob' } };
+      const res = await send({ method: 'POST', url: `${FIXTURE_PREFIX}/messages${SITE_A}`, as: 'sender', body, headers: CSRF });
+      const { data } = JSON.parse(res.body) as { data: { message_id: string; history: { status_id: string }[] } };
+      const id = data.message_id;
+      const [queued = '', sent = '', delivered = ''] = data.history.map((entry) => entry.status_id);
+      const detail = {
+        message_id: id,
+        siteid: TENANT_A.siteId,
+        template_id: TEMPLATE_A1,
+        to_address: 'bob@example.com',
+        from_address: 'noreply@opt2.local',
+        subject: 'Hello Bob',
+        body_text: 'Hi Bob',
+        body_html: '',
+        state: 'delivered',
+        created: '2026-06-30T12:00:00',
+        sent_at: '2026-06-30T12:00:00',
+        history: [
+          historyView(queued, id, 'queued', '2026-06-30T12:00:00'),
+          historyView(sent, id, 'sent', '2026-06-30T12:00:00'),
+          historyView(delivered, id, 'delivered', '2026-06-30T12:00:00', `mailpit-${id}`),
+        ],
+      };
+
+      for (const value of [id, queued, sent, delivered]) expect(value).toMatch(CF_UUID);
+      expectFixtureResponse(res, 200, successBody(MESSAGES_METHOD, detail));
+      expect(res.csrfCalls).toBe(1);
+      expect(t.mail.sent.at(-1)).toMatchObject({ to: 'bob@example.com', subject: 'Hello Bob', text: 'Hi Bob', messageId: id });
+
+      const read = await send({ url: `${FIXTURE_PREFIX}/messages/${id.toLowerCase()}${SITE_A}`, as: 'sender' });
+
+      expectFixtureResponse(read, 200, res.body);
+      expect(read.writes).toEqual([]);
+    });
+  });
+
+  it.each(['templates', 'messages'])('answers a POST overridden to GET on %s exactly as the GET, writing nothing and consuming no token', async (resource) => {
+    const url = `${FIXTURE_PREFIX}/${resource}${SITE_A}`;
+    const get = await send({ url, as: 'sender' });
+    const overridden = await send({
+      method: 'POST',
+      url,
+      as: 'sender',
+      body: { name: 'Ignored', to: 'ignored@example.com' },
+      headers: { ...CSRF, 'x-http-method-override': 'GET' },
+    });
+
+    expectFixtureResponse(overridden, 200, get.body);
+    expect(overridden.writes).toEqual([]);
+    expect(overridden.csrfCalls).toBe(0);
+  });
+
+  it('answers a tenant-b message to a tenant-b sender, the tenant coming from the token', async () => {
+    const res = await send({ url: `${FIXTURE_PREFIX}/messages/${MESSAGE_B}?siteid=${TENANT_B.siteId}`, as: 'senderB' });
+    const history = [historyView('D1000000-0000-0000-0000000000000001', MESSAGE_B, 'queued', '2026-06-30T09:00:00')];
+
+    expectFixtureResponse(res, 200, successBody(MESSAGES_METHOD, { ...messageView(TENANT_B, MESSAGE_B), history }));
+  });
+
+  it.each<[string, Req, ErrorType, string]>([
+    ['an anonymous caller', { url: `${FIXTURE_PREFIX}/templates${SITE_A}` }, 'authorization', TEMPLATES_METHOD],
+    ['a user without communications.sender', { url: `${FIXTURE_PREFIX}/templates${SITE_A}`, as: 'systemUser' }, 'forbidden', TEMPLATES_METHOD],
+    ['a sender naming another site', { url: `${FIXTURE_PREFIX}/messages?siteid=${TENANT_B.siteId}`, as: 'sender' }, 'forbidden', MESSAGES_METHOD],
+    ['an unknown site', { url: `${FIXTURE_PREFIX}/messages?siteid=nowhere`, as: 'sender' }, 'invalidParameters', MESSAGES_METHOD],
+    ['an unknown message id', { url: `${FIXTURE_PREFIX}/messages/${UNKNOWN_ID}${SITE_A}`, as: 'sender' }, 'notFound', MESSAGES_METHOD],
+    ['a tenant-b message id read by a tenant-a sender', { url: `${FIXTURE_PREFIX}/messages/${MESSAGE_B}${SITE_A}`, as: 'sender' }, 'notFound', MESSAGES_METHOD],
+    [
+      'a tenant-b template sent by a tenant-a sender',
+      { method: 'POST', url: `${FIXTURE_PREFIX}/messages${SITE_A}`, as: 'sender', body: { templateId: TEMPLATE_B, to: 'bob@example.com' }, headers: CSRF },
+      'notFound',
+      MESSAGES_METHOD,
+    ],
+    [
+      'a method the path does not declare',
+      { url: `${FIXTURE_PREFIX}/templates${SITE_A}`, as: 'sender', headers: { 'x-http-method-override': 'DELETE' } },
+      'notFound',
+      TEMPLATES_METHOD,
+    ],
+    [
+      'a template without a name',
+      { method: 'POST', url: `${FIXTURE_PREFIX}/templates${SITE_A}`, as: 'sender', body: { subject: 'Hello', bodyText: 'Hi' }, headers: CSRF },
+      'invalidParameters',
+      TEMPLATES_METHOD,
+    ],
+    [
+      'a message to an invalid address',
+      { method: 'POST', url: `${FIXTURE_PREFIX}/messages${SITE_A}`, as: 'sender', body: { to: 'not-an-address', subject: 'Hello', bodyText: 'Hi' }, headers: CSRF },
+      'invalidParameters',
+      MESSAGES_METHOD,
+    ],
+    ['paging beyond 1000 items', { url: `${FIXTURE_PREFIX}/messages${SITE_A}&itemsPerPage=1001`, as: 'sender' }, 'invalidParameters', MESSAGES_METHOD],
+    [
+      'a write without CSRF tokens',
+      { method: 'POST', url: `${FIXTURE_PREFIX}/templates${SITE_A}`, as: 'sender', body: { name: 'Digest', subject: 'Hello', bodyText: 'Hi' } },
+      'invalidTokens',
+      TEMPLATES_METHOD,
+    ],
+    [
+      'in-range non-ASCII paging digits',
+      { url: `${FIXTURE_PREFIX}/templates${SITE_A}&pageIndex=${encodeURIComponent('1٣')}`, as: 'sender' },
+      'server_error',
+      TEMPLATES_METHOD,
+    ],
+  ])('answers %s with its error-map row, writing nothing', async (_case, req, type, method) => {
+    const res = await send(req);
+
+    expectFixtureResponse(res, rowOf(type).status, errorBody(method, rowOf(type)));
+    expect(Object.keys(JSON.parse(res.body) as object)).toEqual(['apiversion', 'method', 'error']);
+    expect(res.writes).toEqual([]);
+  });
+
+  describe('api.cfm check order, with two checks failing at once', () => {
+    it('answers an unknown resource under the prefix with 404 before checking the caller or the site', async () => {
+      const res = await send({ url: `${FIXTURE_PREFIX}/subscribers?siteid=nowhere` });
+
+      expect(res.status).toBe(404);
+      // Status and method only: no cut-over entry routes such a path to communications, and service-kit's not-found
+      // answers it in the JSON API error shape rather than envelope.cfc's.
+      expect(JSON.parse(res.body)).toMatchObject({ apiversion: 'v1', method: 'invalid' });
+      expect(res.writes).toEqual([]);
+    });
+
+    it.each<[string, Req, ErrorType, string]>([
+      ['the site check precedes the login check', { method: 'POST', url: `${FIXTURE_PREFIX}/templates?siteid=nowhere`, body: {} }, 'invalidParameters', TEMPLATES_METHOD],
+      ['the site check precedes the role check', { url: `${FIXTURE_PREFIX}/messages?siteid=nowhere`, as: 'systemUser' }, 'invalidParameters', MESSAGES_METHOD],
+      [
+        'the token-site check refuses another site to a caller without the role',
+        { url: `${FIXTURE_PREFIX}/messages/${UNKNOWN_ID}?siteid=${TENANT_B.siteId}`, as: 'systemUser' },
+        'forbidden',
+        MESSAGES_METHOD,
+      ],
+      [
+        'the site check precedes the method check',
+        { url: `${FIXTURE_PREFIX}/templates?siteid=nowhere`, headers: { 'x-http-method-override': 'DELETE' } },
+        'invalidParameters',
+        TEMPLATES_METHOD,
+      ],
+      ['the login check precedes the existence check', { url: `${FIXTURE_PREFIX}/messages/${UNKNOWN_ID}${SITE_A}` }, 'authorization', MESSAGES_METHOD],
+      ['the role check precedes the existence check', { url: `${FIXTURE_PREFIX}/messages/${UNKNOWN_ID}${SITE_A}`, as: 'systemUser' }, 'forbidden', MESSAGES_METHOD],
+      ['the login check precedes validation', { method: 'POST', url: `${FIXTURE_PREFIX}/templates${SITE_A}`, body: {}, headers: CSRF }, 'authorization', TEMPLATES_METHOD],
+      ['the role check precedes the CSRF check', { method: 'POST', url: `${FIXTURE_PREFIX}/messages${SITE_A}`, as: 'systemUser', body: {} }, 'forbidden', MESSAGES_METHOD],
+      [
+        'the CSRF check precedes the template existence check',
+        { method: 'POST', url: `${FIXTURE_PREFIX}/messages${SITE_A}`, as: 'sender', body: { templateId: UNKNOWN_ID } },
+        'invalidTokens',
+        MESSAGES_METHOD,
+      ],
+      [
+        'the existence check precedes an invalid filter',
+        { url: `${FIXTURE_PREFIX}/messages/${UNKNOWN_ID}${SITE_A}&itemsPerPage=0`, as: 'sender' },
+        'notFound',
+        MESSAGES_METHOD,
+      ],
+      [
+        'the template existence check precedes validation of the missing fields',
+        { method: 'POST', url: `${FIXTURE_PREFIX}/messages${SITE_A}`, as: 'sender', body: { templateId: UNKNOWN_ID }, headers: CSRF },
+        'notFound',
+        MESSAGES_METHOD,
+      ],
+    ])('%s', async (_case, req, type, method) => {
+      const res = await send(req);
+
+      expectFixtureResponse(res, rowOf(type).status, errorBody(method, rowOf(type)));
+      expect(res.writes).toEqual([]);
+    });
+  });
+
+});
+

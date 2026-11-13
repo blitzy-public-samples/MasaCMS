@@ -1,15 +1,18 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 import type { components } from '@/generated/clients/surveys';
-import { okBody } from '@/lib/gateway-client';
+import { assertNotDenied, type GatewayResponse } from '@/lib/gateway-client';
 import { html, type SafeHtml } from '@/lib/html';
 import type { RequestContext } from '@/lib/request-context';
 import type { Opt2ActionDefinition, Opt2ScreenDefinition, ScreenContext } from '../../registry';
 import {
+  alertBox,
   block,
   controlGroup,
+  errorMessage,
   gridTable,
   opt2ActionUrl,
   opt2View,
+  pageHeader,
   postForm,
   submitToService,
   textInput,
@@ -19,57 +22,86 @@ import {
   SURVEYS_MODULE,
   SURVEYS_ROLES,
   dateTimeText,
-  loadSurvey,
   siteIdOf,
   surveyHeader,
   surveyIdOf,
+  surveysUrl,
   type Survey,
 } from './common';
 
 type ScheduledTaskView = components['schemas']['ScheduledTaskView'];
 type ScheduleRequest = components['schemas']['ScheduleRequest'];
 
-/** The survey with its schedule and the launch and reminder tasks communications holds for it. */
-export interface ScheduleData {
-  survey: Survey;
-  tasks: ScheduledTaskView[];
-}
+/** The survey with its schedule and the tasks communications holds for it, or the alert shown in their place. */
+export type ScheduleData =
+  | { readonly survey: Survey; readonly tasks: readonly ScheduledTaskView[] }
+  | { readonly alert: SafeHtml };
 
 /** The schedule form's text: launch time as `yyyy-mm-ddThh:mm:ss` and reminder offsets in minutes, comma-separated. */
 interface ScheduleValues {
-  launchAt: string;
+  launch: string;
   reminders: string;
 }
+
+/** A surveys read's answer: the contract's `{data}` body when `ok`, otherwise the body as relayed. */
+type ReadAnswer<T> =
+  | (GatewayResponse<{ data: T }> & { readonly ok: true })
+  | (GatewayResponse<unknown> & { readonly ok: false });
 
 // The service takes integer offsets; other text goes as NaN (JSON null), which it answers invalidParameters.
 const INTEGER = /^[+-]?\d+$/;
 
-/** The survey (`getSurvey`), its tasks (`listSurveyTasks`) and the CSRF pair of its id context. */
-async function loadSchedule(ctx: ScreenContext): Promise<ScheduleData> {
-  const surveyId = surveyIdOf(ctx);
-  const [survey, tasks] = await Promise.all([
-    loadSurvey(ctx, surveyId),
-    ctx.gateway.surveys
-      .call('get', '/v1/surveys/{surveyId}/tasks', { params: { surveyId }, query: { siteid: siteIdOf(ctx) } })
-      .then((res) => okBody(res, 'surveys', 'listSurveyTasks').data),
-    ctx.csrf.prefetch([surveyId]),
+/** Read answers the screen shows under its header: a malformed survey id (400) or no such survey of the site (404). */
+const SHOWN_READ_STATUSES: ReadonlySet<number> = new Set([400, 404]);
+
+/**
+ * The `data` of a surveys read, or its envelope error as an alert on 400 or 404.
+ * @throws GatewayDenialError On 401 or 403; the handlers answer the access gate's redirect.
+ * @throws Error On any other non-2xx status.
+ */
+function readData<T>(res: ReadAnswer<T>, operation: string): { readonly data: T } | { readonly alert: SafeHtml } {
+  if (res.ok) return { data: res.body.data };
+  assertNotDenied(res, 'surveys', operation);
+  if (!SHOWN_READ_STATUSES.has(res.status)) throw new Error(`${operation} answered HTTP ${res.status}`);
+  return { alert: alertBox(errorMessage(res)) };
+}
+
+/**
+ * The survey (`getSurvey`), then its tasks (`listSurveyTasks`) with the CSRF pair of its id context; an empty id
+ * is not sent, since `/v1/surveys/{surveyId}` has no empty-id form.
+ */
+async function loadSchedule(ctx: ScreenContext, surveyId: string): Promise<ScheduleData> {
+  if (surveyId === '') return { alert: alertBox('No survey selected.', 'info') };
+  const query = { siteid: siteIdOf(ctx) };
+  const survey = readData(
+    await ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}', { params: { surveyId }, query }),
+    'getSurvey',
+  );
+  if ('alert' in survey) return survey;
+  // The form posts the stored id, which the service takes as the CSRF context, so the pair is issued for that id.
+  const storedId = survey.data.surveyId;
+  const [tasks] = await Promise.all([
+    ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}/tasks', { params: { surveyId }, query }),
+    ctx.csrf.prefetch([storedId]),
   ]);
-  return { survey, tasks };
+  const taskList = readData(tasks, 'listSurveyTasks');
+  if ('alert' in taskList) return taskList;
+  return { survey: survey.data, tasks: taskList.data };
 }
 
 /** The stored schedule as form text; empty when the survey was never scheduled. */
 function storedValues(survey: Survey): ScheduleValues {
   const { schedule } = survey;
-  if (schedule === null) return { launchAt: '', reminders: '' };
+  if (schedule === null) return { launch: '', reminders: '' };
   return {
-    launchAt: schedule.launchAt.slice(0, 'yyyy-mm-ddThh:mm:ss'.length),
+    launch: schedule.launchAt.slice(0, 'yyyy-mm-ddThh:mm:ss'.length),
     reminders: schedule.reminders.map((reminder) => reminder.offsetMinutes).join(','),
   };
 }
 
 /** The posted form text. */
 function postedValues(rc: RequestContext): ScheduleValues {
-  return { launchAt: rc['launchAt'] ?? '', reminders: rc['reminders'] ?? '' };
+  return { launch: rc['launchAt'] ?? '', reminders: rc['reminders'] ?? '' };
 }
 
 /** The `scheduleSurvey` body of the form text: one reminder per non-blank comma-separated offset, in order. */
@@ -79,22 +111,34 @@ function scheduleRequestOf(values: ScheduleValues): ScheduleRequest {
     .map((text) => text.trim())
     .filter((text) => text !== '');
   return {
-    launchAt: values.launchAt.trim(),
+    launchAt: values.launch.trim(),
     reminders: offsets.map((text) => ({ offsetMinutes: INTEGER.test(text) ? Number(text) : Number.NaN })),
   };
 }
 
-/** Status, the schedule form holding `values`, then the reminder and task grids; `alert` follows the header. */
-function renderSchedule(ctx: ScreenContext, data: ScheduleData, values: ScheduleValues, alert?: SafeHtml): SafeHtml {
+/**
+ * Status, the schedule form holding `values` (default: the stored schedule), then the reminder and task grids;
+ * `alert` follows the header. Without a survey, only the header, `alert` and the read's alert.
+ */
+function renderSchedule(
+  ctx: ScreenContext,
+  data: ScheduleData,
+  { alert, values }: { alert?: SafeHtml; values?: ScheduleValues } = {},
+): SafeHtml {
+  if ('alert' in data) {
+    const header = pageHeader('Schedule', [{ label: 'Surveys', href: surveysUrl(ctx, 'surveys') }]);
+    return html`${header}${alert}${data.alert}`;
+  }
   const { survey, tasks } = data;
+  const shown = values ?? storedValues(survey);
   const form = postForm(
     opt2ActionUrl(SURVEYS_MODULE, 'schedule', { siteid: siteIdOf(ctx), surveyid: survey.surveyId }),
-    html`${controlGroup('Launch At (yyyy-mm-ddThh:mm:ss)', textInput('launchAt', values.launchAt))}${controlGroup(
+    html`${controlGroup('Launch At (yyyy-mm-ddThh:mm:ss)', textInput('launchAt', shown.launch))}${controlGroup(
       'Reminder Offsets (minutes after launch, comma-separated)',
-      textInput('reminders', values.reminders),
+      textInput('reminders', shown.reminders),
     )}`,
     'Save Schedule',
-    { hidden: ctx.csrf.render(surveyIdOf(ctx)) },
+    { hidden: ctx.csrf.render(survey.surveyId) },
   );
   const reminders = gridTable(
     ['Reminder', 'Offset (minutes)', 'Remind At', 'Sent At'],
@@ -116,14 +160,25 @@ function renderSchedule(ctx: ScreenContext, data: ScheduleData, values: Schedule
   )}`;
 }
 
+/** Loads and renders the schedule body of `surveyId`: `opts.alert` after the header, the form holding `opts.values`. */
+export async function scheduleBody(
+  ctx: ScreenContext,
+  surveyId: string,
+  opts: { alert?: SafeHtml; values?: { launch?: string; reminders?: string } } = {},
+): Promise<SafeHtml> {
+  const { alert, values } = opts;
+  const shown = values && { launch: values.launch ?? '', reminders: values.reminders ?? '' };
+  return renderSchedule(ctx, await loadSchedule(ctx, surveyId), { alert, values: shown });
+}
+
 /** `/opt2/admin/surveys/schedule?surveyid=…`: launch time, reminders and their tasks. */
 export const scheduleScreen: Opt2ScreenDefinition<ScheduleData> = {
   module: SURVEYS_MODULE,
   screen: 'schedule',
   roles: SURVEYS_ROLES,
   service: 'surveys',
-  load: loadSchedule,
-  render: (ctx, data) => opt2View(SURVEYS_MODULE, renderSchedule(ctx, data, storedValues(data.survey))),
+  load: (ctx) => loadSchedule(ctx, surveyIdOf(ctx)),
+  render: (ctx, data) => opt2View(SURVEYS_MODULE, renderSchedule(ctx, data)),
 };
 
 /** `/opt2/admin-actions/surveys/schedule`: replaces the survey's schedule (`scheduleSurvey`), then shows it. */
@@ -150,7 +205,7 @@ export const scheduleAction: Opt2ActionDefinition = {
       ctx,
       write,
       { module: SURVEYS_MODULE, screen: 'schedule', params: { siteid, surveyid: surveyId } },
-      async (alert) => renderSchedule(ctx, await loadSchedule(ctx), values, alert),
+      (alert) => scheduleBody(ctx, surveyId, { alert, values }),
     );
   },
 };

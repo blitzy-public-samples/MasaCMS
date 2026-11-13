@@ -98,7 +98,19 @@ function transitionButtons(ctx: ScreenContext, id: string, csrf: SafeHtml): Safe
   return buttons.length === 0 ? null : html`<div class="btn-group">${buttons}</div>`;
 }
 
-/** The preparer's edit and upload forms; amounts stay the decimal text finance serialized or the user typed. */
+/**
+ * The attachment upload form. Its button stays inside the form: legacy styles pin every form `.mura-actions` bar to
+ * the same fixed slot, so a page holds one, the edit form's.
+ */
+function uploadForm(actionUrl: string, csrf: SafeHtml): SafeHtml {
+  const fields = controlGroup('File', textInput('file', '', { type: 'file', required: true }));
+  return html`<form novalidate="novalidate"${attr('action', actionUrl)} method="post" enctype="multipart/form-data">${fields}<div class="form-actions"><button class="btn mura-primary" type="submit">Upload</button>${csrf}</div></form>`;
+}
+
+/**
+ * The preparer's upload and edit forms; the edit form comes last so the fixed Save bar never covers the Upload
+ * button. Amounts stay the decimal text finance serialized or the user typed.
+ */
 function preparerForms(ctx: ScreenContext, record: FinanceRecordDetail, csrf: SafeHtml, edit?: EditValues): SafeHtml {
   const id = record.record_id;
   const values = edit ?? { title: record.title, amount: record.amount, period: record.period };
@@ -106,18 +118,17 @@ function preparerForms(ctx: ScreenContext, record: FinanceRecordDetail, csrf: Sa
     'Amount',
     textInput('amount', values.amount, { required: true }),
   )}${controlGroup('Period', textInput('period', values.period, { required: true }))}`;
-  const uploadFields = controlGroup('File', textInput('file', '', { type: 'file', required: true }));
-  return html`<h2>Edit Record</h2>${postForm(financeActionUrl(ctx, 'edit', { id }), editFields, 'Save', {
-    hidden: csrf,
-  })}<h2>Upload Attachment</h2>${postForm(financeActionUrl(ctx, 'upload', { id }), uploadFields, 'Upload', {
-    multipart: true,
-    hidden: csrf,
-  })}`;
+  return html`<h2>Upload Attachment</h2>${uploadForm(financeActionUrl(ctx, 'upload', { id }), csrf)}<h2>Edit Record</h2>${postForm(
+    financeActionUrl(ctx, 'edit', { id }),
+    editFields,
+    'Save',
+    { hidden: csrf },
+  )}`;
 }
 
 /**
  * The record detail: summary, transition buttons for the user's roles, version history, attachments with their
- * download links and, for a preparer, the edit and upload forms. `rerender` carries a refused write's alert, which
+ * download links and, for a preparer, the upload and edit forms. `rerender` carries a refused write's alert, which
  * replaces the read's own alert, and the posted edit fields.
  */
 export function renderRecord(ctx: ScreenContext, data: RecordData, rerender: RecordRerender = {}): SafeHtml {

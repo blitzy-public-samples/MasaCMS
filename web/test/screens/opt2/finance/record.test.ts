@@ -65,11 +65,11 @@ function detailModel(buttons: readonly string[], preparer: boolean): DomModel {
       record.title,
       'Version History',
       'Attachments',
-      ...(preparer ? ['Edit Record', 'Upload Attachment'] : []),
+      ...(preparer ? ['Upload Attachment', 'Edit Record'] : []),
     ],
-    labels: preparer ? ['Title', 'Amount', 'Period', 'File'] : [],
-    controls: [...buttons.flatMap(() => CSRF_CONTROLS), ...(preparer ? [...editControls, ...uploadControls] : [])],
-    buttons: [...buttons, ...(preparer ? ['Save', 'Upload'] : [])].map(button),
+    labels: preparer ? ['File', 'Title', 'Amount', 'Period'] : [],
+    controls: [...buttons.flatMap(() => CSRF_CONTROLS), ...(preparer ? [...uploadControls, ...editControls] : [])],
+    buttons: [...buttons, ...(preparer ? ['Upload', 'Save'] : [])].map(button),
     links: [
       BACK_LINK,
       ...financeAttachments.map((attachment) => ({
@@ -165,9 +165,20 @@ describe('finance record screen', () => {
     ).toEqual([
       ['post', `/opt2/admin-actions/finance/submit?siteid=${SITE}&id=${RECORD_ID}`, ''],
       ['post', `/opt2/admin-actions/finance/resubmit?siteid=${SITE}&id=${RECORD_ID}`, ''],
-      ['post', `/opt2/admin-actions/finance/edit?siteid=${SITE}&id=${RECORD_ID}`, ''],
       ['post', `/opt2/admin-actions/finance/upload?siteid=${SITE}&id=${RECORD_ID}`, 'multipart/form-data'],
+      ['post', `/opt2/admin-actions/finance/edit?siteid=${SITE}&id=${RECORD_ID}`, ''],
     ]);
+  });
+
+  it('holds one fixed action bar, the edit form last, so no bar covers another form button', async () => {
+    const { view } = await renderDetail();
+    const $ = cheerio.load(toString(view.body), null, false);
+
+    expect($('.mura-actions').toArray().map((bar) => $(bar).closest('form').attr('action'))).toEqual([
+      `/opt2/admin-actions/finance/edit?siteid=${SITE}&id=${RECORD_ID}`,
+    ]);
+    expect($('form').last().find('.mura-actions button').text()).toBe('Save');
+    expect($('form[enctype] .form-actions > button.btn.mura-primary').text()).toBe('Upload');
   });
 
   it('renders inside the shell with Finance marked in the OPT-2 nav group', async () => {

@@ -1,12 +1,13 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Provider contract of communications: every registered route against contracts/openapi.yaml, and every response shape and declared header per operation. */
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { parse } from 'yaml';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { INVOCATION_HEADER, collectRouteMatrix, type RouteMatrixEntry } from '@opt2/platform/auth';
 import type { EventEnvelope } from '@opt2/platform/events';
-import { taskWireBody, type CreateTaskInput } from '@opt2/platform/tasks';
+import { WRITE_POSITION_HEADER, parseWritePosition } from '@opt2/platform/migration-kit';
+import { QUEUES, taskWireBody, type CreateTaskInput } from '@opt2/platform/tasks';
 import {
   TENANT_A,
   TENANT_B,
@@ -23,6 +24,9 @@ import {
 import { LOGIN_MAIL_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION, SURVEY_SCHEDULED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { LOGIN_MAIL_TOPIC } from '../../src/events/login-mail.js';
 import { SURVEY_SCHEDULED_TOPIC } from '../../src/events/survey-scheduled.js';
+import { ADOPT_PATH, CANCEL_ADOPTED_PATH } from '../../src/routes/adoption.js';
+import { SCHEDULED_TASKS_PATH } from '../../src/routes/scheduled-tasks.js';
+import { REMINDER_TASK_PATH } from '../../src/tasks/reminder.js';
 import { buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 import { SAMPLE_IDS, envelopeFor, loginMailPayload, siteChangedPayload, surveyScheduledPayload } from '../helpers/payloads.js';
 
@@ -90,17 +94,16 @@ interface Case {
   seed?: readonly SeedStep[];
   setup?: (ctx: TestApp, seeded: Seeded) => void | Promise<void>;
   status: number;
+  /** The answer commits a communications write, so it carries exactly one communications write position. */
+  writes?: true;
   verify?: (answer: Answer, ctx: TestApp, seeded: Seeded) => void;
 }
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
+const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
 
-const DOC = load(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
-const PIN = JSON.parse(await readFile(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
-
-const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch'] as const;
+// No auto-HEAD filter: service-kit sets exposeHeadRoutes false, so the matrix holds only the methods routes declare.
+const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch', 'head', 'options'] as const;
 const JSON_MEDIA_TYPE = /^application\/(?:[\w.+-]+\+)?json\b/i;
 
 const SERVICE = 'communications';
@@ -321,9 +324,17 @@ async function sendCase(ctx: TestApp, c: Case, seeded: Seeded): Promise<Answer> 
   const contentType = res.headers['content-type'];
   const json = typeof contentType === 'string' && JSON_MEDIA_TYPE.test(contentType) && res.body !== '';
   const body: unknown = json ? JSON.parse(res.body) : res.body;
-  expect(res.statusCode, `${operation.operationId ?? path}: ${res.body}`).toBe(c.status);
+  const id = operation.operationId ?? path;
+  expect(res.statusCode, `${id}: ${res.body}`).toBe(c.status);
   assertResponseMatchesOpenApi(DOC, { method: c.method, path, status: res.statusCode, contentType, body });
-  expect(headerViolations(operation, res), `${operation.operationId ?? path} headers`).toEqual([]);
+  expect(headerViolations(operation, res), `${id} headers`).toEqual([]);
+  const position = res.headers[WRITE_POSITION_HEADER.toLowerCase()] as string | string[] | undefined;
+  if (c.writes === true) {
+    expect(position, `${id} ${WRITE_POSITION_HEADER}`).toBeDefined();
+    expect([...parseWritePosition(position)], `${id} ${WRITE_POSITION_HEADER}`).toEqual([[SERVICE, expect.stringMatching(/^\d+$/)]]);
+  } else if (c.method === 'GET' && (path.startsWith(`${FIXTURE}/`) || path.startsWith('/v1/'))) {
+    expect(position, `${id} ${WRITE_POSITION_HEADER}`).toBeUndefined();
+  }
   return { res, body };
 }
 
@@ -352,7 +363,7 @@ const TENANT_A_TEMPLATES = `${FIXTURE}/templates?siteid=${SITE_A}`;
 const TENANT_A_MESSAGES = `${FIXTURE}/messages?siteid=${SITE_A}`;
 const V1_TEMPLATES = `/v1/templates?siteid=${SITE_A}`;
 const V1_MESSAGES = `/v1/messages?siteid=${SITE_A}`;
-const SCHEDULED_TASKS = `/internal/v1/scheduled-tasks?sourceType=survey&sourceId=${SURVEY_ID}`;
+const SCHEDULED_TASKS = `${SCHEDULED_TASKS_PATH}?sourceType=survey&sourceId=${SURVEY_ID}`;
 const SWEEP_TASK = { queue: SWEEP_QUEUE, name: `${SWEEP_QUEUE}-1782820800`, tenantId: null, payload: null };
 const ADOPT_BODY = { tasks: [{ name: LAUNCH_TASK_NAME, siteId: SITE_A, scheduleTime: '2026-07-01T09:00:00.000', scheduleVersion: 1 }] };
 const CHANGED_DOMAINS = [`${SITE_A}.opt2.test`, `mail.${SITE_A}.opt2.test`];
@@ -429,10 +440,10 @@ const CASES: Record<string, Case[]> = {
       headers: CSRF_HEADERS,
       payload: TEMPLATE_BODY,
       status: 200,
-      verify: ({ body, res }, ctx) => {
+      writes: true,
+      verify: ({ body }, ctx) => {
         expect(dataOf(body)).toMatchObject({ siteid: SITE_A, name: 'Welcome', subject: 'Hello {{name}}', lastupdate: expect.any(String) });
         expect(ctx.db.rows('message_template')).toHaveLength(1);
-        expect(res.headers['x-opt2-write-position']).toBeDefined();
       },
     },
     {
@@ -493,11 +504,11 @@ const CASES: Record<string, Case[]> = {
       headers: CSRF_HEADERS,
       payload: MESSAGE_BODY,
       status: 200,
-      verify: ({ body, res }, ctx, seeded) => {
+      writes: true,
+      verify: ({ body }, ctx, seeded) => {
         expect(dataOf(body)).toMatchObject({ siteid: SITE_A, to_address: RECIPIENT, subject: 'Contract subject', state: 'delivered' });
         expect(historyOf(body)).toEqual(['queued', 'sent', 'delivered']);
         expect(mailsSent(ctx, seeded)).toHaveLength(1);
-        expect(res.headers['x-opt2-write-position']).toBeDefined();
       },
     },
     {
@@ -510,6 +521,7 @@ const CASES: Record<string, Case[]> = {
       payload: ({ templateId }) => ({ templateId, to: RECIPIENT, variables: '{"name":"Ann"}' }),
       setup: (ctx) => ctx.mail.fail(new Error('connection refused')),
       status: 200,
+      writes: true,
       verify: ({ body }, _ctx, { templateId }) => {
         expect(dataOf(body)).toMatchObject({ template_id: templateId, subject: 'Hello Ann', body_text: 'Hi Ann', state: 'failed' });
         expect(historyOf(body)).toEqual(['queued', 'failed']);
@@ -599,10 +611,10 @@ const CASES: Record<string, Case[]> = {
       headers: CSRF_HEADERS,
       payload: TEMPLATE_BODY,
       status: 200,
-      verify: ({ body, res }, ctx) => {
+      writes: true,
+      verify: ({ body }, ctx) => {
         expect(dataOf(body)).toMatchObject({ siteid: SITE_A, name: 'Welcome', body_html: '<p>Hi {{name}}</p>' });
         expect(ctx.db.rows('message_template')).toHaveLength(1);
-        expect(res.headers['x-opt2-write-position']).toBeDefined();
       },
     },
     {
@@ -613,6 +625,7 @@ const CASES: Record<string, Case[]> = {
       headers: { 'content-type': 'application/x-www-form-urlencoded', ...CSRF_HEADERS },
       payload: new URLSearchParams({ name: 'Form', subject: 'Form subject', bodyText: 'Form body' }).toString(),
       status: 200,
+      writes: true,
       verify: ({ body }) => expect(dataOf(body)).toMatchObject({ name: 'Form', subject: 'Form subject', body_html: '' }),
     },
     {
@@ -670,11 +683,11 @@ const CASES: Record<string, Case[]> = {
       headers: CSRF_HEADERS,
       payload: MESSAGE_BODY,
       status: 200,
-      verify: ({ body, res }, ctx, seeded) => {
+      writes: true,
+      verify: ({ body }, ctx, seeded) => {
         expect(dataOf(body)).toMatchObject({ to_address: RECIPIENT, state: 'delivered', template_id: '' });
         expect(historyOf(body)).toEqual(['queued', 'sent', 'delivered']);
         expect(mailsSent(ctx, seeded).map((mail) => mail.to)).toEqual([RECIPIENT]);
-        expect(res.headers['x-opt2-write-position']).toBeDefined();
       },
     },
     {
@@ -760,7 +773,7 @@ const CASES: Record<string, Case[]> = {
     {
       name: 'answers a sourceId that is not a CF UUID as invalidParameters',
       method: 'GET',
-      url: '/internal/v1/scheduled-tasks?sourceType=survey&sourceId=nope',
+      url: `${SCHEDULED_TASKS_PATH}?sourceType=survey&sourceId=nope`,
       headers: () => surveysForwarding(),
       status: 400,
     },
@@ -788,10 +801,10 @@ const CASES: Record<string, Case[]> = {
       seed: ['schedule'],
       payload: (seeded) => reminderBody(seeded),
       status: 200,
-      verify: ({ body, res }, ctx) => {
+      writes: true,
+      verify: ({ body }, ctx) => {
         expect(record(body)).toEqual({ status: 'sent' });
         expect(ctx.client.requestsTo('surveys').map(({ method }) => method)).toEqual(['POST']);
-        expect(res.headers['x-opt2-write-position']).toBeDefined();
       },
     },
     {
@@ -931,10 +944,11 @@ const CASES: Record<string, Case[]> = {
     {
       name: 'adopts a future fixture launch task as a Cloud Task and a scheduled-task row',
       method: 'POST',
-      url: '/internal/v1/migration/adopt-scheduled-tasks',
+      url: ADOPT_PATH,
       as: 'service:migration',
       payload: ADOPT_BODY,
       status: 200,
+      writes: true,
       verify: ({ body }, ctx) => {
         expect(record(body)).toEqual({ adopted: 1, existing: 0, scheduledImmediately: 0 });
         expect(ctx.taskPort.byQueue(LAUNCH_QUEUE)).toHaveLength(1);
@@ -944,7 +958,7 @@ const CASES: Record<string, Case[]> = {
     {
       name: 'answers a task name outside the fixture pattern as invalidParameters',
       method: 'POST',
-      url: '/internal/v1/migration/adopt-scheduled-tasks',
+      url: ADOPT_PATH,
       as: 'service:migration',
       payload: { tasks: [{ ...ADOPT_BODY.tasks[0], name: 'opt2-survey-x-launch' }] },
       status: 400,
@@ -955,19 +969,20 @@ const CASES: Record<string, Case[]> = {
     {
       name: 'cancels every adopted task when no names are given',
       method: 'POST',
-      url: '/internal/v1/migration/cancel-adopted-scheduled-tasks',
+      url: CANCEL_ADOPTED_PATH,
       as: 'service:migration',
       payload: {},
       setup: async (ctx) => {
         const res = await ctx.app.inject({
           method: 'POST',
-          url: '/internal/v1/migration/adopt-scheduled-tasks',
+          url: ADOPT_PATH,
           headers: await subjectHeaders('service:migration'),
           payload: ADOPT_BODY,
         });
         expect(res.statusCode, res.body).toBe(200);
       },
       status: 200,
+      writes: true,
       verify: ({ body }, ctx) => {
         expect(record(body)).toEqual({ cancelled: 1 });
         expect(ctx.taskPort.byQueue(LAUNCH_QUEUE)).toEqual([]);
@@ -976,7 +991,7 @@ const CASES: Record<string, Case[]> = {
     {
       name: 'answers a property the request does not declare as invalidParameters',
       method: 'POST',
-      url: '/internal/v1/migration/cancel-adopted-scheduled-tasks',
+      url: CANCEL_ADOPTED_PATH,
       as: 'service:migration',
       payload: { names: [LAUNCH_TASK_NAME], all: true },
       status: 400,
@@ -1144,7 +1159,7 @@ const FAMILIES: ReadonlyArray<{ family: string; prefix: string; count: number; d
   { family: '/v1', prefix: '/v1/', count: 5, declaration: { transport: 'service', requires: [SENDER], public: false } },
   {
     family: 'scheduled-task listing',
-    prefix: '/internal/v1/scheduled-tasks',
+    prefix: SCHEDULED_TASKS_PATH,
     count: 1,
     declaration: { transport: 'service', requires: ['service:surveys'], public: false },
   },
@@ -1179,6 +1194,39 @@ const FAMILIES: ReadonlyArray<{ family: string; prefix: string; count: number; d
     declaration: { transport: 'pubsub-push', requires: ['service:pubsub-invoker'], public: false },
   },
   { family: 'health', prefix: '/healthz', count: 1, declaration: { transport: 'service', requires: [], public: true } },
+];
+
+/** `METHOD path` keys of the routes each family must contain, named by the constants the routes are registered under. */
+const EXPECTED_ROUTES: readonly string[] = [
+  `GET ${FIXTURE}/templates`,
+  `POST ${FIXTURE}/templates`,
+  `GET ${FIXTURE}/messages`,
+  `POST ${FIXTURE}/messages`,
+  `GET ${FIXTURE}/messages/{id}`,
+  'GET /v1/templates',
+  'POST /v1/templates',
+  'GET /v1/messages',
+  'POST /v1/messages',
+  'GET /v1/messages/{messageId}',
+  `GET ${SCHEDULED_TASKS_PATH}`,
+  `POST ${QUEUES[REMINDER_QUEUE].targetPath}`,
+  'POST /internal/v1/migration/apply',
+  'GET /internal/v1/migration/export',
+  'GET /internal/v1/migration/changes',
+  'GET /internal/v1/migration/position',
+  'GET /internal/v1/migration/watermark',
+  'POST /internal/v1/migration/watermark',
+  'POST /internal/v1/migration/gate',
+  `POST ${ADOPT_PATH}`,
+  `POST ${CANCEL_ADOPTED_PATH}`,
+  'POST /internal/v1/outbox/sweep',
+  'POST /internal/v1/task-queues/{queue}/pause',
+  'POST /internal/v1/task-queues/{queue}/resume',
+  'POST /internal/v1/task-queues/{queue}/ensure',
+  `POST /internal/v1/events/${SITE_CHANGED_SUBSCRIPTION}`,
+  `POST /internal/v1/events/${LOGIN_MAIL_SUBSCRIPTION}`,
+  `POST /internal/v1/events/${SURVEY_SCHEDULED_SUBSCRIPTION}`,
+  'GET /healthz',
 ];
 
 describe('contract document', () => {
@@ -1228,6 +1276,15 @@ describe('route declarations', () => {
 
   it('assigns every route to exactly one family', () => {
     expect(FAMILIES.reduce((sum, { count }) => sum + count, 0)).toBe(routes.length);
+  });
+
+  it('registers every expected route', () => {
+    const registered = new Set(routes.map(routeKey));
+    expect(EXPECTED_ROUTES.filter((key) => !registered.has(key))).toEqual([]);
+  });
+
+  it('serves the reminder task at the communications-reminders target path', () => {
+    expect(toOpenApiPath(REMINDER_TASK_PATH)).toBe(QUEUES[REMINDER_QUEUE].targetPath);
   });
 
   it('names the drifting route when an operation, a route or a role differs', () => {

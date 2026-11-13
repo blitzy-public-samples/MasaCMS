@@ -48,6 +48,7 @@ import {
   SITE_CHANGED_SUBSCRIPTION,
   SITE_CHANGED_TOPIC,
 } from '../../src/events/consumers.js';
+import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
 import { SERVICE, buildContentApp, serviceHeaders, userHeaders, type ContentTestApp } from '../helpers/app.js';
 
 const SITE_A = TENANT_A.siteId;
@@ -82,6 +83,7 @@ interface ExpectedRoute {
 }
 
 const HEADER_PROMPT_ROLES: readonly Role[] = [Roles.s2, Roles.siteAdmin, Roles.systemUser];
+const FILE_READ_ROLES: readonly Role[] = [Roles.s2, Roles.siteAdmin, 'm:000'];
 const MIGRATION_ONLY: readonly Role[] = [Roles.platformMigration];
 const QUEUE_CONTROLLERS: readonly Role[] = [Roles.platformMigration, Roles.platformOperator];
 const PUSH_INVOKER: readonly Role[] = [PUBSUB_INVOKER_ROLE];
@@ -105,6 +107,17 @@ const EXPECTED: readonly ExpectedRoute[] = [
     actsForUser: true,
     admitted: 200,
   },
+  {
+    method: 'GET',
+    url: '/v1/sites/:siteid/files/:fileid/download-url',
+    transport: 'service',
+    requires: FILE_READ_ROLES,
+    actsForUser: true,
+    probesSite: true,
+    // The probe's file id names no stored row.
+    admitted: 404,
+  },
+  { method: 'GET', url: '/opt2/files/content-files/:tenantId/:objectName', transport: 'service', public: true, admitted: 200 },
   { method: 'POST', url: '/internal/v1/migration/objects', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
   { method: 'GET', url: '/internal/v1/migration/objects', transport: 'service', requires: MIGRATION_ONLY, admitted: 404 },
   { method: 'POST', url: '/internal/v1/migration/apply', transport: 'service', requires: MIGRATION_ONLY, admitted: 400 },
@@ -151,6 +164,8 @@ const NO_EFFECTS: Effects = { statements: 0, published: 0, tasks: 0 };
 
 let t: ContentTestApp;
 let matrix: RouteMatrix;
+/** A local signed URL of a stored tenant-a object, signed once the app exists. */
+let localFileUrl = '';
 
 /** `<METHOD> <url>` of a route. */
 function keyOf(route: Pick<ExpectedRoute, 'method' | 'url'> | Pick<RouteMatrixEntry, 'method' | 'url'>): string {
@@ -271,6 +286,8 @@ const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).dig
 const PROBES: Readonly<Record<string, () => ProbeRequest>> = {
   'GET /healthz': () => ({ method: 'GET', url: '/healthz' }),
   'GET /v1/sites/:siteid/header-prompts': () => ({ method: 'GET', url: `/v1/sites/${SITE_A}/header-prompts` }),
+  'GET /v1/sites/:siteid/files/:fileid/download-url': () => ({ method: 'GET', url: `/v1/sites/${SITE_A}/files/${FILE_ID}/download-url` }),
+  'GET /opt2/files/content-files/:tenantId/:objectName': () => ({ method: 'GET', url: localFileUrl }),
   'POST /internal/v1/files::lookup': () => ({
     method: 'POST',
     url: '/internal/v1/files:lookup',
@@ -514,6 +531,9 @@ function verdictOf(cell: Cell): string[] {
 beforeAll(async () => {
   t = await buildContentApp();
   matrix = collectRouteMatrix(t.app);
+  const key = `${TENANT_A.tenantId}/${FILE_ID}.pdf`;
+  await t.storage.put(CONTENT_FILES_BUCKET, key, OBJECT_BYTES, { contentType: 'application/pdf' });
+  localFileUrl = await t.storage.signedUrl(CONTENT_FILES_BUCKET, key);
 });
 
 afterAll(async () => {
@@ -584,6 +604,7 @@ describe('transport separation', () => {
     ...(
       [
         ['GET', '/v1/sites/:siteid/header-prompts'],
+        ['GET', '/v1/sites/:siteid/files/:fileid/download-url'],
         ['POST', '/internal/v1/files::lookup'],
         ['POST', '/internal/v1/migration/objects'],
         ['POST', '/internal/v1/migration/apply'],
@@ -641,6 +662,12 @@ describe('tenant boundaries', () => {
     const headers = await userHeaders({ sub: USER_ID, site: SITE_B, roles });
     const read = await tenantsOf(() => t.app.inject({ method: 'GET', url: `/v1/sites/${SITE_B}/header-prompts`, headers }));
     expect(read).toEqual({ status: 200, tenants: [...new Set(expected.map((id) => id.toLowerCase()))].sort() });
+  });
+
+  it.each([TENANT_A, TENANT_B])('getFileDownloadUrl for a $siteId site admin reads only that site’s file pool', async (fixture) => {
+    const headers = await userHeaders({ sub: USER_ID, site: fixture.siteId, roles: [Roles.siteAdmin] });
+    const read = await tenantsOf(() => t.app.inject({ method: 'GET', url: `/v1/sites/${fixture.siteId}/files/${FILE_ID}/download-url`, headers }));
+    expect(read).toEqual({ status: 404, tenants: [poolTenantExpectation(fixture, 'file').toLowerCase()] });
   });
 
   it.each([TENANT_A, TENANT_B])('the file lookup for a $siteId user reads only that site’s photo file pools', async (fixture) => {

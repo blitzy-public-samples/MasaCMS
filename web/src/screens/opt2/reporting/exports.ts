@@ -104,7 +104,7 @@ export async function loadExports(ctx: ScreenContext): Promise<ExportsData> {
 }
 
 function jobRow(job: ExportJob, downloadUrl: string): GridCell[] {
-  // A done job's Download button posts its id to the download action.
+  // Not an inline signed link: signed URLs expire after 900 s, so each click has the download action fetch a fresh one.
   const download = job.state === 'done' ? actionButton('Download', downloadUrl, { jobId: job.job_id }) : null;
   return [job.job_id, job.format, job.state, job.created, job.started_at, job.finished_at, job.error, download];
 }
