@@ -1,11 +1,12 @@
 // cUsers.editAddress against editaddress.cfm (77-220), cusers.cfc editAddress() and the people address contracts.
 import { readFileSync } from 'node:fs';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import * as cheerio from 'cheerio';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { components } from '@/generated/clients/people';
 import { createCsrfRenderer } from '@/lib/csrf';
 import { GatewayDenialError } from '@/lib/gateway-client';
-import { toString } from '@/lib/html';
+import { encodeHtmlAttr, toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import {
@@ -15,14 +16,32 @@ import {
   renderEditAddress,
   type AddressEditData,
   type AddressExtendSetLoader,
+  type EditAddressData,
 } from '@/screens/cusers/editaddress';
 import { cusersGate } from '@/screens/cusers/gate';
-import type { ExtendAttributeDefinition, ExtendSetDefinition } from '@/screens/cusers/loadextendedattributes';
-import type { ScreenContext } from '@/screens/registry';
-import { adminS2Request } from '../../helpers/admin-request';
+import {
+  extendRenderContext,
+  renderExtendAttribute,
+  type ExtendAttributeDefinition,
+  type ExtendSetDefinition,
+} from '@/screens/cusers/loadextendedattributes';
+import type { PageScreen, ScreenContext } from '@/screens/registry';
+import {
+  ADDRESS_IDS,
+  addressExtendSets,
+  existingAddressEditData,
+  janeSmithHomeAddress,
+  newAddressEditData,
+} from '../../fixtures/people/address-edit';
+import { PERSON_IDS } from '../../fixtures/people/user-list';
+import { adminS2Request, siteAdminRequest } from '../../helpers/admin-request';
 import { fragmentModel, normaliseIds } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type RecordedRequest } from '../../helpers/fake-gateway';
+import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../helpers/screen-context';
+
+// The registry pulls in every circuit's screens; the shell reads only its hooks, and cUsers has no secondary menu.
+vi.mock('@/screens/registry', () => ({ shellHooks: Object.freeze({ secondaryMenus: Object.freeze({}) }) }));
 
 type AddressRecord = components['schemas']['AddressRecord'];
 type PersonRecord = components['schemas']['PersonRecord'];
@@ -333,5 +352,239 @@ describe('cusers.editaddress', () => {
     gateway.setRoute(ADDRESS_EDIT_ROUTE, { status: 403, body: { error: { type: 'forbidden' } } });
     const ctx = contextFor(editRequest({ userid: USER_ID, siteid: 'default', addressID: '' }), gateway);
     await expect(loadEditAddress(ctx)).rejects.toBeInstanceOf(GatewayDenialError);
+  });
+});
+
+describe('cusers.editaddress for the tenant-a site admin over the people fixtures', () => {
+  const SITE = 'tenant-a';
+  const ROUTE_ID = 'editprofile';
+  const CSRF_CONTEXT = `updateaddress${PERSON_IDS.janeSmith}`;
+  const UPDATE_ACTION =
+    `./?muraAction=cUsers.updateAddress&userid=${PERSON_IDS.janeSmith}&routeid=${ROUTE_ID}&siteid=${SITE}`;
+  const [DELIVERY_SET] = addressExtendSets as readonly [ExtendSetDefinition];
+  const [DELIVERY] = DELIVERY_SET.attributes as readonly [ExtendAttributeDefinition];
+  const DELIVERY_VALUE = 'Leave parcels at the front desk.';
+  const withDelivery: AddressExtendSetLoader = () => Promise.resolve(addressExtendSets);
+
+  const ADDRESS_FIELDS = [
+    'addressName',
+    'address1',
+    'address2',
+    'city',
+    'state',
+    'zip',
+    'country',
+    'phone',
+    'fax',
+    'addressURL',
+    'addressEmail',
+    'hours',
+  ] as const;
+  const ADDRESS_LABELS = [
+    'Address name',
+    'Street Address 1',
+    'Street Address 2',
+    'City',
+    'State',
+    'Zip',
+    'Country',
+    'Phone',
+    'Fax',
+    'Website (Including HTTP://)',
+    'Email',
+    'Hours',
+  ];
+
+  type Ctx = ReturnType<typeof makeScreenContext>;
+
+  /** The address field controls filled from `address`; '' for a NULL column. */
+  const fieldControls = (address: AddressRecord) =>
+    ADDRESS_FIELDS.map((name) =>
+      name === 'hours'
+        ? { tag: 'textarea', name, type: 'textarea', value: address.hours ?? '' }
+        : { tag: 'input', name, type: 'text', value: address[name] ?? '' },
+    );
+
+  /** The CSRF pair and the hidden fields after it, for Jane Smith (`isPublic` 0). */
+  const hiddenControls = (addressId: string, isPrimary: boolean) => [
+    { tag: 'input', name: CSRF_FIELD_TOKEN, type: 'hidden', value: FIXED_CSRF.token },
+    { tag: 'input', name: CSRF_FIELD_EXPIRES, type: 'hidden', value: FIXED_CSRF.expires },
+    { tag: 'input', name: 'action', type: 'hidden', value: '' },
+    { tag: 'input', name: 'addressID', type: 'hidden', value: addressId },
+    { tag: 'input', name: 'isPublic', type: 'hidden', value: '0' },
+    ...(isPrimary ? [{ tag: 'input', name: 'isPrimary', type: 'hidden', value: '1' }] : []),
+  ];
+
+  /** The site admin's context on Jane Smith's `addressid`, people answering `edit` and her `addresses`. */
+  function contextOf(addressid: string, edit: AddressEditData, addresses: readonly AddressRecord[]): Ctx {
+    const req = siteAdminRequest(SITE, {
+      circuit: 'cusers',
+      item: 'editaddress',
+      rc: { siteid: SITE, userid: PERSON_IDS.janeSmith, addressid, routeid: ROUTE_ID },
+    });
+    const userEdit: Partial<UserEditData> = { user: edit.user, isNew: false, addresses: [...addresses] };
+    return makeScreenContext({
+      req,
+      gateway: fakeGatewayClient({
+        [ADDRESS_EDIT_ROUTE]: { status: 200, body: edit },
+        [USER_EDIT_ROUTE]: { status: 200, body: userEdit },
+      }),
+    });
+  }
+
+  /** The view `ctx` renders with `loader`: markup, `cfhtmlhead` text, model and a cheerio root. */
+  async function viewOf(ctx: Ctx, loader?: AddressExtendSetLoader) {
+    const view = renderEditAddress(ctx, await loadEditAddress(ctx, loader));
+    const body = toString(view.body);
+    return {
+      body,
+      htmlHead: view.htmlHead === undefined ? '' : toString(view.htmlHead),
+      model: fragmentModel(body),
+      $: cheerio.load(body, null, false),
+    };
+  }
+
+  /** The `<head>` markup of the page the production answers for `def`, trailing whitespace trimmed. */
+  async function documentHead(def: PageScreen<EditAddressData>, ctx: Ctx): Promise<string> {
+    const page = await renderScreenPage(def, ctx);
+    if (page.kind === 'redirect') throw new Error(`The screen redirected to ${page.location}`);
+    const end = page.html.indexOf('</head>');
+    expect(end).toBeGreaterThan(0);
+    return page.html.slice(0, end).trimEnd();
+  }
+
+  const csrfContexts = (ctx: Ctx): string[] =>
+    ctx.gateway.calls
+      .filter((call) => call.service === 'identity' && call.path === '/v1/csrf/tokens')
+      .flatMap((call) => (call.json as { readonly contexts: readonly string[] }).contexts);
+
+  describe('an existing address', () => {
+    const existing = (): Ctx =>
+      contextOf(ADDRESS_IDS.janeSmithHome, existingAddressEditData, [janeSmithHomeAddress]);
+
+    it("reads people's address and the person's addresses, and issues the form's CSRF context", async () => {
+      const ctx = existing();
+      await viewOf(ctx, withDelivery);
+      expect(ctx.gateway.calls.filter((call) => call.service === 'people')).toEqual([
+        expect.objectContaining({
+          method: 'GET',
+          path: '/v1/users/address',
+          query: { siteid: SITE, userid: PERSON_IDS.janeSmith, addressid: ADDRESS_IDS.janeSmithHome, routeid: ROUTE_ID },
+        }),
+        expect.objectContaining({
+          method: 'GET',
+          path: '/v1/users/edit',
+          query: { siteid: SITE, userid: PERSON_IDS.janeSmith },
+        }),
+      ]);
+      expect(csrfContexts(ctx)).toEqual([CSRF_CONTEXT]);
+    });
+
+    it('posts form1 as multipart to cUsers.updateAddress for the user, route and site', async () => {
+      const { body, $ } = await viewOf(existing(), withDelivery);
+      const form = $('form');
+      expect(form.length).toBe(1);
+      expect({
+        name: form.attr('name'),
+        method: form.attr('method'),
+        enctype: form.attr('enctype'),
+        autocomplete: form.attr('autocomplete'),
+        action: form.attr('action'),
+      }).toEqual({
+        name: 'form1',
+        method: 'post',
+        enctype: 'multipart/form-data',
+        autocomplete: 'off',
+        action: UPDATE_ACTION,
+      });
+      expect(body).toContain(`action="${UPDATE_ACTION.replaceAll('&', '&amp;')}"`);
+    });
+
+    it("labels and fills every field from the address, then the Address set's attribute", async () => {
+      const { model } = await viewOf(existing(), withDelivery);
+      expect(model.headings).toEqual(['Member Address Form', 'Jane Smith', DELIVERY_SET.name]);
+      expect(model.labels).toEqual([...ADDRESS_LABELS, DELIVERY.label]);
+      expect(model.controls).toMatchObject([
+        ...fieldControls(janeSmithHomeAddress),
+        { tag: 'input', name: 'extendSetID', type: 'hidden', value: DELIVERY_SET.extendSetID },
+        { name: DELIVERY.name, value: DELIVERY_VALUE },
+        ...hiddenControls(ADDRESS_IDS.janeSmithHome, false),
+      ]);
+    });
+
+    it('carries the updateaddress CSRF pair and html_attr-encodes the address id', async () => {
+      const { body, model } = await viewOf(existing(), withDelivery);
+      const hidden = model.controls.filter((control) => control.type === 'hidden' && control.name !== 'extendSetID');
+      expect(hidden).toMatchObject(hiddenControls(ADDRESS_IDS.janeSmithHome, false));
+      expect(body).toContain(`<input type="hidden" name="${CSRF_FIELD_TOKEN}" value="${FIXED_CSRF.token}" />`);
+      expect(body).toContain(
+        `<input type="hidden" name="addressID" value="${encodeHtmlAttr(ADDRESS_IDS.janeSmithHome)}">`,
+      );
+      expect(model.controls.map((control) => control.name)).not.toContain('isPrimary');
+    });
+
+    it('offers Update and Delete with the delete confirmation, and no Add', async () => {
+      const { model, $ } = await viewOf(existing(), withDelivery);
+      expect(model.buttons).toEqual([
+        { text: 'Update', type: 'submit', hasOnclick: true },
+        { text: 'Delete', type: 'submit', hasOnclick: true },
+      ]);
+      expect($('button').map((_i, el) => $(el).attr('onclick')).get()).toEqual([
+        "userManager.submitForm(document.forms.form1,'update');",
+        "submitForm(document.forms.form1,'delete','Delete Address?');",
+      ]);
+    });
+
+    it("renders the Address set's attribute through renderExtendAttribute with the tab view", async () => {
+      expect(existingAddressEditData.extendedAttributes).toEqual({ [DELIVERY.name]: DELIVERY_VALUE });
+      const ctx = existing();
+      const { body, htmlHead } = await viewOf(ctx, withDelivery);
+      const control = toString(renderExtendAttribute(DELIVERY, { value: DELIVERY_VALUE, context: extendRenderContext(ctx) }));
+      expect(body).toContain(control);
+      expect(body).toContain(
+        `<span class="extendset" extendsetid="${DELIVERY_SET.extendSetID}" categoryid="" >\n\t\t\t\t\t\t\t\t` +
+          `<input name="extendSetID" type="hidden" value="${DELIVERY_SET.extendSetID}"/>`,
+      );
+      expect(body).toContain('initTabs(Array("Basic","Extended Attributes"),0,0,0);');
+      expect(htmlHead).toBe(USER_JS + TAB_VIEW_HEAD);
+    });
+
+    it("emits the user script and tab-view assets at the end of the page's head", async () => {
+      const def: PageScreen<EditAddressData> = { ...editAddressScreen, load: (ctx) => loadEditAddress(ctx, withDelivery) };
+      const head = await documentHead(def, existing());
+      expect(head.slice(-(USER_JS + TAB_VIEW_HEAD).length)).toBe(USER_JS + TAB_VIEW_HEAD);
+    });
+  });
+
+  describe('a new address', () => {
+    it.each([
+      ['no addresses', true, []],
+      ['an address', false, [janeSmithHomeAddress]],
+    ] as const)('for a user with %s offers Add only (hidden isPrimary: %s)', async (_name, isPrimary, addresses) => {
+      const ctx = contextOf('', newAddressEditData, addresses);
+      const { model, $ } = await viewOf(ctx);
+      expect(ctx.gateway.calls).toContainEqual(
+        expect.objectContaining({ service: 'people', path: '/v1/users/address', query: expect.objectContaining({ addressid: '' }) }),
+      );
+      expect(model.buttons).toEqual([{ text: 'Add', type: 'submit', hasOnclick: true }]);
+      expect($('button').attr('onclick')).toBe("userManager.submitForm(document.forms.form1,'add');");
+      expect(model.labels).toEqual(ADDRESS_LABELS);
+      expect(model.controls).toMatchObject([
+        ...fieldControls(newAddressEditData.address),
+        ...hiddenControls('', isPrimary),
+      ]);
+    });
+
+    it('without extend sets keeps the user script and drops the tab view', async () => {
+      const view = await viewOf(contextOf('', newAddressEditData, []));
+      expect(view.htmlHead).toBe(USER_JS);
+      expect(view.body).not.toContain('initTabs');
+      expect(view.body).not.toContain('class="extendset"');
+
+      const head = await documentHead(editAddressScreen, contextOf('', newAddressEditData, []));
+      expect(head.slice(-USER_JS.length)).toBe(USER_JS);
+      expect(head).not.toContain('css/tab-view.css');
+      expect(head).not.toContain('assets/js/tab-view.js');
+    });
   });
 });

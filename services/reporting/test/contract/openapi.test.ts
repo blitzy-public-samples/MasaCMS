@@ -1,10 +1,13 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Every reporting route against contracts/openapi.yaml: registered declarations, and the actual responses and task bodies of buildApp through app.inject. */
+/** Every reporting route against contracts/openapi.yaml: the pinned document, registered declarations, and the actual responses and task bodies of buildApp through app.inject. */
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { collectRouteMatrix, type RouteMatrixEntry } from '@opt2/platform/auth';
+import { INVOCATION_HEADER, collectRouteMatrix, type RouteMatrixEntry } from '@opt2/platform/auth';
+import { pushPath } from '@opt2/platform/events';
 import { cfUuid } from '@opt2/platform/legacy-compat';
-import { QUEUES, taskWireBody, type TaskWireBody } from '@opt2/platform/tasks';
+import { MIGRATION_PATH_PREFIX } from '@opt2/platform/migration-kit';
+import { OUTBOX_SWEEP_PATH, QUEUES, QUEUE_CONTROL_PREFIX, taskWireBody, type TaskWireBody } from '@opt2/platform/tasks';
 import {
   ROLE_SET,
   TENANT_A,
@@ -13,12 +16,13 @@ import {
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
+  pushTo,
   type InjectResponse,
   type RoleSubject,
 } from '@opt2/platform/testing';
-import { INVOCATION_HEADER } from '@opt2/platform/auth';
+import { SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { FIXTURE_PREFIX } from '../../src/legacy/index.js';
-import { EXPORT_BUCKET, exportObjectKey, type ExportDefinitionRow, type ExportJobRow } from '../../src/repo/tables.js';
+import { EXPORT_BUCKET, exportObjectKey, type ExportDefinitionRow, type ExportJobRow, type ReportingUnit } from '../../src/repo/tables.js';
 import {
   OPENAPI,
   SERVICE,
@@ -30,17 +34,31 @@ import {
   scopeUrl,
   seedDefinition,
   seedJob,
+  siteChangedEnvelope,
   type TestApp,
 } from '../helpers/app.js';
 
 type Json = Record<string, unknown>;
 
-const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch'] as const;
+/** The contract document's top-level fields this suite reads. */
+interface ContractDocument {
+  openapi: string;
+  info: { version: string; 'x-source-sha'?: string };
+  paths: Record<string, Json>;
+}
+
+const CONTRACT = OPENAPI as ContractDocument;
+const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
+
+const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch', 'options', 'head'] as const;
 const SITE_A = TENANT_A.siteId;
 const ON_SITE_A = `siteid=${SITE_A}`;
 const FIXTURE_EXPORTS = `${FIXTURE_PREFIX}/exports`;
 const V1_EXPORTS = '/v1/reporting/exports';
 const RUN_QUEUE = QUEUES['reporting-export-run'];
+const SITE_CHANGED_PATH = pushPath(SITE_CHANGED_SUBSCRIPTION);
+const JOB_UNIT: ReportingUnit = 'reporting.export_job';
+const WRITE_POSITION = /^reporting=\d+$/;
 /** Headers the legacy envelope sends on every fixture JSON response. */
 const LEGACY_HEADERS = ['generator', 'strict-transport-security', 'etag'] as const;
 
@@ -52,20 +70,34 @@ interface ContractOperation {
   operation: Json;
 }
 
+/** A request one case sent, with the response it received. */
+interface CaseResult {
+  method: string;
+  url: string;
+  res: InjectResponse;
+}
+
+/** `METHOD path` with contract `{name}` parameters in Fastify `:name` form, as the route matrix lists routes. */
+function keyOf(method: string, template: string): string {
+  return `${method.toUpperCase()} ${template.replace(/\{(\w+)\}/g, ':$1')}`;
+}
+
 let t: TestApp;
 let definition: ExportDefinitionRow;
 let financeDefinition: ExportDefinitionRow;
 let done: ExportJobRow;
 let queued: ExportJobRow;
 
-const contractOperations: ContractOperation[] = Object.entries((OPENAPI as { paths: Record<string, Json> }).paths).flatMap(([template, item]) =>
+const contractOperations: ContractOperation[] = Object.entries(CONTRACT.paths).flatMap(([template, item]) =>
   HTTP_METHODS.filter((method) => Object.hasOwn(item, method)).map((method) => ({
-    key: `${method.toUpperCase()} ${template.replace(/\{(\w+)\}/g, ':$1')}`,
+    key: keyOf(method, template),
     template,
     method,
     operation: item[method] as Json,
   })),
 );
+
+const OPERATION_IDS = contractOperations.map(({ operation }) => operation.operationId);
 
 function subject(name: string): RoleSubject {
   const found = ROLE_SET.find((candidate) => candidate.name === name);
@@ -125,6 +157,23 @@ async function send(
   return checked(method, url, res);
 }
 
+/** {@link send}, keeping the request beside its response. */
+async function call(
+  who: string | Record<string, string>,
+  method: 'GET' | 'POST',
+  url: string,
+  options: { payload?: Record<string, unknown>; headers?: Record<string, string> } = {},
+): Promise<CaseResult> {
+  return { method, url, res: await send(who, method, url, options) };
+}
+
+/** Whether the operation serving `method` `url` declares the write-position header on `status`. */
+function declaresWritePosition(method: string, url: string, status: number): boolean {
+  const { operation } = findOperation(OPENAPI, method, url.split('?')[0] ?? url);
+  const declared = resolve((operation.responses as Json)[String(status)]);
+  return Object.hasOwn((declared.headers ?? {}) as Json, 'X-Opt2-Write-Position');
+}
+
 /** CSRF headers identity accepts once for the collection context in the exporter's session. */
 const csrf = (): Record<string, string> => ({ ...t.client.issueCsrf(identityOf(subject('reporting.exporter')).sid, '') });
 
@@ -132,8 +181,17 @@ async function migrationHeaders(): Promise<Record<string, string>> {
   return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'migration', audience: SERVICE, roles: ['platform.migration'] })}` };
 }
 
+async function operatorHeaders(): Promise<Record<string, string>> {
+  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'operator', audience: SERVICE, roles: ['platform.operator'] })}` };
+}
+
 async function tasksHeaders(): Promise<Record<string, string>> {
   return { authorization: `Bearer ${await mintTasksInvokerToken({ audience: SERVICE })}` };
+}
+
+/** The invocation credential of export source producer `caller`. */
+async function producerHeaders(caller: 'finance' | 'timesheets'): Promise<Record<string, string>> {
+  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller, audience: SERVICE })}` };
 }
 
 /** `wire` as an earlier release queued it: the creating session and `who`'s user token of it, here already expired, beside the job. */
@@ -176,7 +234,62 @@ beforeEach(() => {
   t.client.reset();
 });
 
+describe('contract document', () => {
+  it('is OpenAPI 3.1.0 version 1.0.0 at the pinned source SHA', () => {
+    expect({ openapi: CONTRACT.openapi, version: CONTRACT.info.version, sha: CONTRACT.info['x-source-sha'] }).toEqual({
+      openapi: '3.1.0',
+      version: '1.0.0',
+      sha: PIN.sha,
+    });
+  });
+
+  it('gives every operation a unique operationId', () => {
+    const invalid = OPERATION_IDS.filter((id, index) => typeof id !== 'string' || id === '' || OPERATION_IDS.indexOf(id) !== index);
+    expect(invalid).toEqual([]);
+  });
+});
+
 describe('route registrations against the contract', () => {
+  /** Every reporting route family, each of which the app registers and the contract declares. */
+  const FAMILIES = [
+    keyOf('GET', FIXTURE_EXPORTS),
+    keyOf('POST', FIXTURE_EXPORTS),
+    keyOf('GET', `${FIXTURE_EXPORTS}/{id}`),
+    keyOf('GET', `${FIXTURE_EXPORTS}/{id}/download`),
+    keyOf('GET', V1_EXPORTS),
+    keyOf('POST', V1_EXPORTS),
+    keyOf('GET', `${V1_EXPORTS}/{id}`),
+    keyOf('GET', `${V1_EXPORTS}/{id}/download-url`),
+    keyOf('GET', `/opt2/files/${EXPORT_BUCKET}/{tenantId}/{objectName}`),
+    keyOf('GET', '/internal/v1/exports/{exportId}/source-scope'),
+    keyOf('POST', RUN_QUEUE.targetPath),
+    ...['pause', 'resume', 'ensure'].map((op) => keyOf('POST', `${QUEUE_CONTROL_PREFIX}/{queue}/${op}`)),
+    keyOf('POST', SITE_CHANGED_PATH),
+    ...(
+      [
+        ['POST', 'apply'],
+        ['GET', 'export'],
+        ['GET', 'changes'],
+        ['GET', 'position'],
+        ['GET', 'watermark'],
+        ['POST', 'watermark'],
+        ['POST', 'gate'],
+      ] as const
+    ).map(([method, name]) => keyOf(method, `${MIGRATION_PATH_PREFIX}/${name}`)),
+    keyOf('GET', '/healthz'),
+  ];
+
+  it('registers and declares every reporting route family, and no outbox sweep', () => {
+    const registered = collectRouteMatrix(t.app).routes.map((route) => `${route.method} ${route.url}`);
+    const declaredKeys = contractOperations.map((op) => op.key);
+    expect(SITE_CHANGED_PATH).toBe('/internal/v1/events/reporting.programs-sites.site.changed.v1');
+    expect({ unregistered: FAMILIES.filter((key) => !registered.includes(key)), undeclared: FAMILIES.filter((key) => !declaredKeys.includes(key)) }).toEqual({
+      unregistered: [],
+      undeclared: [],
+    });
+    expect([...registered, ...declaredKeys].filter((key) => key.endsWith(` ${OUTBOX_SWEEP_PATH}`))).toEqual([]);
+  });
+
   const comparable = (entry: RouteMatrixEntry): Json => ({
     transport: entry.transport,
     ...(entry.requires === undefined ? { public: true } : { requires: [...entry.requires].sort() }),
@@ -196,6 +309,90 @@ describe('route registrations against the contract', () => {
   it("declares every route's transport, roles, public flag and site check as its operation annotates them", () => {
     const routes = Object.fromEntries(collectRouteMatrix(t.app).routes.map((route) => [`${route.method} ${route.url}`, comparable(route)]));
     expect(routes).toEqual(Object.fromEntries(contractOperations.map((op) => [op.key, declared(op.operation)])));
+  });
+});
+
+const DEFINITION_UNIT: ReportingUnit = 'reporting.export_definition';
+const WATERMARK = { legacyTable: 'synthetic.export_job', direction: 'forward', snapshotSeq: 1, backupLsn: '1', finishedAt: '2026-06-30 12:00:00' } as const;
+
+/** Status of each case that does not answer 200. */
+const CASE_STATUS: Readonly<Record<string, number>> = {
+  pushSiteChanged: 204,
+  // Reporting creates no recurring queue, so ensure always answers the invalidParameters 400 its contract declares.
+  ensureTaskQueue: 400,
+};
+
+/** One request per contract operation, keyed by operationId, presenting the credential of the operation's transport. */
+const cases: Record<string, () => Promise<CaseResult>> = {
+  fixtureListExports: () => call('reporting.exporter', 'GET', `${FIXTURE_EXPORTS}?${ON_SITE_A}`),
+  fixtureCreateExport: () =>
+    call('reporting.exporter', 'POST', `${FIXTURE_EXPORTS}?${ON_SITE_A}`, {
+      headers: csrf(),
+      payload: { definitionId: definition.definition_id, format: 'csv' },
+    }),
+  fixtureGetExport: () => call('reporting.exporter', 'GET', `${FIXTURE_EXPORTS}/${done.job_id}?${ON_SITE_A}`),
+  fixtureDownloadExport: () => call('reporting.exporter', 'GET', `${FIXTURE_EXPORTS}/${done.job_id}/download?${ON_SITE_A}`),
+  listExports: () => call('reporting.exporter', 'GET', `${V1_EXPORTS}?${ON_SITE_A}`),
+  createExport: () =>
+    call('reporting.exporter', 'POST', `${V1_EXPORTS}?${ON_SITE_A}`, {
+      headers: csrf(),
+      payload: { definitionId: definition.definition_id, format: 'xlsx' },
+    }),
+  getExport: () => call('reporting.exporter', 'GET', `${V1_EXPORTS}/${done.job_id}?${ON_SITE_A}`),
+  getExportDownloadUrl: () => call('reporting.exporter', 'GET', `${V1_EXPORTS}/${done.job_id}/download-url?${ON_SITE_A}`),
+  downloadExportObject: async () => {
+    const issued = await send('reporting.exporter', 'GET', `${V1_EXPORTS}/${done.job_id}/download-url?${ON_SITE_A}`);
+    const result = await call({}, 'GET', issued.json<{ data: { url: string } }>().data.url);
+    expect(String(result.res.headers['content-type']).split(';')[0]).toBe(done.content_type);
+    return result;
+  },
+  getExportSourceScope: async () => call(await producerHeaders('timesheets'), 'GET', scopeUrl(done.job_id, SITE_A)),
+  runExportTask: async () => {
+    const job = await seedJob(t, definition, 'queued');
+    const wire = await queueRun(t, job);
+    return call(await tasksHeaders(), 'POST', runUrl(job.job_id), { payload: { ...wire } });
+  },
+  pauseTaskQueue: async () => call(await operatorHeaders(), 'POST', `${QUEUE_CONTROL_PREFIX}/${RUN_QUEUE.name}/pause`),
+  resumeTaskQueue: async () => call(await operatorHeaders(), 'POST', `${QUEUE_CONTROL_PREFIX}/${RUN_QUEUE.name}/resume`),
+  ensureTaskQueue: async () => call(await operatorHeaders(), 'POST', `${QUEUE_CONTROL_PREFIX}/${RUN_QUEUE.name}/ensure`),
+  pushSiteChanged: async () => {
+    const res = await pushTo(t.app, SITE_CHANGED_SUBSCRIPTION, siteChangedEnvelope(SITE_A, 2));
+    return { method: 'POST', url: SITE_CHANGED_PATH, res: checked('POST', SITE_CHANGED_PATH, res) };
+  },
+  migrationApply: async () => {
+    const exported = await send(await migrationHeaders(), 'GET', `${MIGRATION_PATH_PREFIX}/export?unit=${DEFINITION_UNIT}&tenantId=${TENANT_A.tenantId}`);
+    const [table] = exported.json<{ tables: { legacyTable: string; columns: unknown[]; rows: { row: string }[] }[] }>().tables;
+    if (table === undefined || table.rows.length === 0) throw new Error(`the ${DEFINITION_UNIT} export of tenant-a holds no rows`);
+    const batch = {
+      batchId: 'reporting-contract-apply-1',
+      origin: 'backfill',
+      legacyTable: table.legacyTable,
+      tenantId: TENANT_A.tenantId,
+      columns: table.columns,
+      rows: table.rows.map(({ row }) => ({ op: 'upsert', row })),
+    };
+    return call(await migrationHeaders(), 'POST', `${MIGRATION_PATH_PREFIX}/apply`, { payload: batch });
+  },
+  migrationExport: async () => call(await migrationHeaders(), 'GET', `${MIGRATION_PATH_PREFIX}/export?unit=${JOB_UNIT}&tenantId=${TENANT_A.tenantId}`),
+  migrationChanges: async () => call(await migrationHeaders(), 'GET', `${MIGRATION_PATH_PREFIX}/changes?tenantId=${TENANT_A.tenantId}&after=0:0`),
+  migrationPosition: async () => call(await migrationHeaders(), 'GET', `${MIGRATION_PATH_PREFIX}/position`),
+  migrationWatermarkGet: async () => call(await migrationHeaders(), 'GET', `${MIGRATION_PATH_PREFIX}/watermark`),
+  migrationWatermarkPost: async () => call(await migrationHeaders(), 'POST', `${MIGRATION_PATH_PREFIX}/watermark`, { payload: { ...WATERMARK } }),
+  migrationGate: async () => call(await migrationHeaders(), 'POST', `${MIGRATION_PATH_PREFIX}/gate`, { payload: { op: 'status' } }),
+  healthz: () => call({}, 'GET', '/healthz'),
+};
+
+describe('every contract operation', () => {
+  it('has exactly one case per contract operation', () => {
+    expect(Object.keys(cases).sort()).toEqual(OPERATION_IDS.map(String).sort());
+  });
+
+  it.each(OPERATION_IDS.map(String))('answers %s with its success status in its contract shape', async (operationId) => {
+    const run = cases[operationId];
+    if (run === undefined) throw new Error(`no case for ${operationId}`);
+    const { method, url, res } = await run();
+    expect(res.statusCode, res.body).toBe(CASE_STATUS[operationId] ?? 200);
+    if (declaresWritePosition(method, url, res.statusCode)) expect(res.headers['x-opt2-write-position']).toMatch(WRITE_POSITION);
   });
 });
 
@@ -386,14 +583,36 @@ describe('export run task', () => {
   ])('answers a task with %s in the legacy error envelope', async (_label, payload) => {
     expect((await send(await tasksHeaders(), 'POST', runUrl(done.job_id), { payload: await payload() })).statusCode).toBe(400);
   });
+
+  it('refuses a run presented with a user token instead of the tasks credential, leaving the job queued', async () => {
+    const job = await seedJob(t, definition, 'queued');
+    const wire = await queueRun(t, job);
+    const res = await send('reporting.exporter', 'POST', runUrl(job.job_id), { payload: { ...wire } });
+    expect([401, 403]).toContain(res.statusCode);
+    const stored = await send('reporting.exporter', 'GET', `${V1_EXPORTS}/${job.job_id}?${ON_SITE_A}`);
+    expect(stored.json<{ data: { state: string } }>().data.state).toBe('queued');
+  });
+});
+
+describe('unit gates', () => {
+  it.each<[string, string]>([
+    ['fixture', FIXTURE_EXPORTS],
+    ['/v1', V1_EXPORTS],
+  ])('answers a %s create with the legacy 503 while the job unit is legacy-authoritative', async (_label, collection) => {
+    await t.setGate(JOB_UNIT, 'legacy');
+    try {
+      const res = await send('reporting.exporter', 'POST', `${collection}?${ON_SITE_A}`, {
+        headers: csrf(),
+        payload: { definitionId: definition.definition_id, format: 'csv' },
+      });
+      expect(res.statusCode).toBe(503);
+    } finally {
+      await t.setGate(JOB_UNIT, 'open');
+    }
+  });
 });
 
 describe('export source scope', () => {
-  /** The invocation credential of export source producer `caller`. */
-  async function producerHeaders(caller: 'finance' | 'timesheets'): Promise<Record<string, string>> {
-    return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller, audience: SERVICE })}` };
-  }
-
   it("answers the timesheets producer a timesheets job's stored scope", async () => {
     const res = await send(await producerHeaders('timesheets'), 'GET', scopeUrl(done.job_id, SITE_A));
     expect({ status: res.statusCode, body: res.json<unknown>() }).toEqual({
@@ -424,32 +643,19 @@ describe('export source scope', () => {
 });
 
 describe('queue control', () => {
-  it.each<[string, number]>([
-    ['pause', 200],
-    ['resume', 200],
-    ['ensure', 400],
-  ])('answers %s of the export-run queue', async (op, status) => {
-    expect((await send(await migrationHeaders(), 'POST', `/internal/v1/task-queues/${RUN_QUEUE.name}/${op}`)).statusCode).toBe(status);
-  });
-
   it('answers a queue reporting does not create in the legacy error envelope', async () => {
-    expect((await send(await migrationHeaders(), 'POST', '/internal/v1/task-queues/surveys-launch/pause')).statusCode).toBe(400);
+    expect((await send(await migrationHeaders(), 'POST', `${QUEUE_CONTROL_PREFIX}/surveys-launch/pause`)).statusCode).toBe(400);
   });
 });
 
 describe('migration routes', () => {
-  it.each<[string, 'GET' | 'POST', () => string, Record<string, unknown> | undefined, number]>([
-    ['the position', 'GET', () => '/internal/v1/migration/position', undefined, 200],
-    ['the watermarks', 'GET', () => '/internal/v1/migration/watermark', undefined, 200],
-    ['the gate status', 'POST', () => '/internal/v1/migration/gate', { op: 'status' }, 200],
-    ['the changes', 'GET', () => `/internal/v1/migration/changes?tenantId=${TENANT_A.tenantId}`, undefined, 200],
-    ['the export_job export', 'GET', () => `/internal/v1/migration/export?unit=reporting.export_job&tenantId=${TENANT_A.tenantId}`, undefined, 200],
-    ['an empty apply', 'POST', () => '/internal/v1/migration/apply', {}, 400],
-    ['an empty watermark', 'POST', () => '/internal/v1/migration/watermark', {}, 400],
-    ['a foreign unit gate', 'POST', () => '/internal/v1/migration/gate', { op: 'status', units: ['people.person'] }, 400],
-  ])('answers %s', async (_label, method, url, payload, status) => {
-    const res = await send(await migrationHeaders(), method, url(), payload === undefined ? {} : { payload });
-    expect(res.statusCode).toBe(status);
+  it.each<[string, string, Record<string, unknown>]>([
+    ['an empty apply', 'apply', {}],
+    ['an empty watermark', 'watermark', {}],
+    ['a foreign unit gate', 'gate', { op: 'status', units: ['people.person'] }],
+  ])('answers %s in the legacy error envelope', async (_label, name, payload) => {
+    const res = await send(await migrationHeaders(), 'POST', `${MIGRATION_PATH_PREFIX}/${name}`, { payload });
+    expect(res.statusCode).toBe(400);
   });
 
   it('exports the stored output of a done job in the object manifest', async () => {
@@ -464,11 +670,5 @@ describe('migration routes', () => {
     const res = await send(await migrationHeaders(), 'GET', `/internal/v1/migration/changes?tenantId=${TENANT_A.tenantId}`);
     const rows = res.json<{ rows: Array<{ table: string; op: string }> }>().rows;
     expect(rows).toContainEqual(expect.objectContaining({ table: 'export_job', op: 'insert' }));
-  });
-});
-
-describe('platform routes', () => {
-  it('answers the health probe', async () => {
-    expect((await send({}, 'GET', '/healthz')).statusCode).toBe(200);
   });
 });

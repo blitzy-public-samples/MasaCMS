@@ -17,8 +17,10 @@ import { createLocalStorageAdapter, type LocalStorageAdapter } from '@opt2/platf
 import { TENANT_A, TENANT_B, createThrowawaySchema, mintServiceToken, mintUserToken, pgAvailable, seedRegistry, testVerifier, type ThrowawaySchema } from '@opt2/platform/testing';
 import type { EnqueueExportRun, ReportingDeps } from '../../src/domain/deps.js';
 import { FIXTURE_PREFIX, registerFixtureRoutes } from '../../src/legacy/index.js';
+import { definitionRow, jobRow } from '../../src/legacy/serialize.js';
 import { createReportingRepository } from '../../src/repo/repository.js';
-import { EXPORT_BUCKET, UNITS, exportObjectKey } from '../../src/repo/tables.js';
+import { EXPORT_BUCKET, EXPORT_JOB, EXPORT_STATES, UNITS, exportObjectKey, type ExportJobRow, type ExportState } from '../../src/repo/tables.js';
+import { definitionFor, jobFor } from '../helpers/fixtures.js';
 
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
 const P = `${FIXTURE_PREFIX}/exports`;
@@ -32,7 +34,58 @@ const OUTPUT = Buffer.from('a,b\r\n1,2\r\n');
 const errorBody = (method: string, code: string, message: string): string =>
   `{"apiversion":"v1","method":"${method}","error":{"code":"${code}","message":"${message}"}}`;
 
-const available = await pgAvailable();
+/** reporting.cfc `jobColumns`, named as envelope.cfc `rows()` lower-cases them. */
+const JOB_KEYS = ['job_id', 'siteid', 'definition_id', 'format', 'state', 'requested_by_id', 'created', 'started_at', 'finished_at', 'error', 'file_name', 'content_type', 'output_sha256'];
+/** envelope.cfc `listResponse` data keys, in the order it sets them. */
+const LIST_KEYS = ['items', 'startindex', 'endindex', 'itemsperpage', 'totalitems', 'totalpages', 'pageindex'];
+/** The test clock's instant in envelope.cfc's `yyyy-mm-dd'T'HH:nn:ss` mask. */
+const CLOCK_TEXT = '2026-06-30T12:00:00';
+const JOB_ID = 'ABCDEF01-2345-6789-ABCDEF0123456789';
+
+// pgAvailable rejects without PG_HOST; the projection cases need no database.
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
+
+describe('fixture row projections', () => {
+  const definition = definitionFor(TENANT_A, 'timesheets.sheets');
+
+  it.each<[ExportState, string, string, string, string, string]>([
+    ['queued', '', '', '', '', ''],
+    ['running', CLOCK_TEXT, '', '', '', ''],
+    ['done', CLOCK_TEXT, CLOCK_TEXT, '', `export-${JOB_ID}.csv`, 'text/csv'],
+    ['failed', CLOCK_TEXT, CLOCK_TEXT, 'export-failed', '', ''],
+  ])('projects a %s job onto the jobColumns in select order, NULL as an empty string', (state, startedAt, finishedAt, error, fileName, contentType) => {
+    const row = jobFor(definition, { format: 'csv', state, jobId: JOB_ID });
+    const projected = jobRow(row);
+    expect(Object.keys(projected)).toStrictEqual(JOB_KEYS);
+    expect(projected).toStrictEqual({
+      job_id: JOB_ID,
+      siteid: TENANT_A.siteId,
+      definition_id: definition.definition_id,
+      format: 'csv',
+      state,
+      requested_by_id: row.requested_by_id,
+      created: CLOCK_TEXT,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      error,
+      file_name: fileName,
+      content_type: contentType,
+      output_sha256: row.output_sha256 ?? '',
+    });
+  });
+
+  it('renders a timestamp to the second in the process zone, as the fixture mask drops milliseconds', () => {
+    const row = jobFor(definition, { format: 'pdf', state: 'running', at: new Date(2026, 0, 2, 3, 4, 5, 987) });
+    expect(jobRow(row)).toMatchObject({ created: '2026-01-02T03:04:05', started_at: '2026-01-02T03:04:05', finished_at: '' });
+  });
+
+  it.each(['["record_id","title"]', 'record_id,title'])('projects a definition onto its catalog columns, keeping the columns text %j as stored', (columns) => {
+    const row = definitionFor(TENANT_B, 'finance.records', { columns });
+    const projected = definitionRow(row);
+    expect(Object.keys(projected)).toStrictEqual(['definition_id', 'siteid', 'name', 'source', 'columns']);
+    expect(projected).toStrictEqual({ definition_id: row.definition_id, siteid: TENANT_B.siteId, name: 'Finance records', source: 'finance.records', columns });
+  });
+});
 
 describe.skipIf(!available)('reporting fixture routes', () => {
   let handle: ThrowawaySchema;
@@ -168,6 +221,22 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     return jobId;
   }
 
+  /** The seeded definition of `site` as a row `jobFor` builds jobs of. */
+  function definitionOf(site = TENANT_A) {
+    return definitionFor(site, 'timesheets.sheets', { definition_id: defs[site.siteId] as string });
+  }
+
+  /** Stores `row` with every `export_job` column as given. */
+  async function storeJob(row: ExportJobRow): Promise<void> {
+    const names = EXPORT_JOB.columns.map(({ name }) => name as keyof ExportJobRow);
+    await handle.app.withTenant(row.tenant_id, (tx) =>
+      tx.query(
+        `INSERT INTO ${handle.schema}.export_job (${names.join(', ')}) VALUES (${names.map((_, i) => `$${i + 1}`).join(', ')})`,
+        names.map((name) => row[name]),
+      ),
+    );
+  }
+
   it('declares the four routes with the contract annotations', () => {
     const routes = collectRouteMatrix(app).routes.filter((r) => r.url.startsWith(FIXTURE_PREFIX));
     expect(routes.map(({ method, url, requires, transport, siteCheck }) => [method, url.slice(FIXTURE_PREFIX.length), requires, transport, siteCheck])).toEqual(
@@ -239,6 +308,22 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     const res = await create({ definitionId: defs[TENANT_A.siteId], format: 'csv' }, { 'x-csrf_token': 'BAD', 'x-csrf_token_expires': '1' });
     expect(res.statusCode).toBe(400);
     expect(res.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Invalid CSRF tokens'));
+  });
+
+  const BAD_CSRF = { 'x-csrf_token': 'BAD', 'x-csrf_token_expires': '1' };
+  const INVALID_CREATE = { definitionId: 'x', format: 'doc', asOf: '2026-02-30' };
+
+  it.each<[string, () => Promise<Record<string, string>>, string, number, string, number]>([
+    ['login before role, site and fields', async () => CSRF, '?siteid=nowhere', 401, 'Insufficient Account Permissions', 0],
+    ['the role before site and fields', async () => ({ ...(await headers([Roles.systemUser])), ...CSRF }), '?siteid=nowhere', 403, 'Insufficient Account Permissions', 0],
+    ['the site before CSRF and fields', async () => ({ ...(await headers()), ...BAD_CSRF }), '?siteid=nowhere', 400, 'Invalid parameters', 0],
+    ['CSRF before the definition', async () => ({ ...(await headers()), ...BAD_CSRF }), '', 400, 'Invalid CSRF tokens', 1],
+    ['the definition before format and asOf', async () => ({ ...(await headers()), ...CSRF }), '', 404, 'Not Found', 1],
+  ])('answers a create failing several checks with the earliest, %s', async (_case, headersOf, query, status, message, csrfCalls) => {
+    const res = await app.inject({ method: 'POST', url: `${P}${query}`, headers: await headersOf(), payload: INVALID_CREATE });
+    expect(res.statusCode).toBe(status);
+    expect(res.body).toBe(errorBody('reporting.exports', 'invalid_request', message));
+    expect([consumed.length, enqueued.length]).toStrictEqual([csrfCalls, 0]);
   });
 
   it('answers another site or an unknown site as the fixture does', async () => {
@@ -334,6 +419,32 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     expect(dl.body).toBe(errorBody('reporting.exports.download', 'invalid_request', 'Not Found'));
   });
 
+  it('resolves a request without siteid to the token site, so a tenant-b exporter reads and lists only tenant-b jobs', async () => {
+    const own = await storeDone(TENANT_B);
+    const other = await storeDone(TENANT_A);
+    const tenantB = await headers(EXPORTER, TENANT_B.siteId);
+    const read = await app.inject({ url: `${P}/${own}`, headers: tenantB });
+    expect([read.statusCode, read.json().data.siteid]).toStrictEqual([200, TENANT_B.siteId]);
+    const hidden = await app.inject({ url: `${P}/${other}`, headers: tenantB });
+    expect(hidden.statusCode).toBe(404);
+    expect(hidden.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Not Found'));
+    const ids = (await app.inject({ url: `${P}?itemsPerPage=1000`, headers: tenantB })).json().data.items.map((j: { job_id: string }) => j.job_id);
+    expect(ids).toContain(own);
+    expect(ids).not.toContain(other);
+  });
+
+  it.each(EXPORT_STATES)('answers a stored %s job in the envelope.cfc success shape, as jobRow projects it, alone and in the list', async (state) => {
+    const row = jobFor(definitionOf(), { format: 'xlsx', state });
+    await storeJob(row);
+    const detail = await app.inject({ url: `${P}/${row.job_id}`, headers: await headers() });
+    expect(detail.statusCode).toBe(200);
+    expect(Object.keys(detail.json())).toStrictEqual(['apiversion', 'method', 'data']);
+    expect(detail.json()).toStrictEqual({ apiversion: 'v1', method: 'reporting.exports', data: jobRow(row) });
+    const list = (await app.inject({ url: `${P}?itemsPerPage=1000`, headers: await headers() })).json().data;
+    expect(Object.keys(list)).toStrictEqual(LIST_KEYS);
+    expect(list.items.filter((job: { job_id: string }) => job.job_id === row.job_id)).toStrictEqual([jobRow(row)]);
+  });
+
   it('answers a download before done with the not-ready conflict', async () => {
     const created = await create({ definitionId: defs[TENANT_A.siteId], format: 'csv' });
     const id = created.json().data.job_id as string;
@@ -341,6 +452,14 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     expect(res.statusCode).toBe(409);
     expect(res.body).toBe(errorBody('reporting.exports.download', 'invalid_request', 'not-ready'));
     expectEtag(res);
+  });
+
+  it.each<ExportState>(['running', 'failed'])('answers a download of a stored %s job with the not-ready conflict', async (state) => {
+    const row = jobFor(definitionOf(), { format: 'csv', state });
+    await storeJob(row);
+    const res = await app.inject({ url: `${P}/${row.job_id}/download`, headers: await headers() });
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toBe(errorBody('reporting.exports.download', 'invalid_request', 'not-ready'));
   });
 
   it('downloads a done job output as an attachment', async () => {
@@ -353,6 +472,7 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     expect(res.headers['content-length']).toBe(String(OUTPUT.length));
     expect(res.headers.etag).toBeUndefined();
     expect(res.headers.generator).toBe('Masa CMS 7.6.1');
+    expect(res.headers['strict-transport-security']).toBe('max-age=1200');
   });
 
   it('answers server_error for a control character in the file name and for a missing object', async () => {

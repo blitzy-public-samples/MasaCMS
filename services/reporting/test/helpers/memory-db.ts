@@ -17,6 +17,7 @@ export type MemoryTable =
   | 'outbox'
   | 'tenant_registry'
   | 'unit_gate'
+  | 'migration_batch'
   | 'migration_watermark';
 
 /** One finished transaction: its `app.tenant_id`, every statement it ran and how it ended. */
@@ -86,6 +87,7 @@ const TENANT_TABLES: ReadonlySet<MemoryTable> = new Set<MemoryTable>([
   'inbox',
   'consumer_aggregate_version',
   'outbox',
+  'migration_batch',
 ]);
 
 /** The key an insert conflicts on: the migrations' primary key, tenant_registry's unique `tenant_id`, none for the sequenced changelog. */
@@ -99,6 +101,7 @@ const UNIQUE_KEYS: Readonly<Record<MemoryTable, readonly string[] | null>> = {
   outbox: ['event_id'],
   tenant_registry: ['tenant_id'],
   unit_gate: ['unit'],
+  migration_batch: ['tenant_id', 'batch_id'],
   migration_watermark: ['legacy_table', 'direction'],
 };
 
@@ -288,6 +291,25 @@ function project(list: string, row: Row): Row {
   );
 }
 
+/** A bound wall-clock timestamp as `to_char(…, 'YYYY-MM-DD"T"HH24:MI:SS.MS')` renders it once stored as timestamp(3). */
+function wallClockText(value: unknown): string {
+  const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(text(value));
+  if (m === null) throw new UnsupportedStatementError(`timestamp ${text(value)} is not evaluated in memory`);
+  const [, date = '', minutes = '', seconds = '00', fraction = ''] = m;
+  return `${date}T${minutes}:${seconds}.${fraction.padEnd(3, '0')}`;
+}
+
+/** A stored migration watermark in the handlers' `WATERMARK_COLUMNS` form. */
+function watermarkRecord(row: Row): Row {
+  return {
+    legacy_table: row.legacy_table,
+    direction: row.direction,
+    snapshot_seq: row.snapshot_seq === null ? null : text(row.snapshot_seq),
+    backup_lsn: row.backup_lsn === null ? null : text(row.backup_lsn),
+    finished_at: row.finished_at,
+  };
+}
+
 /** Rows of `VALUES (…)[, (…)]` for `columns`; the text after the last tuple is returned as `rest`. */
 function valueTuples(source: string, columns: readonly string[], params: readonly unknown[], now: () => Date): { rows: Row[]; rest: string } {
   let rest = source;
@@ -325,6 +347,7 @@ export function createMemoryDb(options: { now: () => Date }): MemoryDb {
     if (table === 'inbox') base.received_at = now();
     if (table === 'consumer_aggregate_version') base.updated_at = now();
     if (table === 'unit_gate') Object.assign(base, { state: 'legacy', holder_id: null, phase: 'quiet', updated_at: now() });
+    if (table === 'migration_batch') base.applied_at = now();
     const row = { ...base, ...values };
     if (table === 'changelog') {
       nextSeq += 1n;
@@ -456,15 +479,19 @@ export function createMemoryDb(options: { now: () => Date }): MemoryDb {
       ),
       'legacy_table, direction',
     );
-    return answer(
-      rows.map((row) => ({
-        legacy_table: row.legacy_table,
-        direction: row.direction,
-        snapshot_seq: row.snapshot_seq === null ? null : text(row.snapshot_seq),
-        backup_lsn: row.backup_lsn === null ? null : text(row.backup_lsn),
-        finished_at: row.finished_at,
-      })),
-    );
+    return answer(rows.map(watermarkRecord));
+  };
+
+  /** The watermark upsert: the `(legacy_table, direction)` row inserted or replaced, its timestamp kept as to_char renders it. */
+  const watermarkUpsert: Handler = (_m, params, _session, tx) => {
+    const [legacyTable, direction, snapshotSeq, backupLsn, finishedAt] = params;
+    const row: Row = { legacy_table: legacyTable, direction, snapshot_seq: snapshotSeq ?? null, backup_lsn: backupLsn ?? null, finished_at: wallClockText(finishedAt) };
+    const marks = rowsOf(tx, 'migration_watermark');
+    const index = marks.findIndex((stored) => stored.legacy_table === legacyTable && stored.direction === direction);
+    if (index < 0) marks.push(row);
+    else marks[index] = row;
+    xidOf(tx);
+    return answer([watermarkRecord(row)], 'INSERT', 1);
   };
 
   /** The migration export's first page of a single-key table: the tenant's rows by key text, each with its key as the cursor. */
@@ -538,6 +565,7 @@ export function createMemoryDb(options: { now: () => Date }): MemoryDb {
       return answer([], 'INSERT', missing.length);
     }],
     [/^INSERT INTO \w+\.tenant_registry \(([\w, ]+)\) VALUES (\(.+?\)) ON CONFLICT \(tenant_id\) DO UPDATE SET .+ WHERE \w+\.tenant_registry\.aggregate_version < EXCLUDED\.aggregate_version$/, registryUpsert],
+    [/^INSERT INTO \w+\.migration_watermark \(legacy_table, direction, snapshot_seq, backup_lsn, finished_at\) VALUES \(\$1, \$2, \$3, \$4, \$5\) ON CONFLICT \(legacy_table, direction\) DO UPDATE SET snapshot_seq = EXCLUDED\.snapshot_seq, backup_lsn = EXCLUDED\.backup_lsn, finished_at = EXCLUDED\.finished_at RETURNING legacy_table, direction, .+$/, watermarkUpsert],
     [/^INSERT INTO (\w+)\.(\w+) \(([\w, ]+)\) VALUES (.+)$/, insert],
     [/^UPDATE (\w+)\.(\w+) SET (.+?)(?: WHERE (.+?))?(?: RETURNING (.+))?$/, update],
     [SELECT_ONE, select],

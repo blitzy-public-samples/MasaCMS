@@ -1,10 +1,13 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Export-run enqueuer and probe over a fake task port; the export runner against PostgreSQL, local storage and stub sources. */
+/**
+ * Export-run enqueuer and probe over a fake task port; the export runner against PostgreSQL, local storage and stub sources; and the
+ * run task of a `/v1` create delivered through the whole reporting app against PostgreSQL.
+ */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   QUEUES,
   UnknownTaskTargetError,
@@ -17,21 +20,54 @@ import {
   type TaskPort,
 } from '@opt2/platform/tasks';
 import { LOCAL_USER_TOKEN } from '@opt2/platform/auth';
-import { fixedClock, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
+import { ServiceUnavailableError, fixedClock, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
 import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-compat';
-import { GateClosedError, closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
+import { GateClosedError, closeGates, ensureUnitGates, openGates, sha256Hex, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createLocalStorageAdapter, type LocalStorageAdapter } from '@opt2/platform/storage';
-import { tenantIdForSite } from '@opt2/platform/tenancy';
-import { TENANT_A, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { tenantIdForSite, withTenant, type TenantDb } from '@opt2/platform/tenancy';
+import {
+  TENANT_A,
+  assertResponseMatchesOpenApi,
+  createThrowawaySchema,
+  mintTasksInvokerToken,
+  pgAvailable,
+  type ThrowawaySchema,
+} from '@opt2/platform/testing';
 import type { EnqueueExportRun, ExportRunPayload, ReportingDeps } from '../../src/domain/deps.js';
 import { reclaimRun, transitionJob } from '../../src/domain/job-state.js';
 import { createExportJob } from '../../src/domain/jobs.js';
 import { runExport, type RunExportResult } from '../../src/domain/run-export.js';
+import { findJob } from '../../src/repo/queries.js';
 import { createReportingRepository, type ReportingRepository } from '../../src/repo/repository.js';
-import { EXPORT_BUCKET, EXPORT_JOB, OUTPUT_SLOTS, UNITS, exportAttemptKey, exportObjectKey, type ExportJobRow } from '../../src/repo/tables.js';
+import {
+  EXPORT_BUCKET,
+  EXPORT_FORMATS,
+  EXPORT_JOB,
+  OUTPUT_SLOTS,
+  UNITS,
+  exportAttemptKey,
+  exportObjectKey,
+  type ExportFormat,
+  type ExportJobRow,
+  type ExportSource,
+} from '../../src/repo/tables.js';
 import { createExportRunEnqueuer, createExportRunProbe, exportRunTaskName } from '../../src/tasks/enqueue.js';
+import {
+  OPENAPI,
+  REQUESTER,
+  SERVICE,
+  SOURCE_PATHS,
+  buildTestApp,
+  headersFor,
+  type ClientReply,
+  type ExportProducer,
+  type TestApp,
+} from '../helpers/app.js';
+import { seedDefinitions, type SeededDefinitions } from '../helpers/fixtures.js';
 
 const QUEUE = QUEUES['reporting-export-run'];
+// pgAvailable rejects when PG_HOST is unset, so the PostgreSQL suites skip on that before probing the server.
+const pgReady = Boolean(process.env.PG_HOST) && (await pgAvailable());
 const JOB_ID = '6F0A2C1E-5B7D-4E8A-9C3F0D1E2F3A4B5C';
 const PAYLOAD = { jobId: JOB_ID, asOf: '2026-06-30' };
 const CLOCK = fixedClock('2026-06-30T10:00:00.000Z');
@@ -275,7 +311,7 @@ function once(fn: () => Promise<unknown>): () => Promise<void> {
   };
 }
 
-describe.skipIf(!(await pgAvailable()))('export runner against PostgreSQL', () => {
+describe.skipIf(!pgReady)('export runner against PostgreSQL', () => {
   let handle: ThrowawaySchema;
   let stateDir: string;
   let storage: LocalStorageAdapter;
@@ -570,3 +606,156 @@ describe.skipIf(!(await pgAvailable()))('export runner against PostgreSQL', () =
     for (const key of leftovers) expect(await storage.head(EXPORT_BUCKET, key)).toBeNull();
   });
 });
+
+/** Content type each format's output is stored and served with. */
+const CONTENT_TYPES: Readonly<Record<ExportFormat, string>> = Object.freeze({
+  csv: 'text/csv',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pdf: 'application/pdf',
+});
+
+/** The readable sources, each with the producer its export read goes to. */
+const SOURCE_PRODUCERS: ReadonlyArray<readonly [ExportSource, ExportProducer]> = [
+  ['timesheets.sheets', 'timesheets'],
+  ['finance.records', 'finance'],
+];
+
+/** Every format with every readable source. */
+const FORMAT_SOURCE_CASES = EXPORT_FORMATS.flatMap((format) => SOURCE_PRODUCERS.map(([source, producer]) => [format, source, producer] as const));
+
+/** Row version a fresh job's first claim leaves it at, naming that run's attempt key. */
+const FIRST_CLAIM = '2';
+
+/** Gate budget a delivery refused by a closed gate waits out, in place of the platform's 30 s. */
+const REFUSAL_BUDGET_MS = 500;
+
+describe.skipIf(!pgReady)('export-run task of a /v1 create through the reporting app against PostgreSQL', () => {
+  let t: TestApp<TenantDb>;
+  let definitions: SeededDefinitions;
+
+  beforeAll(async () => {
+    t = await buildTestApp({ db: 'pg' });
+    definitions = await seedDefinitions(t);
+  });
+
+  afterEach(() => {
+    t?.client.reset();
+  });
+
+  afterAll(async () => {
+    await t?.close();
+  });
+
+  const exporterHeaders = (): Promise<Record<string, string>> => headersFor('reporting.exporter', { site: TENANT_A.siteId });
+
+  /** Queues a `format` export of tenant-a's `source` definition through `POST /v1/reporting/exports`, as the exporter; returns its job id. */
+  async function createExport(source: ExportSource, format: ExportFormat): Promise<string> {
+    const res = await t.app.inject({
+      method: 'POST',
+      url: '/v1/reporting/exports',
+      headers: { ...(await exporterHeaders()), ...t.client.issueCsrf(REQUESTER.sid, '') },
+      payload: { definitionId: definitions.A[source].definition_id, format },
+    });
+    expect(res.statusCode).toBe(200);
+    return res.json<{ data: { job_id: string } }>().data.job_id;
+  }
+
+  /** POSTs job `jobId`'s queued run task to the URL it was created with, as the tasks-invoker, as the local adapter dispatches it. */
+  async function deliver(jobId: string) {
+    const task = t.tasks.live.get(`${QUEUE.name}/${exportRunTaskName(jobId)}`);
+    if (task === undefined) throw new Error(`no run task is queued for export job ${jobId}`);
+    return t.app.inject({
+      method: 'POST',
+      url: new URL(task.url).pathname,
+      headers: { authorization: `Bearer ${await mintTasksInvokerToken({ audience: SERVICE })}` },
+      payload: taskWireBody(task),
+    });
+  }
+
+  /** Job `jobId` as stored under tenant-a. */
+  async function storedJob(jobId: string): Promise<ExportJobRow> {
+    const job = await withTenant(t.db, TENANT_A.tenantId, (tx) => findJob(tx, jobId));
+    if (job === null) throw new Error(`tenant-a holds no export job ${jobId}`);
+    return job;
+  }
+
+  const firstAttemptKey = (jobId: string, format: ExportFormat): string => exportAttemptKey(TENANT_A.tenantId, jobId, format, FIRST_CLAIM);
+
+  it.each(FORMAT_SOURCE_CASES)(
+    'runs a %s export of %s queued by POST /v1/reporting/exports to done through its run task, storing the bytes its job records',
+    async (format, source, producer) => {
+      const jobId = await createExport(source, format);
+      const before = t.client.requests.length;
+
+      const run = await deliver(jobId);
+
+      expect({ status: run.statusCode, body: run.json<unknown>() }).toStrictEqual({ status: 200, body: { jobId, state: 'done' } });
+      expect(t.client.requests.slice(before).map((read) => [read.service, read.path, read.query?.exportId, read.userToken])).toStrictEqual([
+        [producer, SOURCE_PATHS[producer], jobId, null],
+      ]);
+      const key = firstAttemptKey(jobId, format);
+      const stored = await storedJob(jobId);
+      expect(stored).toMatchObject({ state: 'done', error: null, file_name: `export-${jobId}.${format}`, content_type: CONTENT_TYPES[format], object_key: key });
+      const detail = await t.app.inject({ method: 'GET', url: `/v1/reporting/exports/${jobId}`, headers: await exporterHeaders() });
+      expect(detail.json<{ data: unknown }>().data).toMatchObject({
+        job_id: jobId,
+        state: 'done',
+        error: '',
+        file_name: stored.file_name,
+        content_type: stored.content_type,
+        output_sha256: stored.output_sha256,
+      });
+      expect(await t.storage.head(EXPORT_BUCKET, key)).toMatchObject({ sha256: stored.output_sha256, contentType: CONTENT_TYPES[format] });
+      expect(sha256Hex(await t.storage.get(EXPORT_BUCKET, key))).toBe(stored.output_sha256);
+    },
+  );
+
+  it.each<[string, ClientReply]>([
+    [
+      'refuses the connection',
+      () => {
+        throw new ServiceUnavailableError('timesheets', Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8118'), { code: 'ECONNREFUSED' }));
+      },
+    ],
+    ['answers 503', () => ({ status: 503, headers: {}, body: undefined })],
+  ])('fails a queued export source-unavailable through its run task, storing no object, when the producer %s', async (_case, reply) => {
+    const jobId = await createExport('timesheets.sheets', 'csv');
+    t.client.answer('timesheets', SOURCE_PATHS.timesheets, reply);
+
+    const run = await deliver(jobId);
+
+    expect({ status: run.statusCode, body: run.json<unknown>() }).toStrictEqual({ status: 200, body: { jobId, state: 'failed' } });
+    expect(await storedJob(jobId)).toMatchObject({ state: 'failed', error: 'source-unavailable', object_key: null, output_sha256: null });
+    expect(await t.storage.head(EXPORT_BUCKET, firstAttemptKey(jobId, 'csv'))).toBeNull();
+  });
+
+  it('answers the legacy 503 while the job unit is closed, leaving the job queued and its source unread, then runs it to done once it reopens', async () => {
+    const jobId = await createExport('timesheets.sheets', 'csv');
+    const before = t.client.requests.length;
+    await t.setGate(EXPORT_JOB.unit, 'closed');
+    let refused: Awaited<ReturnType<typeof deliver>>;
+    try {
+      // The delivery's gated transactions share this scope's budget, so the refusal comes without the platform's 30 s wait.
+      refused = await withGatedTenant(t.db, TENANT_A.tenantId, () => deliver(jobId), { budgetMs: REFUSAL_BUDGET_MS });
+    } finally {
+      await t.setGate(EXPORT_JOB.unit, 'open');
+    }
+
+    expect(refused.statusCode).toBe(503);
+    assertResponseMatchesOpenApi(OPENAPI, {
+      method: 'POST',
+      path: QUEUE.targetPath.replace('{exportId}', jobId),
+      status: refused.statusCode,
+      contentType: refused.headers['content-type'] as string | undefined,
+      body: refused.payload,
+    });
+    expect(await storedJob(jobId)).toMatchObject({ state: 'queued', started_at: null, row_version: '1' });
+    expect(t.client.requests.slice(before)).toStrictEqual([]);
+
+    const retried = await deliver(jobId);
+
+    expect({ status: retried.statusCode, body: retried.json<unknown>() }).toStrictEqual({ status: 200, body: { jobId, state: 'done' } });
+    expect(await storedJob(jobId)).toMatchObject({ state: 'done', object_key: firstAttemptKey(jobId, 'csv') });
+  });
+});
+
