@@ -23,7 +23,17 @@ import { Roles } from '@opt2/platform/auth';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { SERVICE_CALL_TIMEOUT_MS, type Clock } from '@opt2/platform/service-kit';
 import { registryEntryForTenant, siteForTenant, tenantForRegisteredSite, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
-import { feedItemRemoteId, importFormat, importItemFields, importOrder, isImportSelected, parseFeedXml, rssChannelItems } from '../legacy/remote-feed.js';
+import {
+  feedItemRemoteId,
+  importFormat,
+  importItemFields,
+  importOrder,
+  isImportSelected,
+  parseFeedXml,
+  prepareRemoteFeedText,
+  previewOrder,
+  rssChannelItems,
+} from '../legacy/remote-feed.js';
 import {
   FEED_SORT_OPTIONS,
   type FeedAdvancedParamFields,
@@ -1519,6 +1529,57 @@ export async function importRemoteFeed(
     }
   }
   return { feedBean, parentBean, success: true, saves };
+}
+
+/** One RSS item cfeed.import1 offers: its remote id, link, title and description markup, and whether no active content holds the id. */
+export interface FeedImportPreviewItem {
+  remoteID: string;
+  link: string;
+  title: string;
+  description: string;
+  isNew: boolean;
+}
+
+/** The cfeed.import1 model: the feed as read and the items it offers; none for a version other than RSS. */
+export interface FeedImportPreview {
+  feedBean: FeedBean;
+  items: FeedImportPreviewItem[];
+}
+
+/** CFML `pubDate eq remotePubDate`: as dates when the stored value is one and the text parses, else as text. */
+function samePubDate(text: string, stored: unknown): boolean {
+  if (stored instanceof Date) {
+    const parsed = parseDateArg(text);
+    return parsed instanceof Date && parsed.getTime() === stored.getTime();
+  }
+  return cfEq(text, cfText(stored));
+}
+
+/** cfeed.import1 (import1.cfm:102-151): the first `maxItems` RSS items of the remote feed that are new, or whose pubDate differs from the imported version's. */
+export async function previewFeedImport(
+  deps: FeedDeps,
+  actor: Actor,
+  args: { feedId: string; siteId: string },
+  fetchRemote: FetchRemote = defaultFetchRemote,
+): Promise<FeedImportPreview> {
+  const feedBean = await readFeed(deps, actor, { feedId: args.feedId });
+  const url = feedBean.text('channellink');
+  const response = await fetchRemote(url, remoteFetchOptions(feedBean.text('authtype')));
+  if (response.status < 200 || response.status >= 300) throw new RemoteFeedHttpError(url, response.status);
+  // import1.cfm strips the text before the first `<` but, unlike getRemoteFeedData, keeps chr(20).
+  const xml = parseFeedXml(prepareRemoteFeedText(response.body));
+  if (importFormat(feedBean.text('version')) !== 'rss') return { feedBean, items: [] };
+  const now = deps.clock.now();
+  const items: FeedImportPreviewItem[] = [];
+  for (const item of previewOrder(rssChannelItems(xml), numericLiteral(feedBean, 'maxitems'))) {
+    const remoteID = feedItemRemoteId(item);
+    const rows = await withTenant(deps.db, actor.tenantId, (tx) => deps.repository.content.readActiveByRemoteId(tx, { siteId: args.siteId, remoteId: remoteID }));
+    const row = rows.at(-1);
+    // `not isNew and pubDate eq …` reads pubDate only for an item already imported.
+    if (row !== undefined && samePubDate(item.child('pubDate').xmlText, LegacyContentBean.fromVersion(row, actor, now).get('remotepubdate'))) continue;
+    items.push({ remoteID, link: item.child('link').xmlText, title: item.child('title').xmlText, description: item.child('description').xmlText, isNew: row === undefined });
+  }
+  return { feedBean, items };
 }
 
 // ---- auto-import job step ----
