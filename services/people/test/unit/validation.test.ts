@@ -2,9 +2,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { cfHash } from '@opt2/platform/legacy-compat';
+import { cfHash, cfUuid } from '@opt2/platform/legacy-compat';
+import { fixedClock } from '@opt2/platform/testing';
+import { EXTEND_CONFIG_DEFAULTS, EXTEND_MESSAGES, validateExtendedData, type ExtendedAttribute } from '../../src/domain/extended-data.js';
 import { enPeopleMessages, type PeopleMessageKey, type PeopleMessages } from '../../src/domain/messages.js';
-import { USER_BEAN_DEFAULTS } from '../../src/domain/person.js';
+import { USER_BEAN_DEFAULTS, newUserValues, splitUserValues, type UserValues } from '../../src/domain/person.js';
 import {
   FM_ALLOWED_EXTENSIONS,
   FM_PUBLIC_ALLOWED_EXTENSIONS,
@@ -17,6 +19,7 @@ import {
   type LegacyErrors,
   type RestrictedFilesOptions,
 } from '../../src/domain/validation.js';
+import { createIdentityDouble } from '../helpers/identity-double.js';
 
 const CAPTCHA_KEY = 'captcha-key';
 // hash('captcha-key', 'CFMX_COMPAT') as ACF 2023 returned it.
@@ -50,6 +53,48 @@ function overridingRb(lookups: string[]): PeopleMessages {
     lookups.push(`${siteId}:${key}`);
     return siteId === 'tenant-b' ? `[tenant-b] ${key}` : enPeopleMessages(siteId, key);
   };
+}
+
+const CLOCK = fixedClock('2026-06-30T12:00:00');
+const EN_BUNDLE = 'core/mura/resourceBundle/resources/en.properties';
+
+/** The English bundle text of `key` with `{1}` replaced by `arg`. */
+function enText(key: string, arg = ''): string {
+  const text = bundleText(legacyFile(EN_BUNDLE), key);
+  if (text === undefined) throw new Error(`${key} is not in ${EN_BUNDLE}`);
+  return text.replace('{1}', arg);
+}
+
+/** A new bean's values for a Type=2 create in site default. */
+const newPerson = (overrides: Partial<UserValues> = {}): UserValues => ({ ...newUserValues(CLOCK), siteid: 'default', ...overrides });
+
+/** Identity's answer to the prepare of a create of `values` after `setPrepareErrors`; undefined when it prepares. */
+async function identityPrepareErrors(values: UserValues, seeded?: Record<string, string>): Promise<LegacyErrors | undefined> {
+  const identity = createIdentityDouble({ clock: CLOCK });
+  const userId = cfUuid();
+  identity.setPrepareErrors(userId, seeded);
+  const outcome = await identity.identityClient.prepare(userId, cfUuid(), { kind: 'create', ...splitUserValues(values).account });
+  return outcome.ok ? undefined : outcome.errors;
+}
+
+const EXTEND_SET_ID = cfUuid();
+
+/** A Numeric TextBox attribute of the default site's submitted set. */
+const numericAttribute = (attributeId: number, name: string): ExtendedAttribute => ({
+  attributeId,
+  name,
+  validation: 'Numeric',
+  message: '',
+  type: 'TextBox',
+  extendSetId: EXTEND_SET_ID,
+  siteId: 'default',
+});
+
+/** validateExtendedData's errors for non-numeric values of myAttr, zeta and alpha. */
+function extendedErrors(): Record<string, string> {
+  const attributes = [numericAttribute(1, 'myAttr'), numericAttribute(2, 'zeta'), numericAttribute(3, 'alpha')];
+  const input = new Map([['siteid', 'default'], ['extendsetid', EXTEND_SET_ID], ['myattr', 'x'], ['zeta', 'z'], ['alpha', 'a']]);
+  return validateExtendedData(attributes, input, EXTEND_CONFIG_DEFAULTS);
 }
 
 describe('messages and extension lists', () => {
@@ -103,6 +148,12 @@ describe('validatePersonValues', () => {
   it('sets email, SecurityCode and Spam in legacy order', () => {
     const errors = validatePersonValues(person({ email: '', hkey: 'bad', ukey: CAPTCHA_KEY, passedprotect: false }));
     expect(Object.keys(errors)).toEqual(['email', 'SecurityCode', 'Spam']);
+  });
+
+  it('passes a new bean with a site and an email', () => {
+    const errors = validatePersonValues(newPerson({ email: 'jdoe@example.com' }));
+    expect(errors).toEqual({});
+    expect(hasErrors(errors)).toBe(false);
   });
 
   it.each([
@@ -206,6 +257,59 @@ describe('validateAddressValues', () => {
   });
 });
 
+describe('extended-data errors', () => {
+  it('keeps validateExtendedData errors under their attribute names beside the person errors', () => {
+    const extended = extendedErrors();
+    expect(extended).toEqual({
+      myAttr: EXTEND_MESSAGES.errornumeric.replace('{1}', 'MYATTR'),
+      zeta: EXTEND_MESSAGES.errornumeric.replace('{1}', 'ZETA'),
+      alpha: EXTEND_MESSAGES.errornumeric.replace('{1}', 'ALPHA'),
+    });
+    const errors = mergeUserErrors({ extended, people: validatePersonValues(newPerson({ email: '' })) });
+    expect(errors).toEqual({ ...extended, email: PEOPLE_MESSAGES.emailRequired });
+  });
+
+  it('gives an address only its extended-data errors', () => {
+    const extended = extendedErrors();
+    expect(validateAddressValues(extended)).toEqual(extended);
+  });
+});
+
+describe("mergeUserErrors with identity's prepare errors", () => {
+  const values = newPerson({ username: 'jdoe', password: 'jdoe', email: '', hkey: 'bad', ukey: CAPTCHA_KEY, passedprotect: false });
+
+  it("carries the double's texts unchanged and keys every part as ACF iterates the struct", async () => {
+    const seeded = { password: enText('user.passwordstrengthvalidate'), username: enText('user.usernamevalidate', 'jdoe') };
+    const identity = await identityPrepareErrors(values, seeded);
+    expect(identity).toEqual(seeded);
+    const restrictedFiles = requestHasRestrictedFiles(
+      new Map([['siteid', 'default'], ['upl', '/opt/tmp/neotmp1.tmp']]),
+      options({ allowedExtensions: FM_ALLOWED_EXTENSIONS, postedFiles: new Map([['upl', 'evil.exe']]) }),
+    );
+    const errors = mergeUserErrors({ extended: extendedErrors(), identity, people: validatePersonValues(values), restrictedFiles, siteId: 'default' });
+    // Keys follow ACF's struct iteration, not the order they were set: ACF 2023 listed this set as
+    // ZETA,REQUESTHASRESTRICTEDFILES,PASSWORD,MYATTR,ALPHA,USERNAME,EMAIL,SECURITYCODE,SPAM.
+    expect(Object.keys(errors)).toEqual([
+      'zeta', 'requestHasRestrictedFiles', 'password', 'myAttr', 'alpha', 'username', 'email', 'SecurityCode', 'Spam',
+    ]);
+    expect(errors.password).toBe(identity?.password);
+    expect(errors.username).toBe(identity?.username);
+    expect(errors.requestHasRestrictedFiles).toBe(PEOPLE_MESSAGES.restrictedFiles);
+  });
+
+  it('adds nothing for a prepared account or other empty parts', async () => {
+    const identity = await identityPrepareErrors(newPerson({ username: 'jdoe', email: 'jdoe@example.com' }));
+    expect(identity).toBeUndefined();
+    expect(mergeUserErrors({ extended: {}, identity, people: {} })).toEqual({});
+    expect(mergeUserErrors({ extended: {}, identity: {}, people: {}, restrictedFiles: false })).toEqual({});
+  });
+
+  it('leaves a blank site id with only siteid and the restricted-file flag', () => {
+    const errors = mergeUserErrors({ extended: {}, people: validatePersonValues(newPerson({ siteid: '', email: '' })), restrictedFiles: true });
+    expect(errors).toEqual({ siteid: PEOPLE_MESSAGES.siteIdMissing, requestHasRestrictedFiles: PEOPLE_MESSAGES.restrictedFiles });
+  });
+});
+
 describe('requestHasRestrictedFiles', () => {
   const posted = (field: string, fileName: string) => new Map([[field, fileName]]);
 
@@ -275,6 +379,23 @@ describe('requestHasRestrictedFiles', () => {
 
   it('fails like ACF on a bare mailto: value', () => {
     expect(() => requestHasRestrictedFiles(new Map([['website', 'mailto:']]), options())).toThrow(RangeError);
+  });
+});
+
+describe.each([
+  ['FM_ALLOWED_EXTENSIONS', FM_ALLOWED_EXTENSIONS],
+  ['FM_PUBLIC_ALLOWED_EXTENSIONS', FM_PUBLIC_ALLOWED_EXTENSIONS],
+])('requestHasRestrictedFiles against %s', (_list, allowedExtensions) => {
+  it.each<[string, Map<string, string>, boolean]>([
+    ['a restricted file', new Map([['upl', 'evil.exe']]), true],
+    ['an allowed extension in another case', new Map([['upl', 'Report.PDF']]), false],
+    ['no posted file', new Map(), false],
+  ])('reports %s and flags it in the merged errors', (_case, postedFiles, expected) => {
+    const input = new Map([['siteid', 'default'], ['upl', '/opt/tmp/neotmp1.tmp']]);
+    const restrictedFiles = requestHasRestrictedFiles(input, options({ allowedExtensions, postedFiles }));
+    expect(restrictedFiles).toBe(expected);
+    const errors = mergeUserErrors({ extended: {}, people: {}, restrictedFiles, siteId: 'default' });
+    expect(errors).toEqual(expected ? { requestHasRestrictedFiles: PEOPLE_MESSAGES.restrictedFiles } : {});
   });
 });
 
@@ -484,6 +605,11 @@ const ACF_URL_VALIDITY: ReadonlyArray<readonly [string, boolean]> = [
   ['news://a%zz/x', false],
   ['http://a b.com/', false],
   ['http://x.com/%zz', false],
+  ['mailto:x(c) a@b.com', true],
+  ['mailto:x(c)a@b.com', true],
+  ['mailto:xg: <a@b.com>;', true],
+  ['mailto:xg: <a@b.com>, c@d.com;', true],
+  ['mailto:x<a@b.com>, c@d.com', false],
 ];
 
 describe("ACF isValid('url') as the scan applies it", () => {
