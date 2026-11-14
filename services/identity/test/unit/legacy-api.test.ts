@@ -11,7 +11,7 @@ import bcrypt from 'bcryptjs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
-import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, etag } from '@opt2/platform/legacy-compat';
+import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, LEGACY_ERROR_MAP, etag, legacyHeaders } from '@opt2/platform/legacy-compat';
 import { createLogger, validateLogRecord, type LogFn, type Logger } from '@opt2/platform/logging';
 import { ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
@@ -1611,14 +1611,16 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
       return { sessionId, csrfSecret, headers: await headersFor({ sub: '', sid: sessionId, roles: [] }), tokens: csrfFields('login', csrfSecret) };
     }
 
-    it('logs the session in under its own id on a valid login token and right credentials', async () => {
+    it('logs the session in under its own id on a valid login token and right credentials, storing its login snapshot', async () => {
       const userId = await seedAccount(SITE, 'jsonapi-lucy', TEST_PASSWORDS.editor);
       const { sessionId, headers, tokens } = await anonymousLogin();
 
       const res = await send(app, 'POST', `${API}/login`, headers, { username: 'jsonapi-lucy', password: TEST_PASSWORDS.editor, ...tokens });
 
+      const session = await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.findSession(tx, sessionId));
       expect(json(res)).toEqual({ apiversion: 'v1', method: 'login', data: { status: 'success' } });
-      expect(await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.findSession(tx, sessionId))).toMatchObject({ user_id: userId, state: 'active' });
+      expect(session).toMatchObject({ user_id: userId, state: 'active' });
+      expect(JSON.parse(session?.login_snapshot ?? 'null')).toMatchObject({ userid: userId, username: 'jsonapi-lucy' });
     });
 
     it('answers a wrong password as failed with one strike', async () => {
@@ -1645,6 +1647,32 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
       expect(json(res)).toEqual({ apiversion: 'v1', method: 'login', data: { status: 'Invalid CSFR Tokens' } });
       expect(await strikeOf(username)).toBeNull();
       expect(await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.findSession(tx, sessionId))).toMatchObject({ user_id: null });
+    });
+
+    it('answers generateCSRFTokens in the legacy envelope and headers with a login token that one login consumes', async () => {
+      await seedAccount(SITE, 'jsonapi-once', TEST_PASSWORDS.editor);
+      const { sessionId, csrfSecret, headers } = await anonymousLogin();
+      const expected = issueTokens({ csrfSecret }, { context: 'login', clock: CLOCK });
+      /** The login form fields of a generateCSRFTokens answer. */
+      const fieldsOf = (issued: Answer): Record<string, string> => {
+        const data = dataOf(issued);
+        return { [CSRF_FIELD_TOKEN]: String(data.csrf_token), [CSRF_FIELD_EXPIRES]: String(data.csrf_token_expires) };
+      };
+
+      const issued = await send(app, 'GET', `${API}/generateCSRFTokens?context=login`, headers);
+      const consumed = await send(app, 'POST', `${API}/login`, headers, { username: 'jsonapi-once', password: TEST_PASSWORDS.admin, ...fieldsOf(issued) });
+      const replayed = await send(app, 'POST', `${API}/login`, headers, { username: 'jsonapi-once', password: TEST_PASSWORDS.editor, ...fieldsOf(issued) });
+
+      expect(issued.statusCode).toBe(200);
+      expect(issued.headers['content-type']).toBe(LEGACY_JSON_TYPE);
+      expect(json(issued)).toEqual({ apiversion: 'v1', method: 'generateCSRFTokens', data: { csrf_token: expected.token, csrf_token_expires: expected.expires } });
+      expect(issued.headers.etag).toBe(etag(issued.body));
+      for (const [name, value] of Object.entries(legacyHeaders())) expect(issued.headers[name.toLowerCase()]).toBe(value);
+      expect(dataOf(consumed)).toEqual({ status: 'failed' });
+      expect(dataOf(replayed)).toEqual({ status: 'Invalid CSFR Tokens' });
+      expect(await strikeOf('jsonapi-once')).toMatchObject({ strikes: 1 });
+      // The session keeps the secret the token was issued under, so only its single use refuses the replay.
+      expect(await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.findSession(tx, sessionId))).toMatchObject({ user_id: null, csrf_secret: csrfSecret });
     });
 
     describe('with a lockdown check (userUtility.cfc:179-259; oracle answers of lockdowncheck true, 1, yes, 2, abc, \'\' and false)', () => {
@@ -2012,6 +2040,20 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
 
       expect(res.statusCode).toBe(401);
       expect(json(res)).toEqual(legacyError('save', ERRORS.authorization));
+    });
+
+    it("refuses an anonymous session's save of a group under a valid token as authorization, writing nothing", async () => {
+      const sessionId = `S-legacy-api-anon-save-${nextId('S')}`;
+      const { csrfSecret } = await ensureSession({ db: handle.app, repo, clock: CLOCK }, { sessionId, mode: 'target-primary' });
+      const anonymous = await headersFor({ sub: '', sid: sessionId, site: SITE_C, roles: [] });
+      const { status, code, message } = LEGACY_ERROR_MAP.authorization;
+
+      const res = await send(app, 'POST', `${GROUP_C}/${ids.helpers}`, anonymous, { groupname: 'Anonymous', ...csrfFields(ids.helpers, csrfSecret) });
+
+      expect(res.statusCode).toBe(status);
+      expect(json(res)).toEqual({ apiversion: 'v1', method: 'save', error: { message, code } });
+      expect(message).toBe('Insufficient Account Permissions');
+      expect(await groupOf(ids.helpers)).toMatchObject({ groupname: 'Helpers' });
     });
 
     it.each([
