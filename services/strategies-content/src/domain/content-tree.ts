@@ -456,7 +456,7 @@ export async function getNest(deps: DomainDeps, actor: Actor, args: NestArgs): P
       sortDirection: args.sortDirection ?? 'asc',
     }),
   );
-  return windowOf(rows, args);
+  return windowOf(await withPooledFiles(deps, actor, rows), args);
 }
 
 /** contentManager.getPageCount [contentManager.cfc:806-813]: `rsPageCount.counter`, the site's active pages, folders, files, calendars and galleries. */
