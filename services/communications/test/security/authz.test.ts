@@ -115,7 +115,7 @@ const NO_INVOCATION: readonly string[] = ['anonymous', TASKS_INVOKER_ROLE, PUBSU
 
 /** One concrete request; each subject's credentials are added when it is sent. */
 interface ProbeRequest {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'OPTIONS';
   url: string;
   payload?: Record<string, unknown>;
   headers?: Record<string, string>;
@@ -215,6 +215,13 @@ const V1_SEND: ProbeRequest = { method: 'POST', url: `/v1/messages?${ON_SITE_A}`
 const V1_STORE: ProbeRequest = { method: 'POST', url: `/v1/templates?${ON_SITE_A}`, headers: CSRF_HEADERS, payload: TEMPLATE_BODY };
 const FIXTURE_LIST: ProbeRequest = { method: 'GET', url: FIXTURE_TEMPLATES };
 const FIXTURE_SEND: ProbeRequest = { method: 'POST', url: FIXTURE_MESSAGES, headers: CSRF_HEADERS, payload: MESSAGE_BODY };
+const OVERRIDE_GET = { 'x-http-method-override': 'GET' } as const;
+
+/** A catch-all probe: the case-variant templates path under `method`, which api.cfm dispatches on the overriding GET as the list. */
+function catchAllList(method: ProbeRequest['method']): ProbeRequest {
+  return { method, url: `${FIXTURE_PREFIX}/Templates?${ON_SITE_A}`, headers: OVERRIDE_GET };
+}
+
 const MIGRATION_POSITION: ProbeRequest = { method: 'GET', url: '/internal/v1/migration/position' };
 const SCHEDULED_TASKS: ProbeRequest = { method: 'GET', url: `${SCHEDULED_TASKS_PATH}?sourceType=survey&sourceId=${SURVEY_ID}` };
 const SWEEP: ProbeRequest = {
@@ -354,6 +361,18 @@ const EXPECTED: Readonly<Record<string, Expectation>> = {
   'POST /internal/v1/task-queues/:queue/pause': queueControl('pause'),
   'POST /internal/v1/task-queues/:queue/resume': queueControl('resume'),
   'POST /internal/v1/tasks/reminders/:scheduledTaskId': taskRoute(reminderTaskRequest),
+  // The api.cfm catch-all dispatches to the same sender-checked handlers as the declared fixture routes.
+  'DELETE /legacy-fixtures/cfml/api.cfm/*': fixtureSenderRoute(catchAllList('DELETE')),
+  'GET /legacy-fixtures/cfml/api.cfm/*': fixtureSenderRoute(() => ({ method: 'GET', url: `${FIXTURE_PREFIX}/MESSAGES/${messageId}?${ON_SITE_A}` })),
+  'HEAD /legacy-fixtures/cfml/api.cfm/*': fixtureSenderRoute(catchAllList('HEAD')),
+  'OPTIONS /legacy-fixtures/cfml/api.cfm/*': fixtureSenderRoute(catchAllList('OPTIONS')),
+  'PATCH /legacy-fixtures/cfml/api.cfm/*': fixtureSenderRoute(catchAllList('PATCH')),
+  'POST /legacy-fixtures/cfml/api.cfm/*': fixtureSenderRoute(() => ({
+    method: 'POST',
+    url: `${FIXTURE_PREFIX}/messages/${messageId}?${ON_SITE_A}`,
+    headers: OVERRIDE_GET,
+  })),
+  'PUT /legacy-fixtures/cfml/api.cfm/*': fixtureSenderRoute(catchAllList('PUT')),
   'GET /legacy-fixtures/cfml/api.cfm/communications/messages': fixtureSenderRoute({ method: 'GET', url: FIXTURE_MESSAGES }),
   'POST /legacy-fixtures/cfml/api.cfm/communications/messages': fixtureSenderRoute(FIXTURE_SEND),
   'GET /legacy-fixtures/cfml/api.cfm/communications/messages/:id': fixtureSenderRoute(() => ({

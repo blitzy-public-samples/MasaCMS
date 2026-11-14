@@ -9,6 +9,7 @@ import {
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
 import type { components, operations, paths } from '../generated/clients/identity.js';
+import { LegacyStorageError } from '../repo/repository.js';
 
 type Schemas = components['schemas'];
 
@@ -100,7 +101,7 @@ export interface ActingUser {
 
 /** People's calls into identity. */
 export interface IdentityClient {
-  /** `prepareAccountOperation`: validates and records the account part and closes the user. */
+  /** `prepareAccountOperation`: validates and records the account part and closes the user; throws LegacyStorageError, nothing recorded, for an account value its legacy column cannot store. */
   prepare(userId: string, operationId: string, change: AccountPrepareRequest, options?: IdentityCallOptions): Promise<PrepareOutcome>;
   /** `commitAccountOperation`: applies the prepared change and records identity's write position; `request` is sent only when given. */
   commit(userId: string, operationId: string, request?: AccountCommitRequest, options?: IdentityCallOptions): Promise<CommitOutcome>;
@@ -181,6 +182,7 @@ const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
+const HTTP_SERVER_ERROR = 500;
 
 /** `maxItems` of identity's `MembershipLookupRequest` user ids; account lookups take the same chunks to keep request bodies bounded. */
 const LOOKUP_MAX_IDS = 1000;
@@ -215,6 +217,13 @@ function fillPath(path: string, userId: string, operationId = ''): string {
 // prepare's 400 is either the validation struct (all string values) or the error envelope of a malformed body.
 function isLegacyErrors(body: unknown): body is LegacyErrors {
   return typeof body === 'object' && body !== null && Object.values(body).every((value) => typeof value === 'string');
+}
+
+/** Whether prepare's 500 carries identity's storage rejection rather than an unhandled failure's envelope. */
+function isStorageRejection(body: unknown): body is Schemas['LegacyStorageRejection'] {
+  if (typeof body !== 'object' || body === null) return false;
+  const { table, column, violation, limit } = body as Record<string, unknown>;
+  return typeof table === 'string' && typeof column === 'string' && (violation === 'width' || violation === 'range') && ['number', 'string'].includes(typeof limit);
 }
 
 /** Whether a step's 409 reports an operation identity never prepared, so there is nothing to undo. */
@@ -317,6 +326,10 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
       if (response.status === HTTP_OK) return { ok: true, ...(response.body as AccountOperation) };
       if (response.status === HTTP_BAD_REQUEST && isLegacyErrors(response.body)) {
         return { ok: false, errors: response.body };
+      }
+      if (response.status === HTTP_SERVER_ERROR && isStorageRejection(response.body)) {
+        const { table, column, violation, limit } = response.body;
+        throw new LegacyStorageError(table, column, violation, limit);
       }
       throw unavailable(op, response.status);
     },

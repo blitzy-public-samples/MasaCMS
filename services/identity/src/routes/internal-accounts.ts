@@ -16,12 +16,13 @@ import {
   type StepOutcome,
 } from '../domain/account-operations.js';
 import type { components, operations } from '../generated/openapi.js';
-import { charKey } from '../repo/repository.js';
+import { LegacyStorageError, charKey } from '../repo/repository.js';
 
 type Schemas = components['schemas'];
 type OperationParams = operations['getAccountOperation']['parameters']['path'];
 type PrepareBody = Schemas['AccountPrepareRequest'];
 type CommitBody = Schemas['AccountCommitRequest'];
+type LegacyStorageRejection = Schemas['LegacyStorageRejection'];
 
 /** The account operations the routes delegate to. */
 export type AccountRouteDeps = { accounts: AccountOperationDeps };
@@ -37,6 +38,7 @@ const STEPS: Readonly<Record<StepAction, Step>> = Object.freeze({
 
 const HTTP_BAD_REQUEST = 400;
 const HTTP_CONFLICT = 409;
+const HTTP_SERVER_ERROR = 500;
 
 const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([serviceRole('people')]) });
 
@@ -165,6 +167,11 @@ function sessionEffectsOf(auth: Opt2AuthContext, userId: string, body: CommitBod
   return effects;
 }
 
+/** The contract's body of an account value its legacy column cannot store. */
+function storageRejection({ table, column, violation, limit }: LegacyStorageError): LegacyStorageRejection {
+  return { table, column, violation, limit };
+}
+
 /** Answers 409 with the operation whose recorded state refuses the step. */
 function sendConflict(reply: FastifyReply, operation: AccountOperationView): FastifyReply {
   return reply.code(HTTP_CONFLICT).send(operation);
@@ -197,7 +204,11 @@ export async function registerAccountRoutes(app: FastifyInstance, deps: AccountR
         siteId,
         actorIsSuperUser: user.s2,
         change: changeOf(request.body),
+      }).catch((err: unknown) => {
+        if (err instanceof LegacyStorageError) return err;
+        throw err;
       });
+      if (result instanceof LegacyStorageError) return reply.code(HTTP_SERVER_ERROR).send(storageRejection(result));
       if (result.outcome === 'invalid') return reply.code(HTTP_BAD_REQUEST).send(result.errors);
       if (result.outcome === 'conflict') return sendConflict(reply, result.operation);
       return reply.send(result.operation);

@@ -347,7 +347,7 @@ describe('route declarations', () => {
     for (const operations of Object.values(OPENAPI.paths)) {
       for (const [method, operation] of Object.entries(operations)) {
         const fastifyPath = operation['x-opt2-fastify-path'];
-        if (method === 'parameters' || typeof fastifyPath !== 'string') continue;
+        if (method === 'parameters' || typeof fastifyPath !== 'string' || !fastifyPath.startsWith('/_api/')) continue;
         for (const url of [fastifyPath, `/index.cfm${fastifyPath}`]) {
           const route = {
             method: method.toUpperCase(),

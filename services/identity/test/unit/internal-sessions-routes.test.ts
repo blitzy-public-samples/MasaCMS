@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
-import { sessionCookieStrings } from '@opt2/platform/legacy-compat';
+import { cfHash, sessionCookieStrings } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { SYSTEM_TENANT_ID, tenantIdForSite, withMetadata, withTenant, type TenantDb } from '@opt2/platform/tenancy';
@@ -21,7 +21,9 @@ import {
   writeTestSecrets,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
+import { consumeToken } from '../../src/domain/csrf.js';
 import { ANONYMOUS_USER_STRUCT, userStructOf } from '../../src/domain/roles.js';
+import type { BridgeRelay } from '../../src/legacy/bridge-relay.js';
 import { createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
 import type { LoginSnapshot } from '../../src/repo/tables.js';
 import { registerSessionRoutes } from '../../src/routes/internal-sessions.js';
@@ -305,6 +307,32 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
       csrfSecretKey: RELOGIN_SECRET,
       usedTokens: [],
     });
+  });
+
+  it.each([
+    ['32 hex characters', '0123456789ABCDEF0123456789ABCDEF'],
+    ['a 35-character CF UUID', LEGACY_SECRET],
+  ])('keeps an adopted secret of %s exactly: an unchanged re-adoption keeps the session and a legacy token of it validates', async (_label, secret) => {
+    if (handle === undefined) throw new Error('PostgreSQL is not available');
+    const db = handle.app;
+    const sid = nextSessionId();
+    const headers = await headersFor('gateway');
+    const relay: BridgeRelay = { markUsed: async () => ({ applied: true }) };
+    const context = 'cusers.update';
+    // NOW + 3 h in legacy's yyMMddHHnnsslll.
+    const expires = '260630150000123';
+
+    const adopted = await send('POST', ADOPT, headers, adoptBody(sid, LEGACY_USER, { roles: ROLES, csrfSecretKey: secret }));
+    const readopted = await send('POST', ADOPT, headers, adoptBody(sid, LEGACY_USER, { roles: ROLES, csrfSecretKey: secret }));
+    const consumed = await consumeToken(
+      { db, repo, bridge: relay, clock: fixedClock(NOW) },
+      { sessionId: sid, token: cfHash(context + secret + expires), expires, context },
+    );
+
+    expect([adopted.json(), readopted.json()]).toMatchObject([{ epoch: 1 }, { epoch: 1 }]);
+    expect((await withTenant(db, SYSTEM_TENANT_ID, (tx) => repo.findSession(tx, sid)))?.csrf_secret).toBe(secret);
+    expect(consumed).toEqual({ valid: true });
+    expect((await gateway('snapshot', sid)).json()).toMatchObject({ epoch: 1, csrfSecretKey: secret });
   });
 
   it.each(['logout', 'legacy-logout', 'expired'])('ends a session for reason %s once, bumping its epoch, after which it reads ended', async (reason) => {

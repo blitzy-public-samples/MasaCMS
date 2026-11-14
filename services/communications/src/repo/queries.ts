@@ -209,9 +209,18 @@ export function listTemplates(tx: TenantTx, filters: TemplateListFilters): Promi
   );
 }
 
-/** The template row with `templateId`; null when the tenant has none. */
+/** `id` as stored CF UUIDs match it under SQL Server's char(35) comparison: trailing spaces dropped, ASCII letters upper-cased. */
+export function storedCfId(id: string): string {
+  let end = id.length;
+  while (end > 0 && id.charCodeAt(end - 1) === 0x20) {
+    end -= 1;
+  }
+  return id.slice(0, end).replace(/[a-z]+/gu, (letters) => letters.toUpperCase());
+}
+
+/** The template row with `templateId`, matched as `storedCfId`; null when the tenant has none. */
 export function findTemplate(tx: TenantTx, templateId: string): Promise<MessageTemplateRow | null> {
-  return readsFor(tx).repository.findByKey<MessageTemplateRow>(tx, MESSAGE_TEMPLATE.table, { template_id: templateId });
+  return readsFor(tx).repository.findByKey<MessageTemplateRow>(tx, MESSAGE_TEMPLATE.table, { template_id: storedCfId(templateId) });
 }
 
 /** One page of the site's messages by creation time and id, with the matching total. */
@@ -225,11 +234,11 @@ export function findMessage(tx: TenantTx, messageId: string): Promise<MessageRow
   return readsFor(tx).repository.findByKey<MessageRow>(tx, MESSAGE.table, { message_id: messageId });
 }
 
-/** The message with its delivery-status history in the fixture detail's order; null when the tenant has no such message. */
+/** The message with `messageId`, matched as `storedCfId`, and its history in the fixture detail's order; null when the tenant has none. */
 export function getMessageDetail(tx: TenantTx, messageId: string): Promise<MessageDetail | null> {
   const reads = readsFor(tx);
   return reads.repository.read(tx, [MESSAGE.unit, DELIVERY_STATUS.unit], async () => {
-    const message = await findMessage(tx, messageId);
+    const message = await findMessage(tx, storedCfId(messageId));
     if (message === null) {
       return null;
     }

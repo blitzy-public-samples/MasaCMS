@@ -30,7 +30,7 @@ import {
   type LoginMailRequestedPayload,
 } from '../../src/events/publish.js';
 import { createIdentityRepository, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
-import { GROUP_ACCOUNT, GROUP_TAG, IDENTITY_UNITS, MEMBERSHIP, PERMISSION } from '../../src/repo/tables.js';
+import { GROUP_ACCOUNT, GROUP_TAG, IDENTITY_UNITS, MEMBERSHIP, PERMISSION, type GroupAccountRow } from '../../src/repo/tables.js';
 
 interface StoredEvent {
   topic: string;
@@ -186,7 +186,7 @@ describe.skipIf(!available)('identity events against PostgreSQL', () => {
     });
     expect(capture.published.map((p) => p.topic)).toEqual([GROUP_CHANGED_TOPIC]);
     const removed = await inTenant(async (tx) => {
-      const before = await repo.deleteGroupRow(tx, group.userid);
+      const before = await repo.delete<GroupAccountRow>(tx, GROUP_ACCOUNT.table, { userid: group.userid });
       return events.publishGroupChanged(tx, before!, { deleted: true, origin: 'target' });
     });
     expect(removed?.aggregateVersion).toBe(2);
@@ -215,7 +215,8 @@ describe.skipIf(!available)('identity events against PostgreSQL', () => {
         inTenant(async (tx) => events.publishGroupChanged(tx, await repo.insertGroup(tx, groupInput({ userid: groupId, groupname }), null), { deleted: false })),
       update: (groupname) =>
         inTenant(async (tx) => events.publishGroupChanged(tx, (await repo.updateGroup(tx, groupId, groupInput({ groupname }), null))!, { deleted: false })),
-      delete: () => inTenant(async (tx) => events.publishGroupChanged(tx, (await repo.deleteGroupRow(tx, groupId))!, { deleted: true })),
+      delete: () =>
+        inTenant(async (tx) => events.publishGroupChanged(tx, (await repo.delete<GroupAccountRow>(tx, GROUP_ACCOUNT.table, { userid: groupId }))!, { deleted: true })),
       'apply-insert': (groupname) => applyGroup('insert', backfill, 'backfill', groupname),
       'apply-delete': () => applyGroup('delete', backfill, 'backfill'),
       'window-insert': async (groupname) => {

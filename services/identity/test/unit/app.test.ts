@@ -49,7 +49,12 @@ const SESSION_READ = /^SELECT \* FROM "identity"\."session" WHERE "tenant_id" = 
 const SIGNER_KEYS: Jwks = { keys: [{ kty: 'RSA', n: 'test-modulus', e: 'AQAB', kid: 'app-test-kid', alg: 'RS256', use: 'sig' }] };
 const silentLogger = createLogger({ service: SERVICE_NAME, version: SERVICE_VERSION, env: 'local', destination: { write: () => undefined } });
 // Ports of harness/repro/ports.env; the gateway comes from OPT2_GATEWAY_URL.
-const CALLEE_URLS = { identity: 'http://127.0.0.1:8111', people: 'http://127.0.0.1:8112', 'strategies-content': 'http://127.0.0.1:8114' };
+const CALLEE_URLS = {
+  identity: 'http://127.0.0.1:8111',
+  people: 'http://127.0.0.1:8112',
+  'programs-sites': 'http://127.0.0.1:8113',
+  'strategies-content': 'http://127.0.0.1:8114',
+};
 
 /** Route declaration as the route matrix and the contract both state it. */
 interface Declared {
@@ -127,6 +132,7 @@ describe('identity composition constants', () => {
   const everyCallee = [
     'OPT2_SERVICE_URLS.identity: is required',
     'OPT2_SERVICE_URLS.people: is required',
+    'OPT2_SERVICE_URLS.programs-sites: is required',
     'OPT2_SERVICE_URLS.strategies-content: is required',
   ];
   it.each<[string, Record<string, string | undefined>, string[]]>([
@@ -141,7 +147,7 @@ describe('identity composition constants', () => {
     [
       'names only the callees a partial map lacks',
       { OPT2_SERVICE_URLS: JSON.stringify({ people: CALLEE_URLS.people }) },
-      ['OPT2_SERVICE_URLS.identity: is required', 'OPT2_SERVICE_URLS.strategies-content: is required'],
+      ['OPT2_SERVICE_URLS.identity: is required', 'OPT2_SERVICE_URLS.programs-sites: is required', 'OPT2_SERVICE_URLS.strategies-content: is required'],
     ],
     [
       'names OPT2_GATEWAY_URL when neither it nor the map names the gateway',

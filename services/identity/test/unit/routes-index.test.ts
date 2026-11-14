@@ -1,4 +1,4 @@
-/** The route registry: the route set it composes, and the login-mail settings it builds from Masa's `MURA_<KEY>` configuration. */
+/** The route registry: the route set it composes, and the login-mail settings it builds from Masa's `MURA_<KEY>` configuration and programs-sites. */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,11 +8,12 @@ import type { EventEnvelope } from '@opt2/platform/events';
 import { createLogger } from '@opt2/platform/logging';
 import { registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
-import { createService, loadEnv, type BaseEnv, type FastifyInstance, type ServiceClient } from '@opt2/platform/service-kit';
+import { createService, loadEnv, type BaseEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { createCapturingPublisher, mintServiceToken, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
 import { createTokenService } from '../../src/domain/tokens.js';
 import { identityPayloadValidators } from '../../src/events/publish.js';
 import { registerRoutes } from '../../src/routes/index.js';
+import { createClientRecorder, siteMailSettingsOf, type ClientHandler, type ClientRecorder } from '../helpers/app.js';
 import { createMemoryIdentityRepo, createRecordingDb, type RecordingDb } from '../helpers/memory-repo.js';
 import { EDITOR } from '../helpers/rows.js';
 import { CLOCK, SERVICE, SITE_A, buildIdentityApp, credentialsFor, defaultSeed, registryAnswer, subjectNamed } from '../helpers/service.js';
@@ -20,6 +21,7 @@ import { CLOCK, SERVICE, SITE_A, buildIdentityApp, credentialsFor, defaultSeed, 
 interface Composed {
   app: FastifyInstance;
   db: RecordingDb;
+  client: ClientRecorder;
 }
 
 interface MailPayload {
@@ -30,10 +32,17 @@ interface MailPayload {
   userId: string;
 }
 
-/** No route module calls another service while serving the requests below. */
-const NO_CALLS: ServiceClient = {
-  request: (req) => Promise.reject(new Error(`unexpected call ${req.service} ${req.method} ${req.path}`)),
-  close: () => Promise.resolve(),
+const MAIL_SETTINGS_PATH = '/internal/v1/sites/mail-settings:lookup';
+
+/** programs-sites' answer for a remote tenant-a whose stored settings differ from every default. */
+const REMOTE_SITE_A = {
+  ...siteMailSettingsOf(SITE_A),
+  site: 'Tenant A Programs',
+  contact: 'contact@tenant-a.example.test',
+  sendLoginScript: 'Hello #firstName#, write to #contactEmail# at #contactName#: #returnURL#',
+  editProfileURL: '/profile/',
+  useSSL: true,
+  remote: { serverPort: ':8443', context: '/remote' },
 };
 
 const MASA_KEYS = ['MURA_SITEIDINURLS', 'MURA_INDEXFILEINURLS', 'MURA_HASHURLS', 'MURA_ADMINSSL', 'MURA_PORT', 'MURA_CONTEXT'] as const;
@@ -42,8 +51,11 @@ let stateDir: string;
 let env: BaseEnv;
 const opened: FastifyInstance[] = [];
 
-/** The identity routes as `registerRoutes` composes them over the memory repository, with `masa` as the only `MURA_*` variables. */
-async function compose(masa: Partial<Record<(typeof MASA_KEYS)[number], string>> = {}): Promise<Composed> {
+/**
+ * The identity routes as `registerRoutes` composes them over the memory repository, with `masa` as the only `MURA_*`
+ * variables and a client answering programs-sites' mail-settings lookup only, from `sites` when given.
+ */
+async function compose(masa: Partial<Record<(typeof MASA_KEYS)[number], string>> = {}, sites?: ClientHandler): Promise<Composed> {
   for (const key of MASA_KEYS) vi.stubEnv(key, masa[key]);
   const db = createRecordingDb();
   db.respond(/FROM identity\.tenant_registry\b/, registryAnswer);
@@ -53,9 +65,15 @@ async function compose(masa: Partial<Record<(typeof MASA_KEYS)[number], string>>
   const app = await createService({ name: SERVICE, version: '1.0.0', env, verifierOverride: testVerifier(SERVICE), logger });
   opened.push(app);
   registerWritePositionHeader(app);
-  await registerRoutes(app, { repository, db, clock: CLOCK, client: NO_CALLS, tokens: createTokenService({ env, clock: CLOCK, db, repo: repository }) });
+  const client = createClientRecorder(sites === undefined ? {} : { 'programs-sites': { [`POST ${MAIL_SETTINGS_PATH}`]: sites } });
+  await registerRoutes(app, { repository, db, clock: CLOCK, client, tokens: createTokenService({ env, clock: CLOCK, db, repo: repository }) });
   await app.ready();
-  return { app, db };
+  return { app, db, client };
+}
+
+/** Answers the lookup with `settings` for every listed id. */
+function answering(settings: Record<string, unknown>): ClientHandler {
+  return (req) => ({ status: 200, headers: {}, body: { items: (req.json as { siteIds: string[] }).siteIds.map(() => settings) } });
 }
 
 function declarations(app: FastifyInstance): string[] {
@@ -131,8 +149,30 @@ describe('registerRoutes', () => {
     expect(mail?.text).toContain(`${link.replace('{id}', mail?.returnId ?? '')}?userID=${mail?.userId ?? ''}`);
   });
 
-  it('refuses a site-scoped mail with the legacy 503 before writing anything, as identity holds no site mail settings', async () => {
-    const { app, db } = await compose();
+  it("mails a site-scoped request with programs-sites' site name, contact, script, SSL, remote port and context, and stored site id", async () => {
+    const { app, db, client } = await compose({ MURA_SITEIDINURLS: 'yes' }, answering(REMOTE_SITE_A));
+
+    const res = await requestLoginMail(app, SITE_A.toUpperCase());
+
+    expect(res.json()).toEqual({ status: 'messagesent' });
+    const [mail] = mailPayloads(db);
+    const returnUrl = `https://admin.example.test:8443/remote/index.cfm/${SITE_A}/${mail?.returnId ?? ''}/?userID=${mail?.userId ?? ''}`;
+    expect(mail).toMatchObject({
+      from: 'Tenant A Programs',
+      subject: 'Tenant A Programs Account Information',
+      text: `Hello ${EDITOR.contact.fname ?? ''}, write to contact@tenant-a.example.test at Tenant A Programs: ${returnUrl}`,
+    });
+    expect(client.requestsTo('programs-sites').map(({ json, userToken }) => ({ json, userToken }))).toEqual([
+      { json: { siteIds: [SITE_A.toUpperCase()] }, userToken: null },
+      { json: { siteIds: [SITE_A.toUpperCase()] }, userToken: null },
+    ]);
+  });
+
+  it.each([
+    ['an edit-profile URL only CFML evaluates', answering({ ...REMOTE_SITE_A, editProfileURL: null })],
+    ['programs-sites answering 503', () => ({ status: 503, headers: {}, body: { apiversion: 'v1', method: 'invalid', error: { message: 'Unhandled Exception', code: 'server_error' } } })],
+  ])('refuses a site-scoped mail over %s with the legacy 503, writing nothing', async (_label, sites) => {
+    const { app, db } = await compose({}, sites);
 
     const res = await requestLoginMail(app, SITE_A);
 
@@ -140,13 +180,25 @@ describe('registerRoutes', () => {
     expect(db.writes()).toEqual([]);
   });
 
-  it('lists the session sites under the empty site name', async () => {
-    const { app } = await compose();
+  it('lists the session sites under the names programs-sites answers, without a user token', async () => {
+    const { app, client } = await compose();
 
     const res = await app.inject({ method: 'GET', url: '/v1/sessions/current/sites', headers: await credentialsFor(subjectNamed('s2')) });
 
     const { sites } = res.json() as { sites: Array<{ siteID: string; site: string }> };
     expect(sites.length).toBeGreaterThan(0);
-    expect(sites.map((entry) => entry.site)).toEqual(sites.map(() => ''));
+    expect(sites.map((entry) => entry.site)).toEqual(sites.map((entry) => `Site ${entry.siteID}`));
+    const lookups = client.requestsTo('programs-sites', MAIL_SETTINGS_PATH);
+    expect(lookups.map(({ json }) => json)).toEqual(sites.map((entry) => ({ siteIds: [entry.siteID] })));
+    expect(lookups.every(({ userToken }) => userToken === null)).toBe(true);
+  });
+
+  it('builds an empty-site mail link without asking programs-sites when site ids stay out of URLs', async () => {
+    const { app, db, client } = await compose();
+
+    await requestLoginMail(app, '');
+
+    expect(mailPayloads(db)).toHaveLength(1);
+    expect(client.requestsTo('programs-sites')).toEqual([]);
   });
 });

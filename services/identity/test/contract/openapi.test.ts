@@ -912,6 +912,15 @@ const CASES: Record<string, Case[]> = {
       status: 400,
     },
     {
+      name: 'answers a username its legacy column cannot store with the storage rejection',
+      method: 'POST',
+      url: operationUrl(cfId('E', 910), cfId('F', 910), 'prepare'),
+      headers: relay('people', 's2'),
+      payload: { ...PREPARE_BODY, account: { ...PREPARE_BODY.account, UserName: 'u'.repeat(256) } },
+      status: 500,
+      verify: (body) => expect(body).toEqual({ table: 'user_account', column: 'username', violation: 'width', limit: 255 }),
+    },
+    {
       name: 'refuses a prepare body without the account',
       method: 'POST',
       url: operationUrl(NEW_USER, cfId('F', 908), 'prepare'),

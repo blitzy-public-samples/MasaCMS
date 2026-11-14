@@ -1,4 +1,5 @@
-/** Group CRUD and memberships against a throwaway `identity` schema: pools, legacy defaults and validation, create, update, delete with its trash packet, membership changes and reads. */
+/** Group saves and memberships against a throwaway `identity` schema: pools, legacy defaults and validation, create, update, membership changes and reads. */
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLogger } from '@opt2/platform/logging';
@@ -9,11 +10,9 @@ import { currentTransaction, tenantIdForSite, withMetadata, withTenant, type Ten
 import { cfHash } from '@opt2/platform/legacy-compat';
 import { createCapturingPublisher, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
-  GroupPhotoWithheldError,
   GroupSaveHaltedError,
   addToGroup,
   createGroup,
-  deleteGroup,
   findGroupForSite,
   groupSaveInputFrom,
   MEMBER_BATCH_SIZE,
@@ -49,85 +48,12 @@ import { createIdentityEvents, identityPayloadValidators } from '../../src/event
 import { createContentClient, type ContentClient } from '../../src/legacy/content-client.js';
 import { verifyLegacyPassword } from '../../src/legacy/hash.js';
 import { READ_PAGE_SIZE, createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
-import { GROUP_TRASH, IDENTITY_UNITS, type GroupAddressRow, type GroupTrashRow } from '../../src/repo/tables.js';
-
-/** The ttrash.objectString ACF 2023 stored for a group deleted through userManager.delete, as test/unit/wddx.test.ts records it. */
-const CAPTURED_GROUP_TRASH_PACKET =
-  "<wddxPacket version='1.0'><header/><data><struct>" +
-  "<var name='ERRORS'><struct></struct></var>" +
-  "<var name='MOBILEPHONE'><string></string></var>" +
-  "<var name='LNAME'><string></string></var>" +
-  "<var name='EMAIL'><string></string></var>" +
-  "<var name='CONTACTFORM'><string></string></var>" +
-  "<var name='LASTUPDATE'><dateTime>2026-11-11T09:41:05+00:00</dateTime></var>" +
-  "<var name='EXTENDDATATABLE'><string>tclassextenddatauseractivity</string></var>" +
-  "<var name='KEEPPRIVATE'><string>0</string></var>" +
-  "<var name='USERID'><string>E3D2FAB9-D68C-2076-91E72671EDD2447F</string></var>" +
-  "<var name='USERNAME'><string></string></var>" +
-  "<var name='PASSEDPROTECT'><boolean value='true'/></var>" +
-  "<var name='muraDeleteID'><string>E3D305BB-A90C-EC0F-183D2FF53867FACD</string></var>" +
-  "<var name='type'><string>1</string></var>" +
-  "<var name='LASTUPDATEBYID'><string>E3D2FAB9-D68C-2076-91E72671EDD2447F</string></var>" +
-  "<var name='SUBTYPE'><string>Default</string></var>" +
-  "<var name='CATEGORYID'><string></string></var>" +
-  "<var name='REMOVEOBJECTS'><array length='0'></array></var>" +
-  "<var name='FNAME'><string></string></var>" +
-  "<var name='COMPANY'><string></string></var>" +
-  "<var name='TABLIST'><string></string></var>" +
-  "<var name='NEWFILE'><string></string></var>" +
-  "<var name='PASSWORD'><string></string></var>" +
-  "<var name='FROMMURACACHE'><boolean value='false'/></var>" +
-  "<var name='ISPUBLIC'><string>0</string></var>" +
-  "<var name='ADDRESSES'><recordset rowCount='0' fieldNames='addressid,userid,siteid,address1,address2,city,state,zip,country," +
-  "isPrimary,addressName,addressNotes,phone,fax,addressURL,longitude,latitude,addressEmail,hours' type='coldfusion.sql.QueryTable'>" +
-  "<field name='addressid'></field><field name='userid'></field><field name='siteid'></field>" +
-  "<field name='address1'></field><field name='address2'></field><field name='city'></field>" +
-  "<field name='state'></field><field name='zip'></field><field name='country'></field>" +
-  "<field name='isPrimary'></field><field name='addressName'></field><field name='addressNotes'></field>" +
-  "<field name='phone'></field><field name='fax'></field><field name='addressURL'></field>" +
-  "<field name='longitude'></field><field name='latitude'></field><field name='addressEmail'></field>" +
-  "<field name='hours'></field></recordset></var>" +
-  "<var name='IMSERVICE'><string></string></var>" +
-  "<var name='ISNEW'><string>0</string></var>" +
-  "<var name='JOBTITLE'><string></string></var>" +
-  "<var name='WEBSITE'><string></string></var>" +
-  "<var name='LASTLOGIN'><string></string></var>" +
-  "<var name='TAGS'><string></string></var>" +
-  "<var name='S2'><string>0</string></var>" +
-  "<var name='EXTENDAUTOCOMPLETE'><boolean value='true'/></var>" +
-  "<var name='muraDeleteDateTime'><string>{ts '2026-11-11 09:41:05'}</string></var>" +
-  "<var name='ADDOBJECTS'><array length='0'></array></var>" +
-  "<var name='NOTES'><string>n\u00f6te<char code='0d'/><char code='0a'/>zwei<char code='09'/>end</string></var>" +
-  "<var name='CREATED'><dateTime>2026-11-11T09:41:05+00:00</dateTime></var>" +
-  "<var name='GROUPNAME'><string>Caf\u00e9 \u20ac &amp; &lt;Eds&gt;</string></var>" +
-  "<var name='PERM'><string>0</string></var>" +
-  "<var name='DESCRIPTION'><string></string></var>" +
-  "<var name='HKEY'><string></string></var>" +
-  "<var name='ADDRESSID'><string></string></var>" +
-  "<var name='IMNAME'><string></string></var>" +
-  "<var name='INSTANCEID'><string>E3D304F0-FEAB-2DB8-7292E9867F0B7556</string></var>" +
-  "<var name='PASSWORDCREATED'><dateTime>2026-11-11T09:41:05+00:00</dateTime></var>" +
-  "<var name='PHOTOFILEID'><string></string></var>" +
-  "<var name='INTERESTS'><string></string></var>" +
-  "<var name='SOURCEITERATOR'><string></string></var>" +
-  "<var name='EXTENDSETID'><string></string></var>" +
-  "<var name='SITEID'><string>default</string></var>" +
-  "<var name='PRIMARYADDRESSID'><string></string></var>" +
-  "<var name='SUBSCRIBE'><string>1</string></var>" +
-  "<var name='UKEY'><string></string></var>" +
-  "<var name='REMOTEID'><string></string></var>" +
-  "<var name='GROUPID'><string></string></var>" +
-  "<var name='INACTIVE'><string>0</string></var>" +
-  "<var name='PHOTOFILEEXT'><string></string></var>" +
-  "<var name='LASTUPDATEBY'><string></string></var>" +
-  "<var name='EXTENDDATA'><string></string></var>" +
-  "</struct></data></wddxPacket>";
+import { IDENTITY_UNITS, type GroupAddressRow } from '../../src/repo/tables.js';
 
 const TRASHED_AT = new Date('2026-11-11T09:41:05.000Z');
 const SITE_A = 'tenant-a';
 const UMBRELLA = 'umbrella';
 const SITE_B = 'tenant-b';
-const DEFAULT = 'default';
 const SUPER: GroupActor = { userId: 'ADDE0000-0000-0000-0000000000000001', fname: 'Admin', lname: 'User', isSuperUser: true };
 const EDITOR: GroupActor = { userId: 'EDD10000-0000-0000-0000000000000001', fname: 'Ed', lname: 'Itor', isSuperUser: false };
 
@@ -194,12 +120,7 @@ describe.skipIf(!available)('groups domain', () => {
     return userId;
   }
 
-  let previousZone: string | undefined;
-
   beforeAll(async () => {
-    // The captured packet's dateTime offsets are UTC's.
-    previousZone = process.env.TZ;
-    process.env.TZ = 'UTC';
     handle = await createThrowawaySchema({ service: 'identity', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
     repo = createIdentityRepository({ clock, schema: handle.schema });
     await ensureUnitGates(handle.app, IDENTITY_UNITS);
@@ -209,12 +130,9 @@ describe.skipIf(!available)('groups domain', () => {
     await registerSite(SITE_A, SITE_A, UMBRELLA);
     await registerSite(UMBRELLA, UMBRELLA, UMBRELLA);
     await registerSite(SITE_B, SITE_B, SITE_B);
-    await registerSite(DEFAULT, DEFAULT, DEFAULT);
   });
   afterAll(async () => {
     await handle?.drop();
-    if (previousZone === undefined) delete process.env.TZ;
-    else process.env.TZ = previousZone;
   });
 
   it.each([
@@ -324,58 +242,53 @@ describe.skipIf(!available)('groups domain', () => {
     expect(after).toMatchObject<Partial<GroupAddressRow>>({ city: 'New City', zip: '1', addressname: 'Primary', isprimary: 1, siteid: SITE_A });
   });
 
-  it('deletes the group, its tags, extended data and tokens, keeps memberships and addresses, trashes it once and publishes deleted', async () => {
-    const userId = next('B');
-    await createGroup(deps(), SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'Doomed', tags: 't1' });
-    const member = await seedUser(SITE_A);
-    expect(await addToGroup(deps(), { userId: member, groupId: userId })).toBe(true);
-    await gated(SITE_A, async (tx) => {
-      await repo.replaceGroupExtendData(tx, { groupId: userId, rows: [{ attributeId: 7, values: { siteid: SITE_A, attributevalue: 'v', remoteid: null, datetimevalue: null, numericvalue: null, stringvalue: 'v' } }] });
-      await repo.insertToken(tx, { granttype: 'client_credentials', userid: userId, clientid: 'C1', accesscode: null, data: null, expires: now, token: next('D') });
+  /** The changelog and outbox row counts of a tenant. */
+  async function writeCounts(site: string): Promise<{ changelog: number; outbox: number }> {
+    return withTenant(handle.app, tenantIdForSite(site), async (tx) => {
+      const { rows } = await tx.query<{ changelog: number; outbox: number }>(
+        `SELECT (SELECT count(*)::int FROM ${handle.schema}.changelog) AS changelog, (SELECT count(*)::int FROM ${handle.schema}.outbox) AS outbox`,
+      );
+      return rows[0] as { changelog: number; outbox: number };
     });
-    expect(await deleteGroup(deps(), SUPER, { groupId: userId, siteId: SITE_A })).toBe(true);
+  }
+
+  it.each<[string, (addressID: string) => Partial<GroupSaveInput>, string]>([
+    ['an email of 256', () => ({ email: 'e'.repeat(256) }), 'email'],
+    ['a subtype of 51', () => ({ subType: 's'.repeat(51) }), 'subtype'],
+    ['a tablist of 256', () => ({ tablist: 't'.repeat(256) }), 'tablist'],
+    ['an address city of 51', (addressID) => ({ address: { addressID, city: 'c'.repeat(51) } }), 'city'],
+    ['a tag of 101', () => ({ tags: `ok,${'t'.repeat(101)}` }), 'tag'],
+  ])('fails a create and an update posting %s as legacy does, after validation and with nothing written', async (_label, posted, column) => {
+    const userId = next('B');
+    const stored = next('B');
+    await createGroup(deps(), SUPER, { userId: stored, siteId: SITE_A, isPublic: '0', groupName: 'Stored' });
+    const [primary] = await gated(SITE_A, (tx) => repo.listGroupAddresses(tx, stored));
+    const before = await writeCounts(SITE_A);
+
+    const created = await createGroup(deps(), SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'Wide', ...posted('') }).catch((err: unknown) => err);
+    const saved = { userId: stored, siteId: SITE_A, isPublic: '0', groupName: 'Renamed', ...posted(primary?.addressid ?? '') };
+    const updated = await updateGroup(deps(), SUPER, saved).catch((err: unknown) => err);
+
+    for (const outcome of [created, updated]) expect(outcome).toMatchObject({ name: 'LegacyStorageError', column });
     expect(await gated(SITE_A, (tx) => repo.findGroup(tx, userId))).toBeNull();
-    expect(await gated(SITE_A, (tx) => repo.membershipGroupIds(tx, member))).toEqual([userId]);
-    const counts = await withTenant(handle.app, tenantIdForSite(SITE_A), async (tx) => {
-      const q = async (table: string, column: string): Promise<number> => Number((await tx.query<{ n: string }>(`SELECT count(*) AS n FROM ${handle.schema}.${table} WHERE ${column} = $1`, [userId])).rows[0]?.n);
-      return { tags: await q('user_tag', 'userid'), extend: await q('extend_data_user_activity', 'baseid'), tokens: await q('oauth_token', 'userid'), addresses: await q('user_address', 'userid') };
-    });
-    expect(counts).toEqual({ tags: 0, extend: 0, tokens: 0, addresses: 1 });
-    const trash = await gated(SITE_A, (tx) => repo.findByKey<GroupTrashRow>(tx, GROUP_TRASH.table, { objectid: userId }));
-    expect(trash?.parentid.trimEnd()).toBe('NA');
-    expect(trash).toMatchObject({ siteid: SITE_A, objectlabel: 'Doomed', objectclass: 'user', objecttype: 'Group', objectsubtype: 'Default', deletedby: 'Admin User', orderno: 1 });
-    expect(trash?.objectstring).toContain("<var name='GROUPNAME'><string>Doomed</string></var>");
-    expect(trash?.objectstring).toContain("<var name='TAGS'><string>t1</string></var>");
-    const events = (await outbox(SITE_A)).filter((e) => e.payload.groupId === userId);
-    expect(events.at(-1)).toMatchObject({ topic: 'identity.group.changed.v1', version: '2', payload: { deleted: true } });
-    expect(await deleteGroup(deps(), SUPER, { groupId: userId, siteId: SITE_A })).toBe(false);
+    expect(await gated(SITE_A, (tx) => repo.findGroup(tx, stored))).toMatchObject({ groupname: 'Stored', row_version: '1' });
+    expect(await writeCounts(SITE_A)).toEqual(before);
+    const invalid = await createGroup(deps(), SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'Wide', hKey: 'abc', uKey: 'def', ...posted('') });
+    expect(invalid).toMatchObject({ written: false, errors: { SecurityCode: expect.any(String) } });
   });
 
-  it('reproduces the captured ACF trash packet byte for byte', async () => {
-    const userId = 'E3D2FAB9-D68C-2076-91E72671EDD2447F';
-    await gated(DEFAULT, (tx) => repo.insertGroup(tx, {
-      userid: userId, groupname: 'Caf\u00e9 \u20ac & <Eds>', fname: '', lname: '', username: '', password: '', email: '', company: '', jobtitle: '',
-      mobilephone: '', website: '', type: 1, subtype: 'Default', contactform: '', s2: 0, perm: 0, inactive: 0, ispublic: 0, siteid: DEFAULT,
-      subscribe: 1, notes: 'n\u00f6te\r\nzwei\tend', description: '', interests: '', keepprivate: 0, photofileid: '', imname: '', imservice: '',
-      remoteid: '', tags: '', tablist: '',
-    }, null));
-    expect(await deleteGroup(deps(), SUPER, { groupId: userId, siteId: DEFAULT })).toBe(true);
-    const trash = await gated(DEFAULT, (tx) => repo.findByKey<GroupTrashRow>(tx, GROUP_TRASH.table, { objectid: userId }));
-    const packet = (trash?.objectstring ?? '')
-      .replace(/(<var name='muraDeleteID'><string>)[^<]*/, '$1E3D305BB-A90C-EC0F-183D2FF53867FACD')
-      .replace(/(<var name='INSTANCEID'><string>)[^<]*/, '$1E3D304F0-FEAB-2DB8-7292E9867F0B7556');
-    expect(packet).toBe(CAPTURED_GROUP_TRASH_PACKET);
-    expect(trash?.deleteddate).toEqual(TRASHED_AT);
+  it('fails an update of an unknown group id posting a subtype of 51, as legacy\'s UPDATE does on no row', async () => {
+    const outcome = await updateGroup(deps(), SUPER, { userId: next('B'), siteId: SITE_A, isPublic: '0', groupName: 'Ghost', subType: 's'.repeat(51) }).catch((err: unknown) => err);
+    expect(outcome).toMatchObject({ name: 'LegacyStorageError', table: 'group_account', column: 'subtype', violation: 'width', limit: 50 });
+    expect(await updateGroup(deps(), SUPER, { userId: next('B'), siteId: SITE_A, isPublic: '0', groupName: 'Ghost', perm: '300' })).toMatchObject({ written: false });
   });
 
-  it('refuses to delete a group with a stored photo and writes nothing', async () => {
-    const userId = next('B');
-    await createGroup(deps(), SUPER, { userId, siteId: SITE_A, isPublic: '0', groupName: 'Photo', photoFileID: 'F1' });
-    const before = (await outbox(SITE_A)).length;
-    await expect(deleteGroup(deps(), SUPER, { groupId: userId, siteId: SITE_A })).rejects.toBeInstanceOf(GroupPhotoWithheldError);
-    expect(await gated(SITE_A, (tx) => repo.findGroup(tx, userId))).not.toBeNull();
-    expect(await gated(SITE_A, (tx) => repo.findByKey(tx, GROUP_TRASH.table, { objectid: userId }))).toBeNull();
-    expect((await outbox(SITE_A)).length).toBe(before);
+  it('saves values at the legacy widths: email 255, subtype 50 and tablist 255', async () => {
+    const wide = { email: 'e'.repeat(255), subType: 's'.repeat(50), tablist: 't'.repeat(255) };
+    const result = await createGroup(deps(), SUPER, { siteId: SITE_A, isPublic: '0', groupName: 'AtWidth', ...wide });
+    expect(result).toMatchObject({ written: true, group: { email: wide.email, subtype: wide.subType, tablist: wide.tablist } });
+    const updated = await updateGroup(deps(), SUPER, { userId: result.group.userid, siteId: SITE_A, isPublic: '0', groupName: 'AtWidth', ...wide });
+    expect(updated.written).toBe(true);
   });
 
   it.each([
@@ -429,6 +342,36 @@ describe.skipIf(!available)('groups domain', () => {
     expect((await outbox(SITE_A)).at(-1)?.payload).toEqual({ userId: amy, siteId: SITE_A, groupIds: [] });
     expect(newGroupRecord(clock, 'X')).toMatchObject({ userid: 'X', ispublic: 1, subtype: 'Default', type: 1, subscribe: 1 });
     expect((await findGroupForSite(deps(), { groupId, siteId: SITE_B }))?.tenantId).toBe(tenantIdForSite(SITE_A));
+  });
+
+  it('settles concurrent adds of one membership with one row, one changelog insert and one event; the rest add nothing', async () => {
+    const groupId = next('B');
+    await createGroup(deps(), SUPER, { userId: groupId, siteId: SITE_A, isPublic: '0', groupName: 'Race' });
+    const userId = await seedUser(SITE_A);
+    const before = (await outbox(SITE_A)).length;
+    const lockWaits = async (): Promise<number> =>
+      (await handle.adminPool.query<{ n: number }>("SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename = $1 AND wait_event = 'transactionid'", [handle.roles.app])).rows[0]?.n ?? 0;
+    const rollback = new Error('rollback');
+    let adds: Promise<boolean[]> = Promise.resolve([]);
+    // An uncommitted row holds the adds' inserts until two wait, so they contend for the row once it rolls back.
+    await expect(
+      gated(SITE_A, async (tx) => {
+        await repo.addMembership(tx, userId, groupId);
+        adds = Promise.all(Array.from({ length: 10 }, () => addToGroup(deps(), { userId, groupId })));
+        while ((await lockWaits()) < 2) await delay(5);
+        throw rollback;
+      }),
+    ).rejects.toBe(rollback);
+
+    const outcomes = await adds;
+
+    expect(outcomes.filter((added) => added)).toHaveLength(1);
+    expect(await gated(SITE_A, (tx) => repo.membershipGroupIds(tx, userId))).toEqual([groupId]);
+    const logged = await withTenant(handle.app, tenantIdForSite(SITE_A), async (tx) =>
+      (await tx.query<{ op: string }>(`SELECT op FROM ${handle.schema}.changelog WHERE "table" = 'membership' AND strpos(key, $1) > 0`, [userId])).rows,
+    );
+    expect(logged).toEqual([{ op: 'insert' }]);
+    expect((await outbox(SITE_A)).slice(before).map((e) => e.payload)).toEqual([{ userId, siteId: SITE_A, groupIds: [groupId] }]);
   });
 
   describe('collection reads', () => {

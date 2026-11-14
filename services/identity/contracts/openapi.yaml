@@ -15,6 +15,7 @@ x-opt2-calls:
   - people
   - gateway
   - strategies-content
+  - programs-sites
 tags:
   - name: legacy-api
     description: Masa JSON, AJAX and REST API routes identity serves once cut over.
@@ -2964,6 +2965,12 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/AccountOperationConflict'
+        '500':
+          description: An account value its legacy `tusers` column cannot store, on which legacy's save fails with its 500; nothing is recorded or reserved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyStorageRejection'
         '503':
           $ref: '#/components/responses/Unavailable'
           description: Another open operation holds the user beyond the 10 s wait.
@@ -4675,6 +4682,39 @@ components:
       description: Field name to legacy validation message, as the admin views render them.
       additionalProperties:
         type: string
+    LegacyStorageRejection:
+      type: object
+      description: An identity table column whose value its legacy column cannot store, and the width or range the value breaks.
+      required:
+        - table
+        - column
+        - violation
+        - limit
+      additionalProperties: false
+      properties:
+        table:
+          type: string
+          examples:
+            - user_account
+        column:
+          type: string
+          examples:
+            - username
+        violation:
+          type: string
+          enum:
+            - width
+            - range
+        limit:
+          description: The text width in UTF-16 code units, or the `tinyint`, `float` or `datetime` range.
+          oneOf:
+            - type: integer
+              minimum: 1
+            - type: string
+              enum:
+                - tinyint
+                - float
+                - datetime
     LegacyCallBody:
       type: object
       description: A JSON API call; method arguments and entity fields are further parameters.

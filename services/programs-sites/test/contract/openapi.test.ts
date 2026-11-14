@@ -654,6 +654,39 @@ const CASES: Record<string, Case[]> = {
       verify: ({ body }) => expect(record(body).siteDomain).toBe(`${SITE_A}.opt2.test`),
     },
   ],
+  lookupSiteMailSettings: [
+    {
+      name: "reads identity's login-mail settings of each listed site, matched ignoring case, in request order",
+      method: 'POST',
+      url: '/internal/v1/sites/mail-settings:lookup',
+      as: 'service:identity',
+      payload: { siteIds: [SITE_B, SITE_A.toUpperCase()] },
+      status: 200,
+      verify: ({ body }) => {
+        const items = record(body).items as Array<{ siteID: string; site: string }>;
+        expect(items.map(({ siteID, site }) => [siteID, site])).toEqual([
+          [SITE_B, 'Tenant B'],
+          [SITE_A, 'Tenant A'],
+        ]);
+      },
+    },
+    {
+      name: 'rejects an empty site id list as badRequest',
+      method: 'POST',
+      url: '/internal/v1/sites/mail-settings:lookup',
+      as: 'service:identity',
+      payload: { siteIds: [] },
+      status: 400,
+    },
+    {
+      name: 'refuses the lookup to an s2 user, which only identity may call',
+      method: 'POST',
+      url: '/internal/v1/sites/mail-settings:lookup',
+      as: 's2',
+      payload: { siteIds: [SITE_A] },
+      status: 403,
+    },
+  ],
   listUserSites: [
     {
       name: 'lists every registered site an s2 user administers',

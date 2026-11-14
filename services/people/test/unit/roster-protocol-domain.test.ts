@@ -54,7 +54,7 @@ import {
   type IdentityClient,
   type LegacyErrors,
 } from '../../src/legacy/identity-client.js';
-import { createPeopleRepository, type PeopleRepository, type PersonInput } from '../../src/repo/repository.js';
+import { LegacyStorageError, createPeopleRepository, type PeopleRepository, type PersonInput } from '../../src/repo/repository.js';
 import { PEOPLE_UNITS, type RosterOperationRow, type RosterState } from '../../src/repo/tables.js';
 
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
@@ -85,7 +85,8 @@ describe('roster protocol constants', () => {
 
 /** How the identity double answers one operation's steps. */
 interface DoubleBehaviour {
-  prepare?: 'ok' | 'unreachable' | LegacyErrors;
+  /** `unstorable` rejects as identity's prepare does an account value its legacy column cannot store. */
+  prepare?: 'ok' | 'unreachable' | 'unstorable' | LegacyErrors;
   commit?: 'ok' | 'error' | 'lost-reply';
   /** How a repeated commit of a committed operation answers. */
   replay?: 'ok' | 'error';
@@ -107,6 +108,7 @@ function identityDouble(accounts: Map<string, AccountView>, behaviour: DoubleBeh
       prepared.push(change);
       const outcome = behaviour.prepare ?? 'ok';
       if (outcome === 'unreachable') throw down();
+      if (outcome === 'unstorable') throw new LegacyStorageError('user_account', 'username', 'width', 255);
       if (outcome !== 'ok') return { ok: false, errors: outcome };
       states.set(operationId, 'prepared');
       return { ok: true, operationId, userId, kind: change.kind, state: 'prepared' };
@@ -449,6 +451,25 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
     const operation = await operationOf(userId);
     expect(operation).toMatchObject({ state: 'rolled-back', error: 'validation' });
     expect(await registered(operation?.operation_id ?? '')).toBe(false);
+    expect(await snapshot(userId)).toMatchObject({ ...OLD, rowVersion: '1' });
+  });
+
+  it.each<[string, Record<string, unknown>, 'legacy-storage' | 'validation']>([
+    ['without validation errors throws the LegacyStorageError, the legacy 500', {}, 'legacy-storage'],
+    ['with a validation error answers the validation errors, as legacy validates before its insert', { email: '' }, 'validation'],
+  ])("answers an account value identity's legacy column cannot store %s, rolling back with nothing written", async (_label, extra, error) => {
+    const { userId, addressId } = await seedUser();
+    const identity = identityDouble(accounts, { prepare: 'unstorable' });
+
+    const outcome = await runRosterOperation(depsFor(identity.client), rosterInput('admin-update', updateParams(userId, addressId, extra))).catch((err: unknown) => err);
+
+    if (error === 'legacy-storage') expect(outcome).toBeInstanceOf(LegacyStorageError);
+    else expect(outcome).toMatchObject({ ok: false, errors: { email: expect.any(String) } });
+    expect(identity.calls).toEqual(['readAccount', 'readAccount', 'memberships', 'prepare']);
+    const operation = await operationOf(userId);
+    expect(operation).toMatchObject({ state: 'rolled-back', error });
+    expect(await registered(operation?.operation_id ?? '')).toBe(false);
+    expect(await outboxOf(operation?.operation_id ?? '')).toEqual([]);
     expect(await snapshot(userId)).toMatchObject({ ...OLD, rowVersion: '1' });
   });
 

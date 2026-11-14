@@ -21,6 +21,7 @@ import {
   type IdentityClient,
   type UsernameCandidateRequest,
 } from '../../src/legacy/identity-client.js';
+import { LegacyStorageError } from '../../src/repo/repository.js';
 
 const IDENTITY_CONTRACT = parse(readFileSync(new URL('../../../identity/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
@@ -105,12 +106,22 @@ describe('roster protocol calls', () => {
   it.each([
     ['a malformed-body envelope', 400, { apiversion: 'v1', method: 'invalid', error: { message: 'Bad Request', code: 'invalid_request' } }],
     ['a conflict', 409, { ...PREPARED, state: 'aborted' }],
+    ['an unhandled failure', 500, { apiversion: 'v1', method: 'invalid', error: { message: 'Unhandled Exception', code: 'server_error' } }],
     ['a closed user', 503, { apiversion: 'v1', method: 'invalid', error: { message: 'Unhandled Exception', code: 'server_error' } }],
   ])('fails closed on %s', async (_case, status, body) => {
     const { identity } = identityWith({ status, body });
     const failure = identity.prepare(USER_ID, OPERATION_ID, CHANGE);
     await expect(failure).rejects.toBeInstanceOf(ServiceUnavailableError);
     await expect(failure).rejects.toMatchObject(unavailableFrom('prepareAccountOperation', status));
+  });
+
+  it('rejects an account value its legacy column cannot store with the LegacyStorageError identity names', async () => {
+    const rejection = { table: 'user_account', column: 'username', violation: 'width', limit: 255 };
+    assertResponseMatchesOpenApi(IDENTITY_CONTRACT, { method: 'POST', path: `${OPERATION_BASE}:prepare`, status: 500, contentType: 'application/json', body: rejection });
+    const { identity } = identityWith({ status: 500, body: rejection });
+    const failure = identity.prepare(USER_ID, OPERATION_ID, CHANGE);
+    await expect(failure).rejects.toBeInstanceOf(LegacyStorageError);
+    await expect(failure).rejects.toMatchObject(rejection);
   });
 
   it('commits on the :commit path and records both the header and the reply position for identity', async () => {

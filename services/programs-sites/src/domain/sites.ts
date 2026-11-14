@@ -1,6 +1,6 @@
 /** Business operations of the carried `csettings` site actions (core/mura/settings). */
 import { AuthDenial, assertSiteMatches, type UserClaims } from '@opt2/platform/auth';
-import { cfIsNumeric, cfToNumber, cfUuid } from '@opt2/platform/legacy-compat';
+import { cfIsNumeric, cfToBoolean, cfToNumber, cfUuid } from '@opt2/platform/legacy-compat';
 import { awaitReadable, withGatedTenant, type MigrationHandlerOptions } from '@opt2/platform/migration-kit';
 import { localTimestamp, type OutboxOrigin } from '@opt2/platform/outbox';
 import {
@@ -18,7 +18,9 @@ import type { components } from '../generated/openapi.js';
 import {
   LEGACY_GLOBAL_CONFIG_DEFAULTS,
   SITE_COLUMNS,
+  effectiveEditProfileURL,
   effectiveEmailBroadcaster,
+  effectiveUseSSL,
   getSiteText,
   getSiteValue,
   newSiteBean,
@@ -45,6 +47,8 @@ type SiteExtendAttribute = Schemas['SiteExtendAttribute'];
 type SiteOrderResult = Schemas['SiteOrderResult'];
 type ImageSize = Schemas['ImageSize'];
 type HrefDomains = Schemas['HrefDomains'];
+type SiteMailSettings = Schemas['SiteMailSettings'];
+type SiteMailRemote = Schemas['SiteMailRemote'];
 
 /** Sort of the site list as `settingsGateway.getList` takes it; unknown values fall back to `orderno` / `asc`. */
 export interface SiteListOptions {
@@ -68,7 +72,7 @@ export interface SitesDomainDeps {
   config?: LegacyGlobalConfig;
 }
 
-/** Site operations behind `csettings.list`, `editSite`, the admin layout and `sanitizeHref`. */
+/** Site operations behind `csettings.list`, `editSite`, the admin layout, `sanitizeHref` and identity's login mail. */
 export interface SitesDomain {
   /**
    * The Sites screen rows: every registered site for an S2 token, else the token's own, one transaction per tenant and
@@ -86,11 +90,25 @@ export interface SitesDomain {
   saveOrderAndDeploy(db: TenantDb, claims: UserClaims, input: SiteOrderInput): Promise<SiteOrderResult>;
   /** The registered domains and site domain `utility.sanitizeHref` checks against; `siteId` is the session site. */
   hrefDomains(db: TenantDb, siteId: string): Promise<HrefDomains>;
+  /**
+   * The login-mail settings `settingsManager.getSite` resolves for each id, in order (settingsManager.cfc:537-567).
+   * @throws Error when neither the named site nor `default` is stored, where legacy's getSite fails.
+   */
+  readMailSettings(db: TenantDb, siteIds: readonly string[]): Promise<SiteMailSettings[]>;
   /** Writes `programs-sites.site.changed.v1` for each applied site insert or update of a migration apply. */
   emitStateEvents: NonNullable<MigrationHandlerOptions['emitStateEvents']>;
 }
 
+// legacy: core/mura/content/contentRenderer.cfc:2704, the tags setDynamicContent evaluates as CFML.
+const DYNAMIC_CONTENT = /(\[sava\]|\[mura\]|\[m\]).+?(\[\/sava\]|\[\/mura\]|\[\/m\])/i;
+
 const COLUMN_TYPES: ReadonlyMap<string, string> = new Map(SITE.columns.map((column) => [column.name, column.type]));
+
+/** settingsManager `getSite`'s fallback for an empty or unknown site id. */
+const DEFAULT_SITE_ID = 'default';
+
+/** Ports getServerPort leaves out of a remote site's URL (settingsBean.cfc:1406). */
+const DEFAULT_PORTS: readonly string[] = ['80', '443'];
 
 /** Most tenant transactions one site list holds at once: below pg's default pool of 10, so one list never takes the pool. */
 const SITE_LIST_CONCURRENCY = 4;
@@ -200,6 +218,32 @@ function toShellSite(bean: SiteBean, row: SiteRow | null, config: LegacyGlobalCo
     ...shell,
     SiteID: site.SiteID,
     EmailBroadcaster: cfIsNumeric(emailBroadcaster) ? cfToNumber(emailBroadcaster) : null,
+  };
+}
+
+/** getServerPort() and getContext() of a remote site (settingsBean.cfc:1395-1414); null for a local one, which reads configBean's. */
+function mailRemote(bean: SiteBean): SiteMailRemote | null {
+  if (!cfToBoolean(getSiteText(bean, 'isRemote'))) return null;
+  const port = getSiteText(bean, 'RemotePort');
+  return {
+    serverPort: cfIsNumeric(port) && !DEFAULT_PORTS.includes(port) ? `:${port}` : '',
+    context: getSiteText(bean, 'RemoteContext'),
+  };
+}
+
+/** The bean values sendLogin reads (userUtility.cfc:518-540); an edit-profile URL with Mura tags is null, as only CFML evaluates them. */
+function toMailSettings(bean: SiteBean, config: LegacyGlobalConfig): SiteMailSettings {
+  const editProfileURL = effectiveEditProfileURL(bean, config);
+  return {
+    siteID: getSiteText(bean, 'siteID'),
+    site: getSiteText(bean, 'site'),
+    contact: getSiteText(bean, 'contact'),
+    sendLoginScript: getSiteText(bean, 'sendLoginScript'),
+    editProfileURL: DYNAMIC_CONTENT.test(editProfileURL) ? null : editProfileURL,
+    extranetSSL: cfToBoolean(getSiteText(bean, 'extranetSSL')),
+    useSSL: effectiveUseSSL(bean) === '1',
+    extranetPublicRegNotify: getSiteText(bean, 'ExtranetPublicRegNotify'),
+    remote: mailRemote(bean),
   };
 }
 
@@ -345,6 +389,26 @@ export function createSitesDomain({ repo, config = LEGACY_GLOBAL_CONFIG_DEFAULTS
     return { sites };
   }
 
+  /** The stored row getSite resolves `siteId` to: the registered site ignoring case, else `default`; null when neither is stored. */
+  async function mailSite(db: TenantDb, siteId: string): Promise<SiteRow | null> {
+    for (const id of new Set([siteId === '' ? DEFAULT_SITE_ID : siteId, DEFAULT_SITE_ID])) {
+      const tenantId = await tenantForRegisteredSite(db, id);
+      const row = tenantId === null ? null : await withTenant(db, tenantId, (tx) => findSite(tx, id));
+      if (row !== null) return row;
+    }
+    return null;
+  }
+
+  async function readMailSettings(db: TenantDb, siteIds: readonly string[]): Promise<SiteMailSettings[]> {
+    const settings: SiteMailSettings[] = [];
+    for (const siteId of siteIds) {
+      const row = await mailSite(db, siteId);
+      if (row === null) throw new Error(`Neither site '${siteId}' nor the default site is registered`);
+      settings.push(toMailSettings(readBean(row), config));
+    }
+    return settings;
+  }
+
   async function saveOrderAndDeploy(db: TenantDb, claims: UserClaims, input: SiteOrderInput): Promise<SiteOrderResult> {
     if (!claims.s2) throw AuthDenial.forbidden();
     const orderIds = cfList(input.orderID ?? '');
@@ -395,6 +459,7 @@ export function createSitesDomain({ repo, config = LEGACY_GLOBAL_CONFIG_DEFAULTS
     readUserPoolSites,
     saveOrderAndDeploy,
     hrefDomains,
+    readMailSettings,
     emitStateEvents,
   });
 }

@@ -20,7 +20,8 @@ const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', impor
 };
 const HTTP_METHODS = new Set(['get', 'put', 'post', 'delete', 'patch', 'head', 'options']);
 // Contract paths of the site, image size and JSON API `site` modules.
-const MODULE_PATH = /^\/v1\/|^\/_api\/(?:json|ajax|rest)\/v1(?:\/|$)/;
+const MODULE_PATH = /^\/v1\/|^\/internal\/v1\/sites\/|^\/_api\/(?:json|ajax|rest)\/v1(?:\/|$)/;
+const JSON_API_PATH = /^\/_api\//;
 const SITE_MONITOR_URLS = [
   '/_api/sitemonitor*',
   '/index.cfm/_api/sitemonitor*',
@@ -132,7 +133,7 @@ afterEach(async () => {
 
 describe('registerRoutes', () => {
   it('adds exactly the contract operations of the site, image size and JSON API site modules', async () => {
-    // A JSON API operation names its Fastify route, served with and without the front controller.
+    // A JSON API operation names its Fastify route, served with and without the front controller; another named route is served as named.
     const expected = [
       ...new Set(
         Object.entries(OPENAPI.paths)
@@ -142,7 +143,13 @@ describe('registerRoutes', () => {
               .filter(([method]) => HTTP_METHODS.has(method))
               .flatMap(([method, operation]) => {
                 const fastifyPath = operation['x-opt2-fastify-path'];
-                const urls = typeof fastifyPath === 'string' ? [fastifyPath, `/index.cfm${fastifyPath}`] : [template.replace(/\{(\w+)\}/g, ':$1')];
+                const named = typeof fastifyPath === 'string' ? fastifyPath : undefined;
+                const urls =
+                  named === undefined
+                    ? [template.replace(/\{(\w+)\}/g, ':$1')]
+                    : JSON_API_PATH.test(template)
+                      ? [named, `/index.cfm${named}`]
+                      : [named];
                 return urls.map((url) => `${method.toUpperCase()} ${url}`);
               }),
           ),

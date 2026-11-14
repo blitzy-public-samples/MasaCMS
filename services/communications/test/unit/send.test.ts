@@ -294,6 +294,19 @@ describe('fixture messages route', () => {
     const outbox = expectStateEvents(message, history);
     expect(outbox.filter((row) => (row.envelope.payload as { state: string }).state === 'failed')).toHaveLength(1);
   });
+
+  it.each<[string, (id: string) => string]>([
+    ['a lower-case', (id) => id.toLowerCase()],
+    ['a trailing-space', (id) => `${id}  `],
+  ])('answers GET /v1/messages/{id} for %s id with the stored detail', async (_case, asSent) => {
+    const { data } = await postMessage();
+    const headers = await headersFor(SENDER, { site: TENANT_A.siteId, sub: USER_ID });
+
+    const res = await t.app.inject({ method: 'GET', url: `/v1/messages/${encodeURIComponent(asSent(data.message_id))}`, headers });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toStrictEqual({ data });
+  });
 });
 
 // communications.cfc ends a send Mailpit never shows in `failed` (mailpit-not-found); the message does not stay `sent`.

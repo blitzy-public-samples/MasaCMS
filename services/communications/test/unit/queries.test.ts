@@ -20,6 +20,7 @@ import {
   messageCursor,
   queuedLoginMailOlderThan,
   RECOVERY_BATCH_SIZE,
+  storedCfId,
   taskCursor,
   unstampedScheduledTasksOlderThan,
   type BatchCursor,
@@ -43,6 +44,26 @@ function at(minutes: number): Date {
 function cfId(n: number): string {
   return `${String(n).padStart(8, '0')}-AAAA-BBBB-CCCCDDDDEEEEFFFF`;
 }
+
+/** `id` with every second letter lower-cased. */
+function mixedCase(id: string): string {
+  let letters = 0;
+  return id.replace(/[A-Z]/g, (letter) => (letters++ % 2 === 1 ? letter.toLowerCase() : letter));
+}
+
+describe('storedCfId', () => {
+  it.each<[string, string, string]>([
+    ['a long space run before a letter', `${' '.repeat(100_000)}x`, `${' '.repeat(100_000)}X`],
+    ['a long trailing space run', `abc${' '.repeat(100_000)}`, 'ABC'],
+  ])('normalises %s in linear time', (_case, id, expected) => {
+    const started = performance.now();
+    const stored = storedCfId(id);
+    const elapsed = performance.now() - started;
+
+    expect(stored).toBe(expected);
+    expect(elapsed).toBeLessThan(200);
+  });
+});
 
 const available = await pgAvailable();
 
@@ -215,6 +236,47 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
     expect(template).toMatchObject({ tenant_id: tenantA, template_id: cfId(1), subject: 'Hello {{name}}' });
     expect(message).toMatchObject({ tenant_id: tenantA, message_id: cfId(2), template_id: cfId(1), row_version: '1' });
     expect([noTemplate, noMessage]).toEqual([null, null]);
+  });
+
+  describe('id matching as SQL Server char(35) compares', () => {
+    beforeEach(async () => {
+      await inTenant(tenantA, async (tx) => {
+        await insertTemplate(tx, cfId(1), 'tenant-a', at(0));
+        await insertMessage(tx, cfId(2), 'tenant-a', at(0), { template_id: cfId(1) });
+        await insertStatus(tx, cfId(3), cfId(2), 'queued', at(0));
+      });
+    });
+
+    /** findTemplate and getMessageDetail for the template and message ids as `asSent` rewrites them. */
+    function lookUp(tenant: string, asSent: (id: string) => string) {
+      return inTenant(tenant, async (tx) => ({
+        template: await findTemplate(tx, asSent(cfId(1))),
+        detail: await getMessageDetail(tx, asSent(cfId(2))),
+      }));
+    }
+
+    it.each<[string, (id: string) => string]>([
+      ['a lower-case id', (id) => id.toLowerCase()],
+      ['a mixed-case id', mixedCase],
+      ['an id with trailing spaces', (id) => `${id}   `],
+      ['a lower-case id with a trailing space', (id) => `${id.toLowerCase()} `],
+    ])('finds the stored rows for %s, and none in another tenant', async (_case, asSent) => {
+      const { template, detail } = await lookUp(tenantA, asSent);
+
+      expect(template).toMatchObject({ tenant_id: tenantA, template_id: cfId(1) });
+      expect(detail?.message).toMatchObject({ tenant_id: tenantA, message_id: cfId(2) });
+      expect(detail?.history.map((row) => row.status_id)).toEqual([cfId(3)]);
+      expect(await lookUp(tenantB, asSent)).toEqual({ template: null, detail: null });
+    });
+
+    it.each<[string, (id: string) => string]>([
+      ['an unknown lower-case id', () => cfId(9).toLowerCase()],
+      ['a leading space', (id) => ` ${id}`],
+      ['a trailing tab', (id) => `${id}\t`],
+      ['a ligature that full Unicode upper-casing turns into FF', (id) => id.replace(/FF/g, '\uFB00')],
+    ])('finds nothing for %s', async (_case, asSent) => {
+      expect(await lookUp(tenantA, asSent)).toEqual({ template: null, detail: null });
+    });
   });
 
   it('returns a message with its history by recorded time and status id, and null for an unknown message', async () => {

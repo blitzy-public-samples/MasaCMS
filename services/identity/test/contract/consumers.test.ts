@@ -1,4 +1,4 @@
-/** Consumer contracts of identity: the producer event schemas its consumers read and the gateway, people and strategies-content operations it calls. */
+/** Consumer contracts of identity: the producer event schemas its consumers read and the gateway, people, strategies-content and programs-sites operations it calls. */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,7 @@ import {
 import type { PersonChangedPayload } from '../../src/events/person-contact.js';
 import { GATEWAY_SERVICE, createBridgeRelay, type MarkUsedResult } from '../../src/legacy/bridge-relay.js';
 import { createContentClient } from '../../src/legacy/content-client.js';
+import { createSitesClient } from '../../src/legacy/sites-client.js';
 import { TEST_CLOCK, buildTestApp, createClientRecorder, headersFor } from '../helpers/app.js';
 import { SITE_ADMIN_A } from '../helpers/rows.js';
 import { registryAnswer } from '../helpers/service.js';
@@ -60,6 +61,7 @@ const CALLEES: Readonly<Record<string, Contract>> = {
   [GATEWAY_SERVICE]: loadContract(new URL('../../../../gateway/contracts/openapi.yaml', import.meta.url)),
   people: loadContract(new URL('../../../people/contracts/openapi.yaml', import.meta.url)),
   'strategies-content': loadContract(new URL('../../../strategies-content/contracts/openapi.yaml', import.meta.url)),
+  'programs-sites': loadContract(new URL('../../../programs-sites/contracts/openapi.yaml', import.meta.url)),
 };
 
 const personSchema = readTopicSchema(new URL('../../../people/contracts/events/people.person.changed.v1.json', import.meta.url));
@@ -237,6 +239,8 @@ beforeAll(async () => {
   client.on(GATEWAY_SERVICE, 'POST', MARK_USED_TEMPLATE, unmappedSessionAnswer);
   unmapped = await relay.markUsed(SESSION_ID, used);
   await createContentClient(client).photoFileExts([PHOTO_ID, null]);
+  // The recorder's default programs-sites answer is the one every suite composing registerRoutes receives.
+  await createSitesClient(client).mailSettings([TENANT_A.siteId, '']);
 
   const t = await buildTestApp();
   try {
@@ -333,6 +337,16 @@ describe('gateway legacySessionMarkUsed', () => {
     expect(exchanges.filter(({ req }) => req.service === GATEWAY_SERVICE).map(({ res }) => res.status)).toEqual([204, 404]);
     expect(applied).toEqual({ applied: true });
     expect(unmapped).toEqual({ applied: false });
+  });
+});
+
+describe('programs-sites lookupSiteMailSettings', () => {
+  it('is called as identity alone, on an operation whose security takes no user token', () => {
+    const calls = exchanges.filter(({ req }) => req.service === 'programs-sites');
+
+    expect(calls.map(({ req }) => calledOperation(req).match.operation.operationId)).toEqual(['lookupSiteMailSettings']);
+    expect(calls.map(({ req }) => req.userToken)).toEqual([null]);
+    expect(calls.map(({ req }) => calledOperation(req).match.operation['security'])).toEqual([[{ invocationCredential: [] }]]);
   });
 });
 

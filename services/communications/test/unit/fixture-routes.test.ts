@@ -43,7 +43,7 @@ import { FIXTURE_ROLES } from '../../src/legacy/fixture-auth.js';
 import { FIXTURE_ERROR_MAP, FixtureApiError, fixtureMethod, type FixtureErrorType } from '../../src/legacy/fixture-envelope.js';
 import type { CommunicationsRepository } from '../../src/repo/repository.js';
 import type { MessageTemplateRow } from '../../src/repo/tables.js';
-import { FIXTURE_PREFIX, registerFixtureRoutes } from '../../src/routes/fixture.js';
+import { FIXTURE_CATCH_ALL, FIXTURE_PREFIX, registerFixtureRoutes } from '../../src/routes/fixture.js';
 import { TEST_CLOCK, buildTestApp, createRecordingDb, headersFor, type TestApp } from '../helpers/app.js';
 
 vi.mock('../../src/domain/templates.js', async (importOriginal) => ({
@@ -277,6 +277,22 @@ describe('communications fixture routes', () => {
     }
   });
 
+  it('declares the api.cfm catch-all for every method, public with the site checked in the handler, as the contract names it', () => {
+    const methods = ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'];
+    const routes = collectRouteMatrix(app).routes.filter((route) => route.url === FIXTURE_CATCH_ALL);
+    const operations = Object.values(OPENAPI.paths).flatMap((item) =>
+      Object.entries(item).filter(([, operation]) => operation['x-opt2-fastify-path'] === FIXTURE_CATCH_ALL),
+    );
+
+    expect(routes.map(({ method, ...declared }) => [method, declared]).sort()).toEqual(
+      methods.map((method) => [method, { url: FIXTURE_CATCH_ALL, transport: 'service', public: true, siteCheck: false }]),
+    );
+    expect([...new Set(operations.map(([method]) => method.toUpperCase()))].sort()).toEqual(methods);
+    for (const [, operation] of operations) {
+      expect([operation['x-opt2-transport'], operation['x-opt2-public'], operation['x-opt2-site-check']]).toEqual(['service', true, false]);
+    }
+  });
+
   it.each<[string, TenantFixture, string]>([
     ['a tenant-a sender with a case-variant site', TENANT_A, 'TENANT-A'],
     ['a tenant-b sender', TENANT_B, 'tenant-b'],
@@ -483,7 +499,7 @@ describe('communications fixture routes over the recording database', () => {
 
   /** One injected request; no `as` sends it anonymously, a `body` is sent as JSON. */
   interface Req {
-    method?: 'GET' | 'POST';
+    method?: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'OPTIONS';
     url: string;
     as?: Caller;
     body?: unknown;
@@ -745,7 +761,7 @@ describe('communications fixture routes over the recording database', () => {
     });
   });
 
-  it.each(['templates', 'messages'])('answers a POST overridden to GET on %s exactly as the GET, writing nothing and consuming no token', async (resource) => {
+  it.each(['templates', 'messages', `messages/${MESSAGE_A}`])('answers a POST overridden to GET on %s exactly as the GET, writing nothing and consuming no token', async (resource) => {
     const url = `${FIXTURE_PREFIX}/${resource}${SITE_A}`;
     const get = await send({ url, as: 'sender' });
     const overridden = await send({
@@ -759,6 +775,74 @@ describe('communications fixture routes over the recording database', () => {
     expectFixtureResponse(overridden, 200, get.body);
     expect(overridden.writes).toEqual([]);
     expect(overridden.csrfCalls).toBe(0);
+  });
+
+  const DECLARED_TEMPLATES = `${FIXTURE_PREFIX}/templates${SITE_A}`;
+  const DECLARED_MESSAGE = `${FIXTURE_PREFIX}/messages/${MESSAGE_A}${SITE_A}`;
+
+  it.each<[string, Omit<Req, 'as'>, string]>([
+    ['a case-variant resource', { url: `${FIXTURE_PREFIX}/Templates${SITE_A}` }, DECLARED_TEMPLATES],
+    ['a case-variant module', { url: `/legacy-fixtures/cfml/api.cfm/COMMUNICATIONS/templates${SITE_A}` }, DECLARED_TEMPLATES],
+    ['empty segments', { url: `/legacy-fixtures/cfml/api.cfm//communications//templates${SITE_A}` }, DECLARED_TEMPLATES],
+    ['a trailing slash', { url: `${FIXTURE_PREFIX}/templates/${SITE_A}` }, DECLARED_TEMPLATES],
+    ['a case-variant detail path', { url: `${FIXTURE_PREFIX}/MESSAGES/${MESSAGE_A}${SITE_A}` }, DECLARED_MESSAGE],
+    ['a detail POST overridden to lower-case get', { method: 'POST', url: DECLARED_MESSAGE, headers: { 'x-http-method-override': 'get' } }, DECLARED_MESSAGE],
+  ])('answers %s exactly as its declared GET, to an anonymous caller and to the sender', async (_case, variant, declared) => {
+    for (const [caller, status] of [[{}, 401], [{ as: 'sender' as const }, 200]] as const) {
+      const expected = await send({ url: declared, ...caller });
+      const res = await send({ ...variant, ...caller });
+
+      expect(expected.status).toBe(status);
+      expectFixtureResponse(res, expected.status, expected.body);
+      expect([res.writes, res.csrfCalls]).toEqual([[], 0]);
+    }
+  });
+
+  it.each<[Req['method'], string, string]>([
+    ['PUT', `${FIXTURE_PREFIX}/templates`, TEMPLATES_METHOD],
+    ['DELETE', `${FIXTURE_PREFIX}/templates`, TEMPLATES_METHOD],
+    ['HEAD', `${FIXTURE_PREFIX}/templates`, TEMPLATES_METHOD],
+    ['OPTIONS', `${FIXTURE_PREFIX}/templates`, TEMPLATES_METHOD],
+    ['PATCH', `${FIXTURE_PREFIX}/messages`, MESSAGES_METHOD],
+    ['POST', `${FIXTURE_PREFIX}/messages/${MESSAGE_A}`, MESSAGES_METHOD],
+    ['DELETE', `${FIXTURE_PREFIX}/messages/${MESSAGE_A}`, MESSAGES_METHOD],
+    ['GET', `${FIXTURE_PREFIX}/templates/abc`, TEMPLATES_METHOD],
+    ['GET', `${FIXTURE_PREFIX}/unknown`, 'communications.unknown'],
+    ['GET', `${FIXTURE_PREFIX}/Unknown/${MESSAGE_A}`, 'communications.unknown'],
+    ['GET', `${FIXTURE_PREFIX}/messages/${MESSAGE_A}/extra`, 'communications.messages.extra'],
+    ['GET', `${FIXTURE_PREFIX}/messages/${MESSAGE_A}/Extra/${MESSAGE_A.toLowerCase()}`, 'communications.messages.extra'],
+    ['GET', `${FIXTURE_PREFIX}/messages/${MESSAGE_A}/extra/Tail`, 'communications.messages.extra.tail'],
+  ])('answers %s %s, which communications.cfc does not dispatch, with notFound as %s before any check of the caller', async (method, url, envelopeMethod) => {
+    for (const caller of [{}, { as: 'systemUser' as const }]) {
+      const res = await send({ method, url: `${url}${SITE_A}`, ...caller });
+
+      expectFixtureResponse(res, 404, errorBody(envelopeMethod, rowOf('notFound')));
+      expect([res.writes, res.csrfCalls]).toEqual([[], 0]);
+    }
+  });
+
+  it.each<[string, Req['method'], string]>([
+    ...(['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'] as const).map((method): [string, Req['method'], string] => [
+      `${method} on the module alone`,
+      method,
+      FIXTURE_PREFIX,
+    ]),
+    ['the module with a trailing slash', 'GET', `${FIXTURE_PREFIX}/`],
+    ['the case-variant module alone', 'GET', '/legacy-fixtures/cfml/api.cfm/Communications'],
+    ['six segments', 'GET', `${FIXTURE_PREFIX}/a/b/c/d/e`],
+  ])('answers %s, outside api.cfm path grammar, with notFound as method invalid before the site check', async (_case, method, path) => {
+    const res = await send({ method, url: `${path}?siteid=nowhere` });
+
+    expectFixtureResponse(res, 404, errorBody('invalid', rowOf('notFound')));
+    expect(res.writes).toEqual([]);
+  });
+
+  it("leaves another module's api.cfm path to the service not-found", async () => {
+    const other = await send({ url: '/legacy-fixtures/cfml/api.cfm/people/persons' });
+    const unrouted = await send({ url: '/legacy-fixtures/cfml/unrouted.cfm' });
+
+    expect(unrouted.status).toBe(404);
+    expect([other.status, other.body]).toEqual([unrouted.status, unrouted.body]);
   });
 
   it('answers a tenant-b message to a tenant-b sender, the tenant coming from the token', async () => {
@@ -821,17 +905,21 @@ describe('communications fixture routes over the recording database', () => {
   });
 
   describe('api.cfm check order, with two checks failing at once', () => {
-    it('answers an unknown resource under the prefix with 404 before checking the caller or the site', async () => {
-      const res = await send({ url: `${FIXTURE_PREFIX}/subscribers?siteid=nowhere` });
-
-      expect(res.status).toBe(404);
-      // Status and method only: no cut-over entry routes such a path to communications, and service-kit's not-found
-      // answers it in the JSON API error shape rather than envelope.cfc's.
-      expect(JSON.parse(res.body)).toMatchObject({ apiversion: 'v1', method: 'invalid' });
-      expect(res.writes).toEqual([]);
-    });
-
     it.each<[string, Req, ErrorType, string]>([
+      ['the site check precedes the dispatch of an unknown resource', { url: `${FIXTURE_PREFIX}/subscribers?siteid=nowhere` }, 'invalidParameters', 'communications.subscribers'],
+      ['the site check precedes the dispatch of an undeclared method', { method: 'PUT', url: `${FIXTURE_PREFIX}/templates?siteid=nowhere` }, 'invalidParameters', TEMPLATES_METHOD],
+      [
+        'the site check precedes the dispatch of a sub-path',
+        { url: `${FIXTURE_PREFIX}/messages/${UNKNOWN_ID}/extra?siteid=nowhere` },
+        'invalidParameters',
+        'communications.messages.extra',
+      ],
+      [
+        'the token-site check precedes the dispatch of an unknown resource',
+        { url: `${FIXTURE_PREFIX}/subscribers?siteid=${TENANT_B.siteId}`, as: 'sender' },
+        'forbidden',
+        'communications.subscribers',
+      ],
       ['the site check precedes the login check', { method: 'POST', url: `${FIXTURE_PREFIX}/templates?siteid=nowhere`, body: {} }, 'invalidParameters', TEMPLATES_METHOD],
       ['the site check precedes the role check', { url: `${FIXTURE_PREFIX}/messages?siteid=nowhere`, as: 'systemUser' }, 'invalidParameters', MESSAGES_METHOD],
       [

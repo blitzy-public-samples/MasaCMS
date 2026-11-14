@@ -93,6 +93,8 @@ export type SiteData = Record<string, unknown>;
 /** Global settings the site bean's effective getters consult (configBean). */
 export interface LegacyGlobalConfig {
   readonly emailBroadcaster: boolean;
+  /** configBean `indexFile`; omitted, its default '' (configBean.cfc:93). */
+  readonly indexFile?: string;
 }
 
 /** configBean defaults: broadcaster off (configBean.cfc:210). */
@@ -464,6 +466,23 @@ export function effectiveEmailBroadcaster(
   config: LegacyGlobalConfig = LEGACY_GLOBAL_CONFIG_DEFAULTS,
 ): string {
   return config.emailBroadcaster ? getSiteText(bean, 'EmailBroadcaster') : '0';
+}
+
+/** getUseSSL (settingsBean.cfc:396-402): '1' when useSSL or the deprecated extranetSSL is true, as CF booleans. */
+export function effectiveUseSSL(bean: SiteBean): '1' | '0' {
+  return cfToBoolean(getSiteValue(bean, 'useSSL')) || cfToBoolean(getSiteValue(bean, 'extranetSSL')) ? '1' : '0';
+}
+
+/**
+ * getEditProfileURL(parseMuraTag=false) (settingsBean.cfc:559-569): the stored URL, else
+ * `<indexFile>?display=editProfile`.
+ */
+export function effectiveEditProfileURL(
+  bean: SiteBean,
+  config: LegacyGlobalConfig = LEGACY_GLOBAL_CONFIG_DEFAULTS,
+): string {
+  const url = getSiteText(bean, 'editProfileURL');
+  return url !== '' ? url : `${config.indexFile ?? ''}?display=editProfile`;
 }
 
 /** Column the site list sorts by. */

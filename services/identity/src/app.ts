@@ -35,8 +35,8 @@ export const SERVICE_NAME = 'identity';
 /** Equals `info.version` of `contracts/openapi.yaml`. */
 export const SERVICE_VERSION = '1.0.0';
 
-/** Services identity calls through `OPT2_SERVICE_URLS`: itself (its outbox sweep's task target), people and strategies-content. */
-const REQUIRED_SERVICES: readonly string[] = [SERVICE_NAME, 'people', 'strategies-content'];
+/** Services identity calls through `OPT2_SERVICE_URLS`: itself (its outbox sweep's task target), people, programs-sites and strategies-content. */
+const REQUIRED_SERVICES: readonly string[] = [SERVICE_NAME, 'people', 'programs-sites', 'strategies-content'];
 
 /** Base variables with every callee's URL required, the gateway's by either entry; `OPT2_ENV=cloud` selects Identity Platform issuance in the tenants of `GOOGLE_CLOUD_PROJECT`. */
 export const identityEnvSchema = baseEnvSchema.superRefine(

@@ -43,6 +43,12 @@ const MESSAGE_KEYS = [
   'sent_at',
 ];
 
+/** `id` with every second letter lower-cased. */
+function mixedCase(id: string): string {
+  let letters = 0;
+  return id.replace(/[A-Z]/g, (letter) => (letters++ % 2 === 1 ? letter.toLowerCase() : letter));
+}
+
 const available = await pgAvailable();
 
 describe.skipIf(!available)('message domain against PostgreSQL', () => {
@@ -196,6 +202,20 @@ describe.skipIf(!available)('message domain against PostgreSQL', () => {
     });
     expect(fromObject).toMatchObject({ subject: 'Hi YES {{Name}}', body_text: 'x {{missing}} YES' });
     expect(withoutVariables).toMatchObject({ subject: 'Hi {{name}} {{Name}}', body_text: 'x {{missing}} {{name}}' });
+  });
+
+  it.each<[string, (id: string) => string]>([
+    ['a lower-case', (id) => id.toLowerCase()],
+    ['a mixed-case', mixedCase],
+    ['a trailing-space', (id) => `${id}  `],
+  ])('fills the template %s templateId names and stores the id as supplied, as char(35) keeps it', async (_case, asSent) => {
+    const stored = await newTemplate('Hi {{name}}', 'Text {{name}}');
+    const templateId = asSent(stored);
+
+    const detail = await submit({ templateId, to: TO, variables: { name: 'lc' } });
+
+    expect(detail).toMatchObject({ template_id: templateId.replace(/ +$/u, ''), subject: 'Hi lc', body_text: 'Text lc', state: 'delivered' });
+    expect(sent.map((mail) => [mail.subject, mail.text])).toEqual([['Hi lc', 'Text lc']]);
   });
 
   it.each<[string, unknown]>([

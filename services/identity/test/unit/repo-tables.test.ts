@@ -33,13 +33,14 @@ const CREATE_TABLE = /^CREATE TABLE (\w+)\.(\w+) \(\n([\s\S]*?)\n\);/gm;
 const COLUMN = /^"?([a-z_0-9]+)"? (.+?)(?= COLLATE | NOT NULL| NULL| DEFAULT | PRIMARY KEY| UNIQUE| CHECK | GENERATED |$)/;
 const CONSTRAINT = /^(PRIMARY KEY|UNIQUE) /;
 const ADD_COLUMN = /^ALTER TABLE (\w+)\.(\w+) ADD COLUMN (.+);$/gm;
+const ALTER_TYPE = /^ALTER TABLE (\w+)\.(\w+) ALTER COLUMN (\w+) TYPE (.+);$/gm;
 
 /** Canonical tag of a migration column type; xid8 is carried as its decimal text. */
 function canonicalTag(type: string): string {
   return type === 'xid8' ? 's' : canonicalTypeForPostgres(type).type;
 }
 
-/** Every `CREATE TABLE` of the service-table migrations (0002 onwards), keyed `<schema>.<table>`, with file, columns (later `ADD COLUMN`s appended) and primary key. */
+/** Every `CREATE TABLE` of the service-table migrations (0002 onwards), keyed `<schema>.<table>`, with file, columns (later `ADD COLUMN`s appended, `ALTER COLUMN … TYPE`s applied) and primary key. */
 function migrationTables(): Map<string, DdlTable> {
   const tables = new Map<string, DdlTable>();
   for (const file of readdirSync(MIGRATIONS).filter((name) => /^\d{4}_\w+\.sql$/.test(name) && !name.startsWith('0001_')).sort()) {
@@ -63,6 +64,10 @@ function migrationTables(): Map<string, DdlTable> {
     for (const [, schema, table, definition] of sql.matchAll(ADD_COLUMN)) {
       const m = COLUMN.exec(definition as string);
       if (m !== null) tables.get(`${schema as string}.${table as string}`)?.columns.push({ name: m[1] as string, type: m[2] as string });
+    }
+    for (const [, schema, table, name, type] of sql.matchAll(ALTER_TYPE)) {
+      const column = tables.get(`${schema as string}.${table as string}`)?.columns.find((candidate) => candidate.name === name);
+      if (column !== undefined) column.type = type as string;
     }
   }
   return tables;

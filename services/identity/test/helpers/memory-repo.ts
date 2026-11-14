@@ -38,6 +38,7 @@ import {
   charKey,
   createIdentityRepository,
   lastUpdateInfo,
+  legacyStorable,
   type AccountFilter,
   type AccountInput,
   type AccountOperationInput,
@@ -1604,7 +1605,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
       tablist: daoNull(row.tablist),
       opt2_state: row.opt2_state ?? 'active',
     };
-    return insert<UserAccountRow>(tx, USER_ACCOUNT.table, stored, ctx);
+    return insert<UserAccountRow>(tx, USER_ACCOUNT.table, legacyStorable(USER_ACCOUNT.table, stored), ctx);
   }
 
   function updateAccount(tx: TenantTx, userId: string, values: AccountUpdate, ctx: WriteContext = {}): Promise<UserAccountRow | null> {
@@ -1619,7 +1620,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
       siteid: javaTrim(values.siteid ?? ''),
       tablist: daoNull(values.tablist),
     };
-    return update<UserAccountRow>(tx, USER_ACCOUNT.table, { userid: userId }, patch, ctx);
+    return update<UserAccountRow>(tx, USER_ACCOUNT.table, { userid: userId }, legacyStorable(USER_ACCOUNT.table, patch), ctx);
   }
 
   function setAccountState(tx: TenantTx, userId: string, state: UserAccountRow['opt2_state'], ctx: WriteContext = {}): Promise<UserAccountRow | null> {
@@ -1875,7 +1876,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
       tablist: daoNull(input.tablist),
       row_version: 1,
     };
-    return insert<GroupAccountRow>(tx, GROUP_ACCOUNT.table, row, ctx);
+    return insert<GroupAccountRow>(tx, GROUP_ACCOUNT.table, legacyStorable(GROUP_ACCOUNT.table, row), ctx);
   }
 
   async function updateGroup(
@@ -1925,19 +1926,16 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
       tags: daoNull(input.tags),
       tablist: daoNull(input.tablist),
     };
+    const storable = legacyStorable(GROUP_ACCOUNT.table, patch);
     // The version counts saves, so it is read from the row as stored when this write runs.
     const updated = await updateWhere(
       tx,
       GROUP_ACCOUNT.table,
       { userid: current.userid },
-      (stored) => ({ ...patch, row_version: (BigInt(String(stored.row_version)) + 1n).toString() }),
+      (stored) => ({ ...storable, row_version: (BigInt(String(stored.row_version)) + 1n).toString() }),
       ctx,
     );
     return updated as GroupAccountRow | null;
-  }
-
-  function deleteGroupRow(tx: TenantTx, groupId: string, ctx: WriteContext = {}): Promise<GroupAccountRow | null> {
-    return remove<GroupAccountRow>(tx, GROUP_ACCOUNT.table, { userid: groupId }, ctx);
   }
 
 
@@ -1969,7 +1967,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
       addressemail: daoNull(row.addressemail),
       hours: daoNull(row.hours),
     };
-    return insert<GroupAddressRow>(tx, GROUP_ADDRESS.table, stored, ctx);
+    return insert<GroupAddressRow>(tx, GROUP_ADDRESS.table, legacyStorable(GROUP_ADDRESS.table, stored), ctx);
   }
 
   async function updateGroupAddress(tx: TenantTx, addressId: string, values: GroupAddressUpdate, ctx: WriteContext = {}): Promise<GroupAddressRow | null> {
@@ -1993,7 +1991,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
       addressemail: daoNull(values.addressemail),
       hours: daoNull(values.hours),
     };
-    return update<GroupAddressRow>(tx, GROUP_ADDRESS.table, { addressid: addressId }, patch, ctx);
+    return update<GroupAddressRow>(tx, GROUP_ADDRESS.table, { addressid: addressId }, legacyStorable(GROUP_ADDRESS.table, patch), ctx);
   }
 
   async function setPrimaryGroupAddress(tx: TenantTx, groupId: string, addressId: string, ctx: WriteContext = {}): Promise<void> {
@@ -2015,30 +2013,6 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
       by((row) => row.isprimary, { desc: true, nulls: 'last' }),
       by((row) => charKey(row.addressid)),
     ).map(copyRow);
-  }
-
-  /** Deletes every extended value stored under `baseId`. */
-  async function deleteExtendRows(tx: TenantTx, baseId: string, ctx: WriteContext): Promise<number> {
-    const tenantId = await gated(tx, [GROUP_EXTEND_DATA.unit]);
-    const stale = sorted(
-      scan(GROUP_EXTEND_DATA.table, tenantId, (row) => ciEq(row.baseid, baseId)),
-      by((row) => row.dataid),
-    );
-    return removeKeys(tx, GROUP_EXTEND_DATA.table, stale.map(({ dataid }) => ({ dataid })), ctx);
-  }
-
-  async function deleteGroupAddresses(tx: TenantTx, groupId: string, ctx: WriteContext = {}): Promise<number> {
-    await requireGroup(tx, groupId, GROUP_ADDRESS.table);
-    const tenantId = await gated(tx, [GROUP_ADDRESS.unit]);
-    const stale = sorted(
-      scan(GROUP_ADDRESS.table, tenantId, (row) => ciEq(row.userid, groupId)),
-      by((row) => charKey(row.addressid)),
-    ).map((row) => row.addressid);
-    for (const addressid of stale) {
-      await remove(tx, GROUP_ADDRESS.table, { addressid }, ctx);
-      await deleteExtendRows(tx, addressid, ctx);
-    }
-    return stale.length;
   }
 
   async function replaceGroupInterests(
@@ -2120,25 +2094,11 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     for (const item of (input.tags ?? '').split(',')) {
       const value = javaTrim(item);
       if (value === '') continue;
-      const row: Omit<GroupTagRow, 'tenant_id'> = { tagid: nextId(GROUP_TAG, 'tagid'), userid: input.groupId, siteid: input.siteId, tag: value };
+      const stored = legacyStorable(GROUP_TAG.table, { userid: input.groupId, siteid: input.siteId, tag: value });
+      const row: Omit<GroupTagRow, 'tenant_id'> = { tagid: nextId(GROUP_TAG, 'tagid'), ...stored };
       created.push(await insert<GroupTagRow>(tx, GROUP_TAG.table, row, ctx));
     }
     return created;
-  }
-
-  async function deleteGroupTags(tx: TenantTx, groupId: string, ctx: WriteContext = {}): Promise<number> {
-    await requireGroup(tx, groupId, GROUP_TAG.table);
-    return deleteTagRows(tx, groupId, ctx);
-  }
-
-  async function deleteGroupFavorites(tx: TenantTx, groupId: string, ctx: WriteContext = {}): Promise<number> {
-    await requireGroup(tx, groupId, GROUP_FAVORITE.table);
-    const tenantId = await gated(tx, [GROUP_FAVORITE.unit]);
-    const stale = sorted(
-      scan(GROUP_FAVORITE.table, tenantId, (row) => ciEq(row.userid, groupId)),
-      by((row) => charKey(row.favoriteid)),
-    );
-    return removeKeys(tx, GROUP_FAVORITE.table, stale.map(({ favoriteid }) => ({ favoriteid })), ctx);
   }
 
   async function replaceGroupExtendData(
@@ -2156,20 +2116,16 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
       );
       await removeKeys(tx, GROUP_EXTEND_DATA.table, stale.map(({ dataid }) => ({ dataid })), ctx);
       if (values === null) continue;
+      const stored = legacyStorable(GROUP_EXTEND_DATA.table, values);
       const row: Omit<GroupExtendDataRow, 'tenant_id'> = {
         dataid: nextId(GROUP_EXTEND_DATA, 'dataid'),
         baseid: input.groupId,
         attributeid: attributeId,
-        ...values,
+        ...stored,
       };
       inserted.push(await insert<GroupExtendDataRow>(tx, GROUP_EXTEND_DATA.table, row, ctx));
     }
     return inserted;
-  }
-
-  async function deleteGroupExtendData(tx: TenantTx, baseId: string, ctx: WriteContext = {}): Promise<number> {
-    await requireGroup(tx, baseId, GROUP_EXTEND_DATA.table);
-    return deleteExtendRows(tx, baseId, ctx);
   }
 
 
@@ -2592,11 +2548,11 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
 
   function insertOAuthClient(tx: TenantTx, row: OAuthClientInput, ctx: WriteContext = {}): Promise<OAuthClientRow> {
     const stored = { ...row, clientid: row.clientid === undefined || row.clientid === '' ? cfUuid() : row.clientid };
-    return insert<OAuthClientRow>(tx, OAUTH_CLIENT.table, ormRow(stored, OAUTH_CLIENT), ctx);
+    return insert<OAuthClientRow>(tx, OAUTH_CLIENT.table, legacyStorable(OAUTH_CLIENT.table, ormRow(stored, OAUTH_CLIENT)), ctx);
   }
 
   function updateOAuthClient(tx: TenantTx, clientId: string, values: OAuthClientValues, ctx: WriteContext = {}): Promise<OAuthClientRow | null> {
-    return update<OAuthClientRow>(tx, OAUTH_CLIENT.table, { clientid: clientId }, ormRow(values, OAUTH_CLIENT), ctx);
+    return update<OAuthClientRow>(tx, OAUTH_CLIENT.table, { clientid: clientId }, legacyStorable(OAUTH_CLIENT.table, ormRow(values, OAUTH_CLIENT)), ctx);
   }
 
   async function deleteOAuthClient(tx: TenantTx, clientId: string, ctx: WriteContext = {}): Promise<boolean> {
@@ -2921,21 +2877,16 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     listPoolGroups,
     insertGroup,
     updateGroup,
-    deleteGroupRow,
     insertGroupAddress,
     updateGroupAddress,
     setPrimaryGroupAddress,
     listGroupAddresses,
-    deleteGroupAddresses,
     replaceGroupInterests,
     groupInterestIds,
     hasGroupExtendData,
     listGroupRelationRows,
     replaceGroupTags,
-    deleteGroupTags,
-    deleteGroupFavorites,
     replaceGroupExtendData,
-    deleteGroupExtendData,
     membershipsOf,
     membershipGroupIds,
     readMembershipRecords,

@@ -2930,7 +2930,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/ServerError'
-          description: A missing or invalid CSRF token; nothing is written, and legacy fails on the unset user bean.
+          description: A missing or invalid CSRF token, on which legacy fails on the unset user bean, or a value a legacy column cannot store, on which its query fails; nothing is written on either side.
         '503':
           $ref: '#/components/responses/Unavailable'
           description: A withheld branch, or a roster write-protocol step with identity that did not complete; nothing is written on either side.

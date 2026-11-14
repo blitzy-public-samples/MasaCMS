@@ -1,7 +1,7 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Fixture routes `communications/…` of legacy-fixtures/cfml/api.cfm, answered as legacy-fixtures/cfml/modules/communications.cfc answers them. */
 import type { Opt2RouteConfig, UserClaims } from '@opt2/platform/auth';
-import { cfDateTimeFormat } from '@opt2/platform/legacy-compat';
+import { cfDateTimeFormat, isCfUuid } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from '@opt2/platform/service-kit';
 import { withTenant, type TenantDb } from '@opt2/platform/tenancy';
@@ -26,6 +26,7 @@ import {
   fixtureSuccess,
   type FixtureContext,
 } from '../legacy/fixture-envelope.js';
+import { storedCfId } from '../repo/queries.js';
 import type { MessageTemplateRow } from '../repo/tables.js';
 
 type Schemas = components['schemas'];
@@ -42,6 +43,12 @@ export type FixtureRouteDeps = {
 /** Fastify path of the communications fixture module; every fixture path below is built from it. */
 export const FIXTURE_PREFIX = '/legacy-fixtures/cfml/api.cfm/communications';
 
+/** Fastify path of the api.cfm catch-all; above the module, since the gateway routes fixture paths ignoring case and empty segments. */
+export const FIXTURE_CATCH_ALL = '/legacy-fixtures/cfml/api.cfm/*';
+
+/** The module segment of every communications fixture path; api.cfm matches it ignoring case. */
+const FIXTURE_MODULE = 'communications';
+
 // api.cfm resolves the site before communications.cfc checks login and role, so these routes are public on the
 // platform and resolveSite and requireAny decide in the handler. A platform `requires` list would refuse an anonymous
 // or role-less caller before the site check, in the JSON API envelope rather than the fixture's.
@@ -50,8 +57,25 @@ const FIXTURE_ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service'
 const SENDER_ROLES: readonly string[] = Object.freeze([FIXTURE_ROLES.sender]);
 const DATE_MASK = "yyyy-mm-dd'T'HH:nn:ss";
 
-/** The methods the contract declares on a fixture path; communications.cfc dispatches no other. */
-type HttpMethod = 'GET' | 'POST';
+/** The methods api.cfm answers; communications.cfc dispatches only GET and POST. */
+const FIXTURE_METHODS = Object.freeze(['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'] as const);
+
+type HttpMethod = (typeof FIXTURE_METHODS)[number];
+
+/** Path parameters of the fixture routes: the detail's `{id}`, or the rest of the path after api.cfm on the catch-all. */
+type RouteParams = { id?: string; '*'?: string };
+
+type FixtureRequest = FastifyRequest<{ Params: RouteParams }>;
+
+/** One fixture path as api.cfm's grammar reads it. */
+interface FixturePath {
+  /** Envelope method `communications.<resource>[.<action>][.<tail>]`, without the id or a CF UUID tail; `invalid` outside the grammar. */
+  method: string;
+  /** communications.cfc's dispatch path `<resource>[/{id}][/+]`; undefined outside the grammar. */
+  key: string | undefined;
+  /** The `{id}` segment as sent; '' when absent. */
+  id: string;
+}
 
 /** One fixture request after api.cfm's site check. */
 interface FixtureCall {
@@ -75,7 +99,7 @@ async function requireSender(call: FixtureCall): Promise<UserClaims> {
 
 /** The message id to look up: stored ids are upper-case CF UUIDs, so this reproduces SQL Server's case- and trailing-space-insensitive match. */
 function storedId(call: FixtureCall): string {
-  return call.id.replace(/ +$/u, '').toUpperCase();
+  return storedCfId(call.id);
 }
 
 /** A `synthetic.message_template` row as envelope.cfc rows() writes it: dates to the second, NULL as ''. */
@@ -92,39 +116,59 @@ function fixtureTemplate(row: MessageTemplateRow): Schemas['MessageTemplate'] {
   };
 }
 
-/**
- * Registers one fixture path for exactly its declared methods. As api.cfm and communications.cfc do, the site is
- * checked first, then the effective method (X-HTTP-Method-Override included) picks the handler, and a method the
- * path lacks answers notFound.
- */
+/** api.cfm's grammar `<module>/<resource>[/<id>][/<action>][/<tail>]` over the non-empty path segments after api.cfm. */
+function fixturePath(segments: readonly string[]): FixturePath {
+  if (segments.length < 2 || segments.length > 5) return { method: 'invalid', key: undefined, id: '' };
+  const [, resource = '', id = '', action = '', tail = ''] = segments;
+  const namedTail = isCfUuid(tail) ? '' : tail;
+  return {
+    method: fixtureMethod(resource, [action, namedTail].filter((part) => part !== '').join('.')),
+    key: `${resource.toLowerCase()}${id === '' ? '' : '/{id}'}${action === '' ? '' : '/+'}`,
+    id,
+  };
+}
+
+/** communications.cfc handle(): the handler of each `<dispatch path> <effective method>` key. */
+type Dispatch = ReadonlyMap<string, MethodHandler>;
+
+/** Registers `url` for `methods`, dispatching each request through api.cfm's grammar, site check and communications.cfc key. */
 function registerPath(
   app: FastifyInstance,
   lookup: FixtureSiteLookup,
+  dispatch: Dispatch,
   url: string,
-  method: string,
-  handlers: ReadonlyArray<readonly [HttpMethod, MethodHandler]>,
+  methods: readonly HttpMethod[],
+  segmentsOf: (request: FixtureRequest) => readonly string[],
 ): void {
-  app.route<{ Params: { id?: string } }>({
-    method: handlers.map(([httpMethod]) => httpMethod),
+  app.route<{ Params: RouteParams }>({
+    method: [...methods],
     url,
     config: { opt2: FIXTURE_ROUTE_AUTH },
-    handler: fixtureHandler(method, async (request, reply, ctx) => {
-      const site = await resolveSite(request, ctx.params, lookup);
-      const effective = fixtureHttpMethod(request);
-      const handler = handlers.find(([httpMethod]) => httpMethod === effective)?.[1];
-      if (handler === undefined) {
-        throw new FixtureApiError('notFound');
-      }
-      return handler({ request, reply, ctx, site, id: request.params.id ?? '' });
-    }),
+    handler: fixtureHandler<FixtureRequest>(
+      (request) => fixturePath(segmentsOf(request)).method,
+      async (request, reply, ctx) => {
+        const segments = segmentsOf(request);
+        if (segments[0]?.toLowerCase() !== FIXTURE_MODULE) {
+          reply.callNotFound();
+          return reply;
+        }
+        const { key, id } = fixturePath(segments);
+        if (key === undefined) {
+          throw new FixtureApiError('notFound');
+        }
+        const site = await resolveSite(request, ctx.params, lookup);
+        const handler = dispatch.get(`${key} ${fixtureHttpMethod(request)}`);
+        if (handler === undefined) {
+          throw new FixtureApiError('notFound');
+        }
+        return handler({ request, reply, ctx, site, id });
+      },
+    ),
   });
 }
 
-/** Registers the five communications fixture routes the contract declares: templates and messages lists and writes, and the message detail. */
+/** Registers the five communications fixture routes the contract declares, and the api.cfm catch-all answering every other path and method. */
 export async function registerFixtureRoutes(app: FastifyInstance, deps: FixtureRouteDeps): Promise<void> {
-  const register = (url: string, method: string, handlers: ReadonlyArray<readonly [HttpMethod, MethodHandler]>): void =>
-    registerPath(app, deps.siteLookup, url, method, handlers);
-
   const templates: MethodHandler = async (call) => {
     const user = await requireSender(call);
     const filters: TemplateFilters = { ...call.ctx.params, siteId: call.site };
@@ -161,14 +205,19 @@ export async function registerFixtureRoutes(app: FastifyInstance, deps: FixtureR
     return fixtureSuccess(call.reply, { ...call.ctx, data: detail });
   };
 
-  register(`${FIXTURE_PREFIX}/templates`, fixtureMethod('templates'), [
-    ['GET', templates],
-    ['POST', storeTemplate],
+  const dispatch: Dispatch = new Map([
+    ['templates GET', templates],
+    ['templates POST', storeTemplate],
+    ['messages GET', messages],
+    ['messages POST', send],
+    ['messages/{id} GET', message],
   ]);
-  register(`${FIXTURE_PREFIX}/messages`, fixtureMethod('messages'), [
-    ['GET', messages],
-    ['POST', send],
-  ]);
-  // api.cfm leaves an `{id}` segment out of the envelope method, so the detail answers as `communications.messages`.
-  register(`${FIXTURE_PREFIX}/messages/:id`, fixtureMethod('messages'), [['GET', message]]);
+  const register = (url: string, methods: readonly HttpMethod[], segmentsOf: (request: FixtureRequest) => readonly string[]): void =>
+    registerPath(app, deps.siteLookup, dispatch, url, methods, segmentsOf);
+
+  register(`${FIXTURE_PREFIX}/templates`, ['GET', 'POST'], () => [FIXTURE_MODULE, 'templates']);
+  register(`${FIXTURE_PREFIX}/messages`, ['GET', 'POST'], () => [FIXTURE_MODULE, 'messages']);
+  register(`${FIXTURE_PREFIX}/messages/:id`, ['GET'], (request) => [FIXTURE_MODULE, 'messages', request.params.id ?? '']);
+  // CFML listToArray drops the empty segments of `//` and a trailing `/`.
+  register(FIXTURE_CATCH_ALL, FIXTURE_METHODS, (request) => (request.params['*'] ?? '').split('/').filter((segment) => segment !== ''));
 }

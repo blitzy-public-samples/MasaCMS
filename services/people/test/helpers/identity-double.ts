@@ -311,6 +311,8 @@ const USER_CLOSED_WAIT_MS = 10_000;
 const DEFAULT_XID_START = 1000n;
 /** Default and largest `limit` of `listGroups`. */
 const GROUP_PAGE_LIMIT = 1000;
+/** Width of the legacy `tusers.UserName` column, which identity's prepare enforces. */
+const USERNAME_WIDTH = 255;
 const CFML_FALSE: ReadonlySet<string> = new Set(['0', 'false', 'no']);
 
 /** A char(35) id as identity compares it: case-insensitive, trailing spaces ignored. */
@@ -782,6 +784,10 @@ export function createIdentityDouble(options: IdentityDoubleOptions = {}): Ident
       if (errors !== undefined) return json(errors, 400);
       const stored = listedAccount(userId);
       if ((change.kind === 'update') !== (stored !== undefined)) return badRequest();
+      // Identity checks the legacy width after its validation, recording nothing for a value beyond it.
+      if (javaTrim(change.account.UserName).length > USERNAME_WIDTH) {
+        return json({ table: 'user_account', column: 'username', violation: 'width', limit: USERNAME_WIDTH }, 500);
+      }
       const priorGroupIds = [...groupIdsOf(userId)];
       const operation: MutableOperation = {
         operationId,

@@ -37,7 +37,7 @@ import { applyLogin, endSession, ensureSession, sessionState } from '../../src/d
 import { DEFAULT_STRIKE_SETTINGS } from '../../src/domain/strikes.js';
 import { createIdentityEvents, identityPayloadValidators, MEMBERSHIP_CHANGED_TOPIC } from '../../src/events/publish.js';
 import { hashNewPassword, verifyLegacyPassword } from '../../src/legacy/hash.js';
-import { charKey, createIdentityRepository, type AccountInput, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
+import { LegacyStorageError, charKey, createIdentityRepository, type AccountInput, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
 import {
   IDENTITY_UNITS,
   LOGIN_STATE,
@@ -475,6 +475,38 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       expect(await operationOf(prepare.operationId)).toBeNull();
       expect(await registered(prepare.operationId)).toBe(false);
       expect((await accountOf(userId))?.username ?? null).toBe(existing ? username : null);
+    });
+
+    it.each<[string, AccountOperationKind, Partial<AccountChange>, string, 'width' | 'range']>([
+      ['a create posting a username of 256', 'create', { username: 'u'.repeat(256) }, 'username', 'width'],
+      ['an update posting a username of 256', 'update', { username: 'u'.repeat(256) }, 'username', 'width'],
+      ['a create posting a remoteID of 51', 'create', { remoteID: 'r'.repeat(51) }, 'remoteid', 'width'],
+      ['an update posting a tablist of 256', 'update', { tablist: 't'.repeat(256) }, 'tablist', 'width'],
+      ['a create posting Perm 256', 'create', { perm: 256 }, 'perm', 'range'],
+    ])('rejects %s with LegacyStorageError, reserving, recording and registering nothing', async (_label, kind, changes, column, violation) => {
+      const userId = kind === 'update' ? await seedUser(uname('wide')) : next('A');
+      const before = await accountOf(userId);
+      const prepare = input(kind, userId, changes);
+
+      const rejected: unknown = await prepareAccountOperation(deps(), prepare).catch((err: unknown) => err);
+
+      expect(rejected).toBeInstanceOf(LegacyStorageError);
+      expect(rejected).toMatchObject({ table: 'user_account', column, violation });
+      expect(await operationOf(prepare.operationId)).toBeNull();
+      expect(await registered(prepare.operationId)).toBe(false);
+      expect(await changelogCount(prepare.operationId, SITE_A)).toBe(0);
+      expect(await accountOf(userId)).toEqual(before);
+    });
+
+    it.each<[string, AccountOperationKind, Partial<AccountChange>]>([
+      ['a create posting a username of 255', 'create', { username: 'u'.repeat(255) }],
+      ['an update posting Perm 256, which the update leaves as stored', 'update', { perm: 256 }],
+    ])('prepares %s', async (_label, kind, changes) => {
+      const userId = kind === 'update' ? await seedUser(uname('at-width')) : next('A');
+
+      await prepared(input(kind, userId, changes));
+
+      expect(await accountOf(userId)).toMatchObject({ perm: 0, opt2_state: kind === 'create' ? 'pending' : 'active', ...(kind === 'create' ? { username: 'u'.repeat(255) } : {}) });
     });
 
     it.each([

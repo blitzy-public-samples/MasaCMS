@@ -234,6 +234,199 @@ paths:
           $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/communications/{fixturePath}:
+    description: 'Any path below the module the declared operations do not match, served by the api.cfm catch-all as `<resource>[/<id>][/<action>][/<tail>]` with empty segments dropped. More segments, and the module path alone with or without a trailing slash, which the same catch-all serves, answer notFound as method `invalid` before the site check.'
+    parameters:
+      - $ref: '#/components/parameters/FixturePath'
+      - $ref: '#/components/parameters/FixtureSiteId'
+      - $ref: '#/components/parameters/PageIndex'
+      - $ref: '#/components/parameters/ItemsPerPage'
+      - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: fixturePathGet
+      summary: Dispatches `templates`, `messages` and `messages/{id}` in any letter case on the effective method as their declared operations; any other path or method answers notFound after the site check.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureDispatched'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: fixturePathHead
+      summary: Dispatches `templates`, `messages` and `messages/{id}` in any letter case on the effective method as their declared operations; any other path or method answers notFound after the site check; HEAD sends the headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureDispatched'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixturePathPost
+      summary: Dispatches `templates`, `messages` and `messages/{id}` in any letter case on the effective method as their declared operations; any other path or method answers notFound after the site check.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureDispatched'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: fixturePathPut
+      summary: Dispatches `templates`, `messages` and `messages/{id}` in any letter case on the effective method as their declared operations; any other path or method answers notFound after the site check.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureDispatched'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: fixturePathDelete
+      summary: Dispatches `templates`, `messages` and `messages/{id}` in any letter case on the effective method as their declared operations; any other path or method answers notFound after the site check.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureDispatched'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: fixturePathPatch
+      summary: Dispatches `templates`, `messages` and `messages/{id}` in any letter case on the effective method as their declared operations; any other path or method answers notFound after the site check.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureDispatched'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: fixturePathOptions
+      summary: Dispatches `templates`, `messages` and `messages/{id}` in any letter case on the effective method as their declared operations; any other path or method answers notFound after the site check.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      x-opt2-fastify-path: /legacy-fixtures/cfml/api.cfm/*
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureDispatched'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /v1/templates:
     get:
       operationId: listTemplates
@@ -1178,6 +1371,15 @@ components:
       schema:
         type: string
         minLength: 1
+    FixturePath:
+      name: fixturePath
+      in: path
+      required: true
+      description: The rest of the path after the module, one or more segments; empty segments are dropped, and the resource, the action and a tail other than a CF UUID are read in lower case.
+      x-opt2-wildcard: true
+      schema:
+        type: string
+        minLength: 1
     MessageId:
       name: messageId
       in: path
@@ -1305,6 +1507,25 @@ components:
           schema:
             $ref: '#/components/schemas/SystemTaskWireBody'
   responses:
+    FixtureDispatched:
+      description: The answer of the declared fixture operation a case variant of its path or an `X-HTTP-Method-Override` dispatches to.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            anyOf:
+              - $ref: '#/components/schemas/FixtureTemplateListEnvelope'
+              - $ref: '#/components/schemas/FixtureTemplateEnvelope'
+              - $ref: '#/components/schemas/FixtureMessageListEnvelope'
+              - $ref: '#/components/schemas/FixtureMessageDetailEnvelope'
     FixtureBadRequest:
       description: 'Fixture 400: `invalidParameters` for an unknown site or an invalid parameter, or `badRequest`.'
       headers:
@@ -1407,7 +1628,7 @@ components:
                       message:
                         const: Insufficient Account Permissions
     FixtureNotFound:
-      description: Fixture 404 `notFound` for a message or template outside the site, or an `X-HTTP-Method-Override` naming a method the path does not declare.
+      description: Fixture 404 `notFound` for a message or template outside the site, or a path or effective method (`X-HTTP-Method-Override` included) communications.cfc does not dispatch; a path outside api.cfm's grammar answers it as method `invalid`.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -1644,8 +1865,9 @@ components:
               const: server_error
     FixtureMethod:
       type: string
-      description: Envelope method, `<module>.<resource>` of the fixture path.
-      enum:
+      description: Envelope method api.cfm names from the path, `communications.<resource>[.<action>][.<tail>]` in lower case without the id or a CF UUID tail; `invalid` for a path outside its grammar.
+      pattern: '^(?:invalid|communications\..+)$'
+      examples:
         - communications.templates
         - communications.messages
     FixtureEnvelope:

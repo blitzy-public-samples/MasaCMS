@@ -20,12 +20,16 @@ import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } 
 import {
   OWNER,
   SCHEMA,
+  LegacyStorageError,
   createIdentityRepository,
   lastUpdateInfo,
+  legacyStorable,
   type AccountFilter,
   type AccountInput,
   type GroupInput,
   type IdentityRepository,
+  type LegacyLimitedTable,
+  type OAuthClientValues,
   type ListedAccountCount,
   type SessionLockMode,
   type UsernameCandidateRow,
@@ -72,6 +76,48 @@ function groupInput(overrides: Partial<GroupInput> = {}): GroupInput {
 function account(userid: string, username: string, overrides: Partial<AccountInput> = {}): AccountInput {
   return { userid, username, type: 2, s2: 0, perm: 0, inactive: 0, ispublic: 0, siteid: 'site-a', remoteid: '', tablist: '', ...overrides };
 }
+
+function oauthClient(overrides: Partial<OAuthClientValues> = {}): OAuthClientValues {
+  return {
+    clientsecret: '', siteid: 'site-a', granttype: 'basic', userid: '', name: 'Client', created: NOW, lastupdate: NOW,
+    description: '', redirecturl: '', lastupdatebidy: '', lastupdateby: 'Ada Admin', ...overrides,
+  };
+}
+
+describe('legacyStorable', () => {
+  it.each<[string, LegacyLimitedTable, Record<string, unknown>, Record<string, unknown>]>([
+    ['text at its width', 'group_account', { email: 'e'.repeat(255), subtype: 's'.repeat(50), tablist: 't'.repeat(255) }, { email: 'e'.repeat(255), subtype: 's'.repeat(50), tablist: 't'.repeat(255) }],
+    ['only trailing spaces beyond the width, cut', 'user_account', { username: `${'u'.repeat(255)}   `, tags: 'x'.repeat(300) }, { username: 'u'.repeat(255), tags: 'x'.repeat(300) }],
+    ['NULL and absent values', 'oauth_client', { name: null }, { name: null }],
+    ['the tinyint bounds', 'group_account', { perm: 0, inactive: 255 }, { perm: 0, inactive: 255 }],
+    ['a finite float and the datetime floor', 'extend_data_user_activity', { numericvalue: 1.5e300, datetimevalue: new Date(1753, 0, 1) }, { numericvalue: 1.5e300, datetimevalue: new Date(1753, 0, 1) }],
+  ])('stores %s', (_label, table, row, expected) => {
+    expect(legacyStorable(table, row)).toEqual(expected);
+  });
+
+  it.each<[string, LegacyLimitedTable, Record<string, unknown>, string, 'width' | 'range']>([
+    ['a group email of 256', 'group_account', { email: 'e'.repeat(256) }, 'email', 'width'],
+    ['a group subtype of 51', 'group_account', { subtype: 's'.repeat(51) }, 'subtype', 'width'],
+    ['a group tablist of 256', 'group_account', { tablist: 't'.repeat(256) }, 'tablist', 'width'],
+    ['a space then text beyond the width', 'user_account', { username: `${'u'.repeat(255)} x` }, 'username', 'width'],
+    ['a varchar(25) tag site id of 26', 'user_tag', { siteid: 's'.repeat(26) }, 'siteid', 'width'],
+    ['an OAuth client name of 51', 'oauth_client', { name: 'n'.repeat(51) }, 'name', 'width'],
+    ['a tinyint of 256', 'user_address', { isprimary: 256 }, 'isprimary', 'range'],
+    ['an infinite float', 'user_address', { latitude: Number.POSITIVE_INFINITY }, 'latitude', 'range'],
+    ['a datetime that rounds past 9999', 'extend_data_user_activity', { datetimevalue: new Date(9999, 11, 31, 23, 59, 59, 999) }, 'datetimevalue', 'range'],
+  ])('rejects %s', (_label, table, row, column, violation) => {
+    const thrown = ((): unknown => {
+      try {
+        return legacyStorable(table, row);
+      } catch (err) {
+        return err;
+      }
+    })();
+    expect(thrown).toBeInstanceOf(LegacyStorageError);
+    expect(thrown).toBeInstanceOf(RepositoryError);
+    expect(thrown).toMatchObject({ table, column, violation });
+  });
+});
 
 describe('identity repository surface', () => {
   it('extends the platform repository of the owned tables and exposes it as base', () => {
@@ -220,6 +266,43 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(await gated((tx) => repo.updateGroup(tx, id(99, 'G'), groupInput(), null))).toBeNull();
   });
 
+  const extendValues = { siteid: 'site-a', attributevalue: 'x', remoteid: '', datetimevalue: null, numericvalue: null, stringvalue: 'v'.repeat(256) };
+
+  it.each<[string, (tx: TenantTx, groupId: string) => Promise<unknown>, string, string]>([
+    ['a group email of 256 on insert', (tx) => repo.insertGroup(tx, groupInput({ email: 'e'.repeat(256) }), null), 'group_account', 'email'],
+    ['a group subtype of 51 on update', (tx, groupId) => repo.updateGroup(tx, groupId, groupInput({ subtype: 's'.repeat(51) }), null), 'group_account', 'subtype'],
+    ['a group tablist of 256 on update', (tx, groupId) => repo.updateGroup(tx, groupId, groupInput({ tablist: 't'.repeat(256) }), null), 'group_account', 'tablist'],
+    ['a group perm of 256 on insert', (tx) => repo.insertGroup(tx, groupInput({ perm: 256 }), null), 'group_account', 'perm'],
+    ['a group address city of 51 on insert', (tx, groupId) => repo.insertGroupAddress(tx, { userid: groupId, city: 'c'.repeat(51) }), 'user_address', 'city'],
+    ['a group address URL of 201 on update', (tx, groupId) => repo.updateGroupAddress(tx, id(90, 'D'), { userid: groupId, addressurl: 'u'.repeat(201) }), 'user_address', 'addressurl'],
+    ['a second group tag of 101', (tx, groupId) => repo.replaceGroupTags(tx, { groupId, siteId: 'site-a', tags: `ok,${'t'.repeat(101)}` }), 'user_tag', 'tag'],
+    ['an extended string value of 256', (tx, groupId) => repo.replaceGroupExtendData(tx, { groupId, rows: [{ attributeId: 1, values: extendValues }] }), 'extend_data_user_activity', 'stringvalue'],
+    ['an account username of 256 on insert', (tx) => repo.insertAccount(tx, account(id(91), 'u'.repeat(256))), 'user_account', 'username'],
+    ['an account remoteid of 51 on update', (tx) => repo.updateAccount(tx, id(92), { ...account(id(92), 'x'), remoteid: 'r'.repeat(51) }), 'user_account', 'remoteid'],
+    ['an OAuth client name of 51 on insert', (tx) => repo.insertOAuthClient(tx, oauthClient({ name: 'n'.repeat(51) })), 'oauth_client', 'name'],
+    ['an OAuth client grant type of 51 on update', (tx) => repo.updateOAuthClient(tx, id(93, 'C'), oauthClient({ granttype: 'g'.repeat(51) })), 'oauth_client', 'granttype'],
+  ])('rejects %s with LegacyStorageError, writing nothing', async (_label, write, table, column) => {
+    const groupId = (await gated((tx) => repo.insertGroup(tx, groupInput(), null))).userid;
+    const logged = (await changelog()).length;
+
+    const outcome = await gated((tx) => write(tx, groupId)).catch((err: unknown) => err);
+
+    expect(outcome).toBeInstanceOf(LegacyStorageError);
+    expect(outcome).toMatchObject({ table, column });
+    expect(await changelog()).toHaveLength(logged);
+    expect(await inTenant((tx) => repo.findGroup(tx, groupId))).toMatchObject({ subtype: 'Default', tablist: null, row_version: '1' });
+  });
+
+  it('stores values at their legacy widths, cutting overflow made only of trailing spaces', async () => {
+    const created = await gated((tx) => repo.insertGroup(tx, groupInput({ email: 'e'.repeat(255), subtype: 's'.repeat(50), tablist: `${'t'.repeat(255)}  `, perm: 255 }), null));
+    expect(created).toMatchObject({ email: 'e'.repeat(255), subtype: 's'.repeat(50), tablist: 't'.repeat(255), perm: 255 });
+
+    const updated = await gated((tx) => repo.updateGroup(tx, created.userid, groupInput({ email: `${'e'.repeat(255)} `, tablist: 't'.repeat(255) }), null));
+    expect(updated).toMatchObject({ email: 'e'.repeat(255), tablist: 't'.repeat(255), row_version: '2' });
+    expect(await gated((tx) => repo.insertAccount(tx, account(id(94), 'u'.repeat(255))))).toMatchObject({ username: 'u'.repeat(255) });
+    expect(await gated((tx) => repo.insertOAuthClient(tx, oauthClient({ name: `${'n'.repeat(50)} ` })))).toMatchObject({ name: 'n'.repeat(50) });
+  });
+
   it('rejects writes of a legacy unit, waits out a closed gate and blocks reads during a window', async () => {
     await setGates('legacy');
     await expect(gated((tx) => repo.insertGroup(tx, groupInput(), null))).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
@@ -299,8 +382,6 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     ]);
     expect(await inTenant((tx) => repo.findGroupsByIds(tx, []))).toEqual([]);
     expect(await inTenant((tx) => repo.findGroup(tx, id(1, 'G')), otherTenantId)).toBeNull();
-    expect((await gated((tx) => repo.deleteGroupRow(tx, id(1, 'G'))))?.groupname).toBe('Admin');
-    expect(await gated((tx) => repo.deleteGroupRow(tx, id(1, 'G')))).toBeNull();
   });
 
   it('writes group child rows only for groups, with negative descending ids for tags and extended data', async () => {
@@ -312,7 +393,6 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(tags.every((row) => row.tagid < 0)).toBe(true);
     expect(tags.map((row) => row.tagid)).toEqual([...tags.map((row) => row.tagid)].sort((a, b) => b - a));
     expect(await gated((tx) => repo.replaceGroupTags(tx, { groupId, siteId: 'site-a', tags: null }))).toEqual([]);
-    expect(await gated((tx) => repo.deleteGroupTags(tx, groupId))).toBe(0);
 
     const values = { siteid: 'site-a', attributevalue: '5', remoteid: '', datetimevalue: null, numericvalue: 5, stringvalue: '5' };
     const extend = await gated((tx) => repo.replaceGroupExtendData(tx, { groupId, rows: [{ attributeId: 7, values }, { attributeId: 8, values: null }] }));
@@ -321,18 +401,14 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(extend[0]?.dataid).toBeLessThan(0);
     const replaced = await gated((tx) => repo.replaceGroupExtendData(tx, { groupId, rows: [{ attributeId: 7, values: { ...values, stringvalue: '6' } }] }));
     expect(replaced[0]?.stringvalue).toBe('6');
-    expect(await gated((tx) => repo.deleteGroupExtendData(tx, groupId))).toBe(1);
 
     await gated((tx) => repo.replaceGroupInterests(tx, { groupId, categoryIds: [id(1, 'C'), '', id(1, 'C'), id(2, 'C'), 'x'.repeat(36)] }));
     await gated((tx) => repo.replaceGroupInterests(tx, { groupId, categoryIds: [id(3, 'C'), id(1, 'C')], onlyCategoryIds: [id(2, 'C')] }));
     const interests = await inTenant(async (tx) => (await tx.query<{ categoryid: string }>(`SELECT categoryid FROM ${handle.schema}.user_interest ORDER BY categoryid`)).rows);
     expect(interests.map((row) => row.categoryid)).toEqual([id(1, 'C'), id(3, 'C')]);
-
-    await gated((tx) => repo.insert(tx, 'user_favorite', { favoriteid: id(1, 'F'), userid: groupId, favorite: 'f', type: 'Link', datecreated: NOW }));
-    expect(await gated((tx) => repo.deleteGroupFavorites(tx, groupId))).toBe(1);
   });
 
-  it('keeps one primary group address and deletes addresses with their extended data', async () => {
+  it('keeps one primary group address and updates an address in place', async () => {
     const groupId = (await gated((tx) => repo.insertGroup(tx, groupInput(), null))).userid;
     const first = await gated((tx) => repo.insertGroupAddress(tx, { userid: groupId, siteid: 'site-a', city: '' }));
     const second = await gated((tx) => repo.insertGroupAddress(tx, { userid: groupId, addressid: id(2, 'D'), addressname: 'Office', isprimary: 0 }));
@@ -348,10 +424,6 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     ]);
     const updated = await gated((tx) => repo.updateGroupAddress(tx, second.addressid, { userid: groupId, city: 'Rome', siteid: ' site-a ' }));
     expect(updated).toMatchObject({ city: 'Rome', siteid: 'site-a', addressname: null, isprimary: 1 });
-
-    await gated((tx) => repo.insert(tx, 'extend_data_user_activity', { dataid: 11, baseid: second.addressid, attributeid: 1, siteid: 'site-a' }));
-    expect(await gated((tx) => repo.deleteGroupAddresses(tx, groupId))).toBe(2);
-    expect(await inTenant((tx) => repo.findByKey(tx, 'extend_data_user_activity', { dataid: 11 }))).toBeNull();
   });
 
   it('replaces, clears, adds and removes memberships, and lists members by last name without S2 or pending accounts', async () => {

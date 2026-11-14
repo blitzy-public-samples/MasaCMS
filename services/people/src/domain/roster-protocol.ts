@@ -870,6 +870,19 @@ async function guarded<T>(step: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Identity's prepare answer, or the LegacyStorageError of an account value its legacy column cannot store, for which identity recorded nothing. */
+async function prepareAccount(
+  deps: RosterDeps,
+  call: { userId: string; operationId: string; change: AccountPrepareRequest; timeoutMs: number },
+): Promise<PrepareOutcome | LegacyStorageError> {
+  try {
+    return await guarded('prepare', () => deps.identity.prepare(call.userId, call.operationId, call.change, { timeoutMs: call.timeoutMs }));
+  } catch (err) {
+    if (err instanceof LegacyStorageError) return err;
+    throw err;
+  }
+}
+
 /**
  * Runs one Type=2 save under the roster write protocol. Returns legacy's validation outcome as `ok: false`; throws the
  * legacy 503 for a rejected save, which leaves no change on either side once any open step is recovered.
@@ -903,12 +916,18 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
     throw budgetSpent('prepare');
   }
   const change: AccountPrepareRequest = { kind: shaped.operation, ...shaped.account };
-  const prepared = await guarded('prepare', () => deps.identity.prepare(userId, operationId, change, { timeoutMs: prepareTimeoutMs }));
+  const prepared = await prepareAccount(deps, { userId, operationId, change, timeoutMs: prepareTimeoutMs });
+  const unstorable = prepared instanceof LegacyStorageError;
 
-  const errors = mergeUserErrors({ ...shaped.errors, identity: prepared.ok ? {} : prepared.errors, siteId: shaped.values.siteid }, deps.rb);
+  const errors = mergeUserErrors({ ...shaped.errors, identity: unstorable || prepared.ok ? {} : prepared.errors, siteId: shaped.values.siteid }, deps.rb);
+  // Legacy validates before the insert that fails on the value, so validation errors answer first.
+  if (unstorable && !hasErrors(errors)) {
+    await guarded('prepare', () => closeOperation(deps, tenantId, operationId, { state: 'rolled-back', error: 'legacy-storage' }, write));
+    throw prepared;
+  }
   if (hasErrors(errors)) {
     await guarded('validation', async () => {
-      if (prepared.ok) await deps.identity.abort(userId, operationId, callOptions(budget, 'abort'));
+      if (!unstorable && prepared.ok) await deps.identity.abort(userId, operationId, callOptions(budget, 'abort'));
       await closeOperation(deps, tenantId, operationId, { state: 'rolled-back', error: 'validation' }, write);
     });
     return { ok: false, errors, values: { ...shaped.values, errors } };

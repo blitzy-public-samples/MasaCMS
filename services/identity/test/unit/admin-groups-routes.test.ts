@@ -412,6 +412,21 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     expect((await send('GET', `/v1/groups/${userid}`, await admin())).json()).toMatchObject({ isNew: true });
   });
 
+  it.each([
+    ['an email of 256', { email: 'e'.repeat(256) }],
+    ['a subtype of 51', { subtype: 's'.repeat(51) }],
+    ['a tablist of 256', { tablist: 't'.repeat(256) }],
+  ])('answers a create and an update posting %s with the legacy 500 and writes nothing', async (_label, wide) => {
+    const userid = nextId('B');
+    const created = await send('POST', '/v1/groups', await admin(), { userid, groupname: 'Wide', isPublic: '0', ...wide, ...csrfFields(userid) });
+    const updated = await send('PUT', `/v1/groups/${ids.parent}`, await admin(), { groupname: 'Parent', isPublic: '0', ...wide, ...csrfFields(ids.parent) });
+
+    expect([created.statusCode, updated.statusCode]).toEqual([500, 500]);
+    expect(created.json()).toMatchObject({ error: { code: 'server_error', message: 'Unhandled Exception' } });
+    expect((await send('GET', `/v1/groups/${userid}`, await admin())).json()).toMatchObject({ isNew: true });
+    expect(await gated(SITE, (tx) => repo.findGroup(tx, ids.parent))).toMatchObject({ groupname: 'Parent', email: null, subtype: 'Default', tablist: null });
+  });
+
   it('creates under the posted id as CSRF context, forcing a non-admin to a Member group', async () => {
     const adminGroup = nextId('B');
     const editorGroup = nextId('B');

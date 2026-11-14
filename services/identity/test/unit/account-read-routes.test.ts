@@ -25,7 +25,7 @@ import {
 import { createAccountReads } from '../../src/domain/account-reads.js';
 import { registerAccountReadRoutes } from '../../src/routes/internal-account-reads.js';
 import { createIdentityRepository, type AccountInput, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
-import { IDENTITY_UNITS, USER_STRIKE } from '../../src/repo/tables.js';
+import { GROUP_ACCOUNT, IDENTITY_UNITS, USER_STRIKE } from '../../src/repo/tables.js';
 
 type ContractOperation = Record<string, unknown>;
 type Method = 'GET' | 'POST';
@@ -548,7 +548,7 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
       expect((await send('GET', `/internal/v1/accounts/${MISSING}/memberships`, await headersFor('people'))).json()).toEqual({ groupIds: [] });
     } finally {
       await gated('umbrella', (tx) => repo.removeMembership(tx, ACTIVE, abroad));
-      await gated('tenant-b', (tx) => repo.deleteGroupRow(tx, abroad));
+      await gated('tenant-b', (tx) => repo.delete(tx, GROUP_ACCOUNT.table, { userid: abroad }));
     }
   });
 

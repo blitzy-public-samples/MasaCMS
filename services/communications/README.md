@@ -84,6 +84,8 @@ Paths below are under `/legacy-fixtures/cfml/api.cfm/communications`. Each answe
 | `POST` | `/messages` | `communications.messages` | Sends `templateId` with `variables`, or literal content, `to` and `from`; returns the message with `history[]` |
 | `GET` | `/messages/{id}` | `communications.messages` | One message with its delivery history `history[]` |
 
+Every other method and path under `/legacy-fixtures/cfml/api.cfm/` reaches the catch-all `/legacy-fixtures/cfml/api.cfm/*`, which reads the path as `api.cfm` does: empty segments dropped, module, resource and action in any letter case, dispatched on the effective method (`X-HTTP-Method-Override` included). It serves the five rows above under those spellings and answers anything else with the fixture `notFound`: after the site check under `communications.<resource>[.<action>][.<tail>]`, or before it under `invalid` for the module alone or more than five segments. Another module's path gets the service's not-found.
+
 The gateway routes all five `legacy` in `v0001`. From `v0002` the two writes are `target` with their groups `grp:communications.message_template` and `grp:communications.delivery_status`; a read moves only once every unit it lists is `target`-authoritative.
 
 ### `/v1` APIs

@@ -1,8 +1,7 @@
-/** Group CRUD and memberships: Masa `tusers` Type=1 rows and their child rows, each save or delete one gated identity transaction. */
+/** Group saves, reads and memberships: Masa `tusers` Type=1 rows and their child rows, each write one gated identity transaction. */
 import { setTimeout as timerSleep } from 'node:timers/promises';
 import {
   LegacyServiceUnavailableError,
-  cfDateTimeFormat,
   cfEq,
   cfHash,
   cfIsBoolean,
@@ -31,10 +30,10 @@ import {
 import type { IdentityEvents } from '../events/publish.js';
 import type { ContentClient } from '../legacy/content-client.js';
 import { hashNewPassword, type LegacyPasswordConfig } from '../legacy/hash.js';
-import { WddxRecordset, cfml2wddx, type WddxValue } from '../legacy/wddx.js';
 import {
   READ_PAGE_SIZE,
   charKey,
+  legacyStorable,
   type AuditActor,
   type GroupAddressInput as GroupAddressRowInput,
   type GroupAddressUpdate,
@@ -48,7 +47,7 @@ import {
   type ListPage,
 } from '../repo/repository.js';
 import type { GroupFeedQuery } from '../repo/group-feed.js';
-import { GROUP_TRASH, type GroupAccountRow, type GroupAddressRow, type GroupTrashRow } from '../repo/tables.js';
+import { GROUP_ACCOUNT, GROUP_TRASH, type GroupAccountRow, type GroupAddressRow } from '../repo/tables.js';
 import { ACCOUNT_OPERATION_UNITS, DEFAULT_ACCOUNT_SETTINGS, USER_CLOSED_WAIT_MS, randomPassword, withOpenAccount, type LegacyErrors } from './account-operations.js';
 
 export type { GroupMemberRow };
@@ -218,15 +217,6 @@ export interface GroupDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** A group delete whose stored photo legacy would delete with it; the photo version is strategies-content data, so identity never deletes the group. */
-export class GroupPhotoWithheldError extends LegacyServiceUnavailableError {
-  override readonly name: string = 'GroupPhotoWithheldError';
-
-  constructor(readonly groupId: string) {
-    super(`Group ${groupId} has a stored photo; deleting it writes strategies-content data`, 'auto', 'group-photo-withheld');
-  }
-}
-
 /** Why a save identity cannot carry out in one transaction of its own data was halted. */
 export type GroupSaveHalt = 'pool-move' | 'origin-interests';
 
@@ -252,29 +242,6 @@ const SITE_REQUIRED = "The attribute 'SITEID' is required when saving a user.";
 const SITE_MISSING = "The 'SiteID' variable is missing.";
 const GROUP_TYPE = 1;
 const CLOSED_POLL_MS = 100;
-const EXTEND_DATA_TABLE = 'tclassextenddatauseractivity';
-// Columns of the bean's empty ADDRESSES query [legacy: core/mura/user/userBean.cfc:162].
-const ADDRESS_COLUMNS = [
-  'addressid',
-  'userid',
-  'siteid',
-  'address1',
-  'address2',
-  'city',
-  'state',
-  'zip',
-  'country',
-  'isPrimary',
-  'addressName',
-  'addressNotes',
-  'phone',
-  'fax',
-  'addressURL',
-  'longitude',
-  'latitude',
-  'addressEmail',
-  'hours',
-] as const;
 
 type TextColumn =
   | 'groupname'
@@ -599,103 +566,6 @@ function addressUpdate(groupId: string, siteId: string, stored: GroupAddressRow 
     row[column] = posted === undefined ? text(stored?.[column]) : javaTrim(posted);
   }
   return row;
-}
-
-/** Identifiers and time of one `trashManager.throwIn` call. */
-interface TrashStamp {
-  at: Date;
-  /** muraDeleteID, a createUUID() value. */
-  deleteId: string;
-  /** INSTANCEID, the createUUID() value the bean took at init. */
-  instanceId: string;
-}
-
-/** A loaded group's `getAllValues()` struct in ACF 2023's cfml2wddx key order, without people-owned extended attributes [legacy: core/mura/trash/trashManager.cfc:174-227]. */
-function groupTrashValues(group: GroupAccountRow, groupIds: readonly string[], categoryIds: readonly string[], stamp: TrashStamp): Map<string, WddxValue> {
-  // bean.set(rsUser) trims every column to text; setters parse the dates back and setKeepPrivate keeps its init 0 for a NULL.
-  const flag = (value: number | null): string => (value === null ? '' : String(value));
-  return new Map<string, WddxValue>([
-    ['ERRORS', {}],
-    ['MOBILEPHONE', text(group.mobilephone)],
-    ['LNAME', text(group.lname)],
-    ['EMAIL', text(group.email)],
-    ['CONTACTFORM', text(group.contactform)],
-    ['LASTUPDATE', group.lastupdate ?? ''],
-    ['EXTENDDATATABLE', EXTEND_DATA_TABLE],
-    ['KEEPPRIVATE', group.keepprivate === null ? 0 : String(group.keepprivate)],
-    ['USERID', text(group.userid)],
-    ['USERNAME', text(group.username)],
-    ['PASSEDPROTECT', true],
-    ['muraDeleteID', stamp.deleteId],
-    ['type', flag(group.type)],
-    ['LASTUPDATEBYID', text(group.lastupdatebyid)],
-    ['SUBTYPE', text(group.subtype)],
-    ['CATEGORYID', categoryIds.join(',')],
-    ['REMOVEOBJECTS', []],
-    ['FNAME', text(group.fname)],
-    ['COMPANY', text(group.company)],
-    ['TABLIST', text(group.tablist)],
-    ['NEWFILE', ''],
-    ['PASSWORD', ''],
-    ['FROMMURACACHE', false],
-    ['ISPUBLIC', flag(group.ispublic)],
-    ['ADDRESSES', new WddxRecordset(ADDRESS_COLUMNS)],
-    ['IMSERVICE', text(group.imservice)],
-    ['ISNEW', '0'],
-    ['JOBTITLE', text(group.jobtitle)],
-    ['WEBSITE', text(group.website)],
-    ['LASTLOGIN', group.lastlogin ?? ''],
-    ['TAGS', text(group.tags)],
-    ['S2', flag(group.s2)],
-    ['EXTENDAUTOCOMPLETE', true],
-    // setValue trims now() to its CFML string form [legacy: core/mura/trash/trashManager.cfc:179-183].
-    ['muraDeleteDateTime', `{ts '${cfDateTimeFormat(stamp.at, 'yyyy-mm-dd HH:nn:ss')}'}`],
-    ['ADDOBJECTS', []],
-    ['NOTES', text(group.notes)],
-    ['CREATED', group.created ?? ''],
-    ['GROUPNAME', text(group.groupname)],
-    ['PERM', flag(group.perm)],
-    ['DESCRIPTION', text(group.description)],
-    ['HKEY', ''],
-    ['ADDRESSID', ''],
-    ['IMNAME', text(group.imname)],
-    ['INSTANCEID', stamp.instanceId],
-    ['PASSWORDCREATED', group.passwordcreated ?? stamp.at],
-    ['PHOTOFILEID', text(group.photofileid)],
-    ['INTERESTS', text(group.interests)],
-    ['SOURCEITERATOR', ''],
-    ['EXTENDSETID', ''],
-    ['SITEID', text(group.siteid)],
-    ['PRIMARYADDRESSID', ''],
-    ['SUBSCRIBE', flag(group.subscribe)],
-    ['UKEY', ''],
-    ['REMOTEID', text(group.remoteid)],
-    ['GROUPID', groupIds.join(',')],
-    ['INACTIVE', flag(group.inactive)],
-    ['PHOTOFILEEXT', ''],
-    ['LASTUPDATEBY', text(group.lastupdateby)],
-    ['EXTENDDATA', ''],
-  ]);
-}
-
-/** The `ttrash` row `throwIn` inserts for a group [legacy: core/mura/trash/trashManager.cfc:229-273]. */
-function groupTrashRow(group: GroupAccountRow, actor: GroupActor, sessionSiteId: string, objectString: string, stamp: TrashStamp): Omit<GroupTrashRow, 'tenant_id'> {
-  const siteId = text(group.siteid);
-  return {
-    objectid: group.userid,
-    parentid: 'NA',
-    siteid: siteId === '' ? sessionSiteId : siteId,
-    objectlabel: text(group.groupname),
-    objectclass: 'user',
-    objecttype: 'Group',
-    objectsubtype: text(group.subtype),
-    objectstring: objectString,
-    // The stored time is the trimmed muraDeleteDateTime text, so it keeps whole seconds.
-    deleteddate: new Date(Math.floor(stamp.at.getTime() / 1000) * 1000),
-    deletedby: javaTrim(`${actor.fname ?? ''} ${actor.lname ?? ''}`).slice(0, 50),
-    deleteid: stamp.deleteId,
-    orderno: 1,
-  };
 }
 
 /** Each registered tenant once, the `first` tenants ahead of the rest. */
@@ -1152,7 +1022,8 @@ export async function updateGroup(deps: GroupDeps, actor: GroupActor, input: Gro
   const base = located === null ? newGroupValues(groupId) : storedGroupValues(located.group);
   const { values, errors, tenantId } = await prepareSave(deps, actor, input, base);
   const echo = echoRecord(values, located?.group ?? null, deps.clock.now());
-  // Legacy's UPDATE of an unknown id changes no row; the child rows it then writes would belong to no group here.
+  // Legacy's UPDATE of an unknown id changes no row yet fails on a value the columns it sets (all but Perm) cannot store.
+  if (located === null && tenantId !== null && Object.keys(errors).length === 0) legacyStorable(GROUP_ACCOUNT.table, { ...groupColumns(values, ''), perm: null });
   if (located === null || tenantId === null || Object.keys(errors).length > 0) return { written: false, group: echo, errors };
   // A pool switch would move the row and its children to another tenant, which no single transaction can write.
   if (tenantId !== located.tenantId) throw new GroupSaveHaltedError(groupId, 'pool-move');
@@ -1193,31 +1064,6 @@ export async function updateGroup(deps: GroupDeps, actor: GroupActor, input: Gro
     await events.publishGroupChanged(tx, row, { deleted: false });
     await publishOwnMemberships(deps, tx, groupId, values.siteid, before);
     return { written: true, group: recordOf(row), errors: {} };
-  });
-}
-
-/** Deletes a group as `userManager.delete` does, leaving its memberships, permissions, addresses, interests and favorites; false for an unknown id [legacy: core/mura/user/userManager.cfc:705-744; core/mura/user/userDAO.cfc:357-378]. */
-export async function deleteGroup(deps: GroupDeps, actor: GroupActor, input: { groupId: string; siteId: string }): Promise<boolean> {
-  const located = await locateGroup(deps, input.groupId, text(input.siteId));
-  if (located === null) return false;
-  const stamp: TrashStamp = { at: deps.clock.now(), deleteId: cfUuid(), instanceId: cfUuid() };
-  return withGatedTenant(deps.db, located.tenantId, async (tx) => {
-    const { repo, events } = deps;
-    const group = await repo.findGroup(tx, located.group.userid);
-    if (group === null) return false;
-    if (text(group.photofileid) !== '') throw new GroupPhotoWithheldError(group.userid);
-    const groupId = group.userid;
-    if ((await repo.findByKey(tx, GROUP_TRASH.table, { objectid: groupId })) === null) {
-      const values = groupTrashValues(group, await repo.membershipGroupIds(tx, groupId), await repo.groupInterestIds(tx, groupId), stamp);
-      await repo.insert(tx, GROUP_TRASH.table, groupTrashRow(group, actor, text(input.siteId), cfml2wddx(values), stamp));
-    }
-    await repo.deleteGroupExtendData(tx, groupId);
-    await repo.deleteGroupTags(tx, groupId);
-    await repo.deleteTokensByUser(tx, groupId);
-    const deleted = await repo.deleteGroupRow(tx, groupId);
-    if (deleted === null) return false;
-    await events.publishGroupChanged(tx, deleted, { deleted: true });
-    return true;
   });
 }
 

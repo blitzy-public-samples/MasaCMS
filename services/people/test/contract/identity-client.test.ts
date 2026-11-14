@@ -34,6 +34,7 @@ import {
   type PrepareOutcome,
   type UserGroupRow,
 } from '../../src/legacy/identity-client.js';
+import { LegacyStorageError } from '../../src/repo/repository.js';
 import { TEST_CLOCK, buildTestApp, userHeaders, type TestApp } from '../helpers/app.js';
 import {
   DEFAULT_PEOPLE_SEED,
@@ -444,6 +445,15 @@ describe("identity's answers as people's client reads them", () => {
     expect(outcome).toEqual({ ok: false, errors });
     expect(outcome.ok ? [] : Object.keys(outcome.errors)).toEqual(['username', 'password']);
     expect(subject.exchanges.map((exchange) => exchange.response?.status)).toEqual([400]);
+    assertExchangesMatchContract(subject.exchanges);
+  });
+
+  it("rejects a username identity's legacy column cannot store with the LegacyStorageError identity's 500 names", async () => {
+    const change: AccountPrepareRequest = { ...UPDATE, account: { ...UPDATE.account, UserName: 'u'.repeat(256) } };
+    const failure = inSiteAdminSession(() => subject.identity.prepare(SYSTEM_USER_A_PERSON.userid, cfUuid(), change));
+    await expect(failure).rejects.toBeInstanceOf(LegacyStorageError);
+    await expect(failure).rejects.toMatchObject({ table: 'user_account', column: 'username', violation: 'width', limit: 255 });
+    expect(subject.exchanges.map((exchange) => exchange.response?.status)).toEqual([500]);
     assertExchangesMatchContract(subject.exchanges);
   });
 

@@ -839,6 +839,95 @@ describe('readUserPoolSites', () => {
   });
 });
 
+describe('readMailSettings', () => {
+  const LOOKUP_PATH = '/internal/v1/sites/mail-settings:lookup';
+  const rows = (): SiteRow[] => [siteRow('default'), siteRow('tenant-a'), siteRow('tenant-b')];
+
+  it.each<{ name: string; siteId: string; arrange?: (h: Harness) => void; siteID: string; opened: string[] }>([
+    { name: 'the named site ignoring case', siteId: 'TENANT-A', siteID: 'tenant-a', opened: [TENANT_A] },
+    { name: 'default for an empty id', siteId: '', siteID: 'default', opened: [TENANT_DEFAULT] },
+    { name: 'default for an id that names no site', siteId: 'nosuch', siteID: 'default', opened: [TENANT_DEFAULT] },
+    {
+      name: 'default for a registered site without a stored row',
+      siteId: 'tenant-b',
+      arrange: ({ store }) => {
+        store.sites.delete(TENANT_B);
+      },
+      siteID: 'default',
+      opened: [TENANT_B, TENANT_DEFAULT],
+    },
+  ])('resolves $name as getSite does', async ({ siteId, arrange, siteID, opened }) => {
+    const h = harness(rows());
+    arrange?.(h);
+
+    const [settings] = await h.domain.readMailSettings(h.db, [siteId]);
+
+    expect(settings?.siteID).toBe(siteID);
+    expect(settings?.site).toBe(`Site ${siteID}`);
+    expect(h.opened).toEqual(opened);
+    expect(writesOf(h.repo)).toEqual([]);
+  });
+
+  it('answers one entry per listed id, in request order', async () => {
+    const { db, domain } = harness(rows());
+
+    const items = await domain.readMailSettings(db, ['tenant-b', '', 'tenant-a', 'tenant-b']);
+
+    expect(items.map(({ siteID }) => siteID)).toEqual(['tenant-b', 'default', 'tenant-a', 'tenant-b']);
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: LOOKUP_PATH, status: 200, contentType: 'application/json', body: { items } });
+  });
+
+  it.each<{ name: string; row: Partial<SiteRow>; indexFile?: string; expected: Record<string, unknown> }>([
+    {
+      name: 'the stored mail fields of a local site, which keeps configBean port and context',
+      row: {
+        site: 'Alpha',
+        contact: 'contact@a.example.test',
+        sendloginscript: 'Dear #firstName#',
+        editprofileurl: '/profile/',
+        extranetpublicregnotify: 'notify@a.example.test',
+        isremote: 0,
+        remoteport: 8443,
+        remotecontext: '/remote',
+      },
+      expected: {
+        siteID: 'tenant-a',
+        site: 'Alpha',
+        contact: 'contact@a.example.test',
+        sendLoginScript: 'Dear #firstName#',
+        editProfileURL: '/profile/',
+        extranetSSL: false,
+        useSSL: false,
+        extranetPublicRegNotify: 'notify@a.example.test',
+        remote: null,
+      },
+    },
+    { name: 'the port and context of a remote site', row: { isremote: 1, remoteport: 8443, remotecontext: '/remote' }, expected: { remote: { serverPort: ':8443', context: '/remote' } } },
+    { name: 'no port for a remote site on 443', row: { isremote: 1, remoteport: 443, remotecontext: null }, expected: { remote: { serverPort: '', context: '' } } },
+    { name: 'the default edit-profile URL for an empty one', row: { editprofileurl: null }, expected: { editProfileURL: '?display=editProfile' } },
+    { name: 'the default edit-profile URL under the indexFile', row: { editprofileurl: '' }, indexFile: '/index.cfm', expected: { editProfileURL: '/index.cfm?display=editProfile' } },
+    { name: 'null for an edit-profile URL with an [m] tag', row: { editprofileurl: '[m]$.siteConfig("editProfileURL")[/m]' }, expected: { editProfileURL: null } },
+    { name: 'null for an edit-profile URL with a [mura] tag', row: { editprofileurl: '/x/[MURA]$.createHref()[/MURA]' }, expected: { editProfileURL: null } },
+    { name: 'useSSL and extranetSSL from a set useSSL', row: { usessl: 1, extranetssl: 0 }, expected: { extranetSSL: true, useSSL: true } },
+    { name: 'useSSL from extranetSSL when useSSL is NULL', row: { usessl: null, extranetssl: 1 }, expected: { extranetSSL: true, useSSL: true } },
+  ])('reads $name', async ({ row, indexFile, expected }) => {
+    const config = indexFile === undefined ? {} : { config: { emailBroadcaster: false, indexFile } };
+    const { db, domain } = harness([siteRow('tenant-a', row)], config);
+
+    const [settings] = await domain.readMailSettings(db, ['tenant-a']);
+
+    expect(settings).toMatchObject(expected);
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: LOOKUP_PATH, status: 200, contentType: 'application/json', body: { items: [settings] } });
+  });
+
+  it('fails as getSite does when neither the named site nor default is stored', async () => {
+    const { db, domain } = harness([siteRow('tenant-a')]);
+
+    await expect(domain.readMailSettings(db, ['nosuch'])).rejects.toThrow("Neither site 'nosuch' nor the default site is registered");
+  });
+});
+
+
 describe('saveOrderAndDeploy', () => {
   const rows = (): SiteRow[] => [siteRow('tenant-a', { orderno: 1, deploy: 1 }), siteRow('tenant-b', { orderno: 2, deploy: 1 })];
 

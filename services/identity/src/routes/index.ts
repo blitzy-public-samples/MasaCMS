@@ -23,6 +23,7 @@ import type { TokenService } from '../domain/tokens.js';
 import { createIdentityEvents } from '../events/publish.js';
 import { createBridgeRelay } from '../legacy/bridge-relay.js';
 import { createContentClient } from '../legacy/content-client.js';
+import { createSitesClient, type SiteMailSettings, type SitesClient } from '../legacy/sites-client.js';
 import type { IdentityRepository } from '../repo/repository.js';
 import { registerAdminGroupRoutes } from './admin-groups.js';
 import { registerAdminOAuthClientRoutes } from './admin-oauth-clients.js';
@@ -69,41 +70,32 @@ function urlStemOptions(env: MasaEnv): UrlStemOptions {
 }
 
 /**
- * `getSite(siteId)` as far as identity can answer it. The tsettings mail columns are programs-sites data that no
- * operation open to identity serves, so reading one refuses with the legacy 503 instead of mailing with made-up values.
+ * `getSite(siteId)` from programs-sites' answer: a remote site's own port and context, else configBean's
+ * [legacy: core/mura/settings/settingsBean.cfc:1395-1414]. An edit-profile URL only CFML can evaluate refuses with the
+ * legacy 503 when read, so only a mail that needs it fails.
  */
-function siteMailSettings(global: LoginMailGlobalSettings): LoginMailSiteSettings {
-  const refuse = (column: string): never => {
-    throw new LegacyServiceUnavailableError(`tsettings.${column} is programs-sites data identity cannot read`, 'auto', 'site-mail-settings');
-  };
+function siteMailSettings(found: SiteMailSettings, global: LoginMailGlobalSettings): LoginMailSiteSettings {
+  const { editProfileURL } = found;
   return Object.freeze({
-    // The session site list reads only the name, so it gets settingsBean's unset Site rather than a refusal.
-    site: '',
-    serverPort: global.serverPort,
-    context: global.context,
-    get contact(): string {
-      return refuse('Contact');
-    },
-    get sendLoginScript(): string {
-      return refuse('sendLoginScript');
-    },
+    site: found.site,
+    contact: found.contact,
+    sendLoginScript: found.sendLoginScript,
+    extranetSSL: found.extranetSSL,
+    useSSL: found.useSSL,
+    serverPort: found.remote?.serverPort ?? global.serverPort,
+    context: found.remote?.context ?? global.context,
+    extranetPublicRegNotify: found.extranetPublicRegNotify,
     get editProfileURL(): string {
-      return refuse('editProfileURL');
-    },
-    get extranetSSL(): boolean {
-      return refuse('ExtranetSSL');
-    },
-    get useSSL(): boolean {
-      return refuse('useSSL');
-    },
-    get extranetPublicRegNotify(): string {
-      return refuse('ExtranetPublicRegNotify');
+      if (editProfileURL === null) {
+        throw new LegacyServiceUnavailableError(`The editProfileURL of site ${found.siteID} holds Mura tags only CFML evaluates (EX-LOGIN-MAIL-TAGGED-URL)`, 'auto', 'site-mail-settings');
+      }
+      return editProfileURL;
     },
   });
 }
 
-/** Masa's login-mail settings with the configBean values identity reads from `MURA_<KEY>`; every site resolves to {@link siteMailSettings}. */
-function loginMailSettings(legacy: LegacyApiSettings, env: MasaEnv): LoginMailSettingsSource {
+/** Masa's login-mail settings: configBean values identity reads from `MURA_<KEY>`, site settings from programs-sites. */
+function loginMailSettings(legacy: LegacyApiSettings, env: MasaEnv, sites: SitesClient): LoginMailSettingsSource {
   const global: LoginMailGlobalSettings = Object.freeze({
     ...DEFAULT_LOGIN_MAIL_GLOBAL_SETTINGS,
     adminSSL: legacy.adminSSL,
@@ -111,12 +103,17 @@ function loginMailSettings(legacy: LegacyApiSettings, env: MasaEnv): LoginMailSe
     serverPort: legacy.serverPort ?? DEFAULT_LOGIN_MAIL_GLOBAL_SETTINGS.serverPort,
     context: legacy.context,
   });
-  const site = siteMailSettings(global);
   const stem = urlStemOptions(env);
+  const lookup = async (siteId: string): Promise<SiteMailSettings> => {
+    const [found] = await sites.mailSettings([siteId]);
+    if (found === undefined) throw new Error(`programs-sites answered no mail settings for site '${siteId}'`);
+    return found;
+  };
   return {
     global: () => global,
-    site: () => site,
-    urlStem: (siteId, filename) => legacyUrlStem(siteId, filename, stem),
+    site: async (siteId) => siteMailSettings(await lookup(siteId), global),
+    // getURLStem reads the site id only with siteIdInUrls, so only then is its stored form looked up.
+    urlStem: async (siteId, filename) => legacyUrlStem(stem.siteIdInUrls ? (await lookup(siteId)).siteID : siteId, filename, stem),
   };
 }
 
@@ -135,7 +132,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   const permissions: PermissionDeps = { db, repo, events };
   const reverseLookup: ReversePermDeps = { db, repo };
   const oauth: OAuthDeps = { db, repo, clock };
-  const loginMail: LoginMailDeps = { db, repo, events, clock, settings: loginMailSettings(legacy, process.env) };
+  const loginMail: LoginMailDeps = { db, repo, events, clock, settings: loginMailSettings(legacy, process.env, createSitesClient(client)) };
   const accounts: AccountOperationDeps = { db, repo, events, clock };
   const rest: OAuthRouteDeps = { oauth, login, sessions };
 

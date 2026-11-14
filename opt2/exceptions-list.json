@@ -311,6 +311,21 @@
         "replay": "opt2/reports/parity.json#GS-CO-04"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-LOGIN-MAIL-TAGGED-URL",
+      "scenario": "GS-ID-04",
+      "routeKey": "admin:clogin.main",
+      "appliesTo": [],
+      "difference": "Legacy `sendLogin` builds a site-scoped login mail's edit-profile redirect from `getSite(siteid).getEditProfileURL()` (core/mura/user/userUtility.cfc:518-540), which evaluates the `[m]`, `[mura]` and `[sava]` tags of the stored `tsettings.EditProfileURL` as CFML through `contentRenderer.setDynamicContent` (core/mura/settings/settingsBean.cfc:559-569; core/mura/content/contentRenderer.cfc:2699-2760). programs-sites answers such a URL as null, and identity answers that mail with the legacy-shaped 503, writing nothing. The legacy admin forgot-password form always passes an empty site id (admin/core/views/clogin/main.cfm:310), as web does to `POST /v1/login-mail`, so `admin:clogin.main` and GS-ID-04 never reach the case.",
+      "decision": "preserve",
+      "reason": "Evaluating CFML tags is impossible outside the legacy runtime, so the target fails closed on a site-scoped mail whose stored edit-profile URL holds them instead of diverging. Halting would hold `admin:clogin.main` back as `legacy-write` for a case its legacy behaviour never reaches, so the entry stays open as the record. It closes once the target reproduces the evaluated URL.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ID-04.json",
+        "replay": "opt2/reports/parity.json#GS-ID-04"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }
   ]
 }

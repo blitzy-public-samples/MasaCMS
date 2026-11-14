@@ -17,6 +17,7 @@ Contracts: [`contracts/openapi.yaml`](contracts/openapi.yaml), [`contracts/event
 | Pools | `publicUserPoolID`, `privateUserPoolID`, `displayPoolID`, `contentPoolID`, `categoryPoolID`, `filePoolID`, each defaulting to the site's own id [core/mura/settings/settingsBean.cfc:119-124,328-344] | Stored on `programs_sites.site` and published as legacy site ids in `site.changed`; each consumer resolves them to tenant UUIDs in its `tenant_registry`. Pooled rows of other services carry the pool site's tenant |
 | JSON API entity `site` | Public entity [core/mura/client/api/json/v1/jsonApiUtility.cfc:69-73]; an unknown `siteid` falls back to `default` [core/mura/content/contentServer.cfc:610-622] | Every `/_api/{json,ajax,rest}/v1` path, also behind `/index.cfm` and in any letter case, under every verb: `findOne`, `findAll`, `findMany`, `findQuery`, `findNew`, `findProperties`, `findPermissions`, `validate` and `delete`; the withheld `save` answers the legacy-shaped 503 ([below](#json-api-site)) |
 | Admin layout site data, a user's sites, href domains | `settingsManager.getUserSites`, `contentServer.bindToDomain(isAdmin=true)`, `utility.sanitizeHref` | `GET /v1/sites/{siteId}/shell`, `GET /v1/sites/{siteId}/user-pool-sites`, `GET /v1/user-sites` (for `web/`), `GET /v1/href-domains` (for the gateway) |
+| Site login-mail settings | `settingsManager.getSite` [core/mura/settings/settingsManager.cfc:537-567]; `getUseSSL`, `getEditProfileURL`, `getServerPort`, `getContext` [core/mura/settings/settingsBean.cfc:396-402,559-569,1395-1414] | `POST /internal/v1/sites/mail-settings:lookup` (for identity's login mail) |
 | In-memory site registry rebuild | `settingsManager.setSites` [core/mura/settings/settingsManager.cfc:440-486] | `programs-sites.site.changed.v1` into every service's `tenant_registry`; legacy is refreshed by the migration projector through `gateway/legacy-bridge/cfml/site.cfm?op=refresh` |
 | Site monitor | `/_api/sitemonitor` [core/mura/content/contentServer.cfc:669-747]; ACF task registration [core/appcfc/onApplicationStart_include.cfm:549-579] | `src/jobs/sitemonitor.ts` ([below](#site-monitor)) |
 
@@ -127,6 +128,7 @@ The service implements the other routes in full, so a later version can move the
 |---|---|---|
 | `POST /internal/v1/migration/apply`; `GET /internal/v1/migration/export`, `changes`, `position`; `GET`, `POST /internal/v1/migration/watermark`; `POST /internal/v1/migration/gate` | service | `platform.migration` |
 | `GET`, `PUT /internal/v1/sitemonitor/state` | service | `platform.migration` |
+| `POST /internal/v1/sites/mail-settings:lookup` | service | `service:identity`: the mail settings `getSite` resolves for each listed id, in order |
 | `POST /internal/v1/task-queues/{queue}/pause`, `resume`, `ensure` | service | `platform.migration`, `platform.operator` |
 | `POST /internal/v1/events/programs-sites.programs-sites.site.changed.v1` | Pub/Sub push | `service:pubsub-invoker` |
 | `POST /internal/v1/outbox/sweep` (`programs-sites-outbox-sweep`) | Cloud Tasks | `service:tasks-invoker` |

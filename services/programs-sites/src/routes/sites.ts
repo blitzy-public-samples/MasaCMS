@@ -1,9 +1,9 @@
 /**
- * Site-settings routes of `csettings.list`, `editSite`, the refused `updateSite`, the admin layout's site read and the
- * admin gate's `sanitizeHref`.
+ * Site-settings routes of `csettings.list`, `editSite`, the refused `updateSite`, the admin layout's site read, the
+ * admin gate's `sanitizeHref` and identity's login-mail settings.
  */
 import { AuthDenial, Roles, assertSiteMatches, serviceRole, type UserClaims } from '@opt2/platform/auth';
-import { LegacyServiceUnavailableError, cfEq } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, LegacyServiceUnavailableError, cfEq } from '@opt2/platform/legacy-compat';
 import {
   csrfPreHandler,
   legacyParamsOf,
@@ -33,6 +33,9 @@ const S2_ONLY = [Roles.s2] as const;
 const S2_OR_SITE_ADMIN = [Roles.s2, Roles.siteAdmin] as const;
 const PRIVATE_ADMIN = [Roles.s2, Roles.siteAdmin, Roles.systemUser] as const;
 const GATEWAY_ONLY = [serviceRole('gateway')] as const;
+const IDENTITY_ONLY = [serviceRole('identity')] as const;
+
+const MAIL_SETTINGS_LOOKUP_PATH = '/internal/v1/sites/mail-settings::lookup';
 
 // legacy: csettings.cfc:103 params siteSortBy to `site`; getList's direction defaults to `asc`.
 const DEFAULT_SORT_BY = 'site';
@@ -60,6 +63,10 @@ const validateOrderForm = legacyParamsGuard(
     csrf_token_expires: optionalText,
   }),
 );
+
+const mailSettingsLookupSchema = z.strictObject({
+  siteIds: z.array(z.string()).min(1),
+}) satisfies z.ZodType<Schemas['SiteMailSettingsLookup']>;
 
 /** `SiteUpdate` over lower-cased names: `action` equal to `Update` under CFML `==`, and every field a simple value. */
 const validateUpdateForm = legacyParamsGuard(
@@ -111,7 +118,8 @@ function clientGoneSignal(reply: FastifyReply): AbortSignal {
 
 /**
  * Registers `GET /v1/sites`, `POST /v1/sites/order`, `GET /v1/sites/:siteId`, `GET /v1/sites/:siteId/shell`,
- * `GET /v1/sites/:siteId/user-pool-sites`, the refusing `POST /v1/sites/:siteId/update` and `GET /v1/href-domains`.
+ * `GET /v1/sites/:siteId/user-pool-sites`, the refusing `POST /v1/sites/:siteId/update`, `GET /v1/href-domains` and
+ * `POST /internal/v1/sites/mail-settings:lookup`.
  */
 export async function registerSiteRoutes(app: FastifyInstance, deps: SiteRouteDeps): Promise<void> {
   /** Sites screen rows for an S2 user [csettings.cfc:97-114]. */
@@ -222,5 +230,16 @@ export async function registerSiteRoutes(app: FastifyInstance, deps: SiteRouteDe
     '/v1/href-domains',
     { config: { opt2: { transport: 'service', requires: GATEWAY_ONLY } } },
     async (request) => deps.sites.hrefDomains(deps.db, fieldText(legacyParamsOf(request), 'siteid') ?? ''),
+  );
+
+  /** Site settings identity's forgot-password and send-login mail read through getSite [userUtility.cfc:518-540]. */
+  app.post<{ Reply: Schemas['SiteMailSettingsList'] }>(
+    MAIL_SETTINGS_LOOKUP_PATH,
+    { config: { opt2: { transport: 'service', requires: IDENTITY_ONLY } } },
+    async (request) => {
+      const body = mailSettingsLookupSchema.safeParse(request.body);
+      if (!body.success) throw new LegacyApiError('badRequest');
+      return { items: await deps.sites.readMailSettings(deps.db, body.data.siteIds) };
+    },
   );
 }

@@ -26,7 +26,7 @@ import {
 import type { components } from '../generated/openapi.js';
 import type { IdentityEvents } from '../events/publish.js';
 import { hashNewPassword, type LegacyPasswordConfig } from '../legacy/hash.js';
-import { charKey, createIdentityRepository, type AccountOperationPatch, type IdentityRepository } from '../repo/repository.js';
+import { charKey, createIdentityRepository, legacyStorable, type AccountOperationPatch, type IdentityRepository } from '../repo/repository.js';
 import {
   CREDENTIAL,
   LOGIN_STATE,
@@ -788,6 +788,8 @@ export async function prepareAccountOperation(deps: AccountOperationDeps, input:
         remoteid: javaTrim(change.remoteID),
         tablist: change.tablist === undefined ? (before.account?.tablist ?? null) : change.tablist === null ? null : javaTrim(change.tablist),
       };
+      // Legacy saves after validating and fails on a value its column cannot store; an update leaves Perm as stored.
+      legacyStorable(USER_ACCOUNT.table, { ...account, perm: kind === 'create' ? account.perm : null });
       const pending: PendingChange = { account, credential, memberships };
       if (kind === 'create') {
         await repo.insertAccount(tx, { userid: userId, type: 2, ...account, opt2_state: 'pending' }, ctx);

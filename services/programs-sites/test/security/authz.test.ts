@@ -558,6 +558,17 @@ const EXPECTED: Readonly<Record<string, Expected>> = {
       ]),
     ],
   },
+  // userUtility.sendLogin's getSite, read for identity's login mail; identity calls as itself, with no user token.
+  'POST /internal/v1/sites/mail-settings::lookup': {
+    declared: { transport: 'service', requires: ['service:identity'] },
+    probes: [
+      probe(
+        'POST mail-settings lookup',
+        { method: 'POST', url: '/internal/v1/sites/mail-settings:lookup', headers: JSON_HEADERS, payload: { siteIds: [SITE_A] } },
+        ['service:identity'],
+      ),
+    ],
+  },
   // csettings.cfc:84-94: `list` is excluded from the site Admin grant, so only S2 lists sites.
   'GET /v1/sites': {
     declared: { transport: 'service', requires: ['s2'] },

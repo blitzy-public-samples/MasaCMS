@@ -1,4 +1,4 @@
-/** Group CRUD, memberships and the cUsers group routes over the memory repository and recording database: no PostgreSQL, network or running stack. */
+/** Group saves, reads, memberships and the cUsers group routes over the memory repository and recording database: no PostgreSQL, network or running stack. */
 import { readFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -32,11 +32,9 @@ import {
 } from '@opt2/platform/testing';
 import { SERVICE_NAME, SERVICE_VERSION } from '../../src/app.js';
 import {
-  GroupPhotoWithheldError,
   GroupSaveHaltedError,
   addToGroup,
   createGroup,
-  deleteGroup,
   findGroupForSite,
   listGroupMembers,
   listGroups,
@@ -56,7 +54,6 @@ import {
   GROUP_EXTEND_DATA,
   GROUP_INTEREST,
   GROUP_TAG,
-  GROUP_TRASH,
   IDENTITY_UNITS,
   MEMBERSHIP,
   OWNED_TABLES,
@@ -322,7 +319,7 @@ const FULL_SAVE: GroupSaveInput = {
   address: { address1: '1 Main St', city: 'Springfield' },
 };
 
-describe('group saves of Type=1 rows [userManager.cfc:563-744; userDAO.cfc:300-500]', () => {
+describe('group saves of Type=1 rows [userManager.cfc:563-703; userDAO.cfc:300-355,404-500]', () => {
   let h: DomainHarness;
 
   beforeEach(() => {
@@ -389,40 +386,6 @@ describe('group saves of Type=1 rows [userManager.cfc:563-744; userDAO.cfc:300-5
     expect(h.db.writes()).toEqual([]);
   });
 
-  it('deletes the row with its extended data and tags into the trash, leaving its memberships, members, addresses and interests [userManager.cfc:705-744]', async () => {
-    await createGroup(h.deps, SUPER, FULL_SAVE);
-    await addToGroup(h.deps, { userId: ALPHA.userid, groupId: NEW_GROUP });
-    h.reset();
-
-    expect(await deleteGroup(h.deps, SUPER, { groupId: NEW_GROUP, siteId: SITE_A })).toBe(true);
-
-    expect(h.transactions.size).toBe(1);
-    expect(IDENTITY_UNITS).toEqual(expect.arrayContaining(writtenUnits(h.store.writes())));
-    expectChangelogImages(h.store.writes());
-    expect(rowsOf(h.store, GROUP_ACCOUNT.table, 'userid', NEW_GROUP)).toEqual([]);
-    expect(rowsOf(h.store, GROUP_TRASH.table, 'objectid', NEW_GROUP)).toEqual([expect.objectContaining({ objectclass: 'user', objecttype: 'Group', objectlabel: 'Reviewers' })]);
-    expect(rowsOf(h.store, GROUP_TAG.table, 'userid', NEW_GROUP)).toEqual([]);
-    expect(rowsOf(h.store, GROUP_EXTEND_DATA.table, 'baseid', NEW_GROUP)).toEqual([]);
-    expect(rowsOf(h.store, GROUP_ADDRESS.table, 'userid', NEW_GROUP)).toHaveLength(1);
-    expect(rowsOf(h.store, GROUP_INTEREST.table, 'userid', NEW_GROUP)).toHaveLength(1);
-    expect(rowsOf(h.store, MEMBERSHIP.table, 'userid', NEW_GROUP).map((row) => row.groupid)).toEqual([PARENT.userid]);
-    expect(rowsOf(h.store, MEMBERSHIP.table, 'groupid', NEW_GROUP).map((row) => row.userid)).toEqual([ALPHA.userid]);
-    const events = outboxEvents(h.db, GROUP_CHANGED_TOPIC).map((raw) => assertEventMatches(undefined, GROUP_CHANGED_SCHEMA, raw));
-    expect(events).toEqual([expect.objectContaining({ aggregateVersion: 2, payload: expect.objectContaining({ groupId: NEW_GROUP, groupName: 'Reviewers', deleted: true }) })]);
-  });
-
-  it('answers false for deleting an unknown id', async () => {
-    expect(await deleteGroup(h.deps, SUPER, { groupId: UNKNOWN_ID, siteId: SITE_A })).toBe(false);
-    expect(h.store.writes()).toEqual([]);
-  });
-
-  it('withholds deleting a group with a stored photo, which writes strategies-content data, before any write', async () => {
-    await expect(deleteGroup(h.deps, SUPER, { groupId: PICTURED.userid, siteId: SITE_A })).rejects.toBeInstanceOf(GroupPhotoWithheldError);
-
-    expect(h.store.writes()).toEqual([]);
-    expect(h.db.writes()).toEqual([]);
-    expect(rowsOf(h.store, GROUP_ACCOUNT.table, 'userid', PICTURED.userid)).toHaveLength(1);
-  });
 });
 
 describe('group save validation and halts [userBean.cfc:447-522]', () => {

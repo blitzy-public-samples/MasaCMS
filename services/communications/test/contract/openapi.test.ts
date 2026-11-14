@@ -25,12 +25,13 @@ import { LOGIN_MAIL_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION, SURVEY_SCHEDULED_SU
 import { LOGIN_MAIL_TOPIC } from '../../src/events/login-mail.js';
 import { SURVEY_SCHEDULED_TOPIC } from '../../src/events/survey-scheduled.js';
 import { ADOPT_PATH, CANCEL_ADOPTED_PATH } from '../../src/routes/adoption.js';
+import { FIXTURE_CATCH_ALL } from '../../src/routes/fixture.js';
 import { SCHEDULED_TASKS_PATH } from '../../src/routes/scheduled-tasks.js';
 import { REMINDER_TASK_PATH } from '../../src/tasks/reminder.js';
 import { buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 import { SAMPLE_IDS, envelopeFor, loginMailPayload, siteChangedPayload, surveyScheduledPayload } from '../helpers/payloads.js';
 
-type HttpMethod = 'GET' | 'POST';
+type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'OPTIONS';
 type Payload = Record<string, unknown>;
 type OperationObject = Record<string, unknown> & { operationId?: string };
 type Json = Record<string, unknown>;
@@ -167,9 +168,10 @@ function routeKey(route: Pick<RouteMatrixEntry, 'method' | 'url'>): string {
   return `${route.method} ${toOpenApiPath(route.url)}`;
 }
 
-/** `METHOD path` key of a contract operation. */
-function operationKey(operation: Pick<ContractOperation, 'method' | 'path'>): string {
-  return `${operation.method} ${operation.path}`;
+/** `METHOD path` key of a contract operation: the Fastify route `x-opt2-fastify-path` names, in contract form, else its template. */
+function operationKey({ method, path, op }: Pick<ContractOperation, 'method' | 'path' | 'op'>): string {
+  const fastifyPath = op['x-opt2-fastify-path'];
+  return `${method} ${typeof fastifyPath === 'string' ? toOpenApiPath(fastifyPath) : path}`;
 }
 
 /** Routes the contract does not declare, and operations no route serves, each sorted. */
@@ -378,6 +380,93 @@ function mailsSent(ctx: TestApp, seeded: Seeded): TestApp['mail']['sent'] {
   return ctx.mail.sent.slice(seeded.mails);
 }
 
+/** Every method the api.cfm catch-all serves. */
+const CATCH_ALL_METHODS: readonly HttpMethod[] = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'];
+
+/** The fixture error envelope of `error` under envelope method `method`, params suppressed. */
+function fixtureError(method: string, error: Json): Json {
+  return { apiversion: 'v1', method, error };
+}
+
+/** Operation id of the catch-all operation for `method` below the module, as `fixturePathGet`. */
+function catchAllOperation(method: HttpMethod): string {
+  return `fixturePath${method.charAt(0)}${method.slice(1).toLowerCase()}`;
+}
+
+/** Cases each catch-all method adds below the module beyond the dispatch and unknown-resource cases. */
+const PATH_METHOD_CASES: Partial<Record<HttpMethod, Case[]>> = {
+  GET: [
+    {
+      name: 'answers an anonymous caller of the case-variant templates path with the authorization 401',
+      method: 'GET',
+      url: `${FIXTURE}/Templates?siteid=${SITE_A}`,
+      status: 401,
+      verify: ({ body }) => expect(body).toEqual(fixtureError('communications.templates', AUTHORIZATION)),
+    },
+    {
+      name: 'refuses a system user on the case-variant templates path as forbidden',
+      method: 'GET',
+      url: `${FIXTURE}/Templates?siteid=${SITE_A}`,
+      as: 'system-user',
+      status: 403,
+      verify: ({ body }) => expect(body).toEqual(fixtureError('communications.templates', FIXTURE_FORBIDDEN)),
+    },
+  ],
+  POST: [
+    {
+      name: 'stores a template through the case-variant templates path once identity consumed the CSRF token',
+      method: 'POST',
+      url: `${FIXTURE}/TEMPLATES?siteid=${SITE_A}`,
+      as: SENDER,
+      headers: CSRF_HEADERS,
+      payload: TEMPLATE_BODY,
+      status: 200,
+      writes: true,
+      verify: ({ body }, ctx) => {
+        expect(record(body).method).toBe('communications.templates');
+        expect(dataOf(body)).toMatchObject({ siteid: SITE_A, name: 'Welcome' });
+        expect(ctx.db.rows('message_template')).toHaveLength(1);
+      },
+    },
+  ],
+  PUT: [
+    {
+      name: 'answers an unknown site as invalidParameters before the method check',
+      method: 'PUT',
+      url: `${FIXTURE}/templates?siteid=nowhere`,
+      status: 400,
+      verify: ({ body }) => expect(body).toEqual(fixtureError('communications.templates', INVALID_PARAMETERS)),
+    },
+  ],
+};
+
+/** Cases of the catch-all below the module: a case-variant path dispatched on the overriding GET, an unknown resource, and PATH_METHOD_CASES. */
+function pathCases(method: HttpMethod): Case[] {
+  return [
+    {
+      name: 'dispatches the case-variant templates path overridden to GET as the template list',
+      method,
+      url: `${FIXTURE}/Templates?siteid=${SITE_A}`,
+      as: SENDER,
+      headers: { 'x-http-method-override': 'GET' },
+      seed: ['template'],
+      status: 200,
+      verify: ({ body }, _ctx, { templateId }) => {
+        expect(record(body).method).toBe('communications.templates');
+        expect(dataOf(body)).toMatchObject({ totalitems: 1, items: [{ template_id: templateId, siteid: SITE_A }] });
+      },
+    },
+    {
+      name: 'answers an unknown resource as notFound under its own method, after the site check',
+      method,
+      url: `${FIXTURE}/unknown?siteid=${SITE_A}`,
+      status: 404,
+      verify: ({ body }) => expect(body).toEqual(fixtureError('communications.unknown', FIXTURE_NOT_FOUND)),
+    },
+    ...(PATH_METHOD_CASES[method] ?? []),
+  ];
+}
+
 const CASES: Record<string, Case[]> = {
   fixtureListTemplates: [
     {
@@ -576,6 +665,7 @@ const CASES: Record<string, Case[]> = {
       verify: ({ body }) => expect(errorOf(body)).toEqual(FIXTURE_NOT_FOUND),
     },
   ],
+  ...Object.fromEntries(CATCH_ALL_METHODS.map((method) => [catchAllOperation(method), pathCases(method)])),
   listTemplates: [
     {
       name: 'lists the tenant-a templates for the sender',
@@ -1155,7 +1245,7 @@ const CASES: Record<string, Case[]> = {
 
 /** Route families of communications and the declaration every route of the family carries. */
 const FAMILIES: ReadonlyArray<{ family: string; prefix: string; count: number; declaration: Omit<Declaration, 'siteCheck'> }> = [
-  { family: 'fixture', prefix: FIXTURE, count: 5, declaration: { transport: 'service', requires: [], public: true } },
+  { family: 'fixture', prefix: '/legacy-fixtures/cfml/api.cfm/', count: 12, declaration: { transport: 'service', requires: [], public: true } },
   { family: '/v1', prefix: '/v1/', count: 5, declaration: { transport: 'service', requires: [SENDER], public: false } },
   {
     family: 'scheduled-task listing',
@@ -1203,6 +1293,7 @@ const EXPECTED_ROUTES: readonly string[] = [
   `GET ${FIXTURE}/messages`,
   `POST ${FIXTURE}/messages`,
   `GET ${FIXTURE}/messages/{id}`,
+  ...CATCH_ALL_METHODS.map((method) => `${method} ${FIXTURE_CATCH_ALL}`),
   'GET /v1/templates',
   'POST /v1/templates',
   'GET /v1/messages',

@@ -412,6 +412,25 @@ describe.skipIf(!PG_AVAILABLE)('cUsers roster writes over PostgreSQL', () => {
       expect(await columnOf(db, 'person', 'fname', userId)).toEqual(['Robin']);
     }));
 
+  it.each<[string, Record<string, string>, number, string]>([
+    ['answers the legacy 500', {}, 500, 'legacy-storage'],
+    ['answers the validation errors of another field, as legacy validates before its insert', { email: '' }, 200, 'validation'],
+  ])("adds a user posting a username of 256, beyond identity's legacy column, and %s, writing nothing on either side", (_label, extra, expected, error) =>
+    onPeople(async ({ app, identity, db }) => {
+      const userId = cfUuid();
+      const fields = userForm('Add', { usernameNoCache: 'u'.repeat(256), ...extra });
+
+      const { status, body } = await send<UpdateResult>(app, UPDATE_USER, SITE_ADMIN_A, { fields, query: userQuery(userId) });
+
+      expect(status).toBe(expected);
+      if (expected === 200) expect(body).toMatchObject({ written: false, errors: { email: expect.any(String) } });
+      expect(accountSteps(identity).map(([step]) => step)).toEqual(['prepare']);
+      expect(identity.account(userId)).toBeUndefined();
+      expect(await rowsOf(db, 'person', userId)).toEqual([]);
+      const operations = await db.withTenant(TENANT_A.tenantId, async (tx) => (await tx.query(`SELECT state, error FROM ${tx.schema}.roster_operation WHERE user_id = $1`, [userId])).rows);
+      expect(operations).toEqual([{ state: 'rolled-back', error }]);
+    }));
+
   it('updates a stored user, replacing its interests and tags, leaving its addresses, then lists the users', () =>
     onPeople(async ({ app, identity, db }) => {
       const addresses = await rowsOf(db, 'user_address', STORED_USER);

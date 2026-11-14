@@ -46,6 +46,7 @@ import {
   type GroupAddressRow,
   type GroupExtendDataRow,
   type GroupTagRow,
+  type IdentityTableName,
   type LoginStateRow,
   type OAuthClientRow,
   type OAuthTokenRow,
@@ -112,6 +113,69 @@ export function charKey(value: string): string {
 /** A posted id the legacy `char(35)` column can hold; legacy swallows the insert error of any other [legacy: core/mura/user/userDAO.cfc:561-581]. */
 function storableId(value: string): boolean {
   return value !== '' && value.length <= ID_WIDTH;
+}
+
+/** A legacy column limit: a text width in UTF-16 code units, the `tinyint` range, a finite `float` or the `datetime` range. */
+export type LegacyLimit = number | 'tinyint' | 'float' | 'datetime';
+
+/** First and last local times a SQL Server `datetime` holds once rounded to 1/300 s. */
+const DATETIME_RANGE = [new Date(1752, 11, 31, 23, 59, 59, 999).getTime(), new Date(9999, 11, 31, 23, 59, 59, 998).getTime()] as const;
+
+/** Live legacy catalog limits of the caller-supplied columns the write helpers set; `char(35)`, `max` and `int` columns need none. */
+const LEGACY_LIMITS = {
+  group_account: {
+    groupname: 255, fname: 50, lname: 50, username: 255, password: 100, email: 255, company: 50, jobtitle: 50, mobilephone: 50, website: 255,
+    subtype: 50, lastupdateby: 50, lastupdatebyid: 35, perm: 'tinyint', inactive: 'tinyint', siteid: 50, keepprivate: 'tinyint', imname: 100,
+    imservice: 50, remoteid: 50, tablist: 255,
+  },
+  user_account: { username: 255, perm: 'tinyint', inactive: 'tinyint', siteid: 50, remoteid: 50, tablist: 255 },
+  user_address: {
+    siteid: 50, addressname: 50, address1: 50, address2: 50, city: 50, state: 50, zip: 50, country: 50, phone: 50, fax: 50,
+    isprimary: 'tinyint', addressurl: 200, longitude: 'float', latitude: 'float', addressemail: 100,
+  },
+  user_tag: { siteid: 25, tag: 100 },
+  extend_data_user_activity: { siteid: 25, remoteid: 35, datetimevalue: 'datetime', numericvalue: 'float', stringvalue: 255 },
+  oauth_client: { clientsecret: 100, siteid: 25, granttype: 50, name: 50, lastupdatebidy: 35, lastupdateby: 50 },
+} as const satisfies Partial<Record<IdentityTableName, Readonly<Record<string, LegacyLimit>>>>;
+
+/** An identity table whose legacy column limits `legacyStorable` enforces. */
+export type LegacyLimitedTable = keyof typeof LEGACY_LIMITS;
+
+/**
+ * `row` as legacy SQL Server stores it: text beyond its width by trailing spaces only is cut to the width, as
+ * ANSI_WARNINGS allows; any other value legacy rejects throws LegacyStorageError. NULL and absent values pass.
+ */
+export function legacyStorable<R extends Readonly<Record<string, unknown>>>(table: LegacyLimitedTable, row: R): R {
+  let stored = row;
+  for (const [column, limit] of Object.entries<LegacyLimit>(LEGACY_LIMITS[table])) {
+    const value = row[column];
+    if (value === null || value === undefined) continue;
+    if (typeof limit === 'number') {
+      if (typeof value !== 'string' || value.length <= limit) continue;
+      if (!/^ +$/.test(value.slice(limit))) throw new LegacyStorageError(table, column, 'width', limit);
+      stored = { ...stored, [column]: value.slice(0, limit) };
+    } else if (limit === 'datetime') {
+      const time = value instanceof Date ? value.getTime() : Date.parse(String(value));
+      if (!(time >= DATETIME_RANGE[0] && time <= DATETIME_RANGE[1])) throw new LegacyStorageError(table, column, 'range', limit);
+    } else if (limit === 'tinyint' ? !(Number(value) >= 0 && Number(value) <= 255) : !Number.isFinite(Number(value))) {
+      throw new LegacyStorageError(table, column, 'range', limit);
+    }
+  }
+  return stored;
+}
+
+/** Raised for a value the legacy column cannot store, writing nothing; unhandled, it answers the legacy 500 of the failed legacy query. */
+export class LegacyStorageError extends RepositoryError {
+  override readonly name: string = 'LegacyStorageError';
+
+  constructor(
+    override readonly table: LegacyLimitedTable,
+    readonly column: string,
+    readonly violation: 'width' | 'range',
+    readonly limit: LegacyLimit,
+  ) {
+    super(`column ${column} is beyond the legacy ${violation} ${limit}`, table);
+  }
 }
 
 /** The bound values of the repository's account filter SQL for `filter`, in its parameter order; no filter binds no predicate. */
@@ -554,8 +618,6 @@ export interface IdentityRepository extends Repository {
   insertGroup(tx: TenantTx, input: GroupInput, actor: AuditActor | null, ctx?: WriteContext): Promise<GroupAccountRow>;
   /** Updates a group as `userDAO.update` does and adds 1 to `row_version` [legacy: core/mura/user/userDAO.cfc:404-456]; null when absent. */
   updateGroup(tx: TenantTx, groupId: string, input: GroupUpdate, actor: AuditActor | null, ctx?: WriteContext): Promise<GroupAccountRow | null>;
-  /** Deletes the `group_account` row only; null when absent. */
-  deleteGroupRow(tx: TenantTx, groupId: string, ctx?: WriteContext): Promise<GroupAccountRow | null>;
 
   /** Inserts a group address as `createAddress` does, named `Primary` and primary by default [legacy: core/mura/user/userDAO.cfc:776-808]. */
   insertGroupAddress(tx: TenantTx, row: GroupAddressInput, ctx?: WriteContext): Promise<GroupAddressRow>;
@@ -565,8 +627,6 @@ export interface IdentityRepository extends Repository {
   setPrimaryGroupAddress(tx: TenantTx, groupId: string, addressId: string, ctx?: WriteContext): Promise<void>;
   /** The group's addresses, primary first. */
   listGroupAddresses(tx: TenantTx, groupId: string): Promise<GroupAddressRow[]>;
-  /** Deletes the group's addresses and their extended data; returns the number of addresses. */
-  deleteGroupAddresses(tx: TenantTx, groupId: string, ctx?: WriteContext): Promise<number>;
   /** Deletes the group's interests (only `onlyCategoryIds` when given), then inserts each new non-empty id [legacy: core/mura/user/userDAO.cfc:583-616]. */
   replaceGroupInterests(
     tx: TenantTx,
@@ -581,18 +641,12 @@ export interface IdentityRepository extends Repository {
   listGroupRelationRows(tx: TenantTx, relation: GroupRelation, groupIds: readonly string[]): Promise<RepositoryRow[]>;
   /** Deletes the group's tags, then inserts each trimmed, non-empty item of the comma list `tags` [legacy: core/mura/user/userDAO.cfc:895-922]. */
   replaceGroupTags(tx: TenantTx, input: { groupId: string; siteId: string; tags: string | null }, ctx?: WriteContext): Promise<GroupTagRow[]>;
-  /** Deletes every tag of the group; returns the number deleted. */
-  deleteGroupTags(tx: TenantTx, groupId: string, ctx?: WriteContext): Promise<number>;
-  /** Deletes every favorite of the group; returns the number deleted. */
-  deleteGroupFavorites(tx: TenantTx, groupId: string, ctx?: WriteContext): Promise<number>;
   /** Per attribute, deletes the group's stored values, then inserts the new ones; returns the inserted rows. */
   replaceGroupExtendData(
     tx: TenantTx,
     input: { groupId: string; rows: readonly GroupExtendDataReplacement[] },
     ctx?: WriteContext,
   ): Promise<GroupExtendDataRow[]>;
-  /** Deletes every extended value of the group `baseId`; returns the number deleted. */
-  deleteGroupExtendData(tx: TenantTx, baseId: string, ctx?: WriteContext): Promise<number>;
 
   /** The groups of this tenant `userId` belongs to, by group userid. */
   membershipsOf(tx: TenantTx, userId: string): Promise<GroupMembership[]>;
@@ -909,7 +963,6 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     ' ORDER BY perm DESC NULLS LAST, lower(groupname) ASC NULLS FIRST, userid';
   const lockGroupSql = `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND userid = $2 FOR UPDATE`;
   const addressesSql = `SELECT * FROM ${address} WHERE tenant_id = $1 AND userid = $2 ORDER BY isprimary DESC NULLS LAST, addressid`;
-  const lockAddressIdsSql = `SELECT addressid FROM ${address} WHERE tenant_id = $1 AND userid = $2 ORDER BY addressid FOR UPDATE`;
   const lockOtherPrimariesSql =
     `SELECT addressid FROM ${address} WHERE tenant_id = $1 AND userid = $2 AND addressid <> $3` +
     ' AND isprimary IS DISTINCT FROM 0 ORDER BY addressid FOR UPDATE';
@@ -932,8 +985,6 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
   // The clustered (userID, categoryID) key orders legacy's unordered read.
   const orderedInterestIdsSql = `${interestIdsSql} ORDER BY categoryid`;
   const lockTagsSql = `SELECT tagid FROM ${tag} WHERE tenant_id = $1 AND userid = $2 ORDER BY tagid FOR UPDATE`;
-  const lockFavoritesSql = `SELECT favoriteid FROM ${favorite} WHERE tenant_id = $1 AND userid = $2 ORDER BY favoriteid FOR UPDATE`;
-  const lockExtendByBaseSql = `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND baseid = $2 ORDER BY dataid FOR UPDATE`;
   const lockExtendByAttributeSql =
     `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND baseid = $2 AND attributeid = $3 ORDER BY dataid FOR UPDATE`;
   const nextIdSql = 'SELECT nextval(pg_get_serial_sequence($1, $2)::regclass)::text AS id';
@@ -1209,7 +1260,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
       tablist: daoNull(row.tablist),
       opt2_state: row.opt2_state ?? 'active',
     };
-    return base.insert<UserAccountRow>(tx, USER_ACCOUNT.table, stored, ctx);
+    return base.insert<UserAccountRow>(tx, USER_ACCOUNT.table, legacyStorable(USER_ACCOUNT.table, stored), ctx);
   }
 
   function updateAccount(tx: TenantTx, userId: string, values: AccountUpdate, ctx: WriteContext = {}): Promise<UserAccountRow | null> {
@@ -1224,7 +1275,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
       siteid: cfTrim(values.siteid ?? ''),
       tablist: daoNull(values.tablist),
     };
-    return base.update<UserAccountRow>(tx, USER_ACCOUNT.table, { userid: userId }, patch, ctx);
+    return base.update<UserAccountRow>(tx, USER_ACCOUNT.table, { userid: userId }, legacyStorable(USER_ACCOUNT.table, patch), ctx);
   }
 
   function setAccountState(tx: TenantTx, userId: string, state: AccountState, ctx: WriteContext = {}): Promise<UserAccountRow | null> {
@@ -1369,7 +1420,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
       tablist: daoNull(input.tablist),
       row_version: 1,
     };
-    return base.insert<GroupAccountRow>(tx, GROUP_ACCOUNT.table, row, ctx);
+    return base.insert<GroupAccountRow>(tx, GROUP_ACCOUNT.table, legacyStorable(GROUP_ACCOUNT.table, row), ctx);
   }
 
   async function updateGroup(
@@ -1422,11 +1473,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
       tablist: daoNull(input.tablist),
       row_version: String(BigInt(current.row_version) + 1n),
     };
-    return base.update<GroupAccountRow>(tx, GROUP_ACCOUNT.table, { userid: current.userid }, patch, ctx);
-  }
-
-  function deleteGroupRow(tx: TenantTx, groupId: string, ctx: WriteContext = {}): Promise<GroupAccountRow | null> {
-    return base.delete<GroupAccountRow>(tx, GROUP_ACCOUNT.table, { userid: groupId }, ctx);
+    return base.update<GroupAccountRow>(tx, GROUP_ACCOUNT.table, { userid: current.userid }, legacyStorable(GROUP_ACCOUNT.table, patch), ctx);
   }
 
   /** Throws unless `groupId` is a group of this tenant; a user's child rows belong to people. */
@@ -1460,7 +1507,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
       addressemail: daoNull(row.addressemail),
       hours: daoNull(row.hours),
     };
-    return base.insert<GroupAddressRow>(tx, GROUP_ADDRESS.table, stored, ctx);
+    return base.insert<GroupAddressRow>(tx, GROUP_ADDRESS.table, legacyStorable(GROUP_ADDRESS.table, stored), ctx);
   }
 
   async function updateGroupAddress(
@@ -1489,7 +1536,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
       addressemail: daoNull(values.addressemail),
       hours: daoNull(values.hours),
     };
-    return base.update<GroupAddressRow>(tx, GROUP_ADDRESS.table, { addressid: addressId }, patch, ctx);
+    return base.update<GroupAddressRow>(tx, GROUP_ADDRESS.table, { addressid: addressId }, legacyStorable(GROUP_ADDRESS.table, patch), ctx);
   }
 
   async function setPrimaryGroupAddress(tx: TenantTx, groupId: string, addressId: string, ctx: WriteContext = {}): Promise<void> {
@@ -1507,22 +1554,6 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
 
   function listGroupAddresses(tx: TenantTx, groupId: string): Promise<GroupAddressRow[]> {
     return readUnits<GroupAddressRow>(tx, GROUP_ADDRESS.unit, addressesSql, [tx.tenantId, groupId]);
-  }
-
-  /** Deletes every extended value stored under `baseId`. */
-  async function deleteExtendRows(tx: TenantTx, baseId: string, ctx: WriteContext): Promise<number> {
-    const stale = await readUnits<{ dataid: number }>(tx, GROUP_EXTEND_DATA.unit, lockExtendByBaseSql, [tx.tenantId, baseId]);
-    return deleteKeys(tx, GROUP_EXTEND_DATA.table, stale, ctx);
-  }
-
-  async function deleteGroupAddresses(tx: TenantTx, groupId: string, ctx: WriteContext = {}): Promise<number> {
-    await requireGroup(tx, groupId, GROUP_ADDRESS.table);
-    const stale = await readUnits<{ addressid: string }>(tx, GROUP_ADDRESS.unit, lockAddressIdsSql, [tx.tenantId, groupId]);
-    for (const { addressid } of stale) {
-      await base.delete(tx, GROUP_ADDRESS.table, { addressid }, ctx);
-      await deleteExtendRows(tx, addressid, ctx);
-    }
-    return stale.length;
   }
 
   async function replaceGroupInterests(
@@ -1575,21 +1606,11 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     for (const item of (input.tags ?? '').split(',')) {
       const value = cfTrim(item);
       if (value === '') continue;
-      const row: Omit<GroupTagRow, 'tenant_id'> = { tagid: await nextId(tx, GROUP_TAG, 'tagid'), userid: input.groupId, siteid: input.siteId, tag: value };
+      const stored = legacyStorable(GROUP_TAG.table, { userid: input.groupId, siteid: input.siteId, tag: value });
+      const row: Omit<GroupTagRow, 'tenant_id'> = { tagid: await nextId(tx, GROUP_TAG, 'tagid'), ...stored };
       created.push(await base.insert<GroupTagRow>(tx, GROUP_TAG.table, row, ctx));
     }
     return created;
-  }
-
-  async function deleteGroupTags(tx: TenantTx, groupId: string, ctx: WriteContext = {}): Promise<number> {
-    await requireGroup(tx, groupId, GROUP_TAG.table);
-    return deleteTagRows(tx, groupId, ctx);
-  }
-
-  async function deleteGroupFavorites(tx: TenantTx, groupId: string, ctx: WriteContext = {}): Promise<number> {
-    await requireGroup(tx, groupId, GROUP_FAVORITE.table);
-    const stale = await readUnits<{ favoriteid: string }>(tx, GROUP_FAVORITE.unit, lockFavoritesSql, [tx.tenantId, groupId]);
-    return deleteKeys(tx, GROUP_FAVORITE.table, stale, ctx);
   }
 
   async function replaceGroupExtendData(
@@ -1604,20 +1625,16 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
       const stale = await readUnits<{ dataid: number }>(tx, GROUP_EXTEND_DATA.unit, lockExtendByAttributeSql, params);
       await deleteKeys(tx, GROUP_EXTEND_DATA.table, stale, ctx);
       if (values === null) continue;
+      const stored = legacyStorable(GROUP_EXTEND_DATA.table, values);
       const row: Omit<GroupExtendDataRow, 'tenant_id'> = {
         dataid: await nextId(tx, GROUP_EXTEND_DATA, 'dataid'),
         baseid: input.groupId,
         attributeid: attributeId,
-        ...values,
+        ...stored,
       };
       inserted.push(await base.insert<GroupExtendDataRow>(tx, GROUP_EXTEND_DATA.table, row, ctx));
     }
     return inserted;
-  }
-
-  async function deleteGroupExtendData(tx: TenantTx, baseId: string, ctx: WriteContext = {}): Promise<number> {
-    await requireGroup(tx, baseId, GROUP_EXTEND_DATA.table);
-    return deleteExtendRows(tx, baseId, ctx);
   }
 
 
@@ -1649,17 +1666,19 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     };
   }
 
-  /** Inserts each storable id of `groupIds` the user does not already hold; returns the inserted ids. */
+  /** Inserts each storable id of `groupIds` the user does not already hold, skipping one a concurrent writer committed first [legacy: core/mura/user/userDAO.cfc:566-577]; returns the inserted ids. */
   async function insertMemberships(tx: TenantTx, userId: string, groupIds: readonly string[], ctx: WriteContext): Promise<string[]> {
     const held = new Set((await membershipGroupIds(tx, userId)).map(charKey));
-    const added: string[] = [];
+    const absent: string[] = [];
     for (const groupId of groupIds) {
       if (!storableId(groupId) || held.has(charKey(groupId))) continue;
-      await base.insert(tx, MEMBERSHIP.table, { userid: userId, groupid: groupId }, ctx);
       held.add(charKey(groupId));
-      added.push(groupId);
+      absent.push(groupId);
     }
-    return added;
+    const rows = absent.map((groupid) => ({ userid: userId, groupid }));
+    const stored = await base.insertAbsent<{ groupid: string }>(tx, MEMBERSHIP.table, rows, ['userid', 'groupid'], ctx);
+    const inserted = new Set(stored.map((row) => charKey(row.groupid)));
+    return absent.filter((groupId) => inserted.has(charKey(groupId)));
   }
 
   async function replaceMemberships(
@@ -2028,11 +2047,12 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
 
   function insertOAuthClient(tx: TenantTx, row: OAuthClientInput, ctx: WriteContext = {}): Promise<OAuthClientRow> {
     const stored = { ...row, clientid: row.clientid === undefined || row.clientid === '' ? cfUuid() : row.clientid };
-    return base.insert<OAuthClientRow>(tx, OAUTH_CLIENT.table, ormRow(stored, OAUTH_CLIENT, OAUTH_CLIENT_REQUIRED), ctx);
+    return base.insert<OAuthClientRow>(tx, OAUTH_CLIENT.table, legacyStorable(OAUTH_CLIENT.table, ormRow(stored, OAUTH_CLIENT, OAUTH_CLIENT_REQUIRED)), ctx);
   }
 
   function updateOAuthClient(tx: TenantTx, clientId: string, values: OAuthClientValues, ctx: WriteContext = {}): Promise<OAuthClientRow | null> {
-    return base.update<OAuthClientRow>(tx, OAUTH_CLIENT.table, { clientid: clientId }, ormRow(values, OAUTH_CLIENT, OAUTH_CLIENT_REQUIRED), ctx);
+    const patch = legacyStorable(OAUTH_CLIENT.table, ormRow(values, OAUTH_CLIENT, OAUTH_CLIENT_REQUIRED));
+    return base.update<OAuthClientRow>(tx, OAUTH_CLIENT.table, { clientid: clientId }, patch, ctx);
   }
 
   async function deleteOAuthClient(tx: TenantTx, clientId: string, ctx: WriteContext = {}): Promise<boolean> {
@@ -2255,21 +2275,16 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     listPoolGroups,
     insertGroup,
     updateGroup,
-    deleteGroupRow,
     insertGroupAddress,
     updateGroupAddress,
     setPrimaryGroupAddress,
     listGroupAddresses,
-    deleteGroupAddresses,
     replaceGroupInterests,
     groupInterestIds,
     hasGroupExtendData,
     listGroupRelationRows,
     replaceGroupTags,
-    deleteGroupTags,
-    deleteGroupFavorites,
     replaceGroupExtendData,
-    deleteGroupExtendData,
     membershipsOf,
     membershipGroupIds,
     readMembershipRecords,

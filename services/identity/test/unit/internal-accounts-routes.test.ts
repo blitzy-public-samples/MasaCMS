@@ -385,6 +385,18 @@ describe.skipIf(!available)('operations against PostgreSQL', () => {
     expect(res.json()).toEqual({ username: "The username 'routes-one' that you entered is being used by another user." });
   });
 
+  it('answers a username its legacy column cannot store with the storage rejection, recording nothing', async () => {
+    const userId = nextId('A');
+    const op = nextId('C');
+    const people = await headersFor('people');
+
+    const res = await send('POST', opUrl(userId, op, 'prepare'), people, prepareBody('create', 'u'.repeat(256)));
+
+    expect([res.statusCode, res.json()]).toEqual([500, { table: 'user_account', column: 'username', violation: 'width', limit: 255 }]);
+    expect(await accountOf(userId)).toBeNull();
+    expect((await send('GET', opUrl(userId, op), people)).json()).toMatchObject({ state: 'unknown' });
+  });
+
   it('aborts a prepared create, deleting its pending account, and refuses a later commit', async () => {
     const userId = nextId('A');
     const op = nextId('C');

@@ -1098,6 +1098,17 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
       expect(await groupOf(String(data.userid))).toMatchObject({ isnew: 1 });
     });
 
+    it('answers a save posting a value the legacy tusers column cannot store with the 500, writing nothing', async () => {
+      const caller = await inSession(S2, SITE_C, 'S2');
+
+      const created = await send(app, 'POST', GROUP_C, await headersFor(caller), { groupname: 'Wide', email: 'e'.repeat(256), ...csrfFields('new') });
+      const updated = await send(app, 'POST', `${GROUP_C}/${ids.helpers}`, await headersFor(caller), { subtype: 's'.repeat(51), ...csrfFields(ids.helpers) });
+
+      expect([created.statusCode, updated.statusCode]).toEqual([500, 500]);
+      expect(json(created)).toEqual(legacyError('save', ERRORS.serverError));
+      expect(await groupOf(ids.helpers)).toMatchObject({ groupname: 'Helpers', email: 'helpers@example.test' });
+    });
+
     it.each([
       ['no token', {}],
       ['the token of context new for a stored id', null],

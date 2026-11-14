@@ -52,6 +52,18 @@ const SITE_ROW: components['schemas']['SiteListItem'] = {
 const SITE: components['schemas']['Site'] = { SiteID: 'tenant-a', Site: 'Tenant A' };
 const SHELL_SITE: components['schemas']['ShellSite'] = { SiteID: 'tenant-a', Site: 'Tenant A', EmailBroadcaster: 0 };
 const DOMAINS: components['schemas']['HrefDomains'] = { allowedDomains: ['localhost', 'alias.example'], siteDomain: 'localhost' };
+const MAIL_SETTINGS: components['schemas']['SiteMailSettings'] = {
+  siteID: 'tenant-a',
+  site: 'Tenant A',
+  contact: 'contact@tenant-a.example.test',
+  sendLoginScript: '',
+  editProfileURL: '?display=editProfile',
+  extranetSSL: false,
+  useSSL: false,
+  extranetPublicRegNotify: '',
+  remote: null,
+};
+const MAIL_SETTINGS_URL = '/internal/v1/sites/mail-settings:lookup';
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 const JSON_BODY = { 'content-type': 'application/json' };
 const TOKEN_FIELDS = 'csrf_token=T&csrf_token_expires=E';
@@ -124,6 +136,7 @@ beforeEach(async () => {
     readUserPoolSites: vi.fn<SitesDomain['readUserPoolSites']>(async () => ({ sites: [SHELL_SITE] })),
     saveOrderAndDeploy: vi.fn<SitesDomain['saveOrderAndDeploy']>(async () => ({ written: true, sites: [SITE_ROW] })),
     hrefDomains: vi.fn<SitesDomain['hrefDomains']>(async () => DOMAINS),
+    readMailSettings: vi.fn<SitesDomain['readMailSettings']>(async (_db, siteIds) => siteIds.map(() => MAIL_SETTINGS)),
   };
   const verifier = testVerifier('programs-sites');
   const { authenticate } = verifier.transports.service;
@@ -162,7 +175,7 @@ afterEach(async () => {
   await app.opt2.shutdown();
 });
 
-type SubjectName = 's2' | 'site-admin' | 'editor' | 'member' | 'anonymous' | 'service:gateway' | 'service:people';
+type SubjectName = 's2' | 'site-admin' | 'editor' | 'member' | 'anonymous' | 'service:gateway' | 'service:people' | 'service:identity';
 
 async function headersAs(name: SubjectName, { site = 'tenant-a', sub }: { site?: string; sub?: string } = {}) {
   const subject = ROLE_SET.find((candidate) => candidate.name === name);
@@ -575,5 +588,30 @@ describe('GET /v1/href-domains', () => {
     const res = await send('GET', '/v1/href-domains?siteid=default', 'anonymous', await headersOf());
     expect(res.statusCode).toBe(status);
     expect(sites.hrefDomains).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /internal/v1/sites/mail-settings:lookup', () => {
+  it('declares the service transport for identity alone', () => {
+    const route = collectRouteMatrix(app).routes.find((entry) => entry.url === '/internal/v1/sites/mail-settings::lookup');
+    expect(route).toMatchObject({ method: 'POST', transport: 'service', requires: ['service:identity'] });
+  });
+
+  it("answers identity's lookup with one entry per listed id", async () => {
+    const res = await send('POST', MAIL_SETTINGS_URL, 'service:identity', JSON_BODY, { siteIds: ['tenant-a', ''] });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ items: [MAIL_SETTINGS, MAIL_SETTINGS] });
+    expect(sites.readMailSettings).toHaveBeenCalledExactlyOnceWith(db, ['tenant-a', '']);
+  });
+
+  it.each([
+    ['no site ids', { siteIds: [] }],
+    ['a site id that is not text', { siteIds: [7] }],
+    ['a field the contract does not declare', { siteIds: ['tenant-a'], siteId: 'tenant-a' }],
+    ['no body fields', {}],
+  ])('refuses a body with %s as badRequest', async (_label, payload) => {
+    const res = await send('POST', MAIL_SETTINGS_URL, 'service:identity', JSON_BODY, payload);
+    expect(res.statusCode).toBe(400);
+    expect(sites.readMailSettings).not.toHaveBeenCalled();
   });
 });

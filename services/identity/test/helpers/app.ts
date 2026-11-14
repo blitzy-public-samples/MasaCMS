@@ -48,6 +48,7 @@ import { CSRF_USED_TTL_HOURS, PENDING_LEGACY_WAIT_MS } from '../../src/domain/cs
 import { DEFAULT_STRIKE_SETTINGS } from '../../src/domain/strikes.js';
 import { createLocalTokenSigner, type IdentityPlatformAdapter, type TokenSigner } from '../../src/domain/tokens.js';
 import { GATEWAY_SERVICE } from '../../src/legacy/bridge-relay.js';
+import type { SiteMailSettings } from '../../src/legacy/sites-client.js';
 import {
   createMemoryIdentityRepo,
   createRecordingDb,
@@ -287,7 +288,7 @@ export interface MarkedUsed {
   readonly tokens: ReadonlyArray<{ readonly token: string; readonly usedAt: string }>;
 }
 
-/** Fake service client: records each call, then answers from the newest matching handler, else from the gateway and people defaults. */
+/** Fake service client: records each call, then answers from the newest matching handler, else from the gateway, people and programs-sites defaults. */
 export interface ClientRecorder extends ServiceClient {
   readonly requests: ServiceRequest[];
   readonly markedUsed: MarkedUsed[];
@@ -324,6 +325,8 @@ interface PendingFailure {
 /** Callee name of people in `OPT2_SERVICE_URLS`. */
 const PEOPLE_SERVICE = 'people';
 const CURRENT_USER_PATH = '/internal/v1/users/current';
+const SITES_SERVICE = 'programs-sites';
+const MAIL_SETTINGS_PATH = '/internal/v1/sites/mail-settings:lookup';
 const MARK_USED_PATH = /^\/internal\/v1\/legacy-sessions\/([^/]+):mark-used$/;
 const ROUTE_KEY = /^(GET|POST|PUT|PATCH|DELETE) (\/\S*)$/;
 const ANY_PATH = /^/;
@@ -377,6 +380,22 @@ function personData(actor: TestActor): Record<string, unknown> {
   };
 }
 
+/** programs-sites' mail settings of a local site under `siteId` (`default` for ''), named `Site <id>`, with the bean's defaults. */
+export function siteMailSettingsOf(siteId: string): SiteMailSettings {
+  const siteID = siteId === '' ? 'default' : siteId;
+  return {
+    siteID,
+    site: `Site ${siteID}`,
+    contact: '',
+    sendLoginScript: '',
+    editProfileURL: '?display=editProfile',
+    extranetSSL: false,
+    useSSL: false,
+    extranetPublicRegNotify: '',
+    remote: null,
+  };
+}
+
 /** The new user bean people's `readCurrentUser` answers for an unknown or absent user, rather than a 404: a fresh id under the call's site. */
 function newUserData(siteId: string): Record<string, unknown> {
   const id = cfUuid();
@@ -424,6 +443,15 @@ export function createClientRecorder(handlers: ClientHandlers = {}): ClientRecor
         const actor = userId === undefined ? undefined : ACTORS_BY_USER_ID.get(userId.toUpperCase());
         const data = actor === undefined ? newUserData(firstValue(req.query?.siteid) ?? '') : personData(actor);
         return { status: 200, headers: { ...JSON_HEADERS }, body: { data } };
+      },
+    },
+    {
+      service: SITES_SERVICE,
+      method: 'POST',
+      pattern: matcherPattern(MAIL_SETTINGS_PATH),
+      handler: (req) => {
+        const { siteIds } = req.json as { siteIds: string[] };
+        return { status: 200, headers: { ...JSON_HEADERS }, body: { items: siteIds.map(siteMailSettingsOf) } };
       },
     },
   ];
