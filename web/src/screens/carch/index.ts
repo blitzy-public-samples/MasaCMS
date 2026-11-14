@@ -29,6 +29,7 @@ export { carchSecondaryMenu } from './secondary-menu';
 // display-object CFML of displayobjectmodal and frontendconfigurator, loadrepomanager's FW/1 viewNotFound page, the
 // image-engine edits cropimage, flipimage and rotateimage (halted) and the withheld copy; the withheld or halted
 // variants of update, multifileupload, updateobjectparams and variationtargeting are the registry's not-built list.
+// dsp_nest, dsp_nextN, dsp_rendertabevents and objectclass/legacy are rendered by strategies-content and relayed raw.
 /** The carried cArch actions: the Site Manager pages, the editor and its save, their fragments, JSON and downloads. */
 export const carchScreens: readonly ScreenDefinition[] = Object.freeze([
   listScreen,

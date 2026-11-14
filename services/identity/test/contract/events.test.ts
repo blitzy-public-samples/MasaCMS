@@ -1,23 +1,53 @@
-/** Event contracts of identity: its topic schemas, the envelopes its routes write to the outbox, and its consumers against the producers' schemas. */
+/** Event contracts of identity: its topic schemas, the envelopes its routes and event writers put in the outbox, and its consumers against the producers' schemas. */
 import { readFileSync, readdirSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { consumeEnvelope, subscriptionName, type EventEnvelope } from '@opt2/platform/events';
+import {
+  compileTopicSchema,
+  consumeEnvelope,
+  eventTypeOf,
+  readTopicSchema,
+  schemaVersionOf,
+  subscriptionName,
+  topicMeta,
+  type EventEnvelope,
+  type EventKind,
+  type TopicValidator,
+} from '@opt2/platform/events';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
-import { tenantIdForSite, type SiteChangedPayload } from '@opt2/platform/tenancy';
+import { OUTBOX_TABLE, rowFromDb, type OutboxRow } from '@opt2/platform/outbox';
+import { tenantIdForSite, type QueryResultRow, type SiteChangedPayload, type TenantTx } from '@opt2/platform/tenancy';
 import {
+  ContractAssertionError,
   TENANT_A,
   TENANT_UMBRELLA,
   assertEventMatches,
   assertProducerConsumerCompatible,
   registryPayloads,
   testEnvelope,
+  withoutTenant,
   type ConsumerExpectation,
   type JsonType,
 } from '@opt2/platform/testing';
-import { IDENTITY_TOPICS } from '../../src/events/publish.js';
+import {
+  GROUP_CHANGED_TOPIC,
+  IDENTITY_TOPICS,
+  LOGIN_MAIL_REQUESTED_TOPIC,
+  MEMBERSHIP_CHANGED_TOPIC,
+  PERMISSION_CHANGED_TOPIC,
+  createIdentityEvents,
+  groupChangedPayload,
+  identityPayloadValidators,
+  type GroupChangedPayload,
+  type IdentityEvents,
+  type IdentityTopic,
+  type LoginMailRequestedPayload,
+} from '../../src/events/publish.js';
 import { PERSON_CHANGED_TOPIC, PERSON_CONTACT_SUBSCRIPTION, personChangedSchema, personContactConsumer, type PersonChangedPayload } from '../../src/events/person-contact.js';
-import { EDITOR, SITE_ADMIN_A } from '../helpers/rows.js';
+import { CREDENTIAL, GROUP_ACCOUNT, MEMBERSHIP, PERMISSION } from '../../src/repo/tables.js';
+import { buildTestApp, type TestApp } from '../helpers/app.js';
+import type { RecordingDb } from '../helpers/memory-repo.js';
+import { EDITOR, SITE_ADMIN_A, groupRow, membershipRow, permissionRow, type PermissionType } from '../helpers/rows.js';
 import {
   SITE_A,
   SUBJECT_SESSIONS,
@@ -34,10 +64,12 @@ type Schema = Record<string, unknown>;
 
 const EVENTS_DIR = new URL('../../contracts/events/', import.meta.url);
 const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
+/** Topic names of the schema files in `contracts/events/`. */
+const SCHEMA_FILES = readdirSync(EVENTS_DIR)
+  .filter((file) => file.endsWith('.json'))
+  .map((file) => file.replace(/\.json$/, ''));
 const SCHEMAS: Readonly<Record<string, Schema>> = Object.fromEntries(
-  readdirSync(EVENTS_DIR)
-    .filter((file) => file.endsWith('.json'))
-    .map((file) => [file.replace(/\.json$/, ''), JSON.parse(readFileSync(new URL(file, EVENTS_DIR), 'utf8')) as Schema]),
+  IDENTITY_TOPICS.map((topic) => [topic, readTopicSchema(new URL(`../../contracts/events/${topic}.json`, import.meta.url))]),
 );
 const PERSON_PRODUCER = JSON.parse(
   readFileSync(new URL('../../../people/contracts/events/people.person.changed.v1.json', import.meta.url), 'utf8'),
@@ -47,12 +79,35 @@ const SITE_PRODUCER = JSON.parse(
 ) as Schema;
 
 /** The `x-opt2-kind` each identity topic is published under. */
-const TOPIC_KINDS: Readonly<Record<string, 'state' | 'process'>> = {
+const TOPIC_KINDS: Readonly<Record<IdentityTopic, EventKind>> = {
   'identity.group.changed.v1': 'state',
   'identity.membership.changed.v1': 'state',
   'identity.permission.changed.v1': 'state',
   'identity.login-mail.requested.v1': 'process',
 };
+
+/** The payload schema of `topic`; throws for a topic identity does not publish. */
+function schemaFor(topic: string): Schema {
+  const schema = SCHEMAS[topic];
+  if (schema === undefined) throw new Error(`No contract for ${topic}`);
+  return schema;
+}
+
+/** The compiled payload validator the outbox runtime checks `topic` writes with. */
+function validatorFor(topic: IdentityTopic): TopicValidator {
+  const validator = identityPayloadValidators[topic];
+  if (validator === undefined) throw new Error(`identity registers no payload validator for ${topic}`);
+  return validator;
+}
+
+/** Every key declared under a `properties` object anywhere in `node`, whether nested, in `$defs`, `items` or a combinator. */
+function declaredPropertyNames(node: unknown): string[] {
+  if (Array.isArray(node)) return node.flatMap(declaredPropertyNames);
+  if (typeof node !== 'object' || node === null) return [];
+  const { properties } = node as { properties?: unknown };
+  const own = typeof properties === 'object' && properties !== null ? Object.keys(properties) : [];
+  return [...own, ...Object.values(node).flatMap(declaredPropertyNames)];
+}
 
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' } as const;
 const USERS_MODULE = '00000000000000000000000000000000008';
@@ -88,9 +143,7 @@ function outboxKinds(t: IdentityTestApp): Map<string, unknown> {
 function writtenEnvelopes(t: IdentityTestApp): EventEnvelope[] {
   const kinds = outboxKinds(t);
   return t.outboxEvents().map((envelope) => {
-    const topic = `${envelope.eventType}.v${envelope.schemaVersion.split('.')[0] ?? ''}`;
-    const schema = SCHEMAS[topic];
-    if (schema === undefined) throw new Error(`No contract for ${topic}`);
+    const schema = schemaFor(`${envelope.eventType}.v${envelope.schemaVersion.split('.')[0] ?? ''}`);
     assertEventMatches(undefined, schema, envelope);
     expect(kinds.get(envelope.eventId)).toBe(schema['x-opt2-kind']);
     expect(envelope.producer).toBe('identity');
@@ -99,8 +152,21 @@ function writtenEnvelopes(t: IdentityTestApp): EventEnvelope[] {
 }
 
 describe('topic schemas', () => {
-  it('are exactly the topics identity publishes', () => {
-    expect(Object.keys(SCHEMAS).sort()).toEqual([...IDENTITY_TOPICS].sort());
+  it('are exactly the topics identity publishes, one file per topic constant', () => {
+    const constants = [GROUP_CHANGED_TOPIC, MEMBERSHIP_CHANGED_TOPIC, PERMISSION_CHANGED_TOPIC, LOGIN_MAIL_REQUESTED_TOPIC];
+    expect([...IDENTITY_TOPICS].sort()).toEqual([...constants].sort());
+    expect([...SCHEMA_FILES].sort()).toEqual([...IDENTITY_TOPICS].sort());
+  });
+
+  it('registers a runtime payload validator for exactly the topics identity publishes', () => {
+    expect(new Set(Object.keys(identityPayloadValidators))).toEqual(new Set(IDENTITY_TOPICS));
+    expect(Object.keys(identityPayloadValidators)).toHaveLength(IDENTITY_TOPICS.length);
+  });
+
+  it('the login-mail schema declares no password or hash property at any depth', () => {
+    const names = declaredPropertyNames(schemaFor(LOGIN_MAIL_REQUESTED_TOPIC));
+    expect(names).toContain('userId');
+    expect(names.filter((name) => /password|hash/i.test(name))).toEqual([]);
   });
 
   it.each(Object.entries(TOPIC_KINDS))('%s carries its URN, the pinned SHA and kind %s', (topic, kind) => {
@@ -111,6 +177,68 @@ describe('topic schemas', () => {
       'x-opt2-kind': kind,
     });
     expect(SCHEMAS[topic]).not.toHaveProperty(['x-opt2-tenant-fanout']);
+  });
+});
+
+describe.each(Object.entries(TOPIC_KINDS) as Array<[IdentityTopic, EventKind]>)('%s schema', (topic, kind) => {
+  const schema = schemaFor(topic);
+
+  it('compiles with the platform validator under its own $id', () => {
+    const validator = compileTopicSchema(schema);
+    expect(validator.schemaId).toBe(schema.$id);
+    expect(validator.meta.kind).toBe(kind);
+  });
+
+  it(`declares kind ${kind} through topicMeta, with no tenant fan-out or superseding effects`, () => {
+    const meta = topicMeta(schema);
+    expect(meta.kind).toBe(kind);
+    expect(meta.fanout).toBeUndefined();
+    expect(meta.supersedes).not.toBe(true);
+  });
+
+  it("is the contract identity's outbox runtime validates writes against", () => {
+    expect(validatorFor(topic).meta.kind).toBe(topicMeta(schema).kind);
+    expect(validatorFor(topic).schemaId).toBe(schema.$id);
+  });
+});
+
+/** A group payload in the envelope its pool tenant publishes it under. */
+function groupEnvelope(payload: object, groupId: string): EventEnvelope {
+  return testEnvelope({ topic: GROUP_CHANGED_TOPIC, tenantId: TENANT_UMBRELLA.tenantId, aggregateId: groupId, aggregateVersion: 1, payload });
+}
+
+describe('identity.group.changed.v1 payloads groupChangedPayload builds', () => {
+  const schema = schemaFor(GROUP_CHANGED_TOPIC);
+  const pooled = { tenant_id: TENANT_UMBRELLA.tenantId, siteid: TENANT_UMBRELLA.siteId };
+  const saved = groupRow({ ...pooled, userid: cfId('A', 821), groupname: 'Umbrella Editors', ispublic: 0 });
+
+  it.each([
+    { name: 'a saved private-pool group', row: saved, deleted: false, groupName: 'Umbrella Editors', isPublic: 0 },
+    { name: 'a deleted public-pool group', row: groupRow({ ...pooled, groupname: 'Umbrella Members', ispublic: 1 }), deleted: true, groupName: 'Umbrella Members', isPublic: 1 },
+    { name: 'a group whose name and isPublic are null', row: groupRow({ ...pooled, groupname: null, ispublic: null }), deleted: false, groupName: null, isPublic: null },
+    { name: "a group whose isPublic arrives in the driver's text form", row: { ...groupRow(pooled), ispublic: '1' }, deleted: false, groupName: 'Test Group', isPublic: 1 },
+  ])('$name passes the topic contract in the pool tenant', ({ row, deleted, groupName, isPublic }) => {
+    const payload = groupChangedPayload(row, { deleted }, TENANT_UMBRELLA.tenantId);
+
+    expect(payload).toStrictEqual({ groupId: row.userid, siteId: TENANT_UMBRELLA.siteId, groupName, type: 1, isPublic, poolTenantId: TENANT_UMBRELLA.tenantId, deleted });
+    expect(assertEventMatches(undefined, schema, groupEnvelope(payload, payload.groupId)).payload).toStrictEqual(payload);
+  });
+
+  it('rejects the envelope once its tenantId is removed', () => {
+    const payload = groupChangedPayload(saved, { deleted: false }, TENANT_UMBRELLA.tenantId);
+    expect(() => assertEventMatches(undefined, schema, withoutTenant(groupEnvelope(payload, payload.groupId)))).toThrow(ContractAssertionError);
+  });
+
+  const built: GroupChangedPayload = groupChangedPayload(saved, { deleted: false }, TENANT_UMBRELLA.tenantId);
+  const withoutGroupId = Object.fromEntries(Object.entries(built).filter(([key]) => key !== 'groupId'));
+
+  it.each([
+    ['an extra legacy-cased property', { ...built, GroupName: built.groupName }, 'must NOT have additional properties'],
+    ['no groupId', withoutGroupId, "must have required property 'groupId'"],
+  ])('the runtime validator rejects a payload with %s', (_case, payload, message) => {
+    const result = validatorFor(GROUP_CHANGED_TOPIC).validatePayload(payload);
+    expect(result.ok).toBe(false);
+    expect(result.ok ? [] : result.errors).toContainEqual(expect.stringContaining(message));
   });
 });
 
@@ -228,6 +356,233 @@ describe('envelopes the routes write', () => {
     expect((await t.app.inject({ method: 'POST', url: url('finish'), headers })).statusCode).toBe(200);
     const released = t.db.writes().filter((write) => write.verb === 'UPDATE' && write.table === 'identity.outbox');
     expect(released.map((write) => [write.sql.includes('SET held = false'), write.values[0]])).toEqual([[true, OPERATION_ID]]);
+  });
+});
+
+const OUTBOX = `identity.${OUTBOX_TABLE}`;
+const INSERT_COLUMNS = /^INSERT INTO \S+ \(([^)]+)\)/;
+const FLUSH_LOCK = new RegExp(`FROM "identity"\\.${OUTBOX_TABLE} o JOIN`);
+
+/** Committed outbox rows as pg returns them, rebuilt from the recorded inserts and publish stamps. */
+function storedOutboxRows(db: RecordingDb): QueryResultRow[] {
+  const writes = db.writes().filter((write) => write.table === OUTBOX);
+  const stamps = new Map<string, unknown>();
+  for (const write of writes.filter((candidate) => candidate.verb === 'UPDATE' && candidate.sql.includes('SET published_at'))) {
+    for (const eventId of write.values[1] as readonly string[]) stamps.set(eventId, write.values[0]);
+  }
+  return writes
+    .filter((write) => write.verb === 'INSERT')
+    .map((write, index) => {
+      const columns = (INSERT_COLUMNS.exec(write.sql)?.[1] ?? '').split(',').map((column) => column.trim());
+      const row: QueryResultRow = Object.fromEntries(columns.map((column, i) => [column, write.values[i]]));
+      return { ...row, seq: String(index + 1), envelope: JSON.parse(String(row.envelope)), published_at: stamps.get(String(row.event_id)) ?? null };
+    });
+}
+
+/** The committed outbox rows, decoded as the flush, sweep and CLI read them. */
+function outboxRows(db: RecordingDb): OutboxRow[] {
+  return storedOutboxRows(db).map(rowFromDb);
+}
+
+/** Answers the in-request flush's row lock with the committed, unheld, unpublished rows it names, as PostgreSQL would. */
+function answerFlushLock(db: RecordingDb): void {
+  db.respond(FLUSH_LOCK, (_sql, values) => {
+    const named = new Set(values[0] as readonly string[]);
+    return storedOutboxRows(db).filter((row) => named.has(String(row.event_id)) && row.held === false && row.published_at === null);
+  });
+}
+
+/** The only item of `items`; fails the test unless there is exactly one. */
+function single<T>(items: readonly T[]): T {
+  expect(items).toHaveLength(1);
+  return items[0] as T;
+}
+
+/** One identity event writer call and the outbox row it must leave in tenant-a. */
+interface WriterCase {
+  name: string;
+  topic: IdentityTopic;
+  aggregateType: 'group' | 'user';
+  aggregateId: string;
+  payload: unknown;
+  write(events: IdentityEvents, tx: TenantTx): Promise<EventEnvelope | null>;
+}
+
+const WRITER_GROUP = groupRow({ userid: cfId('A', 811), groupname: 'Contract Group', ispublic: 1 });
+const HOME_NODE = '00000000000000000000000000000000001';
+const CONTENT_NODE = cfId('B', 811);
+const MAIL: LoginMailRequestedPayload = {
+  messageId: cfId('C', 811),
+  userId: EDITOR.account.userid,
+  returnId: cfId('D', 811),
+  siteId: SITE_A,
+  to: 'qa_editor@tenant-a.opt2.test',
+  from: 'Tenant A',
+  subject: 'Tenant A Account Information',
+  text: 'Dear QA Editor,\n',
+  bcc: '',
+  kind: 'forgot-password',
+};
+const SEND_LOGIN_MAIL: LoginMailRequestedPayload = { ...MAIL, messageId: cfId('C', 812), returnId: cfId('D', 812), siteId: '', kind: 'send-login' };
+const permission = (contentid: string, type: PermissionType) => permissionRow({ groupid: EDITOR_GROUP, siteid: SITE_A, contentid, type });
+
+const WRITER_CASES: WriterCase[] = [
+  ...[false, true].map((deleted): WriterCase => ({
+    name: `publishGroupChanged of a ${deleted ? 'deleted' : 'saved'} group`,
+    topic: GROUP_CHANGED_TOPIC,
+    aggregateType: 'group',
+    aggregateId: WRITER_GROUP.userid,
+    payload: { groupId: WRITER_GROUP.userid, siteId: SITE_A, groupName: 'Contract Group', type: 1, isPublic: 1, poolTenantId: TENANT_A.tenantId, deleted },
+    write: (events, tx) => events.publishGroupChanged(tx, WRITER_GROUP, { deleted }),
+  })),
+  {
+    name: 'publishMembershipChanged of a user in no group',
+    topic: MEMBERSHIP_CHANGED_TOPIC,
+    aggregateType: 'user',
+    aggregateId: EDITOR.account.userid,
+    payload: { userId: EDITOR.account.userid, siteId: SITE_A, groupIds: [] },
+    write: (events, tx) => events.publishMembershipChanged(tx, { userId: EDITOR.account.userid, siteId: SITE_A, groupIds: [] }),
+  },
+  {
+    name: 'publishMembershipChanged of a user in two groups, given unsorted with a duplicate',
+    topic: MEMBERSHIP_CHANGED_TOPIC,
+    aggregateType: 'user',
+    aggregateId: EDITOR.account.userid,
+    payload: { userId: EDITOR.account.userid, siteId: SITE_A, groupIds: [ADMIN_GROUP, EDITOR_GROUP].sort() },
+    write: (events, tx) =>
+      events.publishMembershipChanged(tx, { userId: EDITOR.account.userid, siteId: SITE_A, groupIds: [EDITOR_GROUP, ADMIN_GROUP, EDITOR_GROUP] }),
+  },
+  {
+    name: 'publishPermissionChanged of node verdicts and a module grant',
+    topic: PERMISSION_CHANGED_TOPIC,
+    aggregateType: 'group',
+    aggregateId: EDITOR_GROUP,
+    payload: {
+      groupId: EDITOR_GROUP,
+      siteId: SITE_A,
+      rows: [
+        { contentId: HOME_NODE, siteId: SITE_A, type: 'Editor' },
+        { contentId: USERS_MODULE, siteId: SITE_A, type: 'module' },
+        { contentId: CONTENT_NODE, siteId: SITE_A, type: 'Author' },
+        { contentId: CONTENT_NODE, siteId: SITE_A, type: 'Deny' },
+        { contentId: CONTENT_NODE, siteId: SITE_A, type: 'Read' },
+      ],
+    },
+    write: (events, tx) =>
+      events.publishPermissionChanged(tx, {
+        groupId: EDITOR_GROUP,
+        siteId: SITE_A,
+        rows: [
+          permission(CONTENT_NODE, 'Read'),
+          permission(USERS_MODULE, 'module'),
+          permission(CONTENT_NODE, 'Deny'),
+          permission(HOME_NODE, 'Editor'),
+          permission(CONTENT_NODE, 'Author'),
+        ],
+      }),
+  },
+  {
+    name: 'publishPermissionChanged of a group with no rows left',
+    topic: PERMISSION_CHANGED_TOPIC,
+    aggregateType: 'group',
+    aggregateId: EDITOR_GROUP,
+    payload: { groupId: EDITOR_GROUP, siteId: SITE_A, rows: [] },
+    write: (events, tx) => events.publishPermissionChanged(tx, { groupId: EDITOR_GROUP, siteId: SITE_A, rows: [] }),
+  },
+  ...[MAIL, SEND_LOGIN_MAIL].map((mail): WriterCase => ({
+    name: `publishLoginMailRequested of a ${mail.kind} mail${mail.siteId === '' ? ' under the global configuration' : ''}`,
+    topic: LOGIN_MAIL_REQUESTED_TOPIC,
+    aggregateType: 'user',
+    aggregateId: mail.userId,
+    payload: mail,
+    write: (events, tx) => events.publishLoginMailRequested(tx, mail),
+  })),
+];
+
+describe('outbox rows the identity event writers leave', () => {
+  let t: TestApp;
+  let events: IdentityEvents;
+
+  beforeAll(async () => {
+    t = await buildTestApp();
+    await t.app.ready();
+    events = createIdentityEvents(t.repo);
+  });
+
+  afterAll(async () => {
+    await t?.app.close();
+  });
+
+  beforeEach(() => {
+    t.db.clear();
+    t.publisher.clear();
+    answerFlushLock(t.db);
+  });
+
+  it.each(WRITER_CASES)('$name writes one contract-valid row that the in-request flush publishes', async ({ topic, aggregateType, aggregateId, payload, write }) => {
+    const returned = await t.db.withTenant(TENANT_A.tenantId, (tx) => write(events, tx));
+    const row = single(outboxRows(t.db));
+    const schema = schemaFor(topic);
+    const envelope = assertEventMatches(undefined, schema, row.envelope);
+
+    expect(envelope).toEqual(returned);
+    expect(envelope).toMatchObject({
+      eventType: eventTypeOf(topic),
+      schemaVersion: schemaVersionOf(topic),
+      tenantId: TENANT_A.tenantId,
+      producer: 'identity',
+      aggregateType,
+      aggregateId,
+      payload,
+    });
+    expect(envelope.schemaVersion).toBe('1.0.0');
+    expect(envelope.payload).toStrictEqual(payload);
+    expect(row).toMatchObject({ tenantId: TENANT_A.tenantId, eventId: envelope.eventId, topic, kind: topicMeta(schema).kind, orderingKey: aggregateId, held: false, operationId: null });
+    expect(row.publishedAt).not.toBeNull();
+    expect(t.publisher.published.map((sent) => [sent.topic, sent.envelope.eventId])).toEqual([[row.topic, row.eventId]]);
+  });
+
+  it('holds a membership row written under an open operation, unpublished', async () => {
+    const operationId = cfId('F', 811);
+    const returned = await t.db.withTenant(TENANT_A.tenantId, (tx) =>
+      events.publishMembershipChanged(tx, { userId: EDITOR.account.userid, siteId: SITE_A, groupIds: [EDITOR_GROUP] }, { operationId }),
+    );
+    const row = single(outboxRows(t.db));
+
+    expect(assertEventMatches(undefined, schemaFor(MEMBERSHIP_CHANGED_TOPIC), row.envelope)).toEqual(returned);
+    expect(row).toMatchObject({ topic: MEMBERSHIP_CHANGED_TOPIC, kind: 'state', held: true, operationId, publishedAt: null });
+    expect(t.publisher.published).toEqual([]);
+  });
+
+  it('emitStateEvents of applied group, membership, permission and credential rows writes only the three state topics', async () => {
+    type AppliedChange = Parameters<IdentityEvents['emitStateEvents']>[1];
+    const applied = (definition: { unit: string; table: string }, after: AppliedChange['after']): AppliedChange => ({
+      unit: definition.unit,
+      table: definition.table,
+      op: 'insert',
+      after,
+      origin: 'backfill',
+      tenantId: TENANT_A.tenantId,
+    });
+    const group = groupRow({ userid: cfId('A', 812), groupname: 'Applied Group' });
+    const changes = [
+      applied(GROUP_ACCOUNT, group),
+      applied(MEMBERSHIP, membershipRow({ userid: SITE_ADMIN_A.account.userid, groupid: ADMIN_GROUP })),
+      applied(PERMISSION, permissionRow({ groupid: group.userid, siteid: SITE_A })),
+      applied(CREDENTIAL, SITE_ADMIN_A.credential),
+    ];
+
+    await t.db.withTenant(TENANT_A.tenantId, async (tx) => {
+      for (const change of changes) await events.emitStateEvents(tx, change, { origin: 'backfill' });
+    });
+    const rows = outboxRows(t.db);
+
+    expect(rows.map((row) => row.topic).sort()).toEqual([GROUP_CHANGED_TOPIC, MEMBERSHIP_CHANGED_TOPIC, PERMISSION_CHANGED_TOPIC].sort());
+    for (const row of rows) {
+      const schema = schemaFor(row.topic);
+      expect(assertEventMatches(undefined, schema, row.envelope).tenantId).toBe(TENANT_A.tenantId);
+      expect(row.kind).toBe(topicMeta(schema).kind);
+    }
   });
 });
 
