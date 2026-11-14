@@ -1,6 +1,7 @@
 // Internal cut-over endpoints of the gateway contract: activate, freeze, unfreeze, status and evidence-backed orphan clearing.
 import { AuthDenial, Roles, type Opt2AuthContext } from '@opt2/platform/auth';
-import type { FastifyInstance, FastifyReply } from '@opt2/platform/service-kit';
+import { LegacyApiError } from '@opt2/platform/legacy-compat';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from '@opt2/platform/service-kit';
 import type { components } from '../generated/openapi.js';
 import type { InflightStore } from './inflight.js';
 import { ActivationRejected, CutoverConflict, type CutoverState, type CutoverStatus } from './state.js';
@@ -78,6 +79,12 @@ const CLEAR_ORPHANS_BODY = {
   ],
 } as const;
 
+/** Refuses a body whose media type is not `application/json`, the only one the contract declares, with the legacy 400. */
+function requireJsonBody(request: FastifyRequest, _reply: FastifyReply, done: (err?: Error) => void): void {
+  const essence = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
+  done(essence === 'application/json' ? undefined : new LegacyApiError('badRequest'));
+}
+
 /** The verified caller recorded as `activated_by` / `frozen_by`: the calling service, else the user. */
 function actorOf(auth: Opt2AuthContext): string {
   const actor = auth.service?.name ?? auth.user?.sub;
@@ -96,7 +103,7 @@ function sendFindings(reply: FastifyReply, error: unknown): FastifyReply {
 export async function registerCutoverRoutes(app: FastifyInstance, { state, inflight }: CutoverRouteDeps): Promise<void> {
   app.post<{ Body: CutoverActivateRequest }>(
     '/internal/v1/cutover/activate',
-    { schema: { body: ACTIVATE_BODY }, config: { opt2: { transport: 'service', requires: OPERATOR } } },
+    { schema: { body: ACTIVATE_BODY }, preValidation: requireJsonBody, config: { opt2: { transport: 'service', requires: OPERATOR } } },
     async (request, reply) => {
       const actor = actorOf(request.opt2Auth);
       try {
@@ -110,7 +117,7 @@ export async function registerCutoverRoutes(app: FastifyInstance, { state, infli
   const freezeRoute = (url: string, change: CutoverState['freeze']): void => {
     app.post<{ Body: CutoverRoutesRequest }>(
       url,
-      { schema: { body: ROUTES_BODY }, config: { opt2: { transport: 'service', requires: OPERATOR } } },
+      { schema: { body: ROUTES_BODY }, preValidation: requireJsonBody, config: { opt2: { transport: 'service', requires: OPERATOR } } },
       async (request, reply) => {
         const actor = actorOf(request.opt2Auth);
         try {
@@ -134,7 +141,11 @@ export async function registerCutoverRoutes(app: FastifyInstance, { state, infli
   // `::` is the router's literal colon, so the contract's `inflight:clear-orphans` is not read as a path parameter.
   app.post<{ Body: InflightClearRequest }>(
     '/internal/v1/inflight::clear-orphans',
-    { schema: { body: CLEAR_ORPHANS_BODY }, config: { opt2: { transport: 'service', requires: OPERATOR_OR_MIGRATION } } },
+    {
+      schema: { body: CLEAR_ORPHANS_BODY },
+      preValidation: requireJsonBody,
+      config: { opt2: { transport: 'service', requires: OPERATOR_OR_MIGRATION } },
+    },
     async (request): Promise<InflightClearResponse> => {
       const actor = actorOf(request.opt2Auth);
       // The store's `routes` narrowing is in-process only; the contract body carries no routes.

@@ -708,7 +708,7 @@ describe('validateVersion', () => {
       const findings = validateVersion(V3, activation(committed.reconciliationDir));
       expect(findings).toHaveLength(1);
       expect(findings[0]).toMatchObject({ rule: 'rollback-evidence', group: G_PERSON });
-      expect(findings[0]?.message).toMatch(/rollback-before\.json has result pending-run$/);
+      expect(findings[0]?.message).toBe('rollback-before.json has result pending-run');
     });
 
     it('passes with a zero-difference report', async () => {
@@ -725,10 +725,16 @@ describe('validateVersion', () => {
       expect(validateVersion(t, activation(dir))).toEqual([]);
     });
 
-    it('fails when the report is missing', async () => {
-      const findings = validateVersion(V3, activation(await tempDir()));
+    it.each([
+      ['missing', undefined, /^rollback-before\.json is unreadable: ENOENT$/],
+      ['not JSON', '{', /^rollback-before\.json is unreadable: .*JSON/],
+    ] as const)('fails when the report is %s, naming it without its directory', async (_label, content, expected) => {
+      const dir = await tempDir();
+      if (content !== undefined) await writeFile(join(dir, 'rollback-before.json'), content);
+      const findings = validateVersion(V3, activation(dir));
       expect(findings.map((f) => f.rule)).toEqual(['rollback-evidence']);
-      expect(findings[0]?.message).toMatch(/is unreadable: ENOENT/);
+      expect(findings[0]?.message).toMatch(expected);
+      expect(findings[0]?.message).not.toContain(dir);
     });
 
     it('needs only the reference in ci mode', async () => {

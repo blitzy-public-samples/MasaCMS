@@ -1,4 +1,4 @@
-// Internal cut-over routes: registration as the contract declares it, operator and migration access, findings and orphan clearing.
+// Internal cut-over routes: registration as the contract declares it, operator and migration access, JSON-only bodies, findings and orphan clearing.
 import { readFile } from 'node:fs/promises';
 import { INVOCATION_HEADER, Roles, recordedRoutes, rolesForService } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
@@ -143,11 +143,19 @@ const PROBES: Record<string, Probe> = {
   },
 };
 
-/** Injects `probe` with `headers` (the operator's credential by default) and an optional replacement body. */
+// Each POST probe's body as a form; the platform's form parser yields the same top-level fields.
+const FORM_BODIES: Record<string, string> = {
+  cutoverActivate: 'tableVersion=v0002',
+  cutoverFreeze: `routes=${encodeURIComponent(ROUTE)}`,
+  cutoverUnfreeze: `routes=${encodeURIComponent(ROUTE)}`,
+  inflightClearOrphans: `side=legacy&evidence=${encodeURIComponent(JSON.stringify(LEGACY_RESTART))}`,
+};
+
+/** Injects `probe` with `headers` (the operator's credential by default) and an optional replacement body, raw text included. */
 async function call(
   app: FastifyInstance,
   probe: Probe,
-  opts: { headers?: Record<string, string>; payload?: object } = {},
+  opts: { headers?: Record<string, string>; payload?: object | string } = {},
 ): Promise<{ status: number; body: unknown }> {
   const res = await app.inject({
     method: probe.method,
@@ -225,6 +233,32 @@ describe('registerCutoverRoutes', () => {
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Invalid parameters' } });
     expect(calls).toEqual([]);
+  });
+
+  it.each(
+    Object.entries(PROBES)
+      .filter(([, probe]) => probe.method === 'POST')
+      .flatMap(([operationId, probe]): Array<[string, string, Probe, string | undefined, string]> => [
+        [operationId, 'a form body', probe, 'application/x-www-form-urlencoded', FORM_BODIES[operationId]!],
+        [operationId, 'JSON text as text/plain', probe, 'text/plain', JSON.stringify(probe.payload)],
+        [operationId, 'JSON text under a JSON-prefixed type', probe, 'application/json-patch+json', JSON.stringify(probe.payload)],
+        [operationId, 'JSON text without a media type', probe, undefined, JSON.stringify(probe.payload)],
+      ]),
+  )('refuses %s with %s as a bad request before touching the state', async (_operationId, _label, probe, contentType, payload) => {
+    const { app, calls } = await cutoverApp();
+    const headers = { ...(await credentialOf('operator')), ...(contentType === undefined ? {} : { 'content-type': contentType }) };
+    const res = await call(app, probe, { headers, payload });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Bad Request' } });
+    expect(calls).toEqual([]);
+  });
+
+  it.each(['application/json; charset=utf-8', 'Application/JSON'])('accepts a JSON body sent as %s', async (contentType) => {
+    const { app, calls } = await cutoverApp();
+    const headers = { ...(await credentialOf('operator')), 'content-type': contentType };
+    const res = await call(app, PROBES.cutoverActivate!, { headers, payload: JSON.stringify({ tableVersion: 'v0002' }) });
+    expect(res).toEqual({ status: 200, body: { tableVersion: 'v0002', epoch: 4 } });
+    expect(calls).toEqual([['activate', { tableVersion: 'v0002', actor: 'operator' }]]);
   });
 
   it('freezes and unfreezes routes and answers the status after the new epoch', async () => {

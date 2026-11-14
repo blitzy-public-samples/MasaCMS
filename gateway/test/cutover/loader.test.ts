@@ -337,8 +337,9 @@ describe('schema failures', () => {
     expect(schemaError.name).toBe('CutoverSchemaError');
     expect(schemaError.file).toBe(file);
     expect(schemaError.errors.length).toBeGreaterThan(0);
-    expect(schemaError.message).toContain(file);
-    expect(schemaError.message).toContain(instancePath);
+    expect(schemaError.message).toBe(`${file} does not match its cut-over schema: ${schemaError.detail}`);
+    expect(schemaError.detail).toContain(instancePath);
+    expect(schemaError.detail).not.toContain(caseDir);
   });
 });
 
@@ -444,8 +445,8 @@ describe('opt2 inputs', () => {
     const { file, error } = await rejection(input, path, value);
     expect(error).toBeInstanceOf(CutoverSchemaError);
     expect((error as CutoverSchemaError).file).toBe(file);
-    expect((error as CutoverSchemaError).message).toContain(`${file} does not match its cut-over schema:`);
-    expect((error as CutoverSchemaError).message).toContain(expected);
+    expect((error as CutoverSchemaError).message).toBe(`${file} does not match its cut-over schema: ${(error as CutoverSchemaError).detail}`);
+    expect((error as CutoverSchemaError).detail).toContain(expected);
   });
 
   const JOINER = { unit: 'communications.scheduled_task', owner: 'communications', legacyTables: [] as string[] };

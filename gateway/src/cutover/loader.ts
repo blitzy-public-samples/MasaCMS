@@ -43,15 +43,18 @@ function describeError(error: ErrorObject): string {
   return `${error.instancePath || '/'} ${error.message ?? error.keyword}`;
 }
 
-/** A cut-over file that does not match its JSON Schema; the message names the file and the first error paths. */
+/** A cut-over file that does not match its JSON Schema; `detail` lists the first error paths, and the message prefixes the file. */
 export class CutoverSchemaError extends Error {
   override readonly name = 'CutoverSchemaError';
+  readonly detail: string;
 
   constructor(
     readonly file: string,
     readonly errors: ErrorObject[],
   ) {
-    super(`${file} does not match its cut-over schema: ${errors.slice(0, REPORTED_ERRORS).map(describeError).join('; ')}`);
+    const detail = errors.slice(0, REPORTED_ERRORS).map(describeError).join('; ');
+    super(`${file} does not match its cut-over schema: ${detail}`);
+    this.detail = detail;
   }
 }
 

@@ -286,16 +286,18 @@ function writeEntryGroups(groups: GroupsFile): Map<string, string[]> {
 
 type ReportVerdict = { ok: true } | { ok: false; reason: string };
 
-/** Reads a reconciliation report named by a rollback reference from the reconciliation directory. */
+/** Reads a reconciliation report named by a rollback reference from the reconciliation directory; a reason names the report by file name only. */
 function reportVerdict(reconciliationDir: string, report: string): ReportVerdict {
-  const file = join(reconciliationDir, basename(report));
+  const name = basename(report);
   let result: unknown;
   try {
-    result = (JSON.parse(readFileSync(file, 'utf8')) as { result?: unknown }).result;
+    result = (JSON.parse(readFileSync(join(reconciliationDir, name), 'utf8')) as { result?: unknown }).result;
   } catch (error) {
-    return { ok: false, reason: `${file} is unreadable: ${(error as Error).message}` };
+    // A file-system error message repeats the absolute path, so only its code is reported.
+    const { code, message } = error as NodeJS.ErrnoException;
+    return { ok: false, reason: `${name} is unreadable: ${code ?? message}` };
   }
-  return result === ZERO_DIFFERENCE ? { ok: true } : { ok: false, reason: `${file} has result ${String(result)}` };
+  return result === ZERO_DIFFERENCE ? { ok: true } : { ok: false, reason: `${name} has result ${String(result)}` };
 }
 
 /** A version indexed for the rules, with the context-derived key sets they share. */

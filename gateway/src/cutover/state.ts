@@ -1,5 +1,6 @@
 // Cut-over activation, freeze and epoch protocol over `gateway.cutover_state`, `gateway.cutover_freeze` and `gateway.instance`.
 // Liveness and stored timestamps come from the database clock; the injected clock only bounds in-process waits.
+import { join } from 'node:path';
 import { LegacyServiceUnavailableError, normaliseRouteKey } from '@opt2/platform/legacy-compat';
 import type { Clock } from '@opt2/platform/service-kit';
 import {
@@ -371,14 +372,20 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
       ),
     );
 
+  /** Loads the version to activate; a missing or schema-invalid file is refused with findings naming only the version, and its path is logged. */
   const requestedTable = async (tableVersion: string): Promise<CutoverTable> => {
     try {
       return await tableFor(tableVersion);
     } catch (error) {
+      const refused = `cut-over activation refused: tableVersion=${tableVersion} instance=${instanceId}`;
       if (isMissingFile(error)) {
-        throw new ActivationRejected([{ rule: 'unknown-version', message: `no version file ${tableVersion}.json in ${paths.versionsDir}` }]);
+        logger.info({}, `${refused} rule=unknown-version file=${join(paths.versionsDir, `${tableVersion}.json`)}`);
+        throw new ActivationRejected([{ rule: 'unknown-version', message: `no version file ${tableVersion}.json` }]);
       }
-      if (error instanceof CutoverSchemaError) throw new ActivationRejected([{ rule: 'schema', message: error.message }]);
+      if (error instanceof CutoverSchemaError) {
+        logger.info({}, `${refused} rule=schema error=${error.message}`);
+        throw new ActivationRejected([{ rule: 'schema', message: `${tableVersion}.json does not match its cut-over schema: ${error.detail}` }]);
+      }
       throw error;
     }
   };

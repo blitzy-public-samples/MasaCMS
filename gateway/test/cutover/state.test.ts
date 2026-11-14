@@ -161,20 +161,27 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
   });
 
   it('refuses unknown and schema-invalid version files without committing an epoch', async () => {
-    const state = makeState('gw-a');
+    const logged: string[] = [];
+    const logger: CutoverStateLogger = { info: (_obj, msg) => logged.push(msg), error: () => undefined };
+    const state = makeState('gw-a', { logger });
     const unknown = await state.activate({ tableVersion: 'v0099', actor: OPERATOR }).catch((e: unknown) => e);
     expect(unknown).toBeInstanceOf(ActivationRejected);
-    expect((unknown as ActivationRejected).findings.map((f) => f.rule)).toEqual(['unknown-version']);
+    expect((unknown as ActivationRejected).findings).toEqual([{ rule: 'unknown-version', message: 'no version file v0099.json' }]);
     expectContract('POST', '/internal/v1/cutover/activate', 400, { findings: (unknown as ActivationRejected).findings });
+    expect(logged).toContainEqual(expect.stringContaining(`rule=unknown-version file=${join(paths.versionsDir, 'v0099.json')}`));
 
     const dir = await mkdtemp(join(tmpdir(), 'state-test-'));
     try {
       await writeFile(join(dir, 'v0009.json'), JSON.stringify({ tableVersion: 'v0009' }));
-      const invalid = await makeState('gw-b', { paths: { ...paths, versionsDir: dir } })
+      const invalid = await makeState('gw-b', { logger, paths: { ...paths, versionsDir: dir } })
         .activate({ tableVersion: 'v0009', actor: OPERATOR })
         .catch((e: unknown) => e);
       expect(invalid).toBeInstanceOf(ActivationRejected);
-      expect((invalid as ActivationRejected).findings.map((f) => f.rule)).toEqual(['schema']);
+      const findings = (invalid as ActivationRejected).findings;
+      expect(findings.map((f) => f.rule)).toEqual(['schema']);
+      expect(findings[0]?.message).toMatch(/^v0009\.json does not match its cut-over schema: \/ must have required property/);
+      expect(findings[0]?.message).not.toContain(dir);
+      expect(logged).toContainEqual(expect.stringContaining(`rule=schema error=${join(dir, 'v0009.json')} does not match its cut-over schema`));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
