@@ -134,11 +134,22 @@ export function fixtureSuccess(ctx: FixtureContext, data: unknown = {}, status =
   return respond(buildEnvelope({ method: ctx.method, params: paramsWithoutMethod(ctx.params), data }), status, ctx.params);
 }
 
-/** envelope.cfc `listResponse` of a `queryPage` result: `items` already holds only the page of `paging.total` rows. */
-export function fixtureList(ctx: FixtureContext, items: readonly unknown[], paging: FixturePaging): FixtureResponse {
+/** One page in Masa's paged-list shape, as envelope.cfc `listResponse` builds its `data`. */
+export interface FixturePage<T> {
+  items: T[];
+  startindex: number;
+  endindex: number;
+  itemsperpage: number;
+  totalitems: number;
+  totalpages: number;
+  pageindex: number;
+}
+
+/** The paged-list `data` of a `queryPage` result: `items` already holds only the page of `paging.total` rows. */
+export function fixturePage<T>(items: readonly T[], paging: FixturePaging): FixturePage<T> {
   const { total, pageIndex, itemsPerPage } = paging;
   const startIndex = (pageIndex - 1) * itemsPerPage + 1;
-  return fixtureSuccess(ctx, {
+  return {
     items: startIndex > total ? [] : [...items],
     startindex: startIndex,
     endindex: Math.min(startIndex + itemsPerPage - 1, total),
@@ -146,7 +157,12 @@ export function fixtureList(ctx: FixtureContext, items: readonly unknown[], pagi
     totalitems: total,
     totalpages: Math.ceil(total / itemsPerPage),
     pageindex: pageIndex,
-  });
+  };
+}
+
+/** envelope.cfc `listResponse` of a `queryPage` result: `items` already holds only the page of `paging.total` rows. */
+export function fixtureList(ctx: FixtureContext, items: readonly unknown[], paging: FixturePaging): FixtureResponse {
+  return fixtureSuccess(ctx, fixturePage(items, paging));
 }
 
 /** Error envelope of envelope.cfc `fail` at the type's status; a non-empty `message` replaces the type's default. */
