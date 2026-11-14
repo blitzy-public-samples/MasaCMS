@@ -5,6 +5,7 @@ import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration
 import { cfNumberString, cfUuid } from '@opt2/platform/legacy-compat';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { compareLegacyText } from '../../src/domain/text-order.js';
 import {
   LEGACY_CHAR_CI_COLLATION,
   LEGACY_TEXT_ORDER_COLLATION,
@@ -27,7 +28,7 @@ interface CorpusRow {
   ext: number | null;
 }
 
-// Replicates text, compareText, compareSql and compareCandidates of src/domain/search.ts exactly.
+// Replicates text, compareSql and compareCandidates of src/domain/search.ts exactly, over its compareLegacyText.
 function text(value: unknown): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number') return cfNumberString(value);
@@ -36,18 +37,12 @@ function text(value: unknown): string {
   return value === null || value === undefined ? '' : String(value);
 }
 
-const COLLATOR = new Intl.Collator('en-US', { sensitivity: 'accent' });
-
-function compareText(a: string, b: string): number {
-  return COLLATOR.compare(a.replace(/ +$/, ''), b.replace(/ +$/, ''));
-}
-
 function compareSql(a: unknown, b: unknown): number {
   if (a === null || a === undefined) return b === null || b === undefined ? 0 : -1;
   if (b === null || b === undefined) return 1;
   if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime();
   if (typeof a === 'number' && typeof b === 'number') return a - b;
-  return compareText(text(a), text(b));
+  return compareLegacyText(text(a), text(b));
 }
 
 function compareCandidates(a: CorpusRow, b: CorpusRow, keys: readonly PersonSortKey[]): number {
@@ -239,7 +234,7 @@ describe.skipIf(!available)('pagePersonsInOrder against PostgreSQL', () => {
 
     it('keeps every id equal under the collation across pages, in one stable order', async () => {
       const tied = { siteIds: [`fold-${suffix}`] };
-      const ids = [`\uFB01-${suffix}`, `fi-${suffix}`];
+      const ids = [`\uFB01_${suffix}`, `fi_${suffix}`];
       await insert(TENANT_A.tenantId, ids.map((userid) => ({ userid, siteid: `fold-${suffix}`, lname: 'Same' })));
       const onePerPage = await idsOf(tied, PERSON_NAME_ORDER, 1);
       expect([...onePerPage].sort()).toEqual([...ids].sort());
@@ -351,7 +346,7 @@ describe.skipIf(!available)('pagePersonsInOrder against PostgreSQL', () => {
   it.each<[string, boolean]>([
     ['first', false],
     ['next', true],
-  ])('reads the %s name-order page in the order of person_tenant_text_name_order_idx without sorting', async (_label, next) => {
+  ])('reads the %s name-order page in the order of person_tenant_word_name_order_idx without sorting', async (_label, next) => {
     const plan = await handle.app.withTenant(TENANT_B.tenantId, async (tx) => {
       const after = next ? (await repo.pagePersonsInOrder(tx, {}, { orderBy: PERSON_NAME_ORDER, limit: 37 })).next : null;
       const [statement] = await personStatements(tx, (recording) => repo.pagePersonsInOrder(recording, {}, { orderBy: PERSON_NAME_ORDER, after, limit: 37 }));
@@ -360,7 +355,7 @@ describe.skipIf(!available)('pagePersonsInOrder against PostgreSQL', () => {
     });
     const walk = (node: Record<string, unknown>): Record<string, unknown>[] => [node, ...((node.Plans ?? []) as Record<string, unknown>[]).flatMap(walk)];
     const nodes = plan.flatMap((row) => row['QUERY PLAN'].flatMap((entry) => walk(entry.Plan)));
-    const scan = nodes.find((node) => node['Index Name'] === 'person_tenant_text_name_order_idx');
+    const scan = nodes.find((node) => node['Index Name'] === 'person_tenant_word_name_order_idx');
     expect(String(scan?.['Index Cond'])).toContain('tenant_id = ');
     expect(nodes.filter((node) => String(node['Node Type']).includes('Sort'))).toEqual([]);
   });

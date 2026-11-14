@@ -8,6 +8,7 @@ import type {
   UsernameCandidateRequest,
   UsernameCandidates,
 } from '../../src/legacy/identity-client.js';
+import { compareLegacyText } from '../../src/domain/text-order.js';
 import type { PersonOrderScope, PersonSortKey } from '../../src/repo/repository.js';
 import type { PersonRow } from '../../src/repo/tables.js';
 
@@ -46,15 +47,13 @@ export function ilikeC(pattern: string): (value: string) => boolean {
   return (value) => regex.test(asciiLower(value));
 }
 
-const COLLATOR = new Intl.Collator('en-US', { sensitivity: 'accent' });
-
-/** SQL Server's order of two person values: NULLs lowest, text case-insensitively with trailing spaces ignored. */
+/** SQL Server's order of two person values: NULLs lowest, text in its word sort. */
 function compareValue(a: unknown, b: unknown): number {
   if (a === null || a === undefined) return b === null || b === undefined ? 0 : -1;
   if (b === null || b === undefined) return 1;
   if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime();
   if (typeof a === 'number' && typeof b === 'number') return a - b;
-  return COLLATOR.compare(String(a).replace(/ +$/, ''), String(b).replace(/ +$/, ''));
+  return compareLegacyText(String(a), String(b));
 }
 
 /** The persons of `rows` in `scope`, in `pagePersonsInOrder` order: `orderBy`, then userid. */

@@ -75,6 +75,10 @@ const NEXT_IDS_SQL = 'SELECT nextval(pg_get_serial_sequence($1, $2)::regclass)::
 export const LEGACY_CHAR_CI_COLLATION = 'legacy_char_ci';
 /** SQL Server's case-insensitive, accent-sensitive text sort order (0010_person_text_order.sql), as the people domain compares names. */
 export const LEGACY_TEXT_ORDER_COLLATION = 'legacy_text_order';
+/** Text without the specials SQL Server's word sort weighs last and the code points it ignores, in NFD (0012_person_word_order.sql), sorted by `LEGACY_TEXT_ORDER_COLLATION`. */
+export const LEGACY_WORD_TEXT_FUNCTION = 'legacy_word_text';
+/** The specials' rank-by-position tie-break key (0012_person_word_order.sql), sorted by `COLLATE "C"`. */
+export const LEGACY_WORD_SPECIAL_FUNCTION = 'legacy_word_special';
 /** Rows per page when a caller gives no limit. */
 const DEFAULT_PAGE_SIZE = 500;
 /** The most rows one page returns. */
@@ -306,7 +310,7 @@ export interface PersonSearch {
   limit?: number;
 }
 
-/** One sort key of `pagePersonsInOrder`: text by `LEGACY_TEXT_ORDER_COLLATION` ignoring trailing spaces, other types natively; NULLs lowest. */
+/** One sort key of `pagePersonsInOrder`: text in SQL Server's word sort (`LEGACY_WORD_TEXT_FUNCTION`, then `LEGACY_WORD_SPECIAL_FUNCTION`), other types natively; NULLs lowest. */
 export interface PersonSortKey {
   column: PersonQueryColumn;
   descending: boolean;
@@ -810,12 +814,18 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   /** The text site id `column` equals an element of the array parameter `param`, compared as `siteEquals` does. */
   const siteIn = (column: string, param: string): string => `${column}::bpchar COLLATE ${legacyCi} = ANY (${param}::bpchar[])`;
   const textOrder = qualified(schema, LEGACY_TEXT_ORDER_COLLATION);
-  /** The sort key of `key` in the legacy text order, in the expression form person_tenant_text_name_order_idx indexes. */
-  const textOrderKey = (key: PersonSortKey): PersonOrderKey => {
+  const wordText = qualified(schema, LEGACY_WORD_TEXT_FUNCTION);
+  const wordSpecial = qualified(schema, LEGACY_WORD_SPECIAL_FUNCTION);
+  /** The sort keys of `key` in the legacy word sort, in the expression form person_tenant_word_name_order_idx indexes: two for text, one otherwise. */
+  const textOrderKey = (key: PersonSortKey): PersonOrderKey[] => {
     const { sql: column, text } = personColumn(key.column);
-    return { expression: text ? `rtrim(${column}) COLLATE ${textOrder}` : column, descending: key.descending };
+    if (!text) return [{ expression: column, descending: key.descending }];
+    return [
+      { expression: `${wordText}(${column}) COLLATE ${textOrder}`, descending: key.descending },
+      { expression: `${wordSpecial}(${column}) COLLATE "C"`, descending: key.descending },
+    ];
   };
-  // The collated userid is the comparator's last key; the stored userid after it only orders ids equal under the collation.
+  // The word-sorted userid is the comparator's last key; the stored userid after it only orders ids equal under it.
   const textOrderTie = textOrderKey({ column: 'userid', descending: false });
 
   // A person matching several spellings is returned once, at the first of them.
@@ -1133,7 +1143,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   }
 
   async function pagePersonsInOrder(tx: TenantTx, scope: PersonOrderScope, opts: PersonOrderPageOptions): Promise<Page<PersonRow, PersonCursor>> {
-    const keys = [...opts.orderBy.map(textOrderKey), textOrderTie];
+    const keys = [...opts.orderBy.flatMap(textOrderKey), ...textOrderTie];
     return keyedPersonPage(tx, orderScopeFilter(tx, scope), keys, opts.after, pageSize(opts.limit));
   }
 

@@ -47,6 +47,7 @@ import {
 import { ADDRESS, FAVORITE, INTEREST, PERSON, TAG, type ExtendAttributeRow, type ExtendDataRow, type PersonRow } from '../repo/tables.js';
 import { castColumnFor, EXTEND_CONFIG_DEFAULTS, type ExtendConfig } from './extended-data.js';
 import { observePersons, type PersonObserver, type PersonObserverDeps } from './roster-protocol.js';
+import { compareLegacyText } from './text-order.js';
 
 /** Columns of getSearch and getAdvancedSearch, in userGateway's `fieldList` order [legacy: core/mura/user/userGateway.cfc:82]. */
 export const SEARCH_FIELD_LIST = [
@@ -238,12 +239,9 @@ function idKey(id: string): string {
   return id.replace(/ +$/, '').toUpperCase();
 }
 
-// Windows collation word sort weighs hyphens and apostrophes lightly; ICU does not, so ordering of such names can differ.
-const COLLATOR = new Intl.Collator('en-US', { sensitivity: 'accent' });
-
-/** SQL Server text comparison under SQL_Latin1_General_CP1_CI_AS: case-insensitive, accent-sensitive, trailing spaces ignored. */
+/** SQL Server text comparison under SQL_Latin1_General_CP1_CI_AS: case-insensitive, accent-sensitive, trailing spaces ignored, word sort. */
 function compareText(a: string, b: string): number {
-  return COLLATOR.compare(a.replace(/ +$/, ''), b.replace(/ +$/, ''));
+  return compareLegacyText(a, b);
 }
 
 /** SQL Server ORDER BY of one key: NULLs lowest. */

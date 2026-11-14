@@ -34,6 +34,7 @@ import {
   type UsersQueryArgs,
   type ViewerScope,
 } from '../../src/domain/search.js';
+import { compareLegacyText } from '../../src/domain/text-order.js';
 import type { AccountView } from '../../src/legacy/identity-client.js';
 import { createPeopleRepository, type PeopleRepository } from '../../src/repo/repository.js';
 import { PEOPLE_UNITS } from '../../src/repo/tables.js';
@@ -80,15 +81,13 @@ const ADMIN_A: ViewerScope = { tid: A, site: TENANT_A.siteId, isS2: true };
 const VIEWER_A: ViewerScope = { tid: A, site: TENANT_A.siteId, isS2: false };
 const ADMIN_B: ViewerScope = { tid: B, site: TENANT_B.siteId, isS2: true };
 
-// Replicates text, compareText, compareSql and compareCandidates of src/domain/search.ts.
-const COLLATOR = new Intl.Collator('en-US', { sensitivity: 'accent' });
-
+// Replicates text, compareSql and compareCandidates of src/domain/search.ts, over its compareLegacyText.
 function compareSql(a: unknown, b: unknown): number {
   if (a === null || a === undefined) return b === null || b === undefined ? 0 : -1;
   if (b === null || b === undefined) return 1;
   if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime();
   if (typeof a === 'number' && typeof b === 'number') return a - b;
-  return COLLATOR.compare(String(a).replace(/ +$/, ''), String(b).replace(/ +$/, ''));
+  return compareLegacyText(String(a), String(b));
 }
 
 /** One reference sort key over users. */

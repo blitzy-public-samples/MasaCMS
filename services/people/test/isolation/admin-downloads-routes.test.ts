@@ -336,4 +336,35 @@ describe.skipIf(!available)('cUsers CSV downloads against PostgreSQL', () => {
       expect(res.body).toBe(await bodyText(full));
     });
   });
+
+  describe("in SQL Server's word sort of last names", () => {
+    // Tenant-b's private pool holds only these users; the earlier cases read it empty.
+    const NAMES = ['Herman-Romaguera', 'Hermann', "O'Hara", 'Ohara', "O'Connell", 'OConnell', 'Green-Klocko', 'Greenfelder'];
+    const wordId = (n: number): string => `C${String(n).padStart(7, '0')}-0000-0000-0000000000000000`;
+
+    beforeAll(async () => {
+      const writer = createPeopleRepository({ clock: fixedClock(new Date(2026, 3, 5, 6, 7, 8, 90)), schema: handle.schema });
+      await handle.app.withTenant(TENANT_B.tenantId, async (tx) => {
+        for (const [n, lname] of NAMES.entries()) {
+          await writer.insertPerson(tx, {
+            userid: wordId(n), groupname: '', fname: 'Pat', lname, email: '', company: '', jobtitle: '', mobilephone: '', website: '',
+            subtype: 'Default', contactform: '', lastupdateby: 'Admin, Ada', lastupdatebyid: 'ACTOR', siteid: TENANT_B.siteId, subscribe: 1,
+            notes: '', description: '', interests: '', keepprivate: 0, photofileid: '', imname: '', imservice: '', tags: '',
+          });
+        }
+      });
+      for (const n of NAMES.keys()) identity.accounts.set(wordId(n), account(wordId(n).slice(0, 8), TENANT_B.siteId, { userId: wordId(n) }));
+    });
+
+    it('streams the users CSV with hyphens and apostrophes weighed only as SQL Server weighs them', async () => {
+      const fixture = JSON.parse(readFileSync(new URL('../fixtures/legacy-word-order.json', import.meta.url), 'utf8')) as { corpus: string[]; ranks: number[] };
+      const rank = (lname: string): number => fixture.ranks[fixture.corpus.indexOf(lname)] as number;
+      const expected = [...NAMES.keys()].sort((a, b) => rank(NAMES[a] as string) - rank(NAMES[b] as string)).map(wordId);
+      const res = await get('/v1/users/download?ispublic=0', await headersFor(SITE_ADMIN, TENANT_B.siteId));
+      expect(res.status).toBe(200);
+      const streamed = [...res.body.matchAll(/"(C\d{7}-0000-0000-0000000000000000) "/g)].map((match) => match[1]);
+      expect(streamed).toEqual(expected);
+      expect(streamed.slice(0, 4).map((userid) => NAMES[Number(userid?.slice(1, 8))])).toEqual(['Greenfelder', 'Green-Klocko', 'Hermann', 'Herman-Romaguera']);
+    });
+  });
 });
