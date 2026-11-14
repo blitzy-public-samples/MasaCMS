@@ -1060,6 +1060,81 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
     }
   });
 
+  const ROSTER_GROUP_UNITS = ['people.person', 'people.user_address', 'people.user_interest', 'people.user_tag'];
+  const OUTSIDE_GROUP_UNITS = ['people.extend_data_user_activity', 'people.trash'];
+
+  /** Runs `fn` with the extended-data and trash units `legacy`-authoritative, reopening them after. */
+  async function withOutsideUnitsLegacy<T>(fn: () => Promise<T>): Promise<T> {
+    for (const operation of await openOperations(db)) await endOperation(db, operation.operationId);
+    await closeGates(db, { units: OUTSIDE_GROUP_UNITS, holderId: 'legacy-outside' });
+    await openGates(db, { units: OUTSIDE_GROUP_UNITS, holderId: 'legacy-outside', state: 'legacy' });
+    try {
+      return await fn();
+    } finally {
+      await closeGates(db, { units: OUTSIDE_GROUP_UNITS, holderId: 'legacy-outside', allowLegacy: true });
+      await openGates(db, { units: OUTSIDE_GROUP_UNITS, holderId: 'legacy-outside', state: 'open' });
+    }
+  }
+
+  it('commits an update while the extended-data and trash units stay legacy, registering only the units it writes', async () => {
+    const { userId, addressId } = await seedUser();
+    const identity = identityDouble(accounts);
+    const units: string[][] = [];
+    const client: IdentityClient = {
+      ...identity.client,
+      async prepare(...args) {
+        units.push(...(await openOperations(db)).filter((operation) => operation.operationId === args[1]).map((operation) => operation.units));
+        return identity.client.prepare(...args);
+      },
+    };
+    const result = await withOutsideUnitsLegacy(() => runRosterOperation(depsFor(client), rosterInput('admin-update', updateParams(userId, addressId))));
+    expect(result).toMatchObject({ ok: true, userId });
+    expect(identity.calls).toEqual([...PROTOCOL_CALLS, 'prepare', 'commit', 'finish']);
+    expect(units).toEqual([ROSTER_GROUP_UNITS]);
+    expect(await snapshot(userId)).toMatchObject({ ...NEW, rowVersion: '2' });
+    const operation = await operationOf(userId);
+    expect(operation).toMatchObject({ state: 'done', error: null });
+    expect(JSON.parse(operation?.before_image ?? '{}')).not.toHaveProperty('extendData');
+  });
+
+  it('restores the before-image of a failed identity commit without writing the legacy extended-data unit', async () => {
+    const { userId, addressId } = await seedUser();
+    const row = { dataid: 1_900_000_001, baseid: userId, attributeid: 9101, siteid: SITE, attributevalue: 'kept', stringvalue: 'kept' };
+    await inTenant((tx) => seedRepo.insert(tx, 'extend_data_user_activity', row));
+    const identity = identityDouble(accounts, { commit: 'error' });
+    const error = await withOutsideUnitsLegacy(() => rejection(runRosterOperation(depsFor(identity.client), rosterInput('admin-update', updateParams(userId, addressId)))));
+    expect(error).toBeInstanceOf(LegacyServiceUnavailableError);
+    expect(error).not.toBeInstanceOf(UnitNotAuthoritativeError);
+    expect(identity.calls).toEqual([...PROTOCOL_CALLS, 'prepare', 'commit', 'state', 'abort']);
+    expect(await operationOf(userId)).toMatchObject({ state: 'rolled-back', error: 'identity-commit' });
+    expect(await snapshot(userId)).toMatchObject({ ...OLD, rowVersion: '3' });
+    expect(await inTenant((tx) => repo.listExtendData(tx, [userId]))).toEqual([expect.objectContaining(row)]);
+    const changes = await inTenant((tx) => tx.query<{ op: string }>(`SELECT op FROM ${schema}.changelog WHERE "table" = 'extend_data_user_activity' AND key LIKE $1 ORDER BY seq`, [`%${row.dataid}%`]));
+    expect(changes.rows.map((change) => change.op)).toEqual(['insert']);
+  });
+
+  it.each<[string, () => Promise<RosterInput>, string]>([
+    ['a save posting extended attributes', async () => {
+      const { userId, addressId } = await seedUser();
+      return rosterInput('admin-update', updateParams(userId, addressId, { extendsetid: 'SET-UNWRITTEN' }));
+    }, 'people.extend_data_user_activity'],
+    ['an admin add restoring a user from the trash', async () => {
+      const params = { userid: cfUuid(), siteid: SITE, type: '2', action: 'Add', fname: 'Ry', email: 'ry@example.com', username: 'ry', ispublic: '0', frommuratrash: '1' };
+      return rosterInput('admin-add', params);
+    }, 'people.trash'],
+  ])('refuses %s while its unit stays legacy, rolling the intent back before prepare', async (_label, build, unit) => {
+    const input = await build();
+    const userId = String(input.params.get('userid'));
+    const identity = identityDouble(accounts);
+    const error = await withOutsideUnitsLegacy(() => rejection(runRosterOperation(depsFor(identity.client), input)));
+    expect(error).toBeInstanceOf(UnitNotAuthoritativeError);
+    expect(error).toMatchObject({ units: [unit] });
+    expect(identity.calls).not.toContain('prepare');
+    const operation = await operationOf(userId);
+    expect(operation).toMatchObject({ state: 'rolled-back', error: 'units-blocked' });
+    expect(await registered(operation?.operation_id ?? '')).toBe(false);
+  });
+
   describe('awaitPersonOpen', () => {
     it('returns at once for an open user, or for the caller\'s own operation', async () => {
       const userId = cfUuid();

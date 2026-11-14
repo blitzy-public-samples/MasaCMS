@@ -118,7 +118,7 @@ export const REQUEST_BUDGET_MS = 10_000;
 /** Part of the request budget the people commit's fence wait leaves for the identity call after it, `:abort` or `:commit`. */
 export const IDENTITY_CALL_RESERVE_MS = 1_000;
 
-/** People units a roster operation writes; its `open_operation` registration keeps their gates from closing until it ends. */
+/** Every people unit a roster operation can write. */
 export const PEOPLE_OPERATION_UNITS: readonly PeopleUnit[] = Object.freeze([
   PERSON.unit,
   ADDRESS.unit,
@@ -212,7 +212,7 @@ export interface BeforeImage {
   addresses: AddressRow[];
   interests: InterestRow[];
   tags: TagRow[];
-  extendData: ExtendDataRow[];
+  extendData?: ExtendDataRow[];
   trash?: TrashRow[];
 }
 
@@ -800,6 +800,23 @@ async function closeOperation(
   });
 }
 
+/** Whether the save takes the user out of the trash, deleting its `people.trash` row. */
+function takesOutTrash(shaped: ShapedSave): boolean {
+  return shaped.operation === 'create' && PEOPLE_TRASH_ENABLED && shaped.params.has('frommuratrash');
+}
+
+/** The people units `shaped` writes. */
+function savedUnits(shaped: ShapedSave): PeopleUnit[] {
+  return [
+    PERSON.unit,
+    ADDRESS.unit,
+    INTEREST.unit,
+    TAG.unit,
+    ...(shaped.saveExtended ? [EXTEND_DATA.unit] : []),
+    ...(takesOutTrash(shaped) ? [TRASH.unit] : []),
+  ];
+}
+
 /** The rows of `userId` the people commit may touch, read in its transaction before the first write. */
 async function captureBeforeImage(repo: PeopleRepository, tx: TenantTx, shaped: ShapedSave): Promise<BeforeImage> {
   const { userId } = shaped;
@@ -808,14 +825,14 @@ async function captureBeforeImage(repo: PeopleRepository, tx: TenantTx, shaped: 
   // A posted addressid of another user's address moves that address to this user (userManager.cfc:450-454, 504-506).
   const posted = shaped.addressId === '' ? null : await repo.findAddress(tx, shaped.addressId);
   if (posted !== null && !addresses.some((row) => row.addressid === posted.addressid)) addresses.push(posted);
-  const trash = shaped.operation === 'create' && shaped.params.has('frommuratrash') ? await repo.findByKey<TrashRow>(tx, TRASH.table, { objectid: userId }) : null;
+  const trash = takesOutTrash(shaped) ? await repo.findByKey<TrashRow>(tx, TRASH.table, { objectid: userId }) : null;
   return {
     existed: person !== null,
     ...(person === null ? {} : { person }),
     addresses,
     interests: await repo.listInterests(tx, userId),
     tags: await repo.listTags(tx, userId),
-    extendData: await repo.listExtendData(tx, [userId]),
+    ...(shaped.saveExtended ? { extendData: await repo.listExtendData(tx, [userId]) } : {}),
     ...(trash === null ? {} : { trash: [trash] }),
   };
 }
@@ -972,8 +989,8 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
   if ('voided' in shaped) return { ok: true, voided: true, userId: shaped.userId, values: shaped.values };
   const { userId } = shaped;
   try {
-    // Only people's units: this schema holds no identity gates, and identity registers its own units at prepare.
-    await registerOperation(deps.db, { operationId, kind: OPERATION_KIND, units: PEOPLE_OPERATION_UNITS });
+    // Only the people units this save writes: this schema holds no identity gates, and identity registers its own units at prepare.
+    await registerOperation(deps.db, { operationId, kind: OPERATION_KIND, units: savedUnits(shaped) });
   } catch (err) {
     await guarded('register', () => closeOperation(deps, tenantId, operationId, { state: 'rolled-back', error: 'units-blocked' }, write));
     throw err;
@@ -1068,7 +1085,7 @@ function parseBeforeImage(text: string): BeforeImage {
     addresses: rows<AddressRow>(ADDRESS, image.addresses),
     interests: rows<InterestRow>(INTEREST, image.interests),
     tags: rows<TagRow>(TAG, image.tags),
-    extendData: rows<ExtendDataRow>(EXTEND_DATA, image.extendData),
+    ...(image.extendData === undefined ? {} : { extendData: rows<ExtendDataRow>(EXTEND_DATA, image.extendData) }),
     ...(image.trash === undefined ? {} : { trash: rows<TrashRow>(TRASH, image.trash) }),
   };
 }
@@ -1124,7 +1141,7 @@ export async function restoreBeforeImageInTx(repo: PeopleRepository, tx: TenantT
   const before = held.before_image === null ? null : parseBeforeImage(held.before_image);
   if (before !== null) {
     const write: WriteContext = { origin: 'target', operationId };
-    await restoreRows(repo, tx, EXTEND_DATA, await repo.listExtendData(tx, [userId]), before.extendData, write);
+    if (before.extendData !== undefined) await restoreRows(repo, tx, EXTEND_DATA, await repo.listExtendData(tx, [userId]), before.extendData, write);
     await restoreRows(repo, tx, ADDRESS, await repo.listAddresses(tx, userId), before.addresses, write);
     await restoreRows(repo, tx, INTEREST, await repo.listInterests(tx, userId), before.interests, write);
     await restoreRows(repo, tx, TAG, await repo.listTags(tx, userId), before.tags, write);
