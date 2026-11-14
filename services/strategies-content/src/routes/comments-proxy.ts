@@ -146,7 +146,7 @@ function boundCall(request: FastifyRequest): BoundCall {
 }
 
 /** settingsBean.getScheme() without the site's `useSSL`, which this service does not hold: the request protocol (utility.cfc:481-500). */
-function requestScheme(request: FastifyRequest): 'http' | 'https' {
+export function requestScheme(request: FastifyRequest): 'http' | 'https' {
   const forwarded = request.headers['x-forwarded-proto'];
   if (typeof forwarded === 'string' && forwarded.toLowerCase() === 'https') return 'https';
   const frontEnd = request.headers['front-end-https'];
