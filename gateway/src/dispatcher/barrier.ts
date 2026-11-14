@@ -31,7 +31,10 @@ export class BarrierTimeoutError extends LegacyServiceUnavailableError {
   }
 }
 
-/** Read-after-write barrier over `gateway.session_barrier` and migration's projection await; only its exchange ends a declaration. */
+/**
+ * Read-after-write barrier over `gateway.session_barrier` and migration's projection await; only its exchange ends a declaration.
+ * Owners the active version does not reverse-project count as applied: nothing of theirs is stored, and their earlier rows are dropped.
+ */
 export interface SessionBarrier {
   /** Declares a target write of `owner` for the session before it is forwarded; until it ends, legacy reads await `owner`. */
   declare(sessionId: string, owner: string): Promise<void>;
@@ -47,14 +50,16 @@ export interface SessionBarrier {
   awaitOwners(owners: readonly string[]): Promise<void>;
 }
 
-/** Dependencies of {@link createSessionBarrier}: the gateway schema handle and the gateway's service client. */
+/** Dependencies of {@link createSessionBarrier}: the gateway schema handle, the gateway's service client and the projected owners. */
 export interface SessionBarrierOptions {
   db: TenantDb;
   client: ServiceClient;
+  /** Owners whose writes the reverse projector applies in legacy under the active version; read on every call. */
+  projectedOwners: () => ReadonlySet<string>;
 }
 
 /** Creates the session barrier; SQL is qualified by the handle's schema (`gateway`). */
-export function createSessionBarrier({ db, client }: SessionBarrierOptions): SessionBarrier {
+export function createSessionBarrier({ db, client, projectedOwners }: SessionBarrierOptions): SessionBarrier {
   /** Sends one projection await; any answer other than 2xx leaves the positions unconfirmed, so the request fails closed. */
   async function projectionAwait(body: Schemas['ProjectionAwaitRequest'], awaited: string): Promise<void> {
     let status: number;
@@ -86,6 +91,12 @@ export function createSessionBarrier({ db, client }: SessionBarrierOptions): Ses
     await projectionAwait(body, `owners:${owners.join(',')}`);
   }
 
+  /** The positions of projected owners only. */
+  function projectedPositions(positions: WritePositions): WritePositions {
+    const projected = projectedOwners();
+    return new Map([...positions].filter(([owner]) => projected.has(owner)));
+  }
+
   /** Ends one declaration of `owner`; a row left with neither a declaration nor a position goes. */
   function endDeclaration(tx: MetadataTx, sessionId: string, owner: string): Promise<QueryResult> {
     return tx.query(
@@ -100,6 +111,7 @@ export function createSessionBarrier({ db, client }: SessionBarrierOptions): Ses
 
   return {
     async declare(sessionId, owner) {
+      if (!projectedOwners().has(owner)) return;
       await withMetadata(db, (tx) =>
         tx.query(
           `INSERT INTO ${tx.schema}.${TABLE} AS b (session_id, owner, pending, recorded_at) VALUES ($1, $2, 1, now())
@@ -109,7 +121,9 @@ export function createSessionBarrier({ db, client }: SessionBarrierOptions): Ses
       );
     },
 
-    async record(sessionId, positions, declared) {
+    async record(sessionId, written, declaredOwner) {
+      const positions = projectedPositions(written);
+      const declared = declaredOwner !== undefined && projectedOwners().has(declaredOwner) ? declaredOwner : undefined;
       if (positions.size === 0 && declared === undefined) return;
       const owners = [...positions.keys()];
       const xids = [...positions.values()];
@@ -130,16 +144,24 @@ export function createSessionBarrier({ db, client }: SessionBarrierOptions): Ses
     },
 
     async release(sessionId, owner) {
+      if (!projectedOwners().has(owner)) return;
       await withMetadata(db, (tx) => endDeclaration(tx, sessionId, owner));
     },
 
     async awaitForSession(sessionId) {
-      const { rows } = await withMetadata(db, (tx) =>
-        tx.query<{ owner: string; xid: string | null; pending: number }>(
+      const rows = await withMetadata(db, async (tx) => {
+        const { rows: stored } = await tx.query<{ owner: string; xid: string | null; pending: number }>(
           `SELECT owner, xid::text AS xid, pending FROM ${tx.schema}.${TABLE} WHERE session_id = $1`,
           [sessionId],
-        ),
-      );
+        );
+        const projected = projectedOwners();
+        // Rows stored while their owner was projected have nothing left to await once it is not; they go without asking migration.
+        const unprojected = stored.filter((row) => !projected.has(row.owner)).map((row) => row.owner);
+        if (unprojected.length > 0) {
+          await tx.query(`DELETE FROM ${tx.schema}.${TABLE} WHERE session_id = $1 AND owner = ANY($2::text[])`, [sessionId, unprojected]);
+        }
+        return stored.filter((row) => projected.has(row.owner));
+      });
       if (rows.length === 0) return;
       // A declared owner's current position covers every write of it, recorded or not.
       const declared = rows.filter((row) => row.pending > 0);
@@ -162,12 +184,17 @@ export function createSessionBarrier({ db, client }: SessionBarrierOptions): Ses
       );
     },
 
-    async awaitPositions(positions) {
+    async awaitPositions(written) {
+      const positions = projectedPositions(written);
       if (positions.size === 0) return;
       const awaited: Record<string, string> = Object.fromEntries(positions);
       await projectionAwait({ positions: awaited, timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS }, formatWritePosition(positions));
     },
 
-    awaitOwners: ownersAwait,
+    async awaitOwners(owners) {
+      const projected = projectedOwners();
+      const awaited = owners.filter((owner) => projected.has(owner));
+      if (awaited.length > 0) await ownersAwait(awaited);
+    },
   };
 }

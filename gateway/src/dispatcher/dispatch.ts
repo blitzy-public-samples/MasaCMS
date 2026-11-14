@@ -36,6 +36,7 @@ import {
 import { sessionModeFor, type SessionMode } from '../session/mode.js';
 import {
   sessionIdFromTargetCookies,
+  type LegacyBoundResolution,
   type SessionRequestInput,
   type SessionResolution,
   type SessionResolver,
@@ -61,7 +62,7 @@ import type {
   RoutedOutcome,
   TargetDestination,
 } from './match.js';
-import { isRelayCaller, relayHandler, type RelayDeps } from './relay.js';
+import { SAFE_METHODS, isRelayCaller, relayHandler, type RelayDeps } from './relay.js';
 import type { WindowCompleteInput, WriteWindowClient } from './write-window.js';
 
 /** Methods of the edge operations (`edgeDelete|Get|Head|Options|Patch|Post|Put`). */
@@ -243,7 +244,7 @@ function prepend(extras: readonly string[], list: readonly string[]): string[] {
 }
 
 /** `Set-Cookie` values a resolution hands the client. */
-function setCookiesOf(resolution: SessionResolution | undefined): string[] {
+function setCookiesOf(resolution: LegacyBoundResolution | undefined): string[] {
   return resolution === undefined || resolution.kind === 'response' ? [] : resolution.setCookies;
 }
 
@@ -476,7 +477,9 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       method: destination.method,
       forwardBody: destination.forwardBody,
       sessionId,
-      declaresWrite: writeEntryOf(route.outcome) !== undefined,
+      // A safe method writes nothing, unless X-HTTP-Method-Override makes the request one that does.
+      declaresWrite:
+        writeEntryOf(route.outcome) !== undefined && !(SAFE_METHODS.has(request.method) && SAFE_METHODS.has(result.httpMethod)),
       mode,
       isWeb: destination.isWeb,
       failContext: route.outcome.failContext,
@@ -501,7 +504,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     const userAgent = userAgentOf(request);
     const input = sessionInputOf(request, outcome);
     const isStatic = entry?.kind === 'static';
-    let resolution: SessionResolution | undefined;
+    let resolution: LegacyBoundResolution | undefined;
     let sessionId: string | undefined;
     let cookieHeader: string | undefined;
     // A static entry is a file: it reads no session or data, so it needs no barrier, hydration or claim.
@@ -513,7 +516,10 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         siteId: result.siteId,
       });
       if (resolution.kind === 'response') return sendLegacyResponse(reply, resolution);
-      if (resolution.kind === 'session') {
+      if (resolution.kind === 'unverified') {
+        request.log.warn({ route: result.key }, 'edge legacy-bound session unverified: identity unavailable');
+      }
+      if (resolution.kind !== 'none') {
         sessionId = resolution.sessionId;
         // A legacy logout of a flagged session began: identity's end completes first, and legacy sees no session.
         const ended = resolution.identityEndPending === true;
@@ -528,8 +534,9 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
           if (row === undefined) sessionId = undefined;
           cookieHeader = legacyCookieHeaderFor(request.headers.cookie, row?.cookies ?? {}, clock.now());
         } else {
-          if (Object.keys(resolution.legacyCookies).length > 0) {
-            cookieHeader = legacyCookieHeaderFor(request.headers.cookie, resolution.legacyCookies, clock.now());
+          const legacyCookies = resolution.kind === 'session' ? resolution.legacyCookies : {};
+          if (Object.keys(legacyCookies).length > 0) {
+            cookieHeader = legacyCookieHeaderFor(request.headers.cookie, legacyCookies, clock.now());
           }
           if (ended) sessionId = undefined;
         }

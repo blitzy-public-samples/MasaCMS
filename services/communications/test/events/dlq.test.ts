@@ -20,7 +20,7 @@ import {
   type EventEnvelope,
   type EventPublisher,
 } from '@opt2/platform/events';
-import { MIGRATION_PATH_PREFIX, UNIT_GATE_TABLE, qualified, type GateRequest } from '@opt2/platform/migration-kit';
+import { GATE_WAIT_MS, MIGRATION_PATH_PREFIX, UNIT_GATE_TABLE, qualified, type GateRequest } from '@opt2/platform/migration-kit';
 import { isTenantId, tenantIdForSite, withMetadata, withTenant, type TenantDb } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
@@ -86,6 +86,28 @@ let messageIds = 0;
 function nextMessageId(): string {
   messageIds += 1;
   return `D1000000-0000-4000-${messageIds.toString(16).toUpperCase().padStart(16, '0')}`;
+}
+
+/**
+ * Runs `start` with only Date faked, stepping it 1 s per real 25 ms until the call settles, so a 30 s gate budget elapses in
+ * about a second while the gate polls and the database run in real time; `elapsedMs` is the faked time the call took.
+ */
+async function underSteppedDate<T>(start: () => Promise<T>): Promise<{ result: T; elapsedMs: number }> {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    const started = Date.now();
+    let settled = false;
+    const pending = start().finally(() => {
+      settled = true;
+    });
+    while (!settled) {
+      await sleep(25);
+      vi.setSystemTime(Date.now() + 1_000);
+    }
+    return { result: await pending, elapsedMs: Date.now() - started };
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 // An unset PG_HOST means no PostgreSQL is configured; the suite then skips without probing the server.
@@ -172,9 +194,12 @@ describe.skipIf(!available)(`communications login-mail push route${available ? '
       expect(closed.statusCode).toBe(200);
       expect(closed.json()).toEqual({ units: [{ unit: MESSAGE.unit, state: 'closed', holderId: GATE_HOLDER, phase: 'quiet' }] });
 
-      const nacked = await pushTo(ctx.app, LOGIN_MAIL_SUBSCRIPTION, envelope, { messageId: delivery, deliveryAttempt: 1 });
+      const { result: nacked, elapsedMs } = await underSteppedDate(() =>
+        pushTo(ctx.app, LOGIN_MAIL_SUBSCRIPTION, envelope, { messageId: delivery, deliveryAttempt: 1 }),
+      );
 
-      // The consumer's message read fences the gate before its insert, so the closed gate nacks as GateRaceError without the gate wait.
+      // The consumer's message read fences the gate before its insert, so each attempt rolls back and re-runs until the gate wait ends.
+      expect(elapsedMs).toBeGreaterThanOrEqual(GATE_WAIT_MS);
       expect(nacked.statusCode).toBe(503);
       expect(ctx.publisher.deadLetters(LOGIN_MAIL_SUBSCRIPTION)).toEqual([]);
       expect(await countRows(INBOX_TABLE, 'event_id', envelope.eventId)).toBe(0);

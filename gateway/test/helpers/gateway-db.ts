@@ -577,6 +577,13 @@ function statementHandlers(): Map<string, Handler> {
       return changed('DELETE', deleted);
     },
   );
+  on('DELETE FROM session_barrier WHERE session_id = $1 AND owner = ANY($2::text[])', (values, t) => {
+    const sessionId = text(values[0]);
+    const owners = texts(values[1]) ?? [];
+    let deleted = 0;
+    for (const owner of owners) if (t.barriers.delete(barrierKey(sessionId, owner))) deleted += 1;
+    return changed('DELETE', deleted);
+  });
   return handlers;
 }
 

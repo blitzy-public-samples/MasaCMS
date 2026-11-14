@@ -12,7 +12,7 @@ import {
   type EventEnvelope,
   type EventPublisher,
 } from '../../src/events/index.js';
-import { createLogger } from '../../src/logging/index.js';
+import { createLogger, type Logger } from '../../src/logging/index.js';
 import { migrationKitSql } from '../../src/migration-kit/index.js';
 import {
   FLUSH_DEADLINE_MS,
@@ -121,15 +121,22 @@ function testAggregateSql(): string {
   ].join('\n');
 }
 
-/** Registers the outbox runtime of the throwaway schema over `publisher`. */
-function outboxWith(publisher: EventPublisher): OutboxRuntime {
-  return createOutbox({ service: SERVICE, db: handle.app, publisher, logger, clock });
+/** Registers the outbox runtime of the throwaway schema over `publisher`, logging through `log`. */
+function outboxWith(publisher: EventPublisher, log: Logger = logger): OutboxRuntime {
+  return createOutbox({ service: SERVICE, db: handle.app, publisher, logger: log, clock });
 }
 
-/** Registers an outbox runtime over a fresh capturing publisher. */
-function capturingOutbox(): { runtime: OutboxRuntime; capture: CapturingPublisher } {
+/** Registers an outbox runtime over a fresh capturing publisher, logging through `log`. */
+function capturingOutbox(log: Logger = logger): { runtime: OutboxRuntime; capture: CapturingPublisher } {
   const capture = createCapturingPublisher();
-  return { runtime: outboxWith(capture), capture };
+  return { runtime: outboxWith(capture, log), capture };
+}
+
+/** A logger whose lines are parsed into `lines`. */
+function capturingLogger(): { log: Logger; lines: Record<string, unknown>[] } {
+  const lines: Record<string, unknown>[] = [];
+  const destination = { write: (chunk: string) => void lines.push(JSON.parse(chunk) as Record<string, unknown>) };
+  return { log: createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination }), lines };
 }
 
 /** A note event for `aggregateId` on `topic`; `extra` overrides any field. */
@@ -519,13 +526,23 @@ describe('outbox writer and in-request flush against PostgreSQL and the Pub/Sub 
     const unreachable = createPublisher({ projectId: process.env.GOOGLE_CLOUD_PROJECT ?? 'opt2-local', emulatorHost: UNREACHABLE_PUBSUB_HOST });
     // close() first flushes the publish the client still retries, so it is bounded rather than awaited.
     cleanups.push(() => Promise.race([unreachable.close(), sleep(1_000)]));
-    outboxWith(unreachable);
+    const { log, lines } = capturingLogger();
+    outboxWith(unreachable, log);
 
     const started = performance.now();
     const envelope = await withTenant(handle.app, TENANT_A.tenantId, (tx) => saveNote(tx, noteEvent(stateTopic, randomUUID())));
     expect(performance.now() - started).toBeLessThan(FLUSH_DEADLINE_MS + FLUSH_MARGIN_MS);
     const eventId = String(envelope?.eventId);
     expect(await rowsFor(TENANT_A.tenantId, eventId)).toMatchObject([{ held: false, publishedAt: null }]);
+    expect(lines).toMatchObject([
+      {
+        severity: 'WARNING',
+        message: 'outbox publish not confirmed within FLUSH_DEADLINE_MS (2000 ms); left to the sweep',
+        eventId,
+        tenantId: TENANT_A.tenantId,
+        error: { type: 'TimeoutError' },
+      },
+    ]);
 
     const { runtime, capture } = capturingOutbox();
     await expect(sweepOutbox(runtime, { service: SERVICE, clock })).resolves.toMatchObject({ failed: 0, tenants: 3 });
@@ -537,10 +554,12 @@ describe('outbox writer and in-request flush against PostgreSQL and the Pub/Sub 
   });
 
   it("answers a write within the flush deadline while another transaction locks its key's earlier row, then the sweep publishes both in seq order", async () => {
-    const { runtime, capture } = capturingOutbox();
+    const { log, lines } = capturingLogger();
+    const { runtime, capture } = capturingOutbox(log);
     const aggregateId = randomUUID();
     capture.failNext(1);
     const first = await withTenant(handle.app, TENANT_A.tenantId, (tx) => saveNote(tx, noteEvent(stateTopic, aggregateId)));
+    expect(lines).toMatchObject([{ severity: 'ERROR', message: 'outbox publish failed', eventId: first?.eventId }]);
 
     let release = (): void => undefined;
     const released = new Promise<void>((resolve) => {
@@ -562,6 +581,14 @@ describe('outbox writer and in-request flush against PostgreSQL and the Pub/Sub 
         saveNote(tx, noteEvent(stateTopic, aggregateId, { aggregateVersion: 2 })),
       );
       expect(performance.now() - started).toBeLessThan(FLUSH_DEADLINE_MS + FLUSH_MARGIN_MS);
+      expect(lines.slice(1)).toMatchObject([
+        {
+          severity: 'WARNING',
+          message: `outbox flush row locks not granted within FLUSH_DEADLINE_MS (2000 ms); events ${String(second?.eventId)} left to the sweep`,
+          tenantId: TENANT_A.tenantId,
+          error: { message: 'PostgreSQL error 55P03' },
+        },
+      ]);
       const unpublished = (await outboxRows(TENANT_A.tenantId)).filter((row) => row.orderingKey === aggregateId);
       expect(unpublished.map((row) => [row.eventId, row.publishedAt])).toEqual([
         [first?.eventId, null],

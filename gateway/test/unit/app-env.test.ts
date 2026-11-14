@@ -1,14 +1,18 @@
-// Tests gatewayEnvSchema through loadEnv, and the matcher's route-key wiring of the reload key and the legacy site registry.
+// Tests gatewayEnvSchema through loadEnv, the matcher's route-key wiring of the reload key and the legacy site registry, and the barrier's projected owners.
 import { randomBytes, randomUUID } from 'node:crypto';
 import { fixedClock } from '@opt2/platform/testing';
 import { EnvValidationError, loadEnv } from '@opt2/platform/service-kit';
 import { describe, expect, it } from 'vitest';
 import { createResponseModes } from '../../src/admin/response-modes.js';
 import { createSiteRegistry } from '../../src/dispatcher/site-registry.js';
-import { gatewayEnvSchema, routeKeyOptionsOf, type GatewayEnv } from '../../src/app.js';
+import { gatewayEnvSchema, projectedOwnersOf, routeKeyOptionsOf, type GatewayEnv } from '../../src/app.js';
+import { loadTableOwnership } from '../../src/cutover/loader.js';
+import { resolveGatewayPaths } from '../../src/cutover/paths.js';
+import type { RoutingIndex } from '../../src/cutover/types.js';
 import { EMPTY_BODY_PARAMS } from '../../src/dispatcher/body.js';
 import { createMatcher, type Matcher } from '../../src/dispatcher/match.js';
 import { RELAY_SERVICES } from '../../src/dispatcher/relay.js';
+import { committedIndex, type CommittedVersion } from '../helpers/versions.js';
 
 const PACKAGES = [
   'gateway',
@@ -215,5 +219,55 @@ describe('route-key wiring of the legacy site registry', () => {
     const matcher = matcherFor(loadEnv(gatewayEnvSchema, sourceOf()));
 
     await expect(siteKeyOf(matcher, '/_api/json/v1/nosuchsite/content')).resolves.toEqual(['api:content.findall', 'nosuchsite']);
+  });
+});
+
+describe('projected owners of the active version', () => {
+  const ownership = loadTableOwnership(resolveGatewayPaths({}));
+  const V0002_OWNERS = ['communications', 'e-signature', 'finance', 'people', 'reporting', 'strategies-content', 'surveys', 'timesheets'];
+
+  it.each<[CommittedVersion, string[]]>([
+    ['v0001', []],
+    ['v0002', V0002_OWNERS],
+    ['v0003', V0002_OWNERS.filter((owner) => owner !== 'people')],
+  ])('are the table-ownership owners of the units %s makes target-authoritative', async (version, owners) => {
+    const index = await committedIndex(version);
+    const projected = projectedOwnersOf((await ownership).units, () => index);
+
+    expect([...projected()].sort()).toEqual(owners);
+  });
+
+  it('are none before any version is active, and the last seen version stays in force while the cache is stale', async () => {
+    const [v0002, v0003] = await Promise.all([committedIndex('v0002'), committedIndex('v0003')]);
+    let active: RoutingIndex | undefined;
+    const projected = projectedOwnersOf((await ownership).units, () => active);
+
+    expect(projected().size).toBe(0);
+    active = v0002;
+    const first = projected();
+    expect(first.has('people')).toBe(true);
+    expect(projected()).toBe(first);
+    active = undefined;
+    expect(projected()).toBe(first);
+    active = v0003;
+    expect(projected().has('people')).toBe(false);
+  });
+
+  it('reads unit authority once per routing index', async () => {
+    const index = await committedIndex('v0002');
+    let reads = 0;
+    const counted: RoutingIndex = {
+      ...index,
+      unitAuthority: (unit) => {
+        reads += 1;
+        return index.unitAuthority(unit);
+      },
+    };
+    const { units } = await ownership;
+    const projected = projectedOwnersOf(units, () => counted);
+
+    projected();
+    projected();
+    expect(reads).toBe(units.length);
   });
 });

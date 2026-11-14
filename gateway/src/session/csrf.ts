@@ -14,7 +14,7 @@ import type { BridgeClient } from './bridge-client.js';
 import type { IdentityClient } from './identity-client.js';
 import { isDeletedJarCookie, type JarCookies, type LegacyJar } from './jar.js';
 import type { SessionMode } from './mode.js';
-import type { SessionRequestInput, SessionResolver } from './resolve.js';
+import { isIdentityUnavailable, type SessionRequestInput, type SessionResolver } from './resolve.js';
 
 /** Bridge wire time in the legacy server's zone, the space-separated form the bridge parses. */
 const WIRE_TIME_MASK = 'yyyy-MM-dd HH:nn:ss.lll';
@@ -50,7 +50,8 @@ export interface CsrfHandle {
 export interface CsrfContinuity {
   /**
    * Claims the request's token when its branch validates, before forwarding; a reload key is judged by its
-   * `afterReload` route. Undefined when no legacy ledger needs settling.
+   * `afterReload` route. Undefined when no legacy ledger needs settling, or in legacy-primary while identity is
+   * unavailable.
    */
   beforeLegacy(
     request: SessionRequestInput,
@@ -127,6 +128,16 @@ function liveCookies(cookies: JarCookies, now: Date): JarCookies {
   return Object.fromEntries(Object.entries(cookies).filter(([, cookie]) => !isDeletedJarCookie(cookie, now)));
 }
 
+/** `call`'s result; undefined in legacy-primary while identity is unavailable, as no target route can consume a token then. */
+async function unlessIdentityDown<T>(mode: SessionMode, call: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await call();
+  } catch (error) {
+    if (mode === 'legacy-primary' && isIdentityUnavailable(error)) return undefined;
+    throw error;
+  }
+}
+
 /** Creates the CSRF continuity over identity's claims, the bridge's ledger ops, session resolution and the jar. */
 export function createCsrfContinuity(opts: CsrfContinuityOptions): CsrfContinuity {
   const { identity, bridge, sessions, jar, facts } = opts;
@@ -177,16 +188,21 @@ export function createCsrfContinuity(opts: CsrfContinuityOptions): CsrfContinuit
 
       const routeFacts = facts.get(served.key);
       const validates = token !== undefined && (routeFacts?.csrfValidation ?? UNLISTED_VALIDATION) === 'validates';
-      const resolution = await sessions.resolveLegacyBound(request, { mode, adopt: validates, siteId: served.siteId });
-      if (resolution.kind !== 'session') return undefined;
+      const resolution = await unlessIdentityDown(mode, () =>
+        sessions.resolveLegacyBound(request, { mode, adopt: validates, siteId: served.siteId }),
+      );
+      if (resolution?.kind !== 'session') return undefined;
       const attached = await attachedSession(resolution.sessionId);
       if (attached === undefined) return undefined;
 
       const userAgent = headerText(request.headers, 'user-agent');
       const claimedTokens =
         validates && token !== undefined
-          ? await claimToken(request, served, routeFacts, token, { sessionId: resolution.sessionId, attached, userAgent })
+          ? await unlessIdentityDown(mode, () =>
+              claimToken(request, served, routeFacts, token, { sessionId: resolution.sessionId, attached, userAgent }),
+            )
           : [];
+      if (claimedTokens === undefined) return undefined;
       return {
         sessionId: resolution.sessionId,
         legacySessionId: attached.legacySessionId,

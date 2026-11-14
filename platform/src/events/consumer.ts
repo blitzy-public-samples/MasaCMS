@@ -1,11 +1,11 @@
 /** Idempotent event consumer: per-destination inbox receipts, tenant re-check and the `x-opt2-kind` version rules. */
 import type { Logger } from '../logging/index.js';
+import { GATE_WAIT_MS, withGatedTenant } from '../migration-kit/gates.js';
 import {
   SITE_CHANGED_TOPIC,
   TenantMismatchError,
   registryEntryForTenant,
   userPoolFanoutTenants,
-  withTenant,
   type SiteChangedPayload,
   type TenantDb,
   type TenantTx,
@@ -78,8 +78,8 @@ export async function destinationTenants(
 }
 
 /**
- * Applies `envelope` once per destination tenant, each in its own transaction with its inbox receipt.
- * Throws DeadLetterError when a destination tenant fails the re-check; every other error propagates so the delivery is nacked.
+ * Applies `envelope` once per destination tenant, each in its own gated transaction with its inbox receipt, all within one gate budget.
+ * Throws DeadLetterError when a destination tenant fails the re-check; every other error, GateClosedError included, propagates so the delivery is nacked.
  */
 export function consumeEnvelope<P>(
   db: TenantDb,
@@ -93,13 +93,14 @@ export function consumeEnvelope<P>(
       `events.consume ${subscription}`,
       SpanKind.CONSUMER,
       async (): Promise<ConsumeOutcome> => {
+        const deadline = Date.now() + GATE_WAIT_MS;
         const origin = envelope.tenantId.toLowerCase();
         const destinations: ConsumeOutcome['destinations'] = [];
         const tenants = await destinationTenants(db, def, envelope);
         // Fan-out tenants first and the envelope tenant last, so its receipt shows the delivery reached every destination.
         for (const tenantId of [...tenants.filter((tenant) => tenant !== origin), origin]) {
           const result = await runWithConsumedEnvelope(envelope, () =>
-            consumeIn(db, def, envelope, options, { tenantId, isFanout: tenantId !== origin }),
+            consumeIn(db, def, envelope, options, { tenantId, isFanout: tenantId !== origin }, deadline),
           );
           destinations.push({ tenantId, result });
         }
@@ -121,12 +122,14 @@ interface Destination {
   isFanout: boolean;
 }
 
+/** Applies `envelope` in one destination tenant, re-running its transaction after a gate race until `deadline` (epoch ms). */
 async function consumeIn<P>(
   db: TenantDb,
   def: ConsumerDefinition<P>,
   envelope: EventEnvelope<P>,
   options: ConsumeOptions,
   destination: Destination,
+  deadline: number,
 ): Promise<DestinationResult> {
   const ctx: ConsumeContext = {
     subscription: options.subscription,
@@ -138,7 +141,7 @@ async function consumeIn<P>(
   };
   const inbox = `${db.schema}.${INBOX_TABLE}`;
   try {
-    return await withTenant(db, destination.tenantId, async (tx): Promise<DestinationResult> => {
+    return await withGatedTenant(db, destination.tenantId, async (tx): Promise<DestinationResult> => {
       const receipt = await tx.query(
         `INSERT INTO ${inbox} (tenant_id, event_id, subscription, status) VALUES ($1, $2, $3, 'applied')` +
           ' ON CONFLICT (tenant_id, event_id) DO NOTHING',
@@ -172,7 +175,7 @@ async function consumeIn<P>(
         [...key, envelope.aggregateVersion],
       );
       return 'applied';
-    });
+    }, { budgetMs: deadline - Date.now() });
   } catch (err) {
     // A stored aggregate or site belonging to another tenant classifies the delivery instead of failing it.
     if (err instanceof TenantMismatchError) {

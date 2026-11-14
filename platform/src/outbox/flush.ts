@@ -34,6 +34,7 @@ export const FLUSH_DEADLINE_MS = 2_000;
 export const PUBLISH_STALL_MS = 5_000;
 
 const SET_LOCK_TIMEOUT_SQL = "SELECT set_config('lock_timeout', $1, true)";
+const LOCK_NOT_AVAILABLE = '55P03';
 
 /**
  * Counts of one publishing pass; `skipped` rows stay unpublished behind a failed, held or unpublished earlier row of their ordering key,
@@ -153,12 +154,13 @@ function bySeq(a: OutboxRow, b: OutboxRow): number {
  * After a failed publish, later rows with the same ordering key are skipped, so a key's events never leave out of order.
  * `stamp: 'unpublished-only'` (default) sets `published_at` only where it is null; `'none'` stamps nothing.
  * Once `signal` aborts, a publish still pending counts as failed and every row not yet attempted as skipped.
+ * `abortWarning` is logged at WARNING, instead of ERROR 'outbox publish failed', for a publish `signal` cut.
  */
 export async function publishLockedRows(
   tx: TenantTx,
   runtime: OutboxRuntime,
   rows: readonly OutboxRow[],
-  opts: { stamp?: 'unpublished-only' | 'none'; signal?: AbortSignal } = {},
+  opts: { stamp?: 'unpublished-only' | 'none'; signal?: AbortSignal; abortWarning?: string } = {},
 ): Promise<PublishSummary> {
   const failedKeys = new Set<string>();
   const published: string[] = [];
@@ -175,10 +177,12 @@ export async function publishLockedRows(
     } catch (err) {
       failed += 1;
       failedKeys.add(row.orderingKey);
-      runtime.logger.error(
-        { eventId: row.eventId, tenantId: row.tenantId, error: serializeError(err) },
-        'outbox publish failed',
-      );
+      const fields = { eventId: row.eventId, tenantId: row.tenantId, error: serializeError(err) };
+      if (opts.abortWarning !== undefined && opts.signal?.aborted === true && err === opts.signal.reason) {
+        runtime.logger.warn(fields, opts.abortWarning);
+      } else {
+        runtime.logger.error(fields, 'outbox publish failed');
+      }
     }
   }
   if (published.length > 0 && (opts.stamp ?? 'unpublished-only') === 'unpublished-only') {
@@ -225,7 +229,7 @@ export function publishPass(runtime: OutboxRuntime, stallMs: number, deadline?: 
 
 /**
  * Commit callback publishing and stamping the rows `eventIds` names after their keys' earlier unpublished rows, in a fresh tenant transaction.
- * Bounded by FLUSH_DEADLINE_MS: rows whose locks or publishes are not confirmed in time are left to the sweep.
+ * Bounded by FLUSH_DEADLINE_MS: rows whose locks or publishes are not confirmed in time are left to the sweep and logged at WARNING; other failures log ERROR.
  * Never throws: on error nothing is stamped, every id counts as failed and the rows are left to the sweep, as are rows behind a held row.
  */
 export async function flushAfterCommit(
@@ -238,18 +242,24 @@ export async function flushAfterCommit(
   }
   const { schema } = runtime.db;
   const signal = AbortSignal.timeout(FLUSH_DEADLINE_MS);
+  const bound = `FLUSH_DEADLINE_MS (${FLUSH_DEADLINE_MS} ms)`;
   try {
     return await runtime.db.withTenant(tenantId, async (tx) => {
       await tx.query(SET_LOCK_TIMEOUT_SQL, [`${FLUSH_DEADLINE_MS}ms`]);
       const { rows, blocked } = await dropBlockedRows(tx, schema, await selectPublishable(tx, schema, { eventIds }));
-      const summary = await publishLockedRows(tx, runtime, rows, { signal });
+      const summary = await publishLockedRows(tx, runtime, rows, {
+        signal,
+        abortWarning: `outbox publish not confirmed within ${bound}; left to the sweep`,
+      });
       return { ...summary, skipped: summary.skipped + blocked };
     });
   } catch (err) {
-    runtime.logger.error(
-      { tenantId, error: serializeError(err) },
-      `outbox flush failed for events ${eventIds.join(',')}`,
-    );
+    const fields = { tenantId, error: serializeError(err) };
+    if ((err as { code?: unknown } | null | undefined)?.code === LOCK_NOT_AVAILABLE) {
+      runtime.logger.warn(fields, `outbox flush row locks not granted within ${bound}; events ${eventIds.join(',')} left to the sweep`);
+    } else {
+      runtime.logger.error(fields, `outbox flush failed for events ${eventIds.join(',')}`);
+    }
     return { published: 0, failed: eventIds.length, skipped: 0 };
   }
 }

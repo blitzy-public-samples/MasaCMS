@@ -184,9 +184,10 @@ describe('resolveFixtureSite', () => {
 describe('fixtureDenialOverride', () => {
   /** Claims of an active session without a login on `site`, as identity mints them. */
   const anonymous = (site: string): UserClaims => ({ ...claims(site), sub: '', roles: [] });
+  /** The role denial the platform hooks raise for `user`: unauthenticated for the anonymous principal, else forbidden. */
+  const roleDenialOf = (user: UserClaims): AuthDenial => (user.sub === '' ? AuthDenial.unauthenticated('missing-credential') : AuthDenial.forbidden());
 
   it.each([
-    ['missing credential', AuthDenial.unauthenticated('missing-credential')],
     ['invalid token', AuthDenial.invalidToken()],
     ['expired token', AuthDenial.expiredToken()],
     ['site mismatch', AuthDenial.siteMismatch()],
@@ -197,8 +198,10 @@ describe('fixtureDenialOverride', () => {
     expect(tenants).toStrictEqual([]);
   });
 
-  it('keeps a role denial of a request without user claims, reading nothing', async () => {
-    const denial = AuthDenial.forbidden();
+  it.each([
+    ['role', AuthDenial.forbidden()],
+    ['missing credential', AuthDenial.unauthenticated('missing-credential')],
+  ])('keeps a %s denial of a request without user claims, reading nothing', async (_case, denial) => {
     const { db, tenants } = registryDb();
 
     await expect(fixtureDenialOverride(denial, { claims: undefined, params: {} }, { db })).resolves.toBe(denial);
@@ -227,7 +230,7 @@ describe('fixtureDenialOverride', () => {
     ['an anonymous session naming an unregistered siteid', anonymous(TENANT_A.siteId), { SiteID: 'nosuch' }, REGISTERED],
     ['an anonymous session without a token site or a registered default', anonymous(''), {}, [TENANT_A.siteId]],
   ])('answers the role denial of %s with invalidParameters, as resolveSite raises before requireLogin', async (_case, user, params, sites) => {
-    const answer = await fixtureDenialOverride(AuthDenial.forbidden(), { claims: user, params }, registryDb(sites));
+    const answer = await fixtureDenialOverride(roleDenialOf(user), { claims: user, params }, registryDb(sites));
 
     expect(answer).toBeInstanceOf(FixtureApiError);
     await expect(fixtureAnswer(Promise.reject(answer))).resolves.toStrictEqual(INVALID_PARAMETERS);
@@ -237,7 +240,8 @@ describe('fixtureDenialOverride', () => {
     ['its token site', {}],
     ['a registered siteid', { siteid: TENANT_B.siteId }],
   ])('answers the role denial of an anonymous session requesting %s with authorization, as requireLogin raises', async (_case, params) => {
-    const answer = await fixtureDenialOverride(AuthDenial.forbidden(), { claims: anonymous(TENANT_A.siteId), params }, registryDb());
+    const user = anonymous(TENANT_A.siteId);
+    const answer = await fixtureDenialOverride(roleDenialOf(user), { claims: user, params }, registryDb());
 
     expect(answer).toBeInstanceOf(FixtureApiError);
     await expect(fixtureAnswer(Promise.reject(answer))).resolves.toStrictEqual(UNAUTHORIZED);

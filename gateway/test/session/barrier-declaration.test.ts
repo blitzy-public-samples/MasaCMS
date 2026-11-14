@@ -52,6 +52,12 @@ const INDEX: RoutingIndex = {
   loginGroupAuthority: () => 'target',
 };
 
+/** v0001, which reverse-projects no owner and keeps sessions legacy-primary. */
+const V0001: RoutingIndex = { ...INDEX, table: { tableVersion: 'v0001' } as RoutingIndex['table'], loginGroupAuthority: () => 'legacy' };
+
+/** Owners v0002 reverse-projects that these suites write to. */
+const PROJECTED: ReadonlySet<string> = new Set(['people']);
+
 const SESSION: SessionResolution = {
   kind: 'session',
   sessionId: SESSION_ID,
@@ -60,6 +66,23 @@ const SESSION: SessionResolution = {
   legacyCookies: {},
   setCookies: [],
 };
+
+const LEGACY_PRIMARY_SESSION: SessionResolution = {
+  kind: 'session',
+  sessionId: SESSION_ID,
+  epoch: 3,
+  mode: 'legacy-primary',
+  legacyCookies: {},
+  setCookies: [],
+};
+
+/** What `/write` reaches and under which version: people under v0002 by default. */
+interface GatewayOptions {
+  owner?: 'people' | 'stub';
+  index?: RoutingIndex;
+  projected?: ReadonlySet<string>;
+  session?: SessionResolution;
+}
 
 interface Gateway {
   app: FastifyInstance;
@@ -109,10 +132,12 @@ describe.skipIf(!live)('a target write declared in gateway.session_barrier again
     return rows;
   }
 
-  /** A gateway whose `/write` is a target write to people and every other path a legacy read, over the real barrier. */
-  async function startGateway(): Promise<Gateway> {
+  /** A gateway whose `/write` is a target write to `owner` and every other path a legacy read, over the real barrier. */
+  async function startGateway(opts: GatewayOptions = {}): Promise<Gateway> {
+    const { owner = 'people', index = INDEX, projected = PROJECTED, session = SESSION } = opts;
+    const writeEntry: CutoverEntry = owner === 'people' ? WRITE_ENTRY : { ...WRITE_ENTRY, route: 'opt2:/opt2/stub/**', owningService: 'stub' };
     const legacy = await startHttpDouble((_req, res) => sendBytes(res, 200, 'legacy-body'));
-    const svc = await startHttpDouble((_req, res) => sendBytes(res, 201, 'committed', { 'x-opt2-write-position': 'people=42' }));
+    const svc = await startHttpDouble((_req, res) => sendBytes(res, 201, 'committed', { 'x-opt2-write-position': `${owner}=42` }));
     const awaits: unknown[] = [];
     const confirm = { value: true };
     const failRecord = { value: false };
@@ -155,20 +180,20 @@ describe.skipIf(!live)('a target write declared in gateway.session_barrier again
     });
     const outcomeFor = (url: string): MatchOutcome => {
       const write = url.startsWith('/write');
-      const entry = write ? WRITE_ENTRY : READ_ENTRY;
+      const entry = write ? writeEntry : READ_ENTRY;
       const family = write ? 'api' : 'page';
       const result: RouteKeyResult = { key: entry.route, baseKey: entry.route, family, httpMethod: 'GET', params: {}, siteId: 'default' };
       const destination: TargetDestination | LegacyDestination = write
-        ? { kind: 'target' as const, service: 'people', serviceUrl: svc.url, path: url, isWeb: false }
+        ? { kind: 'target' as const, service: owner, serviceUrl: svc.url, path: url, isWeb: false }
         : { kind: 'legacy' as const };
       return { result, entry, destination, failContext: failContextFor(result, url), urlScope: {}, scanFailed: false };
     };
-    const barrier = createSessionBarrier({ db, client: migration });
+    const barrier = createSessionBarrier({ db, client: migration, projectedOwners: () => projected });
     const deps: DispatcherDeps = {
       matcher: { match: async (request) => outcomeFor(request.url) },
       state: {
-        active: () => INDEX,
-        readEpochForWrite: async () => ({ epoch: 1, index: INDEX }),
+        active: () => index,
+        readEpochForWrite: async () => ({ epoch: 1, index }),
         isFrozen: () => false,
         waitUnfrozen: async () => true,
       },
@@ -180,9 +205,9 @@ describe.skipIf(!live)('a target write declared in gateway.session_barrier again
       },
       barrier,
       resolver: {
-        resolveSession: async () => SESSION,
-        resolveLegacyBound: async () => SESSION,
-        adoptAfterLegacy: async () => SESSION,
+        resolveSession: async () => session,
+        resolveLegacyBound: async () => session,
+        adoptAfterLegacy: async () => session,
       },
       tokenCache: { get: async () => 'user-token-1' },
       identity: { adminSite: () => Promise.reject(new Error('unexpected identity call')) },
@@ -306,7 +331,7 @@ describe.skipIf(!live)('a target write declared in gateway.session_barrier again
     const deps: RelayDeps = {
       env: { OPT2_SERVICE_URLS: { people: serviceUrl } },
       invocation: { headersFor: async () => ({}) },
-      barrier: createSessionBarrier({ db: handle.app, client: {} as ServiceClient }),
+      barrier: createSessionBarrier({ db: handle.app, client: {} as ServiceClient, projectedOwners: () => PROJECTED }),
       sessionMode: () => 'target-primary',
     };
     const auth = { userToken: 'user-token-1', user: { sid: SESSION_ID } as UserClaims, caller: { name: 'web', roles: [] } as unknown as ServiceIdentity };
@@ -356,5 +381,45 @@ describe.skipIf(!live)('a target write declared in gateway.session_barrier again
     expect(read.statusCode).toBe(200);
     expect(gw.awaits).toEqual([{ positions: { people: '42' }, timeoutMs: 5000 }]);
     await vi.waitFor(async () => expect(await barrierRows()).toEqual([]));
+  });
+
+  it.each(['POST', 'GET'] as const)(
+    'stores nothing for a stub %s under v0001, so the legacy reads after it reach legacy without asking migration',
+    async (method) => {
+      const gw = await startGateway({ owner: 'stub', index: V0001, projected: new Set(), session: LEGACY_PRIMARY_SESSION });
+      gw.confirm.value = false;
+      const during: unknown[] = [];
+      gw.svc.setHandler(async (_req, res) => {
+        during.push(await barrierRows());
+        sendBytes(res, 201, 'committed', { 'x-opt2-write-position': 'stub=42' });
+      });
+      const write = await gw.app.inject({ method, url: '/write', headers: COOKIE, ...(method === 'POST' ? { payload: 'title=x' } : {}) });
+      expect(write.statusCode).toBe(201);
+      expect(write.headers['x-opt2-write-position']).toBeUndefined();
+      expect(during).toEqual([[]]);
+      expect(await barrierRows()).toEqual([]);
+
+      for (let read = 0; read < 2; read++) {
+        const page = await gw.app.inject({ method: 'GET', url: '/page', headers: COOKIE });
+        expect([page.statusCode, page.body]).toEqual([200, 'legacy-body']);
+      }
+      expect(gw.legacy.requests).toHaveLength(2);
+      expect(gw.awaits).toEqual([]);
+    },
+  );
+
+  it('drops the rows of an owner the version no longer projects without asking migration about them', async () => {
+    const gw = await startGateway();
+    await withMetadata(handle.app, (tx) =>
+      tx.query(
+        `INSERT INTO ${handle.schema}.session_barrier (session_id, owner, xid, pending, recorded_at)
+         VALUES ($1, 'stub', 7, 1, now()), ($1, 'people', 42, 0, now())`,
+        [SESSION_ID],
+      ),
+    );
+    const read = await gw.app.inject({ method: 'GET', url: '/page', headers: COOKIE });
+    expect(read.statusCode).toBe(200);
+    expect(gw.awaits).toEqual([{ positions: { people: '42' }, timeoutMs: 5000 }]);
+    expect(await barrierRows()).toEqual([]);
   });
 });

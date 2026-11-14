@@ -221,10 +221,10 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
     }));
   }
 
-  /** A user token for `roles` on `site` plus the gateway's invocation credential. */
-  async function headersFor(roles: readonly string[], site: string = TENANT_A.siteId): Promise<Record<string, string>> {
+  /** A user token of `sub` for `roles` on `site` plus the gateway's invocation credential; `sub` '' is the anonymous principal. */
+  async function headersFor(roles: readonly string[], site: string = TENANT_A.siteId, sub: string = USER_ID): Promise<Record<string, string>> {
     const [token, invocation] = await Promise.all([
-      mintUserToken({ sub: USER_ID, site, roles }),
+      mintUserToken({ sub, site, roles }),
       mintServiceToken({ caller: 'gateway', audience: 'timesheets' }),
     ]);
     return { authorization: `Bearer ${token}`, [INVOCATION_HEADER]: `Bearer ${invocation}` };
@@ -285,6 +285,18 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
     [
       'a role-less user of an unregistered site',
       () => get('/sheets', [Roles.member], 'retired-site'),
+      400,
+      errorBody('timesheets.sheets', 'invalid_request', 'Invalid parameters'),
+    ],
+    [
+      'the anonymous principal, as requireLogin answers a session without a login',
+      async () => app.inject({ url: `${P}/sheets`, headers: await headersFor([], TENANT_A.siteId, '') }),
+      401,
+      errorBody('timesheets.sheets', 'invalid_request', 'Insufficient Account Permissions'),
+    ],
+    [
+      'the anonymous principal of an unregistered site, as resolveSite raises before requireLogin',
+      async () => app.inject({ url: `${P}/sheets`, headers: await headersFor([], 'retired-site', '') }),
       400,
       errorBody('timesheets.sheets', 'invalid_request', 'Invalid parameters'),
     ],

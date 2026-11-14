@@ -28,5 +28,9 @@
     "javaHome": "/usr/lib/jvm/java-17-openjdk-amd64",
     "heapSize": 2048,
     "args": "@JVM_ARGS@"
+  },
+  "env": {
+    "MURA_PORT": "8100",
+    "MURA_PROXYPORT": "8100"
   }
 }

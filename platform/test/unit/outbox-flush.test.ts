@@ -3,7 +3,7 @@ import type { DestinationStream } from 'pino';
 import type { QueryConfig, QueryResult, QueryResultRow } from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EventEnvelope, EventPublisher, TopicValidator } from '../../src/events/index.js';
-import { REDACTED, createLogger } from '../../src/logging/index.js';
+import { REDACTED, createLogger, validateLogRecord } from '../../src/logging/index.js';
 import { rowFromDb } from '../../src/outbox/ddl.js';
 import {
   FLUSH_DEADLINE_MS,
@@ -422,14 +422,15 @@ describe('flushAfterCommit', () => {
     expect(statements.at(-1)).toEqual({ tenantId: TENANT_A, sql: STAMP_SQL, values: [STAMP, [eventId(2)]] });
   });
 
-  it('resolves with the failures counted when the publisher rejects', async () => {
+  it('resolves with the failures counted and logs ERROR when the publisher rejects', async () => {
     const { db, statements } = fakeDb([dbRow('1', 'K'), dbRow('2', 'K')]);
-    const { runtime } = runtimeWith(db, [eventId(1)]);
+    const { runtime, lines } = runtimeWith(db, [eventId(1)]);
     await expect(flushAfterCommit(runtime, TENANT_A, ids)).resolves.toStrictEqual({ published: 0, failed: 1, skipped: 1 });
     expect(statements.map((s) => s.sql)).toEqual([LOCK_TIMEOUT_SQL, SELECT_IDS, BLOCKERS_SQL]);
+    expect(lines).toMatchObject([{ severity: 'ERROR', message: 'outbox publish failed', eventId: eventId(1), tenantId: TENANT_A }]);
   });
 
-  it('resolves once FLUSH_DEADLINE_MS passes while a publish never settles, leaving every row unstamped', async () => {
+  it('resolves once FLUSH_DEADLINE_MS passes while a publish never settles, leaving every row unstamped to the sweep with a WARNING', async () => {
     const { db, statements } = fakeDb([dbRow('1', 'K'), dbRow('2', 'L')]);
     const { runtime, publish, lines } = runtimeWith(db, [], ids);
     const started = performance.now();
@@ -443,10 +444,13 @@ describe('flushAfterCommit', () => {
     expect(statements.map((s) => s.sql)).toEqual([LOCK_TIMEOUT_SQL, SELECT_IDS, BLOCKERS_SQL]);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({
-      message: 'outbox publish failed',
+      severity: 'WARNING',
+      message: 'outbox publish not confirmed within FLUSH_DEADLINE_MS (2000 ms); left to the sweep',
       eventId: eventId(1),
+      tenantId: TENANT_A,
       error: TIMED_OUT,
     });
+    expect(validateLogRecord(lines[0]).errors).toStrictEqual([]);
   });
 
   it('opens no transaction for an empty id list', async () => {
@@ -470,11 +474,6 @@ describe('flushAfterCommit', () => {
       logged: 'PostgreSQL error 57014',
     },
     {
-      case: 'a row lock is not granted within lock_timeout',
-      fail: { select: pgError('canceling statement due to lock timeout', '55P03') },
-      logged: 'PostgreSQL error 55P03',
-    },
-    {
       case: 'the stamp fails',
       fail: { update: pgError('could not serialize access due to concurrent update', '40001') },
       logged: 'PostgreSQL error 40001',
@@ -492,6 +491,22 @@ describe('flushAfterCommit', () => {
       tenantId: TENANT_A,
       error: { type: 'Error', message: logged },
     });
+  });
+
+  it('never throws when a row lock is not granted within lock_timeout: it logs one WARNING and leaves every row to the sweep', async () => {
+    const { db } = fakeDb([dbRow('1', 'K'), dbRow('2', 'L')], { select: pgError('canceling statement due to lock timeout', '55P03') });
+    const { runtime, lines } = runtimeWith(db);
+
+    await expect(flushAfterCommit(runtime, TENANT_A, ids)).resolves.toStrictEqual({ published: 0, failed: 2, skipped: 0 });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      severity: 'WARNING',
+      message: `outbox flush row locks not granted within FLUSH_DEADLINE_MS (2000 ms); events ${ids.join(',')} left to the sweep`,
+      tenantId: TENANT_A,
+      error: { type: 'Error', message: 'PostgreSQL error 55P03' },
+    });
+    expect(validateLogRecord(lines[0]).errors).toStrictEqual([]);
   });
 });
 

@@ -36,6 +36,7 @@ import {
   type MintedTraceparent,
 } from '../../src/events/traces.js';
 import { runCatalogChecks, type CatalogRunResult } from '../../src/isolation/catalog.js';
+import { legacyPortReferences } from '../../src/isolation/legacy-origin.js';
 import { createHttpSession, type HttpResult, type HttpSession } from '../../src/lib/http.js';
 import { reportsDir, type EnvLike } from '../../src/lib/paths.js';
 import { createCatalogClient } from '../../src/lib/pg.js';
@@ -43,6 +44,7 @@ import { writeJsonReport } from '../../src/lib/report.js';
 import type { UpProcessEntry } from '../../src/repro/up-state.js';
 import { gatewaySession, legacySession, sessionForSubject, type SubjectSession } from '../helpers/admin-login.js';
 import {
+  gatewayUrl,
   legacyUrl,
   migrationInvoker,
   readStack,
@@ -81,6 +83,10 @@ const CONSUMED_PREFIX = `event consumed on ${SUBSCRIPTION}: `;
 const GENERATED_BY = 'harness/e2e/isolation/platform-proof.e2e.test.ts';
 const NOTES_PATH = '/opt2/stub/notes';
 const STATIC_PATH = '/admin/assets/js/admin.min.js';
+// Forwarded legacy pages carrying absolute URLs: admin Mura.init paths, redirect Locations, public page assets.
+const ADMIN_PATH = '/admin/';
+const LOGOUT_PATH = '/?doaction=logout';
+const ROOT_PATH = '/';
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 /** `PositiveDigits` of the stub contract. */
 const POSITIVE_DIGITS = /^[1-9][0-9]*$/;
@@ -560,8 +566,33 @@ describe('platform proof on the stub', () => {
       const gatewaySha256 = sha256(viaGateway.bytes);
       const legacySha256 = sha256(direct.bytes);
       expect(gatewaySha256, 'body digest through the gateway').toBe(legacySha256);
+      const admin = await gatewayOf(tenantA).get(ADMIN_PATH);
+      const root = await gatewaySession().get(ROOT_PATH);
+      // The site's domain on the gateway's port, so legacy answers the logout instead of its wrong-domain redirect.
+      const siteOrigin = new URL(gatewayUrl());
+      siteOrigin.hostname = new URL(root.url).hostname;
+      const logout = await createHttpSession({ baseUrl: siteOrigin.origin }).get(LOGOUT_PATH);
+      const forwarded: [string, HttpResult][] = [
+        [ADMIN_PATH, admin],
+        [ROOT_PATH, root],
+        [LOGOUT_PATH, logout],
+      ];
+      const references = forwarded.flatMap(([path, result]) =>
+        legacyPortReferences(result, legacyUrl()).map((reference) => ({ path, ...reference })),
+      );
+      expect(references, `forwarded responses naming the port of ${legacyUrl()}`).toEqual([]);
+      expect(admin.text, 'admin layout through the gateway').toContain('Mura.init(');
       const { status, bytes } = viaGateway;
-      return { path: STATIC_PATH, status, contentType, bytes: bytes.length, gatewaySha256, legacySha256 };
+      return {
+        path: STATIC_PATH,
+        status,
+        contentType,
+        bytes: bytes.length,
+        gatewaySha256,
+        legacySha256,
+        forwarded: forwarded.map(([path, result]) => ({ path, statuses: result.hops.map((hop) => hop.status) })),
+        legacyPortReferences: references.length,
+      };
     }),
   );
 

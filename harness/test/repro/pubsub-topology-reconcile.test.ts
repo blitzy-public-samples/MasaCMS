@@ -17,9 +17,10 @@ const DELETED_TOPIC = '_deleted-topic_';
 const GRPC_NOT_FOUND = 5;
 const GRPC_ALREADY_EXISTS = 6;
 
-/** The retry policy and attempt count every push subscription must carry. */
+/** The retry policy, attempt count and ack deadline every push subscription must carry. */
 const EXPECTED_RETRY: PushRetryPolicy = { minimumBackoff: { seconds: 10 }, maximumBackoff: { seconds: 600 } };
 const EXPECTED_ATTEMPTS = 5;
+const EXPECTED_ACK_DEADLINE_SECONDS = 60;
 
 const PORTS: Record<string, number> = Object.fromEntries(PACKAGE_NAMES.map((name, index) => [name, 9100 + index]));
 const TOPOLOGY = deriveTopology('local');
@@ -29,7 +30,7 @@ type Call =
   | { op: 'createTopic'; name: string }
   | { op: 'createSubscription'; topic: string; name: string; options: PushSubscriptionOptions | undefined }
   | { op: 'modifyPushConfig'; name: string; config: { pushEndpoint: string } }
-  | { op: 'setMetadata'; name: string; metadata: { deadLetterPolicy: DeadLetterPolicy; retryPolicy: PushRetryPolicy } }
+  | { op: 'setMetadata'; name: string; metadata: { deadLetterPolicy: DeadLetterPolicy; retryPolicy: PushRetryPolicy; ackDeadlineSeconds: number } }
   | { op: 'delete'; name: string };
 
 interface FakeSubscription {
@@ -177,12 +178,13 @@ describe('local topology reconcile on an injected emulator client', () => {
           enableMessageOrdering: true,
           deadLetterPolicy: { deadLetterTopic: topicPath(`${name}.dlq`), maxDeliveryAttempts: EXPECTED_ATTEMPTS },
           retryPolicy: EXPECTED_RETRY,
+          ackDeadlineSeconds: EXPECTED_ACK_DEADLINE_SECONDS,
         },
       })),
     );
   });
 
-  it('gives every existing push subscription the retry and dead-letter policies in one metadata update', async () => {
+  it('gives every existing push subscription the retry and dead-letter policies and the ack deadline in one metadata update', async () => {
     const key = newPushKey();
     const pubsub = await reconciledFake(key);
 
@@ -197,6 +199,7 @@ describe('local topology reconcile on an injected emulator client', () => {
         metadata: {
           deadLetterPolicy: { deadLetterTopic: topicPath(`${name}.dlq`), maxDeliveryAttempts: EXPECTED_ATTEMPTS },
           retryPolicy: EXPECTED_RETRY,
+          ackDeadlineSeconds: EXPECTED_ACK_DEADLINE_SECONDS,
         },
       })),
     );

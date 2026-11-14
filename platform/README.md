@@ -117,7 +117,7 @@ Loading:
 |---|---|
 | `opt2-auth matrix --app <module>` | Builds the Fastify app from a compiled module's builder export (default `buildApp`) without listening, and writes its route/role matrix as JSON (`--export`, `--options`, `--out`) |
 | `opt2-outbox replay --since <ts>` | Republishes stored outbox rows with their original `eventId` (`--tenant`, `--schema`) |
-| `opt2-events replay --subscription <s>` | Republishes the subscription's DLQ messages to its original topic (`--max`, `--idle-seconds`, `--project`) |
+| `opt2-events replay --subscription <s>` | Republishes the subscription's DLQ messages published before the run started to its original topic; later ones, including replays dead-lettered again, stay on the DLQ (`--max`, `--idle-seconds`, `--project`) |
 | `opt2-tasks reconcile` | Has each creating service run `ensureRecurring()` for its recurring queues (`--queue`, `--with-sitemonitor`, `--include-local-only`, `--as`) |
 
 | CLI | Reads | Exit 0 | Exit 1 | Exit 2 |

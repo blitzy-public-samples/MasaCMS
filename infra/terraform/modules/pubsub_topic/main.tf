@@ -29,6 +29,8 @@ resource "google_pubsub_subscription" "push" {
   name                    = each.key
   topic                   = google_pubsub_topic.this.id
   enable_message_ordering = true
+  # The push request timeout; above the consumer's 30 s gate wait so a waiting delivery's answer reaches Pub/Sub.
+  ack_deadline_seconds = 60
 
   push_config {
     push_endpoint = each.value.push_endpoint

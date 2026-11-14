@@ -39,6 +39,7 @@ const SELECT_SQL = `SELECT owner, xid::text AS xid, pending FROM ${SCHEMA}.sessi
 const DELETE_SQL =
   `DELETE FROM ${SCHEMA}.session_barrier AS b USING unnest($2::text[], $3::numeric[]) AS p(owner, xid) ` +
   'WHERE b.session_id = $1 AND b.owner = p.owner AND b.pending = 0 AND (b.xid IS NULL OR b.xid <= p.xid)';
+const DROP_SQL = `DELETE FROM ${SCHEMA}.session_barrier WHERE session_id = $1 AND owner = ANY($2::text[])`;
 
 /** One statement as a metadata transaction received it. */
 interface Statement {
@@ -109,6 +110,9 @@ function memoryBarrierTable(): MemoryBarrierTable {
           if (stored.xid === null || (xid !== null && stored.xid <= xid)) table.delete(owner);
         }
         return [];
+      case DROP_SQL:
+        for (const owner of values[1] as string[]) table.delete(owner);
+        return [];
       default:
         throw new Error(`unexpected statement: ${sql}`);
     }
@@ -165,10 +169,14 @@ const answerStatus =
   (status: number): Answer =>
   async () => ({ status, headers: {}, body: {} });
 
-function setup(answer: Answer = answerStatus(200)) {
+/** Owners the suites' version reverse-projects: every owner the barrier tests name, the stub excepted. */
+const PROJECTED: ReadonlySet<string> = new Set(['people', 'identity', 'strategies-content']);
+
+/** A barrier whose projected owners are `projected.owners`, which a test may replace between calls. */
+function setup(answer: Answer = answerStatus(200), projected: { owners: ReadonlySet<string> } = { owners: PROJECTED }) {
   const table = memoryBarrierTable();
   const client = stubClient(answer);
-  return { table, client, barrier: createSessionBarrier({ db: table.db, client }) };
+  return { table, client, barrier: createSessionBarrier({ db: table.db, client, projectedOwners: () => projected.owners }) };
 }
 
 const positions = (entries: Record<string, string>): WritePositions => new Map(Object.entries(entries));
@@ -470,6 +478,86 @@ describe('SessionBarrier.awaitPositions', () => {
     const { client, barrier } = setup();
     await barrier.awaitPositions(new Map());
     expect(client.calls).toEqual([]);
+  });
+});
+
+describe('SessionBarrier owners the active version does not reverse-project', () => {
+  type Call = (barrier: SessionBarrier) => Promise<void>;
+
+  it.each<[string, Call]>([
+    ['declare', (barrier) => barrier.declare(SESSION, 'stub')],
+    ['release', (barrier) => barrier.release(SESSION, 'stub')],
+    ['record with the declaration', (barrier) => barrier.record(SESSION, positions({ stub: '42' }), 'stub')],
+    ['awaitPositions', (barrier) => barrier.awaitPositions(positions({ stub: '42' }))],
+    ['awaitOwners', (barrier) => barrier.awaitOwners(['stub'])],
+    ['awaitForSession', (barrier) => barrier.awaitForSession(SESSION)],
+  ])('%s of a stub write stores nothing and asks migration nothing', async (_label, call) => {
+    const { table, client, barrier } = setup();
+    await barrier.declare(SESSION, 'stub');
+    await barrier.record(SESSION, positions({ stub: '42' }), 'stub');
+    await call(barrier);
+    expect(table.statements.filter((statement) => statement.sql !== SELECT_SQL)).toEqual([]);
+    expect(client.calls).toEqual([]);
+    expect(table.full(SESSION)).toEqual({});
+  });
+
+  it('records the projected positions alone and ends no declaration of an owner it does not project', async () => {
+    const { table, client, barrier } = setup();
+    await barrier.record(SESSION, positions({ stub: '7', people: '42' }), 'stub');
+    expect(table.statements).toEqual([{ sql: UPSERT_SQL, values: [SESSION, ['people'], ['42']] }]);
+    await barrier.awaitForSession(SESSION);
+    expect(client.calls.map((request) => request.json)).toEqual([{ positions: { people: '42' }, timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS }]);
+  });
+
+  it.each<[string, Call, unknown]>([
+    [
+      'awaitPositions',
+      (barrier) => barrier.awaitPositions(positions({ stub: '8', people: '43' })),
+      { positions: { people: '43' }, timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS },
+    ],
+    ['awaitOwners', (barrier) => barrier.awaitOwners(['stub', 'identity']), { owners: ['identity'], timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS }],
+  ])('%s awaits the projected owners alone', async (_label, call, awaited) => {
+    const { table, client, barrier } = setup();
+    await call(barrier);
+    expect(client.calls.map((request) => request.json)).toEqual([awaited]);
+    expect(table.transactions()).toBe(0);
+  });
+
+  it.each<[string, number, Record<string, unknown>]>([
+    ['confirms', 200, {}],
+    ['answers HTTP 503 for', 503, { people: { xid: '42', pending: 0 } }],
+  ])('drops the rows of an owner no longer projected, asking migration only about the others, when it %s them', async (_label, status, left) => {
+    const projected = { owners: new Set([...PROJECTED, 'stub']) as ReadonlySet<string> };
+    const { table, client, barrier } = setup(answerStatus(status), projected);
+    await barrier.declare(SESSION, 'stub');
+    await barrier.record(SESSION, positions({ stub: '7', people: '42' }));
+    projected.owners = PROJECTED;
+    await barrier.release(SESSION, 'stub');
+    const before = table.statements.length;
+    const awaited = barrier.awaitForSession(SESSION);
+    if (status === 200) await awaited;
+    else expect(await rejectionOf(awaited)).toBeInstanceOf(BarrierTimeoutError);
+    expect(client.calls.map((request) => request.json)).toEqual([{ positions: { people: '42' }, timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS }]);
+    expect(table.statements.slice(before, before + 2)).toEqual([
+      { sql: SELECT_SQL, values: [SESSION] },
+      { sql: DROP_SQL, values: [SESSION, ['stub']] },
+    ]);
+    expect(table.full(SESSION)).toEqual(left);
+  });
+
+  it('drops the rows of an owner no longer projected in the reading transaction when no other owner is left to await', async () => {
+    const projected = { owners: new Set([...PROJECTED, 'stub']) as ReadonlySet<string> };
+    const { table, client, barrier } = setup(answerStatus(200), projected);
+    await barrier.declare(SESSION, 'stub');
+    await barrier.record(SESSION, positions({ stub: '7' }));
+    await barrier.declare(OTHER_SESSION, 'stub');
+    projected.owners = PROJECTED;
+    const transactions = table.transactions();
+    await barrier.awaitForSession(SESSION);
+    expect(client.calls).toEqual([]);
+    expect(table.transactions()).toBe(transactions + 1);
+    expect(table.full(SESSION)).toEqual({});
+    expect(table.full(OTHER_SESSION)).toEqual({ stub: { xid: null, pending: 1 } });
   });
 });
 

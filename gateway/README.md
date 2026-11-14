@@ -18,6 +18,7 @@ The gateway is the strangler-fig front door of OPT-2. Every browser and API requ
 | `/opt2/svc/<service>/…` | The web service-call relay (see [Internal API](#internal-api)) |
 
 - **Legacy URLs stay.** The browser URL is always the legacy one; web receives the original request target in `X-Opt2-Original-Url`, and builds links, form actions and redirects in legacy form.
+- **Absolute URLs address the gateway.** Masa builds them from the preserved `Host` and its configured port, so legacy runs with `MURA_PORT` and `MURA_PROXYPORT` equal to the gateway port (set by `harness/repro/server.json.template`), and its `Mura.init` paths and redirect `Location` headers name the gateway. The platform-proof check `unmoved-to-legacy` fails on any forwarded response that names `LEGACY_ORIGIN`'s port.
 
 ## Cut-over table
 

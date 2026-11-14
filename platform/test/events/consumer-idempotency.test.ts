@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { PubSub, type Message, type Subscription, type Topic } from '@google-cloud/pubsub';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -20,6 +21,7 @@ import {
   type InboxStatus,
 } from '../../src/events/index.js';
 import {
+  GATE_WAIT_MS,
   GateClosedError,
   acquireWriteGates,
   closeGates,
@@ -55,7 +57,6 @@ const SERVICE = 'stub';
 const PROJECT = process.env.GOOGLE_CLOUD_PROJECT ?? 'opt2-local';
 const REQUIRED_ENV = ['PG_HOST', 'PG_USER', 'PG_PASSWORD', 'PG_DATABASE', 'PUBSUB_EMULATOR_HOST'] as const;
 const EFFECT_UNIT = 'test_effect';
-const GATE_BUDGET_MS = 250;
 const SETUP_HOLDER = 'consumer-idempotency-setup';
 
 interface ValuePayload {
@@ -259,6 +260,28 @@ async function closeEffectGate(): Promise<() => Promise<unknown>> {
   return () => openGates(db(), { units: [EFFECT_UNIT], holderId });
 }
 
+/**
+ * Runs `start` with only Date faked, stepping it 1 s per real 25 ms until the call settles, so a 30 s gate budget elapses in
+ * about a second while the gate polls and the database run in real time; `elapsedMs` is the faked time the call took.
+ */
+async function underSteppedDate<T>(start: () => Promise<T>): Promise<{ result: T; elapsedMs: number }> {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    const started = Date.now();
+    let settled = false;
+    const pending = start().finally(() => {
+      settled = true;
+    });
+    while (!settled) {
+      await sleep(25);
+      vi.setSystemTime(Date.now() + 1_000);
+    }
+    return { result: await pending, elapsedMs: Date.now() - started };
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 /** Makes the next process apply throw; the returned function is a no-op, since the failure clears itself. */
 async function failNextApply(): Promise<() => Promise<unknown>> {
   injectedFailure = new Error('injected apply failure');
@@ -305,7 +328,7 @@ function processConsumerFor(topic: string): ConsumerDefinition<ValuePayload> {
         const failure = injectedFailure;
         injectedFailure = undefined;
         if (failure !== undefined) throw failure;
-        await acquireWriteGates(tx, [EFFECT_UNIT], { budgetMs: GATE_BUDGET_MS });
+        await acquireWriteGates(tx, [EFFECT_UNIT]);
       } catch (error) {
         applyErrors.push(error);
         throw error;
@@ -641,27 +664,31 @@ describe('event consumer idempotency through push delivery', () => {
 
   it.each([
     {
-      cause: 'the unit gate is closed',
+      cause: 'the unit gate stays closed for the whole gate wait',
       status: 503,
+      waitedMs: GATE_WAIT_MS,
       block: closeEffectGate,
       error: { name: 'GateClosedError', units: [EFFECT_UNIT] },
     },
     {
       cause: 'apply fails',
       status: 500,
+      waitedMs: 0,
       block: failNextApply,
       error: { name: 'Error', message: 'injected apply failure' },
     },
-  ])('nacks without a receipt when $cause, then applies the redelivery once', async ({ status, block, error }) => {
+  ])('nacks without a receipt when $cause, then applies the redelivery once', async ({ status, waitedMs, block, error }) => {
     const envelope = envelopeOn(topicOfSubscription(processSub));
     const unblock = await block();
     let first: InjectResponse;
+    let elapsedMs: number;
     try {
-      first = await pushTo(service(), processSub, envelope);
+      ({ result: first, elapsedMs } = await underSteppedDate(() => pushTo(service(), processSub, envelope)));
     } finally {
       await unblock();
     }
 
+    expect(elapsedMs).toBeGreaterThanOrEqual(waitedMs);
     expect(first.statusCode).toBe(status);
     expect(first.json()).toMatchObject({ error: { code: 'server_error' } });
     expect(applyErrors.at(-1)).toMatchObject(error);

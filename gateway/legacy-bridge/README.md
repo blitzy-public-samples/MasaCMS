@@ -262,6 +262,8 @@ Set on the ColdFusion start command only, by `harness/repro/lib/legacy-start.sh`
 | `OPT2_GATEWAY_ORIGIN` | Gateway origin used by `scheduler.cfm` `repoint` and `restore` |
 | `MURA_PING` | `false`, so Masa never registers the site-monitor task itself (`core/appcfc/onApplicationStart_include.cfm:136-141`, `:561`) |
 
+The rendered server definition, `harness/repro/server.json.template`, also sets `MURA_PORT` and `MURA_PROXYPORT` to the gateway port, so the absolute URLs Masa builds address the gateway.
+
 ## Callers
 
 | Endpoint | Caller | When |

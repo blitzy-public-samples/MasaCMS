@@ -43,6 +43,9 @@ export interface PushRetryPolicy {
 /** Backoff between push redeliveries, so a consumer outage spends the delivery attempts over minutes rather than seconds. */
 export const PUSH_RETRY_POLICY: PushRetryPolicy = { minimumBackoff: { seconds: 10 }, maximumBackoff: { seconds: 600 } };
 
+/** Push request timeout of a subscription, above the consumer's 30 s gate wait so a waiting delivery's answer reaches Pub/Sub. */
+export const PUSH_ACK_DEADLINE_SECONDS = 60;
+
 /** Repository-relative path of the generated cloud variables file. */
 export const TFVARS_RELATIVE_PATH = 'infra/terraform/envs/plan/topology.auto.tfvars.json';
 
@@ -375,13 +378,14 @@ export interface PushSubscriptionOptions {
   enableMessageOrdering: boolean;
   deadLetterPolicy: DeadLetterPolicy;
   retryPolicy: PushRetryPolicy;
+  ackDeadlineSeconds: number;
 }
 
 /** The subscription methods used to bring an existing push or DLQ replay subscription up to date. */
 export interface SubscriptionHandleLike {
   getMetadata(): Promise<[{ topic?: string | null; enableMessageOrdering?: boolean | null }, ...unknown[]]>;
   modifyPushConfig(config: { pushEndpoint: string }): Promise<unknown>;
-  setMetadata(metadata: { deadLetterPolicy: DeadLetterPolicy; retryPolicy: PushRetryPolicy }): Promise<unknown>;
+  setMetadata(metadata: { deadLetterPolicy: DeadLetterPolicy; retryPolicy: PushRetryPolicy; ackDeadlineSeconds: number }): Promise<unknown>;
   delete(): Promise<unknown>;
 }
 
@@ -457,6 +461,7 @@ async function reconcileEmulator(client: PubSubLike, topology: Topology, opts: L
         maxDeliveryAttempts: subscription.max_delivery_attempts,
       },
       retryPolicy: PUSH_RETRY_POLICY,
+      ackDeadlineSeconds: PUSH_ACK_DEADLINE_SECONDS,
     };
     const create = () => client.topic(subscription.topic).createSubscription(name, options);
     if (await createIfAbsent(create)) {
@@ -472,7 +477,11 @@ async function reconcileEmulator(client: PubSubLike, topology: Topology, opts: L
     } else {
       // Restores push delivery after a drain switched the subscription to pull.
       await existing.modifyPushConfig(options.pushConfig);
-      await existing.setMetadata({ deadLetterPolicy: options.deadLetterPolicy, retryPolicy: options.retryPolicy });
+      await existing.setMetadata({
+        deadLetterPolicy: options.deadLetterPolicy,
+        retryPolicy: options.retryPolicy,
+        ackDeadlineSeconds: options.ackDeadlineSeconds,
+      });
     }
     result.updated += 1;
   }

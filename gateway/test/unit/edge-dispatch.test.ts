@@ -21,12 +21,14 @@ import { EDGE_METHODS, EDGE_ROUTE_URL, registerEdgeRoute, type DispatcherDeps } 
 import { failContextFor } from '../../src/dispatcher/fail-closed.js';
 import type { Destination, MatchOutcome } from '../../src/dispatcher/match.js';
 import { WindowOpenError } from '../../src/dispatcher/write-window.js';
+import type { BridgeClient } from '../../src/session/bridge-client.js';
 import { createCsrfContinuity, type CsrfHandle } from '../../src/session/csrf.js';
-import type { SettleInput } from '../../src/session/identity-client.js';
+import type { IdentityClient, LegacyDescribe, SettleInput } from '../../src/session/identity-client.js';
 import { createInvalidation } from '../../src/session/invalidation.js';
-import type { JarCookies, JarRow } from '../../src/session/jar.js';
+import type { JarCookies, JarRow, LegacyJar } from '../../src/session/jar.js';
 import type { SessionMode } from '../../src/session/mode.js';
-import type { SessionResolution } from '../../src/session/resolve.js';
+import { createSessionResolver, type SessionResolution } from '../../src/session/resolve.js';
+import { createSessionStateChecker } from '../../src/session/state-check.js';
 import { sendBytes, startHttpDouble, type HttpDouble } from '../helpers/http-double.js';
 
 const SILENT = createLogger({ service: 'gateway', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
@@ -40,6 +42,8 @@ interface Script {
   family?: RouteKeyResult['family'];
   /** The request's `siteid`; `null` when it names none. Default `default`. */
   siteId?: string | null;
+  /** The method the route key reads after X-HTTP-Method-Override. Default `GET`. */
+  httpMethod?: string;
 }
 
 interface Harness {
@@ -135,10 +139,11 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
     const family = s.family ?? (path.startsWith('/admin') ? 'admin' : 'api');
     const key = s.entry?.route ?? `${family}:unlisted`;
     const siteId = s.siteId === undefined ? 'default' : s.siteId;
+    const httpMethod = s.httpMethod ?? 'GET';
     const result: RouteKeyResult =
       siteId === null
-        ? { key, baseKey: key, family, httpMethod: 'GET', params: {} }
-        : { key, baseKey: key, family, httpMethod: 'GET', params: { siteid: siteId }, siteId };
+        ? { key, baseKey: key, family, httpMethod, params: {} }
+        : { key, baseKey: key, family, httpMethod, params: { siteid: siteId }, siteId };
     const destinations: Record<Script['destination'], Exclude<Destination, { kind: 'relay' }>> = {
       legacy: { kind: 'legacy' },
       target: { kind: 'target', service: 'people', serviceUrl: svc.url, path: url, isWeb: false },
@@ -691,6 +696,27 @@ describe('freeze', () => {
 });
 
 describe('write entries', () => {
+  it.each<['GET' | 'HEAD' | 'OPTIONS' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', string, boolean]>([
+    ['GET', 'GET', false],
+    ['HEAD', 'HEAD', false],
+    ['OPTIONS', 'OPTIONS', false],
+    ['POST', 'POST', true],
+    ['PUT', 'PUT', true],
+    ['PATCH', 'PATCH', true],
+    ['DELETE', 'DELETE', true],
+    ['GET', 'DELETE', true],
+    ['POST', 'GET', true],
+  ])('declares a %s to a target write entry whose route key reads %s in the session barrier: %s', async (method, keyMethod, declares) => {
+    const h = await harness();
+    h.setScript(() => ({ entry: { route: 'opt2:/opt2/stub/**', kind: 'write', state: 'target' }, destination: 'target', httpMethod: keyMethod }));
+    vi.mocked(h.deps.resolver.resolveSession).mockResolvedValueOnce(session('legacy-primary'));
+    expect((await h.app.inject({ method, url: '/opt2/stub/notes' })).statusCode).toBe(200);
+    await settle();
+    const declaration = h.calls.filter((call) => call.startsWith('declare:') || call.startsWith('release:'));
+    expect(declaration).toEqual(declares ? [`declare:${SESSION_ID}:people`, `release:${SESSION_ID}:people`] : []);
+    expect(h.svc.requests.map((received) => received.method)).toEqual([method]);
+  });
+
   it('registers before reading the epoch and removes the row once the response completed', async () => {
     const h = await harness();
     h.setScript(() => ({ entry: { route: 'admin:cusers.update', kind: 'write', state: 'target' }, destination: 'target' }));
@@ -1168,5 +1194,224 @@ describe('sessions of legacy-bound requests', () => {
       CFID: 'C1',
       CFTOKEN: 'N2',
     });
+  });
+});
+
+describe('legacy-primary legacy-bound requests while identity is unavailable', () => {
+  const IDENTITY_DOWN = new ServiceUnavailableError(
+    IDENTITY_SERVICE,
+    Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8111'), { code: 'ECONNREFUSED' }),
+  );
+  const MAPPED_ID = 'M1';
+  const LEGACY_SESSION_ID = 'L-1';
+  const LEGACY_COOKIES = 'CFID=1001; CFTOKEN=12345678; JSESSIONID=L-J';
+  const TOKEN = 'B'.repeat(32);
+  const FACTS: Record<string, RouteFacts> = {
+    'admin:clogin.login': {
+      route: 'admin:clogin.login',
+      csrfValidation: 'validates',
+      writeSet: [],
+      keyScope: [],
+      sessionEffects: ['login'],
+    },
+    'admin:carch.update': {
+      route: 'admin:carch.update',
+      csrfValidation: 'validates',
+      writeSet: ['content'],
+      keyScope: [],
+      sessionEffects: [],
+    },
+  };
+  const DESCRIBED: LegacyDescribe = {
+    sessionId: LEGACY_SESSION_ID,
+    isLoggedIn: true,
+    user: {
+      userID: 'U1',
+      username: 'admin',
+      siteID: 'default',
+      subtype: 'Default',
+      password: '',
+      fname: '',
+      lname: '',
+      email: '',
+      remoteID: '',
+      company: '',
+      lastlogin: '',
+      passwordCreated: '',
+    },
+    memberships: 'Admin;default;0',
+    membershipIds: 'G1,U1',
+    csrfSecretKey: 'SECRET',
+    usedTokens: [],
+    siteId: 'default',
+    serverTime: '2026-06-30 12:00:00.000',
+  };
+
+  interface DownOptions {
+    active?: RoutingIndex;
+    /** Fields of the jar row mapping the browser's legacy session to M1; no row when absent. */
+    mapped?: Partial<JarRow>;
+    /** The bridge refuses as well. */
+    bridgeDown?: boolean;
+  }
+
+  /** The dispatcher over the real session resolver, state checker and CSRF continuity, every identity call refused. */
+  async function identityDown(opts: DownOptions = {}): Promise<Harness> {
+    const h = await harness({ active: opts.active, facts: FACTS });
+    const rows = new Map<string, JarRow>();
+    if (opts.mapped !== undefined) {
+      rows.set(MAPPED_ID, {
+        sessionId: MAPPED_ID,
+        legacySessionId: LEGACY_SESSION_ID,
+        cookies: {},
+        mode: 'legacy-primary',
+        hydratedEpoch: null,
+        updatedAt: new Date(),
+        ...opts.mapped,
+      });
+    }
+    const refuse = (op: string) => (): Promise<never> => {
+      h.calls.push(`identity.${op}`);
+      return Promise.reject(IDENTITY_DOWN);
+    };
+    const identity: IdentityClient = {
+      mintToken: refuse('mintToken'),
+      authenticate: refuse('authenticate'),
+      adopt: refuse('adopt'),
+      state: refuse('state'),
+      adminSite: refuse('adminSite'),
+      snapshot: refuse('snapshot'),
+      end: refuse('end'),
+      claim: refuse('claim'),
+      settle: refuse('settle'),
+    };
+    const bridgeCall = (op: string) => (): Promise<never> => {
+      h.calls.push(`bridge.${op}`);
+      return Promise.reject(new ServiceUnavailableError('legacy-bridge', new Error(`${op} refused`)));
+    };
+    const bridge = {
+      describe: opts.bridgeDown === true ? bridgeCall('describe') : () => Promise.resolve({ body: DESCRIBED, setCookies: [] }),
+      markUsed: bridgeCall('markUsed'),
+      usedSince: bridgeCall('usedSince'),
+    } as unknown as BridgeClient;
+    const jar = {
+      get: (sessionId: string) => Promise.resolve(rows.get(sessionId)),
+      findByLegacySessionId: (legacySessionId: string) =>
+        Promise.resolve([...rows.values()].find((row) => row.legacySessionId === legacySessionId)),
+    } as unknown as LegacyJar;
+    const state = createSessionStateChecker({ identity, clock: systemClock, tokenCache: { drop: () => undefined } });
+    h.deps.resolver = createSessionResolver({ identity, bridge, jar, state });
+    h.deps.csrf = createCsrfContinuity({ identity, bridge, sessions: h.deps.resolver, jar, facts: h.deps.facts });
+    h.legacy.setHandler((_req, res) => {
+      h.calls.push('legacy');
+      sendBytes(res, 200, 'legacy-body');
+    });
+    return h;
+  }
+
+  /** Adds `params` to every matched request's merged params, as its form body would. */
+  function withParams(h: Harness, params: Record<string, string>): void {
+    const match = vi.mocked(h.deps.matcher.match);
+    const original = match.getMockImplementation();
+    if (original === undefined) throw new Error('the harness matcher has no implementation');
+    match.mockImplementation(async (...args) => {
+      const outcome = await original(...args);
+      if (outcome.result === undefined) return outcome;
+      return { ...outcome, result: { ...outcome.result, params: { ...outcome.result.params, ...params } } };
+    });
+  }
+
+  const identityCalls = (h: Harness): string[] => h.calls.filter((call) => call.startsWith('identity.'));
+
+  it('forwards a login POST whose validating token identity can neither adopt nor claim, answering legacy own 302', async () => {
+    const h = await identityDown();
+    h.setScript(() => ({ entry: { route: 'admin:clogin.login', kind: 'write' }, destination: 'legacy', family: 'admin' }));
+    withParams(h, { muraAction: 'cLogin.login', csrf_token: TOKEN, csrf_token_expires: '260630153456789' });
+    h.legacy.setHandler((_req, res) => {
+      sendBytes(res, 302, '', { location: './' });
+    });
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/admin/index.cfm',
+      headers: { cookie: LEGACY_COOKIES, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: `muraAction=cLogin.login&csrf_token=${TOKEN}`,
+    });
+
+    expect([res.statusCode, res.headers.location]).toEqual([302, './']);
+    expect(h.legacy.requests.map((request) => [request.method, request.headers.cookie])).toEqual([['POST', LEGACY_COOKIES]]);
+    expect(identityCalls(h)).toEqual(['identity.adopt']);
+    expect(h.calls.filter((call) => call.startsWith('bridge.'))).toEqual([]);
+  });
+
+  it.each<{ name: string; method: 'GET' | 'POST'; route: string; kind: EntryKind; params: Record<string, string> }>([
+    { name: 'an admin page', method: 'GET', route: 'admin:cdashboard.main', kind: 'read', params: {} },
+    { name: 'a validating save carrying a token', method: 'POST', route: 'admin:carch.update', kind: 'write', params: { csrf_token: TOKEN } },
+  ])('forwards $name of a mapped session behind the barrier of the mapped session, with the browser cookies', async (c) => {
+    const h = await identityDown({ mapped: {} });
+    h.setScript(() => ({ entry: { route: c.route, kind: c.kind }, destination: 'legacy', family: 'admin' }));
+    withParams(h, c.params);
+    const res = await h.app.inject({ method: c.method, url: '/admin/', headers: { cookie: LEGACY_COOKIES } });
+
+    expect([res.statusCode, res.body]).toEqual([200, 'legacy-body']);
+    expect(h.calls.filter((call) => call.startsWith('barrier:') || call === 'legacy')).toEqual([`barrier:${MAPPED_ID}`, 'legacy']);
+    expect(h.legacy.requests[0]?.headers.cookie).toBe(LEGACY_COOKIES);
+    expect(new Set(identityCalls(h))).toEqual(new Set(['identity.state']));
+    expect(h.calls.filter((call) => call.startsWith('bridge.'))).toEqual([]);
+  });
+
+  it('marks the identity end of a mapped session pending before legacy logs it out, answering the 503 identity owes', async () => {
+    const h = await identityDown({ mapped: {} });
+    h.setScript(() => ({ entry: { route: 'page:logout', kind: 'legacy-write' }, destination: 'legacy', family: 'page' }));
+    vi.mocked(h.deps.invalidation.afterLegacyLogout).mockImplementationOnce((sessionId) => {
+      h.calls.push(`afterLegacyLogout:${sessionId}`);
+      return Promise.reject(IDENTITY_DOWN);
+    });
+    const res = await h.app.inject({ method: 'GET', url: '/?doaction=logout', headers: { cookie: LEGACY_COOKIES } });
+
+    expect(res.statusCode).toBe(503);
+    expect(h.calls.filter((call) => call === 'legacy' || call.includes('Logout:'))).toEqual([
+      `beforeLegacyLogout:${MAPPED_ID}`,
+      'legacy',
+      `afterLegacyLogout:${MAPPED_ID}`,
+    ]);
+    expect(h.deps.invalidation.beforeLegacyLogout).toHaveBeenCalledWith(MAPPED_ID, 'legacy-primary');
+  });
+
+  it.each<{ name: string; options: DownOptions; destination: 'legacy' | 'target'; cookie: string; arrange?: (h: Harness) => void }>([
+    {
+      name: 'a target-primary legacy-bound request',
+      options: { active: indexOf('v0002', [], 'target') },
+      destination: 'legacy',
+      cookie: `JSESSIONID=${MAPPED_ID}; CFID=T-CFID`,
+    },
+    { name: 'a legacy-primary target-bound request', options: { mapped: {} }, destination: 'target', cookie: LEGACY_COOKIES },
+    {
+      name: 'a mapped session whose barrier times out',
+      options: { mapped: {} },
+      destination: 'legacy',
+      cookie: LEGACY_COOKIES,
+      arrange: (h) => {
+        vi.mocked(h.deps.barrier.awaitForSession).mockRejectedValueOnce(new BarrierTimeoutError('people=9', new Error('timeout')));
+      },
+    },
+    {
+      name: 'a mapped session whose pending identity end cannot complete',
+      options: { mapped: { identityEndPendingAt: new Date() } },
+      destination: 'legacy',
+      cookie: LEGACY_COOKIES,
+      arrange: (h) => {
+        vi.mocked(h.deps.invalidation.completePending).mockRejectedValueOnce(IDENTITY_DOWN);
+      },
+    },
+    { name: 'a request the legacy bridge cannot describe', options: { mapped: {}, bridgeDown: true }, destination: 'legacy', cookie: LEGACY_COOKIES },
+  ])('fails closed for $name', async ({ options, destination, cookie, arrange }) => {
+    const h = await identityDown(options);
+    h.setScript(() => ({ entry: { route: 'admin:cdashboard.main', kind: 'read' }, destination }));
+    arrange?.(h);
+    const res = await h.app.inject({ method: 'GET', url: '/admin/', headers: { cookie } });
+
+    expect([res.statusCode, res.body]).toEqual([503, adminUnavailableResponse().body]);
+    expect(h.legacy.requests).toHaveLength(0);
+    expect(h.svc.requests).toHaveLength(0);
   });
 });

@@ -15,6 +15,7 @@ interface FakeMessage {
   data: Buffer;
   attributes: Record<string, string>;
   orderingKey?: string;
+  publishTime: Date;
   ack: ReturnType<typeof vi.fn>;
   nack: ReturnType<typeof vi.fn>;
 }
@@ -25,6 +26,7 @@ const state = vi.hoisted(() => ({
   subscriptions: [] as FakeSubscription[],
   closed: [] as string[],
   closeError: undefined as Error | undefined,
+  nackedByClose: [] as FakeMessage[],
 }));
 
 vi.mock('@google-cloud/pubsub', async (importOriginal) => {
@@ -35,14 +37,18 @@ vi.mock('@google-cloud/pubsub', async (importOriginal) => {
     }
 
     subscription(name: string, options: unknown): FakeSubscription {
+      const delivered: FakeMessage[] = [];
       const subscription = Object.assign(new EventEmitter(), {
         name,
         options,
         close: vi.fn(async () => {
           state.closed.push('subscription');
+          // Subscriber.close() nacks every message still unsettled; recorded apart so the spies count only the CLI's settles.
+          state.nackedByClose.push(...delivered.filter((message) => message.ack.mock.calls.length + message.nack.mock.calls.length === 0));
           if (state.closeError) throw state.closeError;
         }),
       });
+      subscription.on('message', (message: FakeMessage) => delivered.push(message));
       state.subscriptions.push(subscription);
       return subscription;
     }
@@ -75,9 +81,19 @@ function capture(sink: (chunk: string) => void, error: Error | null = null) {
   };
 }
 
-/** A pulled dead letter with spied ack and nack. */
-function deadLetter(data: string, attributes: Record<string, string>, orderingKey?: string): FakeMessage {
-  return { data: Buffer.from(data, 'utf8'), attributes, orderingKey, ack: vi.fn(), nack: vi.fn() };
+/** A pulled dead letter with spied ack and nack, published a minute before now unless `publishTime` is given. */
+function deadLetter(
+  data: string,
+  attributes: Record<string, string>,
+  orderingKey?: string,
+  publishTime = new Date(Date.now() - 60_000),
+): FakeMessage {
+  return { data: Buffer.from(data, 'utf8'), attributes, orderingKey, publishTime, ack: vi.fn(), nack: vi.fn() };
+}
+
+/** A dead letter published after the run started, as a replay dead-lettered again is. */
+function lateLetter(eventId: string): FakeMessage {
+  return deadLetter('{}', { eventId }, undefined, new Date(Date.now() + 60_000));
 }
 
 /** The only subscription the CLI opened. */
@@ -103,6 +119,7 @@ beforeEach(() => {
   state.subscriptions.length = 0;
   state.closed.length = 0;
   state.closeError = undefined;
+  state.nackedByClose.length = 0;
   publishRaw = vi.fn(async () => 'message-id');
   state.createPublisher.mockReset();
   state.createPublisher.mockImplementation(() => ({
@@ -186,7 +203,7 @@ describe('opt2-events replay', () => {
     const run = main(replayArgs('--idle-seconds', '2'));
     const subscription = pulled();
     expect(subscription.name).toBe(SOURCE);
-    expect(subscription.options).toEqual({ flowControl: { maxMessages: 1, allowExcessMessages: false } });
+    expect(subscription.options).toEqual({ flowControl: { maxMessages: 1000, allowExcessMessages: false } });
 
     const keyed = deadLetter('{"aggregateId":"from-data"}', { eventId: 'e1', reason: 'missing-tenant' }, 'agg-1');
     const forwarded = deadLetter('{"aggregateId":"agg-2"}', {
@@ -249,6 +266,65 @@ describe('opt2-events replay', () => {
     expect(await run).toBe(0);
     expect(JSON.parse(stdout)).toMatchObject({ replayed: 1, stoppedBy: 'idle' });
   });
+
+  it.each([
+    [['--max', '1'], 2],
+    [['--max', '999'], 1000],
+    [[], 1000],
+    [['--max', '5000'], 1000],
+  ])('pulls with %j through a flow-control window of %i messages', async (extra, maxMessages) => {
+    const run = main(replayArgs(...extra, '--idle-seconds', '1'));
+    expect(pulled().options).toEqual({ flowControl: { maxMessages, allowExcessMessages: false } });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await run).toBe(0);
+  });
+
+  it.each([[['late', 'early', 'early']], [['early', 'late', 'early']]])(
+    'holds a letter published after the run started for close to nack, uncounted toward --max, in arrival order %j',
+    async (kinds) => {
+      const run = main(replayArgs('--max', '2'));
+      const subscription = pulled();
+      const messages = kinds.map((kind, index) => (kind === 'late' ? lateLetter(`m${index}`) : deadLetter('{}', { eventId: `m${index}` })));
+      for (const message of messages) subscription.emit('message', message);
+      expect(await run).toBe(0);
+      const late = messages[kinds.indexOf('late')] as FakeMessage;
+      const early = messages.filter((message) => message !== late);
+      expect(JSON.parse(stdout)).toMatchObject({ replayed: 2, stoppedBy: 'max' });
+      expect(publishRaw.mock.calls.map(([, message]) => (message as { attributes: unknown }).attributes)).toEqual(
+        early.map((message) => message.attributes),
+      );
+      expect(early.map((message) => message.ack.mock.calls.length)).toEqual([1, 1]);
+      expect([late.ack.mock.calls.length, late.nack.mock.calls.length]).toEqual([0, 0]);
+      expect(state.nackedByClose).toEqual([late]);
+    },
+  );
+
+  it.each([
+    [[[1_000, 'late']], 2_000, 0],
+    [[[500, 'early'], [1_500, 'late'], [2_400, 'late']], 2_500, 1],
+  ] as Array<[Array<[number, 'early' | 'late']>, number, number]>)(
+    'keeps the idle window of the letters to replay when letters published after the start arrive at %j',
+    async (arrivals, stopsAt, replayed) => {
+      const run = main(replayArgs('--idle-seconds', '2'));
+      const subscription = pulled();
+      const late: FakeMessage[] = [];
+      let now = 0;
+      for (const [at, kind] of arrivals) {
+        await vi.advanceTimersByTimeAsync(at - now);
+        now = at;
+        const message = kind === 'late' ? lateLetter(`at-${at}`) : deadLetter('{}', { eventId: `at-${at}` });
+        if (kind === 'late') late.push(message);
+        subscription.emit('message', message);
+      }
+      await vi.advanceTimersByTimeAsync(stopsAt - 1 - now);
+      expect(state.closed).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await run).toBe(0);
+      expect(JSON.parse(stdout)).toMatchObject({ replayed, stoppedBy: 'idle' });
+      expect(late.map((message) => message.ack.mock.calls.length + message.nack.mock.calls.length)).toEqual(late.map(() => 0));
+      expect(state.nackedByClose).toEqual(late);
+    },
+  );
 
   it('nacks the dead letter, stops and exits 1 when its publish fails', async () => {
     publishRaw.mockResolvedValueOnce('id').mockRejectedValueOnce(new Error('5 NOT_FOUND: Topic not found'));

@@ -93,10 +93,13 @@ export async function resolveFixtureSite(params: FixtureParams, ctx: FixtureSite
  * requireAny; authorization for an anonymous token, as requireLogin raises; else `denial`.
  */
 export async function fixtureDenialOverride(denial: AuthDenial, ctx: FixtureDenialContext): Promise<AuthDenial | FixtureApiError> {
-  if (denial.reason !== 'forbidden' || ctx.claims === undefined) return denial;
-  if ((await tenantForRegisteredSite(ctx.registry, ctx.claims.site)) === null) return new FixtureApiError('invalidParameters');
+  const { claims } = ctx;
+  // The role check refuses the anonymous principal as unauthenticated and any other token as forbidden.
+  const roleDenial = claims !== undefined && (denial.reason === 'forbidden' || (claims.sub === '' && denial.reason === 'missing-credential'));
+  if (!roleDenial) return denial;
+  if ((await tenantForRegisteredSite(ctx.registry, claims.site)) === null) return new FixtureApiError('invalidParameters');
   // Identity mints sub '' for a session without a login; the gateway forwards it, and the fixture answers that session 401, not 403.
-  return ctx.claims.sub === '' ? new FixtureApiError('authorization') : denial;
+  return claims.sub === '' ? new FixtureApiError('authorization') : denial;
 }
 
 /** The tenant's `Program_<id>` binding, read under `tx`'s tenant, the verified `tenantId`; throws invalidParameters when it has none, as auth.cfc programFor does. */

@@ -160,7 +160,9 @@ export function registerAuth(app: FastifyInstance, opts: RegisterAuthOptions): v
       const roles = [...new Set([...userRoles, ...(service?.roles ?? [])])];
       request.opt2Auth = { user, userToken, service, roles, transport };
       if (config.requires !== undefined && !hasAnyRole(roles, config.requires)) {
-        throw user === undefined && config.requires.some((role) => !isServiceRole(role))
+        // The anonymous principal (`sub` '') is no authenticated user.
+        const authenticated = user !== undefined && user.sub !== '';
+        throw !authenticated && config.requires.some((role) => !isServiceRole(role))
           ? AuthDenial.unauthenticated('missing-credential')
           : AuthDenial.forbidden();
       }

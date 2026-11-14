@@ -6,7 +6,7 @@ import { withMetadata, withTenant, type MetadataTx, type Queryable, type TenantD
 import { LegacyServiceUnavailableError } from '../legacy-compat/index.js';
 import { SAFE_ERROR_TEXT } from '../logging/safe-error.js';
 import { Roles } from '../auth/index.js';
-import { currentRequestContext } from '../service-kit/index.js';
+import { currentRequestContext } from '../service-kit/context.js';
 
 /** Longest a write, read, operation start or gate close waits on a gate. */
 export const GATE_WAIT_MS = 30_000;

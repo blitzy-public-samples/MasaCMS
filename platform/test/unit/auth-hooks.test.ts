@@ -2,6 +2,7 @@
 import { fastify, type FastifyInstance, type FastifyRequest, type RouteShorthandOptions } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  ANONYMOUS_PRINCIPAL_UID,
   AuthDenial,
   INVOCATION_HEADER,
   PUBSUB_INVOKER_ROLE,
@@ -358,6 +359,22 @@ describe('request authentication and role checks', () => {
     const res = await app.inject({ url, headers: { [INVOCATION_HEADER]: await invocationFrom(caller) } });
 
     expect(res.statusCode).toBe(status);
+    expect(res.json()).toStrictEqual(DENIED_ENVELOPE);
+    expect(handled).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'a user-role route', url: '/v1/admin', sub: '', status: 401 },
+    { label: 'a module-role route', url: '/v1/users', sub: '', status: 401 },
+    { label: 'a user-role route', url: '/v1/staff', sub: ANONYMOUS_PRINCIPAL_UID, status: 401 },
+    { label: 'a service-role route the caller lacks', url: PEOPLE_ONLY_URL, sub: '', status: 403 },
+  ])('answers $status to an anonymous-principal token (sub "$sub") beside an invocation credential on $label', async ({ url, sub, status }) => {
+    const [token, invocation] = await Promise.all([mintUserToken({ sub, site: SITE_A, roles: [] }), invocationFrom('gateway')]);
+
+    const res = await app.inject({ url, headers: { authorization: `Bearer ${token}`, [INVOCATION_HEADER]: invocation } });
+
+    expect(res.statusCode).toBe(status);
+    expect(res.headers['www-authenticate']).toBeUndefined();
     expect(res.json()).toStrictEqual(DENIED_ENVELOPE);
     expect(handled).not.toHaveBeenCalled();
   });

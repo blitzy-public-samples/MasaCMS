@@ -1,5 +1,6 @@
 // Dead-letter classification of the push route, `publishDeadLetter` and `opt2-events replay` against PostgreSQL and the Pub/Sub emulator.
 import { randomBytes } from 'node:crypto';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PubSub, type Message } from '@google-cloud/pubsub';
@@ -19,6 +20,7 @@ import {
   eventsSql,
   originalAttributes,
   publishDeadLetter,
+  pushPath,
   registerPushSubscription,
   subscriptionName,
   topicName,
@@ -36,11 +38,13 @@ import { rlsSql, tenantRegistrySql, withTenant } from '../../src/tenancy/index.j
 import {
   TENANT_A,
   TENANT_B,
+  TEST_PUSH_KEY,
   createThrowawaySchema,
   isAck,
   pgAvailable,
   publishToEmulator,
   pubsubEmulatorAvailable,
+  pushKeyQuery,
   pushTo,
   seedRegistry,
   testEnvelope,
@@ -97,9 +101,12 @@ interface Received {
 const CASES = ['reasons', 'nack', 'replay', 'apply', 'direct', 'publish-failure'] as const;
 type CaseKey = (typeof CASES)[number];
 
+/** Consumers of the loop case's topic: the replayed subscription's consumer, then a second that dead-letters the same letters. */
+const LOOP_CONSUMERS = [SERVICE, 'peer'] as const;
+
 /** One case's push route and dead-letter resources; its original topic exists only once the case calls {@link openTopic}. */
 interface Fixture {
-  key: CaseKey;
+  key: CaseKey | 'loop';
   topic: string;
   subscription: string;
   dlqTopic: string;
@@ -112,6 +119,7 @@ let pubsub: PubSub;
 let publisher: EventPublisher;
 let app: FastifyInstance;
 const fixtures = new Map<CaseKey, Fixture>();
+const loopFixtures: Fixture[] = [];
 const cleanups: Array<() => Promise<unknown>> = [];
 
 /** Receives from `name` until `count` messages arrived and SETTLE_MS passed without another, or `deadlineMs` elapsed; acks each. */
@@ -228,6 +236,21 @@ async function createFixture(key: CaseKey): Promise<Fixture> {
   return fixture;
 }
 
+/** Creates `consumer`'s subscription resources on `topic` as the local topology does (an unordered `.dlq.replay`) plus an observer, and mounts its push route. */
+async function createLoopConsumer(consumer: string, topic: string): Promise<Fixture> {
+  const subscription = subscriptionName(consumer, topic);
+  const dlqTopic = dlqTopicName(subscription);
+  const fixture: Fixture = { key: 'loop', topic, subscription, dlqTopic, dlqObserver: `${dlqTopic}.observer`, failApply: false };
+  const [deadLetterTopic] = await pubsub.createTopic(dlqTopic);
+  cleanups.push(() => deadLetterTopic.delete());
+  const [replaySource] = await deadLetterTopic.createSubscription(dlqReplaySubscriptionName(subscription));
+  cleanups.push(() => replaySource.delete());
+  const [observer] = await deadLetterTopic.createSubscription(fixture.dlqObserver, { enableMessageOrdering: true });
+  cleanups.push(() => observer.delete());
+  registerPushSubscription(app, { subscription, topic, consumer: noteConsumer(fixture), payloadSchema: PAYLOAD_SCHEMA, publisher, db: handle.app });
+  return fixture;
+}
+
 /** The fixture of case `key`. */
 function fixtureOf(key: CaseKey): Fixture {
   const fixture = fixtures.get(key);
@@ -317,6 +340,12 @@ beforeAll(async () => {
   for (const key of CASES) {
     fixtures.set(key, await createFixture(key));
   }
+  const loopTopic = topicName(SERVICE, `loop-${randomBytes(4).toString('hex')}`, 'event', 1);
+  for (const consumer of LOOP_CONSUMERS) {
+    loopFixtures.push(await createLoopConsumer(consumer, loopTopic));
+  }
+  // The loop case's push subscriptions deliver to the listening app; the other cases inject.
+  await app.listen({ host: '127.0.0.1', port: 0 });
 });
 
 afterAll(async () => {
@@ -499,5 +528,61 @@ describe('dead letters and opt2-events replay against the Pub/Sub emulator', () 
     expect(await pullUntil(fixture.dlqObserver, 1)).toEqual([
       { data, attributes: { origin: 'direct', [DEAD_LETTER_REASON_ATTRIBUTE]: 'schema-invalid' } },
     ]);
+  });
+
+  it('replays a permanently invalid letter once per run under real push delivery, re-dead-lettered once by each subscription', { timeout: 90_000 }, async () => {
+    const [replayed, peer] = loopFixtures as [Fixture, Fixture];
+    const { subscription } = replayed;
+    const { port } = app.server.address() as AddressInfo;
+    const [topic] = await pubsub.createTopic(replayed.topic);
+    cleanups.push(() => topic.delete());
+    for (const fixture of loopFixtures) {
+      const [created] = await topic.createSubscription(fixture.subscription, {
+        enableMessageOrdering: true,
+        pushConfig: { pushEndpoint: `http://127.0.0.1:${port}${pushPath(fixture.subscription)}?${pushKeyQuery(TEST_PUSH_KEY)}` },
+        retryPolicy: { minimumBackoff: { seconds: 1 }, maximumBackoff: { seconds: 2 } },
+      });
+      cleanups.push(() => created.delete());
+    }
+    const eventIdsOn = async (fixture: Fixture): Promise<string[]> =>
+      (await pullUntil(fixture.dlqObserver, 1)).map((letter) => letter.attributes.eventId ?? '');
+
+    const invalid = withoutTenant(envelopeFor(replayed, 'missing'));
+    await publishToEmulator(replayed.topic, invalid);
+    for (const fixture of loopFixtures) expect(await eventIdsOn(fixture)).toEqual([invalid.eventId]);
+    const valid = envelopeFor(replayed, 'valid');
+    await storeAggregate(TENANT_A.tenantId, valid.aggregateId);
+    await pubsub.topic(replayed.dlqTopic).publishMessage({
+      data: encodeEnvelope(valid),
+      attributes: {
+        ...sentAttributes(valid),
+        [DEAD_LETTER_SOURCE_SUBSCRIPTION_ATTRIBUTE]: `projects/${PROJECT}/subscriptions/${subscription}`,
+        [DEAD_LETTER_SOURCE_DELIVERY_COUNT_ATTRIBUTE]: '5',
+      },
+    });
+    expect(await eventIdsOn(replayed)).toEqual([valid.eventId]);
+
+    const started = Date.now();
+    expect(await replay(replayed)).toEqual({
+      subscription,
+      source: dlqReplaySubscriptionName(subscription),
+      topic: replayed.topic,
+      replayed: 2,
+      stoppedBy: 'idle',
+    });
+    expect(Date.now() - started).toBeLessThan(REPLAY.idleSeconds * 1000 + 8_000);
+    expect(await eventIdsOn(replayed)).toEqual([invalid.eventId]);
+    expect(await eventIdsOn(peer)).toEqual([invalid.eventId]);
+    const applied = async (): Promise<number[]> => [
+      await rowsFor('test_effect', TENANT_A.tenantId, [valid.eventId]),
+      await rowsFor('inbox', TENANT_A.tenantId, [valid.eventId]),
+    ];
+    expect(await applied()).toEqual([1, 1]);
+
+    // The copy the first run re-dead-lettered was left on the replayed subscription's DLQ for the next run.
+    expect(await replay(replayed)).toMatchObject({ replayed: 1, stoppedBy: 'idle' });
+    expect(await eventIdsOn(replayed)).toEqual([invalid.eventId]);
+    expect(await eventIdsOn(peer)).toEqual([invalid.eventId]);
+    expect(await applied()).toEqual([1, 1]);
   });
 });

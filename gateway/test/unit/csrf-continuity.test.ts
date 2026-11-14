@@ -1,5 +1,6 @@
 // CSRF continuity for legacy-bound requests: token extraction, identity claims before legacy and settlement after it.
 import { cfDateTimeFormat, routeKeyForRequest, type RouteKeyResult, type VariantDeclaration } from '@opt2/platform/legacy-compat';
+import { IDENTITY_SERVICE, ServiceUnavailableError } from '@opt2/platform/service-kit';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { loadInventoryFacts, loadVariants } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths } from '../../src/cutover/paths.js';
@@ -17,6 +18,7 @@ import type { JarCookie, JarCookies, JarRow, JarUpsert, LegacyJar } from '../../
 import type { SessionMode } from '../../src/session/mode.js';
 import {
   createSessionResolver,
+  type LegacyBoundResolution,
   type SessionRequestInput,
   type SessionResolution,
 } from '../../src/session/resolve.js';
@@ -111,7 +113,7 @@ type Call = [op: string, ...args: unknown[]];
 interface Harness {
   calls: Call[];
   now: Date;
-  resolution: SessionResolution;
+  resolution: LegacyBoundResolution;
   rows: Map<string, JarRow>;
   routes: Map<string, RouteFacts>;
   claimState: ClaimResult['state'];
@@ -642,6 +644,78 @@ describe('createCsrfContinuity beforeLegacy', () => {
 
     expect(since).toMatch(WIRE_TIME);
     expect(since >= before && since <= after).toBe(true);
+  });
+});
+
+describe('createCsrfContinuity beforeLegacy while identity is unavailable', () => {
+  const IDENTITY_DOWN = new ServiceUnavailableError(
+    IDENTITY_SERVICE,
+    Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8111'), { code: 'ECONNREFUSED' }),
+  );
+  const BRIDGE_DOWN = new ServiceUnavailableError('legacy-bridge', new Error('refused'));
+  const refuse = (error: Error) => () => Promise.reject(error);
+
+  it.each<{ name: string; overrides?: Partial<CsrfContinuityOptions>; resolution?: LegacyBoundResolution; ops: string[] }>([
+    {
+      name: 'resolution cannot adopt the session',
+      overrides: { sessions: { resolveLegacyBound: refuse(IDENTITY_DOWN) } },
+      ops: ['facts.get'],
+    },
+    {
+      name: 'identity cannot claim the token',
+      overrides: { identity: { claim: refuse(IDENTITY_DOWN), settle: refuse(IDENTITY_DOWN) } },
+      ops: ['facts.get', 'sessions.resolveLegacyBound', 'jar.get'],
+    },
+    {
+      name: 'resolution leaves the mapped session unverified',
+      resolution: { kind: 'unverified', sessionId: SESSION_ID, setCookies: [] },
+      ops: ['facts.get', 'sessions.resolveLegacyBound'],
+    },
+  ])('returns no handle for a validating legacy-primary token when $name', async ({ overrides, resolution, ops }) => {
+    const h = harness(true, overrides);
+    if (resolution !== undefined) h.resolution = resolution;
+
+    await expect(h.continuity.beforeLegacy(request(), ROUTE, 'legacy-primary')).resolves.toBeUndefined();
+    expect(h.ops()).toEqual(ops);
+  });
+
+  it.each<{
+    name: string;
+    mode: SessionMode;
+    overrides: Partial<CsrfContinuityOptions>;
+    claimState?: ClaimResult['state'];
+    failure: Error;
+  }>([
+    {
+      name: 'target-primary resolution with identity unavailable',
+      mode: 'target-primary',
+      overrides: { sessions: { resolveLegacyBound: refuse(IDENTITY_DOWN) } },
+      failure: IDENTITY_DOWN,
+    },
+    {
+      name: 'a target-primary claim with identity unavailable',
+      mode: 'target-primary',
+      overrides: { identity: { claim: refuse(IDENTITY_DOWN), settle: refuse(IDENTITY_DOWN) } },
+      failure: IDENTITY_DOWN,
+    },
+    {
+      name: 'legacy-primary resolution with the bridge unavailable',
+      mode: 'legacy-primary',
+      overrides: { sessions: { resolveLegacyBound: refuse(BRIDGE_DOWN) } },
+      failure: BRIDGE_DOWN,
+    },
+    {
+      name: 'a legacy-primary ledger write of a used token with the bridge unavailable',
+      mode: 'legacy-primary',
+      overrides: { bridge: { markUsed: refuse(BRIDGE_DOWN), usedSince: refuse(BRIDGE_DOWN) } },
+      claimState: 'used',
+      failure: BRIDGE_DOWN,
+    },
+  ])('rejects $name with the failure itself', async ({ mode, overrides, claimState, failure }) => {
+    const h = harness(true, overrides);
+    if (claimState !== undefined) h.claimState = claimState;
+
+    await expect(h.continuity.beforeLegacy(request(), ROUTE, mode)).rejects.toBe(failure);
   });
 });
 

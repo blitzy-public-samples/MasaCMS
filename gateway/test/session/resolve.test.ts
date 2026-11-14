@@ -1,7 +1,7 @@
 // Session resolution: REST credentials, target- and legacy-primary mapping, adoption, switch back and jar absorption.
 import { describe, expect, it } from 'vitest';
 import { parseCookieHeader, parseSetCookie, setCookieLegacy } from '@opt2/platform/legacy-compat';
-import { ServiceUnavailableError } from '@opt2/platform/service-kit';
+import { IDENTITY_SERVICE, ServiceUnavailableError } from '@opt2/platform/service-kit';
 import type { BridgeClient, BridgeResult, LegacyCookies } from '../../src/session/bridge-client.js';
 import type {
   AdoptInput,
@@ -12,9 +12,11 @@ import type {
   RestAuthOutcome,
 } from '../../src/session/identity-client.js';
 import type { JarCookies, JarRow, JarUpsert, LegacyJar, LockedJar } from '../../src/session/jar.js';
+import type { SessionMode } from '../../src/session/mode.js';
 import {
   createSessionResolver,
   sessionIdFromTargetCookies,
+  type LegacyBoundResolution,
   type SessionRequestInput,
   type SessionResolution,
 } from '../../src/session/resolve.js';
@@ -45,6 +47,8 @@ interface Fakes {
   adopt?: (input: AdoptInput) => AdoptedSession;
   authenticate?: (input: RestAuthInput) => RestAuthOutcome;
   rows?: JarRow[];
+  /** Rejects every session-state check, as identity's state read fails. */
+  stateFailure?: Error;
   /** Runs as a lock is granted, as the section that held it first would have changed the jar. */
   onLock?: (key: string, rows: Map<string, JarRow>) => void;
 }
@@ -194,6 +198,7 @@ function setup(fakes: Fakes = {}) {
   const state: SessionStateChecker = {
     check(sessionId): Promise<SessionStateCheck> {
       calls.push(`check:${sessionId}`);
+      if (fakes.stateFailure !== undefined) return Promise.reject(fakes.stateFailure);
       const known = fakes.states?.[sessionId] ?? { state: 'ended', epoch: 0 };
       return Promise.resolve({ ...known, userId: 'U1', siteId: 'default', epochChanged: false });
     },
@@ -230,7 +235,7 @@ function request(cookieHeader?: string, fields: Partial<SessionRequestInput> = {
   return { path: '/admin/', httpMethod: 'GET', headers, query: {}, params: {}, ...fields };
 }
 
-function asSession(resolution: SessionResolution) {
+function asSession(resolution: LegacyBoundResolution) {
   if (resolution.kind !== 'session') throw new Error(`expected a session, got ${resolution.kind}`);
   return resolution;
 }
@@ -594,10 +599,44 @@ describe('resolveLegacyBound', () => {
   });
 });
 
+describe('resolveLegacyBound while a session state cannot be read', () => {
+  const IDENTITY_DOWN = new ServiceUnavailableError(
+    IDENTITY_SERVICE,
+    Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8111'), { code: 'ECONNREFUSED' }),
+  );
+
+  it.each<[string, Partial<JarRow>, Record<string, true>]>([
+    ['an unmarked jar', {}, {}],
+    ['a jar marked pending-end', { identityEndPendingAt: NOW }, { identityEndPending: true }],
+  ])('answers a legacy-primary session mapped by %s as unverified, adopting nothing', async (_label, fields, flag) => {
+    const s = setup({ stateFailure: IDENTITY_DOWN, rows: [jarRow('M1', { mode: 'legacy-primary', ...fields })] });
+    const resolution = await s.resolver.resolveLegacyBound(request('JSESSIONID=L-J'), { mode: 'legacy-primary', adopt: true });
+
+    expect(resolution).toStrictEqual({ kind: 'unverified', sessionId: 'M1', setCookies: [], ...flag });
+    expect(s.calls).toEqual(['jar.get', 'describe', 'jar.find', 'check:M1']);
+  });
+
+  it.each<[string, SessionMode, JarRow['mode'], Error]>([
+    ['a target-primary session with identity unavailable', 'target-primary', 'target-primary', IDENTITY_DOWN],
+    ['a legacy-primary switch back with identity unavailable', 'legacy-primary', 'target-primary', IDENTITY_DOWN],
+    [
+      'a legacy-primary mapped session with another service unavailable',
+      'legacy-primary',
+      'legacy-primary',
+      new ServiceUnavailableError('migration', new Error('refused')),
+    ],
+    ['a legacy-primary mapped session with a non-service failure', 'legacy-primary', 'legacy-primary', new Error('memo lost')],
+  ])('rejects %s with the failure itself', async (_label, mode, rowMode, failure) => {
+    const s = setup({ stateFailure: failure, rows: [jarRow('M1', { mode: rowMode })] });
+
+    await expect(s.resolver.resolveLegacyBound(request('JSESSIONID=M1'), { mode, adopt: false })).rejects.toBe(failure);
+  });
+});
+
 describe('sessions whose jar is marked pending-end', () => {
   const MARKED: Partial<JarRow> = { identityEndPendingAt: NOW };
 
-  it.each<[string, (s: ReturnType<typeof setup>) => Promise<SessionResolution>, JarRow, string[]]>([
+  it.each<[string, (s: ReturnType<typeof setup>) => Promise<LegacyBoundResolution>, JarRow, string[]]>([
     [
       'a target-primary target-bound request',
       (s) => s.resolver.resolveSession(request('JSESSIONID=T1'), { family: 'admin', mode: 'target-primary' }),
@@ -839,7 +878,7 @@ describe('adoption of a legacy session another jar holds', () => {
   });
 
   const legacySet = [setCookieLegacy({ name: 'CFID', value: 'N-CFID' }), 'MXP=1;path=/;'];
-  it.each<[string, (s: ReturnType<typeof setup>) => Promise<SessionResolution>, string[], string[]]>([
+  it.each<[string, (s: ReturnType<typeof setup>) => Promise<LegacyBoundResolution>, string[], string[]]>([
     [
       'a target-primary adoption',
       (s) => s.resolver.resolveSession(request('JSESSIONID=L-J'), { family: 'admin', mode: 'target-primary' }),

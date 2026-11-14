@@ -951,6 +951,13 @@ on(
   },
 );
 
+on('DELETE FROM session_barrier WHERE session_id = $1 AND owner = ANY($2::text[])', 'DELETE', ['session_barrier'], ({ params, tables }) => {
+  const sessionId = pgText(params[0]);
+  const owners = textArray(params[1]) ?? [];
+  return changed(removeWhere(tables.session_barrier, (row) => row.session_id === sessionId && owners.includes(row.owner)).length);
+});
+
+
 /** A transaction holding the store's lock, with the image its rollback restores. */
 interface OpenTransaction {
   readonly snapshot: GatewayTables;

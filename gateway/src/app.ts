@@ -22,10 +22,11 @@ import {
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { createResponseModes } from './admin/response-modes.js';
 import { createInflightStore } from './cutover/inflight.js';
-import { loadInventoryFacts, loadVariants } from './cutover/loader.js';
+import { loadInventoryFacts, loadTableOwnership, loadVariants } from './cutover/loader.js';
 import { resolveGatewayPaths } from './cutover/paths.js';
 import { registerCutoverRoutes } from './cutover/routes.js';
 import { createCutoverState } from './cutover/state.js';
+import type { OwnershipUnit, RoutingIndex } from './cutover/types.js';
 import { createSessionBarrier } from './dispatcher/barrier.js';
 import { registerEdgeRoute, type DispatcherDeps } from './dispatcher/dispatch.js';
 import { createMatcher, type MatcherDeps } from './dispatcher/match.js';
@@ -98,6 +99,26 @@ export function routeKeyOptionsOf(
   return siteExists === undefined ? { appReloadKey: env.MURA_APPRELOADKEY } : { appReloadKey: env.MURA_APPRELOADKEY, siteExists };
 }
 
+const NO_OWNERS: ReadonlySet<string> = new Set();
+
+/** Owners of the active version's `target`-authoritative units, the only ones the reverse projector writes; memoised per routing index. */
+export function projectedOwnersOf(
+  units: readonly Pick<OwnershipUnit, 'unit' | 'owner'>[],
+  active: () => RoutingIndex | undefined,
+): () => ReadonlySet<string> {
+  let seen: { index: RoutingIndex; owners: ReadonlySet<string> } | undefined;
+  return () => {
+    // A stale cache reads as no version, so the version last seen stays in force until a refresh succeeds.
+    const index = active() ?? seen?.index;
+    if (index === undefined) return NO_OWNERS;
+    if (seen?.index !== index) {
+      const owners = units.filter(({ unit }) => index.unitAuthority(unit) === 'target').map(({ owner }) => owner);
+      seen = { index, owners: new Set(owners) };
+    }
+    return seen.owners;
+  };
+}
+
 /** Collaborators `buildApp` uses instead of building its own from the environment. */
 export interface BuildAppOptions {
   env?: GatewayEnv;
@@ -133,7 +154,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   // Read before createService opens a pool, so an invalid cut-over or inventory file fails without leaking one.
   const paths = resolveGatewayPaths(env);
-  const [variants, facts] = await Promise.all([loadVariants(paths), loadInventoryFacts(paths)]);
+  const [variants, facts, ownership] = await Promise.all([loadVariants(paths), loadInventoryFacts(paths), loadTableOwnership(paths)]);
 
   const app = await createService({
     name: SERVICE_NAME,
@@ -164,7 +185,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const jar = createLegacyJar(db);
   const tokenCache = createTokenCache({ identity, clock });
   const stateCheck = createSessionStateChecker({ identity, clock, tokenCache });
-  const barrier = createSessionBarrier({ db, client: migrationClient });
+  const projectedOwners = projectedOwnersOf(ownership.units, () => state.active());
+  const barrier = createSessionBarrier({ db, client: migrationClient, projectedOwners });
   const hydrator = createHydrator({ identity, bridge, jar, barrier, clock });
   const resolver = createSessionResolver({ identity, bridge, jar, state: stateCheck });
   const csrf = createCsrfContinuity({ identity, bridge, sessions: resolver, jar, facts, clock });

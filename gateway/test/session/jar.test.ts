@@ -629,6 +629,9 @@ describe('createLegacyJar over a TenantDb double', () => {
 
 const live = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
+/** Owners whose barrier rows the rebind suites store, as a version projecting both would. */
+const BARRIER_OWNERS: ReadonlySet<string> = new Set(['people', 'identity']);
+
 describe.skipIf(!live)('createLegacyJar against PostgreSQL', () => {
   const CFID: JarCookie = {
     name: 'CFID',
@@ -753,6 +756,7 @@ describe.skipIf(!live)('createLegacyJar against PostgreSQL', () => {
     const barrier = createSessionBarrier({
       db: handle.app,
       client: { request: () => Promise.reject(new Error('no projection await here')) } as unknown as ServiceClient,
+      projectedOwners: () => BARRIER_OWNERS,
     });
     await barrier.declare(SESSION_ID, 'people');
     await barrier.declare(SESSION_ID, 'people');
@@ -856,6 +860,7 @@ describe.skipIf(!live)('createLegacyJar against PostgreSQL', () => {
     const barrier = createSessionBarrier({
       db: handle.app,
       client: { request: () => Promise.reject(new Error('no projection await here')) } as unknown as ServiceClient,
+      projectedOwners: () => BARRIER_OWNERS,
     });
     await barrier.record(SESSION_ID, new Map([['identity', '100']]));
     const BARRIER = `${handle.schema}.session_barrier`;

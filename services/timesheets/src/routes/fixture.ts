@@ -274,8 +274,10 @@ async function sheetDetail(
 function fixtureDenialRenderer(db: TenantDb): DenialRenderer {
   return async (denial, request) => {
     const claims = (request.opt2Auth as Opt2AuthContext | null)?.user;
-    // Identity mints a token without roles for an unknown site, whereas auth.cfc resolveSite rejects that site before requireAny.
-    const unknownSite = denial.reason === 'forbidden' && claims !== undefined && (await tenantForRegisteredSite(db, claims.site)) === null;
+    // The role check refuses the anonymous principal as unauthenticated and any other token as forbidden.
+    const roleDenial = claims !== undefined && (denial.reason === 'forbidden' || (claims.sub === '' && denial.reason === 'missing-credential'));
+    // Identity mints a token without roles for an unknown site, whereas auth.cfc resolveSite rejects that site before requireLogin.
+    const unknownSite = roleDenial && (await tenantForRegisteredSite(db, claims.site)) === null;
     const answered = unknownSite ? new FixtureApiError('invalidParameters') : denial;
     recordOutcomeReason(request, fixtureOutcomeReason(answered));
     return toFixtureError(answered, contextOf(request));

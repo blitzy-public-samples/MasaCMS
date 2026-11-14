@@ -14,10 +14,11 @@ const USAGE = 'usage: opt2-events replay --subscription <name> [--max <n>] [--id
 const HELP = `${USAGE}
 
 Pulls the dead letters of a subscription from <subscription>.dlq.replay, republishes each to the subscription's
-topic with its original attributes and ordering key, then acks it. Prints one JSON summary line.
+topic with its original attributes and ordering key, then acks it. Prints one JSON summary line. Only letters
+published before the run started are replayed; later ones, including replays dead-lettered again, stay on the DLQ.
   --subscription <name>  consumer subscription, <consumer>.<service>.<entity>.<event>.v<major> (required)
   --max <n>              stop after n messages are replayed (default: 1000)
-  --idle-seconds <n>     stop when no message arrived for n seconds (default: 10)
+  --idle-seconds <n>     stop when no letter to replay arrived for n seconds (default: 10)
   --project <id>         Pub/Sub project (default: GOOGLE_CLOUD_PROJECT)
   -h, --help             print this help
 Environment:
@@ -31,6 +32,9 @@ const DEFAULT_IDLE_SECONDS = 10;
 const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
 // setTimeout fires at once for delays above 2^31 - 1 ms, so longer idle windows are refused.
 const MAX_IDLE_SECONDS = Math.floor(0x7fffffff / 1000);
+// Held letters occupy the flow-control window, and each replay sends at most one re-dead-lettered copy back to the
+// source, so a window of max + 1 keeps room for the backlog; capped at the client library's default of 1000.
+const MAX_WINDOW = 1000;
 
 /** Options of {@link replayDeadLetters}. */
 export interface ReplayOptions {
@@ -39,7 +43,7 @@ export interface ReplayOptions {
   projectId: string;
   /** Stop after this many messages are replayed. */
   max: number;
-  /** Stop when no message arrived for this many seconds. */
+  /** Stop when no letter to replay arrived for this many seconds. */
   idleSeconds: number;
 }
 
@@ -143,14 +147,17 @@ function positiveInteger(flag: string, text: string, limit: number): number {
   return value;
 }
 
-/** Republishes dead letters one at a time, acking each after its publish; stops at `max` replayed or after `idleSeconds` without a message. */
+/** Republishes, one at a time, the dead letters published before the run started, acking each after its publish; stops at `max` replayed or `idleSeconds` after the last. */
 export async function replayDeadLetters(options: ReplayOptions): Promise<ReplaySummary> {
   const { subscription, projectId, max, idleSeconds } = options;
   const topic = topicOfSubscription(subscription);
   const source = dlqReplaySubscriptionName(subscription);
   const publisher = createPublisher({ projectId });
   const pubsub = new PubSub({ projectId });
-  const pull = pubsub.subscription(source, { flowControl: { maxMessages: 1, allowExcessMessages: false } });
+  const pull = pubsub.subscription(source, {
+    flowControl: { maxMessages: Math.min(max + 1, MAX_WINDOW), allowExcessMessages: false },
+  });
+  const startedAt = Date.now();
   let replayed = 0;
   try {
     const stoppedBy = await new Promise<ReplaySummary['stoppedBy']>((resolve, reject) => {
@@ -201,6 +208,10 @@ export async function replayDeadLetters(options: ReplayOptions): Promise<ReplayS
       };
 
       pull.on('message', (message: Message) => {
+        if (message.publishTime.getTime() > startedAt) {
+          // Published after the run started, such as a replay dead-lettered again: held for close to nack, outside max and the idle window.
+          return;
+        }
         clearTimeout(idleTimer);
         queued += 1;
         chain = chain

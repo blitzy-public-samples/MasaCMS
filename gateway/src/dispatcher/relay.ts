@@ -60,8 +60,8 @@ const RELAY_FAIL_CONTEXT: FailContext = Object.freeze({ surface: 'api' });
 
 const RELAY_SERVICE_SET: ReadonlySet<string> = new Set(RELAY_SERVICES);
 
-/** Methods that never write, so their relayed calls declare nothing in the session barrier. */
-const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+/** Methods that never write, so their forwarded calls declare nothing in the session barrier. */
+export const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** Identities a relayed call acts for, as the caller verified them. */
 export interface RelayAuth {

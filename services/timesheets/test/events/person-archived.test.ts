@@ -1,8 +1,9 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
-import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { DEAD_LETTER_REASON_ATTRIBUTE, dlqTopicName, type DeadLetterReason, type EventEnvelope } from '@opt2/platform/events';
 import { cfUuid } from '@opt2/platform/legacy-compat';
-import { closeGates, openGates } from '@opt2/platform/migration-kit';
+import { GATE_WAIT_MS, closeGates, openGates } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
@@ -54,6 +55,7 @@ const PERSON_ARCHIVED_REASON = 'person-archived';
 const GATE_HOLDER = 'person-archived-gate-test';
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 const NEWER_EFFECTIVE_FROM = '2026-06-18';
+const REOPEN_AFTER_MS = 2_000;
 
 // Rewritten to the throwaway schema with the migrations; a fault row survives the rollback of the insert it fails.
 const FAULT_SQL = `
@@ -84,6 +86,28 @@ function archiveEnvelope(site: TenantFixture, personId: string, effectiveFrom = 
       archivedAt: ARCHIVED_AT,
     },
   });
+}
+
+/**
+ * Runs `start` with only Date faked, stepping it 1 s per real 25 ms until the call settles, so a 30 s gate budget elapses in
+ * about a second while the gate polls and the database run in real time; `elapsedMs` is the faked time the call took.
+ */
+async function underSteppedDate<T>(start: () => Promise<T>): Promise<{ result: T; elapsedMs: number }> {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    const started = Date.now();
+    let settled = false;
+    const pending = start().finally(() => {
+      settled = true;
+    });
+    while (!settled) {
+      await sleep(25);
+      vi.setSystemTime(Date.now() + 1_000);
+    }
+    return { result: await pending, elapsedMs: Date.now() - started };
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 /** Day ids of `days` in the byte order the blackout readers return them in. */
@@ -329,12 +353,13 @@ describeWithPg('timesheets person.archived consumer', () => {
     }
   });
 
-  it('nacks an archive while the blackout gate is closed and applies its redelivery once the gate reopens', async () => {
+  it('nacks an archive after the full gate wait while the blackout gate stays closed and applies its redelivery once the gate reopens', async () => {
     const envelope = archiveEnvelope(TENANT_UMBRELLA, SHARED_PERSON_ID);
     await closeGates(handle.app, { units: [BLACKOUT.unit], holderId: GATE_HOLDER });
 
-    const blocked = await pushTo(app, PERSON_ARCHIVED_SUBSCRIPTION, envelope);
+    const { result: blocked, elapsedMs } = await underSteppedDate(() => pushTo(app, PERSON_ARCHIVED_SUBSCRIPTION, envelope));
 
+    expect(elapsedMs).toBeGreaterThanOrEqual(GATE_WAIT_MS);
     expect(blocked.statusCode).toBe(503);
     for (const tenant of TENANT_LIST) {
       expect(await blackoutsOf(tenant, SHARED_PERSON_ID)).toStrictEqual([]);
@@ -349,6 +374,29 @@ describeWithPg('timesheets person.archived consumer', () => {
       expect((await blackoutsOf(seed.tenant, SHARED_PERSON_ID)).map((row) => row.day_id)).toStrictEqual(openDayIds(seed));
       expect(await receipts(seed.tenant, envelope.eventId)).toStrictEqual(['applied']);
     }
+  });
+
+  it('holds an archive delivered while the blackout gate is closed and applies it once the gate reopens within the gate wait', async () => {
+    const envelope = archiveEnvelope(TENANT_UMBRELLA, SHARED_PERSON_ID);
+    await closeGates(handle.app, { units: [BLACKOUT.unit], holderId: GATE_HOLDER });
+    const started = Date.now();
+    let settled = false;
+    const pending = pushTo(app, PERSON_ARCHIVED_SUBSCRIPTION, envelope).finally(() => {
+      settled = true;
+    });
+
+    await sleep(REOPEN_AFTER_MS);
+    expect(settled).toBe(false);
+    await openGates(handle.app, { units: [BLACKOUT.unit], holderId: GATE_HOLDER });
+    const delivered = await pending;
+
+    expect(delivered.statusCode).toBe(204);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(REOPEN_AFTER_MS);
+    for (const seed of [TENANT_SEEDS.a, TENANT_SEEDS.umbrella]) {
+      expect((await blackoutsOf(seed.tenant, SHARED_PERSON_ID)).map((row) => row.day_id)).toStrictEqual(openDayIds(seed));
+      expect(await receipts(seed.tenant, envelope.eventId)).toStrictEqual(['applied']);
+    }
+    expect(publisher.raw).toStrictEqual([]);
   });
 
   it("blacks out only the archived person's unapproved days from the effective date, keeping a day's earlier blackout", async () => {

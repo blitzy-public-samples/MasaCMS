@@ -60,6 +60,17 @@ export type SessionResolution =
   | { kind: 'response'; status: number; headers: Record<string, string>; body: string }
   | { kind: 'none'; setCookies: string[]; consumedParams?: string[] };
 
+/** A legacy-bound request's session; `unverified` is a jar-mapped legacy-primary session whose identity state is unreadable. */
+export type LegacyBoundResolution =
+  | SessionResolution
+  | {
+      kind: 'unverified';
+      sessionId: string;
+      setCookies: string[];
+      /** Set when the jar marks a legacy logout whose identity end must complete before any use. */
+      identityEndPending?: true;
+    };
+
 /** Options of {@link SessionResolver.resolveSession}. */
 export interface ResolveSessionOptions {
   family: RouteFamily;
@@ -90,8 +101,11 @@ export interface AfterLegacyOptions {
 export interface SessionResolver {
   /** The session of a target-bound request; REST is sessionless and answered by identity's credential rules. */
   resolveSession(request: SessionRequestInput, options: ResolveSessionOptions): Promise<SessionResolution>;
-  /** The session of a legacy-bound request, adopting an unmapped live legacy session only when `adopt` is true. */
-  resolveLegacyBound(request: SessionRequestInput, options: LegacyBoundOptions): Promise<SessionResolution>;
+  /**
+   * The session of a legacy-bound request, adopting an unmapped live legacy session only when `adopt` is true;
+   * `unverified` when identity cannot report a legacy-primary jar-mapped session's state.
+   */
+  resolveLegacyBound(request: SessionRequestInput, options: LegacyBoundOptions): Promise<LegacyBoundResolution>;
   /** The `Set-Cookie` values a legacy response hands the client: unchanged in legacy-primary, else target values. */
   adoptAfterLegacy(request: SessionRequestInput, options: AfterLegacyOptions): Promise<SessionResolution>;
 }
@@ -180,6 +194,11 @@ function isEmpty(cookies: JarCookies): boolean {
 
 function none(setCookies: string[] = []): SessionResolution {
   return { kind: 'none', setCookies };
+}
+
+/** True when `error` is the service client's report that identity refused, dropped, outlasted or failed a call. */
+export function isIdentityUnavailable(error: unknown): boolean {
+  return error instanceof ServiceUnavailableError && error.service === IDENTITY_SERVICE;
 }
 
 /** The pending-end flag of a session whose jar `row` carries the mark; empty otherwise. */
@@ -513,7 +532,14 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
       const described = await describeSession(request, sent);
       const mapped = await jar.findByLegacySessionId(described.body.sessionId);
       if (mapped !== undefined) {
-        const check = await state.check(mapped.sessionId);
+        const check = await state.check(mapped.sessionId).catch((error: unknown) => {
+          if (isIdentityUnavailable(error)) return undefined;
+          throw error;
+        });
+        // Legacy owns a legacy-primary session, so the gateway's own mapping still keys its barrier.
+        if (check === undefined) {
+          return { kind: 'unverified', sessionId: mapped.sessionId, setCookies: [], ...pendingEnd(mapped) };
+        }
         if (check.state === 'active') return session(mapped.sessionId, check.epoch, 'legacy-primary', mapped, []);
       }
       if (!adoptUnmapped) return none();

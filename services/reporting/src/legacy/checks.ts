@@ -100,7 +100,9 @@ export async function fixtureDenialOverride(
   deps: Pick<ReportingDeps, 'db'>,
 ): Promise<AuthDenial | FixtureApiError> {
   const { claims, params } = ctx;
-  if (denial.reason !== 'forbidden' || claims === undefined) return denial;
+  // The role check refuses the anonymous principal as unauthenticated and any other token as forbidden.
+  const roleDenial = claims !== undefined && (denial.reason === 'forbidden' || (claims.sub === '' && denial.reason === 'missing-credential'));
+  if (!roleDenial) return denial;
   if ((await requestedSite(params, claims, deps)) === null) return new FixtureApiError('invalidParameters');
   // Identity mints sub '' for a session without a login, which auth.cfc requireLogin answers 401, not 403.
   return claims.sub === '' ? new FixtureApiError('authorization') : denial;
