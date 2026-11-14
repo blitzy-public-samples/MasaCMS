@@ -29,6 +29,7 @@ import {
 import { mappings } from '../../src/migration/mappings/index.js';
 import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
 import { FAKE_XID, SERVICE, TEST_CLOCK, buildContentApp, serviceHeaders, userHeaders, type ContentTestApp } from '../helpers/app.js';
+import { tasksHeaders } from '../helpers/tokens.js';
 
 type Json = Record<string, unknown>;
 
@@ -61,6 +62,8 @@ const SERVED_OPERATIONS = [
   'pushGroupChanged',
   'pushPermissionChanged',
   'pushMembershipChanged',
+  'jobPublishScheduledChangesets',
+  'jobFeedAutoImport',
   'queuePause',
   'queueResume',
   'queueEnsure',
@@ -636,6 +639,62 @@ describe('push subscriptions', () => {
     const body = buildPushBody({ data: encodeEnvelope(envelopeOf(subscription)), messageId: randomUUID(), subscription });
     const res = await t.app.inject({ method: 'POST', url: `/internal/v1/events/${subscription}`, headers: JSON_TYPE, payload: { ...body } });
     expect(held(subscription, res).statusCode).toBe(401);
+  });
+});
+
+describe('site-monitor job steps', () => {
+  const PUBLISH_PATH = '/internal/v1/jobs/publish-scheduled-changesets';
+  const FEED_PATH = '/internal/v1/jobs/feed-auto-import';
+  const stepTask = (queue: string, step: string, tenantId: string | null = null): Json => ({
+    queue,
+    name: `${queue}-1782820800`,
+    tenantId,
+    payload: { step, theTime: '2026-06-30T12:00:00.000', lastMonitored: '2026-06-30T11:45:00.000' },
+  });
+
+  it('publishes the due change sets of every registered tenant, skipping one awaiting approval', async () => {
+    t.db.respond(/FROM "content"\."changeset" WHERE tenant_id = \$1 AND published = 0 /, (params) => (params[0] === TENANT_A.tenantId ? [{ changesetid: CHANGESET_1 }] : []));
+    t.db.respond(/ AS pending FROM /, [{ pending: 1 }]);
+    const res = await call({
+      method: 'POST',
+      url: PUBLISH_PATH,
+      headers: { ...(await tasksHeaders(PUBLISH_PATH)), ...JSON_TYPE },
+      payload: stepTask('content-scheduled-publish', 'publishScheduledChangesets'),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      step: 'publishScheduledChangesets',
+      changesets: [{ tenantId: TENANT_A.tenantId, siteId: SITE_A, changesetId: CHANGESET_1, published: false }],
+    });
+  });
+
+  it('imports the remote feeds of the ?siteid= site', async () => {
+    const res = await call({
+      method: 'POST',
+      url: `${FEED_PATH}?siteid=${SITE_A}`,
+      headers: { ...(await tasksHeaders(FEED_PATH)), ...JSON_TYPE },
+      payload: stepTask('content-feed-import', 'feedAutoImport'),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ step: 'feedAutoImport', siteId: SITE_A, feeds: 0 });
+  });
+
+  it.each<[string, string, Json]>([
+    ['a feed step without a site', FEED_PATH, stepTask('content-feed-import', 'feedAutoImport')],
+    ['a task body carrying a tenant', PUBLISH_PATH, stepTask('content-scheduled-publish', 'publishScheduledChangesets', TENANT_A.tenantId)],
+  ])('answers the contract 400 to %s', async (_label, target, payload) => {
+    const res = await call({ method: 'POST', url: target, headers: { ...(await tasksHeaders(target)), ...JSON_TYPE }, payload });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('refuses a user token with the contract 401', async () => {
+    const res = await call({
+      method: 'POST',
+      url: PUBLISH_PATH,
+      headers: { ...(await userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.s2], s2: true })), ...JSON_TYPE },
+      payload: stepTask('content-scheduled-publish', 'publishScheduledChangesets'),
+    });
+    expect(res.statusCode).toBe(401);
   });
 });
 

@@ -40,7 +40,7 @@ function stepSiteId(ctx: TaskContext): string {
 // pool, and every other setting takes its empty value or the legacy default its type documents. Callers holding the
 // real settings pass `siteFor`.
 /** The settings content saves read for `siteId`, registered as `tenantId`. */
-async function registrySite(db: TenantDb, tenantId: string, siteId: string): Promise<SiteContentSettings> {
+export async function registrySite(db: TenantDb, tenantId: string, siteId: string): Promise<SiteContentSettings> {
   const entry = await registryEntryForTenant(db, tenantId);
   const domain = entry?.domains[0] ?? '';
   return {

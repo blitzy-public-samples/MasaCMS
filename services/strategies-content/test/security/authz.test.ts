@@ -91,6 +91,7 @@ const FILE_READ_ROLES: readonly Role[] = [Roles.s2, Roles.siteAdmin, 'm:000'];
 const MIGRATION_ONLY: readonly Role[] = [Roles.platformMigration];
 const QUEUE_CONTROLLERS: readonly Role[] = [Roles.platformMigration, Roles.platformOperator];
 const PUSH_INVOKER: readonly Role[] = [PUBSUB_INVOKER_ROLE];
+const TASKS_INVOKER: readonly Role[] = [TASKS_INVOKER_ROLE];
 
 const EXPECTED: readonly ExpectedRoute[] = [
   { method: 'GET', url: '/healthz', transport: 'service', public: true, admitted: 200 },
@@ -143,6 +144,8 @@ const EXPECTED: readonly ExpectedRoute[] = [
   { method: 'GET', url: '/internal/v1/migration/watermark', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
   { method: 'POST', url: '/internal/v1/migration/watermark', transport: 'service', requires: MIGRATION_ONLY, admitted: 400 },
   { method: 'POST', url: '/internal/v1/migration/gate', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
+  { method: 'POST', url: '/internal/v1/jobs/publish-scheduled-changesets', transport: 'cloud-tasks', requires: TASKS_INVOKER, admitted: 200 },
+  { method: 'POST', url: '/internal/v1/jobs/feed-auto-import', transport: 'cloud-tasks', requires: TASKS_INVOKER, admitted: 200 },
   { method: 'POST', url: '/internal/v1/task-queues/:queue/pause', transport: 'service', requires: QUEUE_CONTROLLERS, admitted: 200 },
   { method: 'POST', url: '/internal/v1/task-queues/:queue/resume', transport: 'service', requires: QUEUE_CONTROLLERS, admitted: 200 },
   // content-scheduled-publish, the only queue this service creates tasks on, is not a recurring chain.
@@ -298,6 +301,14 @@ function withPushKey(request: ProbeRequest): ProbeRequest {
 
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
+/** The system task body of one site-monitor step, as the programs-sites orchestrator sends it. */
+const siteMonitorTask = (queue: string, step: string): Record<string, unknown> => ({
+  queue,
+  name: `${queue}-1782820800`,
+  tenantId: null,
+  payload: { step, theTime: '2026-06-30T12:00:00.000', lastMonitored: '2026-06-30T11:45:00.000' },
+});
+
 /** The request each non-push row is probed with: tenant-a ids and this service's own queue. */
 const PROBES: Readonly<Record<string, () => ProbeRequest>> = {
   'GET /healthz': () => ({ method: 'GET', url: '/healthz' }),
@@ -351,6 +362,18 @@ const PROBES: Readonly<Record<string, () => ProbeRequest>> = {
     url: '/internal/v1/migration/gate',
     headers: JSON_HEADERS,
     payload: { op: 'status', units: ['content.file'] },
+  }),
+  'POST /internal/v1/jobs/publish-scheduled-changesets': () => ({
+    method: 'POST',
+    url: '/internal/v1/jobs/publish-scheduled-changesets',
+    headers: JSON_HEADERS,
+    payload: siteMonitorTask('content-scheduled-publish', 'publishScheduledChangesets'),
+  }),
+  'POST /internal/v1/jobs/feed-auto-import': () => ({
+    method: 'POST',
+    url: `/internal/v1/jobs/feed-auto-import?siteid=${SITE_A}`,
+    headers: JSON_HEADERS,
+    payload: siteMonitorTask('content-feed-import', 'feedAutoImport'),
   }),
   'POST /internal/v1/task-queues/:queue/pause': () => ({ method: 'POST', url: `/internal/v1/task-queues/${OWN_QUEUE}/pause`, headers: JSON_HEADERS, payload: {} }),
   'POST /internal/v1/task-queues/:queue/resume': () => ({ method: 'POST', url: `/internal/v1/task-queues/${OWN_QUEUE}/resume`, headers: JSON_HEADERS, payload: {} }),
