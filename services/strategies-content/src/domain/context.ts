@@ -89,6 +89,8 @@ export interface SiteContentSettings {
   contentCanceledScript: string;
   contactEmail: string;
   mailServerUsernameEmail?: string;
+  /** settingsBean `commentApprovalDefault`; the legacy default 1 (settingsBean.cfc:141) applies when omitted. */
+  commentApprovalDefault?: number;
   urls: LegacySiteUrlConfig;
 }
 

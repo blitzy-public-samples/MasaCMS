@@ -381,9 +381,13 @@ async function setCommenter(tx: TenantTx, deps: DomainDeps, actor: Actor, bean: 
   bean.userID = javaTrim(saved.commenterid);
 }
 
+/** The site values a save reads; only a notifying save also builds content URLs. */
+export type CommentSaveSite = Omit<CommentSite, 'contentUrl'>;
+
 /** Settings of one contentCommentBean.save call. */
 interface SaveArgs extends NotifyArgs {
-  notify: boolean;
+  /** The site notifySubscribers mails for; a save without it does not notify. */
+  notifySite?: CommentSite;
   apiRequest: boolean;
   /** `request.remoteAddr`, else `CGI.REMOTE_ADDR`: the `ip` a new comment stores. */
   remoteAddr: string;
@@ -399,7 +403,7 @@ async function saveBean(
   deps: DomainDeps,
   actor: Actor,
   bean: CommentBean,
-  site: CommentSite,
+  site: CommentSaveSite,
   args: SaveArgs,
   write: WriteContext,
 ): Promise<{ errors: LegacyErrors; notices: MailNotice[] }> {
@@ -448,7 +452,7 @@ async function saveBean(
   const notices: MailNotice[] = [];
   if (bean.isApproved !== 0) {
     await comments.setSubscribe(tx, { contentId: bean.contentID, siteId: bean.siteID, email: bean.email, subscribe: bean.subscribe }, write);
-    if (args.notify) notices.push(...(await notifySubscribers(tx, deps, bean, site, args)));
+    if (args.notifySite !== undefined) notices.push(...(await notifySubscribers(tx, deps, bean, args.notifySite, args)));
   }
   await setCommentStat(tx, deps.repository, bean.contentID, bean.siteID, write);
   return { errors: {}, notices };
@@ -898,7 +902,7 @@ export async function approveComment(
       const bean = await loadBean(tx, deps, commentId);
       if (bean.isNew !== 0) return [];
       bean.isApproved = 1;
-      const args = { script: '', subject: '', notify: true, apiRequest: options.apiRequest === true, remoteAddr: '' };
+      const args = { script: '', subject: '', notifySite: site, apiRequest: options.apiRequest === true, remoteAddr: '' };
       return (await saveBean(tx, deps, actor, bean, site, args, write)).notices;
     });
     notices.push(...saved);
@@ -926,7 +930,7 @@ export function unapproveComment(
     withGatedTenant(deps.db, actor.tenantId, async (tx) => {
       const bean = await loadBean(tx, deps, commentId);
       bean.isApproved = 0;
-      const args = { script: '', subject: '', notify: false, apiRequest: options.apiRequest === true, remoteAddr: '' };
+      const args = { script: '', subject: '', apiRequest: options.apiRequest === true, remoteAddr: '' };
       await saveBean(tx, deps, actor, bean, site, args, write);
     }),
   );
@@ -1146,7 +1150,7 @@ export interface SaveCommentInput {
   commentId: string;
   /** `$.event().getAllValues()`, applied over the loaded comment as `entity.set` applies them. */
   values: Readonly<Record<string, unknown>>;
-  site: CommentSite;
+  site: CommentSaveSite;
   /** `request.remoteAddr`, else `CGI.REMOTE_ADDR`: the `ip` a new comment stores. */
   remoteAddr: string;
   requestId?: string;
@@ -1167,7 +1171,7 @@ export function saveComment(deps: DomainDeps, actor: Actor, input: SaveCommentIn
     if (!(allowSave || hasModulePerm(actor, COMMENTS_MODULE_ROLE))) {
       throw new LegacyApiError('authorization');
     }
-    const args = { script: '', subject: '', notify: false, apiRequest: true, remoteAddr: input.remoteAddr };
+    const args = { script: '', subject: '', apiRequest: true, remoteAddr: input.remoteAddr };
     const saved = await saveBean(tx, deps, actor, bean, input.site, args, write);
     return { value: beanValues(bean, input.site.urls.scheme), errors: saved.errors, notices: saved.notices };
   });
@@ -1178,6 +1182,48 @@ export function saveComment(deps: DomainDeps, actor: Actor, input: SaveCommentIn
 /** commentsProxy `get` (88-95): `getAllValues()` of the comment `load()` finds, or of a new bean holding the requested id. */
 export function getCommentValues(deps: DomainDeps, tenantId: string, commentId: string, view: CommentValuesView): Promise<CommentValues> {
   return withTenant(deps.db, tenantId, async (tx) => beanValues(await loadBean(tx, deps, commentId, view.commenterPhoto), view.scheme));
+}
+
+// ---- JSON API bean reads ----
+
+/**
+ * JSON API `loadBy(commentID=id)` (jsonApiUtility.cfc:2363-2364): unlike `load()`, a miss keeps no id, so getCommentID()
+ * creates one. `overlay` values are then set over the bean, as save does after validation errors (2049-2057).
+ */
+export function findCommentValues(
+  deps: DomainDeps,
+  tenantId: string,
+  commentId: string,
+  view: CommentValuesView,
+  overlay: Readonly<Record<string, unknown>> = {},
+): Promise<CommentValues> {
+  return withTenant(deps.db, tenantId, async (tx) => {
+    const bean = await loadBean(tx, deps, commentId, view.commenterPhoto);
+    if (bean.isNew !== 0) bean.commentID = '';
+    for (const [key, value] of Object.entries(overlay)) {
+      if (value !== undefined && value !== null) setBeanValue(bean, key, value);
+    }
+    commentIdOf(bean);
+    return beanValues(bean, view.scheme);
+  });
+}
+
+/**
+ * A feed iterator's bean (beanIterator.cfc:98-101), `getBean('comment').set(row).setIsNew(0)`; columns without a bean
+ * property (`ip`, `contenthistid`) follow, trimmed, with NULL as ''.
+ */
+export function feedCommentValues(row: Readonly<Record<string, unknown>>, scheme: string, now: Date): Record<string, unknown> {
+  const bean = newBean(now);
+  applyValues(bean, row);
+  bean.isNew = 0;
+  const columns: Record<string, unknown> = {};
+  for (const [column, value] of Object.entries(row)) {
+    const lowered = column.toLowerCase();
+    if (lowered === 'tenant_id' || lowered === 'entered' || STRING_PROPERTIES.has(lowered) || NUMBER_PROPERTIES.has(lowered)) continue;
+    const text = simpleText(value);
+    columns[column] = text === undefined ? value : javaTrim(text);
+  }
+  return { ...beanValues(bean, scheme), ...columns };
 }
 
 /** Who a proxy write is changelogged for; anonymous when omitted. */
