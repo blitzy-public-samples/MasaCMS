@@ -66,6 +66,9 @@ describe('OPT-2 umbrella', () => {
     const expectedActions = BARRELS.flatMap(({ actions }) => actions);
 
     expect(BARRELS.map(({ module }) => module)).toEqual(OPT2_NAV_MODULES.map(({ module }) => module));
+    for (const { module, screens, actions } of BARRELS) {
+      expect([...screens, ...actions].filter((def) => def.module !== module), module).toEqual([]);
+    }
     expect(opt2Screens).toHaveLength(expectedScreens.length);
     expect(opt2Screens.every((def, index) => def === expectedScreens[index])).toBe(true);
     expect(opt2Actions).toHaveLength(expectedActions.length);

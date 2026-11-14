@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { opt2Actions, opt2Screens } from '@/screens/opt2';
 import { allOpt2Actions, allOpt2Screens, findOpt2Action, findOpt2Screen } from '@/screens/registry';
+import { OPT2_NAV_MODULES } from '@/shell/nav';
 
 describe('screen registry OPT-2 registrations', () => {
   it('registers the umbrella screens and actions as the umbrella orders them', () => {
@@ -27,6 +28,10 @@ describe('screen registry OPT-2 registrations', () => {
       expect(findOpt2Action(def.module.toUpperCase(), def.action.toUpperCase())).toBe(def);
     },
   );
+
+  it.each(OPT2_NAV_MODULES)('serves the $label nav landing $module/$screen', (entry) => {
+    expect(findOpt2Screen(entry.module, entry.screen)?.module).toBe(entry.module);
+  });
 
   it('keeps screen and action slugs apart and serves no unregistered module', () => {
     expect(findOpt2Screen('timesheets', 'day-action')).toBeUndefined();
