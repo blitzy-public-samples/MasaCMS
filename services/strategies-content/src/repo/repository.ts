@@ -471,6 +471,11 @@ function ormStorage(row: RepositoryRow): RepositoryRow {
 }
 
 const STATS_COUNT_COLUMNS = ['views', 'rating', 'totalvotes', 'upvotes', 'downvotes', 'comments', 'disablecomments', 'majorversion', 'minorversion'] as const;
+// `select *` of tcontentstats without the tenant column.
+const STATS_FEED_COLUMNS = CONTENT_STATS.columns
+  .map((column) => column.name)
+  .filter((column) => column !== 'tenant_id')
+  .join(', ');
 // raterManager.getTopRated's content types and grouped content columns (raterManager.cfc:204-253), plus `fileid` for the file join.
 const TOP_RATED_TYPES = ['Page', 'Component', 'Link', 'File', 'Folder', 'Calendar', 'Form', 'Gallery'];
 const TOP_RATED_COLUMNS = [
@@ -1563,6 +1568,21 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
 
     /** contentStatsBean.getQuery. */
     readStats: contentQueries.stats,
+
+    /** A beanFeed over `tcontentstats`: the site's rows, only those of `contentIds` when given, in clustered key order. */
+    siteStats(tx: TenantTx, args: { siteId: string; contentIds?: readonly string[] }): Promise<Omit<ContentStatsRow, 'tenant_id'>[]> {
+      const p = new SqlParams(1);
+      const filters = ['tenant_id = $1', `siteid = ${p.add(args.siteId)}`];
+      if (args.contentIds !== undefined) {
+        filters.push(idIn(p, 'contentid', args.contentIds));
+      }
+      return select<Omit<ContentStatsRow, 'tenant_id'>>(
+        tx,
+        [CONTENT_STATS],
+        `SELECT ${STATS_FEED_COLUMNS} FROM ${name(CONTENT_STATS)} WHERE ${filters.join(' AND ')} ORDER BY contentid, siteid`,
+        [tx.tenantId, ...p.values],
+      );
+    },
 
     /** raterManager.readRate: one user's rating of an item, or null. */
     async readRate(tx: TenantTx, args: StatsKey & { userId: string }): Promise<ContentRatingRow | null> {

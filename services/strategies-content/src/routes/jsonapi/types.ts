@@ -1130,9 +1130,10 @@ function iteratorPageOf<R>(
 }
 
 /**
- * findAll and findQuery (jsonApiUtility.cfc:2542-2625, 2711-2918) for a non-content entity over the rows its feed
- * selects before request params apply: site or pool scope and the entity feed's own defaults. findQuery's filters run
- * for `call.method` findQuery or when `options.expandedParams` is given; paging always reads the URL scope.
+ * findAll, findMany and findQuery (jsonApiUtility.cfc:2542-2918) for a non-content entity over the rows its feed
+ * selects before request params apply: site or pool scope, findMany's ids and the entity feed's own defaults.
+ * findQuery's filters run for `call.method` findQuery or when `options.expandedParams` is given; findMany never
+ * answers `countOnly`; paging always reads the URL scope.
  */
 export function beanFeedQuery<R extends Readonly<Record<string, unknown>>>(
   rows: readonly R[],
@@ -1149,7 +1150,7 @@ export function beanFeedQuery<R extends Readonly<Record<string, unknown>>>(
   const params: Struct = expanded === undefined ? ctx.url : { ...expanded };
   applyFeedProps(feed, call, params, options.primaryKey);
   const countOnly = getNoCase(params, 'countOnly');
-  if (cfIsBoolean(countOnly) && cfToBoolean(countOnly)) return { count: feed.count() };
+  if (!cfEq(call.method, 'findMany') && cfIsBoolean(countOnly) && cfToBoolean(countOnly)) return { count: feed.count() };
   const selected = feed.select(cfText(urlParam(ctx, 'fields')));
   const { items, page } = iteratorPageOf(selected, ctx, feed.nextN, call.entityName);
   return baseUrl === undefined ? { items, page } : { items, page, baseUrl };

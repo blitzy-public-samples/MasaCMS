@@ -524,6 +524,12 @@ describe('beanFeedQuery', () => {
     expect(query(raw)).toEqual({ count });
   });
 
+  it('pages findMany rows whatever countOnly says, as legacy findMany never counts', () => {
+    const result = page(beanFeedQuery(ROWS, callFor({ method: 'findMany', raw: 'countOnly=true' }), OPTIONS));
+    expect(result.items).toHaveLength(3);
+    expect(result.baseUrl).toBeUndefined();
+  });
+
   it('builds the findQuery base URL from the query string, skipping pageIndex and empty values', () => {
     const result = page(query('Name=b%20o&pageindex=2&or&sort=-name'));
     expect(result.baseUrl).toBe(`${ENDPOINT}/comment/?Name=b+o&or&sort=-name`);
