@@ -189,6 +189,16 @@ export function readFileMedium(tx: TenantTx, fileId: string): Promise<ReadFileMe
   return readFileColumns<ReadFileMediumRow>(tx, fileId, MEDIUM_COLUMNS, 'imagemedium');
 }
 
+/** The `file` entity feed's rows (`select * from tfiles where siteid = ?`): every column of `siteId`'s files, by `fileid`. */
+export async function listFiles(tx: TenantTx, siteId: string): Promise<FileRow[]> {
+  await awaitReadable(tx, [UNIT_OF.file]);
+  const { rows } = await tx.query<FileRow>(
+    `SELECT ${allColumns(FILE)} FROM ${qualified(tx.schema, FILE.table)} WHERE ${ci(fileCol('siteid'))} = ${ci('$1::text')} ORDER BY ${fileCol('fileid')}`,
+    [siteId],
+  );
+  return rows;
+}
+
 /** `fileMetaData` entity rows of `filter.siteId`, narrowed to `filter.fileId` and `filter.contentHistId` when given, by `metaid`. */
 export async function listFileMetadata(tx: TenantTx, filter: FileMetadataFilter): Promise<FileMetadataRow[]> {
   await awaitReadable(tx, [UNIT_OF.file_metadata]);

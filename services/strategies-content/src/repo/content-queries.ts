@@ -870,6 +870,21 @@ export async function categoryAssignments(tx: TenantTx, args: { contentHistId: s
   );
 }
 
+/**
+ * The category assignments of a site (the contentCategoryAssign beanFeed's `siteID IN (…)`), assignment columns only,
+ * in clustered-key order. As for {@link categoryAssignments}, the caller joins the category columns in the pool tenant.
+ */
+export async function siteCategoryAssignments(tx: TenantTx, args: { siteId: string }): Promise<CategoryAssignmentRow[]> {
+  await readable(tx, 'content_category_assign');
+  const p = new SqlParams();
+  return run(
+    tx,
+    `SELECT ${columns(CATEGORY_ASSIGN, 'a', ['contenthistid', 'categoryid', 'contentid', 'isfeature', 'orderno', 'siteid', 'featurestart', 'featurestop'])}` +
+      ` FROM ${qualified(tx.schema, CATEGORY_ASSIGN.table)} a WHERE ${ciEq(p, 'a.siteid', args.siteId)} ORDER BY a.contenthistid, a.categoryid`,
+    p.values,
+  );
+}
+
 /** A `content_stats` row without its tenant. */
 export type StatsRow = Omit<ContentStatsRow, 'tenant_id'>;
 

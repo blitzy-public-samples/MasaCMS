@@ -2,14 +2,14 @@
 import { cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
 import { sha256Hex, withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import { contentFileKey, type ContentFileVariant, type StoragePort } from '@opt2/platform/storage';
-import { registryEntryForTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { poolTenantFor, registryEntryForTenant, withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { CONTENT_FILES_BUCKET } from '../migration/objects.js';
 import { StagedObjectMissingError, recoverStagedObjects, settleStagedObject, stageObject } from '../migration/staged-objects.js';
 import { claimStagedObject, deleteStagedObject, lockFileObjectKey } from '../repo/files.js';
 import type { ContentFilesDeletion, ContentRepository, Patch } from '../repo/repository.js';
-import type { FileMetadataRow, FileObjectRow, FileRow } from '../repo/tables.js';
+import { FILE, type FileMetadataRow, type FileObjectRow, type FileRow } from '../repo/tables.js';
 import { writeContextFor, type Actor, type DomainDeps } from './context.js';
-import { UnregisteredTenantError, withPoolTenant } from './pools.js';
+import { UnregisteredTenantError, withGatedPoolTenant, withPoolTenant } from './pools.js';
 
 /** Upload extensions whose renditions Masa writes with ColdFusion's image engine (fileDAO.cfc:159-179); those uploads stay legacy-written. */
 export const IMAGE_UPLOAD_EXTS = ['png', 'gif', 'jpg', 'jpeg', 'flv'] as const;
@@ -389,6 +389,48 @@ export async function saveFileMetaData(
 
   if (args.setAsDefault) await setFileDefaults(fileTx, repository, saved, opts.write);
   return saved;
+}
+
+/** Collaborators of the JSON API entity writes, each of which opens its own gated transactions. */
+export type EntityWriteDeps = Pick<DomainDeps, 'db' | 'repository'>;
+
+/**
+ * beanORM.delete of a `file` entity (jsonApiUtility.cfc delete): removes the row of `fileId` in one gated transaction of
+ * `tenantId`'s file pool tenant. Its stored objects stay, as the legacy delete leaves the file store untouched.
+ */
+export function deleteFileEntity(deps: EntityWriteDeps, tenantId: string, fileId: string, write?: WriteContext): Promise<FileRow | null> {
+  return withGatedPoolTenant(deps.db, tenantId, 'file', (tx) => deps.repository.platform.delete<FileRow>(tx, FILE.table, { fileid: fileId }, write));
+}
+
+/** beanORM.delete of a `fileMetaData` entity: removes the row `metaId` in one gated transaction of its content tenant `tenantId`. */
+export function deleteFileMetaDataEntity(
+  deps: EntityWriteDeps,
+  tenantId: string,
+  metaId: string,
+  write?: WriteContext,
+): Promise<FileMetadataRow | null> {
+  return withGatedTenant(deps.db, tenantId, (tx) => deps.repository.files.deleteFileMetadata(tx, { metaId }, write));
+}
+
+/**
+ * `saveFileMetaData` in a gated transaction of the content tenant `tenantId`, with `tenantId`'s file pool tenant as `fileTx`
+ * when that is another tenant.
+ * @throws UnregisteredTenantError when `tenantId` has no registry entry.
+ */
+export async function saveFileMetaDataEntity(
+  deps: EntityWriteDeps,
+  tenantId: string,
+  args: SaveFileMetaDataArgs,
+  write?: WriteContext,
+): Promise<FileMetadataRow> {
+  const poolTenantId = await poolTenantFor(deps.db, tenantId, 'file');
+  if (poolTenantId === null) throw new UnregisteredTenantError(tenantId);
+  return withGatedTenant(deps.db, tenantId, (tx) =>
+    poolTenantId === tenantId
+      ? saveFileMetaData(tx, deps.repository, args, { write })
+      : // A plain transaction: a gate race in it propagates to the outer retry, which re-runs both writes together.
+        withTenant(deps.db, poolTenantId, (fileTx) => saveFileMetaData(tx, deps.repository, args, { fileTx, write })),
+  );
 }
 
 /** Collaborators of a render resolution. */
