@@ -57,7 +57,7 @@ export const REGISTERED_OPERATIONS = Object.freeze([
   ...SCHEDULER_ROUTES,
 ]);
 
-/** Contract operations no registrar under `src/routes/` serves: the service has no `server.ts` composing their modules yet. */
+/** Contract operations this composition does not serve: no registrar of theirs is composed here, and the service has no `server.ts` composing them yet. */
 export const ABSENT_OPERATIONS = Object.freeze([
   'faultClear',
   'faultSet',
