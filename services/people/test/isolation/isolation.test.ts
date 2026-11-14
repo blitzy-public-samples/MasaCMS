@@ -44,10 +44,10 @@ import { GROUP_NAME_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION } from '../../src/ev
 import { GROUP_CHANGED_TOPIC, PERSON_ARCHIVED_TOPIC, SITE_CHANGED_TOPIC, type GroupChangedPayload } from '../../src/events/topics.js';
 import { createPeopleRepository, type PeopleRepository } from '../../src/repo/repository.js';
 import { OWNED_TABLES, PEOPLE_UNITS, type PersonRow } from '../../src/repo/tables.js';
-import { PG_AVAILABLE, TEST_CLOCK, buildTestApp, userHeaders, type TestApp } from '../helpers/app.js';
+import { TEST_CLOCK, buildTestApp, userHeaders, type TestApp } from '../helpers/app.js';
+import { PG_AVAILABLE } from '../helpers/pg-app.js';
 import {
   ARCHIVE_EFFECTIVE_FROM,
-  ARCHIVE_PERSON,
   DEFAULT_PEOPLE_SEED,
   MEMBER_B_PERSON,
   OTHER_TENANT,
@@ -513,34 +513,43 @@ describe.skipIf(!PG_AVAILABLE)('people tenant isolation', () => {
     const archiveWhere = 'person_id = $1';
     const outboxWhere = `topic = $1 AND envelope->>'aggregateId' = $2`;
 
+    /** Stores a fresh pooled tenant-a member under umbrella; without an identity account, no user list shows it. */
+    const pooledMember = async (): Promise<PersonRow> => {
+      const person = personRow({ siteid: TENANT_UMBRELLA.siteId });
+      await seedPeople(created().app, { [TENANT_UMBRELLA.tenantId]: { persons: [person] } }, { clock: TEST_CLOCK });
+      return person;
+    };
+
     beforeEach(() => {
       publisher.clear();
     });
 
     it('a tenant-b site-admin cannot archive a pooled tenant-a member, and no tenant stores a record or event', async () => {
+      const person = await pooledMember();
       const form = { siteid: TENANT_B.siteId, effectiveFrom: ARCHIVE_EFFECTIVE_FROM, ...CSRF };
-      const reply = await send('POST', ARCHIVE_PATH(ARCHIVE_PERSON.userid), OTHER_TENANT, form);
+      const reply = await send('POST', ARCHIVE_PATH(person.userid), OTHER_TENANT, form);
 
       expect(reply.statusCode).toBe(404);
       expect(reply.json()).toMatchObject({ error: { message: 'Not Found' } });
-      expect(await countsByFixture('person_archive', archiveWhere, [ARCHIVE_PERSON.userid])).toEqual({ A: 0, B: 0, umbrella: 0 });
-      expect(await countsByFixture('outbox', outboxWhere, [PERSON_ARCHIVED_TOPIC, ARCHIVE_PERSON.userid])).toEqual({ A: 0, B: 0, umbrella: 0 });
+      expect(await countsByFixture('person_archive', archiveWhere, [person.userid])).toEqual({ A: 0, B: 0, umbrella: 0 });
+      expect(await countsByFixture('outbox', outboxWhere, [PERSON_ARCHIVED_TOPIC, person.userid])).toEqual({ A: 0, B: 0, umbrella: 0 });
       expect(publisher.published).toEqual([]);
     });
 
     it('archiving a pooled tenant-a member stores the record and its event under umbrella only, and publishes it there', async () => {
+      const person = await pooledMember();
       const form = { siteid: TENANT_A.siteId, effectiveFrom: ARCHIVE_EFFECTIVE_FROM, ...CSRF };
-      const reply = await send('POST', ARCHIVE_PATH(ARCHIVE_PERSON.userid), SITE_ADMIN_A, form);
+      const reply = await send('POST', ARCHIVE_PATH(person.userid), SITE_ADMIN_A, form);
 
       expect(reply.statusCode).toBe(200);
       expect(reply.json()).toMatchObject({
         method: 'people.persons.archive',
-        data: { personid: ARCHIVE_PERSON.userid, siteid: TENANT_UMBRELLA.siteId },
+        data: { personid: person.userid, siteid: TENANT_UMBRELLA.siteId },
       });
-      expect(await countsByFixture('person_archive', archiveWhere, [ARCHIVE_PERSON.userid])).toEqual({ A: 0, B: 0, umbrella: 1 });
-      expect(await countsByFixture('outbox', outboxWhere, [PERSON_ARCHIVED_TOPIC, ARCHIVE_PERSON.userid])).toEqual({ A: 0, B: 0, umbrella: 1 });
+      expect(await countsByFixture('person_archive', archiveWhere, [person.userid])).toEqual({ A: 0, B: 0, umbrella: 1 });
+      expect(await countsByFixture('outbox', outboxWhere, [PERSON_ARCHIVED_TOPIC, person.userid])).toEqual({ A: 0, B: 0, umbrella: 1 });
       expect(publisher.published.map(({ topic, envelope }) => ({ topic, tenantId: envelope.tenantId, aggregateId: envelope.aggregateId }))).toEqual([
-        { topic: PERSON_ARCHIVED_TOPIC, tenantId: TENANT_UMBRELLA.tenantId, aggregateId: ARCHIVE_PERSON.userid },
+        { topic: PERSON_ARCHIVED_TOPIC, tenantId: TENANT_UMBRELLA.tenantId, aggregateId: person.userid },
       ]);
     });
   });
@@ -600,11 +609,19 @@ describe.skipIf(!PG_AVAILABLE)('people tenant isolation', () => {
     });
   });
 
+  // A dedicated schema, so the suite's own stays up for every other case whatever the order.
   it('drops its throwaway schema and roles', async () => {
-    const db = created();
-    await testApp?.close();
-    testApp = undefined;
-    await db.drop();
+    const db = await createThrowawaySchema({ service: 'people', migrationsDir: MIGRATIONS_DIR });
+    let ownApp: TestApp<TenantDb> | undefined;
+    try {
+      ownApp = await buildTestApp({ db: db.app });
+      await ownApp.close();
+      await db.drop();
+    } finally {
+      // Repeated close and drop are no-ops after success, so this only cleans up after a failed step and never replaces its error.
+      await ownApp?.close().catch(() => undefined);
+      await db.drop().catch(() => undefined);
+    }
     const pg = testPgConfig();
     const probe = await createPool({
       env: { OPT2_DB_AUTH: 'password', PG_HOST: pg.host, PG_PORT: pg.port, PG_DATABASE: pg.database, PG_USER: pg.user, PG_PASSWORD: pg.password },

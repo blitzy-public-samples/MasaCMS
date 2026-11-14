@@ -108,6 +108,10 @@ function identityDouble(accounts: Map<string, AccountView>, behaviour: DoubleBeh
       return Promise.resolve(accounts.get(userId));
     },
     readAccounts: unused('readAccounts'),
+    readAccountsAllSites: unused('readAccountsAllSites'),
+    countAccounts: unused('countAccounts'),
+    usernameCandidates: unused('usernameCandidates'),
+    lookupMemberships: unused('lookupMemberships'),
     userMemberships: unused('userMemberships'),
     membershipGroupIds() {
       calls.push('memberships');
@@ -119,6 +123,7 @@ function identityDouble(accounts: Map<string, AccountView>, behaviour: DoubleBeh
     adminSessionState: unused('adminSessionState'),
     saveAdminSessionState: unused('saveAdminSessionState'),
     sessionSites: unused('sessionSites'),
+    loginBlock: unused('loginBlock'),
   };
   return { client, calls, reached, release };
 }

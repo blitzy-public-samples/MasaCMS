@@ -3,7 +3,6 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A } from '@opt2/platform/testing';
 import {
-  PEOPLE_TRASH_ENABLED,
   TAKEOUT_UNBUILT,
   TrashRequestCounter,
   takeOut,
@@ -122,7 +121,7 @@ function storedTrash(objectId: string): TrashRow {
   };
 }
 
-describe.runIf(PEOPLE_TRASH_ENABLED)('throwInAddress', () => {
+describe('throwInAddress', () => {
   it('inserts one address-class trash row numbered by the request counter', async () => {
     const db = trashDb();
     const counter = new TrashRequestCounter();
@@ -221,7 +220,7 @@ describe.runIf(PEOPLE_TRASH_ENABLED)('throwInAddress', () => {
   });
 });
 
-describe.runIf(PEOPLE_TRASH_ENABLED)('takeOut', () => {
+describe('takeOut', () => {
   it.each([
     ['a stored trash row', [storedTrash(OBJECT_ID)], true],
     ['no trash row', [], false],
@@ -251,20 +250,5 @@ describe.runIf(PEOPLE_TRASH_ENABLED)('takeOut', () => {
     expectTypeOf(TAKEOUT_UNBUILT).not.toExtend<string[]>();
     expect(TAKEOUT_UNBUILT.length).toBeGreaterThan(0);
     expect(TAKEOUT_UNBUILT).toEqual(expect.arrayContaining([expect.stringContaining('restoreVersion'), expect.stringContaining('child')]));
-  });
-});
-
-describe.skipIf(PEOPLE_TRASH_ENABLED)('trash writes while people does not hold people.trash', () => {
-  it('throwInAddress and takeOut record no statement', async () => {
-    const db = trashDb();
-
-    const [thrown, restored] = await inTenantA(db, async (tx) => [
-      await throwInAddress(repo, tx, trashedAddress(), context()),
-      await takeOut(repo, tx, OBJECT_ID, new Map([['frommuratrash', 'true']]), { write: {} }),
-    ]);
-
-    expect(thrown).toBeNull();
-    expect(restored).toBe(false);
-    expect(ownStatements(db)).toEqual([]);
   });
 });

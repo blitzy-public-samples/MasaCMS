@@ -907,6 +907,7 @@ describe.skipIf(!available)('people search queries against PostgreSQL', () => {
         }
       } finally {
         for (const userId of more) identity.accounts.delete(userId);
+        await inTenant(TENANT_B.tenantId, (tx) => tx.query(`DELETE FROM "${handle.schema}".person WHERE tenant_id = $1 AND userid = ANY($2::text[])`, [tx.tenantId, more]));
       }
     });
   });
@@ -924,6 +925,12 @@ describe.skipIf(!available)('people search queries against PostgreSQL', () => {
       await inTenant(DEFAULT_TENANT, (tx) => tenantRegistryConsumer.apply(tx, { tenantId: DEFAULT_TENANT, aggregateVersion: 1, payload }));
       await addPerson(DEFAULT_TENANT, 'D1', { fname: 'Dot', lname: 'Default', siteid: DEFAULT_SITE });
       identity.accounts.set(id('D1'), account('D1', DEFAULT_SITE));
+    });
+
+    afterAll(async () => {
+      identity.accounts.delete(id('D1'));
+      await inTenant(DEFAULT_TENANT, (tx) => tx.query(`DELETE FROM "${handle.schema}".person WHERE tenant_id = $1 AND userid = $2`, [tx.tenantId, id('D1')]));
+      await handle.app.withMetadata((tx) => tx.query(`DELETE FROM "${handle.schema}".tenant_registry WHERE tenant_id = $1`, [DEFAULT_TENANT]));
     });
 
     it.each<[string, string, string[]]>([

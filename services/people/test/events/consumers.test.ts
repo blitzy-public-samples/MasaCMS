@@ -32,7 +32,7 @@ import {
 import { GROUP_NAME_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { GROUP_CHANGED_TOPIC, SITE_CHANGED_TOPIC, groupChangedSchema, siteChangedSchema, type GroupChangedPayload } from '../../src/events/topics.js';
 import { GROUP_NAME, type GroupNameRow } from '../../src/repo/tables.js';
-import { PG_AVAILABLE, withPgApp, type PgTestApp } from '../helpers/app.js';
+import { PG_AVAILABLE, withPgApp, type PgTestApp } from '../helpers/pg-app.js';
 import { DEFAULT_SITE, groupNameRow } from '../helpers/fixtures.js';
 
 /** A `programs-sites.site.changed.v1` payload as its contract requires it. */
@@ -125,8 +125,14 @@ async function tenantRows<R extends Record<string, unknown>>(ctx: PgTestApp, ten
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
     return (await client.query<R>(sql, params)).rows;
   } finally {
-    await client.query('ROLLBACK');
-    client.release();
+    let rollbackError: Error | undefined;
+    try {
+      await client.query('ROLLBACK');
+    } catch (err) {
+      // A connection that cannot roll back may still hold the transaction, so pg must destroy it.
+      rollbackError = err instanceof Error ? err : new Error(String(err));
+    }
+    client.release(rollbackError);
   }
 }
 

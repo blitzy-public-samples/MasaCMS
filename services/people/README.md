@@ -179,7 +179,7 @@ npm run test:security
 PORT=8112 npm start     # normally started by harness/repro/up.sh
 ```
 
-`test/contract` and `test/security` need nothing external. Suites that build the app over PostgreSQL 16 read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`, create a throwaway schema and roles through `@opt2/platform/testing`, and skip when the database is unreachable. Golden scenarios proving this service: GS-ID-05, GS-PE-01 to GS-PE-06, GS-PUB-03 and the rollback rehearsal GS-PE-RH-01 to GS-PE-RH-03.
+`test/unit`, `test/contract` and `test/security` need nothing external. `test/isolation` and `test/events` read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`, and `PUBSUB_EMULATOR_HOST` where a suite needs the Pub/Sub emulator; they create a throwaway schema and roles through `@opt2/platform/testing`, drop them afterwards, and skip when the database is unreachable. Golden scenarios proving this service: GS-ID-05, GS-PE-01 to GS-PE-06, GS-PUB-03 and the rollback rehearsal GS-PE-RH-01 to GS-PE-RH-03.
 
 - **Operator CLI.** From this folder, `npx opt2-people resolve-operation <operationId> [--to rolled-back|done] [--tenant <uuid>]` resolves one roster operation from its and identity's recorded states; a halted operation needs `--to`. It reads the service's own environment and exits 0 when resolved, 1 when not, 2 on a usage or environment error.
 - **Local.** `harness/repro/up.sh` starts the service natively with `PORT=8112` and `PG_USER=people_app`, after `opt2-db bootstrap --target local` has created the schema and roles.

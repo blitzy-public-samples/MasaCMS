@@ -1,15 +1,6 @@
-/** People's person archive, seam 1's producer: input parsing, the domain over in-memory collaborators, the fixture route's check order and writes over the recording database, and its PostgreSQL semantics. */
-import { readFileSync } from 'node:fs';
+/** People's person archive, seam 1's producer: input parsing, the domain over in-memory collaborators, and the fixture route's check order and writes over the recording database. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { parse } from 'yaml';
-import {
-  CSRF_HEADER_EXPIRES,
-  CSRF_HEADER_TOKEN,
-  LEGACY_ERROR_MAP,
-  LegacyApiError,
-  isCfUuid,
-  type LegacyErrorSpec,
-} from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_MAP, LegacyApiError, isCfUuid, type LegacyErrorSpec } from '@opt2/platform/legacy-compat';
 import {
   TENANT_A,
   TENANT_B,
@@ -23,35 +14,32 @@ import {
 import { archivePerson, getPersonArchive, parseArchiveInput, type ArchiveArgs, type ArchiveDeps } from '../../src/domain/archive.js';
 import { PERSON_ARCHIVED_TOPIC, personArchivedSchema } from '../../src/events/topics.js';
 import { DuplicateArchiveError } from '../../src/repo/repository.js';
-import { FIXTURE_ARCHIVE_PATH } from '../../src/routes/fixture-archive.js';
+import { TEST_CLOCK, buildTestApp, createRecordingDb, userHeaders, type RecordingDb, type RecordedStatement, type TestApp } from '../helpers/app.js';
 import {
-  PG_AVAILABLE,
-  TEST_CLOCK,
-  buildTestApp,
-  createRecordingDb,
-  userHeaders,
-  withPgApp,
-  type PgTestApp,
-  type RecordingDb,
-  type RecordedStatement,
-  type TestApp,
-} from '../helpers/app.js';
+  ARCHIVED_AT_TEXT,
+  EFFECTIVE_FROM_TEXT,
+  METHOD,
+  NOT_FOUND,
+  OPENAPI,
+  SADMIN_NAMES,
+  actorHeaders,
+  archivePath,
+  callArchive,
+  expectFixtureError,
+  type ArchiveCall,
+} from '../helpers/archive-calls.js';
 import {
   ADMIN_S2,
   ARCHIVED_PERSON_B,
   ARCHIVE_EFFECTIVE_FROM,
   DEFAULT_PEOPLE_SEED,
   DEFAULT_SITE,
-  MEMBER_POOLED,
   OTHER_TENANT,
   OTHER_TENANT_PERSON,
   SITE_ADMIN_A,
   SYSTEM_USER_A,
   SYSTEM_USER_A_PERSON,
   TENANT_B_ARCHIVE,
-  personRow,
-  seedPeople,
-  type TestActor,
 } from '../helpers/fixtures.js';
 
 type ArchiveRepo = ArchiveDeps['repo'];
@@ -60,29 +48,17 @@ type StoredPerson = NonNullable<Awaited<ReturnType<ArchiveRepo['findPerson']>>>;
 type StoredArchive = Awaited<ReturnType<ArchiveRepo['insertPersonArchive']>>;
 type ArchiveInsert = Parameters<ArchiveRepo['insertPersonArchive']>[1];
 type WriteCtx = Parameters<ArchiveRepo['insertPersonArchive']>[2];
-type InjectResponse = Awaited<ReturnType<TestApp['app']['inject']>>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
-
-/** api.cfm's envelope `method` of the archive route. */
-const METHOD = 'people.persons.archive';
-/** envelope.cfc rows the JSON API error map lacks. */
+/** envelope.cfc's forbidden row, which the JSON API error map lacks. */
 const FORBIDDEN: LegacyErrorSpec = { status: 403, code: 'invalid_request', message: 'Insufficient Account Permissions' };
-const NOT_FOUND: LegacyErrorSpec = { status: 404, code: 'invalid_request', message: 'Not Found' };
 
 const ARCHIVE_ID = 'A1B2C3D4-0000-0000-0000000000000001';
-const EFFECTIVE_FROM_TEXT = '2026-07-01T00:00:00';
-const ARCHIVED_AT_TEXT = '2026-06-30T12:00:00';
-const SADMIN_NAMES = { fname: 'Sasha', lname: 'Admin' } as const;
 
 const SEEDED_PERSONS: readonly StoredPerson[] = Object.values(DEFAULT_PEOPLE_SEED).flatMap((tenant) => tenant.persons ?? []);
 const SEEDED_ARCHIVES: readonly StoredArchive[] = Object.values(DEFAULT_PEOPLE_SEED).flatMap((tenant) => tenant.archives ?? []);
 
 /** A char(35) id as SQL Server compares it: case-insensitive, trailing spaces ignored. */
 const sameId = (a: string, b: string): boolean => a.replace(/ +$/, '').toUpperCase() === b.replace(/ +$/, '').toUpperCase();
-
-/** The archive path of `userId`. */
-const archivePath = (userId: string): string => FIXTURE_ARCHIVE_PATH.replace(':userId', encodeURIComponent(userId));
 
 /** The rejection `outcome` settles with. */
 async function rejection(outcome: Promise<unknown>): Promise<unknown> {
@@ -92,14 +68,6 @@ async function rejection(outcome: Promise<unknown>): Promise<unknown> {
     return err;
   }
   throw new Error('expected a rejection');
-}
-
-/** The fixture envelope of an error row: api.cfm's method, code before message. */
-function expectFixtureError(response: InjectResponse, row: LegacyErrorSpec): void {
-  expect(response.statusCode).toBe(row.status);
-  const body = response.json<{ error: Record<string, unknown> }>();
-  expect(body).toStrictEqual({ apiversion: 'v1', method: METHOD, error: { code: row.code, message: row.message } });
-  expect(Object.keys(body.error)).toEqual(['code', 'message']);
 }
 
 describe('parseArchiveInput', () => {
@@ -365,40 +333,6 @@ const siteLookups = (db: RecordingDb): string[] => db.statements().filter(({ tex
 const writtenTables = (db: RecordingDb): string[] =>
   db.writes().map(({ text }) => /^INSERT INTO (?:"?\w+"?\.)?"?(\w+)"?/.exec(text)?.[1] ?? text);
 
-let csrfSequence = 0;
-
-/** Headers of `actor` arriving through the gateway with a fresh CSRF token; `site` overrides the token's site. */
-async function actorHeaders(actor: Pick<TestActor, 'sub' | 'site' | 'roles' | 's2'>, opts: { sid?: string; site?: string } = {}): Promise<Record<string, string>> {
-  csrfSequence += 1;
-  return {
-    ...(await userHeaders({ ...actor, site: opts.site ?? actor.site, ...(opts.sid === undefined ? {} : { sid: opts.sid }) })),
-    [CSRF_HEADER_TOKEN]: `TOKEN-${String(csrfSequence)}`,
-    [CSRF_HEADER_EXPIRES]: '260630130000000',
-  };
-}
-
-/** One call of the archive route. */
-interface ArchiveCall {
-  method?: 'GET' | 'POST';
-  userId: string;
-  headers?: Record<string, string>;
-  query?: Record<string, string>;
-  /** A JSON object body, or a urlencoded form string. */
-  body?: Record<string, unknown> | string;
-}
-
-function callArchive(app: TestApp['app'], call: ArchiveCall): Promise<InjectResponse> {
-  const method = call.method ?? 'POST';
-  const form = typeof call.body === 'string';
-  return app.inject({
-    method,
-    url: archivePath(call.userId),
-    query: call.query ?? {},
-    headers: { ...(form ? { 'content-type': 'application/x-www-form-urlencoded' } : {}), ...call.headers },
-    ...(method === 'POST' ? { payload: call.body ?? { effectiveFrom: ARCHIVE_EFFECTIVE_FROM } } : {}),
-  });
-}
-
 /** One check-order case: the call, its fixture error row, and how far the request got. */
 interface CheckCase {
   call: () => Promise<ArchiveCall>;
@@ -660,165 +594,3 @@ describe('the fixture archive route over the recording database', () => {
     expect(t.identity.requests).toEqual([]);
   });
 });
-
-
-/** A stored `person_archive` row as the test reads it back. */
-interface ArchiveRow {
-  archive_id: string;
-  person_id: string;
-  siteid: string;
-  archived_by_id: string | null;
-  archived_by: string | null;
-}
-
-describe.skipIf(!PG_AVAILABLE)('the fixture archive route against PostgreSQL', () => {
-  /** Runs `fn` over a seeded throwaway schema; fails rather than skips once PostgreSQL was found at import. */
-  async function onPg(fn: (ctx: PgTestApp) => Promise<void>): Promise<void> {
-    const outcome = await withPgApp(async (ctx) => {
-      await seedPeople(ctx.db, DEFAULT_PEOPLE_SEED);
-      await fn(ctx);
-      return 'ran' as const;
-    });
-    expect(outcome).toBe('ran');
-  }
-
-  /** Rows of `sql` read in a transaction of `tenantId`. */
-  async function rowsIn<R>(ctx: PgTestApp, tenantId: string, sql: string, params: unknown[] = []): Promise<R[]> {
-    return ctx.db.withTenant(tenantId, async (tx) => (await tx.query(sql, params)).rows as R[]);
-  }
-
-  const archivesOf = (ctx: PgTestApp, tenantId: string, personId: string): Promise<ArchiveRow[]> =>
-    rowsIn<ArchiveRow>(
-      ctx,
-      tenantId,
-      `SELECT archive_id, person_id, siteid, archived_by_id, archived_by FROM ${ctx.schema.schema}.person_archive WHERE person_id = $1`,
-      [personId],
-    );
-
-  const outboxOf = (ctx: PgTestApp, tenantId: string, personId: string): Promise<Array<{ topic: string; published: boolean }>> =>
-    rowsIn(ctx, tenantId, `SELECT topic, published_at IS NOT NULL AS published FROM ${ctx.schema.schema}.outbox WHERE ordering_key = $1`, [personId]);
-
-  /** Changelog rows the requests wrote, as opposed to the seed's backfill rows. */
-  const targetChanges = (ctx: PgTestApp, tenantId: string): Promise<Array<{ table: string; op: string }>> =>
-    rowsIn(ctx, tenantId, `SELECT "table", op FROM ${ctx.schema.schema}.changelog WHERE origin = 'target' ORDER BY seq`);
-
-  it('commits the archive with its outbox row, publishes it in the request, and writes no person or identity data', async () => {
-    await onPg(async (ctx) => {
-      const sid = 'SESSION-ARCHIVE-PG';
-      ctx.identity.seedSessions({ sessionId: sid, user: { isLoggedIn: true, userID: SITE_ADMIN_A.sub, ...SADMIN_NAMES } });
-      const before = await rowsIn<{ row_version: string }>(ctx, TENANT_A.tenantId, `SELECT row_version FROM ${ctx.schema.schema}.person WHERE userid = $1`, [
-        SYSTEM_USER_A_PERSON.userid,
-      ]);
-
-      const response = await callArchive(ctx.app, { userId: SYSTEM_USER_A_PERSON.userid, headers: await actorHeaders(SITE_ADMIN_A, { sid }) });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json<{ data: { archiveid: string } }>();
-      const archiveId = body.data.archiveid;
-      expect(isCfUuid(archiveId)).toBe(true);
-      expect(body).toStrictEqual({
-        apiversion: 'v1',
-        method: METHOD,
-        data: { archiveid: archiveId, personid: SYSTEM_USER_A_PERSON.userid, siteid: TENANT_A.siteId, effectivefrom: EFFECTIVE_FROM_TEXT, archivedat: ARCHIVED_AT_TEXT },
-      });
-      expect(response.headers['x-opt2-write-position']).toMatch(/^people=\d+$/);
-
-      expect(ctx.publisher.published).toHaveLength(1);
-      const [event] = ctx.publisher.published;
-      expect(event?.topic).toBe(PERSON_ARCHIVED_TOPIC);
-      expect(assertEventMatches(undefined, personArchivedSchema, event?.envelope)).toMatchObject({
-        tenantId: TENANT_A.tenantId,
-        aggregateId: SYSTEM_USER_A_PERSON.userid,
-        payload: {
-          personId: SYSTEM_USER_A_PERSON.userid,
-          archiveId,
-          siteId: TENANT_A.siteId,
-          effectiveFrom: '2026-07-01 00:00:00.000',
-          archivedAt: '2026-06-30 12:00:00.000',
-        },
-      });
-
-      expect(await archivesOf(ctx, TENANT_A.tenantId, SYSTEM_USER_A_PERSON.userid)).toStrictEqual([
-        { archive_id: archiveId, person_id: SYSTEM_USER_A_PERSON.userid, siteid: TENANT_A.siteId, archived_by_id: SITE_ADMIN_A.sub, archived_by: 'Sasha Admin' },
-      ]);
-      expect(await outboxOf(ctx, TENANT_A.tenantId, SYSTEM_USER_A_PERSON.userid)).toStrictEqual([{ topic: PERSON_ARCHIVED_TOPIC, published: true }]);
-      expect(await targetChanges(ctx, TENANT_A.tenantId)).toStrictEqual([{ table: 'person_archive', op: 'insert' }]);
-      expect(
-        await rowsIn(ctx, TENANT_A.tenantId, `SELECT row_version FROM ${ctx.schema.schema}.person WHERE userid = $1`, [SYSTEM_USER_A_PERSON.userid]),
-      ).toStrictEqual(before);
-      expect(ctx.identity.requests.map((request) => request.operationId)).toEqual(['consumeCsrfToken', 'getCurrentSession']);
-      expect(ctx.identity.operations.size).toBe(0);
-    });
-  });
-
-  it('archives a pooled member through tenant-a in the umbrella tenant, and GET reads the stored record back', async () => {
-    await onPg(async (ctx) => {
-      const posted = await callArchive(ctx.app, { userId: MEMBER_POOLED.sub, headers: await actorHeaders(SITE_ADMIN_A) });
-
-      expect(posted.statusCode).toBe(200);
-      const { data } = posted.json<{ data: { archiveid: string; siteid: string } }>();
-      expect(data.siteid).toBe(TENANT_UMBRELLA.siteId);
-      expect(ctx.publisher.published.map(({ envelope }) => [envelope.tenantId, (envelope.payload as { siteId: string }).siteId])).toStrictEqual([
-        [TENANT_UMBRELLA.tenantId, TENANT_UMBRELLA.siteId],
-      ]);
-      expect((await archivesOf(ctx, TENANT_UMBRELLA.tenantId, MEMBER_POOLED.sub)).map((row) => row.archive_id)).toEqual([data.archiveid]);
-      expect(await archivesOf(ctx, TENANT_A.tenantId, MEMBER_POOLED.sub)).toEqual([]);
-
-      const read = await callArchive(ctx.app, { method: 'GET', userId: MEMBER_POOLED.sub, headers: await actorHeaders(SITE_ADMIN_A) });
-
-      expect(read.statusCode).toBe(200);
-      expect(read.json()).toStrictEqual(posted.json());
-      assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: archivePath(MEMBER_POOLED.sub), status: 200, contentType: read.headers['content-type'], body: read.json() });
-    });
-  });
-
-  it('reads a seeded archive record, answers notFound for a person never archived, and invalidParameters for a site id PostgreSQL cannot store', async () => {
-    await onPg(async (ctx) => {
-      const seeded = await callArchive(ctx.app, { method: 'GET', userId: ARCHIVED_PERSON_B.userid, headers: await actorHeaders(OTHER_TENANT) });
-      expect(seeded.statusCode).toBe(200);
-      expect(seeded.json()).toStrictEqual({
-        apiversion: 'v1',
-        method: METHOD,
-        data: { archiveid: TENANT_B_ARCHIVE.archive_id, personid: ARCHIVED_PERSON_B.userid, siteid: TENANT_B.siteId, effectivefrom: '2026-06-01T00:00:00', archivedat: ARCHIVED_AT_TEXT },
-      });
-
-      expectFixtureError(await callArchive(ctx.app, { method: 'GET', userId: SYSTEM_USER_A_PERSON.userid, headers: await actorHeaders(SITE_ADMIN_A) }), NOT_FOUND);
-
-      const nul = await callArchive(ctx.app, { method: 'GET', userId: SYSTEM_USER_A_PERSON.userid, headers: await actorHeaders(SITE_ADMIN_A), query: { siteid: 'tenant\u0000a' } });
-      expectFixtureError(nul, LEGACY_ERROR_MAP.invalidParameters);
-    });
-  });
-
-  it('refuses any second archive of a person with badRequest, keeping one archive row and one outbox row', async () => {
-    await onPg(async (ctx) => {
-      const first = await callArchive(ctx.app, { userId: SYSTEM_USER_A_PERSON.userid, headers: await actorHeaders(SITE_ADMIN_A) });
-      expect(first.statusCode).toBe(200);
-
-      for (const effectiveFrom of [ARCHIVE_EFFECTIVE_FROM, '2026-08-01']) {
-        const repeat = await callArchive(ctx.app, { userId: SYSTEM_USER_A_PERSON.userid, headers: await actorHeaders(SITE_ADMIN_A), body: { effectiveFrom } });
-        expectFixtureError(repeat, LEGACY_ERROR_MAP.badRequest);
-      }
-
-      expect(await archivesOf(ctx, TENANT_A.tenantId, SYSTEM_USER_A_PERSON.userid)).toHaveLength(1);
-      expect(await outboxOf(ctx, TENANT_A.tenantId, SYSTEM_USER_A_PERSON.userid)).toHaveLength(1);
-      expect(ctx.publisher.published).toHaveLength(1);
-    });
-  });
-
-  it('rolls the archive back when its outbox event is rejected after the insert, answering server_error', async () => {
-    await onPg(async (ctx) => {
-      // Backfilled persons keep row_version 0, below the envelope's aggregateVersion minimum.
-      const unbumped = personRow({ siteid: TENANT_A.siteId, row_version: '0' });
-      await seedPeople(ctx.db, { [TENANT_A.tenantId]: { persons: [unbumped] } });
-
-      const response = await callArchive(ctx.app, { userId: unbumped.userid, headers: await actorHeaders(SITE_ADMIN_A) });
-
-      expectFixtureError(response, LEGACY_ERROR_MAP.server_error);
-      expect(await archivesOf(ctx, TENANT_A.tenantId, unbumped.userid)).toEqual([]);
-      expect(await outboxOf(ctx, TENANT_A.tenantId, unbumped.userid)).toEqual([]);
-      expect(await targetChanges(ctx, TENANT_A.tenantId)).toEqual([]);
-      expect(ctx.publisher.published).toEqual([]);
-    });
-  });
-});
-

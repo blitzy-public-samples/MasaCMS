@@ -2,11 +2,9 @@
 import { describe, expect, it } from 'vitest';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
-import { encodeRow } from '@opt2/platform/migration-kit';
 import { createOutbox, type OutboxRuntime, type RecoveryContext } from '@opt2/platform/outbox';
 import { ServiceUnavailableError } from '@opt2/platform/service-kit';
 import { TENANT_A, TENANT_B, createCapturingPublisher, type CapturingPublisher } from '@opt2/platform/testing';
-import type { BeforeImage } from '../../src/domain/roster-protocol.js';
 import {
   HALT_AFTER_MS,
   RECOVERY_THRESHOLD_MS,
@@ -20,27 +18,18 @@ import {
   type ResolveTarget,
 } from '../../src/domain/roster-recovery.js';
 import { createPeopleEvents } from '../../src/events/publish.js';
-import type { AccountOperationState, AccountPrepareRequest } from '../../src/legacy/identity-client.js';
+import type { AccountOperationState } from '../../src/legacy/identity-client.js';
 import { createPeopleRepository } from '../../src/repo/repository.js';
-import { FINISH_PENDING_ERROR, PERSON, type PersonRow, type RosterOperationRow, type RosterState } from '../../src/repo/tables.js';
-import { PG_AVAILABLE, createMutableClock, createRecordingDb, withPgApp, type MutableClock, type RecordedStatement, type RecordingDb } from '../helpers/app.js';
+import { FINISH_PENDING_ERROR, type PersonRow, type RosterOperationRow, type RosterState } from '../../src/repo/tables.js';
+import { createMutableClock, createRecordingDb, type MutableClock, type RecordedStatement, type RecordingDb } from '../helpers/app.js';
 import { createIdentityDouble, type IdentityDouble } from '../helpers/identity-double.js';
 import { accountFor, personRow, rosterOperationRow } from '../helpers/fixtures.js';
+import { CHANGE, STALE_MS, imageOf } from '../helpers/roster-recovery-fixtures.js';
 
 const A = TENANT_A.tenantId;
 const B = TENANT_B.tenantId;
 const PERSON_CHANGED_TOPIC = 'people.person.changed.v1';
 const OTHER_RESOLVER = 'OTHER-RESOLVER-0000-000000000000001';
-/** Age of a stale operation: just past the recovery threshold. */
-const STALE_MS = RECOVERY_THRESHOLD_MS + 1_000;
-
-/** The account part of a roster update, as identity's prepare takes it. */
-const CHANGE: AccountPrepareRequest = {
-  kind: 'update',
-  siteId: TENANT_A.siteId,
-  account: { UserName: 'jdoe', Perm: 0, InActive: 0, isPublic: 0, Admin: 0, remoteID: '', Type: 2 },
-  groupIds: [],
-};
 
 type Row = Record<string, unknown>;
 
@@ -196,12 +185,6 @@ function world(): World {
 /** `ms` before the world's clock. */
 function ago(w: World, ms: number): Date {
   return new Date(w.clock.now().getTime() - ms);
-}
-
-/** The before-image a people commit stores for an update of `person`. */
-function imageOf(person: PersonRow): string {
-  const image: BeforeImage = { existed: true, person, addresses: [], interests: [], tags: [], extendData: [] };
-  return JSON.stringify(image);
 }
 
 type PeopleStage = 'started' | 'people-committed' | 'done';
@@ -824,41 +807,4 @@ describe('claim races', () => {
       expect(ended(w, operation)).toBe(false);
     },
   );
-});
-
-describe.skipIf(!PG_AVAILABLE)('roster recovery against PostgreSQL', () => {
-  it('rolls a people-committed operation identity still prepared back to its before-image byte for byte', async () => {
-    const result = await withPgApp(async ({ db, identity }) => {
-      const clock = createMutableClock();
-      const lines: string[] = [];
-      const logger = createLogger({ service: 'people', version: '1.0.0', env: 'local', destination: { write: (line: string) => void lines.push(line) } });
-      const repo = createPeopleRepository({ clock, schema: db.schema });
-      const deps: RecoveryDeps = { db, repo, identity: identity.identityClient, events: createPeopleEvents(repo), clock, logger };
-      const before = await db.withTenant(A, (tx) => repo.insert<PersonRow>(tx, PERSON.table, personRow()));
-      const operation = await db.withTenant(A, async (tx) => {
-        const started = await repo.insertRosterOperation(tx, { kind: 'admin-update', userId: before.userid, payload: '{}' });
-        await repo.update(tx, PERSON.table, { userid: before.userid }, { fname: 'Robin', email: 'robin@tenant-a.opt2.test', row_version: '2' });
-        return repo.setRosterOperationState(tx, started.operation_id, { state: 'people-committed', beforeImage: imageOf(before) });
-      });
-      if (operation === null) throw new Error('roster operation missing after its insert');
-      identity.seedAccounts(accountFor(before));
-      await identity.identityClient.prepare(before.userid, operation.operation_id, CHANGE);
-      clock.advance(STALE_MS);
-
-      const outcome = await resolveOperation(deps, { tenantId: A, operationId: operation.operation_id });
-      const restored = await db.withTenant(A, (tx) => repo.findPerson(tx, before.userid));
-      const final = await db.withTenant(A, (tx) => repo.findRosterOperation(tx, operation.operation_id));
-      return { outcome, restored, final, identityState: identity.operation(operation.operation_id)?.state, before };
-    });
-
-    if ('skipped' in result) throw new Error(result.reason);
-    const { outcome, restored, final, identityState, before } = result;
-    expect(outcome).toMatchObject({ from: 'people-committed', to: 'rolled-back', action: 'aborted', identityState: 'prepared' });
-    expect(identityState).toBe('aborted');
-    expect(final).toMatchObject({ state: 'rolled-back' });
-    if (restored === null) throw new Error('restored person missing');
-    const legacyColumns = PERSON.columns.filter((column) => column.name !== 'row_version');
-    expect(encodeRow(legacyColumns, restored)).toBe(encodeRow(legacyColumns, before));
-    expect(restored.row_version).toBe('3');
-  });
 });

@@ -29,7 +29,8 @@ import {
 import { personArchiveMapping, personMapping } from '../../src/migration/mappings/index.js';
 import { PERSON, PERSON_ARCHIVE } from '../../src/repo/tables.js';
 import { PEOPLE_SWEEP_QUEUE } from '../../src/tasks/port.js';
-import { PG_AVAILABLE, headersFor, userHeaders, withPgApp, type FakeTaskPort, type PgTestApp } from '../helpers/app.js';
+import { headersFor, userHeaders, type FakeTaskPort } from '../helpers/app.js';
+import { PG_AVAILABLE, withPgApp, type PgTestApp } from '../helpers/pg-app.js';
 import {
   ARCHIVE_EFFECTIVE_FROM,
   ARCHIVE_PERSON,

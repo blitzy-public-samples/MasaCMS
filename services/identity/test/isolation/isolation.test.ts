@@ -617,11 +617,20 @@ describe.skipIf(!available)('identity tenant isolation', () => {
     });
   });
 
+  // A dedicated schema, so the suite's own stays up for every other case whatever the order.
   it('drops its throwaway schema and roles', async () => {
-    const db = created();
-    await ctx?.app.close();
-    ctx = undefined;
-    await db.drop();
+    const db = await createThrowawaySchema({ service: 'identity', migrationsDir: MIGRATIONS_DIR });
+    let own: AppContext | undefined;
+    try {
+      own = await buildTestApp({ db: db.app });
+      await own.app.ready();
+      await own.app.close();
+      await db.drop();
+    } finally {
+      // Repeated close and drop are no-ops after success, so this only cleans up after a failed step and never replaces its error.
+      await own?.app.close().catch(() => undefined);
+      await db.drop().catch(() => undefined);
+    }
     const pg = testPgConfig();
     const probe = await createPool({
       env: { OPT2_DB_AUTH: 'password', PG_HOST: pg.host, PG_PORT: pg.port, PG_DATABASE: pg.database, PG_USER: pg.user, PG_PASSWORD: pg.password },

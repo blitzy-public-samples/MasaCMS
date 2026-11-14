@@ -1,4 +1,4 @@
-/** The address saves' statements over a recording `people` database, and the stored address order over PostgreSQL. */
+/** The address saves' statements over a recording `people` database. */
 import { describe, expect, it } from 'vitest';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { OperationBlockedError } from '@opt2/platform/migration-kit';
@@ -9,7 +9,6 @@ import {
   applyAddressInput,
   createAddress,
   insertAddressInTx,
-  listAddresses,
   saveAddress,
   setPrimaryAddress,
   updateAddress,
@@ -17,11 +16,10 @@ import {
   type AddressDeps,
 } from '../../src/domain/addresses.js';
 import { fencePersons, withPersonsOpen } from '../../src/domain/roster-protocol.js';
-import { PEOPLE_TRASH_ENABLED } from '../../src/domain/trash.js';
 import { createPeopleRepository } from '../../src/repo/repository.js';
 import type { AddressRow, PersonRow, TrashRow } from '../../src/repo/tables.js';
-import { PG_AVAILABLE, TEST_CLOCK, createRecordingDb, withPgApp, type RecordingDb, type StatementMatcher } from '../helpers/app.js';
-import { addressRow, personRow, seedPeople } from '../helpers/fixtures.js';
+import { TEST_CLOCK, createRecordingDb, type RecordingDb, type StatementMatcher } from '../helpers/app.js';
+import { addressRow, personRow } from '../helpers/fixtures.js';
 
 const A = TENANT_A.tenantId;
 const ACTOR: AddressActor = { tid: A, write: { actorUserId: 'ACTOR', requestId: 'REQ-1' } };
@@ -207,7 +205,7 @@ describe('createAddress over a recording database', () => {
     expect(firstIndex(db, OPEN_OPERATION_READ)).toBeLessThan(firstIndex(db, PERSON_READ));
   });
 
-  it.skipIf(!PEOPLE_TRASH_ENABLED)('takes an address restored from the trash out of people.trash after the insert', async () => {
+  it('takes an address restored from the trash out of people.trash after the insert', async () => {
     const owner = personRow();
     const { db, deps } = recording(owner);
     await createAddress(deps, A, posted({ userid: owner.userid, addressid: 'ADDR-1', fromMuraTrash: 'true' }), ACTOR);
@@ -304,33 +302,5 @@ describe('setPrimaryAddress over a recording database', () => {
     ]);
     expect(writtenTables(db)).toEqual([ADDRESS_TABLE, CHANGELOG_TABLE, ADDRESS_TABLE, CHANGELOG_TABLE, ADDRESS_TABLE, CHANGELOG_TABLE]);
     expect(schemasNamed(db)).toEqual(['people']);
-  });
-});
-
-describe.skipIf(!PG_AVAILABLE)('listAddresses against PostgreSQL', () => {
-  it("lists the user's addresses primary first, then by addressid, a NULL isPrimary last", async () => {
-    const owner = personRow();
-    const id = (n: number): string => `B0000000-0000-0000-000000000000000${String(n)}`;
-    const own = [
-      addressRow({ addressid: id(1), userid: owner.userid, isprimary: null }),
-      addressRow({ addressid: id(2), userid: owner.userid, isprimary: 0 }),
-      addressRow({ addressid: id(3), userid: owner.userid, isprimary: 1 }),
-      addressRow({ addressid: id(4), userid: owner.userid, isprimary: 0 }),
-    ];
-    const outcome = await withPgApp(async ({ db }) => {
-      await seedPeople(db, {
-        [A]: { persons: [owner], addresses: [...own, addressRow({ addressid: id(5), isprimary: 1 })] },
-        [TENANT_B.tenantId]: { addresses: [addressRow({ addressid: id(6), userid: owner.userid, siteid: TENANT_B.siteId, isprimary: 1 })] },
-      });
-      const repo = createPeopleRepository({ clock: TEST_CLOCK, schema: db.schema });
-      return withTenant(db, A, (tx) => listAddresses(repo, tx, owner.userid));
-    });
-    expect(outcome).not.toHaveProperty('skipped');
-    expect((outcome as AddressRow[]).map((row) => [row.addressid, row.isprimary])).toEqual([
-      [id(3), 1],
-      [id(2), 0],
-      [id(4), 0],
-      [id(1), null],
-    ]);
   });
 });

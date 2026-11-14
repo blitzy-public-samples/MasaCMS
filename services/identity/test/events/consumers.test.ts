@@ -163,8 +163,14 @@ describe.skipIf(!available)('identity event consumers', () => {
       await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
       return (await client.query<R>(sql, params)).rows;
     } finally {
-      await client.query('ROLLBACK');
-      client.release();
+      let rollbackError: Error | undefined;
+      try {
+        await client.query('ROLLBACK');
+      } catch (err) {
+        // A connection that cannot roll back may still hold the transaction, so pg must destroy it.
+        rollbackError = err instanceof Error ? err : new Error(String(err));
+      }
+      client.release(rollbackError);
     }
   }
 

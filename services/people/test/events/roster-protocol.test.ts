@@ -19,7 +19,8 @@ import type { LegacyErrors } from '../../src/legacy/identity-client.js';
 import { createPeopleRepository, type PeopleRepository } from '../../src/repo/repository.js';
 import { FINISH_PENDING_ERROR, UNIT_TABLES, type PersonRow, type RosterOperationRow, type RosterState } from '../../src/repo/tables.js';
 import { PEOPLE_SWEEP_QUEUE } from '../../src/tasks/port.js';
-import { PG_AVAILABLE, createMutableClock, headersFor, userHeaders, withPgApp, type MutableClock, type PgTestApp } from '../helpers/app.js';
+import { createMutableClock, headersFor, userHeaders, type MutableClock } from '../helpers/app.js';
+import { PG_AVAILABLE, withPgApp, type PgTestApp } from '../helpers/pg-app.js';
 import {
   CSV_QUIRK_PERSONS,
   DEFAULT_PEOPLE_SEED,
