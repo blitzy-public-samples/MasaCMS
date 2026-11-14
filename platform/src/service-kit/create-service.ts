@@ -41,8 +41,10 @@ import { createPool, type TenantDb } from '../tenancy/index.js';
 import { shutdownTracing } from '../tracing/index.js';
 import { createServiceClient, type ServiceClient } from './client.js';
 import { systemClock, type Clock } from './clock.js';
-import { newRequestContext, requestContext, requestIdFrom, type RequestContextStore } from './context.js';
+import { newRequestContext, RequestAbortedError, requestContext, requestIdFrom, type RequestContextStore } from './context.js';
 import type { BaseEnv } from './env.js';
+import { EVENT_SCOPE, eventScopeOf, type EventLogScope } from './event-scope.js';
+import { createMultipartHeaderScanner, type MultipartHeaderScanner } from './multipart-headers.js';
 
 /** Surface a request's legacy error responses are rendered on. */
 export type LegacySurface = UnavailableSurface;
@@ -109,6 +111,8 @@ interface MultipartFileData {
   field: string;
   filename: string;
   mimetype: string;
+  /** The part's content type as ColdFusion `fileUpload` reports it, parameters included; `mimetype` when its headers were not scanned. */
+  contentType: string;
   size: number;
   /** Lowercase hex SHA-256 of the part's bytes. */
   sha256: string;
@@ -116,12 +120,13 @@ interface MultipartFileData {
   stream(): Readable;
 }
 
-/** A file part as `onFile` spooled it: its temporary file, byte count and SHA-256. */
+/** A file part as `onFile` spooled it: its temporary file, byte count, SHA-256 and `fileUpload` content type. */
 interface SpooledFile {
   part: MultipartFile;
   filepath: string;
   size: number;
   sha256: string;
+  contentType: string;
 }
 
 /** A legacy-compat response object; `statusText` sets the reason phrase. */
@@ -134,20 +139,27 @@ interface LegacyResponse {
 
 const CONTEXT = Symbol('opt2.service-kit.context');
 const FILES = Symbol('opt2.service-kit.files');
+const PART_HEADERS = Symbol('opt2.service-kit.part-headers');
 const BODY_LIMIT = Symbol('opt2.service-kit.body-limit');
 const RESPONSE_CLOSED = Symbol('opt2.service-kit.response-closed');
 const REASON = Symbol('opt2.service-kit.reason');
+const DISCONNECT = Symbol('opt2.service-kit.disconnect');
 
 /** Per-request state kept on module-private symbols. */
 interface KitRequestState {
   [CONTEXT]: RequestContextStore | null;
+  /** Aborts with a RequestAbortedError once the response closes before it ended, which is the client disconnecting. */
+  [DISCONNECT]: AbortSignal | null;
   [FILES]: SpooledFile[] | null;
+  /** The part headers of a multipart request's body, scanned as it streams. */
+  [PART_HEADERS]: MultipartHeaderScanner | null;
   /** The body-limit error that aborted the request's multipart parse. */
   [BODY_LIMIT]: FastifyError | null;
   /** Whether a multipart request's response has closed, after which the plugin no longer deletes listed uploads. */
   [RESPONSE_CLOSED]: boolean;
   /** Fixed identifier of why the request was denied or rejected, such as an AuthDenial reason; never request input. */
   [REASON]: string | null;
+  [EVENT_SCOPE]: EventLogScope | null;
 }
 
 const ADMIN_PREFIXES: readonly string[] = ['/admin/', '/admin-actions/', '/admin-raw/'];
@@ -314,10 +326,11 @@ export function legacyParamsOf(request: FastifyRequest, options: LegacyParamsOpt
 
 /** The spooled multipart file parts of a request, in body order. */
 export function multipartFilesOf(request: FastifyRequest): MultipartFileData[] {
-  return (stateOf(request)[FILES] ?? []).map(({ part, filepath, size, sha256 }) => ({
+  return (stateOf(request)[FILES] ?? []).map(({ part, filepath, size, sha256, contentType }) => ({
     field: part.fieldname,
     filename: part.filename,
     mimetype: part.mimetype,
+    contentType,
     size,
     sha256,
     stream: () => createReadStream(filepath),
@@ -397,12 +410,15 @@ export function isUnstorableTextError(err: unknown): err is { code: '22021' | '2
   return code === '22021' || (code === '22P05' && file === 'jsonfuncs.c');
 }
 
-/** Verified tenant and user of a request, for its log lines. */
-function scopeFields(request: FastifyRequest): Pick<LogFields, 'tenantId' | 'userId'> {
+/** Tenant, user and recorded event of a request, for its log lines; a verified tenant wins over the delivery's. */
+function scopeFields(request: FastifyRequest): Pick<LogFields, 'tenantId' | 'userId' | 'eventId'> {
   const store = stateOf(request)[CONTEXT];
-  const fields: Pick<LogFields, 'tenantId' | 'userId'> = {};
-  if (store?.tenantId !== undefined) fields.tenantId = store.tenantId;
+  const event = eventScopeOf(request);
+  const fields: Pick<LogFields, 'tenantId' | 'userId' | 'eventId'> = {};
+  const tenantId = store?.tenantId ?? event?.tenantId;
+  if (tenantId !== undefined) fields.tenantId = tenantId;
   if (store?.user?.sub !== undefined) fields.userId = store.user.sub;
+  if (event?.eventId !== undefined) fields.eventId = event.eventId;
   return fields;
 }
 
@@ -424,6 +440,12 @@ function bindVerifiedScope(request: FastifyRequest): void {
     }
     if (service !== undefined) span.setAttribute('opt2.caller', service.name);
   }
+}
+
+/** Opts a read into abandonment: once its client disconnects, `throwIfRequestAborted()` and service calls of `request` throw RequestAbortedError. */
+export function abandonOnDisconnect(request: FastifyRequest): void {
+  const { [CONTEXT]: store, [DISCONNECT]: signal } = stateOf(request);
+  if (store !== null && signal !== null) store.signal = signal;
 }
 
 /** Records why `request` was denied or rejected, for its WARNING line; `reason` is a fixed identifier such as an error type, never request input. */
@@ -537,10 +559,13 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   app.decorate('opt2', runtime);
   app.decorateRequest('opt2', null, []);
   app.decorateRequest(CONTEXT, null, []);
+  app.decorateRequest(DISCONNECT, null, []);
   app.decorateRequest(FILES, null, []);
+  app.decorateRequest(PART_HEADERS, null, []);
   app.decorateRequest(BODY_LIMIT, null, []);
   app.decorateRequest(RESPONSE_CLOSED, false, []);
   app.decorateRequest(REASON, null, []);
+  app.decorateRequest(EVENT_SCOPE, null, []);
 
   await app.register(cookie);
   await app.register(formbody);
@@ -549,6 +574,8 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     limits: { fileSize: LEGACY_POST_LIMIT_BYTES, fieldSize: LEGACY_POST_LIMIT_BYTES },
     async onFile(part) {
       const state = stateOf(this);
+      // Parts arrive in body order, each after the scanner has read its headers.
+      const contentType = state[PART_HEADERS]?.take(part.fieldname, part.mimetype) ?? part.mimetype;
       const filepath = path.join(tmpdir(), `opt2-upload-${randomUUID()}`);
       const file = await open(filepath, 'wx', 0o600);
       if (state[RESPONSE_CLOSED]) {
@@ -574,7 +601,7 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
         // A file the body limit destroyed reports a premature close; the limit is the request's error.
         throw state[BODY_LIMIT] ?? err;
       }
-      (state[FILES] ??= []).push({ part, filepath, size, sha256: hash.digest('hex') });
+      (state[FILES] ??= []).push({ part, filepath, size, sha256: hash.digest('hex'), contentType });
     },
   });
   // Multipart reads the raw request past bodyLimit, so its bytes are counted against the same limit here.
@@ -610,6 +637,12 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     // Paused first, so the listener does not start the stream; multipart's pipe resumes it.
     raw.pause();
     raw.on('data', count);
+    // Ahead of multipart's own listener, so busboy hands a file part over only once its headers are scanned.
+    const scanner = createMultipartHeaderScanner(request.headers['content-type']);
+    if (scanner !== undefined) {
+      stateOf(request)[PART_HEADERS] = scanner;
+      raw.on('data', (chunk: Buffer) => scanner.push(chunk));
+    }
     done(null, payload);
   });
   const parseJson = app.getDefaultJsonParser('remove', 'remove') as (
@@ -632,12 +665,18 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   });
 
   // Registered before auth, so the auth hooks and the handler run inside the request context.
-  app.addHook('onRequest', (request, _reply, done) => {
+  app.addHook('onRequest', (request, reply, done) => {
     // The HTTP instrumentation names its server span `<method> <route>` from this at response end; unmatched paths keep the method.
     const rpcMetadata = getRPCMetadata(context.active());
     if (rpcMetadata?.type === RPCType.HTTP && request.routeOptions.url !== undefined) rpcMetadata.route = request.routeOptions.url;
     const store = newRequestContext({ requestId: request.id, clock });
     stateOf(request)[CONTEXT] = store;
+    // Fastify's request.signal also aborts once a body is consumed; only a response closing unended means the client left.
+    const disconnect = new AbortController();
+    reply.raw.once('close', () => {
+      if (!reply.raw.writableEnded) disconnect.abort(new RequestAbortedError());
+    });
+    stateOf(request)[DISCONNECT] = disconnect.signal;
     request.opt2 = {};
     requestContext.run(store, () => done());
   });
@@ -674,6 +713,12 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   });
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
+    if (error instanceof RequestAbortedError) {
+      const route = request.routeOptions.url ?? pathOf(request);
+      request.log.info({ route, httpMethod: request.method, latencyMs: Math.round(reply.elapsedTime), ...scopeFields(request) }, 'request abandoned');
+      // 499 is the client-closed-request code; the socket is gone, so it never reaches the wire.
+      return reply.code(499).send();
+    }
     const params = legacyParamsOf(request);
     const method = paramString(params, 'method');
     if (error instanceof AuthDenial) {

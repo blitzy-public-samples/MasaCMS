@@ -98,19 +98,21 @@ describe('createFaultRegistry: set, clear and active', () => {
     expect(delay).toEqual({ name: 'projector-delay', params: { delayMs: 3000 }, since: NOW });
     expect(window).toEqual({ name: 'window-import-interrupted', params: { windowId: WINDOW_A }, since: NOW });
     registry.set('projector-crash', { point: 'after-legacy-commit' });
+    registry.set('projector-hold', { point: 'first-change' });
     expect(registry.active().map((fault) => fault.name)).toEqual([...REGISTRY_FAULT_NAMES].sort());
 
     expect(registry.set('projector-delay', { delayMs: 50 }).params).toEqual({ delayMs: 50 });
-    expect(registry.active()).toHaveLength(3);
+    expect(registry.active()).toHaveLength(4);
 
     expect(registry.clear('projector-delay')).toBe(true);
     expect(registry.clear('projector-delay')).toBe(false);
-    expect(registry.active().map((fault) => fault.name)).toEqual(['projector-crash', 'window-import-interrupted']);
+    expect(registry.active().map((fault) => fault.name)).toEqual(['projector-crash', 'projector-hold', 'window-import-interrupted']);
     registry.set('window-import-interrupted');
     expect(messages(logger)).toEqual([
       'fault set projector-delay delayMs=3000',
       `fault set window-import-interrupted window ${WINDOW_A}`,
       'fault set projector-crash point=after-legacy-commit afterBatches=1',
+      'fault set projector-hold point=first-change holdMs=0 fail=false',
       'fault set projector-delay delayMs=50',
       'fault cleared projector-delay',
       'fault set window-import-interrupted every window',
@@ -133,6 +135,12 @@ describe('createFaultRegistry: set, clear and active', () => {
     ['projector-crash', {}, 'point'],
     ['projector-crash', { point: 'before-legacy-commit' }, 'point'],
     ['projector-crash', { point: 'after-legacy-commit', afterBatches: 0 }, 'afterBatches'],
+    ['projector-hold', {}, 'point'],
+    ['projector-hold', { point: 'after-legacy-commit' }, 'point'],
+    ['projector-hold', { point: 'first-change', holdMs: -1 }, 'holdMs'],
+    ['projector-hold', { point: 'first-change', holdMs: 2.5 }, 'holdMs'],
+    ['projector-hold', { point: 'first-change', fail: 'yes' }, 'fail'],
+    ['projector-hold', { point: 'first-change', afterBatches: 1 }, '(root)'],
     ['window-import-interrupted', { windowId: '' }, 'windowId'],
     ['window-import-interrupted', { windowId: 7 }, 'windowId'],
     ['window-import-interrupted', { windowId: WINDOW_A.toLowerCase() }, 'windowId'],
@@ -149,13 +157,25 @@ describe('createFaultRegistry: set, clear and active', () => {
     expect(logger.calls).toEqual([]);
   });
 
-  it('refuses projector-crash outside OPT2_ENV=local, even with valid parameters', () => {
+  it.each([
+    ['projector-crash', { point: 'after-legacy-commit' }],
+    ['projector-hold', { point: 'between-participants', holdMs: 10, fail: true }],
+  ])('refuses %s outside OPT2_ENV=local, even with valid parameters', (name, params) => {
     const { registry } = registryIn('cloud');
-    expect(() => registry.set('projector-crash', { point: 'after-legacy-commit' })).toThrow(
-      expect.objectContaining({ fault: 'projector-crash', statusCode: 400, issues: ['local only (OPT2_ENV=cloud)'] }),
+    expect(() => registry.set(name, params)).toThrow(
+      expect.objectContaining({ fault: name, statusCode: 400, issues: ['local only (OPT2_ENV=cloud)'] }),
     );
     expect(registry.active()).toEqual([]);
     expect(registry.set('projector-delay').name).toBe('projector-delay');
+  });
+
+  it('arms projector-hold with holdMs 0 and fail false by default', () => {
+    const { registry } = registryIn();
+    expect(registry.set('projector-hold', { point: 'between-participants' })).toEqual({
+      name: 'projector-hold',
+      params: { point: 'between-participants', holdMs: 0, fail: false },
+      since: NOW,
+    });
   });
 
   it('fails to build without a configured projector-delay default', () => {
@@ -214,6 +234,60 @@ describe('projectorHooks', () => {
     registry.clear('projector-crash');
     await commit('batch-5');
     expect(exit).toHaveBeenCalledTimes(2);
+  });
+
+  /** One operation change point of batch `batch-1`. */
+  const point = (owner: string, written: string[]) => ({ batchId: 'batch-1', operationId: 'OP-1', owner, written });
+
+  it.each<['first-change' | 'between-participants', string, string[], boolean]>([
+    ['first-change', 'people', [], true],
+    ['first-change', 'identity', ['people'], false],
+    ['first-change', 'people', ['people'], false],
+    ['between-participants', 'people', [], false],
+    ['between-participants', 'people', ['people'], false],
+    ['between-participants', 'identity', ['people'], true],
+    ['between-participants', 'people', ['people', 'identity'], false],
+  ])('beforeOperationChange under %s, for the %s change after %j, fires: %s', async (at, owner, written, fires) => {
+    const { registry, sleep, logger } = registryIn();
+    registry.set('projector-hold', { point: at, holdMs: 250, fail: true });
+    const attempt = registry.projectorHooks().beforeOperationChange?.(point(owner, written));
+    if (fires) {
+      await expect(attempt).rejects.toMatchObject({ name: 'FaultInjectedError', fault: 'projector-hold' });
+      expect(sleep).toHaveBeenCalledExactlyOnceWith(250);
+      expect(messages(logger)).toContain(`fault projector-hold holding batch batch-1 for 250 ms before the ${owner} change of operation OP-1`);
+    } else {
+      await expect(attempt).resolves.toBeUndefined();
+      expect(sleep).not.toHaveBeenCalled();
+    }
+  });
+
+  it('beforeOperationChange holds without failing, stays armed until cleared, and keeps the parameters it read for a hold in progress', async () => {
+    const { registry, sleep } = registryIn();
+    const hooks = registry.projectorHooks();
+    await expect(hooks.beforeOperationChange?.(point('people', []))).resolves.toBeUndefined();
+    expect(sleep).not.toHaveBeenCalled();
+
+    registry.set('projector-hold', { point: 'first-change', holdMs: 40, fail: true });
+    let wake: () => void = () => undefined;
+    sleep.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          wake = resolve;
+        }),
+    );
+    const held = hooks.beforeOperationChange?.(point('people', []));
+    registry.set('projector-hold', { point: 'first-change', holdMs: 5 });
+    wake();
+    await expect(held).rejects.toBeInstanceOf(FaultInjectedError);
+
+    for (const operationId of ['OP-2', 'OP-3']) {
+      await expect(hooks.beforeOperationChange?.({ ...point('identity', []), operationId })).resolves.toBeUndefined();
+    }
+    expect(sleep.mock.calls).toEqual([[40], [5], [5]]);
+
+    registry.clear('projector-hold');
+    await expect(hooks.beforeOperationChange?.(point('people', []))).resolves.toBeUndefined();
+    expect(sleep).toHaveBeenCalledTimes(3);
   });
 
   it('afterLegacyCommit calls process.exit by default', async () => {

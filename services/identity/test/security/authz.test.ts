@@ -244,6 +244,7 @@ const CONSUME_CALLERS = [
   'service:identity',
   'service:gateway',
   'service:communications',
+  'service:e-signature',
   'service:finance',
   'service:reporting',
   'service:surveys',
@@ -398,6 +399,7 @@ const EXPECTED: Readonly<Record<string, Row>> = {
   'POST /internal/v1/csrf/consume': service(CONSUME_CALLERS, { method: 'POST', url: '/internal/v1/csrf/consume', payload: {} }),
 
   'GET /internal/v1/accounts/:userId': service(PEOPLE_ONLY, { method: 'GET', url: `/internal/v1/accounts/${USER_ID}` }, { actsForUser: true }),
+  'GET /internal/v1/accounts/:userId/memberships': service(PEOPLE_ONLY, { method: 'GET', url: `/internal/v1/accounts/${USER_ID}/memberships` }, { actsForUser: true }),
   'POST /internal/v1/accounts/:userId/login-block': service(PEOPLE_ONLY, { method: 'POST', url: `/internal/v1/accounts/${USER_ID}/login-block`, payload: {} }),
   'POST /internal/v1/accounts::lookup': service(PEOPLE_ONLY, { method: 'POST', url: '/internal/v1/accounts:lookup', payload: {} }),
   'POST /internal/v1/accounts::lookup-all-sites': service(PEOPLE_ONLY, { method: 'POST', url: '/internal/v1/accounts:lookup-all-sites', payload: {} }),

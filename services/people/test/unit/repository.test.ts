@@ -171,6 +171,7 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
     person: "INSERT INTO <s>.person (tenant_id, userid) SELECT $1, 'FILL-' || g FROM generate_series(1, 3000) AS g",
     user_address: "INSERT INTO <s>.user_address (tenant_id, addressid, userid) SELECT $1, 'FILL-' || g, 'FILL-' || g FROM generate_series(1, 3000) AS g",
     user_tag: "INSERT INTO <s>.user_tag (tenant_id, tagid, userid) SELECT $1, 1000000000 + g, 'FILL-' || g FROM generate_series(1, 3000) AS g",
+    user_interest: "INSERT INTO <s>.user_interest (tenant_id, userid, categoryid) SELECT $1, 'FILL-' || g, 'FILL-' || g FROM generate_series(1, 3000) AS g",
     user_favorite:
       "INSERT INTO <s>.user_favorite (tenant_id, favoriteid, userid, favorite, type, datecreated) SELECT $1, 'FILL-' || g, 'FILL-' || g, 'c', 'Page', now()" +
       ' FROM generate_series(1, 3000) AS g',
@@ -1385,14 +1386,46 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect(await inTenant((tx) => repo.insertTrashIfAbsent(tx, { ...trash, objectid: trash.objectid.toLowerCase() }))).toBeNull();
     });
 
+    it.each<[string, string, (tx: TenantTx, ids: readonly string[]) => Promise<Map<string, unknown[]>>, (tx: TenantTx, id: string) => Promise<unknown[]>]>([
+      ['listAddressesOf', 'user_address', (tx, ids) => repo.listAddressesOf(tx, ids), (tx, id) => repo.listAddresses(tx, id)],
+      ['listInterestsOf', 'user_interest', (tx, ids) => repo.listInterestsOf(tx, ids), (tx, id) => repo.listInterests(tx, id)],
+      ['listExtendDataOf', 'extend_data_user_activity', (tx, ids) => repo.listExtendDataOf(tx, ids), (tx, id) => repo.listExtendData(tx, [id])],
+    ])('%s reads every requested id in one statement, keyed by the id as given and each listed as its single-id read lists it', async (_label, table, many, one) => {
+      const owners = [cfUuid(), cfUuid()];
+      for (const userid of owners) {
+        await inTenant(async (tx) => {
+          await repo.insertAddress(tx, { userid, isprimary: null });
+          await repo.insertAddress(tx, { userid, isprimary: 1 });
+          await repo.replaceInterests(tx, userid, ['B-CATEGORY', 'A-CATEGORY']);
+          await repo.replaceExtendData(tx, userid, [{ attributeId: 2, row: extendValues('b') }, { attributeId: 1, row: extendValues('a') }]);
+        });
+      }
+      const [first, second] = owners as [string, string];
+      const absent = cfUuid();
+      const requested = [first.toLowerCase(), `${second}  `, first.toLowerCase(), absent];
+      const statements: string[] = [];
+      const found = await inTenant((tx) => many(recorded(tx, statements), requested));
+      expect(statements.filter((sql) => sql.includes(`"${handle.schema}"."${table}"`))).toHaveLength(1);
+      expect([...found.keys()]).toEqual([first.toLowerCase(), `${second}  `, absent]);
+      for (const [id, listed] of found) expect(listed).toEqual(await inTenant((tx) => one(tx, id)));
+      expect(found.get(first.toLowerCase())).toHaveLength(2);
+      expect(found.get(absent)).toEqual([]);
+      const none: string[] = [];
+      expect(await inTenant((tx) => many(recorded(tx, none), []))).toEqual(new Map());
+      expect(none.filter((sql) => sql.includes(`"${handle.schema}"."${table}"`))).toEqual([]);
+    });
+
     it.each<[string, (tx: TenantTx) => Promise<unknown>, string, string, string]>([
       ['findPerson', (tx) => repo.findPerson(tx, cfUuid()), 'person', 'person_tenant_ci_userid_uidx', 'userid'],
       ['findPersons', (tx) => repo.findPersons(tx, [cfUuid()]), 'person', 'person_tenant_ci_userid_uidx', 'userid'],
       ['findAddress', (tx) => repo.findAddress(tx, cfUuid()), 'user_address', 'user_address_tenant_ci_addressid_uidx', 'addressid'],
       ['listAddresses', (tx) => repo.listAddresses(tx, cfUuid()), 'user_address', 'user_address_tenant_ci_userid_idx', 'userid'],
+      ['listAddressesOf', (tx) => repo.listAddressesOf(tx, [cfUuid()]), 'user_address', 'user_address_tenant_ci_userid_idx', 'userid'],
+      ['listInterestsOf', (tx) => repo.listInterestsOf(tx, [cfUuid()]), 'user_interest', 'user_interest_tenant_ci_key_uidx', 'userid'],
       ['replaceTags', (tx) => repo.replaceTags(tx, { userId: cfUuid(), siteId: 'tenant-a', tags: null }), 'user_tag', 'user_tag_tenant_ci_userid_idx', 'userid'],
       ['listFavorites', (tx) => repo.listFavorites(tx, cfUuid()), 'user_favorite', 'user_favorite_tenant_ci_userid_idx', 'userid'],
       ['listExtendData', (tx) => repo.listExtendData(tx, [cfUuid()]), 'extend_data_user_activity', 'extend_data_user_activity_tenant_ci_baseid_idx', 'baseid'],
+      ['listExtendDataOf', (tx) => repo.listExtendDataOf(tx, [cfUuid()]), 'extend_data_user_activity', 'extend_data_user_activity_tenant_ci_baseid_idx', 'baseid'],
       ['listExtendSets', (tx) => repo.listExtendSets(tx, [cfUuid()]), 'extend_set', 'extend_set_tenant_ci_subtypeid_idx', 'subtypeid'],
       ['listExtendAttributes', (tx) => repo.listExtendAttributes(tx, { setIds: [cfUuid()] }), 'extend_attribute', 'extend_attribute_tenant_extendsetid_ci_idx', 'extendsetid'],
       ['insertTrashIfAbsent', (tx) => repo.insertTrashIfAbsent(tx, { ...trashRow(), objectid: cfUuid() }), 'trash', 'trash_tenant_ci_objectid_uidx', 'objectid'],

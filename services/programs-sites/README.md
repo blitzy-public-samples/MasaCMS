@@ -12,11 +12,10 @@ Contracts: [`contracts/openapi.yaml`](contracts/openapi.yaml), [`contracts/event
 |---|---|---|
 | Sites list, bind order and batch-deploy flags | `csettings.list` [admin/core/controllers/csettings.cfc:97-114]; `settingsManager.saveOrder`, `saveDeploy` [core/mura/settings/settingsManager.cfc:212-242] | `GET /v1/sites`; `POST /v1/sites/order` under CSRF context `updatesites` |
 | Edit Site, all tabs | `csettings.editSite` [admin/core/controllers/csettings.cfc:116-118] | `GET /v1/sites/{siteId}`: the stored settings, the `tsettings` extend sets with their values and the custom image sizes; an unknown id yields the defaulted new site. Stored Razuna settings (`trazunasettings`, decision list) stay on legacy and are not returned ([`web/README.md`](../../web/README.md#known-limitations)) |
-| Edit Site save, `action=Update` | `csettings.updateSite` [admin/core/controllers/csettings.cfc:170-225]; `settingsManager.update` [core/mura/settings/settingsManager.cfc:251-304]; `settingsDAO.update` [core/mura/settings/settingsDAO.cfc:318-420] | `POST /v1/sites/{siteId}/update` under CSRF context = site id; a failed check writes nothing, as in legacy |
 | Custom image sizes | `csettings.loadcustomimage`, `csettings.loadcustomimages` (`admin/core/views/csettings/loadcustomimage.cfm`, `loadcustomimages.cfm`); table `timagesizes` [core/mura/settings/settingsImageSizeBean.cfc:76] | `/v1/sites/{siteId}/image-sizes` and `/v1/sites/{siteId}/image-sizes/{sizeId}`; no CSRF check, as in legacy |
 | Access gate | `csettings.before()`: S2, or an `Admin` of the site's private user pool except on the list, plugin and site-copy actions [admin/core/controllers/csettings.cfc:85-95] | Roles `s2` and `site-admin` ([Routes](#routes)) |
 | Pools | `publicUserPoolID`, `privateUserPoolID`, `displayPoolID`, `contentPoolID`, `categoryPoolID`, `filePoolID`, each defaulting to the site's own id [core/mura/settings/settingsBean.cfc:119-124,328-344] | Stored on `programs_sites.site` and published as legacy site ids in `site.changed`; each consumer resolves them to tenant UUIDs in its `tenant_registry`. Pooled rows of other services carry the pool site's tenant |
-| JSON API entity `site` | Public entity [core/mura/client/api/json/v1/jsonApiUtility.cfc:69-73]; an unknown `siteid` falls back to `default` [core/mura/content/contentServer.cfc:610-622] | Every `/_api/{json,ajax,rest}/v1` path, also behind `/index.cfm` and in any letter case, under every verb: `findOne`, `findAll`, `findMany`, `findQuery`, `findNew`, `findProperties`, `findPermissions`, `validate`, `delete`, and `save` of the addressed, existing site ([below](#json-api-site)) |
+| JSON API entity `site` | Public entity [core/mura/client/api/json/v1/jsonApiUtility.cfc:69-73]; an unknown `siteid` falls back to `default` [core/mura/content/contentServer.cfc:610-622] | Every `/_api/{json,ajax,rest}/v1` path, also behind `/index.cfm` and in any letter case, under every verb: `findOne`, `findAll`, `findMany`, `findQuery`, `findNew`, `findProperties`, `findPermissions`, `validate` and `delete`; the withheld `save` answers the legacy-shaped 503 ([below](#json-api-site)) |
 | Admin layout site data, a user's sites, href domains | `settingsManager.getUserSites`, `contentServer.bindToDomain(isAdmin=true)`, `utility.sanitizeHref` | `GET /v1/sites/{siteId}/shell`, `GET /v1/sites/{siteId}/user-pool-sites`, `GET /v1/user-sites` (for `web/`), `GET /v1/href-domains` (for the gateway) |
 | In-memory site registry rebuild | `settingsManager.setSites` [core/mura/settings/settingsManager.cfc:440-486] | `programs-sites.site.changed.v1` into every service's `tenant_registry`; legacy is refreshed by the migration projector through `gateway/legacy-bridge/cfml/site.cfm?op=refresh` |
 | Site monitor | `/_api/sitemonitor` [core/mura/content/contentServer.cfc:669-747]; ACF task registration [core/appcfc/onApplicationStart_include.cfm:549-579] | `src/jobs/sitemonitor.ts` ([below](#site-monitor)) |
@@ -43,11 +42,12 @@ A legacy step goes to migration `POST /internal/v1/legacy-steps`, which calls `g
 
 ### JSON API site
 
-- **Method.** The route key of `platform/src/legacy-compat/route-key.ts` picks the method as `processRequest` does [core/mura/client/api/json/v1/jsonApiUtility.cfc:856-900,989-1316]. A `/site/<x>` path is `findOne` under any verb. The bare entity path maps GET to `findOne`, POST and PUT to `save`, and DELETE to `delete`; HEAD, OPTIONS and PATCH of it call nothing and answer the empty result `{"apiversion":"v1","data":"","method":"undefined"}`. `?method=<m>&entityname=site` and `/<m>?entityname=site` call `<m>` under any verb and report it as spelled.
+- **Method.** The route key of `platform/src/legacy-compat/route-key.ts` picks the method as `processRequest` does [core/mura/client/api/json/v1/jsonApiUtility.cfc:856-900,989-1316]. A `/site/<x>` path is `findOne` under any verb. The bare entity path maps GET to `findOne`, POST and PUT to the withheld `save`, and DELETE to `delete`; HEAD, OPTIONS and PATCH of it call nothing and answer the empty result `{"apiversion":"v1","data":"","method":"undefined"}`. `?method=<m>&entityname=site` and `/<m>?entityname=site` call `<m>` under any verb and report it as spelled.
 - **HEAD** sends the status, ETag and headers of the GET answer without a body or `Content-Length`, as legacy does.
 - **Feeds.** `findAll`, `findMany` (`ids` required) and `findQuery` read the feed of the API site: `contentpoolid=*` takes its content pool, a listed pool is bounded by it, and each site is read in its own tenant. Paging, blank rows past the last one, `countOnly`, `distinct` and `fields` follow `setFeedProps`, `setIteratorProps` and `packageIteratorArray` [core/mura/client/api/json/v1/jsonApiUtility.cfc:280-370,2542-2918,2955-3185]; `findQuery` filters on `tsettings` columns as `queryParam` binds them [core/mura/queryParam.cfc:60-360]. Legacy orders the query parameters of the `findAll` and `findMany` self links differently from request to request; the target sends one of those orders.
 - **`delete` never writes.** Without a stored site it answers the empty result; a caller without S2 gets `authorization`; the session modes then consume the CSRF token; then, the settings bean defining no `delete`, it answers `server_error` [core/mura/client/api/json/v1/jsonApiUtility.cfc:3259-3335].
 - **Legacy-shaped 503**, writing nothing, where the legacy answer is not reproduced: `findQuery` aggregates (`sum`, `avg`, `count`, `max`, `min`, `groupBy`) and `distinct` (legacy then returns every `tsettings` column, the mail server password included); multi-part column identifiers, criteria naming another entity's column, comparisons converting between column types and a timestamp list bound empty; `ishuman` (CFFormProtect markup); `validate` of another entity or with ad hoc property rules (these site forms are `EX-SITE-FEED-SUBFORMS` in [`opt2/exceptions-list.md`](../../opt2/exceptions-list.md), the `distinct` leak SEC-07 in [`opt2/reports/pre-existing-defects.md`](../../opt2/reports/pre-existing-defects.md)); method calls without `entityname` (`api:.<method>`, which no service owns).
+- **`save` is withheld** ([`opt2/decision-list.json`](../../opt2/decision-list.json) `trazunasettings`): every form that resolves to `site.save` (POST or PUT of the entity path, `?method=save`, `/<site>/save`, a bundle upload) answers the legacy-shaped 503 before any site read, CSRF consume or write, and legacy serves it.
 - **Not reproduced**, as in every service: the Portcullis rewriting of the request scopes (trimming url values, refusing a lowercase `null`, dropping invalid variable names, joining case-variant duplicates).
 
 ## Owned data
@@ -72,7 +72,7 @@ Legacy tables, as split in [`opt2/table-ownership.json`](../../opt2/table-owners
 | `tclassextendsets` | `extend_set` | Sets of those subtypes | `extendSetID` |
 | `tclassextendattributes` | `extend_attribute` | Attributes of those sets | `attributeID` |
 | `tclassextendrcsets` | `extend_rc_set` | Related-content sets of those subtypes | `relatedContentSetID` |
-| `tclassextenddata` | `extend_data` | Values of those attributes; target rows take negative `dataID`s from `extend_data_dataid_seq` | `dataID` |
+| `tclassextenddata` | `extend_data` | Values of those attributes | `dataID` |
 | `ttrash` | `trash` | `extendObject` rows whose `baseTable` is `tsettings` | `objectID` |
 
 Also owned: `sitemonitor_state` (new), and the platform tables `tenant_registry`, `tenant_grant`, `changelog`, `unit_gate`, `open_operation`, `migration_batch`, `migration_watermark`, `outbox`, `inbox`, `consumer_aggregate_version`, `scheduled_task_queue` and `scheduled_task_queue_state`. `synthetic.program_site` is owned too but not migrated; the migration kit reads it to fold `Program_<id>` rows.
@@ -91,11 +91,11 @@ Route keys are those of `platform/src/legacy-compat/route-key.ts`; the state is 
 |---|---|---|---|
 | `admin:csettings.list` | Sites screen, with its order and deploy save | `web/` → `GET /v1/sites`, `POST /v1/sites/order` | `legacy` |
 | `admin:csettings.editsite` | Edit Site | `web/` → `GET /v1/sites/{siteId}` | `legacy` |
-| `admin:csettings.updatesite{action=update}` | Edit Site save | `web/` → `POST /v1/sites/{siteId}/update` | `legacy-write`, decision |
+| `admin:csettings.updatesite{action=update}` | Edit Site save | Legacy; `POST /v1/sites/{siteId}/update` answers the legacy-shaped 503 | `legacy-write`, decision |
 | `admin:csettings.loadcustomimage` | Image size dialog | `web/` → `GET /v1/sites/{siteId}/image-sizes/{sizeId}` | `legacy` |
 | `admin:csettings.loadcustomimages` | Image size list, save and delete | `web/` → `GET /v1/sites/{siteId}/image-sizes`; `PUT`, `DELETE /v1/sites/{siteId}/image-sizes/{sizeId}` | `legacy` |
 | `api:site.findone`, `findall`, `findmany`, `findquery`, `findnew`, `findproperties`, `findpermissions`, `validate`, `delete`, and their `rest:` keys | JSON API site methods | `/_api/{json,ajax,rest}/v1*`, also behind `/index.cfm` | `legacy` |
-| `api:site.save`, `rest:site.save` | JSON API site save | `/_api/{json,ajax,rest}/v1*`, also behind `/index.cfm` | `legacy-write`, decision |
+| `api:site.save`, `rest:site.save` | JSON API site save | Legacy; `/_api/{json,ajax,rest}/v1*` answer the legacy-shaped 503 | `legacy-write`, decision |
 | `api:site.http-head`, `http-options`, `http-patch`, and their `rest:` keys | HEAD, OPTIONS and PATCH of the bare entity path | `/_api/{json,ajax,rest}/v1*`, also behind `/index.cfm` | no entry: legacy |
 | `sitemonitor:run` | `/_api/sitemonitor` | `/_api/sitemonitor` | `target` from `v0002` |
 
@@ -104,7 +104,7 @@ Why the site routes stay on legacy in this run:
 - The site and image-size groups have carry write entries (`admin:csettings.list`, `admin:csettings.loadcustomimages`), but `tsettings`, `timagesizes` and `tsystemobjects` also have application-start writers in the inventory that are not on the prevented-writer list (`gateway/src/cutover/prevented-writers.ts`). `gateway/src/cutover/build-versions.ts` therefore keeps every `programs_sites` group `legacy`-authoritative, and the read entries follow their units. The other units have no carry write entry.
 - The Edit Site save and JSON API `site.save` write `trazunasettings` on every save [core/mura/settings/settingsManager.cfc:271], a decision-list table, plus strategies-content and people extension definitions and `tfiles`. They stay `legacy-write` entries, run on legacy inside write windows.
 
-The service implements these routes in full, so a later version can move them once those blockers are settled.
+The service implements the other routes in full, so a later version can move them once those blockers are settled. The two withheld saves are not built.
 
 ### `/v1` APIs
 
@@ -115,7 +115,7 @@ The service implements these routes in full, so a later version can move them on
 | `GET /v1/sites/{siteId}` | `s2`, `site-admin` | One site's Edit Site data: stored settings, `tsettings` extend sets with their values, custom image sizes. Stored Razuna settings stay on legacy and are not returned ([`web/README.md`](../../web/README.md#known-limitations)) |
 | `GET /v1/sites/{siteId}/shell` | `s2`, `site-admin`, `system-user` | Site settings the admin layout reads |
 | `GET /v1/sites/{siteId}/user-pool-sites` | `s2`, `site-admin`, `system-user` | The same settings of the site's registered private, then public, user pool sites, each once; the user form's photo URL reads a pooled user's site |
-| `POST /v1/sites/{siteId}/update` | `s2`, `site-admin` | Edit Site save |
+| `POST /v1/sites/{siteId}/update` | `s2`, `site-admin` | Refuses the Edit Site save: `invalidParameters` 400 for any action but `Update`, the legacy-shaped 503 for the withheld `Update`; it consumes no CSRF token and writes nothing |
 | `GET /v1/sites/{siteId}/image-sizes` | `s2`, `site-admin` | The site's custom image sizes |
 | `GET`, `PUT`, `DELETE /v1/sites/{siteId}/image-sizes/{sizeId}` | `s2`, `site-admin` | Read (defaulted new size for an unknown id), create or update, delete |
 | `GET /v1/href-domains` | `service:gateway` | Registered domains and the site domain an absolute href is checked against |
@@ -137,18 +137,8 @@ Queues this service creates tasks on (`platform/src/tasks/queues.ts`): `programs
 
 ## Not built here
 
-- **Withheld** (decision list, [`opt2/decision-list.md`](../../opt2/decision-list.md); they keep running on legacy): `admin:csettings.updatesite{action=add}`, `admin:csettings.updatesite{action=delete}`, `admin:csettings.sitecopyselect`, `admin:csettings.sitecopy`, `admin:cextend.*` and `admin:ctrash.*`; also `admin:csettings.updatesite{bundle}` and the plugin writes `deleteplugin`, `deployplugin` and `updateplugin`, which write `tplugins*` (decision list). Programs-sites builds no class-extension definition or trash management: it writes the `tsettings` subtype, set, attribute and related-content-set rows and the site trash rows only through migration. It does read the site's extend sets and their values for Edit Site, and when `extendSetID` is posted, the Edit Site save and JSON API `site.save` replace the non-file extended-attribute values; a posted File attribute value or delete flag answers the legacy-shaped 503 and writes nothing. `admin:csettings.sitecopyresult` has no screen here and stays on legacy with the site copy it reports.
+- **Withheld** (decision list, [`opt2/decision-list.md`](../../opt2/decision-list.md); they keep running on legacy): `admin:csettings.updatesite{action=update}`, `api:site.save` and `rest:site.save`, which write `trazunasettings` on every save [core/mura/settings/settingsManager.cfc:271], so their extended attributes, placeholder image, display-pool copy, bundle deploy and runtime effects stay on legacy too; `admin:csettings.updatesite{action=add}`, `admin:csettings.updatesite{action=delete}`, `admin:csettings.sitecopyselect`, `admin:csettings.sitecopy`, `admin:cextend.*` and `admin:ctrash.*`; also `admin:csettings.updatesite{bundle}` and the plugin writes `deleteplugin`, `deployplugin` and `updateplugin`, which write `tplugins*` (decision list). Programs-sites builds no class-extension definition or trash management: it writes the `tsettings` subtype, set, attribute and related-content-set rows and the site trash rows only through migration. It does read the site's extend sets and their values for Edit Site. `admin:csettings.sitecopyresult` has no screen here and stays on legacy with the site copy it reports.
 - **Legacy-served:** `csettings` createBundle, selectBundleOptions, deployBundle, exportHTML, editPlugin and updatePluginVersion.
-- **Update branches that write outside this service.** Before any write, `src/legacy/update-branches.ts` detects the `settingsManager.update` branches below and answers the legacy-shaped 503, writing nothing:
-
-  | Branch | Trigger | Writes |
-  |---|---|---|
-  | Razuna settings | Razuna fields with values [core/mura/settings/settingsManager.cfc:271] | `trazunasettings` (decision list) |
-  | Placeholder image | `newPlaceholderImg` or `deletePlaceholderImg` [core/mura/settings/settingsManager.cfc:273-290] | `tfiles` and the file store (strategies-content) |
-  | Display-pool copy | The site becomes its own display pool [core/mura/settings/settingsManager.cfc:413-426] | The legacy web-root filesystem |
-  | Bundle deploy | `bundleFile` or `serverBundlePath` [core/mura/settings/settingsManager.cfc:636-680] | The legacy bundle engine |
-
-  The legacy runtime effects of an update (plugin events, `clusterManager.reload`, `setSites`, `application.appInitialized`) are replaced by the `site.changed` event and the projector's registry refresh, not reproduced.
 
 ## Events
 

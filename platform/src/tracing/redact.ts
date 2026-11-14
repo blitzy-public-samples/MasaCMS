@@ -23,7 +23,16 @@ const CREDENTIAL_HEADER_KEY =
 /** Bound SQL parameter values. */
 const BIND_VALUES_KEY = /^db\.(?:postgresql\.values$|query\.parameter\.)/;
 
-const URL_KEYS = new Set(['url.full', 'url.original', 'http.url', 'http.target']);
+/** Path segment after `/sessions/` or `/legacy-sessions/`, where session ids travel. */
+const SESSION_SEGMENT = /(\/(?:legacy-)?sessions\/)([^/?#]+)/gi;
+
+/** Session segments naming a resource or a route-template parameter rather than a session. */
+const SESSION_RESOURCE = /^(?:current|login|logout)$|^[:{]/;
+
+/** Custom-method suffix of a last path segment, such as `:end` or `:mark-used`. */
+const METHOD_SUFFIX = /^:[a-z-]+$/;
+
+const URL_KEYS = new Set(['url.full', 'url.original', 'url.path', 'http.url', 'http.target']);
 const SQL_KEYS = new Set(['db.query.text', 'db.statement']);
 
 type Rule = (text: string) => string;
@@ -33,6 +42,17 @@ function maskQuery(query: string): string {
   return query.replace(QUERY_PARAM, (param) => {
     const eq = param.indexOf('=');
     return eq < 0 || eq === param.length - 1 ? REDACTED : `${param.slice(0, eq + 1)}${REDACTED}`;
+  });
+}
+
+/** Masks session ids in `/sessions/` and `/legacy-sessions/` paths, keeping a last segment's custom-method suffix; idempotent. */
+function maskSessionPath(text: string): string {
+  return text.replace(SESSION_SEGMENT, (match: string, prefix: string, segment: string, offset: number) => {
+    if (SESSION_RESOURCE.test(segment)) return match;
+    const colon = segment.lastIndexOf(':');
+    const suffix = colon < 0 ? '' : segment.slice(colon);
+    const last = text[offset + match.length] !== '/';
+    return `${prefix}${REDACTED}${last && METHOD_SUFFIX.test(suffix) ? suffix : ''}`;
   });
 }
 
@@ -47,7 +67,8 @@ function maskSqlToken(token: string, keep?: string): string {
 const mask: Rule = () => REDACTED;
 const sql: Rule = (text) => redactText(text.replace(SQL_TOKEN, maskSqlToken));
 const query: Rule = (text) => redactText(maskQuery(text));
-const url: Rule = (text) => redactText(text.replace(URL_QUERY, maskQuery));
+const url: Rule = (text) => redactText(maskSessionPath(text).replace(URL_QUERY, maskQuery));
+const path: Rule = (text) => redactText(maskSessionPath(text));
 
 /** Keeps error text only when it is a fixed safe text, since arbitrary error text may carry personal data. */
 const safeError: Rule = (text) => (isSafeErrorText(text) ? text : REDACTED);
@@ -94,7 +115,7 @@ function redactAttributes(attributes: Attributes): Attributes {
 function redactSpan(span: ReadableSpan): ReadableSpan {
   const { status } = span;
   return {
-    name: Object.keys(span.attributes).some((key) => SQL_KEYS.has(key)) ? sql(span.name) : redactText(span.name),
+    name: Object.keys(span.attributes).some((key) => SQL_KEYS.has(key)) ? sql(span.name) : path(span.name),
     kind: span.kind,
     spanContext: () => span.spanContext(),
     parentSpanContext: span.parentSpanContext,

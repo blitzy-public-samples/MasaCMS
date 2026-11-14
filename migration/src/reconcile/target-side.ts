@@ -25,7 +25,7 @@ export interface TargetUnitRows {
   /** The rows in `compareCanonicalRows` order, read once; ending, failing or leaving the iteration removes any spill files. */
   rows: RowSource<CanonicalRow>;
   count: number;
-  /** Null unless `includeObjects` was set. */
+  /** The unit's object manifest: keyed by `legacyPath` for a shape with object columns, by object key with `includeObjects`, else null. */
   objects: ObjectEntry[] | null;
   /** Removes any spill files, read or not. */
   dispose(): Promise<void>;
@@ -120,6 +120,15 @@ function objectEntry(entry: ObjectManifestEntry): ObjectEntry {
   return { key: entry.key, size: entry.size, sha256: entry.sha256.toLowerCase() };
 }
 
+/** A manifest entry of an object column keyed by its `legacyPath`, as the legacy side keys the row values. @throws TargetShapeError without one */
+function legacyPathEntry(shape: UnitTableShape, entry: ObjectManifestEntry): ObjectEntry {
+  if (entry.legacyPath === undefined || entry.legacyPath === '') {
+    const message = `Owner export of unit ${shape.unit} lists object ${entry.key} without the legacyPath of its ${shape.legacyTable} row`;
+    throw new TargetShapeError(shape, shape.objectColumns.map((column) => column.name), [], message);
+  }
+  return { ...objectEntry(entry), key: entry.legacyPath };
+}
+
 /** The sorted rows of `tenantId`; the sorter is disposed once their iteration ends, fails or is left. */
 async function* sortedRows(sorter: UnitRowSorter, tenantId: string): AsyncGenerator<CanonicalRow, void, undefined> {
   try {
@@ -129,14 +138,15 @@ async function* sortedRows(sorter: UnitRowSorter, tenantId: string): AsyncGenera
   }
 }
 
-/** Reads the tenant's owner-exported rows into a bounded canonical sorter, optionally collecting the object manifest. */
+/** Reads the tenant's owner-exported rows into a bounded canonical sorter, collecting the object manifest of object columns or when asked. */
 export async function readTargetUnitRows(
   deps: ReconcileTargetDeps,
   shape: UnitTableShape,
   tenantId: string,
   options: ReadTargetUnitRowsOptions = {},
 ): Promise<TargetUnitRows> {
-  const includeObjects = options.includeObjects === true;
+  const objectBacked = shape.objectColumns.length > 0;
+  const includeObjects = objectBacked || options.includeObjects === true;
   const key = tableKey(shape.legacyTable, shape.folded);
   const sorter = unitRowSorter(shape, options);
   const objects: ObjectEntry[] = [];
@@ -144,7 +154,8 @@ export async function readTargetUnitRows(
     let exportedTable = false;
     // describeUnitTable records the catalog's DataOwner for the unit, widened to string.
     for await (const page of deps.owners.exportPages(shape.owner as DataOwner, { unit: shape.unit, tenantId })) {
-      if (includeObjects) objects.push(...(page.objects ?? []).map(objectEntry));
+      if (objectBacked) objects.push(...(page.objects ?? []).map((entry) => legacyPathEntry(shape, entry)));
+      else if (includeObjects) objects.push(...(page.objects ?? []).map(objectEntry));
       for (const exported of page.tables) {
         if (tableKey(exported.legacyTable, shape.folded) !== key) continue;
         exportedTable = true;

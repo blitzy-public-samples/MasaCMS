@@ -1,4 +1,5 @@
-/** Stored objects of `content-files`: the migration transfer of legacy file-store bytes and the object manifest export of `content.file`. */
+/** Stored objects of `content-files`: the migration transfer and removal of legacy file-store bytes and the object manifest export of `content.file`. */
+import { createHash } from 'node:crypto';
 import {
   DEFAULT_EXPORT_LIMIT,
   requestMigrationAuthority,
@@ -202,22 +203,107 @@ export async function openMigrationObject(deps: Pick<StoreObjectDeps, 'db' | 're
   }
 }
 
-/** `row` as a manifest entry; no `legacyPath`, as the row keeps no site directory and a partial path would misname it. */
-function manifestEntry(row: FileObjectExportRow): ObjectManifestEntry {
+/** Outcome of `deleteMigrationObject`; `deleted` is false when the key's tenant recorded no object under it. */
+export interface DeletedObjectResult {
+  key: string;
+  deleted: boolean;
+}
+
+/** Length of the CF UUID file id that starts an object name. */
+const FILE_ID_LENGTH = 35;
+
+/** Size and SHA-256 a removal intent records: those of no bytes. */
+const NO_BYTES = { size: 0, sha256: sha256Hex(Buffer.alloc(0)) };
+
+/**
+ * Removes the `content.file_object` row under `key` in the key's own tenant, then the bytes stored there, serialized per key; a
+ * key without a row still loses any bytes left under it. The intent outlives the row's deletion, so recovery deletes the bytes
+ * when this call stops first. A `platform.migration` caller's write passes any `content.file` gate state.
+ */
+export async function deleteMigrationObject(deps: StoreObjectDeps, key: string): Promise<DeletedObjectResult> {
+  const tenantId = key.slice(0, key.indexOf('/'));
+  const name = key.slice(tenantId.length + 1);
+  const dot = name.lastIndexOf('.');
+  const { files } = deps.repository;
+  const ctx: WriteContext = { origin: 'migration-feed', authority: requestMigrationAuthority() };
+  await recoverStagedObjects(deps, tenantId);
+  const entry = await stageObject(deps, {
+    tenant_id: tenantId,
+    object_key: key,
+    kind: 'migration',
+    file_id: name.slice(0, FILE_ID_LENGTH),
+    variant: name.slice(FILE_ID_LENGTH, dot),
+    ext: name.slice(dot + 1),
+    ...NO_BYTES,
+    content_type: null,
+  });
+
+  let deleted: boolean;
+  try {
+    deleted = await deps.db.withTenant(tenantId, async (tx) => {
+      await files.lockFileObjectKey(tx, key);
+      if (!(await claimStagedObject(tx, entry.stage_id))) throw new StagedObjectMissingError(entry.stage_id);
+      return (await files.deleteFileObject(tx, { objectKey: key }, ctx)) !== null;
+    });
+  } catch (err) {
+    try {
+      await settleStagedObject(deps, entry);
+    } catch {
+      // The durable intent remains for recovery; preserve the deletion error.
+    }
+    throw err;
+  }
+  // No committed row names the key now, so settling the intent deletes its bytes.
+  await settleStagedObject(deps, entry);
+  return { key, deleted };
+}
+
+/** Collaborators of `createExportObjects`. */
+export interface ExportObjectsDeps {
+  storage: StoragePort;
+}
+
+/**
+ * The manifest entry of the bytes stored under `row.object_key`, sized and hashed as they stream from storage; null when nothing
+ * is stored there. No `legacyPath`, as the row keeps no site directory and a partial path would misname it.
+ */
+async function manifestEntry(storage: StoragePort, row: FileObjectExportRow): Promise<ObjectManifestEntry | null> {
+  let opened: OpenedObject;
+  try {
+    opened = await storage.open(CONTENT_FILES_BUCKET, row.object_key);
+  } catch (err) {
+    if (err instanceof StorageObjectNotFoundError) return null;
+    throw err;
+  }
+  // The row's size and hash and the stored metadata date from the write; only the bytes show what is stored now.
+  const hash = createHash('sha256');
+  let size = 0;
+  for await (const chunk of opened.body as AsyncIterable<Buffer>) {
+    hash.update(chunk);
+    size += chunk.length;
+  }
   return {
     key: row.object_key,
-    size: Number(row.size),
-    sha256: row.sha256,
+    size,
+    sha256: hash.digest('hex'),
     ...(row.content_type === null ? {} : { contentType: row.content_type }),
   };
 }
 
-/** Object manifest of the `content.file` unit, one page by object key after the owner position `after`; other units store no objects. */
-export const exportObjects: NonNullable<MigrationHandlerOptions['exportObjects']> = async (tx, { unit, after, limit = DEFAULT_EXPORT_LIMIT }) => {
-  if (unit !== FILE.unit) return [];
-  if (await hasStaleStagedObjects(tx, STAGED_OBJECT_GRACE_MS)) throw new StagedObjectsPendingError();
-  const rows = await listFileObjectsForExport(tx, { afterKey: after, limit });
-  // Keyset pages follow the primary key's collation, so the last row read is the position, kept in database order.
-  const last = rows.length < limit ? undefined : rows.at(-1);
-  return { objects: rows.map(manifestEntry), next: last?.object_key ?? null };
-};
+/** Builds the `exportObjects` callback: the `content.file` unit's stored objects, one page by object key after the owner position `after`; other units store no objects. */
+export function createExportObjects(deps: ExportObjectsDeps): NonNullable<MigrationHandlerOptions['exportObjects']> {
+  return async (tx, { unit, after, limit = DEFAULT_EXPORT_LIMIT }) => {
+    if (unit !== FILE.unit) return [];
+    if (await hasStaleStagedObjects(tx, STAGED_OBJECT_GRACE_MS)) throw new StagedObjectsPendingError();
+    const rows = await listFileObjectsForExport(tx, { afterKey: after, limit });
+    const objects: ObjectManifestEntry[] = [];
+    // One object at a time, so a page never holds more than one open read stream.
+    for (const row of rows) {
+      const entry = await manifestEntry(deps.storage, row);
+      if (entry !== null) objects.push(entry);
+    }
+    // Keyset pages follow the primary key's collation, so the last row read is the position, kept in database order.
+    const last = rows.length < limit ? undefined : rows.at(-1);
+    return { objects, next: last?.object_key ?? null };
+  };
+}

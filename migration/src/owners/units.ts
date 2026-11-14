@@ -26,6 +26,8 @@ export interface LegacyTableTarget {
   readonly keyColumns: readonly string[];
   /** `'whole-table'`: every live column of the legacy table. */
   readonly ownedColumns: readonly string[] | 'whole-table';
+  /** Columns whose bytes the owner stores as objects, each to its bucket; empty when the target stores none. */
+  readonly objectColumns: Readonly<Record<string, string>>;
 }
 
 /** A legacy table name with a concrete `Program_<id>` schema folded onto its generic entry. */
@@ -109,7 +111,15 @@ const UNMIGRATED_OWNERS: ReadonlySet<string> = new Set(['decision-list', 'retire
 const name = () => z.string().min(1);
 const names = () => z.array(name());
 
-const targetBase = { unit: name(), owner: name(), rowPredicate: z.string().nullable(), keyColumns: names() };
+const targetBase = {
+  unit: name(),
+  owner: name(),
+  rowPredicate: z.string().nullable(),
+  keyColumns: names(),
+  objectColumns: z.record(name(), name()).optional(),
+};
+
+const NO_OBJECT_COLUMNS: Readonly<Record<string, string>> = Object.freeze({});
 
 const ownershipSchema = z.object({
   units: z.array(
@@ -234,6 +244,7 @@ function buildTarget(raw: RawTable, target: RawTarget, service: boolean, ctx: Lo
     rowPredicate: target.rowPredicate,
     keyColumns: Object.freeze([...target.keyColumns]),
     ownedColumns: target.columnPolicy === 'whole-table' ? 'whole-table' : Object.freeze([...target.ownedColumns]),
+    objectColumns: target.objectColumns === undefined ? NO_OBJECT_COLUMNS : Object.freeze({ ...target.objectColumns }),
   });
 }
 

@@ -68,6 +68,10 @@ interface Call {
   part?: { name: string; filename?: string; type?: string; body: string };
   /** CSRF request headers; a POST otherwise sends a fresh pair issued for the record id in its path. */
   csrf?: Readonly<Record<string, string>>;
+  /** Roles of the gateway's invocation credential; none by default. */
+  serviceRoles?: readonly string[];
+  /** Request headers sent last, over the ones the call builds. */
+  headers?: Readonly<Record<string, string>>;
 }
 
 /** An injected answer, its JSON body already validated against the contract. */
@@ -190,8 +194,9 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
   /** Injects one gateway call and validates the answer against the contract. */
   async function call(method: 'GET' | 'POST', url: string, request: Call, target: FastifyInstance = app): Promise<Answer> {
     const { site, roles = PREPARER.roles, sub = PREPARER_ID } = request;
+    const serviceRoles = request.serviceRoles === undefined ? {} : { roles: [...request.serviceRoles] };
     const headers: Record<string, string> = {
-      [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'finance' })}`,
+      [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'finance', ...serviceRoles })}`,
       ...(request.csrf ?? (method === 'POST' ? issueCsrf(recordIdOf(url)) : {})),
     };
     if (roles !== null) headers.authorization = `Bearer ${await mintUserToken({ site, roles, sub, sid: SESSION_ID })}`;
@@ -203,7 +208,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       headers['content-type'] = 'multipart/form-data; boundary=v1routes';
       payload = multipartBody(request.part, 'v1routes');
     }
-    const res = await target.inject({ method, url, headers, ...(payload === undefined ? {} : { payload }) });
+    const res = await target.inject({ method, url, headers: { ...headers, ...request.headers }, ...(payload === undefined ? {} : { payload }) });
     assertResponseMatchesOpenApi(OPENAPI, { method, path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
     return { status: res.statusCode, body: JSON.parse(res.body) as Record<string, any>, headers: res.headers };
   }
@@ -292,14 +297,31 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       ['a period, paged', '?period=2026-06&pageSize=1&page=2', () => ({ ids: [june[1]], total: 2 })],
       ['a state with no records', '?state=APPROVED', () => ({ ids: [], total: 0 })],
       ['a state and a period', '?state=IN-PROGRESS&period=2026-05', () => ({ ids: [ordered.find((id) => !june.includes(id))], total: 1 })],
+      ['the largest safe page size', '?pageSize=9007199254740991', () => ({ ids: ordered, total: 3 })],
     ])('pages and filters: %s', async (_case, query, expected) => {
       const res = await call('GET', `${RECORDS}${query}`, { site: SITE_LIST, ...APPROVER });
       const { ids, total } = expected();
       expect([res.body.data.map((row: { record_id: string }) => row.record_id), res.body.total]).toEqual([ids, total]);
     });
 
-    it.each(['?state=DONE', '?period=2026-13', '?page=0', '?pageSize=x'])('refuses the query %s as invalidParameters', async (query) => {
-      expect((await call('GET', `${RECORDS}${query}`, { site: SITE_LIST })).status).toBe(400);
+    it.each([
+      '?state=DONE',
+      '?period=2026-13',
+      '?page=0',
+      '?pageSize=0',
+      '?pageSize=x',
+      '?pageSize=99999999999999999999',
+      '?pageSize=9223372036854775808',
+      '?pageSize=9007199254740992',
+      '?page=9223372036854775808',
+      '?pageSize=Infinity',
+      '?pageSize=-1e400',
+      '?page=1e400',
+    ])('refuses the query %s as invalidParameters', async (query) => {
+      expect(await call('GET', `${RECORDS}${query}`, { site: SITE_LIST })).toMatchObject({
+        status: 400,
+        body: fixtureError('finance.records', 'Invalid parameters'),
+      });
     });
   });
 
@@ -320,6 +342,10 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
 
     // A JSON-number amount is refused as finance.cfc refuses a non-string amount; the record is checked before the fields.
     expect(await transition(edited, 'edit', { json: { title: 'Office', amount: 12, period: '2026-06' } })).toMatchObject({
+      status: 400,
+      body: fixtureError('finance.records.edit', 'Invalid parameters'),
+    });
+    expect(await transition(edited, 'edit', { json: { title: 'Office\u0000v2', amount: '1', period: '2026-06' } })).toMatchObject({
       status: 400,
       body: fixtureError('finance.records.edit', 'Invalid parameters'),
     });
@@ -500,7 +526,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     });
 
     it.each(
-      ['?pageSize=1001', '?page=0'].flatMap((query) =>
+      ['?pageSize=1001', '?page=0', '?pageSize=Infinity', '?page=-Infinity'].flatMap((query) =>
         [`${V2_RECORDS}/${MISSING_ID}/versions`, `${V2_RECORDS}/${MISSING_ID}/attachments`, V2_ROLLUPS].map((url) => `${url}${query}`),
       ),
     )('refuses %s as invalidParameters', async (url) => {
@@ -588,13 +614,43 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
   });
 
   it.each([
-    ['an anonymous caller', `${RECORDS}`, 'GET', { roles: null }, 401],
-    ['a member', `${RECORDS}`, 'GET', { roles: [Roles.member] }, 403],
-    ['a system user', `${ROLLUPS}`, 'GET', { roles: [Roles.systemUser] }, 403],
-    ['another site named in siteid', `${RECORDS}?siteid=${SITE_OTHER}`, 'GET', {}, 403],
-    ['an approver uploading', `${RECORDS}/${MISSING_ID}/attachments`, 'POST', APPROVER, 403],
-  ] as const)('refuses %s before any CSRF token is consumed', async (_case, url, method, request, status) => {
-    expect((await call(method, url, { site: SITE_LIST, ...request })).status).toBe(status);
+    ['an anonymous caller', `${RECORDS}`, 'GET', { roles: null }, 401, 'finance.records'],
+    ['an anonymous transition', `${RECORDS}/${MISSING_ID}/transitions/Submit`, 'POST', { roles: null }, 401, 'finance.records.submit'],
+    ['a service caller without a user token', `${RECORDS}`, 'GET', { roles: null, serviceRoles: [Roles.financePreparer] }, 401, 'finance.records'],
+    ['a member', `${RECORDS}`, 'GET', { roles: [Roles.member] }, 403, 'finance.records'],
+    ['a system user', `${ROLLUPS}`, 'GET', { roles: [Roles.systemUser] }, 403, 'finance.rollups'],
+    ['a system user on /v2', `${V2_RECORDS}/${MISSING_ID}/versions`, 'GET', { roles: [Roles.systemUser] }, 403, 'finance.records.versions'],
+    ['another site named in siteid', `${RECORDS}?siteid=${SITE_OTHER}`, 'GET', {}, 403, 'finance.records'],
+    ['an approver uploading', `${RECORDS}/${MISSING_ID}/attachments`, 'POST', APPROVER, 403, 'finance.records.attachments'],
+  ] as const)('refuses %s with the route method before any CSRF token is consumed', async (_case, url, method, request, status, envelope) => {
+    expect(await call(method, url, { site: SITE_LIST, ...request })).toMatchObject({
+      status,
+      body: fixtureError(envelope, 'Insufficient Account Permissions'),
+    });
+    expect(consumeCalls).toEqual([]);
+  });
+
+  it('answers a rejected user token with the route method, its invalid_token error and bearer challenge', async () => {
+    const res = await call('GET', ROLLUPS, { site: SITE_LIST, headers: { authorization: 'Bearer not-a-token' } });
+    expect([res.status, res.body]).toEqual([401, { apiversion: 'v1', method: 'finance.rollups', error: { code: 'invalid_token', message: 'Invalid Access Token' } }]);
+    expect(res.headers['www-authenticate']).toBe('Bearer error="invalid_access_token"');
+  });
+
+  it.each([
+    ['an unknown action', 'POST', `${RECORDS}/${MISSING_ID}/transitions/bogus`, {}, 'finance.records.bogus', 'Invalid parameters'],
+    ['an unknown action in capitals', 'POST', `${RECORDS}/${MISSING_ID}/transitions/BOGUS`, {}, 'finance.records.bogus', 'Invalid parameters'],
+    ['a malformed record id', 'GET', `${RECORDS}/not-a-cf-id/versions`, {}, 'finance.records.versions', 'Invalid parameters'],
+    ['a zero /v2 page size', 'GET', `${V2_ROLLUPS}?pageSize=0`, {}, 'finance.rollups', 'Invalid parameters'],
+    [
+      'a body shorter than its Content-Length',
+      'POST',
+      `${RECORDS}/${MISSING_ID}/transitions/edit`,
+      { json: {}, headers: { 'content-length': '64' } },
+      'finance.records.edit',
+      'Bad Request',
+    ],
+  ] as const)('answers %s in the fixture error of the route method, consuming no token', async (_case, method, url, request, envelope, message) => {
+    expect(await call(method, url, { site: SITE_OTHER, ...request })).toMatchObject({ status: 400, body: fixtureError(envelope, message) });
     expect(consumeCalls).toEqual([]);
   });
 
@@ -640,7 +696,10 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     const id = await seed(SITE_OTHER, { title: 'Closed', amount: 1n, period: '2026-06' });
     await setGates('legacy');
     const res = await call('POST', `${RECORDS}/${id}/transitions/submit`, { site: SITE_OTHER });
-    expect(res).toMatchObject({ status: 503, body: { apiversion: 'v1', error: { code: 'server_error', message: 'Unhandled Exception' } } });
+    expect(res).toMatchObject({
+      status: 503,
+      body: { apiversion: 'v1', method: 'finance.records.submit', error: { code: 'server_error', message: 'Unhandled Exception' } },
+    });
   });
 
   it('answers a content type longer than its fixture column with server_error, storing nothing', async () => {
@@ -731,13 +790,20 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       expect(await stateOf(id)).toEqual(['IN-PROGRESS', 2, 0]);
     });
 
-    it.each(WRITES)('answers %s with the legacy 503 and writes nothing when identity cannot consume the token', async (_case, tail, _method, body) => {
+    it.each(WRITES)('answers %s with the legacy 503 and writes nothing when identity cannot consume the token', async (_case, tail, method, body) => {
       const id = await seed(SITE_CSRF, { title: 'Unavailable', amount: 1n, period: '2026-06' });
       identityStatus = 503;
+      const before = logLines.length;
 
       const res = await call('POST', `${RECORDS}/${id}${tail}`, { ...site, ...body });
 
-      expect(res.status).toBe(503);
+      expect(res).toMatchObject({
+        status: 503,
+        body: { apiversion: 'v1', method, error: { code: 'server_error', message: 'Unhandled Exception' } },
+      });
+      expect(logLines.slice(before).filter(({ message }) => message === 'service unavailable')).toEqual([
+        expect.objectContaining({ severity: 'WARNING', tenantId: tenantIdForSite(SITE_CSRF), userId: PREPARER_ID }),
+      ]);
       identityStatus = 200;
       expect(await stateOf(id)).toEqual(['IN-PROGRESS', 1, 0]);
     });
@@ -778,6 +844,27 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
         'request rejected: 22021',
       ],
       ['a page outside the query schema', () => call('GET', `${V2_ROLLUPS}?page=0`, site), 400, 'request rejected: FST_ERR_VALIDATION'],
+      [
+        'a body shorter than its Content-Length',
+        (id) => transition(id, 'edit', { json: {}, headers: { 'content-length': '64' } }),
+        400,
+        'request rejected: FST_ERR_CTP_INVALID_CONTENT_LENGTH',
+      ],
+      [
+        'identity unable to consume the token',
+        (id) => {
+          identityStatus = 503;
+          return transition(id, 'submit');
+        },
+        503,
+        'service unavailable',
+      ],
+      [
+        'a service caller without a user token',
+        () => call('GET', RECORDS, { ...site, roles: null, serviceRoles: [Roles.financePreparer] }),
+        401,
+        'request denied: missing-credential',
+      ],
       ['a tenant without a program', () => call('GET', RECORDS, { site: SITE_UNBOUND }), 400, 'request rejected: invalidParameters'],
       ['no credential', () => call('GET', RECORDS, { ...site, roles: null }), 401, 'request denied: missing-credential'],
       ['another site named in siteid', () => call('GET', `${RECORDS}?siteid=${SITE_OTHER}`, site), 403, 'request denied: site-mismatch'],

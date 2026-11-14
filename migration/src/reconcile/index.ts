@@ -162,16 +162,17 @@ async function fileStoreOf(
   return { fileStore: { store: SUPPORTED_FILE_STORE, status: 'compared', haltedUnits: [] }, objects: legacy.byTenant };
 }
 
-/** Entries of one unit table, one per tenant either side holds rows or (with `objects`) objects in. */
+/** Entries of one unit table, one per tenant either side holds rows or objects in: the file-store `objects`, else its object columns'. */
 async function reconcileTable(
   ctx: ReconcileContext,
   reads: Reads,
   input: { unit: string; legacyTable: string; database: string; tenants: TenantResolver; objects: TenantObjects | null },
 ): Promise<UnitReport[]> {
-  const { database, tenants, objects } = input;
+  const { database, tenants } = input;
   const shape = await reads.tableShape(ctx, { unit: input.unit, legacyTable: input.legacyTable, database });
   const legacy = await reads.legacyRows(ctx, shape, { database, tenants });
-  const includeObjects = objects !== null;
+  const objects = input.objects ?? (shape.objectColumns.length > 0 ? legacy.objects : null);
+  const includeObjects = input.objects !== null;
   const entries: UnitReport[] = [];
   try {
     // Tenants ascend, as the legacy rows are read tenant by tenant.
@@ -190,7 +191,7 @@ async function reconcileTable(
             legacyTable: shape.legacyTable,
             tenantId,
             rows,
-            files: includeObjects ? compareObjects(legacyObjects, targetObjects) : null,
+            files: objects === null ? null : compareObjects(legacyObjects, targetObjects),
             excludedColumns: shape.excludedColumns,
             orphans: orphans?.keys ?? [],
             orphanCount: orphans?.count ?? 0,

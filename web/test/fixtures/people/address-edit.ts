@@ -20,7 +20,6 @@ const janeSmithPerson: PersonRecord = Object.freeze({
   Fname: 'Jane',
   Lname: 'Smith',
   UserName: 'jane_smith',
-  PasswordCreated: '2026-02-16T09:30:00.000',
   Email: 'jane_smith@example.com',
   Company: '',
   JobTitle: '',

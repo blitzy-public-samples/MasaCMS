@@ -117,6 +117,12 @@ function clientView(client: OAuthClient | StoredClient): Schemas['OAuthClient'] 
   };
 }
 
+/** A client as the list reads it: its view without the secret, which the list rows never show [legacy: admin/core/views/cwebservice/list.cfm:110-136]. */
+function listRow(client: StoredClient): Schemas['OAuthClientListItem'] {
+  const { clientsecret: _secret, ...row } = clientView(client);
+  return row;
+}
+
 /** `rc`: each field the url or form supplies, its name matched ignoring case, else its `param` default. */
 function rcOf(request: FastifyRequest, clientId: string): Rc {
   const params = legacyParamsOf(request);
@@ -150,7 +156,7 @@ export async function registerAdminOAuthClientRoutes(app: FastifyInstance, deps:
       const user = userOf(request.opt2Auth);
       const page = { offset: request.query.offset, limit: request.query.limit };
       const { items, total } = await listClients(oauth, user.site, page);
-      return { items: items.map((row) => clientView(row)), ...continuation(page, items.length, total) };
+      return { items: items.map((row) => listRow(row)), ...continuation(page, items.length, total) };
     },
   );
 

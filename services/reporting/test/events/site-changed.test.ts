@@ -31,7 +31,7 @@ type InboxRow = { event_id: string; status: string };
 
 const POOL_KINDS: readonly PoolKind[] = ['publicUser', 'privateUser', 'category', 'file', 'display'];
 
-// pgAvailable rejects when PG_HOST is unset, so the suite skips on that before probing the server.
+// An unset PG_HOST skips the suite without probing the server.
 const pgReady = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 /** A site.changed envelope of `fixture`'s site at `version`, carrying its fixture registry payload with `overrides` applied. */

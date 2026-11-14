@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LegacyApiError, legacyUsersCsvStream } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
+import { RequestAbortedError, newRequestContext, runWithRequestContext } from '@opt2/platform/service-kit';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, pgAvailable, seedRegistry, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   SEARCH_MAX_ROWS,
@@ -679,6 +680,28 @@ describe.skipIf(!available)('search reads over large pools', () => {
       { op: 'readAccountsAllSites', ids: 500 },
       { op: 'readAccountsAllSites', ids: 500 },
     ]);
+  });
+
+  it.each<[string, ViewerScope, (deps: SearchDeps) => Promise<unknown>]>([
+    ['getUsers', ADMIN_B, (deps) => getUsers(deps, ADMIN_B, POOL_ARGS)],
+    ['getSearch', ADMIN_A, (deps) => getSearch(deps, ADMIN_A, { search: 'broad' })],
+  ])('stops %s with its RequestAbortedError when the request is abandoned during the first page, reading no later page or account batch', async (_label, viewer, read) => {
+    const { deps, identity, pages } = counted(viewer);
+    const disconnect = new AbortController();
+    const reason = new RequestAbortedError();
+    const abandoning: PeopleRepository = {
+      ...deps.repo,
+      pagePersonsInOrder: async (tx, scope, opts) => {
+        const page = await deps.repo.pagePersonsInOrder(tx, scope, opts);
+        disconnect.abort(reason);
+        return page;
+      },
+    };
+    const store = { ...newRequestContext(), signal: disconnect.signal };
+    await expect(runWithRequestContext(store, () => read({ ...deps, repo: abandoning }))).rejects.toBe(reason);
+    expect(pages()).toBe(1);
+    expect(identity.calls.filter(({ op }) => op === 'readAccounts')).toEqual([{ op: 'readAccounts', ids: 500 }]);
+    expect(handle.appPool.totalCount - handle.appPool.idleCount).toBe(0);
   });
 
   /** The private-pool advanced search of tenant-b with admin start-up's default criteria. */

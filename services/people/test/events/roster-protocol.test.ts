@@ -17,7 +17,7 @@ import { createPeopleEvents } from '../../src/events/publish.js';
 import { PERSON_CHANGED_TOPIC } from '../../src/events/topics.js';
 import type { LegacyErrors } from '../../src/legacy/identity-client.js';
 import { createPeopleRepository, type PeopleRepository } from '../../src/repo/repository.js';
-import { FINISH_PENDING_ERROR, type PersonRow, type RosterOperationRow, type RosterState } from '../../src/repo/tables.js';
+import { FINISH_PENDING_ERROR, UNIT_TABLES, type PersonRow, type RosterOperationRow, type RosterState } from '../../src/repo/tables.js';
 import { PEOPLE_SWEEP_QUEUE } from '../../src/tasks/port.js';
 import { PG_AVAILABLE, createMutableClock, headersFor, userHeaders, withPgApp, type MutableClock, type PgTestApp } from '../helpers/app.js';
 import {
@@ -335,6 +335,29 @@ function heldRows(world: World, operationId: string): Promise<{ outbox: { held: 
   });
 }
 
+/** People's tables with a legacy projection: its unit tables. */
+const PROJECTED_TABLES: readonly string[] = UNIT_TABLES.map((table) => table.table);
+
+/** The tenant's last changelog `seq`; the rows of a save that follows come after it. */
+function changelogMark(world: World): Promise<string> {
+  return world.db.withTenant(TENANT, async (tx) => {
+    const { rows } = await tx.query<{ seq: string | null }>(`SELECT max(seq)::text AS seq FROM ${tx.schema}.changelog`);
+    return rows[0]?.seq ?? '0';
+  });
+}
+
+/** Expects every projected-table changelog row touching `userId` after `mark` to carry `operationId`; `some` also requires one. */
+async function expectOperationRows(world: World, userId: string, mark: string, operationId: string, some = false): Promise<void> {
+  const rows = await world.db.withTenant(TENANT, async (tx) => {
+    const sql = `SELECT seq::text AS seq, "table", op, operation_id FROM ${tx.schema}.changelog
+      WHERE seq > $1::bigint AND "table" = ANY($2::text[]) AND strpos(upper(concat_ws(' ', key, before, after)), upper($3)) > 0
+      ORDER BY seq`;
+    return (await tx.query<{ seq: string; table: string; op: string; operation_id: string | null }>(sql, [mark, PROJECTED_TABLES, userId])).rows;
+  });
+  expect(rows.filter((row) => row.operation_id !== operationId), `projected changelog rows of ${userId} outside operation ${operationId}`).toEqual([]);
+  if (some) expect(rows.length, `projected changelog rows of ${userId} in operation ${operationId}`).toBeGreaterThan(0);
+}
+
 /** The changelog rows the migration `changes` read returns for `operationId` and the status it reports for them, once they are below the horizon. */
 async function changesFor(world: World, operationId: string): Promise<{ rows: number; status: string | undefined }> {
   const headers = await headersFor('service:migration');
@@ -423,7 +446,7 @@ async function expectReopened(world: World, userId: string, operationId: string)
 }
 
 /** A rejection is total: both sides as before, the operation rolled back and reopened, and no event or projection of it ever released. */
-async function expectRejected(world: World, userId: string, before: BothSides, operationId: string): Promise<void> {
+async function expectRejected(world: World, userId: string, before: BothSides, operationId: string, mark: string): Promise<void> {
   expect(await bothSides(world, userId)).toEqual(before);
   expect(await rosterOperation(world, userId)).toMatchObject({ operation_id: operationId, state: 'rolled-back' });
   await expectReopened(world, userId, operationId);
@@ -431,6 +454,7 @@ async function expectRejected(world: World, userId: string, before: BothSides, o
   expect(publishedFor(world, userId)).toEqual([]);
   expect((await heldRows(world, operationId)).outbox).toEqual([]);
   expect(await changesFor(world, operationId)).toMatchObject({ status: 'rolled-back' });
+  await expectOperationRows(world, userId, mark, operationId);
 }
 
 /** Both sides hold the save's new values, children included where the entry point posts them. */
@@ -460,6 +484,7 @@ describe.skipIf(!PG_AVAILABLE)('roster write protocol against PostgreSQL', () =>
     it('answers success only once both sides hold the new values, with both write positions and one released person event', () =>
       inWorld(async (world) => {
         const userId = entry.target();
+        const mark = await changelogMark(world);
         const answer = await save(world, entry, userId);
         entry.expectSaved(answer, userId);
         const operation = await rosterOperation(world, userId);
@@ -476,17 +501,19 @@ describe.skipIf(!PG_AVAILABLE)('roster write protocol against PostgreSQL', () =>
         expect(publishedFor(world, userId)).toHaveLength(1);
         expect(await heldRows(world, operationId)).toMatchObject({ outbox: [{ held: false, published: true }] });
         expect(await changesFor(world, operationId)).toMatchObject({ status: 'done' });
+        await expectOperationRows(world, userId, mark, operationId, true);
       }));
 
     it("answers prepare's legacy validation errors unchanged, changing neither side and leaving no operation open", () =>
       inWorld(async (world) => {
         const userId = entry.target();
         const before = await bothSides(world, userId);
+        const mark = await changelogMark(world);
         world.identity.setPrepareErrors(userId, USERNAME_TAKEN);
         entry.expectInvalid(await save(world, entry, userId), USERNAME_TAKEN);
         expect(world.identity.operations.size).toBe(0);
         const { operation_id: operationId } = await rosterOperation(world, userId);
-        await expectRejected(world, userId, before, operationId);
+        await expectRejected(world, userId, before, operationId, mark);
       }));
 
     it.each<[string, (world: World) => void, DoubleOperationState | undefined]>([
@@ -497,6 +524,7 @@ describe.skipIf(!PG_AVAILABLE)('roster write protocol against PostgreSQL', () =>
       inWorld(async (world) => {
         const userId = entry.target();
         const before = await bothSides(world, userId);
+        const mark = await changelogMark(world);
         arm(world);
         expectUnavailable(await save(world, entry, userId));
         delete world.injected['after-start'];
@@ -506,18 +534,19 @@ describe.skipIf(!PG_AVAILABLE)('roster write protocol against PostgreSQL', () =>
         expect(await bothSides(world, userId)).toEqual(before);
         await recover(world);
         expect(identityState(world, operation.operation_id)).toBe(aborted);
-        await expectRejected(world, userId, before, operation.operation_id);
+        await expectRejected(world, userId, before, operation.operation_id, mark);
       }));
 
     it('aborts identity inline and answers the legacy 503 when the people commit fails', () =>
       inWorld(async (world) => {
         const userId = entry.target();
         const before = await bothSides(world, userId);
+        const mark = await changelogMark(world);
         world.injected['after-prepare'] = faultAt('after-prepare');
         expectUnavailable(await save(world, entry, userId));
         const { operation_id: operationId } = await rosterOperation(world, userId);
         expect(world.identity.operation(operationId)?.history).toEqual(['prepared', 'aborted']);
-        await expectRejected(world, userId, before, operationId);
+        await expectRejected(world, userId, before, operationId, mark);
       }));
 
     it.each<[string, (world: World) => void]>([
@@ -527,12 +556,13 @@ describe.skipIf(!PG_AVAILABLE)('roster write protocol against PostgreSQL', () =>
       inWorld(async (world) => {
         const userId = entry.target();
         const before = await bothSides(world, userId);
+        const mark = await changelogMark(world);
         arm(world);
         expectUnavailable(await save(world, entry, userId));
         const { operation_id: operationId } = await rosterOperation(world, userId);
         expect(world.identity.requests.some((request) => request.operationId === 'getAccountOperation')).toBe(true);
         expect(world.identity.operation(operationId)?.history).toEqual(['prepared', 'aborted']);
-        await expectRejected(world, userId, before, operationId);
+        await expectRejected(world, userId, before, operationId, mark);
       }));
 
     it("finishes both sides and answers success when identity committed but its commit reply was lost", () =>
@@ -551,6 +581,7 @@ describe.skipIf(!PG_AVAILABLE)('roster write protocol against PostgreSQL', () =>
       inWorld(async (world) => {
         const userId = entry.target();
         const before = await bothSides(world, userId);
+        const mark = await changelogMark(world);
         world.injected['after-identity-commit'] = faultAt('after-identity-commit');
         expectUnavailable(await save(world, entry, userId));
         delete world.injected['after-identity-commit'];
@@ -563,13 +594,14 @@ describe.skipIf(!PG_AVAILABLE)('roster write protocol against PostgreSQL', () =>
         expect(await changesFor(world, operation.operation_id)).toMatchObject({ status: 'open' });
         await recover(world);
         expect(identityState(world, operation.operation_id)).toBe('reverted');
-        await expectRejected(world, userId, before, operation.operation_id);
+        await expectRejected(world, userId, before, operation.operation_id, mark);
       }));
 
     it('answers the legacy 503 when identity committed but stays unreachable for the request budget, and recovery reverts both sides', () =>
       inWorld(async (world) => {
         const userId = entry.target();
         const before = await bothSides(world, userId);
+        const mark = await changelogMark(world);
         world.identity.failAt('commit', 'lost-reply');
         const spent = spendBudgetAtStatus(world);
         const answer = await save(world, entry, userId);
@@ -581,7 +613,7 @@ describe.skipIf(!PG_AVAILABLE)('roster write protocol against PostgreSQL', () =>
         expect(identityState(world, operation.operation_id)).toBe('committed');
         await recover(world);
         expect(identityState(world, operation.operation_id)).toBe('reverted');
-        await expectRejected(world, userId, before, operation.operation_id);
+        await expectRejected(world, userId, before, operation.operation_id, mark);
       }));
 
     it.each<[string, (world: World) => void]>([
@@ -761,9 +793,10 @@ function staleStates(world: World): Promise<[RosterState, DoubleOperationState |
 }
 
 /** Leaves an admin update people-committed with identity committed, then keeps identity unreachable until recovery halts it. */
-async function haltOperation(world: World): Promise<{ userId: string; operationId: string; before: BothSides }> {
+async function haltOperation(world: World): Promise<{ userId: string; operationId: string; before: BothSides; mark: string }> {
   const userId = ADMIN_UPDATE.target();
   const before = await bothSides(world, userId);
+  const mark = await changelogMark(world);
   world.injected['after-identity-commit'] = faultAt('after-identity-commit');
   expectUnavailable(await save(world, ADMIN_UPDATE, userId));
   delete world.injected['after-identity-commit'];
@@ -773,7 +806,7 @@ async function haltOperation(world: World): Promise<{ userId: string; operationI
   expect(await rosterOperation(world, userId)).toMatchObject({ state: 'people-committed', identity_unreachable_since: world.clock.now() });
   world.clock.advance(HALT_AFTER_MS);
   await recover(world);
-  return { userId, operationId, before };
+  return { userId, operationId, before, mark };
 }
 
 describe.skipIf(!PG_AVAILABLE)('roster recovery, halting and opt2-people resolve-operation', () => {
@@ -813,7 +846,7 @@ describe.skipIf(!PG_AVAILABLE)('roster recovery, halting and opt2-people resolve
 
   it('resolves a halted operation only with resolve-operation --to, restoring both sides and reopening the user', () =>
     inWorld(async (world) => {
-      const { userId, operationId, before } = await haltOperation(world);
+      const { userId, operationId, before, mark } = await haltOperation(world);
       world.identity.setUnreachable(false);
       const deps = recoveryDeps(world);
       expect(await runResolveOperation(deps, { operationId })).toEqual({
@@ -825,7 +858,7 @@ describe.skipIf(!PG_AVAILABLE)('roster recovery, halting and opt2-people resolve
         settled: true,
       });
       expect(identityState(world, operationId)).toBe('reverted');
-      await expectRejected(world, userId, before, operationId);
+      await expectRejected(world, userId, before, operationId, mark);
       expect(await readProfile(world)).toMatchObject({ status: 200, body: { user: { UserID: userId, Fname: SYSTEM_USER_A_PERSON.fname } } });
     }));
 

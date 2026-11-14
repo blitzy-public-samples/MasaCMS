@@ -291,7 +291,7 @@ describe('toFixtureError', () => {
     ['a legacy error of a mapped type', new LegacyApiError('invalidTokens'), 400, 'invalid_request', 'Invalid CSRF tokens'],
     ['a legacy error of an unmapped type', new LegacyApiError('invalid_token'), 500, 'server_error', 'Unhandled Exception'],
     ['a legacy error typed as a prototype key', new LegacyApiError('toString'), 500, 'server_error', 'Unhandled Exception'],
-    ['a refused cross-user people read', new PeopleReadDeniedError(401, 'authorization'), 403, 'invalid_request', 'Insufficient Account Permissions'],
+    ['an unauthenticated people read', new PeopleReadDeniedError(401, 'authorization'), 403, 'invalid_request', 'Insufficient Account Permissions'],
     ['a forbidden people read', new PeopleReadDeniedError(403, 'authorization'), 403, 'invalid_request', 'Insufficient Account Permissions'],
     ['a value PostgreSQL cannot store', UNSTORABLE_TEXT, 400, 'invalid_request', 'Invalid parameters'],
     ['an unexpected Error', new Error('connection reset'), 500, 'server_error', 'Unhandled Exception'],

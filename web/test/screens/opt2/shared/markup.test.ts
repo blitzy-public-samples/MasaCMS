@@ -1,3 +1,4 @@
+// SYNTHETIC: opt2-admin - no Masa equivalent; legacy oracle in legacy-fixtures/
 import * as cheerio from 'cheerio';
 import { describe, expect, it } from 'vitest';
 import { isSafeHtml, raw, toString, type SafeHtml } from '@/lib/html';
@@ -15,7 +16,9 @@ import {
   select,
   textarea,
   textInput,
+  valueRows,
   type GridCell,
+  type Label,
 } from '@/screens/opt2/shared/markup';
 
 type Case = [string, SafeHtml, string];
@@ -48,10 +51,65 @@ const OPTIONS = [
   { value: 'closed', label: 'Closed & done' },
 ];
 
+/** A bundle value carrying an HTML entity, as `de` holds `user.prev`. */
+const BUNDLE_LABEL = 'Zur&uuml;ck';
+
 describe('markup', () => {
   it('returns SafeHtml', () => {
     expect(isSafeHtml(pageHeader('x'))).toBe(true);
     expect(isSafeHtml(gridTable([], [], 'x'))).toBe(true);
+  });
+
+  it.each<[string, (label: Label) => SafeHtml, (label: string) => string]>([
+    ['the pageHeader title', (label) => pageHeader(label), (l) => `<div class="mura-header"><h1>${l}</h1></div>`],
+    [
+      'a header link',
+      (label) => pageHeader('T', [{ label, href: 'h' }]),
+      (l) => `<div class="mura-header"><h1>T</h1><div class="nav-module-specific btn-group"><a class="btn" href="h">${l}</a></div></div>`,
+    ],
+    [
+      'a gridTable header',
+      (label) => gridTable([label], [['x']], 'none'),
+      (l) =>
+        `<table class="mura-table-grid"><thead><tr><th class="var-width">${l}</th></tr></thead>` +
+        '<tbody><tr><td class="var-width">x</td></tr></tbody></table>',
+    ],
+    ['the gridTable empty message', (label) => gridTable(['N'], [], label), (l) => `<div class="help-block-empty">${l}</div>`],
+    [
+      'a controlGroup label',
+      (label) => controlGroup(label, raw('<input>')),
+      (l) => `<div class="mura-control-group"><label>${l}</label><input></div>`,
+    ],
+    [
+      'a valueRows label',
+      (label) => valueRows([[label, 'v']]),
+      (l) => `<div class="mura-control-group"><label>${l}</label><div>v</div></div>`,
+    ],
+    [
+      'a select option',
+      (label) => select('s', [{ value: 'v', label }]),
+      (l) => `<select name="s" id="s"><option value="v">${l}</option></select>`,
+    ],
+    [
+      'a formActions button',
+      (label) => formActions([{ label }]),
+      (l) => `<div class="mura-actions"><div class="form-actions"><button class="btn" type="submit">${l}</button></div></div>`,
+    ],
+    [
+      'the postForm submit label',
+      (label) => postForm('a', raw(''), label),
+      (l) =>
+        '<form novalidate="novalidate" action="a" method="post" name="form1"><div class="mura-actions"><div class="form-actions">' +
+        `<button class="btn mura-primary" type="submit">${l}</button></div></div></form>`,
+    ],
+    [
+      'the actionButton label',
+      (label) => actionButton(label, 'go'),
+      (l) => `<form method="post" action="go"><button class="btn" type="submit">${l}</button></form>`,
+    ],
+  ])('keeps a SafeHtml label and encodes a string label in %s', (_, render, expected) => {
+    expect(toString(render(raw(BUNDLE_LABEL)))).toBe(expected(BUNDLE_LABEL));
+    expect(toString(render(BUNDLE_LABEL))).toBe(expected('Zur&amp;uuml&#x3b;ck'));
   });
 
   describe('pageHeader', () => {
@@ -115,6 +173,7 @@ describe('markup', () => {
       ['a text input with an explicit id', textInput('name', '', { id: 'person-name' }), undefined, 'input', 'person-name'],
       ['a select with an explicit id', select('status', OPTIONS, 'open', { id: 'sheet-status' }), undefined, 'select', 'sheet-status'],
       ['a textarea with an explicit id', textarea('notes', '', 6, { id: 'day-notes' }), undefined, 'textarea', 'day-notes'],
+      ['a read-only textarea', textarea('answer', 'x', 6, { id: 'answer-1', readonly: true }), undefined, 'textarea', 'answer-1'],
       ['foreign markup passed with its id', raw('<input type="checkbox" id="agree" name="agree">'), 'agree', 'input', 'agree'],
     ])('targets the id of %s from its label', (_, control, controlId, tag, id) => {
       const $ = cheerio.load(toString(controlGroup('Label', control, controlId)));
@@ -191,6 +250,39 @@ describe('markup', () => {
     it.each<Case>([
       ['six empty rows by default', textarea('notes'), '<textarea name="notes" id="notes" rows="6"></textarea>'],
       ['an encoded value', textarea('notes', 'a<b', 3), '<textarea name="notes" id="notes" rows="3">a&lt;b</textarea>'],
+      [
+        'a read-only value',
+        textarea('answer', 'a<b', 3, { readonly: true }),
+        '<textarea name="answer" id="answer" rows="3" readonly>a&lt;b</textarea>',
+      ],
+      [
+        'an editable value when readonly is false',
+        textarea('notes', '', 6, { readonly: false }),
+        '<textarea name="notes" id="notes" rows="6"></textarea>',
+      ],
+    ])('renders %s', (_, markup, expected) => {
+      expect(toString(markup)).toBe(expected);
+    });
+  });
+
+  describe('valueRows', () => {
+    it.each<Case>([
+      [
+        'one label and value control group per row, the value encoded like a grid cell',
+        valueRows([
+          ['Document', 'a<b'],
+          ['Version', 3],
+          ['Hash', raw('<code>ab</code>')],
+          ['Signer', null],
+          ['Created By', undefined],
+        ]),
+        '<div class="mura-control-group"><label>Document</label><div>a&lt;b</div></div>' +
+          '<div class="mura-control-group"><label>Version</label><div>3</div></div>' +
+          '<div class="mura-control-group"><label>Hash</label><div><code>ab</code></div></div>' +
+          '<div class="mura-control-group"><label>Signer</label><div></div></div>' +
+          '<div class="mura-control-group"><label>Created By</label><div></div></div>',
+      ],
+      ['nothing for no rows', valueRows([]), ''],
     ])('renders %s', (_, markup, expected) => {
       expect(toString(markup)).toBe(expected);
     });

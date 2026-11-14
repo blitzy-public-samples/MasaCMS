@@ -31,6 +31,7 @@ import {
   currentRequestContext,
   newRequestContext,
   REQUEST_ID_HEADER,
+  RequestAbortedError,
   runWithRequestContext,
 } from '../../src/service-kit/context.js';
 import { createService } from '../../src/service-kit/create-service.js';
@@ -154,6 +155,21 @@ describe('createServiceClient with a MockAgent', () => {
     expect(err).toMatchObject({ name: 'UnknownServiceError', service: 'nope' });
     expect(minter.headersFor).not.toHaveBeenCalled();
     expect(callCount()).toBe(0);
+  });
+
+  it("sends while the request's signal holds, then rejects with its RequestAbortedError before minting or sending", async () => {
+    replyOk();
+    const disconnect = new AbortController();
+    const reason = new RequestAbortedError();
+    const store = { ...newRequestContext({ requestId: 'req-abandoned' }), signal: disconnect.signal };
+    const call = () => runWithRequestContext(store, () => client.request({ service: 'identity', method: 'GET', path: '/internal/v1/x' }));
+    await expect(call()).resolves.toMatchObject({ status: 200 });
+    expect(minter.headersFor).toHaveBeenCalledTimes(1);
+    expect(callCount()).toBe(1);
+    disconnect.abort(reason);
+    await expect(call()).rejects.toBe(reason);
+    expect(minter.headersFor).toHaveBeenCalledTimes(1);
+    expect(callCount()).toBe(1);
   });
 
   it('forwards the request context token and adds no X-OPT2 headers', async () => {

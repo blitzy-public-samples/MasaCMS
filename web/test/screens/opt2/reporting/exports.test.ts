@@ -7,6 +7,7 @@ import { runGate, secure } from '@/lib/access-gate';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
+import { rbFor } from '@/lib/resource-bundles/rb';
 import {
   EXPORTER_ROLES,
   PAGE_SIZE,
@@ -16,7 +17,7 @@ import {
   type ExportJob,
   type ExportsData,
 } from '@/screens/opt2/reporting/exports';
-import { noAccessUrl } from '@/screens/opt2/shared';
+import { noAccessUrl, OPT2_LABEL_KEYS, type Opt2LabelName } from '@/screens/opt2/shared';
 import { loadShellData, renderAdminDocument, serializeAdminDocument } from '@/shell/document';
 import { REPORTING_IDS, exportJobs } from '../../../fixtures/opt2/reporting';
 import {
@@ -28,21 +29,21 @@ import {
 import { fragmentModel, domModel, normaliseIds, type DomControl, type DomModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
 import { fakeGatewayClient, type FakeGatewayClient } from '../../../helpers/fake-gateway';
-import { CSRF_PAIR, CSRF_PATH, LIST_PATH, LIST_ROUTE, contextFor, shellAndCsrfRoutes } from './support';
+import { CSRF_PAIR, CSRF_PATH, LIST_PATH, LIST_ROUTE, contextFor, jobValues, shellAndCsrfRoutes } from './support';
 
-const HEADERS = ['Job', 'Format', 'State', 'Created', 'Started', 'Finished', 'Error', 'Download'];
-
-/** The table row the list renders for `job`: its columns as text, `Download` only when done. */
-const rowOf = (job: ExportJob): string[] => [
-  job.job_id,
-  job.format,
-  job.state,
-  job.created,
-  job.started_at,
-  job.finished_at,
-  job.error,
-  job.state === 'done' ? 'Download' : '',
-];
+/** The read-only rows the list renders for `job`: every field it has, as stored, in the reporting column order. */
+const valuesOf = (job: ExportJob): Array<[string, string]> =>
+  (
+    [
+      ['Job', job.job_id],
+      ['Format', job.format],
+      ['State', job.state],
+      ['Created', job.created],
+      ['Started', job.started_at],
+      ['Finished', job.finished_at],
+      ['Error', job.error],
+    ] as Array<[string, string]>
+  ).filter(([, value]) => value !== '');
 
 const DONE_JOBS = exportJobs.filter((job) => job.state === 'done');
 
@@ -73,7 +74,7 @@ function listModel(jobs: readonly ExportJob[]): DomModel {
   return {
     title: '',
     headings: ['Export Jobs'],
-    labels: ['Definition ID', 'Format', 'As Of'],
+    labels: ['Definition ID', 'Format', 'As Of', ...jobs.flatMap((job) => valuesOf(job).map(([label]) => label))],
     controls: [
       control({ name: 'definitionId' }),
       FORMAT_CONTROL,
@@ -87,7 +88,7 @@ function listModel(jobs: readonly ExportJob[]): DomModel {
       ...done.map(() => ({ text: 'Download', type: 'submit', hasOnclick: false })),
     ],
     links: [],
-    tables: jobs.length === 0 ? [] : [{ headers: HEADERS, rows: jobs.map(rowOf) }],
+    tables: [],
     alerts: [],
   };
 }
@@ -224,13 +225,14 @@ describe('reporting/exports', () => {
       const body = await renderedBody({ jobs: exportJobs, total: exportJobs.length, page: 1 });
 
       expect(fragmentModel(body)).toEqual(listModel(exportJobs));
+      expect(jobValues(body)).toEqual(exportJobs.map(valuesOf));
       expect(DONE_JOBS.map((job) => job.job_id)).toEqual([
         REPORTING_IDS.jobDoneXlsx,
         REPORTING_IDS.jobDoneCsv,
         REPORTING_IDS.jobDonePdf,
       ]);
       const $ = cheerio.load(body, null, false);
-      const downloads = $('td form').toArray().map((el) => ({
+      const downloads = $('.block-content .block-content > form').toArray().map((el) => ({
         action: $(el).attr('action'),
         method: $(el).attr('method'),
         fields: $(el).find('input').toArray().map((input) => [$(input).attr('name'), $(input).attr('value')]),
@@ -255,8 +257,8 @@ describe('reporting/exports', () => {
         'csrf_token_expires',
       ]);
       expect(body.startsWith('<div class="mura-header"><h1>Export Jobs</h1></div>')).toBe(true);
-      expect($('table').attr('class')).toBe('mura-table-grid');
-      expect($('style, link, script').length).toBe(0);
+      expect($('.block-content > .block-constrain > .block-bordered > .block-content').length).toBe(exportJobs.length);
+      expect($('style, link, script, table, [style]').length).toBe(0);
     });
 
     it('shows the empty-list message when the tenant has no jobs', async () => {
@@ -312,7 +314,29 @@ describe('reporting/exports', () => {
       const $ = cheerio.load(body, null, false);
 
       expect($('img').length).toBe(0);
-      expect($('td').eq(6).text()).toBe('<img src=x onerror=alert(1)>');
+      expect(jobValues(body)[0]?.at(-1)).toEqual(['Error', '<img src=x onerror=alert(1)>']);
+    });
+  });
+
+  describe('labels', () => {
+    const fr = rbFor('fr');
+    const download = (body: string): string =>
+      cheerio.load(body, null, false)('.block-content .block-content > form button').first().text();
+
+    it.each<{ slot: string; name: Opt2LabelName; read: (body: string) => string | undefined }>([
+      { slot: 'queue form format', name: 'Format', read: (body) => fragmentModel(body).labels[1] },
+      { slot: 'job format', name: 'Format', read: (body) => jobValues(body)[0]?.[1]?.[0] },
+      { slot: 'job state', name: 'State', read: (body) => jobValues(body)[0]?.[2]?.[0] },
+      { slot: 'job created', name: 'Created', read: (body) => jobValues(body)[0]?.[3]?.[0] },
+      { slot: 'Download button', name: 'Download', read: download },
+      { slot: 'Next link', name: 'Next', read: (body) => fragmentModel(body).links[0]?.text },
+    ])('renders the $slot label from the fr bundle', async ({ name, read }) => {
+      const ctx = { ...contextFor(exporterRequest(), listGateway()), rb: fr };
+      await ctx.csrf.prefetch(['']);
+
+      const body = toString(exportsBody(ctx, { jobs: exportJobs, total: 120, page: 1 }));
+
+      expect(read(body)).toBe(fr.rbKey(OPT2_LABEL_KEYS[name]));
     });
   });
 
@@ -335,7 +359,7 @@ describe('reporting/exports', () => {
       ]);
       const model = normaliseIds(domModel(page));
       expect(model.headings).toContain('Export Jobs');
-      expect(model.tables).toEqual(normaliseIds(fragmentModel(toString(view.body))).tables);
+      expect(jobValues(page)).toEqual(exportJobs.map(valuesOf));
     });
   });
 });

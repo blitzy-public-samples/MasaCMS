@@ -1,4 +1,4 @@
-/** People's observer reads over a throwaway `people` schema: user lists, searches and the Edit User, Edit Address and profile reads against roster saves and open operations. */
+/** People's observer reads over a throwaway `people` schema: user lists, searches, the JSON API user collection and the Edit User, Edit Address and profile reads against roster saves and open operations. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { INVOCATION_HEADER, Roles, type UserClaims } from '@opt2/platform/auth';
@@ -21,7 +21,7 @@ import {
 } from '@opt2/platform/testing';
 import { createFaultHooks, type FaultHooks } from '../../src/domain/faults.js';
 import { normaliseParams } from '../../src/domain/person.js';
-import { USER_CLOSED_WAIT_MS, runRosterOperation, type RosterDeps } from '../../src/domain/roster-protocol.js';
+import { USER_CLOSED_WAIT_MS, personFence, runRosterOperation, type RosterDeps } from '../../src/domain/roster-protocol.js';
 import { getAdvancedSearch, getSearch, getUsers, newAdvancedSearchCriteria, type SearchDeps, type ViewerScope } from '../../src/domain/search.js';
 import { createPeopleEvents } from '../../src/events/publish.js';
 import { peoplePayloadValidators } from '../../src/events/topics.js';
@@ -30,6 +30,7 @@ import { createPeopleRepository, type PeopleRepository, type PersonInput } from 
 import { PEOPLE_UNITS, type RosterOperationRow } from '../../src/repo/tables.js';
 import { registerAdminProfileRoutes } from '../../src/routes/admin-profile.js';
 import { registerAdminUserRoutes } from '../../src/routes/admin-users.js';
+import { registerLegacyApiRoutes } from '../../src/routes/legacy-api.js';
 import { accountListed, ilikeC } from '../helpers/search-doubles.js';
 
 const SERVICE = 'people';
@@ -38,6 +39,8 @@ const CLOCK = fixedClock(NOW);
 const A = TENANT_A.tenantId;
 const SITE = TENANT_A.siteId;
 const ADMIN = 'ADMIN000-0000-0000-0000000000000001';
+/** The interest a roster save gives a user. */
+const CATEGORY = 'CATEGORY-0000-0000-0000000000000001';
 const instant = (): Promise<void> => Promise.resolve();
 
 /** Open transactions and held advisory locks of the schema's app role. */
@@ -124,6 +127,8 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
   let hook: { at: number; run: () => Promise<void> } | undefined;
   /** Runs once as an observer's people read returns a person row of `userId`, inside that read's transaction. */
   let readHook: { userId: string; run: () => Promise<void> } | undefined;
+  /** Runs once as the JSON API collection asks for photo extensions, after its selection and before its relations are read. */
+  let selectedHook: (() => Promise<unknown>) | undefined;
   /** The repository the observers read through: `repo` with `readHook` after its person reads. */
   let observedRepo: PeopleRepository;
   let clock: Clock = CLOCK;
@@ -300,6 +305,22 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
     cleanups.push(() => app.close());
     await registerAdminUserRoutes(app, { db, repository: observedRepo, identity: observerIdentity, clock: liveClock, sleep: liveSleep });
     await registerAdminProfileRoutes(app, { roster });
+    const photoFileExts = async (): Promise<ReadonlyMap<string, string>> => {
+      const due = selectedHook;
+      selectedHook = undefined;
+      await due?.();
+      return new Map();
+    };
+    await registerLegacyApiRoutes(app, {
+      db,
+      repository: observedRepo,
+      identity: observerIdentity,
+      clock: liveClock,
+      roster,
+      search: { ...searchDeps(), photoFileExts },
+      addresses: { db, repo, clock: liveClock, fence: personFence },
+      legacy: { adminSSL: false, serverPort: '', context: '', appReloadKey: 'appreload', adminDomain: '' },
+    });
     await app.ready();
   });
 
@@ -312,6 +333,7 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
     holds.length = 0;
     hook = undefined;
     readHook = undefined;
+    selectedHook = undefined;
     clock = CLOCK;
     sleep = instant;
   });
@@ -340,9 +362,9 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
     return inTenant((tx) => repo.setRosterOperationState(tx, operationId, { state: 'done' }));
   }
 
-  /** The admin update renaming `userId` to Robin with user name `robin`, run to success through the roster protocol. */
-  async function rename(userId: string, faults: FaultHooks = createFaultHooks({}, {})): Promise<void> {
-    const params = { userid: userId, siteid: SITE, type: '2', action: 'Update', fname: 'Robin', lname: 'Observed', email: 'robin@example.com', username: 'robin', ispublic: '0' };
+  /** The admin update renaming `userId` to Robin with user name `robin`, and `extra` params, run to success through the roster protocol. */
+  async function rename(userId: string, faults: FaultHooks = createFaultHooks({}, {}), extra: Record<string, string> = {}): Promise<void> {
+    const params = { userid: userId, siteid: SITE, type: '2', action: 'Update', fname: 'Robin', lname: 'Observed', email: 'robin@example.com', username: 'robin', ispublic: '0', ...extra };
     const deps: RosterDeps = { db, repo, events: createPeopleEvents(repo), identity: saverIdentity(), clock: CLOCK, faults, sleep: instant };
     const input = { kind: 'admin-update' as const, tenantId: A, claims: ROSTER_CLAIMS, acting: { userId: ADMIN, fname: 'Ada', lname: 'Admin' }, params: normaliseParams(params), postedFiles: new Map<string, string>(), requestId: 'REQ-ROSTER' };
     const result = await runRosterOperation(deps, input);
@@ -373,6 +395,16 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
   function recordSeen(body: Record<string, unknown>): Seen {
     const user = body.user as Record<string, unknown>;
     return { fname: user.Fname, username: user.UserName };
+  }
+
+  /** The item of `userId` in the JSON API user collection of the private pool's Observed users, as a site administrator queries it. */
+  async function collectionItem(userId: string): Promise<Record<string, unknown> | undefined> {
+    const [user, gateway] = await Promise.all([
+      mintUserToken({ sub: ADMIN, sid: `SESSION-${ADMIN}`, site: SITE, roles: [Roles.siteAdmin, Roles.systemUser] }),
+      mintServiceToken({ caller: 'gateway', audience: SERVICE }),
+    ]);
+    const body = await getJson(`/_api/json/v1/${SITE}/user?isPublic=0&lname=Observed`, { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${gateway}` });
+    return ((body.data as { items: Record<string, unknown>[] }).items ?? []).find((item) => item.userid === userId);
   }
 
   /** Asserts the legacy 503 of `userId` kept closed by `holder`: the domain error, or a route's 503. */
@@ -409,6 +441,17 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
       },
     ],
     ['the profile read', { read: async (userId) => recordSeen(await getJson('/v1/profile', await headersFor(userId, [Roles.systemUser]))), attempt: ['readAccount', 'readAccount'], lead: 1 }],
+    [
+      'the JSON API user collection',
+      {
+        read: async (userId) => {
+          const item = await collectionItem(userId);
+          return item === undefined ? undefined : { fname: item.fname, username: item.username };
+        },
+        attempt: ['readAccounts', 'memberships'],
+        lead: 0,
+      },
+    ],
   ];
 
   it.each(OBSERVERS)('%s reads once with no roster operation in its way, holding no transaction or lock while identity answers', async (_name, observer) => {
@@ -475,6 +518,44 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
       expect(calls).toEqual(observer.attempt.slice(0, observer.lead));
     } finally {
       await endOperation(holder.operation_id);
+    }
+  });
+
+  it.each<[string, (userId: string) => Promise<() => Promise<unknown>>, Record<string, unknown>, string[]]>([
+    [
+      'reads again after a roster save completing',
+      async (userId) => {
+        await rename(userId, createFaultHooks({}, {}), { categoryid: CATEGORY });
+        return () => Promise.resolve();
+      },
+      { fname: 'Robin', username: 'robin', categoryid: CATEGORY },
+      ['readAccounts', 'memberships', 'readAccounts', 'memberships'],
+    ],
+    [
+      'waits out an operation opening',
+      async (userId) => {
+        const holder = await openOperation(userId);
+        let ended: Promise<unknown> | undefined;
+        return () => (ended ??= endOperation(holder.operation_id));
+      },
+      { fname: 'Pat', username: 'pat', categoryid: '' },
+      ['readAccounts', 'readAccounts', 'memberships'],
+    ],
+  ])('the JSON API user collection %s between its selection and its relations, never mixing old and new values', async (_label, land, seen, attempts) => {
+    const { userId } = await seedUser();
+    let settle: () => Promise<unknown> = () => Promise.resolve();
+    selectedHook = async () => {
+      settle = await land(userId);
+    };
+    sleep = () => settle();
+    try {
+      const item = await collectionItem(userId);
+      expect(selectedHook).toBeUndefined();
+      expect({ fname: item?.fname, username: item?.username, categoryid: item?.categoryid }).toEqual(seen);
+      expect(calls).toEqual(attempts);
+      expect(holds.every((held) => held.transactions === 0 && held.advisoryLocks === 0)).toBe(true);
+    } finally {
+      await settle();
     }
   });
 

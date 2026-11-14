@@ -1,4 +1,4 @@
-/** `/internal/v1/migration/objects` over a throwaway `content` schema and local storage: wire mapping, contract shapes, the read back, 400s and authorisation. */
+/** `/internal/v1/migration/objects` over a throwaway `content` schema and local storage: wire mapping, contract shapes, the read back, deletion, 400s and authorisation. */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -11,7 +11,7 @@ import { INVOCATION_HEADER, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { WRITE_POSITION_HEADER_LC, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { createLocalStorageAdapter, type LocalStorageAdapter } from '@opt2/platform/storage';
+import { createLocalStorageAdapter, type LocalStorageAdapter, type StoragePort } from '@opt2/platform/storage';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
@@ -25,7 +25,8 @@ import {
   writeTestSecrets,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
-import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
+import { CONTENT_FILES_BUCKET, type StoreObjectDeps } from '../../src/migration/objects.js';
+import { recoverStagedObjects } from '../../src/migration/staged-objects.js';
 import { createContentRepository } from '../../src/repo/repository.js';
 import { registerMigrationObjectRoutes } from '../../src/routes/migration-objects.js';
 
@@ -42,12 +43,16 @@ const FILE_ID = 'B1C2D3E4-0001-4A5B-8C7D9E0F1A2B3C4D';
 const ORPHAN_ID = 'B1C2D3E4-0002-4A5B-8C7D9E0F1A2B3C4D';
 const REJECTED_ID = 'B1C2D3E4-0003-4A5B-8C7D9E0F1A2B3C4D';
 const ROUND_TRIP_ID = 'B1C2D3E4-0004-4A5B-8C7D9E0F1A2B3C4D';
+const REMOVED_ID = 'B1C2D3E4-0005-4A5B-8C7D9E0F1A2B3C4D';
 const BYTES = Buffer.from('legacy png bytes');
 
 let handle: ThrowawaySchema;
 let stateDir: string;
 let storage: LocalStorageAdapter;
 let app: FastifyInstance;
+let deps: StoreObjectDeps;
+/** Failure the routes' next stored-object deletion throws once, as storage lost after a row deletion committed. */
+let nextDeleteFailure: Error | undefined;
 
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -62,15 +67,28 @@ function putQuery(fileId: string, bytes: Buffer, overrides: Record<string, strin
 }
 
 /** The contract's `pattern` of query parameter `name` of the `method` operation. */
-function contractPattern(method: 'get' | 'post', name: string): string {
+function contractPattern(method: 'get' | 'post' | 'delete', name: string): string {
   const parameters = (OPENAPI.paths[OBJECTS_URL]?.[method]?.['parameters'] ?? []) as { name: string; schema?: { pattern?: string } }[];
   const pattern = parameters.find((parameter) => parameter.name === name)?.schema?.pattern;
   if (pattern === undefined) throw new Error(`the contract declares no pattern for ${method.toUpperCase()} ${OBJECTS_URL} ${name}`);
   return pattern;
 }
 
+/** How many `content.file_object` rows and publication intents the key's tenant records under `key`. */
+async function recorded(key: string): Promise<{ rows: number; intents: number }> {
+  const tenantId = key.slice(0, key.indexOf('/'));
+  const { rows } = await handle.app.withTenant(tenantId, (tx) =>
+    tx.query<{ rows: string; intents: string }>(
+      `SELECT (SELECT count(*) FROM ${handle.schema}.file_object WHERE object_key = $1) AS rows,` +
+        ` (SELECT count(*) FROM ${handle.schema}.staged_object WHERE object_key = $1) AS intents`,
+      [key],
+    ),
+  );
+  return { rows: Number(rows[0]?.rows), intents: Number(rows[0]?.intents) };
+}
+
 /** Sends one request and checks the answer against the contract. */
-async function call(method: 'GET' | 'POST', query: Record<string, string>, headers: Record<string, string>, payload?: Buffer) {
+async function call(method: 'GET' | 'POST' | 'DELETE', query: Record<string, string>, headers: Record<string, string>, payload?: Buffer) {
   const res = await app.inject({
     method,
     url: OBJECTS_URL,
@@ -125,12 +143,17 @@ describe.skipIf(!(await pgAvailable()))('migration object routes', () => {
       pool: db,
       logger: createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
     });
+    const port: StoragePort = {
+      ...storage,
+      delete: (bucket, key) => {
+        const failure = nextDeleteFailure;
+        nextDeleteFailure = undefined;
+        return failure === undefined ? storage.delete(bucket, key) : Promise.reject(failure);
+      },
+    };
+    deps = { db, repository: createContentRepository({ clock, schema: handle.schema }), storage: port, clock };
     registerWritePositionHeader(app);
-    registerMigrationObjectRoutes(app, {
-      domain: { db, repository: createContentRepository({ clock, schema: handle.schema }) },
-      storage,
-      clock,
-    });
+    registerMigrationObjectRoutes(app, { domain: { db, repository: deps.repository }, storage: port, clock });
     await app.ready();
   });
 
@@ -140,10 +163,10 @@ describe.skipIf(!(await pgAvailable()))('migration object routes', () => {
     if (stateDir !== undefined) await rm(stateDir, { recursive: true, force: true });
   });
 
-  it('declares both contract operations', () => {
+  it('declares every contract operation', () => {
     const declared = collectRouteMatrix(app).routes.filter((route) => route.url === OBJECTS_URL);
     expect(declared).toEqual(
-      ['GET', 'POST'].map((method) => {
+      ['DELETE', 'GET', 'POST'].map((method) => {
         const operation = OPENAPI.paths[OBJECTS_URL]?.[method.toLowerCase()] ?? {};
         return expect.objectContaining({
           method,
@@ -283,6 +306,79 @@ describe.skipIf(!(await pgAvailable()))('migration object routes', () => {
     },
   );
 
+  it('declares the deletion key grammar as that of the read', () => {
+    expect(contractPattern('delete', 'key')).toBe(contractPattern('get', 'key'));
+  });
+
+  it('deletes the row and bytes of a stored object under a migration changelog row and its write position, then answers a repeat as not deleted', async () => {
+    const headers = await serviceHeaders('migration');
+    const bytes = Buffer.from('removed legacy rendition');
+    const key = `${TENANT_A.tenantId}/${REMOVED_ID}_small.png`;
+    expect((await call('POST', putQuery(REMOVED_ID, bytes, { variant: '_small' }), headers, bytes)).json()).toMatchObject({ key, created: true });
+
+    const res = await call('DELETE', { key }, headers);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ key, deleted: true });
+    const { rows: logged } = await handle.app.withTenant(TENANT_A.tenantId, (tx) =>
+      tx.query<{ xid: string; op: string; origin: string }>(
+        `SELECT xid::text AS xid, op, origin FROM ${handle.schema}.changelog WHERE "table" = 'file_object' ORDER BY seq DESC LIMIT 1`,
+      ),
+    );
+    expect(logged).toEqual([{ xid: expect.stringMatching(/^\d+$/), op: 'delete', origin: 'migration-feed' }]);
+    expect(res.headers[WRITE_POSITION_HEADER_LC]).toBe(`strategies-content=${String(logged[0]?.xid)}`);
+    expect(await storage.head(CONTENT_FILES_BUCKET, key)).toBeNull();
+    expect(await recorded(key)).toEqual({ rows: 0, intents: 0 });
+    expect((await call('GET', { key }, headers)).statusCode).toBe(404);
+
+    const repeat = await call('DELETE', { key }, headers);
+    expect(repeat.statusCode).toBe(200);
+    expect(repeat.json()).toEqual({ key, deleted: false });
+    expect(repeat.headers[WRITE_POSITION_HEADER_LC]).toBeUndefined();
+  });
+
+  it.each<[string, Buffer | undefined]>([
+    ['no row and no bytes', undefined],
+    ['bytes but no row', Buffer.from('bytes no row records')],
+  ])('answers a deletion of a key with %s as not deleted, leaving nothing stored', async (_label, leftover) => {
+    const key = `${TENANT_B.tenantId}/${REMOVED_ID}.pdf`;
+    if (leftover !== undefined) await storage.put(CONTENT_FILES_BUCKET, key, leftover, { contentType: 'application/pdf' });
+
+    const res = await call('DELETE', { key }, await serviceHeaders('migration'));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ key, deleted: false });
+    expect(await storage.head(CONTENT_FILES_BUCKET, key)).toBeNull();
+    expect(await recorded(key)).toEqual({ rows: 0, intents: 0 });
+  });
+
+  it('keeps an intent that recovery settles by deleting the bytes when their deletion fails after the row deletion committed', async () => {
+    const headers = await serviceHeaders('migration');
+    const bytes = Buffer.from('bytes outliving their row');
+    const key = `${TENANT_A.tenantId}/${REMOVED_ID}_medium.png`;
+    await call('POST', putQuery(REMOVED_ID, bytes, { variant: '_medium' }), headers, bytes);
+    nextDeleteFailure = new Error('storage offline');
+
+    const res = await call('DELETE', { key }, headers);
+    expect(res.statusCode).toBe(500);
+    expect(await recorded(key)).toEqual({ rows: 0, intents: 1 });
+    expect(await storage.get(CONTENT_FILES_BUCKET, key)).toEqual(bytes);
+
+    expect(await recoverStagedObjects(deps, TENANT_A.tenantId, 0)).toBe(1);
+    expect(await storage.head(CONTENT_FILES_BUCKET, key)).toBeNull();
+    expect(await recorded(key)).toEqual({ rows: 0, intents: 0 });
+  });
+
+  it.each([
+    ['a key without a tenant segment', { key: `${REMOVED_ID}.png` }],
+    ['a key with a dot segment', { key: `${TENANT_A.tenantId}/../${REMOVED_ID}.png` }],
+    ['a key whose extension leaves the stored-name grammar', { key: `${TENANT_A.tenantId}/${REMOVED_ID}.tar.gz` }],
+    ['a key beside an undeclared parameter', { key: `${TENANT_A.tenantId}/${FILE_ID}.png`, siteId: TENANT_A.siteId }],
+  ])('refuses a deletion of %s, deleting nothing', async (_label, query) => {
+    const res = await call('DELETE', query, await serviceHeaders('migration'));
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: { message: 'Invalid parameters' } });
+    expect(await recorded(`${TENANT_A.tenantId}/${FILE_ID}.png`)).toEqual({ rows: 1, intents: 0 });
+  });
+
   it.each<[string, () => Promise<Record<string, string>>, number]>([
     ['no credential', async () => ({}), 401],
     ['the operator service', () => serviceHeaders('operator'), 403],
@@ -295,12 +391,16 @@ describe.skipIf(!(await pgAvailable()))('migration object routes', () => {
       }),
       403,
     ],
-  ])('refuses both operations to %s before any store', async (label, headersOf, status) => {
+  ])('refuses every operation to %s before any store or deletion', async (label, headersOf, status) => {
     const bytes = Buffer.from(`refused ${label}`);
     const headers = await headersOf();
+    const stored = `${TENANT_A.tenantId}/${FILE_ID}.png`;
     const put = await call('POST', putQuery(FILE_ID, bytes, { variant: '_refused' }), headers, bytes);
-    const get = await call('GET', { key: `${TENANT_A.tenantId}/${FILE_ID}.png` }, headers);
-    expect([put.statusCode, get.statusCode]).toEqual([status, status]);
+    const get = await call('GET', { key: stored }, headers);
+    const removed = await call('DELETE', { key: stored }, headers);
+    expect([put.statusCode, get.statusCode, removed.statusCode]).toEqual([status, status, status]);
     expect(await storage.head(CONTENT_FILES_BUCKET, `${TENANT_A.tenantId}/${FILE_ID}_refused.png`)).toBeNull();
+    expect(await storage.head(CONTENT_FILES_BUCKET, stored)).not.toBeNull();
+    expect(await recorded(stored)).toEqual({ rows: 1, intents: 0 });
   });
 });

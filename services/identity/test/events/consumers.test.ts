@@ -71,7 +71,7 @@ const PERSON_DLQ_TOPIC = `${PERSON_CONTACT_SUBSCRIPTION}.dlq`;
 const UNREGISTERED_TENANT = tenantIdForSite('no-such-site');
 const PROBED_TENANTS = [...TENANT_LIST.map((fixture) => fixture.tenantId), UNREGISTERED_TENANT];
 
-// pgAvailable rejects when PG_HOST is unset; that case skips the suite instead.
+// An unset PG_HOST skips the suite without probing the server.
 const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 /** A full-state person payload of `userId` in tenant-a, as people publishes it. */

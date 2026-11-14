@@ -288,7 +288,7 @@ const CASES = {
     }),
   },
   membershipGroupIds: {
-    operations: ['listUserMemberships'],
+    operations: ['getAccountMemberships'],
     act: ({ identity, userId }) => identity.membershipGroupIds(userId),
     expected: () => [MEMBERS_GROUP.UserID],
   },

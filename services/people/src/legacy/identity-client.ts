@@ -124,9 +124,9 @@ export interface IdentityClient {
   usernameCandidates(request: UsernameCandidateRequest): Promise<UsernameCandidates>;
   /** `lookupMemberships`: each user's stored membership group ids, keyed by requested id, one call per 1000 ids; an empty list makes no call. */
   lookupMemberships(userIds: readonly string[]): Promise<Map<string, string[]>>;
-  /** `listUserMemberships`: the site's groups and the user's memberships; `siteId` defaults to the token's site. */
+  /** `listUserMemberships`: the site's groups and the user's memberships, for cUsers callers only; `siteId` defaults to the token's site. */
   userMemberships(userId: string, siteId?: string): Promise<UserMemberships>;
-  /** Ids of the groups the user belongs to, in identity's `readMembershipIDs` order. */
+  /** `getAccountMemberships`: ids of the groups the user belongs to, in `readMembershipIDs` order, whatever the caller's roles. */
   membershipGroupIds(userId: string, options?: IdentityCallOptions): Promise<string[]>;
   /** `listSiteGroups`: the groups of the site's private (`isPublic` 0) or public (1) user pool, in identity's order. */
   siteGroups(siteId: string, isPublic: number): Promise<GroupSummary[]>;
@@ -161,6 +161,7 @@ const OPS = {
   finish: { operationId: 'finishAccountOperation', method: 'POST', path: `${OPERATIONS_PATH}:finish` },
   revert: { operationId: 'revertAccountOperation', method: 'POST', path: `${OPERATIONS_PATH}:revert` },
   readAccount: { operationId: 'getAccount', method: 'GET', path: '/internal/v1/accounts/{userId}' },
+  membershipGroupIds: { operationId: 'getAccountMemberships', method: 'GET', path: '/internal/v1/accounts/{userId}/memberships' },
   readAccounts: { operationId: 'lookupAccounts', method: 'POST', path: '/internal/v1/accounts:lookup' },
   readAccountsAllSites: { operationId: 'lookupAccountsAllSites', method: 'POST', path: '/internal/v1/accounts:lookup-all-sites' },
   countAccounts: { operationId: 'countAccounts', method: 'POST', path: '/internal/v1/accounts:count' },
@@ -293,9 +294,9 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
     throw unavailable(op, response.status);
   }
 
-  async function userMemberships(userId: string, siteId?: string, options?: IdentityCallOptions): Promise<UserMemberships> {
+  async function userMemberships(userId: string, siteId?: string): Promise<UserMemberships> {
     const op = OPS.userMemberships;
-    return okBody(op, await send<UserMemberships>(op, fillPath(op.path, userId), { query: { siteid: siteId }, ...callBounds(options) }));
+    return okBody(op, await send<UserMemberships>(op, fillPath(op.path, userId), { query: { siteid: siteId } }));
   }
 
   /** The account views `op` (`lookupAccounts` or `lookupAccountsAllSites`) answers for `userIds` and `where`, one call per chunk. */
@@ -377,7 +378,8 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
     userMemberships,
 
     async membershipGroupIds(userId, options) {
-      return (await userMemberships(userId, undefined, options)).groupIds;
+      const op = OPS.membershipGroupIds;
+      return okBody(op, await send<Schemas['AccountMemberships']>(op, fillPath(op.path, userId), callBounds(options))).groupIds;
     },
 
     async siteGroups(siteId, isPublic) {

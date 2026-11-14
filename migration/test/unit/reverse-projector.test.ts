@@ -36,6 +36,7 @@ import {
   liveTenantSites,
   runProjectorCycle,
   type CycleDeps,
+  type OperationChangePoint,
   type ProjectorContext,
   type ProjectorHooks,
   type StartupGuardRunner,
@@ -1077,6 +1078,107 @@ describe('runProjectorCycle roster operations', () => {
     expect(result.errors.length).toBeGreaterThan(0);
     expect(legacy.applied(TUSERS_UPDATE)).toEqual([]);
     expect(legacy.checkpoint('people')).toMatchObject({ cursor_xid: '0', applied_horizon: '100' });
+  });
+
+  describe('beforeOperationChange', () => {
+    /** People's person update at 100:1 and identity's account update at 102:1 of the done operation. */
+    const donePages = () => ({
+      [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP })], '101', CURSOR_START, { [OP]: 'done' }),
+      [`identity|${CURSOR_START}`]: page([account('grace', { operationId: OP })], '103', CURSOR_START, { [OP]: 'done' }),
+    });
+    /** Statements transaction `tx` issued so far: its tusers update values and its checkpoint upserts. */
+    const issuedIn = (legacy: ReturnType<typeof fakeLegacy>, tx: number) => {
+      const own = legacy.statements.filter((statement) => statement.tx === tx);
+      return {
+        tusers: own.filter((statement) => TUSERS_UPDATE.test(statement.sql)).map((statement) => statement.params.p0),
+        checkpoints: own.filter((statement) => statement.sql.startsWith('UPDATE opt2_sync')).length,
+        ended: legacy.log.filter(([, id]) => id === tx),
+      };
+    };
+
+    it('runs inside the open joint transaction before each operation change, with the owners already written', async () => {
+      const h = harness({ owners: fakeOwners({ pages: donePages() }) });
+      const calls: (OperationChangePoint & { tx: number; issued: ReturnType<typeof issuedIn> })[] = [];
+      const hooks: ProjectorHooks = {
+        beforeOperationChange: async (info) => {
+          const tx = h.legacy.begun();
+          calls.push({ ...info, written: [...info.written], tx, issued: issuedIn(h.legacy, tx) });
+        },
+      };
+      expect(await runProjectorCycle(h.ctx, cycleDeps(hooks))).toMatchObject({ rowsApplied: 2, errors: [] });
+      const [joint] = h.legacy.applied(TUSERS_UPDATE).map((statement) => statement.tx);
+      const batchId = calls[0]?.batchId;
+      expect(batchId).toEqual(expect.any(String));
+      expect(calls).toEqual([
+        { batchId, operationId: OP, owner: 'people', written: [], tx: joint, issued: { tusers: [], checkpoints: 0, ended: [] } },
+        { batchId, operationId: OP, owner: 'identity', written: ['people'], tx: joint, issued: { tusers: ['Grace'], checkpoints: 0, ended: [] } },
+      ]);
+      expect(issuedIn(h.legacy, joint ?? 0)).toEqual({ tusers: ['Grace', 'grace'], checkpoints: 2, ended: [['commit', joint]] });
+    });
+
+    it.each<[string, (info: OperationChangePoint) => boolean, unknown[]]>([
+      ["before the first participant's change", (info) => info.written.length === 0, []],
+      ['between the participants', (info) => info.written.length > 0 && !info.written.includes(info.owner), ['Grace']],
+    ])('rolls back both participants and both checkpoints when it throws %s; the next cycle commits both in one transaction', async (_label, at, issuedBeforeThrow) => {
+      const legacy = fakeLegacy();
+      const owners = fakeOwners({ pages: donePages() });
+      const fault = new Error('held operation failed');
+      let failing = true;
+      const hooks: ProjectorHooks = {
+        beforeOperationChange: async (info) => {
+          if (failing && at(info)) throw fault;
+        },
+      };
+      const loop = createProjectorLoop(harness({ legacy, owners }).ctx, { hooks, startupGuard: refuseGuard });
+
+      await expect(loop.runOnce()).rejects.toBe(fault);
+      const rolledBack = legacy.log.filter(([kind]) => kind === 'rollback').map(([, id]) => id);
+      expect(rolledBack).toHaveLength(1);
+      expect(issuedIn(legacy, rolledBack[0] ?? 0)).toEqual({ tusers: issuedBeforeThrow, checkpoints: 0, ended: [['rollback', rolledBack[0]]] });
+      expect(legacy.applied(TUSERS_UPDATE)).toEqual([]);
+      for (const owner of ['people', 'identity']) expect(legacy.checkpoint(owner), owner).toMatchObject({ cursor_xid: '0', cursor_seq: '0' });
+
+      failing = false;
+      expect(await loop.runOnce()).toMatchObject({ rowsApplied: 2, errors: [] });
+      const [joint, ...others] = new Set(legacy.applied(TUSERS_UPDATE).map((statement) => statement.tx));
+      expect(others).toEqual([]);
+      expect(issuedIn(legacy, joint ?? 0)).toEqual({ tusers: ['Grace', 'grace'], checkpoints: 2, ended: [['commit', joint]] });
+      expect(legacy.checkpoint('people')).toMatchObject({ cursor_xid: '100', cursor_seq: '1' });
+      expect(legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '102', cursor_seq: '1' });
+    });
+
+    it('holds the joint transaction open while it waits between the participants, then commits both in that transaction', async () => {
+      const h = harness({ owners: fakeOwners({ pages: donePages() }) });
+      let reached: (tx: number) => void = () => undefined;
+      const holding = new Promise<number>((resolve) => {
+        reached = resolve;
+      });
+      let release: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const hooks: ProjectorHooks = {
+        beforeOperationChange: async ({ owner }) => {
+          if (owner !== 'identity') return;
+          reached(h.legacy.begun());
+          await released;
+        },
+      };
+      const cycle = runProjectorCycle(h.ctx, cycleDeps(hooks));
+      const tx = await holding;
+      expect(issuedIn(h.legacy, tx)).toEqual({ tusers: ['Grace'], checkpoints: 0, ended: [] });
+      expect(h.legacy.applied(TUSERS_UPDATE)).toEqual([]);
+      expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '0', cursor_seq: '0' });
+
+      release();
+      expect(await cycle).toMatchObject({ rowsApplied: 2, errors: [] });
+      expect(h.legacy.applied(TUSERS_UPDATE).map((statement) => [statement.tx, statement.params.p0])).toEqual([
+        [tx, 'Grace'],
+        [tx, 'grace'],
+      ]);
+      expect(issuedIn(h.legacy, tx)).toMatchObject({ checkpoints: 2, ended: [['commit', tx]] });
+      expect(h.legacy.checkpoint('identity')).toMatchObject({ cursor_xid: '102', cursor_seq: '1' });
+    });
   });
 });
 

@@ -1,7 +1,8 @@
-/** People's Masa JSON API `user` and `address` routes through `buildTestApp` and `app.inject`: wire format, route ownership, denials, reads and roster-protocol saves. */
+/** People's Masa JSON API `user` and `address` routes through `buildTestApp` and `app.inject`: wire format, route ownership, denials, reads, roster-protocol saves and the iterator page hold. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { CSRF_HEADER_EXPIRES, CSRF_HEADER_TOKEN, LEGACY_ERROR_MAP, WWW_AUTHENTICATE, etag, isCfUuid, legacyHeaders } from '@opt2/platform/legacy-compat';
+import { CSRF_HEADER_EXPIRES, CSRF_HEADER_TOKEN, LEGACY_ERROR_MAP, LegacyApiError, WWW_AUTHENTICATE, etag, isCfUuid, legacyHeaders } from '@opt2/platform/legacy-compat';
 import { ROLE_SET, TENANT_A, TENANT_B, TENANT_UMBRELLA, fixtureForSite, registryPayloads, type RoleSubject } from '@opt2/platform/testing';
+import { iteratorPage, iteratorPageHold } from '../../src/routes/legacy-api.js';
 import {
   PG_AVAILABLE,
   buildTestApp,
@@ -12,7 +13,7 @@ import {
   type RecordingDb,
   type TestApp,
 } from '../helpers/app.js';
-import type { IdentityDouble, RecordedIdentityRequest } from '../helpers/identity-double.js';
+import type { DoubleGroup, IdentityDouble, RecordedIdentityRequest } from '../helpers/identity-double.js';
 import {
   ADMIN_S2,
   CSV_QUIRK_PERSONS,
@@ -66,6 +67,9 @@ const TOKEN = 'TEST-CSRF-TOKEN';
 const TOKEN_EXPIRES = '260630130000000';
 const CSRF = csrfHeaders(TOKEN);
 const GROUP_ID = '6A1B2C3D-4E5F-6071-8293A4B5C6D7E8F9';
+/** Tenant-a groups whose name order is the reverse of their id order; a membership of GROUP_ID, which names no group, dangles. */
+const ZULU_GROUP: DoubleGroup = { UserID: '1A1B2C3D-4E5F-6071-8293A4B5C6D7E8F9', GroupName: 'Zulu', SiteID: TENANT_A.siteId, isPublic: 0, Perm: 0 };
+const ALPHA_GROUP: DoubleGroup = { UserID: '9A1B2C3D-4E5F-6071-8293A4B5C6D7E8F9', GroupName: 'alpha', SiteID: TENANT_A.siteId, isPublic: 0, Perm: 0 };
 
 /** CSRF headers carrying `token`; identity consumes each token once per session. */
 function csrfHeaders(token: string): Readonly<Record<string, string>> {
@@ -498,13 +502,15 @@ describe.skipIf(!PG_AVAILABLE)('JSON API reads and saves over PostgreSQL', () =>
     });
 
     it.each([
-      ['a super user, through the ordered membership list', s2OnTenantA],
-      ['a Users module user, through the membership lookup', MODULE_USER_A],
-    ])('reads the memberships of a user for %s', async (_name, actor) => {
-      ctx.identity.seedMemberships(owner.userid, [GROUP_ID]);
+      ['a super user', s2OnTenantA],
+      ['a Users module user', MODULE_USER_A],
+    ])("reads the memberships of a user for %s in readMembershipIDs' group-name order, without a dangling id", async (_name, actor) => {
+      ctx.identity.seedGroups(ZULU_GROUP, ALPHA_GROUP);
+      ctx.identity.seedMemberships(owner.userid, [GROUP_ID, ZULU_GROUP.UserID, ALPHA_GROUP.UserID]);
       const data = dataOf(await send(ctx.app, 'GET', apiPath(family, `/user/${owner.userid}`), await actorHeaders(actor)));
-      expect(data).toMatchObject({ userid: owner.userid, groupid: GROUP_ID });
+      expect(data).toMatchObject({ userid: owner.userid, groupid: `${ALPHA_GROUP.UserID},${ZULU_GROUP.UserID}` });
       expect((data.links as Record<string, string>).edit).toContain('muraAction=cusers.edituser');
+      expect(operationIds(ctx.identity)).toContain('getAccountMemberships');
     });
 
     it('reads a user through the method form the contract lists', async () => {
@@ -721,10 +727,14 @@ describe.skipIf(!PG_AVAILABLE)('JSON API reads and saves over PostgreSQL', () =>
       expect(await storedPerson(String(data.userid))).toBeUndefined();
     });
 
-    it('logs a json-mode self-save in again at commit', async () => {
+    it('lets a system user without the Users module save their own record, keeping its groups in group-name order, and logs it in again at commit', async () => {
+      ctx.identity.seedGroups(ZULU_GROUP, ALPHA_GROUP);
+      ctx.identity.seedMemberships(owner.userid, [ZULU_GROUP.UserID, ALPHA_GROUP.UserID]);
       const form = { fname: 'Sid', lname: owner.lname ?? '', email: owner.email ?? '' };
       const res = await send(ctx.app, 'POST', apiPath('json', `/user/${owner.userid}`), { ...(await actorHeaders(SYSTEM_USER_A)), ...CSRF }, form);
-      expect(dataOf(res)).toMatchObject({ userid: owner.userid, fname: 'Sid', errors: {} });
+      expect(dataOf(res)).toMatchObject({ userid: owner.userid, fname: 'Sid', groupid: `${ALPHA_GROUP.UserID},${ZULU_GROUP.UserID}`, errors: {} });
+      expect(await storedPerson(owner.userid)).toMatchObject({ fname: 'Sid' });
+      expect(operationIds(ctx.identity)).not.toContain('listUserMemberships');
       const [operation] = [...ctx.identity.operations.values()];
       expect(operation?.state).toBe('finished');
       expect(operation?.commitRequest?.sessionEffects).toMatchObject({ reloginSessionId: sessionOf(SYSTEM_USER_A), person: { fname: 'Sid', lname: owner.lname } });
@@ -767,5 +777,71 @@ describe.skipIf(!PG_AVAILABLE)('JSON API reads and saves over PostgreSQL', () =>
       const read = dataOf(await send(ctx.app, 'GET', apiPath('json', `/address/${addressId}`), await actorHeaders(SITE_ADMIN_A)));
       expect(read).toMatchObject({ addressid: addressId, isnew: 0 });
     });
+  });
+});
+
+describe('iteratorPageHold', () => {
+  const NEXT_NS = [1000, 3, 2.5, 1, 0, -2, Number.POSITIVE_INFINITY, Number.NaN];
+  const PAGE_SIZES = [undefined, '*', '0', '1', '2', '3', '1.5', '-2', '1e3', '1e400', 'x', ''];
+  const PAGES = [undefined, '0', '1', '2', '3', '99', '-1', '1.5', '-0.5', '1e400'];
+  const START_INDEXES = [undefined, '0', '1', '2', '3', '4', '7', '99', '-3', '2.5'];
+  const MAX_ITEMS = [0, 1, 3, 5];
+  const COUNTS = Array.from({ length: 10 }, (_, count) => count);
+
+  /** The url scope of the given iterator params, absent ones left out. */
+  function urlOf(itemsPerPage?: string, pageIndex?: string, startIndex?: string): Record<string, string> {
+    return Object.fromEntries(Object.entries({ itemsPerPage, pageIndex, startIndex }).flatMap(([key, value]) => (value === undefined ? [] : [[key, value]])));
+  }
+
+  it.each(PAGE_SIZES.map((size) => [String(size), size]))('holds every position iteratorPage returns for itemsPerPage %s, at every count', (_label, size) => {
+    const missed: string[] = [];
+    let positions = 0;
+    for (const nextN of NEXT_NS) {
+      for (const pageIndex of PAGES) {
+        for (const startIndex of START_INDEXES) {
+          const url = urlOf(size, pageIndex, startIndex);
+          for (const maxItems of MAX_ITEMS) {
+            const hold = iteratorPageHold(nextN, maxItems, url);
+            for (const total of COUNTS) {
+              let page: number[];
+              try {
+                page = iteratorPage(maxItems > 0 ? Math.min(total, maxItems) : total, nextN, url).positions;
+              } catch (err) {
+                if (err instanceof LegacyApiError) continue;
+                throw err;
+              }
+              positions += page.length;
+              for (const position of page) {
+                if (!(position < hold.reach && hold.keep(position))) missed.push(JSON.stringify({ nextN, url, maxItems, total, position }));
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(missed).toEqual([]);
+    expect(positions).toBeGreaterThan(0);
+  });
+
+  it.each<[string, number, number, Record<string, string>, number[], number]>([
+    ['the first page of the feed nextN', 1000, 0, {}, Array.from({ length: 1000 }, (_, index) => index), 1000],
+    ['the first page beside a requested page', 1000, 0, urlOf('2', '3'), [0, 1, 4, 5], 6],
+    ['the first page and the page of a start index', 1000, 0, urlOf('3', undefined, '5'), [0, 1, 2, 3, 4, 5], 6],
+    ['no row past maxItems', 1000, 3, urlOf('2', '2'), [0, 1, 2], 3],
+    ['no row of a negative page size', 1000, 0, urlOf('-2'), [], 0],
+  ])('keeps only %s', (_label, nextN, maxItems, url, kept, reach) => {
+    const hold = iteratorPageHold(nextN, maxItems, url);
+    expect(hold.reach).toBe(reach);
+    expect(Array.from({ length: 1100 }, (_, index) => index).filter((index) => index < hold.reach && hold.keep(index))).toEqual(kept);
+  });
+
+  it.each<[string, number, number, Record<string, string>, number]>([
+    ['itemsPerPage *', 1000, 0, urlOf('*', '2'), Number.POSITIVE_INFINITY],
+    ['itemsPerPage 0 under maxItems', 1000, 4, urlOf('0'), 4],
+    ['a zero nextN', 0, 0, urlOf(undefined, '2'), Number.POSITIVE_INFINITY],
+  ])('keeps every row for %s, whose page size is the count', (_label, nextN, maxItems, url, reach) => {
+    const hold = iteratorPageHold(nextN, maxItems, url);
+    expect(hold.reach).toBe(reach);
+    expect([0, 1, 2, 3, 500].every((index) => hold.keep(index))).toBe(true);
   });
 });

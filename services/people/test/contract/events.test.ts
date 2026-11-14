@@ -361,7 +361,7 @@ async function onlyPersonEnvelope(published: readonly PublishedEvent[], topic: P
   return envelope;
 }
 
-// Gated on PG_AVAILABLE, resolved at import: platform pgAvailable() is async and throws when a PG_* variable is unset.
+// Gated on PG_AVAILABLE, resolved at import: platform pgAvailable() is async and rejects when PG_HOST is set and another PG_* variable is unset.
 describe.skipIf(!PG_AVAILABLE)('published envelopes', () => {
   it('consecutive roster saves of one person publish people.person.changed.v1 at consecutive versions', async () => {
     await withPgApp(async (app) => {

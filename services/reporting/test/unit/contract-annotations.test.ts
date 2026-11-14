@@ -35,6 +35,11 @@ const SYNTHETIC_HEADER = '# SYNTHETIC: reporting - no Masa equivalent; legacy or
 const FIXTURE_PREFIX = '/legacy-fixtures/cfml/api.cfm/reporting/';
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'] as const;
 const SAMPLE_ID = '0A1B2C3D-4E5F-6071-8293A4B5C6D7E8F9';
+/** The X-HTTP-Method-Override of each fixture operation the contract serves as another method's. */
+const METHOD_OVERRIDES: Readonly<Record<string, string>> = Object.freeze({
+  fixtureGetExportByPost: 'GET',
+  fixtureDownloadExportByPost: 'GET',
+});
 
 const source = readFileSync(CONTRACT_URL, 'utf8');
 const contract = parse(source) as Contract;
@@ -129,15 +134,28 @@ describe('reporting operations', () => {
   );
 
   it.each(named(fixtureOperations))(
-    '%s carries the route key of its method and path',
+    '%s carries the route key of its method and path, after X-HTTP-Method-Override',
     (_name, { path, method, op }) => {
+      const override = METHOD_OVERRIDES[String(op.operationId)];
       const { key } = routeKeyForRequest({
         method: method.toUpperCase(),
         path: path.replace(/\{[^}]+\}/g, SAMPLE_ID),
         query: {},
-        headers: {},
+        headers: override === undefined ? {} : { 'X-HTTP-Method-Override': override },
       });
       expect(op['x-opt2-route-keys']).toEqual([key]);
     },
   );
+
+  it('answers every fixture path for GET and POST, a POST of a GET-only path being its override operation', () => {
+    const fixturePaths = Object.keys(contract.paths).filter((path) => path.startsWith(FIXTURE_PREFIX));
+    const methodsOf = (path: string): string[] => Object.keys(contract.paths[path] ?? {}).filter((key) => (HTTP_METHODS as readonly string[]).includes(key));
+    expect(fixturePaths.map((path) => [path, methodsOf(path)])).toEqual(
+      fixturePaths.map((path) => [path, ['get', 'post']]),
+    );
+    const overridden = fixtureOperations.filter(({ op }) => METHOD_OVERRIDES[String(op.operationId)] !== undefined);
+    expect(overridden.map(({ path, method }) => `${method} ${path}`).sort()).toEqual(
+      [`post ${FIXTURE_PREFIX}exports/{id}`, `post ${FIXTURE_PREFIX}exports/{id}/download`].sort(),
+    );
+  });
 });

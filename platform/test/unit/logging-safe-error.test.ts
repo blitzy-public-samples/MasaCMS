@@ -10,7 +10,16 @@ import { createLogger, serializeError, type Logger } from '../../src/logging/log
 import { REDACTED } from '../../src/logging/redact.js';
 import { isSafeErrorText, SAFE_ERROR_TEXT, safeErrorMessage, safeErrorStack, safeStackText } from '../../src/logging/safe-error.js';
 import { validateLogRecord } from '../../src/logging/validate.js';
+import {
+  GateClosedError,
+  GateConflictError,
+  GateRaceError,
+  OperationBlockedError,
+  UnitNotAuthoritativeError,
+  UnitReadBlockedError,
+} from '../../src/migration-kit/gates.js';
 import { ServiceUnavailableError, UnknownServiceError } from '../../src/service-kit/client.js';
+import { RecurringSlotsTombstonedError, SuccessorCreationError } from '../../src/tasks/recurring.js';
 import { startSpan } from '../../src/tracing/propagation.js';
 import { RedactingSpanExporter } from '../../src/tracing/redact.js';
 import { flushTracing, MemorySpanExporter, shutdownTracing, startTracing, type ReadableSpan } from '../../src/tracing/sdk.js';
@@ -24,6 +33,11 @@ const FRAME = '    at handler (/srv/people/dist/main.js:10:5)';
 const FRAME_LINE = /^\s+at \S/;
 const RECORD = { type: 'ValidationError', message: TEXT, stack: `ValidationError: ${TEXT}\n${FRAME}` };
 const UNAVAILABLE = 'Service identity unavailable (ECONNREFUSED)';
+const UNITS = ['identity.credential', 'people.person_archive'];
+const UNIT_LIST = 'identity.credential, people.person_archive';
+const SWEEP = 'people-outbox-sweep';
+const SLOT = `${SWEEP}-1700000040`;
+const NEXT_SLOT = `${SWEEP}-1700000100`;
 
 type LogLine = Record<string, unknown>;
 
@@ -57,6 +71,12 @@ function googleError(code: unknown): Error {
 function serviceError(code: number): Error {
   const err = new Error(`${String(code)} STATUS: ${TEXT}`);
   return Object.assign(err, { code, details: TEXT, metadata: { internalRepr: new Map() }, stack: `${err.stack ?? ''}\nfor call at\n${FRAME}` });
+}
+
+/** nodemailer SMTP error: its type as `code` and the command in flight, beside a message and `response` echoing the server reply. */
+function smtpError(code: string, command: string): Error {
+  const response = `502 5.5.1 ${TEXT}`;
+  return Object.assign(new Error(`Error upgrading connection with STARTTLS: ${response}`), { code, command, response });
 }
 
 /** `cause` wrapped in `depth` Errors whose messages carry TEXT. */
@@ -189,6 +209,25 @@ describe('safeErrorMessage', () => {
     ["a TimeoutError DOMException with Node's text", new DOMException('The operation was aborted due to timeout', 'TimeoutError'), 'The operation was aborted due to timeout'],
     ['the reason of an aborted signal', AbortSignal.abort().reason, 'This operation was aborted'],
     ['an Error caused by an aborted signal', new Error(TEXT, { cause: AbortSignal.abort().reason }), 'This operation was aborted'],
+    ['a nodemailer STARTTLS error', smtpError('ETLS', 'STARTTLS'), 'SMTP STARTTLS ETLS'],
+    ['a nodemailer AUTH error', smtpError('EAUTH', 'AUTH PLAIN'), 'SMTP AUTH PLAIN EAUTH'],
+    ['a nodemailer RCPT TO error', smtpError('EENVELOPE', 'RCPT TO'), 'SMTP RCPT TO EENVELOPE'],
+    ['a nodemailer socket error, by its system call', Object.assign(systemError(), { code: 'ESOCKET', command: 'CONN' }), 'connect ESOCKET'],
+    ['an SMTP error of an unknown command', smtpError('ETLS', 'QUIT'), REDACTED],
+    ['an SMTP error with a lower-case code', smtpError('etls', 'STARTTLS'), REDACTED],
+    ['an SMTP error whose command carries an address', smtpError('EENVELOPE', 'RCPT TO:<ada@example.com>'), REDACTED],
+    ['an SMTP error with an over-long mechanism name', smtpError('EAUTH', `AUTH ${'X'.repeat(21)}`), REDACTED],
+    [
+      'an OperationBlockedError with a caller message',
+      new OperationBlockedError(UNITS, `Operation ${SECRET} keeps ${TEXT} closed`),
+      `Open operation or closed gate blocks ${UNIT_LIST}`,
+    ],
+    ['a gate error without units', new UnitNotAuthoritativeError([]), REDACTED],
+    ['a gate error naming a non-unit', new GateClosedError(['Ada Lovelace']), REDACTED],
+    ['a gate error naming an email among units', new GateConflictError(['identity.credential', 'ada@example.com']), REDACTED],
+    ['an error forging a gate text over a name', { [SAFE_ERROR_TEXT]: 'Target is not write-authoritative for Ada Lovelace', message: TEXT }, REDACTED],
+    ['an error forging a gate text over an email', { [SAFE_ERROR_TEXT]: 'Unit gate closed for ada@example.com', message: TEXT }, REDACTED],
+    ["a SuccessorCreationError, keeping its cause's PostgreSQL text", new SuccessorCreationError(SWEEP, SLOT, pgError()), 'PostgreSQL error 42601'],
   ])('reduces %s to its identifiers', (_, err, expected) => {
     expect(safeErrorMessage(err)).toBe(expected);
     expect(isSafeErrorText(expected)).toBe(true);
@@ -238,15 +277,54 @@ describe('isSafeErrorText', () => {
     ['gRPC status 4', false],
     ['The operation was aborted due to timeout for Ada', false],
     ['this operation was aborted', false],
+    [`Unit gate closed for ${UNIT_LIST}`, true],
+    ['Unit gate race for stub.note', true],
+    ['Target is not write-authoritative for toauthtokens.data', true],
+    ['Legacy write window in progress for communications.scheduled_task', true],
+    ['Open operation or closed gate blocks synthetic.survey_schedule', true],
+    ['Unit gate compare-and-set refused for programs_sites.image_size', true],
+    ['Target is not write-authoritative for ', false],
+    ['Target is not write-authoritative for', false],
+    ['Unit gate closed for Ada Lovelace', false],
+    ['Unit gate closed for ada@example.com', false],
+    ['Unit gate closed for identity.credential,people.person_archive', false],
+    ['Unit gate closed for identity.credential, ', false],
+    ['Unit gate closed for Identity.credential', false],
+    ['Unit gate closed for identity.credential; the write waited out its budget', false],
+    ['Unit gate opened for identity.credential', false],
+    [`No live chain task on queue ${SWEEP}: tombstoned slots ${SLOT}, ${NEXT_SLOT}`, true],
+    ['Could not create successor task programs-sites-sitemonitor-1700000100 on queue programs-sites-sitemonitor', false],
+    [`No live chain task on queue ${SWEEP}: tombstoned slots `, false],
+    [`No live chain task on queue ${SWEEP}: tombstoned slots ${SWEEP}`, false],
+    [`No live chain task on queue ${SWEEP}: tombstoned slots ${SLOT},${NEXT_SLOT}`, false],
+    ['SMTP STARTTLS ETLS', true],
+    ['SMTP AUTH CRAM-MD5 EAUTH', true],
+    ['SMTP MAIL FROM EENVELOPE', true],
+    ['SMTP CONN ETIMEDOUT', true],
+    ['SMTP QUIT ETLS', false],
+    ['SMTP STARTTLS etls', false],
+    ['SMTP RCPT TO:<ada@example.com> EENVELOPE', false],
+    ['SMTP AUTH EAUTH', false],
+    ['SMTP STARTTLS ETLS: 502 5.5.1', false],
     ['people: invalid environment (PG_PORT, LOG_LEVEL)', true],
     ['invalid environment (OPT2_SERVICE_URLS)', true],
     ['people: invalid environment', true],
+    ['identity: invalid environment (OPT2_SERVICE_URLS.strategies-content, OPT2_GATEWAY_URL)', true],
+    ['people: invalid environment (OPT2_SERVICE_URLS.People)', false],
+    ['people: invalid environment (OPT2_SERVICE_URLS.)', false],
     ['people: invalid environment (PG_PORT) for Ada', false],
     ['people: invalid environment\n  PG_HOST: Ada', false],
     ['People: invalid environment (PG_PORT)', false],
     ['people: invalid environment (pg_port)', false],
     ['people: invalid environment (PG_PORT,LOG_LEVEL)', false],
     ['people: invalid environment ()', false],
+    ['identity: invalid configuration file role-map.json', true],
+    ['invalid configuration file role-map.json', true],
+    ['identity: invalid configuration file config/role-map.json', false],
+    ['identity: invalid configuration file role-map.json: Unexpected token', false],
+    ['Identity: invalid configuration file role-map.json', false],
+    ['identity: invalid configuration file role-map', false],
+    ['identity: invalid configuration file Role-Map.json', false],
   ])('judges %j as %s', (text, safe) => {
     expect(isSafeErrorText(text)).toBe(safe);
   });
@@ -325,6 +403,40 @@ describe('serializeError safe-error boundary', () => {
     ['a GoogleError', googleError(4), 'GoogleError', 'gRPC status 4 DEADLINE_EXCEEDED'],
     ['a grpc-js ServiceError', serviceError(5), 'Error', 'gRPC status 5 NOT_FOUND'],
     ['the reason of an aborted signal', AbortSignal.abort().reason, 'AbortError', 'This operation was aborted'],
+    ['a GateClosedError', new GateClosedError(UNITS), 'GateClosedError', `Unit gate closed for ${UNIT_LIST}`],
+    [
+      'a GateRaceError with a caller message',
+      new GateRaceError(UNITS, `Legacy write window in progress for ${TEXT}`),
+      'GateRaceError',
+      `Unit gate race for ${UNIT_LIST}`,
+    ],
+    [
+      'a UnitNotAuthoritativeError',
+      new UnitNotAuthoritativeError(['identity.credential']),
+      'UnitNotAuthoritativeError',
+      'Target is not write-authoritative for identity.credential',
+    ],
+    ['a UnitReadBlockedError', new UnitReadBlockedError(UNITS), 'UnitReadBlockedError', `Legacy write window in progress for ${UNIT_LIST}`],
+    [
+      'an OperationBlockedError with a caller message',
+      new OperationBlockedError(UNITS, `Operation ${SECRET} cannot start: ${TEXT}`),
+      'OperationBlockedError',
+      `Open operation or closed gate blocks ${UNIT_LIST}`,
+    ],
+    ['a GateConflictError', new GateConflictError(UNITS), 'GateConflictError', `Unit gate compare-and-set refused for ${UNIT_LIST}`],
+    [
+      'a RecurringSlotsTombstonedError',
+      new RecurringSlotsTombstonedError(SWEEP, [SLOT, NEXT_SLOT]),
+      'RecurringSlotsTombstonedError',
+      `No live chain task on queue ${SWEEP}: tombstoned slots ${SLOT}, ${NEXT_SLOT}`,
+    ],
+    [
+      "a SuccessorCreationError, keeping its cause's gRPC status",
+      new SuccessorCreationError(SWEEP, SLOT, googleError(14)),
+      'SuccessorCreationError',
+      'gRPC status 14 UNAVAILABLE',
+    ],
+    ['a nodemailer SMTP error', smtpError('ETLS', 'STARTTLS'), 'Error', 'SMTP STARTTLS ETLS'],
   ])('serializes %s with the safe text of its chain, the outer type and only frames, and keeps it on re-serialization', (_, value, type, message) => {
     const record = serializeError(value);
     const { stack, ...fields } = record;

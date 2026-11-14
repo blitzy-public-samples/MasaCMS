@@ -107,13 +107,6 @@ export function jsonApiSiteValues(bean: SiteBean, baseUrl: string, entityName = 
   );
 }
 
-// legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:2062-2065 (saveErrors and errors after the filtered values)
-/** A saved site's values: the site values, then `saveErrors` and `errors`. */
-export function jsonApiSaveValues(bean: SiteBean, baseUrl: string, saveErrors: unknown, errors: unknown): Record<string, unknown> {
-  const values = { ...jsonApiSiteValues(bean, baseUrl), saveErrors, errors };
-  return acfStruct(values, [...VALUE_OPS, ['set', 'saveErrors'], ['set', 'errors']]);
-}
-
 // legacy: core/mura/bean/beanIterator.cfc:98-101 and jsonApiUtility.cfc:3374-3381 (a distinct feed's generic bean links only `entities`)
 /** The values of a generic bean a distinct feed iterates, read as the site entity's fields. */
 export function jsonApiGenericValues(row: Readonly<Record<string, unknown>>, baseUrl: string): JsonApiSiteValues {

@@ -5,6 +5,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 import { load } from 'cheerio';
 import { CookieJar } from 'tough-cookie';
@@ -39,6 +40,8 @@ const SEED_PATH = '/legacy-fixtures/cfml/seed.cfm';
 const CSRF_FIELDS = ['csrf_token', 'csrf_token_expires'];
 const MAX_REDIRECTS = 5;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+// Wait before the single admin login retry.
+const LOGIN_RETRY_PAUSE_MS = 3000;
 // Controls a browser submits only when clicked or chosen.
 const UNSUBMITTED = new Set(['submit', 'button', 'reset', 'image', 'file']);
 // Parts whose rows take secrets from the credentials.json member of the same name.
@@ -148,17 +151,22 @@ function isLoginPage(html) {
   return load(html)('form input[name="password"]').length > 0;
 }
 
-/** Logs `session` in as the admin by submitting the login form with its CSRF fields; throws SeedError on failure. */
-async function login(session, opts) {
+/**
+ * Submits the admin login form once, with its CSRF fields.
+ * Resolves undefined when logged in, else {error, retryable}: a SeedError, and whether another attempt may succeed.
+ */
+async function attemptLogin(session, opts) {
   let page;
   try {
     page = await session.request(new URL(LOGIN_PATH, opts.origin));
   } catch (err) {
-    throw failed('admin login page', err);
+    return { error: failed('admin login page', err), retryable: true };
   }
   const $ = load(page.body);
   const form = $('form').filter((_, el) => $(el).find('input[name="password"]').length > 0).first();
-  if (page.status !== 200 || form.length === 0) throw new SeedError(`admin login page: HTTP ${page.status} without a login form`);
+  if (page.status !== 200 || form.length === 0) {
+    return { error: new SeedError(`admin login page: HTTP ${page.status} without a login form`), retryable: true };
+  }
 
   const fields = new URLSearchParams();
   form.find('input[name]').each((_, el) => {
@@ -169,7 +177,7 @@ async function login(session, opts) {
     fields.append(input.attr('name'), input.attr('value') ?? (choice ? 'on' : ''));
   });
   const missing = CSRF_FIELDS.filter((name) => !fields.has(name));
-  if (missing.length > 0) throw new SeedError(`admin login form has no ${missing.join(' or ')} field`);
+  if (missing.length > 0) return { error: new SeedError(`admin login form has no ${missing.join(' or ')} field`), retryable: false };
   fields.set('username', opts.username);
   fields.set('password', opts.password);
 
@@ -182,9 +190,28 @@ async function login(session, opts) {
       body,
     });
   } catch (err) {
-    throw failed('admin login', err);
+    return { error: failed('admin login failed', err), retryable: true };
   }
-  if (res.status !== 200 || isLoginPage(res.body)) throw new SeedError('admin login failed');
+  if (res.status !== 200) return { error: new SeedError(`admin login failed: HTTP ${res.status}`), retryable: true };
+  if (!isLoginPage(res.body)) return undefined;
+  // Masa sends rejected credentials back to the login page with status=failed, and a session or CSRF token it
+  // did not accept back without it. Credentials are never resent: each rejection is a strike towards a lockout.
+  if (res.url.searchParams.get('status') === 'failed') {
+    return { error: new SeedError('admin login failed: credentials rejected'), retryable: false };
+  }
+  return { error: new SeedError('admin login failed: session not accepted'), retryable: true };
+}
+
+/** Logs `session` in as the admin, retrying once in a new session after a failure that allows it; throws SeedError. */
+async function login(session, opts) {
+  let outcome = await attemptLogin(session, opts);
+  if (outcome?.retryable) {
+    process.stderr.write(`${outcome.error.message}; retrying once\n`);
+    await sleep(LOGIN_RETRY_PAUSE_MS);
+    session.jar = new CookieJar();
+    outcome = await attemptLogin(session, opts);
+  }
+  if (outcome) throw outcome.error;
 }
 
 /** Text naming an envelope error: its type (or code) and message. */

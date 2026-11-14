@@ -1,5 +1,4 @@
-// cfeed before() cases before-gate.test.ts and index.test.ts leave out: the secure() decision as returned, the gate
-// over the real admin request builder, and the param defaults beside present and unrelated rc keys.
+// cfeed before(): the gate's secure() decision over the admin request builder, and the rc param defaults.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runGate, secure, type GateDecision } from '@/lib/access-gate';
 import type { AdminRequest } from '@/lib/request-context';

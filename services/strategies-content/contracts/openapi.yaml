@@ -2280,6 +2280,7 @@ paths:
     get:
       operationId: listContent
       summary: Searches the site content by keywords.
+      description: '`rc` holds `rslist` (always empty: a requested `page` with rows answers the legacy 503), `nextn` (`getNextN` over every match, starting at the page''s first row) and the session''s `copyContentID` and `copySiteID`.'
       tags: [content]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:000']
@@ -2316,6 +2317,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+          description: Legacy-shaped 503 when the requested page holds rows, after `before()` and the search. Each printed row reads the site's locking and URL settings, which only programs-sites holds.
   /v1/sites/{siteid}/content/drafts:
     parameters:
       - $ref: '#/components/parameters/SiteIdPath'
@@ -2525,6 +2527,7 @@ paths:
           $ref: '#/components/responses/AdminNotFound'
         '503':
           $ref: '#/components/responses/Unavailable'
+          description: Legacy-shaped 503 after `before()`, ahead of any read. The view prints the site's page limit, which only programs-sites holds.
   /v1/sites/{siteid}/content/versions/{contenthistid}/summary:
     parameters:
       - $ref: '#/components/parameters/SiteIdPath'
@@ -2663,7 +2666,7 @@ paths:
     get:
       operationId: getImageDetailsModel
       summary: Reads the image details screen model of one or more files.
-      description: Also copies each file's missing `_source` object from its original, as legacy `fileManager.touchSourceImage` does.
+      description: Every request answers the legacy 503; no file is read and no `_source` object is copied.
       tags: [content]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:000']
@@ -2705,6 +2708,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+          description: Legacy-shaped 503 after `before()`, ahead of any read. The view prints the site's rendition sizes and custom image sizes, which only programs-sites holds.
   /v1/sites/{siteid}/files/{fileid}/download-url:
     parameters:
       - $ref: '#/components/parameters/SiteIdPath'
@@ -7346,6 +7350,41 @@ paths:
           $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: migrationDeleteObject
+      summary: Deletes one stored `content-files` object and its `content.file_object` row, for a legacy file the change feed found removed.
+      tags: [migration]
+      x-opt2-transport: service
+      x-opt2-requires: [platform.migration]
+      security: [{invocationCredential: []}]
+      parameters:
+        - name: key
+          in: query
+          required: true
+          description: Object key `<tenantId>/<fileId><variant>.<ext>`; the tenant is its first segment.
+          schema:
+            type: string
+            pattern: ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}/[A-Za-z0-9-]{35}(_[^/\\\u0000-\u001F\u007F]+)?\.[A-Za-z0-9]+$
+      responses:
+        '200':
+          description: Nothing is stored under the key any more; `deleted` is false when the tenant recorded no object under it.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletedFileObject'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 
   /internal/v1/events/strategies-content.programs-sites.site.changed.v1:
     post:
@@ -9321,6 +9360,17 @@ components:
           pattern: ^[0-9a-f]{64}$
         created:
           type: boolean
+    DeletedFileObject:
+      type: object
+      required: [key, deleted]
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+          description: '`<tenantId>/<fileId><variant>.<ext>`, as requested.'
+        deleted:
+          type: boolean
+          description: False when the tenant recorded no object under the key, as for a repeated deletion.
     FileLookupRequest:
       type: object
       required: [fileIds]

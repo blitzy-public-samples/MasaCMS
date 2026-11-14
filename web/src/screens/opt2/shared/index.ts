@@ -13,8 +13,11 @@ export {
   select,
   textarea,
   textInput,
+  valueRows,
 } from './markup';
-export type { AlertKind, FormButton, GridCell, HeaderLink, SelectOption } from './markup';
+export type { AlertKind, FormButton, GridCell, HeaderLink, Label, SelectOption, ValueRow } from './markup';
+export { bundleLabel, opt2Label, OPT2_LABEL_KEYS } from './labels';
+export type { Opt2LabelName } from './labels';
 export { noAccessUrl, opt2ActionUrl, opt2ScreenUrl } from './paths';
 export type { Opt2Params } from './paths';
 export { canUse, opt2Gate } from './access';

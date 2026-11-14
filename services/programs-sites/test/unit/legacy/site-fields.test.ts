@@ -1,4 +1,4 @@
-/** Unit suite for the site settings bean, DAO column rules and list order ported in src/legacy/site-fields.ts. */
+/** Unit suite for the site settings bean, its DAO read and list order ported in src/legacy/site-fields.ts. */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
@@ -7,23 +7,15 @@ import {
   READ_FIELDS,
   SITE_COLUMNS,
   SITE_DEFAULTS,
-  UPDATE_COLUMNS,
   applySet,
-  effectiveDataCollection,
-  effectiveEditProfileURL,
   effectiveEmailBroadcaster,
-  effectiveLoginURL,
-  effectiveUseSSL,
-  fitColumnValues,
   getSiteText,
   getSiteValue,
-  legacyNameFor,
   listOrderSql,
   newSiteBean,
   readBean,
   sortSites,
   targetNameFor,
-  updateColumnValues,
   type SiteBean,
   type SiteData,
   type SiteRow,
@@ -73,17 +65,16 @@ describe('column catalogue', () => {
   });
 
   it.each([
-    ['MAILSERVERIP', 'mailserverip', 'MailserverIP'],
-    ['isRemote', 'isremote', 'isremote'],
-    ['reCaptchaSiteKey', 'recaptchasitekey', 'reCAPTCHASiteKey'],
-  ])('maps %s case-insensitively', (name, target, legacy) => {
+    ['MAILSERVERIP', 'mailserverip'],
+    ['isRemote', 'isremote'],
+    ['reCaptchaSiteKey', 'recaptchasitekey'],
+  ])('maps %s case-insensitively', (name, target) => {
     expect(targetNameFor(name)).toBe(target);
-    expect(legacyNameFor(name)).toBe(legacy);
   });
 
   it('answers undefined for a name outside tsettings', () => {
     expect(targetNameFor('tenant_id')).toBeUndefined();
-    expect(legacyNameFor('row_version')).toBeUndefined();
+    expect(targetNameFor('row_version')).toBeUndefined();
   });
 
   it('reads the DAO field list plus lastdeployment, all of them live columns', () => {
@@ -92,16 +83,6 @@ describe('column catalogue', () => {
     expect(READ_FIELDS.at(-1)).toBe('lastdeployment');
     expect(READ_FIELDS.filter((f) => targetNameFor(f) === undefined)).toEqual([]);
     expect(READ_FIELDS).not.toContain('MaxNestLevel');
-  });
-
-  it('updates exactly the DAO SET list, never the key, order, deploy, deployment date or type', () => {
-    expect(UPDATE_COLUMNS).toHaveLength(90);
-    expect(new Set(UPDATE_COLUMNS).size).toBe(90);
-    expect(UPDATE_COLUMNS.filter((c) => targetNameFor(c) !== c)).toEqual([]);
-    for (const excluded of ['siteid', 'orderno', 'deploy', 'lastdeployment', 'type', 'subtype', 'maxnestlevel']) {
-      expect(UPDATE_COLUMNS).not.toContain(excluded);
-    }
-    expect([UPDATE_COLUMNS[0], UPDATE_COLUMNS.at(-1)]).toEqual(['site', 'scaffolding']);
   });
 });
 
@@ -383,97 +364,18 @@ describe('readBean', () => {
   });
 });
 
-describe('updateColumnValues', () => {
-  it('returns exactly the update columns, with the init defaults for a new bean', () => {
-    const values = updateColumnValues(set({ siteid: 'tenant-a' }));
-    expect(Object.keys(values)).toEqual([...UPDATE_COLUMNS]);
-    expect(values).toMatchObject({ locking: 'None', remoteport: '80', baseid: 'B', filepoolid: 'tenant-a' });
+describe('effectiveEmailBroadcaster', () => {
+  it.each<[boolean, string, string]>([
+    [false, '1', '0'],
+    [true, '1', '1'],
+    [true, '0', '0'],
+  ])('answers the stored flag only under a global broadcaster (global %j, stored %j -> %j)', (emailBroadcaster, stored, expected) => {
+    expect(effectiveEmailBroadcaster(beanWith({ emailbroadcaster: stored }), { emailBroadcaster })).toBe(expected);
   });
 
-  it.each([
-    ['domain', 'trimmed, null when empty', ' x ', 'x', ''],
-    ['contactemail', 'trimmed, null when empty', ' a@b.c ', 'a@b.c', ''],
-    ['customtaggroups', 'trimmed, null when empty', ' a^b ', 'a^b', ''],
-    ['recaptchasitekey', 'trimmed, null when blank', ' k ', 'k', '   '],
-    ['placeholderimgext', 'trimmed, null when blank', ' png ', 'png', ' '],
-    ['sendloginscript', 'untrimmed, null when empty', ' s ', ' s ', ''],
-    ['mailservertls', 'untrimmed, null when empty', ' true ', ' true ', ''],
-  ])('writes %s %s', (column, _rule, value, written, nullInput) => {
-    expect(updateColumnValues(beanWith({ [column]: value }))[column]).toBe(written);
-    expect(updateColumnValues(beanWith({ [column]: nullInput }))[column]).toBeNull();
-  });
-
-  const rawColumns = ['site', 'tagline', 'enablelockdown', 'baseid', 'locking', 'pagelimit', 'publicuserpoolid'];
-
-  it.each([...rawColumns, 'smallimagewidth'])('writes %s raw and never null', (column) => {
-    expect(updateColumnValues(beanWith({ [column]: ' r ' }))[column]).toBe(' r ');
-    expect(updateColumnValues(beanWith({ [column]: '' }))[column]).toBe('');
-  });
-
-  it('writes the effective broadcaster and data collection flags', () => {
-    const bean = beanWith({ emailbroadcaster: '1', datacollection: '1' });
-    expect(updateColumnValues(bean)).toMatchObject({ emailbroadcaster: '0', datacollection: '1' });
-    const on = { ...LEGACY_GLOBAL_CONFIG_DEFAULTS, emailBroadcaster: true, dataCollection: false };
-    expect(updateColumnValues(bean, on)).toMatchObject({ emailbroadcaster: '1', datacollection: '0' });
-    expect(effectiveEmailBroadcaster(bean)).toBe('0');
-    expect(effectiveDataCollection(bean, on)).toBe('0');
-  });
-
-  it.each([
-    ['0', '0', '0'],
-    ['1', '0', '1'],
-    ['0', '1', '1'],
-    ['1', '', '1'],
-    ['false', 'yes', '1'],
-  ])('writes useSSL as the effective flag (useSSL %j, extranetSSL %j -> %j)', (useSSL, extranetSSL, expected) => {
-    const bean = beanWith({ usessl: useSSL, extranetssl: extranetSSL });
-    expect(effectiveUseSSL(bean)).toBe(expected);
-    expect(updateColumnValues(bean).usessl).toBe(expected);
-  });
-
-  it('fails like CF when extranetSSL must be read as a boolean and is not one', () => {
-    expect(() => effectiveUseSSL(beanWith({ usessl: '0', extranetssl: '' }))).toThrow(TypeError);
-  });
-
-  it('falls back to the index file display URLs, so login and profile URLs are never null', () => {
-    const config = { ...LEGACY_GLOBAL_CONFIG_DEFAULTS, indexFile: '/index.cfm' };
-    const empty = beanWith({ loginurl: '', editprofileurl: '' });
-    expect(updateColumnValues(empty)).toMatchObject({
-      loginurl: '?display=login',
-      editprofileurl: '?display=editProfile',
-    });
-    expect(effectiveLoginURL(empty, config)).toBe('/index.cfm?display=login');
-    expect(effectiveEditProfileURL(empty, config)).toBe('/index.cfm?display=editProfile');
-    const custom = beanWith({ loginurl: '/login', editprofileurl: '/profile' });
-    expect(updateColumnValues(custom, config)).toMatchObject({ loginurl: '/login', editprofileurl: '/profile' });
-  });
-
-  it('throws when an update column holds a complex value', () => {
-    expect(() => updateColumnValues(set({ googleAPIKey: { key: 1 } }))).toThrow(TypeError);
-  });
-});
-
-describe('fitColumnValues', () => {
-  it.each<{ name: string; column: string; value: string | null; stored: string | null; overflowing: string[] }>([
-    { name: 'a value of exactly the column length', column: 'site', value: 'S'.repeat(50), stored: 'S'.repeat(50), overflowing: [] },
-    { name: 'a value one unit over', column: 'site', value: 'S'.repeat(51), stored: 'S'.repeat(51), overflowing: ['Site'] },
-    { name: 'an excess of spaces alone', column: 'site', value: `Name${' '.repeat(60)}`, stored: `Name${' '.repeat(46)}`, overflowing: [] },
-    { name: 'an excess holding a tab', column: 'tagline', value: `${'t'.repeat(255)} \t`, stored: `${'t'.repeat(255)} \t`, overflowing: ['tagline'] },
-    { name: 'a surrogate pair at the length', column: 'placeholderimgext', value: `${'a'.repeat(8)}😀`, stored: `${'a'.repeat(8)}😀`, overflowing: [] },
-    { name: 'a surrogate pair past the length', column: 'placeholderimgext', value: `${'a'.repeat(9)}😀`, stored: `${'a'.repeat(9)}😀`, overflowing: ['placeholderImgExt'] },
-    { name: 'an nvarchar(max) column', column: 'domainalias', value: 'd'.repeat(100_000), stored: 'd'.repeat(100_000), overflowing: [] },
-    { name: 'NULL', column: 'site', value: null, stored: null, overflowing: [] },
-  ])('stores $name as SQL Server does', ({ column, value, stored, overflowing }) => {
-    expect(fitColumnValues({ siteid: 'tenant-a', [column]: value })).toEqual({ values: { siteid: 'tenant-a', [column]: stored }, overflowing });
-  });
-
-  it('names every overflowing column by its legacy name in SET order', () => {
-    const values = updateColumnValues(beanWith({ tagline: 'x'.repeat(256), site: 'y'.repeat(51), mailserversmtpport: '123456' }));
-
-    const fitted = fitColumnValues(values);
-
-    expect(fitted.overflowing).toEqual(['Site', 'mailserverSMTPPort', 'tagline']);
-    expect(fitted.values).toEqual(values);
+  it('defaults to the configBean broadcaster, which is off', () => {
+    expect(LEGACY_GLOBAL_CONFIG_DEFAULTS).toEqual({ emailBroadcaster: false });
+    expect(effectiveEmailBroadcaster(beanWith({ emailbroadcaster: '1' }))).toBe('0');
   });
 });
 

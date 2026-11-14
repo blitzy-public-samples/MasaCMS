@@ -3,7 +3,17 @@ import { okBody } from '@/lib/gateway-client';
 import { attr, html, type SafeHtml } from '@/lib/html';
 import type { ShellView } from '@/shell/document';
 import type { Rc, ScreenContext } from '../../registry';
-import { block, gridTable, opt2ScreenUrl, opt2View, pageHeader, type GridCell, type Opt2Params } from '../shared';
+import {
+  block,
+  gridTable,
+  opt2Label,
+  opt2ScreenUrl,
+  opt2View,
+  pageHeader,
+  type GridCell,
+  type Label,
+  type Opt2Params,
+} from '../shared';
 import {
   SHEET_SCREEN,
   SHEETS_SCREEN,
@@ -20,7 +30,10 @@ type Timesheet = TimesheetsSchemas['Timesheet'];
 /** Sheets per list page. */
 export const SHEETS_PER_PAGE = 50;
 
-const HEADERS: readonly string[] = ['Period', 'Person', 'Due Date', 'Status', 'Overdue'];
+/** The sheet list's column headers in the session locale of `ctx`. */
+function headersOf(ctx: ScreenContext): readonly Label[] {
+  return ['Period', 'Person', opt2Label(ctx, 'Due Date'), opt2Label(ctx, 'Status'), 'Overdue'];
+}
 
 /** One page of the tenant's sheets, as of the request's `asOf`. */
 export interface SheetsData {
@@ -49,36 +62,37 @@ export async function loadSheets(ctx: ScreenContext): Promise<SheetsData> {
 }
 
 /** The grid row of `sheet`, its period linking to the sheet detail. */
-function sheetRow(sheet: Timesheet, params: Opt2Params): GridCell[] {
+function sheetRow(ctx: ScreenContext, sheet: Timesheet, params: Opt2Params): GridCell[] {
   const href = opt2ScreenUrl(TIMESHEETS, SHEET_SCREEN, { ...params, timesheetid: sheet.timesheetId });
   return [
     html`<a${attr('href', href)}>${datePart(sheet.periodStart)} - ${datePart(sheet.periodEnd)}</a>`,
     sheet.personId,
     datePart(sheet.dueDate),
     sheet.status,
-    yesNo(sheet.overdue),
+    yesNo(ctx, sheet.overdue),
   ];
 }
 
 /** Previous and next page links around the current page; absent when every sheet fits on one page. */
-function pager(params: Opt2Params, pageIndex: number, total: number): SafeHtml | null {
+function pager(ctx: ScreenContext, params: Opt2Params, pageIndex: number, total: number): SafeHtml | null {
   const pages = Math.ceil(total / SHEETS_PER_PAGE);
   if (pages <= 1) return null;
-  const link = (index: number, label: string): SafeHtml => {
+  const link = (index: number, label: Label): SafeHtml => {
     const href = opt2ScreenUrl(TIMESHEETS, SHEETS_SCREEN, { ...params, pageIndex: index });
     return html`<li><a${attr('href', href)}>${label}</a></li>`;
   };
   const previous = pageIndex > 1 ? link(pageIndex - 1, 'Previous') : null;
   const current = html`<li class="active"><span>Page ${pageIndex} of ${pages}</span></li>`;
-  const next = pageIndex < pages ? link(pageIndex + 1, 'Next') : null;
+  const next = pageIndex < pages ? link(pageIndex + 1, opt2Label(ctx, 'Next')) : null;
   return html`<ul class="pagination">${previous}${current}${next}</ul>`;
 }
 
 /** The sheet list body, with `alert` under its header when given. */
 export function sheetsBody(ctx: ScreenContext, data: SheetsData, alert?: SafeHtml): SafeHtml {
   const params = carriedParams(ctx.req.rc);
-  const rows = data.list.items.map((sheet) => sheetRow(sheet, params));
-  const content = html`${gridTable(HEADERS, rows, 'No timesheets.')}${pager(params, data.pageIndex, data.list.total)}`;
+  const rows = data.list.items.map((sheet) => sheetRow(ctx, sheet, params));
+  const table = gridTable(headersOf(ctx), rows, 'No timesheets.');
+  const content = html`${table}${pager(ctx, params, data.pageIndex, data.list.total)}`;
   return html`${pageHeader('Timesheets')}${alert}${block(content)}`;
 }
 

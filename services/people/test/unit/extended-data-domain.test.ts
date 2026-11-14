@@ -13,6 +13,7 @@ import {
   castColumnFor,
   deleteExtendedData,
   extendSetData,
+  extendSetsData,
   extendedDataRequested,
   loadSubmittedAttributes,
   saveExtendedData,
@@ -20,6 +21,7 @@ import {
   validateExtendedData,
   type CastColumn,
   type ExtendConfig,
+  type ExtendDataBase,
   type ExtendDataScope,
   type ExtendSaveContext,
   type ExtendedAttribute,
@@ -161,25 +163,39 @@ interface MemoryRepository {
   data: ExtendDataRow[];
   writes: Array<{ method: 'replaceExtendData' | 'deleteExtendDataForBase'; baseId: string; ctx: WriteContext | undefined }>;
   attributeFilters: ExtendAttributeFilter[];
+  /** The read methods called, in order. */
+  reads: ExtendMethods[];
 }
 
-type ExtendMethods = 'listExtendData' | 'replaceExtendData' | 'deleteExtendDataForBase' | 'listExtendSubtypes' | 'listExtendSets' | 'listExtendAttributes';
+type ExtendMethods =
+  | 'listExtendData'
+  | 'listExtendDataOf'
+  | 'replaceExtendData'
+  | 'deleteExtendDataForBase'
+  | 'listExtendSubtypes'
+  | 'listExtendSets'
+  | 'listExtendAttributes';
 
 /** The extended-data methods of PeopleRepository over arrays, with the filters and orderings their SQL applies; records each attribute filter. */
 function memoryRepository(definitions: Definitions = {}): MemoryRepository {
   const { subtypes = [], sets = [], attributes = [] } = definitions;
-  const store: Omit<MemoryRepository, 'repo'> = { data: [...(definitions.data ?? [])], writes: [], attributeFilters: [] };
+  const store: Omit<MemoryRepository, 'repo'> = { data: [...(definitions.data ?? [])], writes: [], attributeFilters: [], reads: [] };
   let nextDataId = Math.max(0, ...store.data.map((row) => row.dataid)) + 1;
   const remove = (match: (row: ExtendDataRow) => boolean): number => {
     const before = store.data.length;
     store.data = store.data.filter((row) => !match(row));
     return before - store.data.length;
   };
+  const stored = (baseIds: readonly string[]): ExtendDataRow[] =>
+    store.data.filter((row) => baseIds.some((id) => idEq(row.baseid, id))).sort(byKeys<ExtendDataRow>((r) => r.baseid, (r) => r.attributeid, (r) => r.dataid));
   const methods: Pick<PeopleRepository, ExtendMethods> = {
     async listExtendData(_tx, baseIds) {
-      return store.data
-        .filter((row) => baseIds.some((id) => idEq(row.baseid, id)))
-        .sort(byKeys<ExtendDataRow>((r) => r.baseid, (r) => r.attributeid, (r) => r.dataid));
+      store.reads.push('listExtendData');
+      return stored(baseIds);
+    },
+    async listExtendDataOf(_tx, baseIds) {
+      store.reads.push('listExtendDataOf');
+      return new Map([...new Set(baseIds)].map((id) => [id, stored([id])]));
     },
     async replaceExtendData(_tx, baseId, entries, ctx) {
       store.writes.push({ method: 'replaceExtendData', baseId, ctx });
@@ -198,15 +214,18 @@ function memoryRepository(definitions: Definitions = {}): MemoryRepository {
       return remove((row) => idEq(row.baseid, baseId));
     },
     async listExtendSubtypes(_tx, filter) {
+      store.reads.push('listExtendSubtypes');
       const types = filter.types?.map((type) => type.replace(/ +$/, '').toLowerCase());
       return subtypes
         .filter((row) => idEq(row.siteid, filter.siteId) && (types === undefined || types.includes((row.type ?? '').replace(/ +$/, '').toLowerCase())))
         .sort(byKeys<ExtendSubtypeRow>((r) => r.type?.toLowerCase() ?? null, (r) => r.subtype?.toLowerCase() ?? null, (r) => r.subtypeid));
     },
     async listExtendSets(_tx, subtypeIds) {
+      store.reads.push('listExtendSets');
       return sets.filter((row) => subtypeIds.some((id) => idEq(row.subtypeid, id))).sort(byKeys<ExtendSetRow>((r) => r.orderno, (r) => r.extendsetid));
     },
     async listExtendAttributes(_tx, filter) {
+      store.reads.push('listExtendAttributes');
       store.attributeFilters.push(filter);
       return attributes
         .filter(
@@ -848,6 +867,32 @@ describe('extendSetData [legacy: core/mura/extend/extendData.cfc:218-371,406-440
 
   it('returns no values for a base without stored rows', async () => {
     expect(await read(undefined, [])).toEqual({ data: {}, entries: [], extendSetId: '' });
+  });
+
+  it('reads many bases as it reads each, with one stored-value read, attributes once per site and definitions once per scope', async () => {
+    const definitions = { subtypes: SUBTYPES, sets: SETS, attributes: ATTRIBUTES, data: STORED };
+    const gold: ExtendDataScope = { siteId: SITE, type: 'User', subtype: 'Gold' };
+    const bases: ExtendDataBase[] = [
+      { baseId: BASE, scope: gold },
+      { baseId: OTHER_BASE, scope: { ...gold } },
+      { baseId: BASE.toLowerCase(), scope: { siteId: 'TENANT-A', type: 'User', subtype: 'Default' } },
+      { baseId: BASE },
+      { baseId: cfUuid(), scope: { siteId: SITE, type: 'Page', subtype: 'Default' } },
+    ];
+    const each: Awaited<ReturnType<typeof extendSetData>>[] = [];
+    for (const { baseId, scope } of bases) each.push(await extendSetData(memoryRepository(definitions).repo, TX, baseId, scope));
+    const memory = memoryRepository(definitions);
+    expect(await extendSetsData(memory.repo, TX, bases)).toStrictEqual(each);
+    expect(memory.reads.filter((method) => method === 'listExtendDataOf' || method === 'listExtendData')).toStrictEqual(['listExtendDataOf']);
+    expect(memory.reads.filter((method) => method === 'listExtendSubtypes')).toHaveLength(3);
+    expect(memory.attributeFilters).toStrictEqual([
+      { attributeIds: [1, 8, 99], siteId: SITE },
+      { attributeIds: [1, 8, 99], siteId: 'TENANT-A' },
+      { attributeIds: [1, 8, 99] },
+      { setIds: ['SET-DEFAULT', 'SET-GOLD-1', 'SET-GOLD-2'] },
+      { setIds: ['SET-BASE'] },
+    ]);
+    expect(await extendSetsData(memory.repo, TX, [])).toStrictEqual([]);
   });
 });
 

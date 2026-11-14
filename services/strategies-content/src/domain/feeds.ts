@@ -22,7 +22,7 @@ import {
 import { Roles } from '@opt2/platform/auth';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { SERVICE_CALL_TIMEOUT_MS, type Clock } from '@opt2/platform/service-kit';
-import { registryEntryForTenant, siteForTenant, tenantForRegisteredSite, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { registryEntryForTenant, siteForTenant, tenantForRegisteredSite, withTenant, type RegistrySource, type TenantTx } from '@opt2/platform/tenancy';
 import {
   feedItemRemoteId,
   importFormat,
@@ -51,7 +51,7 @@ import { CONTENT, type TrashRow } from '../repo/tables.js';
 import { listPoolCategories, restrictGroups, type RestrictGroupRow } from './categories.js';
 import { LegacyContentBean, deleteHistAll, getActiveContent, saveContentInTx, type ContentBean, type ContentSaveSite, type SaveContentResult } from './content.js';
 import { writeContextFor, type Actor, type DomainDeps, type LegacyErrors } from './context.js';
-import { getModulePerm, loadMemberships, setRestriction, sitePools } from './permissions.js';
+import { getModulePerm, loadMemberships, setRestrictions, sitePools } from './permissions.js';
 import { feedPoolSites, readAcrossContentPool, withPoolTenant, type PoolSite } from './pools.js';
 import { createTrashCounter, deleteMarkerAssignments, deleteMarkers, deletedParentId, throwIn, trashObjectSubType, trashObjectType } from './trash.js';
 import { WddxDate, cfStruct, wddxNumber, type WddxQuery, type WddxStruct, type WddxValue } from './wddx.js';
@@ -611,14 +611,14 @@ export interface FeedSiteSettings {
 }
 
 /** settingsBean.getContentPoolID of a registered site: its content pool list, else the site itself. */
-async function siteContentPoolId(db: TenantDb, siteId: string): Promise<string> {
+async function siteContentPoolId(db: RegistrySource, siteId: string): Promise<string> {
   const tenantId = await tenantForRegisteredSite(db, siteId);
   const entry = tenantId === null ? null : await registryEntryForTenant(db, tenantId);
   return entry !== null && entry.contentPoolIds.length > 0 ? entry.contentPoolIds.join(',') : siteId;
 }
 
 /** feedBean.getContentPoolID (feedBean.cfc:272-279), which stores what it returns: '' is the own site, `*` the site's content pool. */
-async function resolveContentPoolId(db: TenantDb, bean: FeedBean): Promise<string> {
+async function resolveContentPoolId(db: RegistrySource, bean: FeedBean): Promise<string> {
   const stored = bean.text('contentpoolid');
   if (stored === '') bean.put('contentpoolid', bean.text('siteid'));
   else if (stored === '*') bean.put('contentpoolid', await siteContentPoolId(db, bean.text('siteid')));
@@ -641,7 +641,7 @@ function resolveDisplayList(bean: FeedBean, settings: Pick<FeedSiteSettings, 'de
 }
 
 /** validate() through beanValidator, whose getValue calls resolve the content pool and display list first. */
-async function validateWithGetters(db: TenantDb, bean: FeedBean, settings: Pick<FeedSiteSettings, 'defaultCollectionDisplayList'>): Promise<LegacyErrors> {
+async function validateWithGetters(db: RegistrySource, bean: FeedBean, settings: Pick<FeedSiteSettings, 'defaultCollectionDisplayList'>): Promise<LegacyErrors> {
   await resolveContentPoolId(db, bean);
   resolveDisplayList(bean, settings);
   const errors = validateFeed(bean);
@@ -963,7 +963,7 @@ export async function updateFeed(deps: FeedDeps, actor: Actor, data: FeedData, o
   const write = writeContextFor(actor, opts.requestId);
   return withGatedTenant(deps.db, actor.tenantId, async (tx) => {
     const bean = (await readFeedInTx(tx, deps, { feedId })).set(data);
-    const errors = await validateWithGetters(deps.db, bean, opts);
+    const errors = await validateWithGetters(tx, bean, opts);
     if (Object.keys(errors).length > 0) return bean;
     stampAudit(bean, deps, actor);
     await deps.repository.feeds.updateFeed(tx, bean.text('feedid'), updateColumns(bean), childColumns(bean), write);
@@ -1204,13 +1204,7 @@ async function feedCategoryIds(deps: FeedDeps, actor: Actor, bean: FeedBean): Pr
   const listed = cfListToArray(bean.text('categoryid'));
   if (listed.length === 0) return undefined;
   if (cfBool(bean.get('usecategoryintersect'))) return listed;
-  return withPoolTenant(deps.db, actor.tenantId, 'category', async (tx) => {
-    const ids = new Set<string>();
-    for (const categoryId of listed) {
-      for (const id of await deps.repository.categories.descendantIds(tx, categoryId)) ids.add(id);
-    }
-    return [...ids];
-  });
+  return withPoolTenant(deps.db, actor.tenantId, 'category', (tx) => deps.repository.categories.descendantIdsIn(tx, listed));
 }
 
 /** The params query rows as feed-queries reads them. */
@@ -1347,16 +1341,16 @@ export async function feedContent(deps: FeedDeps, actor: Actor, feed: FeedBean, 
 
 /** permUtility.queryPermFilter (permission.cfc:710-754): the rows whose crumbs are unrestricted or allowed for the actor. */
 async function permitted(deps: FeedDeps, actor: Actor, feed: FeedBean, rows: readonly FeedContentRow[]): Promise<FeedContentRow[]> {
+  if (rows.length === 0) return [];
   const siteId = feed.text('siteid');
-  const kept: FeedContentRow[] = [];
-  for (const row of rows) {
-    const crumbs = await withTenant(deps.db, actor.tenantId, (tx) =>
-      deps.repository.content.crumbPath(tx, { contentId: row.contentid ?? '', siteId, path: row.path ?? '' }),
-    );
-    const restriction = await setRestriction(deps, actor, crumbs);
-    if (!restriction.restrict || restriction.allow) kept.push(row);
-  }
-  return kept;
+  const crumbLists = await withTenant(deps.db, actor.tenantId, (tx) =>
+    deps.repository.content.crumbPaths(tx, { siteId, items: rows.map((row) => ({ contentId: row.contentid ?? '', path: row.path ?? '' })) }),
+  );
+  const restrictions = await setRestrictions(deps, actor, crumbLists);
+  return rows.filter((_row, at) => {
+    const restriction = restrictions[at];
+    return restriction !== undefined && (!restriction.restrict || restriction.allow);
+  });
 }
 
 /** The restricted-feed member lookup allowFeed runs on tusers and tusersmemb (feedManager.cfc:486-508), which identity owns. */
@@ -1570,11 +1564,14 @@ export async function previewFeedImport(
   const xml = parseFeedXml(prepareRemoteFeedText(response.body));
   if (importFormat(feedBean.text('version')) !== 'rss') return { feedBean, items: [] };
   const now = deps.clock.now();
+  const offered = previewOrder(rssChannelItems(xml), numericLiteral(feedBean, 'maxitems')).map((item) => ({ item, remoteID: feedItemRemoteId(item) }));
+  if (offered.length === 0) return { feedBean, items: [] };
+  const versions = await withTenant(deps.db, actor.tenantId, (tx) =>
+    deps.repository.content.readActiveByRemoteIds(tx, { siteId: args.siteId, remoteIds: offered.map((entry) => entry.remoteID) }),
+  );
   const items: FeedImportPreviewItem[] = [];
-  for (const item of previewOrder(rssChannelItems(xml), numericLiteral(feedBean, 'maxitems'))) {
-    const remoteID = feedItemRemoteId(item);
-    const rows = await withTenant(deps.db, actor.tenantId, (tx) => deps.repository.content.readActiveByRemoteId(tx, { siteId: args.siteId, remoteId: remoteID }));
-    const row = rows.at(-1);
+  for (const { item, remoteID } of offered) {
+    const row = versions.get(remoteID)?.at(-1);
     // `not isNew and pubDate eq …` reads pubDate only for an item already imported.
     if (row !== undefined && samePubDate(item.child('pubDate').xmlText, LegacyContentBean.fromVersion(row, actor, now).get('remotepubdate'))) continue;
     items.push({ remoteID, link: item.child('link').xmlText, title: item.child('title').xmlText, description: item.child('description').xmlText, isNew: row === undefined });

@@ -19,6 +19,7 @@ const EDIT: UserEditData = {
   tempIsPublic: 1,
   lockedSuper: false,
   blockedUntil: null,
+  passwordExpired: false,
   addresses: [],
   privateGroups: [],
   publicGroups: [],

@@ -753,7 +753,7 @@ export async function findPoolRows(
 }
 
 /** Runs `read` until it reports no closed user, sleeping between attempts outside its transactions; OperationBlockedError (the legacy 503) once the sleeps total `USER_CLOSED_WAIT_MS`. */
-async function readUnclosed<T>(deps: GroupDeps, read: () => Promise<{ value: T; closed: readonly string[] }>): Promise<T> {
+export async function readUnclosed<T>(deps: Pick<GroupDeps, 'sleep'>, read: () => Promise<{ value: T; closed: readonly string[] }>): Promise<T> {
   const sleep = deps.sleep ?? timerSleep;
   for (let waited = 0; ; ) {
     const { value, closed } = await read();

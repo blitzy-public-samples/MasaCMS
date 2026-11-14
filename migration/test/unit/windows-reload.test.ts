@@ -27,6 +27,7 @@ import {
   tryGuardLock,
   unfreezeLegacyBound,
   withGuardLock,
+  type FrozenRoutes,
   type GuardRunnerContext,
   type ReloadWindowResult,
 } from '../../src/windows/reload.js';
@@ -345,6 +346,27 @@ describe('freezeLegacyBound', () => {
     expect(error).toBeInstanceOf(AggregateError);
     expect((error as AggregateError).errors[0]).toBeInstanceOf(GatewayWaitTimeoutError);
     expect((error as AggregateError).errors[1]).toBe(unfreezeFailure);
+  });
+
+  it.each([
+    { name: 'the legacy-bound routes of the active version', active: VERSION, routes: LEGACY_BOUND, frozenEpoch: 6 },
+    { name: 'no route before a version is active', active: null, routes: [], frozenEpoch: 5 },
+  ])('hands beforeFreeze $name, with the epoch before the freeze, before freezing anything', async ({ active, routes, frozenEpoch }) => {
+    const gateway = gatewayDouble({ active });
+    const recorded: { planned: FrozenRoutes; ops: string[] }[] = [];
+    const beforeFreeze = async (planned: FrozenRoutes): Promise<void> => {
+      recorded.push({ planned, ops: gateway.calls.map((call) => call.op) });
+    };
+    await expect(freezeLegacyBound({ gateway, config: config() }, { beforeFreeze })).resolves.toEqual({ routes, epoch: frozenEpoch });
+    expect(recorded).toEqual([{ planned: { routes, epoch: 5 }, ops: ['status'] }]);
+  });
+
+  it('freezes nothing and rethrows when beforeFreeze fails', async () => {
+    const gateway = gatewayDouble();
+    const failure = new Error('freeze record failed');
+    await expect(freezeLegacyBound({ gateway, config: config() }, { beforeFreeze: async () => Promise.reject(failure) })).rejects.toBe(failure);
+    expect(gateway.calls.map((call) => call.op)).toEqual(['status']);
+    expect(gateway.frozen.size).toBe(0);
   });
 });
 

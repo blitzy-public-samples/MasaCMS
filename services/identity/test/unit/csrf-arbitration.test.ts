@@ -467,7 +467,7 @@ describe('arbitration routes', () => {
   });
 
   it.each([
-    [CONSUME, 'e-signature'],
+    [CONSUME, 'stub'],
     [CLAIMS, 'finance'],
     [SETTLE, 'finance'],
   ])('refuses %s to service:%s before any handler runs', async (url, caller) => {

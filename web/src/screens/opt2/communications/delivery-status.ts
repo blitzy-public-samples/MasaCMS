@@ -2,7 +2,7 @@
 import { okBody } from '@/lib/gateway-client';
 import { html, type SafeHtml } from '@/lib/html';
 import type { Opt2ScreenDefinition, ScreenContext } from '../../registry';
-import { alertBox, block, gridTable, opt2View } from '../shared';
+import { alertBox, block, gridTable, opt2Label, opt2View } from '../shared';
 import { MODULE, SENDER_GATE, SENDER_ROLES, SERVICE, moduleHeader, stateLabel, type MessageDetail } from './common';
 
 /** The requested message with its delivery history, or none when the site has no such message. */
@@ -29,16 +29,16 @@ export function deliveryStatusBody(ctx: ScreenContext, data: DeliveryStatusData)
   if (message === undefined) return html`${header}${alertBox(NOT_FOUND)}`;
   const { to_address, from_address, subject, state, created, sent_at } = message;
   const summary = gridTable(
-    ['To', 'From', 'Subject', 'State', 'Created', 'Sent'],
-    [[to_address, from_address, subject, stateLabel(state), created, sent_at]],
+    (['To', 'From', 'Subject', 'State', 'Created', 'Sent'] as const).map((name) => opt2Label(ctx, name)),
+    [[to_address, from_address, subject, stateLabel(ctx, state), created, sent_at]],
     '',
   );
   const history = gridTable(
-    ['Status', 'Detail', 'Mailpit ID', 'Recorded'],
-    message.history.map((entry) => [stateLabel(entry.status), entry.detail, entry.mailpit_id, entry.recorded_at]),
+    [opt2Label(ctx, 'Status'), 'Detail', 'Mailpit ID', 'Recorded'],
+    message.history.map((entry) => [stateLabel(ctx, entry.status), entry.detail, entry.mailpit_id, entry.recorded_at]),
     'There is no delivery history.',
   );
-  return html`${header}${block(summary)}${block(html`<h2>History</h2>${history}`)}`;
+  return html`${header}${block(summary)}${block(html`<h2>${opt2Label(ctx, 'History')}</h2>${history}`)}`;
 }
 
 export const deliveryStatusScreen: Opt2ScreenDefinition<DeliveryStatusData> = Object.freeze({

@@ -25,6 +25,7 @@ import {
   listGroupMembersPage,
   listGroupsPage,
   newGroupRecord,
+  readUnclosed,
   removeFromGroup,
   streamListedGroupMembers,
   updateGroup,
@@ -283,7 +284,7 @@ function localTimestamp(value: Date | null): string | null {
   return value === null ? null : cfDateTimeFormat(value, 'yyyy-mm-dd HH:nn:ss.lll').replace(' ', 'T');
 }
 
-/** A group record in `tusers` bootstrap casing; the stored password hash is never sent. */
+/** A group record in `tusers` bootstrap casing; its `Password` and `PasswordCreated` are never sent. */
 function groupAccount(group: GroupRecord): Schemas['GroupAccount'] {
   return {
     UserID: group.userid,
@@ -291,8 +292,6 @@ function groupAccount(group: GroupRecord): Schemas['GroupAccount'] {
     Fname: group.fname,
     Lname: group.lname,
     UserName: group.username,
-    Password: null,
-    PasswordCreated: localTimestamp(group.passwordcreated),
     Email: group.email,
     Company: group.company,
     JobTitle: group.jobtitle,
@@ -393,10 +392,11 @@ function jsonCell(value: MemberValue): string | number | null {
   return value instanceof Date ? localTimestamp(value) : value;
 }
 
-/** One member row of the contract. */
+/** One member row of the contract: the query's columns but `PasswordCreated`, which only the CSV download carries. */
 function memberRow(member: ListedGroupMember): Schemas['GroupMember'] {
   const row = memberQueryRow(member);
-  const cells = Object.fromEntries(MEMBER_COLUMNS.map((column) => [column, jsonCell(row[column])]));
+  const columns = MEMBER_COLUMNS.filter((column) => column !== 'PasswordCreated');
+  const cells = Object.fromEntries(columns.map((column) => [column, jsonCell(row[column])]));
   return { ...cells, groupID: member.userid, userID: member.userid };
 }
 
@@ -464,14 +464,21 @@ function byGroupName(a: { userid: string; groupname: string | null }, b: { useri
 
 /**
  * `readMembershipIDs`: the stored groups `userId` belongs to, by group name; the membership rows live in the member's tenant and
- * the groups in their pools' tenants, so every registered tenant is read [legacy: core/mura/user/userDAO.cfc:632-644].
+ * the groups in their pools' tenants, so every registered tenant is read [legacy: core/mura/user/userDAO.cfc:632-644]. It waits
+ * while an open account operation keeps the user closed, then answers the legacy 503.
  */
-async function membershipIds(groups: GroupDeps, userId: string): Promise<string[]> {
+export async function membershipIds(groups: Pick<GroupDeps, 'db' | 'repo' | 'sleep'>, userId: string): Promise<string[]> {
   const tenants = (await registeredTenants(groups.db)).map((entry) => entry.tenantId);
-  const held = new Map<string, string>();
-  for (const tenantId of tenants) {
-    for (const groupId of await withTenant(groups.db, tenantId, (tx) => groups.repo.membershipGroupIds(tx, userId))) held.set(idKey(groupId), groupId);
-  }
+  const held = await readUnclosed(groups, async () => {
+    const value = new Map<string, string>();
+    const closed: string[] = [];
+    for (const tenantId of tenants) {
+      const records = await withTenant(groups.db, tenantId, (tx) => groups.repo.readMembershipRecords(tx, [userId]));
+      closed.push(...records.closed);
+      for (const { groupid } of records.rows) value.set(idKey(groupid), groupid);
+    }
+    return { value, closed };
+  });
   if (held.size === 0) return [];
   const ids = [...held.values()];
   const found = new Map<string, { userid: string; groupname: string | null }>();

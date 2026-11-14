@@ -115,7 +115,7 @@ const TLOG = table('dbo', 'tlog', [
   column('closedAt', 'datetime2', { type: 't' }),
 ], { identity: ['logID'] });
 
-const TARGET: LegacyTableTarget = { unit: 'people.person', owner: 'people', rowPredicate: null, keyColumns: ['UserID'], ownedColumns: 'whole-table' };
+const TARGET: LegacyTableTarget = { unit: 'people.person', owner: 'people', rowPredicate: null, keyColumns: ['UserID'], ownedColumns: 'whole-table', objectColumns: {} };
 
 function options(tableCatalog: TableCatalog, extra: Partial<ApplyLegacyOptions> = {}): ApplyLegacyOptions {
   return { tableCatalog, target: TARGET, split: false, ownedColumns: 'whole-table', ...extra };

@@ -1,31 +1,29 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** E-signature's only route to person data: people's JSON API `user` read, standing in for the fixture's `userManager.read`. */
-import { LEGACY_ERROR_MAP, cfIsNumeric, cfToNumber } from '@opt2/platform/legacy-compat';
+/** E-signature's only route to person data: people's pool-user read, standing in for the fixture's `userManager.read`. */
+import { LEGACY_ERROR_MAP } from '@opt2/platform/legacy-compat';
 import { ServiceUnavailableError, type ServiceClient } from '@opt2/platform/service-kit';
 import type { components } from '../generated/clients/people.js';
 
 type Schemas = components['schemas'];
-type UserEntity = Schemas['UserEntity'];
-type UserEnvelope = Schemas['LegacyEnvelope'] & { data: UserEntity };
+type PoolUser = Schemas['PoolUser'];
 type ErrorEnvelope = Schemas['LegacyError'];
 
 /** Callee name of people in `OPT2_SERVICE_URLS`. */
 export const PEOPLE_SERVICE = 'people';
 
-/** The userBean facts e-signature reads, as people's JSON API serializes them. */
+// People's `readPoolUser` operation.
+const POOL_USER_PATH = '/internal/v1/users/pool-user';
+
+/** The userBean facts e-signature reads, as people's pool-user read answers them. */
 export interface PersonSummary {
   userId: string;
   siteId: string;
   type: number;
-  fname: string;
-  lname: string;
-  email: string;
-  inactive: number;
 }
 
 /** E-signature's reads of people. */
 export interface PeopleClient {
-  /** The user `userId` read in site `siteId`; null for an empty id or an unknown user, throws when people denies or is unavailable. */
+  /** The user `userId` of site `siteId`'s public or private user pool; null for an empty id or one no pool user holds, throws when people denies or is unavailable. */
   readPerson(siteId: string, userId: string): Promise<PersonSummary | null>;
 }
 
@@ -41,63 +39,23 @@ export class PeopleReadDeniedError extends Error {
   }
 }
 
-/** A residual difference between people's `user` read and the fixture's `userManager.read`. */
-export interface PeopleReadGap {
-  readonly id: string;
-  readonly description: string;
-}
-
-/** Where people's `user` read answers differently from `userManager.read` (userManager.cfc:125-195). */
-export const PEOPLE_READ_GAPS: readonly PeopleReadGap[] = Object.freeze([
-  Object.freeze({
-    id: 'cross-permission',
-    description:
-      "People's JSON API answers 401 authorization for another user's record to a caller without the Users module (m:008, s2 or site-admin); the fixture reads any user.",
-  }),
-  Object.freeze({
-    id: 'cross-site',
-    description:
-      "People resolves the user within the requested site's user pools only; userManager.read reads by userid across every site.",
-  }),
-]);
-
 const DEFAULT_DENIED_TYPE = 'authorization';
-const GROUP_TYPE = 1;
-const USER_TYPE = 2;
-// userBean defaults InActive to 0 (userBean.cfc:153); the JSON API serializes a NULL column as ''.
-const DEFAULT_INACTIVE = 0;
-const NEW_BEAN_FLAGS: readonly unknown[] = [1, '1', true];
 
-/** A response body as a parsed envelope; text bodies are JSON-parsed. */
-function envelopeOf<T>(body: unknown): T {
+/** A response body as parsed JSON; text bodies are JSON-parsed. */
+function bodyOf<T>(body: unknown): T {
   return (typeof body === 'string' ? JSON.parse(body) : body) as T;
 }
 
 /** The error type whose code and message the denial carries; the wire error names no type itself. */
 function deniedType(body: unknown): string {
-  const error = envelopeOf<Partial<ErrorEnvelope> | undefined>(body)?.error;
+  const error = bodyOf<Partial<ErrorEnvelope> | undefined>(body)?.error;
   const match = Object.entries(LEGACY_ERROR_MAP).find(([, spec]) => spec.code === error?.code && spec.message === error?.message);
   return match?.[0] ?? DEFAULT_DENIED_TYPE;
 }
 
-/** userBean.setType's decoding of the serialized `type`: a number as is, `group` 1, any other text 2 (userBean.cfc:753-765). */
-function userType(serialized: unknown): number {
-  if (cfIsNumeric(serialized)) return cfToNumber(serialized);
-  return String(serialized).toLowerCase() === 'group' ? GROUP_TYPE : USER_TYPE;
-}
-
-/** A found user as a person summary; a new bean (`isnew` 1) is null, as `getIsNew()` marks a missing user. */
-function personSummary(entity: UserEntity): PersonSummary | null {
-  if (NEW_BEAN_FLAGS.includes(entity.isnew)) return null;
-  return {
-    userId: entity.userid ?? '',
-    siteId: entity.siteid ?? '',
-    type: userType(entity.type),
-    fname: entity.fname ?? '',
-    lname: entity.lname ?? '',
-    email: entity.email ?? '',
-    inactive: typeof entity.inactive === 'number' ? entity.inactive : DEFAULT_INACTIVE,
-  };
+/** A found pool user as a person summary. */
+function personSummary(user: PoolUser): PersonSummary {
+  return { userId: user.userid, siteId: user.siteid, type: user.type };
 }
 
 /** The legacy-shaped 503 for a gateway-class answer from people. */
@@ -116,11 +74,12 @@ export function createPeopleClient({ client }: { client: ServiceClient }): Peopl
       const response = await client.request<unknown>({
         service: PEOPLE_SERVICE,
         method: 'GET',
-        path: `/_api/json/v1/${encodeURIComponent(siteId)}/user/${encodeURIComponent(userId)}`,
+        path: POOL_USER_PATH,
+        query: { siteid: siteId, userid: userId },
       });
       switch (response.status) {
         case 200:
-          return personSummary(envelopeOf<UserEnvelope>(response.body).data);
+          return personSummary(bodyOf<PoolUser>(response.body));
         case 404:
           return null;
         case 401:

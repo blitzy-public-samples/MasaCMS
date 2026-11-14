@@ -42,7 +42,7 @@ const LIST_KEYS = ['items', 'startindex', 'endindex', 'itemsperpage', 'totalitem
 const CLOCK_TEXT = '2026-06-30T12:00:00';
 const JOB_ID = 'ABCDEF01-2345-6789-ABCDEF0123456789';
 
-// pgAvailable rejects without PG_HOST; the projection cases need no database.
+// An unset PG_HOST skips the route suite without probing the server; the projection cases need no database.
 const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe('fixture row projections', () => {
@@ -195,6 +195,15 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     return { authorization: `Bearer ${token}`, [INVOCATION_HEADER]: `Bearer ${inv}` };
   }
 
+  /** The token identity mints for an active session without a login on `site` (sub '', no roles) plus the gateway's invocation credential. */
+  async function anonymousHeaders(site: string = TENANT_A.siteId): Promise<Record<string, string>> {
+    const [token, inv] = await Promise.all([
+      mintUserToken({ sub: '', site, roles: [], sid: SESSION_ID }),
+      mintServiceToken({ caller: 'gateway', audience: 'reporting' }),
+    ]);
+    return { authorization: `Bearer ${token}`, [INVOCATION_HEADER]: `Bearer ${inv}` };
+  }
+
   /** A JSON-body create as an exporter of tenant-a, with a valid CSRF token unless `extra` replaces it. */
   async function create(payload: Record<string, unknown>, extra: Record<string, string> = CSRF) {
     return app.inject({ method: 'POST', url: P, headers: { ...(await headers()), ...extra }, payload });
@@ -237,17 +246,19 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     );
   }
 
-  it('declares the four routes with the contract annotations', () => {
+  it('declares the six routes, every path for GET and POST, with the contract annotations', () => {
     const routes = collectRouteMatrix(app).routes.filter((r) => r.url.startsWith(FIXTURE_PREFIX));
     expect(routes.map(({ method, url, requires, transport, siteCheck }) => [method, url.slice(FIXTURE_PREFIX.length), requires, transport, siteCheck])).toEqual(
       expect.arrayContaining([
         ['GET', '/exports', [Roles.reportingExporter], 'service', false],
         ['POST', '/exports', [Roles.reportingExporter], 'service', false],
         ['GET', '/exports/:id', [Roles.reportingExporter], 'service', false],
+        ['POST', '/exports/:id', [Roles.reportingExporter], 'service', false],
         ['GET', '/exports/:id/download', [Roles.reportingExporter], 'service', false],
+        ['POST', '/exports/:id/download', [Roles.reportingExporter], 'service', false],
       ]),
     );
-    expect(routes).toHaveLength(4);
+    expect(routes).toHaveLength(6);
   });
 
   it('answers anonymous with the 401 fixture envelope', async () => {
@@ -271,6 +282,38 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     expect(res.headers['www-authenticate']).toBeDefined();
   });
 
+  const DENIED_ROUTES: ReadonlyArray<readonly [string, 'GET' | 'POST', string]> = [
+    ['list', 'GET', P],
+    ['detail', 'GET', `${P}/${JOB_ID}`],
+    ['create', 'POST', P],
+  ];
+  const DENIALS: ReadonlyArray<readonly [string, () => Promise<Record<string, string>>, string, number, string]> = [
+    ['an anonymous session', () => anonymousHeaders(), '', 401, 'Insufficient Account Permissions'],
+    ['an anonymous session naming an unregistered siteid', () => anonymousHeaders(), '?siteid=nosuchsite', 400, 'Invalid parameters'],
+    ['an unregistered token site', () => headers([], 'nosuchsite'), '', 400, 'Invalid parameters'],
+    ['an unregistered token site naming it as siteid', () => headers([], 'nosuchsite'), '?siteid=nosuchsite', 400, 'Invalid parameters'],
+    ['a no-role user naming an unregistered siteid', () => headers([Roles.systemUser]), '?siteid=nosuchsite', 400, 'Invalid parameters'],
+    ['a no-role user', () => headers([Roles.systemUser]), '', 403, 'Insufficient Account Permissions'],
+    ['a tenant-b exporter naming tenant-a', () => headers(EXPORTER, TENANT_B.siteId), `?siteid=${TENANT_A.siteId}`, 403, 'Insufficient Account Permissions'],
+  ];
+
+  it.each(DENIED_ROUTES.flatMap(([route, method, url]) => DENIALS.map(([who, credentials, query, status, message]) => [route, who, method, url, credentials, query, status, message] as const)))(
+    'answers the %s route for %s as the fixture does, consuming no token and queueing nothing',
+    async (_route, _who, method, url, credentials, query, status, message) => {
+      const res = await app.inject({
+        method,
+        url: `${url}${query}`,
+        headers: { ...(await credentials()), ...CSRF },
+        ...(method === 'POST' ? { payload: { definitionId: defs[TENANT_A.siteId], format: 'csv' } } : {}),
+      });
+      expect(res.statusCode).toBe(status);
+      expect(res.body).toBe(errorBody('reporting.exports', 'invalid_request', message));
+      expect(res.headers['content-type']).toMatch(/^application\/json/);
+      expectEtag(res);
+      expect([consumed.length, enqueued.length]).toStrictEqual([0, 0]);
+    },
+  );
+
   it("creates a queued job whose run task carries neither the requester's session nor a token", async () => {
     const res = await create({ definitionId: defs[TENANT_A.siteId], format: 'csv', asOf: '2026-06-30' });
     expect(res.statusCode).toBe(200);
@@ -288,6 +331,14 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     const res = await create({ definitionId: defs[TENANT_A.siteId], format: 'pdf', asOf: null });
     expect(res.statusCode).toBe(200);
     expect(enqueued[0]?.payload.asOf).toBe('2026-06-30');
+  });
+
+  it('creates a queued job of the stored definition for a lower-case definitionId, as SQL Server matches char(35)', async () => {
+    const stored = defs[TENANT_A.siteId] as string;
+    const res = await create({ definitionId: stored.toLowerCase(), format: 'csv' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data).toMatchObject({ siteid: 'tenant-a', definition_id: stored, format: 'csv', state: 'queued' });
+    expect(enqueued).toHaveLength(1);
   });
 
   it.each<[string, (def: string) => Record<string, unknown>, number, string]>([
@@ -315,7 +366,10 @@ describe.skipIf(!available)('reporting fixture routes', () => {
 
   it.each<[string, () => Promise<Record<string, string>>, string, number, string, number]>([
     ['login before role, site and fields', async () => CSRF, '?siteid=nowhere', 401, 'Insufficient Account Permissions', 0],
-    ['the role before site and fields', async () => ({ ...(await headers([Roles.systemUser])), ...CSRF }), '?siteid=nowhere', 403, 'Insufficient Account Permissions', 0],
+    ['the site before login, role and fields', async () => ({ ...(await anonymousHeaders()), ...CSRF }), '?siteid=nowhere', 400, 'Invalid parameters', 0],
+    ['the site before role and fields', async () => ({ ...(await headers([Roles.systemUser])), ...CSRF }), '?siteid=nowhere', 400, 'Invalid parameters', 0],
+    ['login before role and fields', async () => ({ ...(await anonymousHeaders()), ...CSRF }), '', 401, 'Insufficient Account Permissions', 0],
+    ['the role before CSRF and fields', async () => ({ ...(await headers([Roles.systemUser])), ...BAD_CSRF }), '', 403, 'Insufficient Account Permissions', 0],
     ['the site before CSRF and fields', async () => ({ ...(await headers()), ...BAD_CSRF }), '?siteid=nowhere', 400, 'Invalid parameters', 0],
     ['CSRF before the definition', async () => ({ ...(await headers()), ...BAD_CSRF }), '', 400, 'Invalid CSRF tokens', 1],
     ['the definition before format and asOf', async () => ({ ...(await headers()), ...CSRF }), '', 404, 'Not Found', 1],
@@ -347,6 +401,8 @@ describe.skipIf(!available)('reporting fixture routes', () => {
       'request denied: missing-credential',
     ],
     ['a user without reporting.exporter', async () => app.inject({ url: P, headers: await headers([Roles.systemUser]) }), 403, 'request denied: forbidden'],
+    ['an anonymous session', async () => app.inject({ url: P, headers: await anonymousHeaders() }), 401, 'request denied: authorization'],
+    ['an unregistered token site', async () => app.inject({ url: P, headers: await headers([], 'nosuchsite') }), 400, 'request rejected: invalidParameters'],
     ['another site', async () => app.inject({ url: `${P}?siteid=tenant-b`, headers: await headers() }), 403, 'request denied: site-mismatch'],
     ['a create without a valid CSRF token', () => create({ definitionId: defs[TENANT_A.siteId], format: 'csv' }, {}), 400, 'request rejected: invalidTokens'],
     ['a bad format', () => create({ definitionId: defs[TENANT_A.siteId], format: 'doc' }), 400, 'request rejected: invalidParameters'],
@@ -462,10 +518,14 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     expect(res.body).toBe(errorBody('reporting.exports.download', 'invalid_request', 'not-ready'));
   });
 
-  it('downloads a done job output as an attachment', async () => {
+  it.each<[string, 'GET' | 'POST', Record<string, string>]>([
+    ['a GET', 'GET', {}],
+    ['a POST overridden to GET, without a CSRF token', 'POST', { 'x-http-method-override': 'GET' }],
+  ])('downloads a done job output as an attachment for %s', async (_case, method, override) => {
     const id = await storeDone();
-    const res = await app.inject({ url: `${P}/${id}/download`, headers: await headers() });
+    const res = await app.inject({ method, url: `${P}/${id}/download`, headers: { ...(await headers()), ...override } });
     expect(res.statusCode).toBe(200);
+    expect(consumed).toHaveLength(0);
     expect(res.rawPayload.equals(OUTPUT)).toBe(true);
     expect(res.headers['content-type']).toBe('text/csv');
     expect(res.headers['content-disposition']).toBe(`attachment; filename="export-${id}.csv"`);
@@ -502,6 +562,29 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     const none = await app.inject({ url: `${P}/X`, headers: { ...(await headers()), 'x-http-method-override': 'DELETE' } });
     expect(none.statusCode).toBe(404);
     expect(none.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Not Found'));
+  });
+
+  it('reads a job for a POST overridden to GET, as api.cfm dispatches it, without a CSRF token', async () => {
+    const id = await storeDone();
+    const res = await app.inject({ method: 'POST', url: `${P}/${id}`, headers: { ...(await headers()), 'x-http-method-override': 'GET' }, payload: {} });
+    expect(res.statusCode).toBe(200);
+    expectEtag(res);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', method: 'reporting.exports', data: { job_id: id, state: 'done', file_name: `export-${id}.csv` } });
+    expect(consumed).toHaveLength(0);
+  });
+
+  it.each<[string, string, string, Record<string, string>]>([
+    ['a POST overridden to PUT on a job', '', 'reporting.exports', { 'x-http-method-override': 'PUT' }],
+    ['a plain POST on a job', '', 'reporting.exports', {}],
+    ['a POST overridden to PUT on a download', '/download', 'reporting.exports.download', { 'x-http-method-override': 'PUT' }],
+    ['a plain POST on a download', '/download', 'reporting.exports.download', {}],
+  ])('answers %s with the fixture notFound, as reporting.cfc handle() does', async (_case, action, method, override) => {
+    const id = await storeDone();
+    const res = await app.inject({ method: 'POST', url: `${P}/${id}${action}`, headers: { ...(await headers()), ...CSRF, ...override } });
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toBe(errorBody(method, 'invalid_request', 'Not Found'));
+    expectEtag(res);
+    expect([consumed.length, enqueued.length]).toStrictEqual([0, 0]);
   });
 
   it('answers the legacy 503 when the units are not target-authoritative or the run cannot be scheduled', async () => {

@@ -1,4 +1,4 @@
-// Unit tests for moving file-store objects to strategies-content: planning, paged streaming, per-site logs and hash checks.
+// Unit tests for moving file-store objects to strategies-content: planning, paged streaming, per-site logs, hash checks and removal.
 import { createHash } from 'node:crypto';
 
 import type { Logger } from '@opt2/platform/logging';
@@ -7,18 +7,24 @@ import type { QueryResult, QueryResultRow } from 'pg';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { MigrationContext } from '../../src/context.js';
+import { diffSnapshotManifests } from '../../src/files/feed.js';
 import { MANIFEST_PAGE_ROWS, type ManifestEntry, type ManifestKey } from '../../src/files/manifest.js';
 import type { StoredVariant } from '../../src/files/names.js';
-import { FileHashMismatchError, planObjects, transferFiles, type PlanOptions } from '../../src/files/transfer.js';
+import { FileHashMismatchError, planObjects, removeDroppedObjects, transferFiles, type PlanOptions } from '../../src/files/transfer.js';
 import { BridgeError, BridgeHashMismatchError, type BridgeClient, type LegacyFileBytes } from '../../src/legacy/bridge.js';
 import type { LegacyDb } from '../../src/legacy/legacy-db.js';
 import type { OwnersClient, PutObjectParams } from '../../src/owners/client.js';
+import { compareObjects } from '../../src/reconcile/compare.js';
+import { readLegacyObjects } from '../../src/reconcile/legacy-side.js';
 
 const SNAP_DB = 'muradb_opt2_snap_5';
+const PREV_DB = 'muradb_opt2_snap_4';
+const SNAPSHOT_DATABASES: Record<number, string> = { 4: PREV_DB, 5: SNAP_DB };
 const FID_A = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
 const FID_B = 'B1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
 const FID_C = 'C1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
 const FID_D = 'D1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+const FID_E = 'E1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
 const SELECT_MANIFEST = 'SELECT site_id, path, file_id, variant, ext, size, sha256, orphan FROM migration.file_manifest';
 const MANIFEST_ORDER = 'ORDER BY site_id COLLATE "C", path COLLATE "C"';
 const FIRST_PAGE_SQL = `${SELECT_MANIFEST} WHERE snapshot_seq = $1 ${MANIFEST_ORDER} LIMIT $2`;
@@ -33,13 +39,13 @@ const byteOrder = (a: string, b: string): number => Buffer.compare(Buffer.from(a
 const keyOrder = (a: ManifestKey, b: ManifestKey): number => byteOrder(a.siteId, b.siteId) || byteOrder(a.path, b.path);
 const keyOf = ({ siteId, path }: ManifestEntry): ManifestKey => ({ siteId, path });
 
-/** Manifest entry of `<siteId>/cache/file/<name>` in snapshot 5, hashed over contentOf its path. */
-function entry(siteId: string, name: string, orphan = false): ManifestEntry {
+/** Manifest entry of `<siteId>/cache/file/<name>` in snapshot `snapshotSeq`, hashed over contentOf its path. */
+function entry(siteId: string, name: string, orphan = false, snapshotSeq = 5): ManifestEntry {
   const dot = name.lastIndexOf('.');
   const path = `${siteId}/cache/file/${name}`;
   const bytes = contentOf(path);
   return {
-    snapshotSeq: 5,
+    snapshotSeq,
     siteId,
     path,
     name,
@@ -68,12 +74,18 @@ const tfile = (fileID: string, siteID: string | null, type: [string | null, stri
   fileExt: type[2],
 });
 
-/** Migration database of snapshot 5, its manifest answered in keyset pages; `events` records page reads. */
+/** Migration database of snapshots 4 and 5, their manifests answered in keyset pages; `events` records page reads. */
 function migrationDb(entries: readonly ManifestEntry[], events: string[]) {
   const statements: { sql: string; values: unknown[]; returned: number }[] = [];
   const sorted = entries.toSorted(keyOrder);
   const answer = (sql: string, values: unknown[]): QueryResultRow[] => {
-    if (sql === 'SELECT database_name FROM migration.snapshot WHERE seq = $1') return values[0] === 5 ? [{ database_name: SNAP_DB }] : [];
+    if (sql === 'SELECT database_name FROM migration.snapshot WHERE seq = $1') {
+      const database = SNAPSHOT_DATABASES[values[0] as number];
+      return database === undefined ? [] : [{ database_name: database }];
+    }
+    if (sql === 'SELECT state, manifest_complete FROM migration.snapshot WHERE seq = $1') {
+      return SNAPSHOT_DATABASES[values[0] as number] === undefined ? [] : [{ state: 'ready', manifest_complete: true }];
+    }
     if (sql !== FIRST_PAGE_SQL && sql !== NEXT_PAGE_SQL) throw new Error(`unexpected statement: ${sql}`);
     const after = sql === NEXT_PAGE_SQL ? { siteId: values[1] as string, path: values[2] as string } : undefined;
     const limit = values[sql === NEXT_PAGE_SQL ? 3 : 1] as number;
@@ -147,29 +159,44 @@ function bridgeOf(events: string[], answers: Record<string, LegacyFileBytes | Er
   return { bridge: { filesGet } as unknown as BridgeClient, filesGet };
 }
 
-/** strategies-content upload that already holds the `held` keys. */
+/** strategies-content upload and deletion over the size and SHA-256 it stores per key, already holding the `held` keys. */
 function ownersOf(held: readonly string[] = []) {
-  const stored = new Set(held);
+  const stored = new Map(held.map((key) => [key, { size: 0, sha256: '' }]));
   const putObject = vi.fn((params: PutObjectParams, bytes: Uint8Array) => {
     const key = `${params.tenantId}/${params.fileId}${params.variant}.${params.ext}`;
     const created = !stored.has(key);
-    stored.add(key);
+    stored.set(key, { size: bytes.byteLength, sha256: params.sha256 });
     return Promise.resolve({ key, size: bytes.byteLength, sha256: params.sha256, created, writePositions: {} });
   });
-  return { owners: { putObject } as unknown as OwnersClient, putObject };
+  const deleteObject = vi.fn((key: string) => Promise.resolve({ key, deleted: stored.delete(key), writePositions: new Map() }));
+  return { owners: { putObject, deleteObject } as unknown as OwnersClient, putObject, deleteObject, stored };
 }
 
-/** Transfer context over `entries`, the snapshot's `tfiles` rows and optional bridge answers. */
-function store(entries: readonly ManifestEntry[], tfiles: TfilesRow[], opts: { held?: string[]; answers?: Record<string, LegacyFileBytes | Error> } = {}) {
+/** Transfer context over `entries`, the `tfiles` rows of snapshot 5 and optionally of snapshot 4, and optional bridge answers. */
+function store(
+  entries: readonly ManifestEntry[],
+  tfiles: TfilesRow[],
+  opts: { held?: string[]; answers?: Record<string, LegacyFileBytes | Error>; previous?: TfilesRow[] } = {},
+) {
   const events: string[] = [];
   const db = migrationDb(entries, events);
-  const legacy = legacyOf({ [SNAP_DB]: tfiles, muradb_restore: tfiles });
+  const legacy = legacyOf({ [SNAP_DB]: tfiles, muradb_restore: tfiles, ...(opts.previous === undefined ? {} : { [PREV_DB]: opts.previous }) });
   const bridge = bridgeOf(events, opts.answers);
   const owners = ownersOf(opts.held);
   const info = vi.fn();
   const config = { umbrellaSiteId: UMBRELLA, fileStore: { flvRenditionExt: 'jpg' } } as unknown as MigrationContext['config'];
   const ctx = { db: db.db, legacy: legacy.legacy, bridge: bridge.bridge, owners: owners.owners, logger: { info } as unknown as Logger, config };
-  return { ctx, events, statements: db.statements, queries: legacy.queries, filesGet: bridge.filesGet, putObject: owners.putObject, info };
+  return {
+    ctx,
+    events,
+    statements: db.statements,
+    queries: legacy.queries,
+    filesGet: bridge.filesGet,
+    putObject: owners.putObject,
+    deleteObject: owners.deleteObject,
+    stored: owners.stored,
+    info,
+  };
 }
 
 /** Two sites: default holds an image with a rendition, an orphan and a copy owned by tenant-a; tenant-a holds one PDF. */
@@ -399,5 +426,117 @@ describe('transferFiles', () => {
 
     await expect(transferFiles(ctx, 5)).rejects.toBe(failure);
     expect(putObject).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('removeDroppedObjects', () => {
+  const defaultTenant = tenantIdForSite('Default');
+  const umbrella = tenantIdForSite(UMBRELLA);
+  const tenantA = tenantIdForSite('tenant-a');
+  const reuploaded = Buffer.from('re-uploaded pdf');
+
+  /**
+   * Snapshot 4 and the feed snapshot 5. Removed at 5: a rendition, an orphan whose umbrella key an orphan copy of another site
+   * still plans, and a misplaced copy. Changed at 5: an orphan that gained its row, so its key leaves the umbrella tenant, and a
+   * re-uploaded PDF keeping its key.
+   */
+  function twoSnapshots() {
+    const before = [
+      entry('default', `${FID_A}.jpg`, false, 4),
+      entry('default', `${FID_A}_small.jpg`, false, 4),
+      entry('default', `${FID_B}.png`, true, 4),
+      entry('default', `${FID_C}.pdf`, false, 4),
+      entry('default', `${FID_D}.png`, true, 4),
+      entry('tenant-a', `${FID_C}.pdf`, false, 4),
+      entry('tenant-a', `${FID_E}.pdf`, false, 4),
+    ];
+    const after = [
+      entry('default', `${FID_A}.jpg`),
+      entry('default', `${FID_D}.png`),
+      entry('tenant-a', `${FID_B}.png`, true),
+      entry('tenant-a', `${FID_C}.pdf`),
+      { ...entry('tenant-a', `${FID_E}.pdf`), size: reuploaded.byteLength, sha256: sha(reuploaded) },
+    ];
+    const pdf: [string, string, string] = ['application', 'pdf', 'pdf'];
+    const previous = [tfile(FID_A, 'Default'), tfile(FID_C, 'tenant-a', pdf), tfile(FID_E, 'tenant-a', pdf)];
+    const tfiles = [...previous, tfile(FID_D, 'Default', ['image', 'png', 'png'])];
+    const answers: Record<string, LegacyFileBytes> = {};
+    const fixture = store([...before, ...after], tfiles, { previous, answers });
+    return { ...fixture, answers };
+  }
+
+  /** Backfills snapshot 4, then transfers the objects snapshot 5 added or changed; returns their diff. */
+  async function transferToFive(fixture: ReturnType<typeof twoSnapshots>) {
+    await transferFiles(fixture.ctx, 4);
+    fixture.answers[`tenant-a/cache/file/${FID_E}.pdf`] = { bytes: reuploaded, sha256: sha(reuploaded) };
+    const diff = await diffSnapshotManifests(fixture.ctx, 4, 5);
+    await transferFiles(fixture.ctx, 5, { only: diff.toTransfer });
+    fixture.info.mockClear();
+    return diff;
+  }
+
+  /** Feeds snapshot 5 after the backfill of 4: the diff's transfer, then its removal. */
+  async function feed(fixture: ReturnType<typeof twoSnapshots>) {
+    const diff = await transferToFive(fixture);
+    return { diff, removal: await removeDroppedObjects(fixture.ctx, diff) };
+  }
+
+  /** The after-feed object comparison of snapshot 5's legacy manifest with the objects the owner holds. */
+  async function reconcileObjects(fixture: ReturnType<typeof twoSnapshots>) {
+    const legacy = await readLegacyObjects(fixture.ctx, { legacySource: 'snapshot', snapshotSeq: 5, database: SNAP_DB });
+    if (legacy.status !== 'compared') throw new Error(`snapshot 5 objects ${legacy.status}: ${legacy.reason}`);
+    return compareObjects(
+      [...legacy.byTenant.values()].flat(),
+      [...fixture.stored].map(([key, object]) => ({ key, ...object })),
+    );
+  }
+
+  it('deletes the keys snapshot 4 placed for dropped copies that snapshot 5 no longer plans, leaving still-planned and misplaced ones', async () => {
+    const fixture = twoSnapshots();
+
+    const { removal } = await feed(fixture);
+
+    expect(removal).toEqual({ from: 4, to: 5, deleted: 2, absent: 0, retained: 2, misplaced: 1 });
+    expect(fixture.deleteObject.mock.calls).toEqual([[`${defaultTenant}/${FID_A}_small.jpg`], [`${umbrella}/${FID_D}.png`]]);
+    expect([...fixture.stored.keys()]).toEqual(expect.arrayContaining([`${umbrella}/${FID_B}.png`, `${tenantA}/${FID_C}.pdf`, `${defaultTenant}/${FID_D}.png`]));
+    expect(fixture.info.mock.calls).toEqual([['files of snapshot 5 dropped since snapshot 4: 2 deleted, 0 already absent, 2 still planned, 1 misplaced']]);
+  });
+
+  it('brings the after-feed object reconciliation from the dropped objects to zero difference, and answers a repeat as absent', async () => {
+    const fixture = twoSnapshots();
+    const diff = await transferToFive(fixture);
+    expect(await reconcileObjects(fixture)).toMatchObject({
+      differenceCount: 2,
+      differences: expect.arrayContaining([
+        expect.objectContaining({ kind: 'object-extra-in-target', key: `${defaultTenant}/${FID_A}_small.jpg` }),
+        expect.objectContaining({ kind: 'object-extra-in-target', key: `${umbrella}/${FID_D}.png` }),
+      ]),
+    });
+
+    await removeDroppedObjects(fixture.ctx, diff);
+    const zero = { legacyObjects: 5, targetObjects: 5, differenceCount: 0, differences: [] };
+    expect(await reconcileObjects(fixture)).toMatchObject(zero);
+
+    const repeat = await removeDroppedObjects(fixture.ctx, diff);
+    expect(repeat).toEqual({ from: 4, to: 5, deleted: 0, absent: 2, retained: 2, misplaced: 1 });
+    expect(await reconcileObjects(fixture)).toMatchObject(zero);
+  });
+
+  it('reads nothing and deletes nothing when no copy was removed or changed', async () => {
+    const { ctx, queries, statements, deleteObject, info } = store([], []);
+
+    const removal = await removeDroppedObjects(ctx, { from: 4, to: 5, removed: [], changed: [] });
+
+    expect(removal).toEqual({ from: 4, to: 5, deleted: 0, absent: 0, retained: 0, misplaced: 0 });
+    expect([queries, statements, deleteObject.mock.calls, info.mock.calls]).toEqual([[], [], [], []]);
+  });
+
+  it('propagates an owner failure without reporting a removal', async () => {
+    const fixture = twoSnapshots();
+    const failure = new Error('strategies-content unavailable');
+    fixture.deleteObject.mockRejectedValueOnce(failure);
+
+    await expect(feed(fixture)).rejects.toBe(failure);
+    expect(fixture.info).not.toHaveBeenCalled();
   });
 });

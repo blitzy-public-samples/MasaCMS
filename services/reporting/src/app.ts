@@ -37,6 +37,24 @@ const LOCAL_PROJECT_ID = 'opt2-local';
 /** Fastify form of the `reporting-export-run` target path: the handler reads `{exportId}` as a route param. */
 const EXPORT_RUN_ROUTE = QUEUES['reporting-export-run'].targetPath.replace(/\{(\w+)\}/g, ':$1');
 
+/** Services reporting calls through `OPT2_SERVICE_URLS`: identity (CSRF), finance and timesheets (sources), and itself (the run task's target). */
+const REQUIRED_SERVICES: readonly string[] = ['identity', 'finance', 'timesheets', OWNER];
+
+/** Base variables with every callee's URL required. */
+export const reportingEnvSchema = baseEnvSchema.superRefine(
+  (env, ctx) => {
+    // Failed fields keep their raw values here; a map that failed as a whole carries its own issue.
+    const urls: unknown = env.OPT2_SERVICE_URLS;
+    const mapFailed = ctx.issues.some((issue) => issue.path?.length === 1 && issue.path[0] === 'OPT2_SERVICE_URLS');
+    if (mapFailed || typeof urls !== 'object' || urls === null) return;
+    for (const name of REQUIRED_SERVICES.filter((service) => !Object.hasOwn(urls, service))) {
+      ctx.addIssue({ code: 'custom', path: ['OPT2_SERVICE_URLS', name], message: 'is required' });
+    }
+  },
+  // Runs even when other variables failed, so loadEnv lists every missing callee at once.
+  { when: () => true },
+);
+
 /** Dependencies `buildApp` uses instead of building its own from the environment; injected ones stay open when the app closes. */
 export interface BuildAppOptions {
   env?: BaseEnv;
@@ -50,7 +68,7 @@ export interface BuildAppOptions {
 
 /** Builds the reporting Fastify app with every route and hook registered; never listens. */
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const env = options.env ?? loadEnv(baseEnvSchema);
+  const env = options.env ?? loadEnv(reportingEnvSchema);
   const clock = options.clock ?? systemClock;
   // Checked before createService acquires anything; an injected publisher needs no emulator.
   const emulatorHost = options.publisher === undefined ? publisherEmulatorHost(env) : undefined;

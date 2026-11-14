@@ -12,6 +12,7 @@ import { ReportingDomainError, createExportJob, type ExportOutput } from '../../
 import {
   FIXTURE_CHECK_ORDER,
   createExportFields,
+  fixtureDenialOverride,
   requireExportJob,
   requireReadyOutput,
   resolveFixtureSite,
@@ -113,6 +114,7 @@ function thrownBy(fn: () => unknown): unknown {
 
 const INVALID_PARAMETERS = { status: 400, error: { code: 'invalid_request', message: 'Invalid parameters' } };
 const FORBIDDEN = { status: 403, error: { code: 'invalid_request', message: 'Insufficient Account Permissions' } };
+const UNAUTHORIZED = { status: 401, error: { code: 'invalid_request', message: 'Insufficient Account Permissions' } };
 const NOT_FOUND = { status: 404, error: { code: 'invalid_request', message: 'Not Found' } };
 
 describe('FIXTURE_CHECK_ORDER', () => {
@@ -176,6 +178,69 @@ describe('resolveFixtureSite', () => {
     await expect(promise).rejects.toBeInstanceOf(AuthDenial);
     await expect(promise).rejects.toMatchObject({ statusCode: 401, reason: 'missing-credential' });
     expect(tenants).toStrictEqual([]);
+  });
+});
+
+describe('fixtureDenialOverride', () => {
+  /** Claims of an active session without a login on `site`, as identity mints them. */
+  const anonymous = (site: string): UserClaims => ({ ...claims(site), sub: '', roles: [] });
+
+  it.each([
+    ['missing credential', AuthDenial.unauthenticated('missing-credential')],
+    ['invalid token', AuthDenial.invalidToken()],
+    ['expired token', AuthDenial.expiredToken()],
+    ['site mismatch', AuthDenial.siteMismatch()],
+  ])('keeps a %s denial without reading the registry, even for an anonymous token of an unregistered site', async (_case, denial) => {
+    const { db, tenants } = registryDb();
+
+    await expect(fixtureDenialOverride(denial, { claims: anonymous('retired-site'), params: { siteid: 'nosuch' } }, { db })).resolves.toBe(denial);
+    expect(tenants).toStrictEqual([]);
+  });
+
+  it('keeps a role denial of a request without user claims, reading nothing', async () => {
+    const denial = AuthDenial.forbidden();
+    const { db, tenants } = registryDb();
+
+    await expect(fixtureDenialOverride(denial, { claims: undefined, params: {} }, { db })).resolves.toBe(denial);
+    expect(tenants).toStrictEqual([]);
+  });
+
+  it.each([
+    ['the token site', {}, TENANT_A.siteId],
+    ['a case variant of the token site as siteid', { siteid: 'Tenant-A' }, TENANT_A.siteId],
+    ['another registered site as siteid', { siteid: TENANT_B.siteId }, TENANT_A.siteId],
+    ['default without a token site', {}, ''],
+  ])('keeps the role denial of a logged-in user requesting %s, read in the token tenant', async (_case, params, tokenSite) => {
+    const denial = AuthDenial.forbidden();
+    const user = { ...claims(tokenSite), roles: [] };
+    const { db, tenants } = registryDb();
+
+    await expect(fixtureDenialOverride(denial, { claims: user, params }, { db })).resolves.toBe(denial);
+    expect(tenants).toStrictEqual([user.tid]);
+  });
+
+  it.each([
+    ['a logged-in user of an unregistered token site', claims('retired-site'), {}, REGISTERED],
+    ['a logged-in user naming an unregistered siteid', claims(TENANT_A.siteId), { siteid: 'nosuch' }, REGISTERED],
+    ['a logged-in user naming an array siteid', claims(TENANT_A.siteId), { siteid: [TENANT_A.siteId] }, REGISTERED],
+    ['an anonymous session of an unregistered token site', anonymous('retired-site'), {}, REGISTERED],
+    ['an anonymous session naming an unregistered siteid', anonymous(TENANT_A.siteId), { SiteID: 'nosuch' }, REGISTERED],
+    ['an anonymous session without a token site or a registered default', anonymous(''), {}, [TENANT_A.siteId]],
+  ])('answers the role denial of %s with invalidParameters, as resolveSite raises before requireLogin', async (_case, user, params, sites) => {
+    const answer = await fixtureDenialOverride(AuthDenial.forbidden(), { claims: user, params }, registryDb(sites));
+
+    expect(answer).toBeInstanceOf(FixtureApiError);
+    await expect(fixtureAnswer(Promise.reject(answer))).resolves.toStrictEqual(INVALID_PARAMETERS);
+  });
+
+  it.each([
+    ['its token site', {}],
+    ['a registered siteid', { siteid: TENANT_B.siteId }],
+  ])('answers the role denial of an anonymous session requesting %s with authorization, as requireLogin raises', async (_case, params) => {
+    const answer = await fixtureDenialOverride(AuthDenial.forbidden(), { claims: anonymous(TENANT_A.siteId), params }, registryDb());
+
+    expect(answer).toBeInstanceOf(FixtureApiError);
+    await expect(fixtureAnswer(Promise.reject(answer))).resolves.toStrictEqual(UNAUTHORIZED);
   });
 });
 

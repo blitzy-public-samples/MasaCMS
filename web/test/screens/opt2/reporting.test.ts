@@ -152,7 +152,6 @@ const REFUSALS: readonly RefusalCase[] = [
   downloadRefusal(409, 'not-ready'),
 ];
 
-// Loading, the grid, paging, the action calls and the role matrix are asserted in ./reporting/ and ./umbrella.test.ts.
 describe('reporting screens', () => {
   let restoreEnv: () => void;
   beforeEach(() => {

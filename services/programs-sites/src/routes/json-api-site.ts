@@ -1,4 +1,4 @@
-/** JSON API `site` entity routes: every generic method of the site entity as Masa's jsonApiUtility serves it. */
+/** JSON API `site` entity routes: each generic method of the site entity but the withheld `save`, as Masa's jsonApiUtility serves it. */
 import { assertSiteMatches, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import {
   LegacyApiError,
@@ -11,14 +11,12 @@ import {
   cfToBoolean,
   corsHeaders,
   isCfUuid,
-  isLegacyFindOneId,
   routeKeyForRequest,
   serializeResponse,
   type ApiNameContext,
   type LegacyApiErrorType,
   type RouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
-import { serializeError } from '@opt2/platform/logging';
 import {
   EnvValidationError,
   csrfPreHandler,
@@ -31,7 +29,6 @@ import {
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
 import { registeredTenants, registryEntries, withTenant, type TenantDb } from '@opt2/platform/tenancy';
-import { SiteColumnTruncationError, type SitesDomain } from '../domain/sites.js';
 import {
   addFeedParam,
   applyFeedProps,
@@ -59,7 +56,6 @@ import {
   jsonApiBaseUrl,
   jsonApiEnvelope,
   jsonApiGenericValues,
-  jsonApiSaveValues,
   jsonApiSitePermissions,
   jsonApiSiteProperties,
   jsonApiSiteValues,
@@ -68,8 +64,7 @@ import {
   type JsonApiMode,
   type JsonApiSiteValues,
 } from '../legacy/json-api-site.js';
-import { applySet, getSiteText, getSiteValue, newSiteBean, readBean, type SiteBean, type SiteRow } from '../legacy/site-fields.js';
-import { hasSiteErrors } from '../legacy/validation.js';
+import { applySet, getSiteText, newSiteBean, readBean, type SiteBean, type SiteRow } from '../legacy/site-fields.js';
 import type { ProgramsSitesRepository } from '../repo/repository.js';
 
 /** configBean and application settings the endpoint URL, the route key and the CORS allow-list read. */
@@ -90,7 +85,6 @@ export interface JsonApiLegacySettings {
 export interface JsonApiSiteRouteDeps {
   db: TenantDb;
   repository: ProgramsSitesRepository;
-  sites: SitesDomain;
   /** Defaults to {@link jsonApiLegacySettings} over `process.env`. */
   legacy?: JsonApiLegacySettings;
 }
@@ -119,13 +113,15 @@ type Operation =
   | 'findPermissions'
   | 'validate'
   | 'delete'
-  | 'save'
   | 'none';
 
-/** The `site` route-key bodies served here: each generic method, and the verbs the entity switch calls nothing for (jsonApiUtility.cfc:1242-1304). */
+/**
+ * The `site` route-key bodies served here: each generic method but the withheld `save`, and the verbs the entity switch
+ * calls nothing for (jsonApiUtility.cfc:1242-1304).
+ */
 const OPERATIONS: ReadonlyMap<string, Operation> = new Map([
   ...(
-    ['findOne', 'findAll', 'findMany', 'findQuery', 'findNew', 'findProperties', 'findPermissions', 'validate', 'delete', 'save'] as const
+    ['findOne', 'findAll', 'findMany', 'findQuery', 'findNew', 'findProperties', 'findPermissions', 'validate', 'delete'] as const
   ).map((operation): [string, Operation] => [`site.${operation.toLowerCase()}`, operation]),
   ...['head', 'options', 'patch'].map((verb): [string, Operation] => [`site.http-${verb}`, 'none']),
 ]);
@@ -643,36 +639,6 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
     return respondPage(call, feed, page, pageItems(call, feed, rows, page), baseUrl);
   }
 
-  /** save(entityName='site') of an existing site, an update through the gated domain (jsonApiUtility.cfc:1903-2075). */
-  async function save(call: SiteCall): Promise<FastifyReply> {
-    const { params, site, user } = call;
-    const csrfContext = params.id ?? 'new';
-    // A uuid site id replaces the id; `new` mints a uuid site id, which creates a site (jsonApiUtility.cfc:1957-1965).
-    const id = isLegacyFindOneId(call.scopeSiteId) ? call.scopeSiteId : csrfContext;
-    if (cfEq(id, 'new')) throw unavailable('A JSON API site save without an id creates a site', 'site-create');
-    // loadBy(siteid=id) then set(event) saves site `id`'s values, or a new bean's defaults, into the addressed site.
-    if (!sameSiteId(id, site.siteId)) throw unavailable('A JSON API site save copies another site', 'site-copy');
-    const stored = await readSiteRow(call.tenantId, site);
-    // settingsManager.save creates a site that has no tsettings row (settingsManager.cfc:807-830).
-    if (stored === null) throw unavailable('A JSON API site save of a site without a row creates it', 'site-create');
-    if (call.sessionManaged) await consumeCsrf(call, csrfContext);
-    if (user === undefined || !canWriteSite(user)) throw new LegacyApiError('authorization');
-    // The JSON API save sets no request locale, so date text is read in the server locale.
-    const result = await deps.sites.updateSite(deps.db, user, site.siteId, params, { locale: '' }).catch((error: unknown) => {
-      if (!(error instanceof SiteColumnTruncationError)) throw error;
-      // processRequest's catch (Any) logs the error and reports the request's method (jsonApiUtility.cfc:1390-1399).
-      call.request.log.error({ error: serializeError(error) }, 'unhandled error');
-      throw new LegacyApiError('server_error', { method: call.reported, methodCtx: call.methodCtx });
-    });
-    const saveErrors = getSiteValue(applySet(readBean(stored), params), 'saveErrors');
-    const reloaded = loadedBean(await readSiteRow(call.tenantId, site), call.scopeSiteId);
-    const reapply = !(cfIsBoolean(saveErrors) && cfToBoolean(saveErrors)) && hasSiteErrors(result.errors);
-    const bean = reapply ? applySet(reloaded, params) : reloaded;
-    // The entity route answers 403 when the result carries errors; a direct call always answers 200 (jsonApiUtility.cfc:1308-1313).
-    const status = !call.direct && hasSiteErrors(result.errors) ? 403 : 200;
-    return respond(call, jsonApiSaveValues(bean, call.baseUrl, saveErrors, result.errors), status);
-  }
-
   /** The served operation of a resolved call. */
   function dispatch(call: SiteCall, operation: Operation): FastifyReply | Promise<FastifyReply> {
     switch (operation) {
@@ -694,8 +660,6 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
         return validate(call);
       case 'delete':
         return deleteSite(call);
-      case 'save':
-        return save(call);
       case 'none':
         return respond(call, '');
     }
@@ -731,7 +695,7 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
     const failure = RESOLUTION_ERRORS.get(body);
     if (failure !== undefined) throw new LegacyApiError(failure, { method: params.method, methodCtx });
     const operation = OPERATIONS.get(body);
-    // A key of no entity, or of another entity, has another owner or stays with legacy.
+    // A key of no entity, of another entity or of the withheld `site.save` has another owner or stays with legacy.
     if (operation === undefined) throw unavailable(`JSON API ${key.key} is not served by programs-sites`, 'not-carried');
     const requested = requestParam(request, 'method');
     // A dotted method (site.<m>) rewrites the path and resolves as the entity route (jsonApiUtility.cfc:953-961).

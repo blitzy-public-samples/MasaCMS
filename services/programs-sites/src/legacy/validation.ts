@@ -24,8 +24,3 @@ export function validateSite(bean: SiteBean): SiteErrors {
   if (typeof siteId === 'string' && RESERVED_SITE_IDS.has(siteId.toLowerCase())) errors.siteid = SITE_ERROR_INVALID;
   return errors;
 }
-
-/** True when validation left an error: the negation of `structIsEmpty(bean.getErrors())` (settingsManager.cfc:265). */
-export function hasSiteErrors(errors: SiteErrors): boolean {
-  return Object.keys(errors).length > 0;
-}

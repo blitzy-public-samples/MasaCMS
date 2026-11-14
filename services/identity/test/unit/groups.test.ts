@@ -760,7 +760,7 @@ describe('cUsers group routes over the memory repository', () => {
     const members = await send('GET', `/v1/groups/${EDITORS.userid}/members`, headers);
     const memberships = await send('GET', `/v1/users/${ALPHA.userid}/memberships`, headers);
 
-    expect(stored.json()).toMatchObject({ isNew: false, group: { UserID: EDITORS.userid, GroupName: 'Editors', Password: null } });
+    expect(stored.json()).toMatchObject({ isNew: false, group: { UserID: EDITORS.userid, GroupName: 'Editors' } });
     expect(unknown.json()).toMatchObject({ isNew: true, group: { isPublic: 1, subType: 'Default' } });
     expect(members.json<{ items: { Lname: string; photoFileExt: string | null }[] }>().items).toEqual([
       expect.objectContaining({ Lname: 'alpha', photoFileExt: 'jpg' }),

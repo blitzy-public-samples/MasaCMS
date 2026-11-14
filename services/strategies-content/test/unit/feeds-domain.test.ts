@@ -1,6 +1,7 @@
 /** Collections through `domain/feeds` over a throwaway `content` schema: the feed bean, cfeed gate and update action, CRUD and local feed content. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { TENANT_A, TENANT_B, fixedClock, pgAvailable } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, fixedClock, pgAvailable } from '@opt2/platform/testing';
+import type { TenantDb } from '@opt2/platform/tenancy';
 import { saveContent, type ContentSaveSite } from '../../src/domain/content.js';
 import type { Actor } from '../../src/domain/context.js';
 import {
@@ -26,7 +27,10 @@ import {
   validateFeed,
   withFeedRcDefaults,
 } from '../../src/domain/feeds.js';
-import { ADMIN, END, HOME, NOBODY, NOW, SITE, SITE_ID, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
+import { setRestriction } from '../../src/domain/permissions.js';
+import type { FeedContentRow } from '../../src/repo/feed-queries.js';
+import { ADMIN, END, HOME, NOBODY, NOW, SITE, SITE_ID, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
+import { roundTripCounter, type RoundTripCounter } from '../helpers/round-trips.js';
 
 const clock = fixedClock(NOW);
 const ANONYMOUS: Actor = { ...NOBODY, userId: '', fullName: '', isLoggedIn: false, roles: [] };
@@ -328,6 +332,111 @@ describe.skipIf(!(await pgAvailable()))('feeds over the content schema', () => {
     });
   });
 
+  describe('batched collection reads', () => {
+    const MEMBERS = cfId('G', 71);
+    const member = (roles: string[]): Actor => ({ ...NOBODY, userId: cfId('U', 71), fullName: 'Mem Ber', roles });
+    const category = (n: number): string => cfId('K', n);
+    let counter: RoundTripCounter;
+    let membersFeedId = '';
+    const membersFeed = () => readFeed(fx.deps, ADMIN, { feedId: membersFeedId });
+
+    /** permUtility.queryPermFilter row by row: a crumb read and a setRestriction for each row. */
+    const perRowFilter = async (actor: Actor, rows: readonly FeedContentRow[]): Promise<FeedContentRow[]> => {
+      const kept: FeedContentRow[] = [];
+      for (const row of rows) {
+        const crumbs = await fx.inTenant((tx) => fx.repo.content.crumbPath(tx, { contentId: row.contentid ?? '', siteId: SITE_ID, path: row.path ?? '' }), actor.tenantId);
+        const restriction = await setRestriction(fx.deps, actor, crumbs);
+        if (!restriction.restrict || restriction.allow) kept.push(row);
+      }
+      return kept;
+    };
+
+    beforeAll(async () => {
+      counter = roundTripCounter(fx.handle);
+      const folder = await page(ADMIN, SITE, { parentid: HOME, type: 'Folder', title: 'Members Area' });
+      const pages: Array<[string, Record<string, unknown>]> = [
+        ['P1 open', {}],
+        ['P2 by name', { restricted: 1, restrictgroups: 'Members' }],
+        ['P3 by id', { restricted: 1, restrictgroups: MEMBERS }],
+        ['P4 open', {}],
+        ['P5 other group', { restricted: 1, restrictgroups: 'Nope' }],
+      ];
+      const ids: string[] = [];
+      for (const [title, extra] of pages) ids.push(await page(ADMIN, SITE, { parentid: folder, title, ...extra }));
+      // Without a stored path the crumbs of P3 and P4 are walked parent by parent.
+      await fx.inTenant((tx) => tx.query(`UPDATE ${fx.handle.schema}.content SET path = NULL WHERE contentid = ANY($1::bpchar[])`, [[ids[2], ids[3]]]));
+      await fx.inTenant(async (tx) => {
+        await fx.repo.projections.upsertGroupProjection(tx, { groupId: MEMBERS, siteId: SITE_ID, groupName: 'Members', isPublic: 0, deleted: false });
+        await fx.repo.projections.replaceUserMemberships(tx, cfId('U', 71), SITE_ID, [MEMBERS]);
+        await fx.repo.projections.replaceGroupPermissions(tx, MEMBERS, SITE_ID, [{ contentId: folder, siteId: SITE_ID, type: 'read' }]);
+      });
+      await fx.inTenant(async (tx) => {
+        // K1 holds K2 and K3; K4 lists K2 again; K5 stands alone.
+        const paths: Array<[number, string]> = [[1, `'${category(1)}'`], [2, `'${category(1)}','${category(2)}'`], [3, `'${category(1)}','${category(3)}'`], [4, `'${category(4)}','${category(2)}'`], [5, `'${category(5)}'`]];
+        for (const [n, path] of paths) await fx.repo.categories.insertCategory(tx, { categoryid: category(n), siteid: TENANT_UMBRELLA.siteId, name: `K${n}`, path });
+      }, TENANT_UMBRELLA.tenantId);
+      for (const [at, n] of [[0, 2], [3, 5], [4, 3]] as Array<[number, number]>) {
+        const [active] = await fx.rows('content', 'contentid = $1 AND active = 1', [ids[at]]);
+        await fx.inTenant((tx) =>
+          fx.repo.categories.setAssignment(tx, { categoryId: category(n), contentId: ids[at] ?? '', contentHistId: String(active?.contenthistid), isFeature: 0, orderNo: 1, siteId: SITE_ID }),
+        );
+      }
+      const feed = await createFeed(fx.deps, ADMIN, { siteid: SITE_ID, name: 'Members', type: 'Local', contentid: folder, sortby: 'title', sortdirection: 'asc' });
+      membersFeedId = feed.text('feedid');
+    });
+
+    it.each([
+      ['anonymous', ANONYMOUS, ['P1 open', 'P4 open']],
+      ['a non-member', NOBODY, ['P1 open', 'P4 open']],
+      ['a member', member(['system-user']), ['P1 open', 'P2 by name', 'P3 by id', 'P4 open']],
+      ['a member with Site Manager access', member(['system-user', 'm:000']), ['P1 open', 'P2 by name', 'P3 by id', 'P4 open', 'P5 other group']],
+      ['a non-member with Site Manager access', { ...NOBODY, roles: ['system-user', 'm:000'] }, ['P1 open', 'P4 open']],
+      ['an S2 administrator', ADMIN, ['P1 open', 'P2 by name', 'P3 by id', 'P4 open', 'P5 other group']],
+    ] as Array<[string, Actor, string[]]>)('the permission filter keeps for %s the rows the per-row filter keeps', async (_label, actor, expected) => {
+      const bean = await membersFeed();
+      const kept = await feedContent(fx.deps, actor, bean, { applyPermFilter: true });
+      expect(titles(kept)).toEqual(expected);
+      expect(kept).toEqual(await perRowFilter(actor, await feedContent(fx.deps, actor, bean)));
+    });
+
+    it.each([
+      ['a member with Site Manager access', member(['system-user', 'm:000'])],
+      ['a member', member(['system-user'])],
+    ] as Array<[string, Actor]>)('filters five rows for %s with the round trips of three', async (_label, actor) => {
+      const deps = { ...fx.deps, db: counter.db };
+      const counts = [];
+      // Both row sets hold a restricted row with a path and one walked from its parent, so only their number differs.
+      for (const maxItems of [3, 5]) {
+        const bean = await membersFeed();
+        bean.setValue('maxItems', maxItems);
+        counts.push(await counter.measure(() => feedContent(deps, actor, bean, { applyPermFilter: true })));
+      }
+      expect(counts[1]).toEqual(counts[0]);
+    });
+
+    it.each([
+      [[1], ['P1 open', 'P5 other group']],
+      [[2], ['P1 open']],
+      [[4, 5], ['P4 open']],
+      [[3, 2, 1, 2], ['P1 open', 'P5 other group']],
+    ])('expands listed categories %j through their paths in the category pool', async (listed, expected) => {
+      const bean = await membersFeed();
+      bean.setValue('categoryID', listed.map(category).join(','));
+      expect(titles(await feedContent(fx.deps, ADMIN, bean))).toEqual(expected);
+    });
+
+    it('expands four listed categories with the round trips of one', async () => {
+      const deps = { ...fx.deps, db: counter.db };
+      const counts = [];
+      for (const listed of [[1], [1, 4, 5, 2]]) {
+        const bean = await membersFeed();
+        bean.setValue('categoryID', listed.map(category).join(','));
+        counts.push(await counter.measure(() => feedContent(deps, ADMIN, bean)));
+      }
+      expect(counts[1]).toEqual(counts[0]);
+    });
+  });
+
   describe('allowFeed', () => {
     it('opens an unrestricted feed, refuses a new bean and lets a private-pool user of the site read any feed', async () => {
       const bean = await readFeed(fx.deps, ADMIN, { feedId });
@@ -351,6 +460,42 @@ describe.skipIf(!(await pgAvailable()))('feeds over the content schema', () => {
       expect(await allowFeed(fx.deps, ANONYMOUS, bean, { username: 'u', password: 'p' }, none)).toBe(false);
       expect(queries).toEqual([{ username: 'u', password: 'p', publicUserPoolId: 'umbrella', restrictGroups: ['G1', 'G2'] }]);
       await expect(allowFeed(fx.deps, ANONYMOUS, bean, {}, async () => true)).rejects.toBeInstanceOf(FeedAllowReturnTypeError);
+    });
+  });
+
+  describe('content pool resolution', () => {
+    it('resolves * on the update transaction, so pool-size-many concurrent updates finish with no metadata connection', async () => {
+      const contentPool = `${TENANT_A.siteId},${TENANT_B.siteId}`;
+      await fx.handle.app.withMetadata((tx) =>
+        tx.query(`UPDATE ${fx.handle.schema}.tenant_registry SET content_pool_ids = $1, content_pool_tenants = $2 WHERE tenant_id = $3`, [
+          [TENANT_A.siteId, TENANT_B.siteId],
+          [TENANT_A.tenantId, TENANT_B.tenantId],
+          TENANT_A.tenantId,
+        ]),
+      );
+      // Every transaction carries the signal, so a deadlocked pool is released when the bound expires.
+      const abort = new AbortController();
+      let metadataTxs = 0;
+      const db: TenantDb = {
+        ...fx.handle.app,
+        withTenant: (tenantId, fn) => fx.handle.app.withTenant(tenantId, fn, { signal: abort.signal }),
+        withMetadata: (fn) => {
+          metadataTxs += 1;
+          return fx.handle.app.withMetadata(fn, { signal: abort.signal });
+        },
+      };
+      const deps = { ...fx.deps, db };
+      const created = await createFeed(deps, ADMIN, { siteid: SITE_ID, name: 'Pooled', type: 'Local', contentpoolid: '*' });
+      expect(created.errors).toEqual({});
+      expect(created.text('contentpoolid')).toBe(contentPool);
+      expect(metadataTxs).toBe(2);
+      metadataTxs = 0;
+      const timer = setTimeout(() => abort.abort(new Error('concurrent * updates did not finish within 15 s')), 15_000);
+      const updates = Array.from({ length: 6 }, (_, n) => updateFeed(deps, ADMIN, { feedid: created.text('feedid'), name: `Pooled ${n}`, contentpoolid: '*' }));
+      const updated = await Promise.all(updates).finally(() => clearTimeout(timer));
+      expect(updated.map((bean) => [bean.errors, bean.text('contentpoolid')])).toEqual(Array(6).fill([{}, contentPool]));
+      expect(metadataTxs).toBe(0);
+      expect(await feedRow(created.text('feedid'))).toMatchObject({ contentpoolid: contentPool });
     });
   });
 });

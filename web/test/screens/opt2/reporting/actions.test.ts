@@ -23,7 +23,7 @@ import { editorRequest, opt2RoleRequest } from '../../../helpers/admin-request';
 import { fragmentModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from '../../../helpers/fake-gateway';
-import { CSRF_PAIR, LIST_PATH, LIST_ROUTE, contextFor, shellAndCsrfRoutes } from './support';
+import { CSRF_PAIR, LIST_PATH, LIST_ROUTE, contextFor, jobValues, shellAndCsrfRoutes } from './support';
 
 const QUEUE_ROUTE = routeKey('POST', 'reporting', LIST_PATH);
 const downloadPath = (id: string): `/${string}` => `${LIST_PATH}/${id}/download-url`;
@@ -150,7 +150,7 @@ describe('reporting actions', () => {
         ['format', ''],
         ['asOf', posted.asOf],
       ]);
-      expect(model.tables[0]?.rows).toHaveLength(exportJobs.length);
+      expect(jobValues(body)).toHaveLength(exportJobs.length);
       expect(gateway.calls.map(({ service, method, path }) => `${service} ${method} ${path}`).sort()).toEqual([
         'identity POST /v1/csrf/tokens',
         'reporting GET /v1/reporting/exports',
@@ -212,7 +212,7 @@ describe('reporting actions', () => {
 
       expect(model.alerts).toEqual([{ text: alert, className: 'alert alert-error' }]);
       expect(model.controls.slice(0, 3).map(({ value }) => value)).toEqual(['', '', '']);
-      expect(model.tables[0]?.rows).toHaveLength(exportJobs.length);
+      expect(jobValues(body)).toHaveLength(exportJobs.length);
     });
 
     it('asks for an empty job id when none is posted', async () => {

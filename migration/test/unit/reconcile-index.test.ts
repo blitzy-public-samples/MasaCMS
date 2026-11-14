@@ -61,7 +61,10 @@ const STATS_COLUMNS: CanonicalColumn[] = [
   { name: 'Status', type: 'i' },
 ];
 
-/** Shape of a unit table: `temailstats` keyless, everything else keyed on its first column. */
+/** Legacy table whose fake shape sets an object column apart. */
+const ATTACHMENT_TABLE = 'Program_N.finance_attachment';
+
+/** Shape of a unit table: `temailstats` keyless, everything else keyed on its first column, attachments with an object column. */
 function shapeOf(unit: string, legacyTable: string): UnitTableShape {
   const keyless = legacyTable === 'temailstats';
   const columns = keyless ? STATS_COLUMNS : PERSON_COLUMNS;
@@ -73,6 +76,7 @@ function shapeOf(unit: string, legacyTable: string): UnitTableShape {
     keyColumns: keyless ? [] : [columns[0]?.name ?? ''],
     columns,
     excludedColumns: keyless ? [] : ['IdentityCol'],
+    objectColumns: legacyTable === ATTACHMENT_TABLE ? [{ name: 'content', type: 'b' }] : [],
     folded: false,
   };
 }
@@ -90,6 +94,8 @@ interface Fakes {
   orphans?: Record<string, readonly string[]>;
   legacyObjects?: LegacyObjects;
   targetObjects?: Record<string, readonly ObjectEntry[]>;
+  /** Per tenant, the objects of object-column shapes: those the legacy rows hold and those the owner's manifest lists by legacyPath. */
+  columnObjects?: { legacy: Record<string, ObjectEntry[]>; target: Record<string, ObjectEntry[]> };
   siteTenants?: readonly string[];
   /** Fixture capability; loaded by default. */
   fixtures?: FixtureStatus;
@@ -152,13 +158,15 @@ function fakeSources(fakes: Fakes, calls: Calls): ReconcileSources {
         counts: new Map([...byTenant].map(([tenantId, rows]) => [tenantId, rows.length])),
         rows: (tenantId: string) => byTenant.get(tenantId) ?? [],
         orphans: new Map(Object.entries(fakes.orphans ?? {}).map(([tenantId, keys]) => [tenantId, { keys: [...keys], count: keys.length }])),
+        objects: new Map(shape.objectColumns.length > 0 ? Object.entries(fakes.columnObjects?.legacy ?? {}) : []),
         dispose: () => Promise.resolve(),
       });
     },
     targetRows: (_deps, shape, tenantId, options) => {
       const includeObjects = options?.includeObjects === true;
       calls.targetRows.push({ unit: shape.unit, tenantId, includeObjects });
-      const objects = includeObjects ? [...(fakes.targetObjects?.[tenantId] ?? [])] : null;
+      const columnObjects = shape.objectColumns.length > 0 ? [...(fakes.columnObjects?.target[tenantId] ?? [])] : null;
+      const objects = includeObjects ? [...(fakes.targetObjects?.[tenantId] ?? [])] : columnObjects;
       const rows = sideRows(fakes.target, shape, tenantId);
       return Promise.resolve({ rows, count: rows.length, objects, dispose: () => Promise.resolve() });
     },
@@ -463,6 +471,32 @@ describe('reconcileUnits', () => {
       expect.objectContaining({ legacyTable: 'tfiles', differences: [expect.objectContaining({ kind: 'object-missing-in-target', key: entry.key })] }),
     ]);
     expect(report.result).toBe('difference');
+  });
+
+  it.each<[string, ObjectEntry, 'zero-difference' | 'difference', object[]]>([
+    ['equal bytes', { key: 'Program_1.finance_attachment/AT1', size: 4, sha256: SHA_1 }, 'zero-difference', []],
+    [
+      'a changed stored hash',
+      { key: 'Program_1.finance_attachment/AT1', size: 4, sha256: SHA_2 },
+      'difference',
+      [expect.objectContaining({ kind: 'object-mismatch', key: 'Program_1.finance_attachment/AT1', column: 'sha256', legacy: SHA_1, target: SHA_2 })],
+    ],
+  ])("compares an object-column unit's values with its owner's manifest, outside the file store, for %s", async (_name, stored, result, differences) => {
+    const attachments = `finance.attachment|${ATTACHMENT_TABLE}`;
+    const fakes: Fakes = {
+      siteTenants: [A],
+      legacy: { [attachments]: { [A]: [ann] } },
+      target: { [attachments]: { [A]: [ann] } },
+      columnObjects: { legacy: { [A]: [{ key: 'Program_1.finance_attachment/AT1', size: 4, sha256: SHA_1, orphan: false }] }, target: { [A]: [stored] } },
+    };
+    const report = await reconcileUnits(contextOf(), { point: 'post-cutover', units: ['finance.attachment'], database: LIVE_DB }, fakeSources(fakes, calls));
+
+    expect(calls.legacyObjects).toEqual([]);
+    expect(calls.targetRows).toEqual([{ unit: 'finance.attachment', tenantId: A, includeObjects: false }]);
+    expect(report).toMatchObject({ result, fileStore: { store: null, status: 'not-applicable', haltedUnits: [] } });
+    expect(report.units).toEqual([
+      expect.objectContaining({ unit: 'finance.attachment', legacyTable: ATTACHMENT_TABLE, tenantId: A, files: expect.objectContaining({ legacyObjects: 1, targetObjects: 1 }), differences }),
+    ]);
   });
 
   it('skips the file units of a halted store and leaves the result to the other units', async () => {

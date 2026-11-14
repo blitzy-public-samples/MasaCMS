@@ -191,7 +191,7 @@ export function toFixtureError(err: unknown, ctx: FixtureContext): FixtureRespon
     return fixtureError(err.statusCode === 403 ? 'forbidden' : err.type, ctx);
   }
   if (err instanceof LegacyApiError) return fixtureError(mappedType(err.type), ctx);
-  // People refuses some cross-user reads the fixture's userManager.read allows (PEOPLE_READ_GAPS).
+  // People refused the signer read for this caller; the fixture's own refusals answer forbidden.
   if (err instanceof PeopleReadDeniedError) return fixtureError('forbidden', ctx);
   return fixtureError('server_error', ctx);
 }

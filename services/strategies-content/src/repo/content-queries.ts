@@ -659,6 +659,20 @@ export interface TypedActiveVersionArgs extends ActiveVersionArgs {
   type?: string;
 }
 
+/** The SELECT of the active versions matching `where` in `siteId`, as the contentDAO readActive* functions select them. */
+function activeWhereSelect(
+  schema: string,
+  p: SqlParams,
+  where: string,
+  args: TypedActiveVersionArgs,
+  types: readonly string[],
+): string {
+  const active = p.include(activeClause('tcontent', args.preview, { liveOnly: false, offset: p.next }));
+  const type =
+    args.type !== undefined && args.type !== '' ? ciEq(p, 'tcontent.type', args.type) : ciLiterals('tcontent.type', types);
+  return `${versionSelect(schema)} WHERE ${where} AND ${active} AND tcontent.siteid = ${p.add(args.siteId)} AND ${type}`;
+}
+
 /** The active versions matching `where` in `siteId`, as the contentDAO readActive* functions select them. */
 async function readActiveWhere(
   tx: TenantTx,
@@ -668,14 +682,7 @@ async function readActiveWhere(
   types: readonly string[],
 ): Promise<ContentVersionRow[]> {
   await readable(tx, 'content', 'file', 'approval_request');
-  const active = p.include(activeClause('tcontent', args.preview, { liveOnly: false, offset: p.next }));
-  const type =
-    args.type !== undefined && args.type !== '' ? ciEq(p, 'tcontent.type', args.type) : ciLiterals('tcontent.type', types);
-  return run(
-    tx,
-    `${versionSelect(tx.schema)} WHERE ${where} AND ${active} AND tcontent.siteid = ${p.add(args.siteId)} AND ${type}`,
-    p.values,
-  );
+  return run(tx, activeWhereSelect(tx.schema, p, where, args, types), p.values);
 }
 
 /** contentDAO.readActive: the active version of `contentId` (no row for an empty id); file columns as for `readVersion`. */
@@ -711,6 +718,34 @@ export async function readActiveByRemoteId(
   }
   const p = new SqlParams();
   return readActiveWhere(tx, p, ciEq(p, 'tcontent.remoteid', args.remoteId), args, VERSION_TYPES);
+}
+
+/** `readActiveByRemoteId` of several remote ids with one query: each requested id's rows, keyed by the id as given. */
+export async function readActiveByRemoteIds(
+  tx: TenantTx,
+  args: TypedActiveVersionArgs & { remoteIds: readonly string[] },
+): Promise<Map<string, ContentVersionRow[]>> {
+  const found = new Map<string, ContentVersionRow[]>(args.remoteIds.map((id) => [id, []]));
+  const ids = [...found.keys()].filter((id) => id !== '');
+  if (ids.length === 0) {
+    return found;
+  }
+  await readable(tx, 'content', 'file', 'approval_request');
+  const p = new SqlParams();
+  const requested = p.add(ids);
+  const versions = activeWhereSelect(tx.schema, p, ciIn(p, 'tcontent.remoteid', ids), args, VERSION_TYPES);
+  // The requested id is joined under ciEq's key, so a version reaches every id SQL Server's = would match it to.
+  const rows = await run<ContentVersionRow & { requested_ord: number }>(
+    tx,
+    `SELECT v.*, requested.ord::integer AS requested_ord FROM (${versions}) v` +
+      ` JOIN unnest(${requested}::text[]) WITH ORDINALITY AS requested(remote_id, ord)` +
+      ' ON lower(rtrim(v.remoteid)) = lower(rtrim(requested.remote_id)) ORDER BY requested.ord',
+    p.values,
+  );
+  for (const { requested_ord: ord, ...row } of rows) {
+    found.get(ids[ord - 1] ?? '')?.push(row);
+  }
+  return found;
 }
 
 /** contentDAO.readActiveByTitle: active versions by `title` (none for an empty title); file columns as for `readVersion`. */
@@ -1147,6 +1182,78 @@ export async function crumbPath(tx: TenantTx, args: { contentId: string; siteId:
     first.parentarray = parents;
   }
   return crumbs;
+}
+
+/** One `crumbPath` walk in progress: the next id to read, the crumbs so far and whether the walk limit ended it. */
+interface CrumbWalk {
+  id: string;
+  crumbs: Crumb[];
+  capped: boolean;
+}
+
+/** `crumbPath` of each of `items` in one site: one query for every stored path, then one per level of the walks together. */
+export async function crumbPaths(tx: TenantTx, args: { siteId: string; items: readonly { contentId: string; path?: string }[] }): Promise<Crumb[][]> {
+  if (args.items.length === 0) {
+    return [];
+  }
+  await readable(tx, 'content', 'file', 'approval_assignment');
+  const bpchar = (value: string): string => value.replace(/ +$/, '');
+  const walks = args.items.map((item): CrumbWalk => ({ id: item.contentId, crumbs: [], capped: false }));
+  const listed = args.items.map((item) => (item.path !== undefined && item.path !== '' ? cfList(item.path) : undefined));
+  const pathIds = [...new Set(listed.flatMap((ids) => ids ?? []))];
+  if (pathIds.length > 0) {
+    const p = new SqlParams();
+    const rows = await run<CrumbQueryRow>(
+      tx,
+      `${crumbSelect(tx.schema)} WHERE ${idIn(p, 'tcontent.contentid', pathIds)} AND tcontent.active = 1` +
+        ` AND tcontent.siteid = ${p.add(args.siteId)} ORDER BY ${orderKey('length(rtrim(tcontent.path))', 'desc')}`,
+      p.values,
+    );
+    listed.forEach((ids, at) => {
+      const walk = walks[at];
+      if (ids === undefined || walk === undefined) {
+        return;
+      }
+      // The rows idIn(ids) matches, in the query's order: stored ids are compared as bpchar to each id's case forms.
+      const forms = new Set(idForms(ids).map(bpchar));
+      walk.crumbs = rows.filter((row) => row.contentid !== null && forms.has(bpchar(row.contentid))).map((row) => toCrumb(row, false));
+    });
+  }
+  let walking = walks.filter((walk, at) => listed[at] === undefined && walk.id.toUpperCase() !== ROOT_PARENT_ID);
+  while (walking.length > 0) {
+    const ids = [...new Set(walking.map((walk) => walk.id))];
+    const p = new SqlParams();
+    const rows = await run<CrumbQueryRow>(
+      tx,
+      `${crumbSelect(tx.schema)} WHERE tcontent.active = 1 AND ${idIn(p, 'tcontent.contentid', ids)} AND tcontent.siteid = ${p.add(args.siteId)}`,
+      p.values,
+    );
+    const byId = firstById(rows, ids, (row) => row.contentid);
+    const next: CrumbWalk[] = [];
+    for (const walk of walking) {
+      const row = byId.get(walk.id);
+      if (row === undefined) {
+        continue;
+      }
+      walk.crumbs.push(toCrumb(row, true));
+      if (walk.crumbs.length >= CRUMB_WALK_LIMIT) {
+        walk.capped = true;
+        continue;
+      }
+      walk.id = row.parentid ?? '';
+      if (walk.id.toUpperCase() !== ROOT_PARENT_ID) {
+        next.push(walk);
+      }
+    }
+    walking = next;
+  }
+  return walks.map((walk) => {
+    const [first] = walk.crumbs;
+    if (first !== undefined && !walk.capped) {
+      first.parentarray = walk.crumbs.map((crumb) => crumb.contentid ?? '');
+    }
+    return walk.crumbs;
+  });
 }
 
 /**

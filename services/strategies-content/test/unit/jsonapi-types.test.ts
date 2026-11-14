@@ -333,6 +333,66 @@ describe('findPropertiesFor', () => {
       datatype: 'int',
     });
   });
+
+  // The oracle answers each of these with a 500 server_error.
+  it.each<[keyof typeof CONTENT_ENTITIES, string]>([
+    ['file', 'nonexistentprop'],
+    ['file', 'contentid'],
+    ['file', 'fileMetaData'],
+    ['stats', 'contentid'],
+    ['content', 'links'],
+    ['comment', 'links'],
+    ['feed', 'pageindex,nonexist'],
+    ['category', 'nonexistentprop'],
+    ['contentCategoryAssign', 'nonexistentprop'],
+  ])('%s properties=%s, which the bean does not declare, raises server_error', (entity, properties) => {
+    const call = callFor({ method: 'findProperties', entityName: entity, params: { properties } });
+    expect(() => findPropertiesFor(CONTENT_ENTITIES[entity], call)).toThrow(
+      expect.objectContaining({ type: 'server_error' }) as LegacyApiError,
+    );
+  });
+
+  // Non-persistent and undescribed declared properties are skipped; the oracle also lists `filename` and `title`.
+  it.each<[keyof typeof CONTENT_ENTITIES, string, string[]]>([
+    ['content', 'foo', []],
+    ['content', 'active,nonexistentprop', ['active']],
+    ['file', 'fileField,isnew,saveErrors,errors,fromMuraCache,instanceID', []],
+    ['file', 'filename', []],
+    ['file', 'site', ['site']],
+    ['fileMetaData', 'filesize,created,remotepubdate', ['remotepubdate']],
+    ['feed', 'pageindex', ['pageindex']],
+  ])('%s properties=%s lists %j', (entity, properties, expected) => {
+    const call = callFor({ method: 'findProperties', entityName: entity, params: { properties } });
+    const names = (findPropertiesFor(CONTENT_ENTITIES[entity], call)['properties'] as Row[]).map((p) => p['name']);
+    expect(names).toEqual(expected);
+  });
+
+  // Each name is in the oracle's default listing, which has no file `filemetadata`, stats `contentid` or
+  // fileMetaData `filesize` and `created`.
+  it.each<[keyof typeof CONTENT_ENTITIES, string[]]>([
+    ['file', ['fileid', 'filesize', 'created', 'deleted', 'remotepubdate', 'content', 'site']],
+    ['fileMetaData', ['metaid', 'remotepubdate', 'file', 'activecontent', 'content', 'site']],
+    [
+      'stats',
+      [
+        'views',
+        'rating',
+        'totalvotes',
+        'upvotes',
+        'downvotes',
+        'comments',
+        'disablecomments',
+        'majorversion',
+        'minorversion',
+        'content',
+        'site',
+      ],
+    ],
+  ])('the %s default listing names only declared persistent or related properties', (entity, expected) => {
+    const call = callFor({ method: 'findProperties', entityName: entity });
+    const names = (findPropertiesFor(CONTENT_ENTITIES[entity], call)['properties'] as Row[]).map((p) => p['name']);
+    expect(names).toEqual(expected);
+  });
 });
 
 describe('beanFeedQuery', () => {
@@ -407,8 +467,101 @@ describe('beanFeedQuery', () => {
     expect(ids(query(raw))).toEqual(expected);
   });
 
+  const LIKE_ROWS: Row[] = [
+    { commentid: 'L1', name: 'abc' },
+    { commentid: 'L2', name: 'ABD' },
+    { commentid: 'L3', name: 'a.c' },
+    { commentid: 'L4', name: 'a]c' },
+    { commentid: 'L5', name: '[ab' },
+    { commentid: 'L6', name: '(a+b)' },
+    { commentid: 'L7', name: 'xbx  ' },
+    { commentid: 'L8', name: '' },
+    { commentid: 'L9', name: 'a%_c' },
+    { commentid: 'L10', name: null },
+  ];
+
+  // begins, ends and like/contains wrap the criteria as `x%`, `%x` and `%x%`.
+  it.each([
+    ['_ as one character', 'begins%5E_b', ['L1', 'L2', 'L7']],
+    ['a class', 'begins%5Ea%5Bbx%5D', ['L1', 'L2']],
+    ['a range, ignoring case', 'ends%5Eb%5Bc-d%5D', ['L1', 'L2']],
+    ['a class closed by its first ], so [] matches nothing', 'begins%5Ea%5B%5D.%5Dc', []],
+    ['an unclosed [ as a class to the end of the pattern', 'begins%5E%5Bab', []],
+    ['. as a literal', 'begins%5Ea.c', ['L3']],
+    ['( and + as literals', 'contains%5E(a%2Bb)', ['L6']],
+    ['literals ignoring case', 'begins%5EABC', ['L1']],
+    ['% at the start', 'ends%5Ec', ['L1', 'L3', 'L4', 'L9']],
+    ['% at the end', 'begins%5Ea', ['L1', 'L2', 'L3', 'L4', 'L9']],
+    ['% in the middle', 'begins%5Ea%25b', ['L1', 'L2']],
+    ['%% as one %', 'begins%5Ea%25%25b', ['L1', 'L2']],
+    ['% alone', 'like%5E%25', ['L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9']],
+    ['runs in order', 'contains%5Ea%25b', ['L1', 'L2', 'L5', 'L6']],
+    ['runs that cannot share characters', 'begins%5Eab%25b', []],
+    ['_ inside a class as a literal', 'ends%5E%5B_%5Dc', ['L9']],
+    ['% inside a class as a literal', 'contains%5E%5B%25%5D', ['L9']],
+    ['trailing spaces of the value ignored', 'ends%5Ebx', ['L7']],
+    ['trailing spaces of the value not matched by _', 'ends%5Ex_', []],
+    ['trailing spaces of the pattern kept', 'ends%5Ebx%20', []],
+    ['nothing for a class of a reversed range', 'contains%5E%5Bz-a%5D', []],
+    ['the other items of a class with a reversed range', 'contains%5E%5Bz-ab%5D', ['L1', 'L2', 'L5', 'L6', 'L7']],
+    ['a range beside a reversed one', 'ends%5E%5Bz-ab-c%5D', ['L1', 'L3', 'L4', 'L5', 'L9']],
+  ])('findQuery LIKE matches %s (name=%s)', (_label, criteria, expected) => {
+    expect(ids(query(`name=${criteria}`, { defaultSort: undefined }, LIKE_ROWS))).toEqual(expected);
+  });
+
+  const CLASS_ROWS: Row[] = 'b B z Z _ [ ^ m á Á ç d - e % 5 ax% xb a'
+    .split(' ')
+    .map((name, i) => ({ commentid: `K${i + 1}`, name }));
+  const LETTERS = ['K1', 'K2', 'K3', 'K4', 'K8', 'K9', 'K10', 'K11', 'K12', 'K14', 'K17', 'K18', 'K19'];
+
+  // SQL Server 2022 (SQL_Latin1_General_CP1_CI_AS, nvarchar) answers for the same names and patterns.
+  it.each([
+    ['[a-Z] across case', 'begins%5E%5Ba-Z%5D', LETTERS],
+    ['[A-z] without _, [ and ^', 'begins%5E%5BA-z%5D', LETTERS],
+    ['accented letters in [a-c], but not ç', 'begins%5E%5Ba-c%5D', ['K1', 'K2', 'K9', 'K10', 'K17', 'K19']],
+    ['nothing for []', 'contains%5E%5B%5D', []],
+    ['an unclosed class to the end, its % a member', 'begins%5E%5Bab', ['K1', 'K2', 'K15', 'K19']],
+    ['a - after a range dropped', 'begins%5E%5Ba-c-e%5D', ['K1', 'K2', 'K9', 'K10', 'K14', 'K17', 'K19']],
+    ['a trailing - as a member', 'begins%5E%5Bd-%5D', ['K12', 'K13']],
+    ['nothing for a reversed mixed-case range beside a member', 'begins%5E%5BZ-a5%5D', ['K16']],
+    ['a digit-to-letter range', 'begins%5E%5B9-A%5D', ['K17', 'K19']],
+    ['a negated unclosed class a trailing ^ leaves', 'x*%5B%5E', ['K18']],
+    ['an unsupported class no value reaches', 'begins%5Ezz%5B!-%2F%5D', []],
+  ])('findQuery LIKE class matches %s (name=%s)', (_label, criteria, expected) => {
+    expect(ids(query(`name=${criteria}`, { defaultSort: undefined }, CLASS_ROWS))).toEqual(expected);
+  });
+
+  it.each([
+    ['a range with a symbol end', 'contains%5E%5B!-%2F%5D'],
+    ['a range with a \\ end', 'contains%5E%5Ba-%5C%5D'],
+    ['a class with --', 'begins%5E%5Bx--z%5D'],
+  ])('findQuery LIKE does not compute %s (name=%s) in memory', (_label, criteria) => {
+    expect(() => query(`name=${criteria}`, { defaultSort: undefined }, CLASS_ROWS)).toThrow(UnsupportedFeedQueryError);
+  });
+
+  it('decides a character outside the reproduced collation order by class members only', () => {
+    const rows: Row[] = [
+      { commentid: 'U1', name: 'þ' },
+      { commentid: 'U2', name: 'b' },
+    ];
+    expect(ids(query('name=begins%5E%5B%C3%BEa-z%5D', { defaultSort: undefined }, rows))).toEqual(['U1', 'U2']);
+    expect(() => query('name=begins%5E%5Ba-z%5D', { defaultSort: undefined }, rows)).toThrow(UnsupportedFeedQueryError);
+  });
+
+  it('matches a LIKE pattern in bounded time on text that makes a backtracking regex explode', () => {
+    const rows: Row[] = [
+      { commentid: 'R1', name: 'a'.repeat(60) },
+      { commentid: 'R2', name: `${'a'.repeat(60)}c` },
+    ];
+    const started = performance.now();
+    const result = ids(query(`name=like%5E${'%25a'.repeat(8)}%25b`, { defaultSort: undefined }, rows));
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(result).toEqual([]);
+  });
+
   it.each([
     ['addObjects=1', 'invalidParameters'],
+    ['name=like%5E%5B!-%2F%5D&addObjects=1', 'invalidParameters'],
     ['name=zz%5Ex', 'server_error'],
     ['name=foo%5Ebar%5Ebaz', 'server_error'],
     ['flagcount=*1', 'server_error'],

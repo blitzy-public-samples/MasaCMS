@@ -8,6 +8,7 @@ import { TENANT_A, TENANT_B, TENANT_UMBRELLA } from '@opt2/platform/testing';
 import {
   DENIED_FEED_JOIN_TABLES,
   getAdvancedSearch,
+  getAdvancedSearchWindow,
   getAllSitesUsers,
   getSearch,
   getUnassignedUsers,
@@ -15,6 +16,7 @@ import {
   newAdvancedSearchCriteria,
   viewerScope,
   type AdvancedSearchCriteria,
+  type AdvancedSearchOptions,
   type SearchDeps,
   type SearchParamEntry,
   type SearchQueryArgs,
@@ -27,6 +29,7 @@ import { PG_AVAILABLE, TEST_CLOCK, createRecordingDb, withPgApp, type PgTestApp 
 import { createIdentityDouble } from '../helpers/identity-double.js';
 import {
   ADMIN_S2,
+  ARCHIVED_PERSON_B,
   DEFAULT_PEOPLE_SEED,
   MODULE_008_ONLY_PERSON,
   MODULE_USER_A_PERSON,
@@ -158,6 +161,8 @@ const SEED: PeopleSeed = {
 const GROUP_ID = cfUuid();
 /** A username no person column contains. */
 const USERNAME_ONLY = 'maxwell';
+/** A username longer than any username-candidate pattern identity admits. */
+const LONG_USERNAME = 'z'.repeat(2100);
 
 /** tenant-a's private pool by last then first name. */
 const TENANT_A_PRIVATE = ['Admin', 'Comma', 'Module', 'Noemail', 'Quote', 'Spaces   ', 'Super', 'System', 'Usersonly'];
@@ -183,7 +188,12 @@ describe.skipIf(!PG_AVAILABLE)('search reads over the shared people seed', () =>
   beforeAll(async () => {
     const { db, identity } = pg();
     await seedPeople(db, SEED, { clock: TEST_CLOCK });
-    identity.seedAccounts(...accountsForSeed(SEED), accountFor(SUPER_A, { s2: 1 }), accountFor(MODULE_008_ONLY_PERSON, { username: USERNAME_ONLY }));
+    identity.seedAccounts(
+      ...accountsForSeed(SEED),
+      accountFor(SUPER_A, { s2: 1 }),
+      accountFor(MODULE_008_ONLY_PERSON, { username: USERNAME_ONLY }),
+      accountFor(ARCHIVED_PERSON_B, { username: LONG_USERNAME }),
+    );
     identity.seedMemberships(SYSTEM_USER_A_PERSON.userid, [GROUP_ID]);
     identity.seedMemberships(MODULE_USER_A_PERSON.userid, [GROUP_ID]);
   });
@@ -231,6 +241,19 @@ describe.skipIf(!PG_AVAILABLE)('search reads over the shared people seed', () =>
     ])('finds %s', async (_label, viewer, args, expected) => {
       expect(userIds(await getSearch(searchDeps(), viewer, args))).toEqual(expected);
     });
+
+    // An n-character ASCII term is an (n + 2)-character `%term%` prefilter.
+    it.each<[number, string, string[], string[]]>([
+      [1998, 'a', ['lookupUsernameCandidates'], []],
+      [1999, 'a', ['lookupAccounts'], []],
+      [5000, 'a', ['lookupAccounts'], []],
+      [1998, 'z', ['lookupUsernameCandidates', 'lookupAccounts'], [ARCHIVED_PERSON_B.userid]],
+      [1999, 'z', ['lookupAccounts'], [ARCHIVED_PERSON_B.userid]],
+    ])('searches a %i-character %s term with identity calls %j', async (length, char, operations, expected) => {
+      const { result, calls } = await withIdentityCalls(() => getSearch(searchDeps(), siteAdminB, { search: char.repeat(length) }));
+      expect(userIds(result)).toEqual(expected);
+      expect(calls.map((call) => call.operationId)).toEqual(operations);
+    });
   });
 
   describe('getAdvancedSearch over the seeded user extension', () => {
@@ -250,6 +273,18 @@ describe.skipIf(!PG_AVAILABLE)('search reads over the shared people seed', () =>
       // A viewer without S2 never sees Super, so the eight other private-pool users remain.
       expect(result.rows).toHaveLength(TENANT_A_PRIVATE.length - 1);
       expect(valued(lnames(result))).toEqual(expected);
+    });
+
+    it.each<[string, AdvancedSearchOptions]>([
+      ['a person-column sort, scanned in order', { isPublic: 0 }],
+      ['an extended sort, scanned unordered', { isPublic: 0, sortBy: 'badgeCode', sortDirection: 'desc' }],
+      ['an account-column sort, scanned unordered', { isPublic: 0, sortBy: 'username' }],
+    ])('windows %s to the held rows getAdvancedSearch returns, counting every match', async (_label, options) => {
+      const all = await getAdvancedSearch(searchDeps(), siteAdminA, newAdvancedSearchCriteria(), options);
+      const hold = { keep: (index: number) => index === 0 || index >= 3, reach: 5 };
+      const window = await getAdvancedSearchWindow(searchDeps(), siteAdminA, newAdvancedSearchCriteria(), options, hold);
+      expect(window.count).toBe(all.rows.length);
+      expect([...window.rows]).toEqual([0, 3, 4].map((index) => [index, all.rows[index]]));
     });
   });
 

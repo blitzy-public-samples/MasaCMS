@@ -9,6 +9,7 @@ import { secure } from '@/lib/access-gate';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
+import { rbFor } from '@/lib/resource-bundles/rb';
 import { esignatureScreens } from '@/screens/opt2/e-signature';
 import { CREATE_REQUEST_FIELDS, renderRequestsView } from '@/screens/opt2/e-signature/requests';
 import { alertBox } from '@/screens/opt2/shared';
@@ -40,6 +41,13 @@ const SITE = SUBJECTS[SIGNER].site;
 const REQUESTS_PATH = '/v1/esignature/requests';
 const CREATE_ACTION_URL = `/opt2/admin-actions/e-signature/create-request?siteid=${SITE}`;
 const ADMIN_CSS = readFileSync(new URL('../../../../../admin/assets/css/admin.css', import.meta.url), 'utf8');
+const FR = rbFor('fr');
+const FIRST_OF_TWO_PAGES = { ...auditChain, items: auditChain.items?.slice(0, 1), totalpages: 2 };
+
+/** The DOM text of French admin-bundle label `key`, which the screens write unencoded. */
+function fr(key: string): string {
+  return cheerio.load(FR.rbKey(key), null, false).text();
+}
 
 type Rc = Readonly<Record<string, string>>;
 type VerifyResult = components['schemas']['VerifyResult'];
@@ -58,10 +66,15 @@ function contextOf(req: AdminRequest, routes: Readonly<Record<string, FakeReply>
   return makeScreenContext({ req, gateway: fakeGatewayClient({ ...eSignatureAnswers, ...routes }) });
 }
 
-/** A screen context for the tenant-a holder of `roles` with `rc`. */
-function contextFor(roles: readonly Role[], rc: Rc = {}, routes: Readonly<Record<string, FakeReply>> = {}) {
+/** A screen context for the tenant-a holder of `roles` with `rc`, whose token user is `sub`: by default the fixture signer. */
+function contextFor(
+  roles: readonly Role[],
+  rc: Rc = {},
+  routes: Readonly<Record<string, FakeReply>> = {},
+  sub: string = ESIGNATURE_IDS.signer,
+) {
   const [first = SIGNER] = roles;
-  return contextOf(opt2RoleRequest(first, { rc, user: { roles: [Roles.systemUser, ...roles] } }), routes);
+  return contextOf(opt2RoleRequest(first, { rc, user: { sub, roles: [Roles.systemUser, ...roles] } }), routes);
 }
 
 /** The screen body markup `slug` renders for `ctx`, after checking the view marks the module. */
@@ -158,11 +171,69 @@ describe('e-signature screen markup', () => {
   });
 
   it('keeps every hash as the service returned it and computes none', async () => {
-    const markup = await bodyOf('audit', contextFor([AUDITOR], { id: SIGNED_ID }));
-    const cells = fragmentModel(markup).tables[0]?.rows.flat() ?? [];
+    const $ = cheerio.load(await bodyOf('audit', contextFor([AUDITOR], { id: SIGNED_ID })), null, false);
+    const values = $('div.mura-control-group > div').toArray().map((el) => $(el).text());
     for (const entry of auditChain.items ?? []) {
-      expect(cells).toEqual(expect.arrayContaining([entry.prev_hash, entry.entry_hash, entry.detail, entry.at]));
+      expect(values).toEqual(expect.arrayContaining([entry.prev_hash, entry.entry_hash, entry.detail, entry.at]));
     }
+  });
+
+  it('shows each audit entry as read-only label and value rows, with no grid', async () => {
+    const $ = cheerio.load(await bodyOf('audit', contextFor([AUDITOR], { id: SIGNED_ID })), null, false);
+    const entries = $('div.block-content div.block-content').toArray();
+    expect(entries).toHaveLength(auditChain.items?.length ?? 0);
+    for (const entry of entries) {
+      expect($(entry).find('label').toArray().map((el) => $(el).text())).toEqual([
+        'Sequence',
+        'Action',
+        'Actor',
+        'Detail',
+        'At',
+        'Previous Hash',
+        'Hash',
+      ]);
+    }
+    expect($('table')).toHaveLength(0);
+    expect($('label[for]')).toHaveLength(0);
+  });
+
+  it.each<[string, readonly Role[], Rc, Readonly<Record<string, FakeReply>>, string[]]>([
+    [
+      'requests',
+      [SIGNER],
+      {},
+      {},
+      ['Document', fr('params.state'), 'Signer', fr('params.created'), fr('sitemanager.content.actions'),
+        'Document Name', 'Document (Base64)', 'Signer User ID'],
+    ],
+    [
+      'request',
+      [AUDITOR],
+      { id: SIGNED_ID },
+      {},
+      ['Document', fr('params.state'), 'Signer', fr('params.created'), fr('sitemanager.content.createdby'),
+        'Document SHA-256', 'Typed Name', 'Signed By', 'Signed At'],
+    ],
+    [
+      'audit',
+      [AUDITOR],
+      { id: SIGNED_ID },
+      { [key('GET', `${REQUESTS_PATH}/${SIGNED_ID}/audit`)]: { status: 200, body: FIRST_OF_TWO_PAGES } },
+      ['Sequence', fr('approvalchains.action'), 'Actor', 'Detail', 'At', 'Previous Hash', 'Hash', fr('sitemanager.next')],
+    ],
+  ])('%s takes its catalogued labels from the French admin bundle', async (slug, roles, rc, routes, expected) => {
+    const req = opt2RoleRequest(roles[0] ?? SIGNER, { rc, user: { roles: [Roles.systemUser, ...roles] } });
+    const ctx = makeScreenContext({ req, gateway: fakeGatewayClient({ ...eSignatureAnswers, ...routes }), rb: FR });
+    const $ = cheerio.load(await bodyOf(slug, ctx), null, false);
+    expect($('label, th, ul.pagination a').toArray().map((el) => $(el).text())).toEqual(expected);
+  });
+
+  it('shows an empty audit chain with the empty-list message', async () => {
+    const empty = { ...auditChain, items: [], startindex: 1, endindex: 0, totalitems: 0, totalpages: 0 };
+    const routes = { [key('GET', `${REQUESTS_PATH}/${SIGNED_ID}/audit`)]: { status: 200, body: empty } };
+    const $ = cheerio.load(await bodyOf('audit', contextFor([AUDITOR], { id: SIGNED_ID }, routes)), null, false);
+    expect($('div.help-block-empty').text()).toBe('There are no audit entries for this request.');
+    expect($('div.mura-control-group')).toHaveLength(0);
   });
 });
 
@@ -329,19 +400,23 @@ describe('e-signature roles', () => {
   });
 
   it.each<[string, readonly Role[], string]>([
-    ['a signer on a pending request', [SIGNER], PENDING_ID],
-    ['a signer and auditor on a pending request', [SIGNER, AUDITOR], PENDING_ID],
-  ])('offers the typed-name form to %s', async (_case, roles, id) => {
-    const $ = cheerio.load(await bodyOf('request', contextFor(roles, { id })), null, false);
+    ['its signer on a pending request', [SIGNER], ESIGNATURE_IDS.signer],
+    ['its signer holding the auditor role too', [SIGNER, AUDITOR], ESIGNATURE_IDS.signer],
+    ['its signer, whose token id differs only in case', [SIGNER], ESIGNATURE_IDS.signer.toLowerCase()],
+  ])('offers the typed-name form to %s', async (_case, roles, sub) => {
+    const ctx = contextFor(roles, { id: PENDING_ID }, {}, sub);
+    const $ = cheerio.load(await bodyOf('request', ctx), null, false);
     expect($('input[name="typedName"]')).toHaveLength(1);
     expect($('button[type="submit"]').text()).toBe('Sign');
+    expect(csrfContexts(ctx.gateway)).toEqual([PENDING_ID]);
   });
 
-  it.each<[string, readonly Role[], string]>([
-    ['an auditor on a pending request', [AUDITOR], PENDING_ID],
-    ['a signer on a signed request', [SIGNER], SIGNED_ID],
-  ])('offers no typed-name form to %s', async (_case, roles, id) => {
-    const ctx = contextFor(roles, { id });
+  it.each<[string, readonly Role[], string, string]>([
+    ['an auditor on a pending request', [AUDITOR], PENDING_ID, ESIGNATURE_IDS.signer],
+    ['a signer on a signed request', [SIGNER], SIGNED_ID, ESIGNATURE_IDS.signer],
+    ['a signer and auditor reading a pending request of another signer', [SIGNER, AUDITOR], PENDING_ID, SUBJECTS[AUDITOR].sub],
+  ])('offers no typed-name form to %s', async (_case, roles, id, sub) => {
+    const ctx = contextFor(roles, { id }, {}, sub);
     const $ = cheerio.load(await bodyOf('request', ctx), null, false);
     expect($('form')).toHaveLength(0);
     expect(csrfContexts(ctx.gateway)).toEqual([]);

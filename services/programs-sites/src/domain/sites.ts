@@ -1,21 +1,7 @@
-/** Business operations of the carried `csettings` site actions and the JSON API `site` entity (core/mura/settings). */
+/** Business operations of the carried `csettings` site actions (core/mura/settings). */
 import { AuthDenial, assertSiteMatches, type UserClaims } from '@opt2/platform/auth';
-import {
-  LegacyServiceUnavailableError,
-  cfDateTimeFormat,
-  cfIsDateText,
-  cfIsNumeric,
-  cfLsIsDate,
-  cfLsParseDateTime,
-  cfNumberString,
-  cfParseDateTimeText,
-  cfTimestampParam,
-  cfToNumber,
-  cfUuid,
-  masaCf2Java,
-  sqlServerDatetime,
-} from '@opt2/platform/legacy-compat';
-import { awaitReadable, withGatedTenant, type MigrationHandlerOptions, type WriteContext } from '@opt2/platform/migration-kit';
+import { cfIsNumeric, cfToNumber, cfUuid } from '@opt2/platform/legacy-compat';
+import { awaitReadable, withGatedTenant, type MigrationHandlerOptions } from '@opt2/platform/migration-kit';
 import { localTimestamp, type OutboxOrigin } from '@opt2/platform/outbox';
 import {
   registeredTenants,
@@ -32,23 +18,17 @@ import type { components } from '../generated/openapi.js';
 import {
   LEGACY_GLOBAL_CONFIG_DEFAULTS,
   SITE_COLUMNS,
-  applySet,
   effectiveEmailBroadcaster,
-  fitColumnValues,
   getSiteText,
   getSiteValue,
   newSiteBean,
   readBean,
   sortSites,
-  updateColumnValues,
   type LegacyGlobalConfig,
   type SiteBean,
-  type SiteData,
   type SiteStoredValue,
 } from '../legacy/site-fields.js';
-import { assertNoForeignBranches } from '../legacy/update-branches.js';
-import { hasSiteErrors, validateSite, type SiteErrors } from '../legacy/validation.js';
-import type { ExtendDataValues, ProgramsSitesRepository, SiteExtendDefinitions } from '../repo/repository.js';
+import type { ProgramsSitesRepository, SiteExtendDefinitions } from '../repo/repository.js';
 import { SITE, type ExtendAttributeRow, type ExtendDataRow, type ImageSizeRow, type SiteRow } from '../repo/tables.js';
 import { createHrefDomainsReader } from './href-domains.js';
 import { siteChangedPayload } from './pools.js';
@@ -62,7 +42,6 @@ type ShellSiteDetail = Schemas['ShellSiteDetail'];
 type UserPoolSites = Schemas['UserPoolSites'];
 type SiteExtendSet = Schemas['SiteExtendSet'];
 type SiteExtendAttribute = Schemas['SiteExtendAttribute'];
-type SiteUpdateResult = Schemas['SiteUpdateResult'];
 type SiteOrderResult = Schemas['SiteOrderResult'];
 type ImageSize = Schemas['ImageSize'];
 type HrefDomains = Schemas['HrefDomains'];
@@ -82,45 +61,14 @@ export interface SiteOrderInput extends SiteListOptions {
   deploy?: string;
 }
 
-/** Request context of an update. */
-export interface SiteUpdateContext {
-  /** Provenance of the update's writes; the request context supplies the actor and request id otherwise. */
-  write?: WriteContext;
-  /**
-   * The CF locale the request reads extended date text in; the stored site's `siteLocale` when omitted, as admin
-   * requests reset the session locale to it. '' is the server locale.
-   */
-  locale?: string;
-}
-
 /** Dependencies of `createSitesDomain`. */
 export interface SitesDomainDeps {
   repo: ProgramsSitesRepository;
   /** Global settings of the effective getters; `LEGACY_GLOBAL_CONFIG_DEFAULTS` when omitted. */
   config?: LegacyGlobalConfig;
-  /** configBean `saveEmptyExtendedValues` (configBean.cfc:221); true when omitted. */
-  saveEmptyExtendedValues?: boolean;
 }
 
-/** Options of `extendDataRows`. */
-export interface ExtendDataOptions {
-  saveEmptyExtendedValues: boolean;
-  /** The request locale its date text is read in, as a `siteLocale` value (settingsBean.cfc:647-654). */
-  siteLocale: string;
-}
-
-/** One attribute's extended-data replacement: delete its rows for `baseId`, then insert `values` unless null. */
-export interface ExtendDataWrite {
-  baseId: string;
-  siteId: string;
-  attributeId: number;
-  values: ExtendDataValues | null;
-}
-
-/**
- * Site operations behind `csettings.list`, `editSite`, `updateSite{action=Update}`, the admin layout, the JSON API
- * `site` entity and `sanitizeHref`.
- */
+/** Site operations behind `csettings.list`, `editSite`, the admin layout and `sanitizeHref`. */
 export interface SitesDomain {
   /**
    * The Sites screen rows: every registered site for an S2 token, else the token's own, one transaction per tenant and
@@ -134,17 +82,6 @@ export interface SitesDomain {
   readShellSite(db: TenantDb, claims: UserClaims, siteId: string): Promise<ShellSiteDetail>;
   /** The layout settings of `siteId`'s private, then public, user pool site, each once; unregistered or unstored ones left out. */
   readUserPoolSites(db: TenantDb, claims: UserClaims, siteId: string): Promise<UserPoolSites>;
-  /**
-   * Port of `settingsManager.update`: validation errors are returned, never thrown, and leave everything unwritten; a
-   * value longer than its tsettings column throws SiteColumnTruncationError once the extended data has committed.
-   */
-  updateSite(
-    db: TenantDb,
-    claims: UserClaims,
-    siteId: string,
-    data: SiteData,
-    ctx?: SiteUpdateContext,
-  ): Promise<SiteUpdateResult>;
   /** Port of `settingsManager.saveOrder` and `saveDeploy` (S2 only), then the site list. */
   saveOrderAndDeploy(db: TenantDb, claims: UserClaims, input: SiteOrderInput): Promise<SiteOrderResult>;
   /** The registered domains and site domain `utility.sanitizeHref` checks against; `siteId` is the session site. */
@@ -152,11 +89,6 @@ export interface SitesDomain {
   /** Writes `programs-sites.site.changed.v1` for each applied site insert or update of a migration apply. */
   emitStateEvents: NonNullable<MigrationHandlerOptions['emitStateEvents']>;
 }
-
-const DATE_VALIDATIONS: ReadonlySet<string> = new Set(['date', 'datetime']);
-
-// legacy: core/mura/content/contentRenderer.cfc:2704, the tags setDynamicContent evaluates as CFML.
-const DYNAMIC_CONTENT = /(\[sava\]|\[mura\]|\[m\]).+?(\[\/sava\]|\[\/mura\]|\[\/m\])/i;
 
 const COLUMN_TYPES: ReadonlyMap<string, string> = new Map(SITE.columns.map((column) => [column.name, column.type]));
 
@@ -202,30 +134,6 @@ function cfList(list: string): string[] {
   return list.split(',').filter((item) => item !== '');
 }
 
-/** `data[key]` as a CFML struct reads it: case-insensitive, the last matching key winning; undefined when absent or null. */
-function lookup(data: Readonly<Record<string, unknown>>, key: string): unknown {
-  const lower = key.toLowerCase();
-  let found: unknown;
-  for (const [name, value] of Object.entries(data)) {
-    if (name.toLowerCase() === lower) found = value;
-  }
-  return found ?? undefined;
-}
-
-/** CFML `len(v) > 0`; an absent value is empty and a date or complex value is not. */
-function cfLen(value: unknown): boolean {
-  return value !== undefined && value !== null && value !== '';
-}
-
-/** A simple value as CFML renders it as text, dates as `{ts 'yyyy-MM-dd HH:mm:ss'}`; throws for a complex value. */
-function cfString(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number') return cfNumberString(value);
-  if (typeof value === 'boolean') return String(value);
-  if (value instanceof Date) return `{ts '${cfDateTimeFormat(value, 'yyyy-mm-dd HH:nn:ss')}'}`;
-  throw new TypeError('A complex value cannot be used as text.');
-}
-
 /** SQL Server `=` on text under its case-insensitive collation, trailing spaces ignored; NULL matches nothing. */
 function sqlEq(a: string | null, b: string | null): boolean {
   return a !== null && b !== null && a.replace(/ +$/, '').toLowerCase() === b.replace(/ +$/, '').toLowerCase();
@@ -238,11 +146,6 @@ function wireTimestamp(date: Date): string {
 
 function nullableText(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
-}
-
-// validateSite yields only the two `siteid` messages the contract enumerates.
-function contractErrors(errors: SiteErrors): Schemas['SiteErrors'] {
-  return errors as Schemas['SiteErrors'];
 }
 
 /** One Sites screen row from the stored row, which the legacy list reads as its raw query (list.cfm). */
@@ -362,165 +265,6 @@ function siteExtendSets(defs: SiteExtendDefinitions, stored: readonly ExtendData
     }));
 }
 
-/** A stored value as convertDataToStruct reads it (extendData.cfc:413-429): a date attribute's timestamp, else its text. */
-function storedValue(row: ExtendDataRow, attribute: ExtendAttributeRow): SiteStoredValue {
-  const isDate = DATE_VALIDATIONS.has((attribute.validation ?? '').toLowerCase());
-  if (isDate && row.datetimevalue !== null) return row.datetimevalue;
-  return row.attributevalue ?? '';
-}
-
-/** contentRenderer.setDynamicContent of an attribute default; CFML-evaluated tags need the legacy runtime. */
-function dynamicDefault(defaultValue: string | null): string {
-  const value = defaultValue ?? '';
-  if (DYNAMIC_CONTENT.test(value)) {
-    throw new LegacyServiceUnavailableError(
-      'An extended attribute default holds Mura tags only the legacy renderer evaluates',
-      'auto',
-      'extend-dynamic-default',
-    );
-  }
-  return value;
-}
-
-/**
- * beanExtendable.getAllValues() with extendAutoComplete (beanExtendable.cfc:284-302): the bean's values plus, under
- * keys it lacks, the stored extended values of its baseID and the defaults of its subtype's unstored attributes
- * (extendData.cfc:218-360), with their sets appended to `extendSetID`. QoQ filters compare case-sensitively.
- */
-function autocompletedValues(
-  bean: SiteBean,
-  defs: SiteExtendDefinitions,
-  stored: readonly ExtendDataRow[],
-  saveEmptyExtendedValues: boolean,
-): Record<string, SiteStoredValue> {
-  const siteId = getSiteText(bean, 'siteID');
-  const type = getSiteText(bean, 'type');
-  const subtype = getSiteText(bean, 'subtype');
-  const attributes = new Map(defs.attributes.map((attribute) => [attribute.attributeid, attribute]));
-  const rows: { name: string; extendSetId: string; value: SiteStoredValue }[] = [];
-  const storedIds = new Set<number>();
-  for (const row of stored) {
-    const attribute = attributes.get(row.attributeid);
-    if (attribute === undefined || (siteId !== '' && !sqlEq(attribute.siteid, siteId))) continue;
-    if (!saveEmptyExtendedValues && row.attributevalue === null) continue;
-    storedIds.add(row.attributeid);
-    rows.push({ name: attribute.name ?? '', extendSetId: attribute.extendsetid ?? '', value: storedValue(row, attribute) });
-  }
-  if (siteId !== '' && type !== '' && subtype !== '') {
-    for (const sub of defs.subtypes) {
-      if (sub.siteid !== siteId || sub.type !== type || (sub.subtype !== subtype && sub.subtype !== 'Default')) continue;
-      for (const set of defs.sets.filter((row) => row.subtypeid === sub.subtypeid)) {
-        for (const attribute of defs.attributes) {
-          if (attribute.extendsetid !== set.extendsetid || storedIds.has(attribute.attributeid)) continue;
-          rows.push({ name: attribute.name ?? '', extendSetId: set.extendsetid, value: dynamicDefault(attribute.defaultvalue) });
-        }
-      }
-    }
-  }
-  const values: Record<string, SiteStoredValue> = Object.assign(Object.create(null) as Record<string, SiteStoredValue>, bean.values);
-  if (rows.length === 0) return values;
-  const extended = new Map(rows.map((row) => [row.name.toLowerCase(), row.value]));
-  for (const [key, value] of extended) {
-    if (!Object.hasOwn(values, key)) values[key] = value;
-  }
-  let setIds = getSiteText({ values, isNew: bean.isNew }, 'extendSetID');
-  for (const id of cfList(rows.map((row) => row.extendSetId).join(','))) {
-    if (!cfList(setIds).includes(id)) setIds = setIds === '' ? id : `${setIds},${id}`;
-  }
-  values.extendsetid = setIds;
-  return values;
-}
-
-
-/** saveExtendedData's coercion of a found value by attribute validation (extendManager.cfc:507-523). */
-function coerceExtendValue(value: unknown, validation: string, siteLocale: string): unknown {
-  if (!cfLen(value)) return value;
-  if (DATE_VALIDATIONS.has(validation)) {
-    // lsIsDate and isDate read only text (and dates, kept as they are).
-    if (typeof value !== 'string') return value;
-    // The request's setLocale(CF2Java(siteLocale)); cfLsIsDate throws setLocale's refusal of an unsupported name.
-    const locale = masaCf2Java(siteLocale);
-    // lsIsDate is lsParseDateTime succeeding, so legacy's fallback to parseDateTime in its catch never runs.
-    if (cfLsIsDate(value, locale)) return cfLsParseDateTime(value, locale);
-    // Other text stays text, which the cf_sql_timestamp binding of extendValues then refuses as legacy's does.
-    return cfIsDateText(value) ? cfParseDateTimeText(value) : value;
-  }
-  return validation === 'numeric' && !cfIsNumeric(value) ? '' : value;
-}
-
-/**
- * The value columns saveExtendedData inserts (extendManager.cfc:527-556); NULL value columns for an empty value. A date
- * attribute's value binds as cf_sql_timestamp into tclassextenddata's SQL Server `datetime` column, whose refusals are
- * legacy's errors.
- */
-function extendValues(value: unknown, validation: string, remoteId: string): ExtendDataValues {
-  const text = cfString(value);
-  const common = { stringvalue: text.slice(0, 250), remoteid: remoteId };
-  if (text === '') return { ...common, attributevalue: null, datetimevalue: null, numericvalue: null };
-  return {
-    ...common,
-    attributevalue: text,
-    datetimevalue: DATE_VALIDATIONS.has(validation) ? sqlServerDatetime(cfTimestampParam(value)) : null,
-    numericvalue: validation === 'numeric' ? cfToNumber(value) : null,
-  };
-}
-
-/**
- * Port of the non-File part of `extendManager.saveExtendedData` (extendManager.cfc:479-560): one replacement per
- * attribute found under `ext<attributeID>` or its name; attributes found under neither are left untouched.
- */
-export function extendDataRows(
-  baseId: string,
-  attributes: readonly ExtendAttributeRow[],
-  data: Readonly<Record<string, unknown>>,
-  { saveEmptyExtendedValues, siteLocale }: ExtendDataOptions,
-): ExtendDataWrite[] {
-  const siteId = cfString(lookup(data, 'siteID') ?? '');
-  const remote = lookup(data, 'remoteID');
-  const remoteId = remote === undefined ? '' : cfString(remote).slice(0, 35);
-  const writes: ExtendDataWrite[] = [];
-  for (const attribute of attributes) {
-    const byId = lookup(data, `ext${attribute.attributeid}`);
-    const byName = lookup(data, attribute.name ?? '');
-    if (byId === undefined && byName === undefined) continue;
-    const validation = (attribute.validation ?? '').toLowerCase();
-    const value = coerceExtendValue(cfLen(byId) ? byId : cfLen(byName) ? byName : '', validation, siteLocale);
-    const values = cfLen(value) || saveEmptyExtendedValues ? extendValues(value, validation, remoteId) : null;
-    writes.push({ baseId, siteId, attributeId: attribute.attributeid, values });
-  }
-  return writes;
-}
-
-/** File attributes whose saveExtendedData branch would run (extendManager.cfc:572-581), writing `tfiles` and the file store. */
-export function fileAttributeBranches(
-  fileAttributes: readonly ExtendAttributeRow[],
-  data: Readonly<Record<string, unknown>>,
-): ExtendAttributeRow[] {
-  return fileAttributes.filter(
-    ({ attributeid, name }) =>
-      cfLen(lookup(data, `ext${attributeid}`)) ||
-      cfLen(lookup(data, name ?? '')) ||
-      lookup(data, `extDelete${attributeid}`) !== undefined ||
-      lookup(data, `extDelete${name ?? ''}`) !== undefined,
-  );
-}
-
-/** The attributes of `setIds` saveExtendedData's two queries select for `siteId` (extendManager.cfc:483-490,563-570). */
-function savedAttributes(
-  defs: SiteExtendDefinitions,
-  setIds: readonly string[],
-  siteId: string,
-): { plain: ExtendAttributeRow[]; files: ExtendAttributeRow[] } {
-  const selected = defs.attributes.filter(
-    (attribute) =>
-      setIds.some((id) => sqlEq(attribute.extendsetid, id)) && sqlEq(attribute.siteid, siteId) && attribute.type !== null,
-  );
-  return {
-    plain: selected.filter((attribute) => !sqlEq(attribute.type, 'File')),
-    files: selected.filter((attribute) => sqlEq(attribute.type, 'File')),
-  };
-}
-
 /** An integer element of a CFML list, as `listGetAt` and the SQL `int` column read it; throws like legacy's 500. */
 function listInteger(list: readonly string[], index: number, name: string): number {
   const value = list[index];
@@ -535,21 +279,8 @@ function nextRowVersion(rowVersion: unknown): string {
   return String(BigInt(String(rowVersion)) + 1n);
 }
 
-/** SQL Server Msg 2628 of `settingsDAO.update` for a value longer than its tsettings column; names the column, not the value. */
-export class SiteColumnTruncationError extends Error {
-  override readonly name: string = 'SiteColumnTruncationError';
-
-  constructor(readonly column: string) {
-    super(`String or binary data would be truncated in table 'tsettings', column '${column}'.`);
-  }
-}
-
 /** Builds the site operations over the injected repository; it holds no state of its own. */
-export function createSitesDomain({
-  repo,
-  config = LEGACY_GLOBAL_CONFIG_DEFAULTS,
-  saveEmptyExtendedValues = true,
-}: SitesDomainDeps): SitesDomain {
+export function createSitesDomain({ repo, config = LEGACY_GLOBAL_CONFIG_DEFAULTS }: SitesDomainDeps): SitesDomain {
   /** The tenant's site row `siteId` names under SQL Server's `siteid = ?` matching; null when none does. */
   async function findSite(tx: TenantTx, siteId: string): Promise<SiteRow | null> {
     const exact = await repo.readSite(tx, siteId);
@@ -561,34 +292,6 @@ export function createSitesDomain({
   async function announce(tx: TenantTx, row: SiteRow, origin?: OutboxOrigin): Promise<void> {
     const rowVersion = BigInt(row.row_version);
     await writeSiteChanged(tx, { siteId: row.siteid, rowVersion, payload: siteChangedPayload(row), origin });
-  }
-
-  /**
-   * settingsManager.update's `saveExtendedData(bean.getBaseID(), bean.getAllValues())` (settingsManager.cfc:267-269),
-   * its date text read in `siteLocale`'s locale.
-   */
-  async function saveExtendedData(
-    tx: TenantTx,
-    bean: SiteBean,
-    write: WriteContext | undefined,
-    siteLocale: string,
-  ): Promise<void> {
-    const siteId = getSiteText(bean, 'siteID');
-    const baseId = getSiteText(bean, 'baseID');
-    const defs = await repo.readSiteExtendDefinitions(tx, siteId);
-    const stored = await repo.readSiteExtendData(tx, baseId);
-    const values = autocompletedValues(bean, defs, stored, saveEmptyExtendedValues);
-    const { plain, files } = savedAttributes(defs, cfList(getSiteText({ values, isNew: bean.isNew }, 'extendSetID')), siteId);
-    if (fileAttributeBranches(files, values).length > 0) {
-      throw new LegacyServiceUnavailableError(
-        'Site update saves a File extended attribute through the strategies-content file manager',
-        'auto',
-        'foreign-branch',
-      );
-    }
-    for (const row of extendDataRows(baseId, plain, values, { saveEmptyExtendedValues, siteLocale })) {
-      await repo.replaceSiteExtendData(tx, row, write);
-    }
   }
 
   async function listSites(db: TenantDb, claims: UserClaims, options: SiteListOptions = {}): Promise<SiteListItem[]> {
@@ -642,50 +345,6 @@ export function createSitesDomain({
     return { sites };
   }
 
-  async function updateSite(
-    db: TenantDb,
-    claims: UserClaims,
-    siteId: string,
-    data: SiteData,
-    ctx: SiteUpdateContext = {},
-  ): Promise<SiteUpdateResult> {
-    // settingsManager.update reads the site the posted `siteid` names (settingsManager.cfc:252).
-    const requested = cfString(lookup(data, 'siteid') ?? '');
-    assertSiteMatches(siteId, claims);
-    assertSiteMatches(requested, claims);
-    const outcome = await withGatedTenant(db, claims.tid, async (tx): Promise<SiteUpdateResult | SiteColumnTruncationError> => {
-      const row = await findSite(tx, requested);
-      if (row === null) {
-        // Legacy's UPDATE of a missing site matches no row.
-        const bean = applySet(newSiteBean(cfUuid()), data);
-        return { written: true, errors: contractErrors(validateSite(bean)), site: toSite(bean, null) };
-      }
-      // An empty stored baseID keeps init's createUUID(), which the update then stores (settingsDAO.cfc:103).
-      const storedBean = readBean(row, cfUuid());
-      const bean = applySet(storedBean, data);
-      const errors = validateSite(bean);
-      assertNoForeignBranches(storedBean, data);
-      if (hasSiteErrors(errors)) {
-        return { written: true, errors: contractErrors(errors), site: toSite(bean, row) };
-      }
-      if (cfLen(lookup(data, 'extendSetID'))) {
-        // Admin requests read in the stored site's locale, set before the update runs (admin/Application.cfc:384-399).
-        await saveExtendedData(tx, bean, ctx.write, ctx.locale ?? getSiteText(storedBean, 'siteLocale'));
-      }
-      const { values, overflowing } = fitColumnValues(updateColumnValues(bean, config));
-      // settingsDAO.update throws after saveExtendedData committed (settingsManager.cfc:267-290): commit, then fail.
-      if (overflowing[0] !== undefined) return new SiteColumnTruncationError(overflowing[0]);
-      const updated = await repo.updateSiteRow(tx, row, values, ctx.write);
-      if (updated === null) {
-        throw new Error(`Site ${row.siteid} disappeared inside its own update transaction`);
-      }
-      await announce(tx, updated);
-      return { written: true, errors: {}, site: toSite(readBean(updated), updated) };
-    });
-    if (outcome instanceof SiteColumnTruncationError) throw outcome;
-    return outcome;
-  }
-
   async function saveOrderAndDeploy(db: TenantDb, claims: UserClaims, input: SiteOrderInput): Promise<SiteOrderResult> {
     if (!claims.s2) throw AuthDenial.forbidden();
     const orderIds = cfList(input.orderID ?? '');
@@ -734,7 +393,6 @@ export function createSitesDomain({
     readSite,
     readShellSite,
     readUserPoolSites,
-    updateSite,
     saveOrderAndDeploy,
     hrefDomains,
     emitStateEvents,

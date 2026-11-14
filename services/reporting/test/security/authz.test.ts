@@ -25,6 +25,7 @@ import {
   createCapturingPublisher,
   mintServiceToken,
   mintTasksInvokerToken,
+  mintUserToken,
   pushKeyQuery,
   pushTo,
   testVerifier,
@@ -134,6 +135,8 @@ interface Expectation {
   deny401: readonly string[];
   /** Sends the probe as `subject` instead of injecting `request` with its credentials. */
   send?: (subject: RoleSubject, credentials: Record<string, string>) => Promise<InjectResponse>;
+  /** Read-only transactions a 403 runs before it answers: the fixture's lookup of the requested site; 0 when absent. */
+  denialReads?: number;
 }
 
 /** Request effects counted from a {@link mark}. */
@@ -167,6 +170,8 @@ const DENIAL_ERRORS: Readonly<Record<401 | 403, readonly ErrorBody[]>> = {
 const FIXTURE_EXPORTS = `${FIXTURE_PREFIX}/exports`;
 const V1_EXPORTS = '/v1/reporting/exports';
 const ON_SITE_A = `siteid=${SITE_A}`;
+/** The header a POST carries to be answered as a GET. */
+const OVERRIDE_GET: Readonly<Record<string, string>> = { 'x-http-method-override': 'GET' };
 const PUSH_URL = `/internal/v1/events/${SITE_CHANGED_SUBSCRIPTION}`;
 const RUN_QUEUE = QUEUES['reporting-export-run'];
 
@@ -268,8 +273,9 @@ const fixed = (request: ProbeRequest) => (): ProbeRequest => request;
 const EXPORTER_ROUTE: Declared = { transport: 'service', requires: [EXPORTER] };
 const FIXTURE_ROUTE: Declared = { transport: 'service', requires: [EXPORTER], siteCheck: false };
 
+/** An exporter route; a role denial first resolves the requested site, as auth.cfc resolveSite runs before requireAny. */
 function exporterRoute(declared: Declared, request: Expectation['request']): Expectation {
-  return { declared, request, allow: [EXPORTER], deny401: NO_USER };
+  return { declared, request, allow: [EXPORTER], deny401: NO_USER, denialReads: 1 };
 }
 
 function migrationRoute(request: ProbeRequest): Expectation {
@@ -336,9 +342,19 @@ function expectations(): Readonly<Record<string, Expectation>> {
       payload: createBody(),
     })),
     [`GET ${FIXTURE_EXPORTS}/:id`]: exporterRoute(FIXTURE_ROUTE, () => ({ method: 'GET', url: `${FIXTURE_EXPORTS}/${doneA.job_id}?${ON_SITE_A}` })),
+    [`POST ${FIXTURE_EXPORTS}/:id`]: exporterRoute(FIXTURE_ROUTE, () => ({
+      method: 'POST',
+      url: `${FIXTURE_EXPORTS}/${doneA.job_id}?${ON_SITE_A}`,
+      headers: { ...OVERRIDE_GET },
+    })),
     [`GET ${FIXTURE_EXPORTS}/:id/download`]: exporterRoute(FIXTURE_ROUTE, () => ({
       method: 'GET',
       url: `${FIXTURE_EXPORTS}/${doneA.job_id}/download?${ON_SITE_A}`,
+    })),
+    [`POST ${FIXTURE_EXPORTS}/:id/download`]: exporterRoute(FIXTURE_ROUTE, () => ({
+      method: 'POST',
+      url: `${FIXTURE_EXPORTS}/${doneA.job_id}/download?${ON_SITE_A}`,
+      headers: { ...OVERRIDE_GET },
     })),
     // Only the export source producers' workloads may read a job's scope, which the scope route itself then narrows to its source.
     'GET /internal/v1/exports/:exportId/source-scope': {
@@ -392,7 +408,8 @@ async function mismatchesOf(key: string, entry: Expectation, who: RoleSubject): 
     problems.push(`${at}: unexpected denial error ${JSON.stringify(error)}`);
   }
   const effects = effectsSince(before);
-  if (!isDeepStrictEqual(effects, NO_EFFECTS)) problems.push(`${at}: denial left effects ${JSON.stringify(effects)}`);
+  const allowed = res.statusCode === 403 ? { ...NO_EFFECTS, transactions: entry.denialReads ?? 0 } : NO_EFFECTS;
+  if (!isDeepStrictEqual(effects, allowed)) problems.push(`${at}: denial left effects ${JSON.stringify(effects)}`);
   return problems;
 }
 
@@ -591,6 +608,37 @@ describe('site boundary', () => {
     // auth.cfc resolveSite reads the site before it compares it with the session's; that registry read is the only effect.
     const outcome = await outcomeOf(toSiteB(request()), await headersFor(subject(EXPORTER), SITE_A));
     expect(outcome).toEqual({ status: 403, error: errorBody(FIXTURE_ERROR_MAP.forbidden), effects: { ...NO_EFFECTS, transactions: 1 } });
+  });
+});
+
+describe('anonymous sessions and unregistered sites', () => {
+  /** A role-less token identity mints for user `sub` ('' for a session without a login) on `site`, beside the gateway's invocation credential. */
+  async function sessionCredentials(sub: string, site: string): Promise<Record<string, string>> {
+    const [user, invocation] = await Promise.all([
+      mintUserToken({ sub, sid: 'authz-session', site, roles: [] }),
+      mintServiceToken({ caller: 'gateway', audience: SERVICE }),
+    ]);
+    return { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${invocation}` };
+  }
+
+  /** Every exporter route's probe without its siteid, so the token's site is the requested one. */
+  const exporterProbes = (): Array<[string, ProbeRequest]> =>
+    Object.entries(expectations())
+      .filter(([, entry]) => entry.allow.length === 1 && entry.allow[0] === EXPORTER)
+      .map(([key, entry]) => {
+        const probe = entry.request(subject(EXPORTER));
+        return [key, { ...probe, url: probe.url.replace(`?${ON_SITE_A}`, '') }];
+      });
+
+  it.each<[string, () => Promise<Record<string, string>>, number, ErrorBody]>([
+    ['an anonymous session token', () => sessionCredentials('', SITE_A), 401, errorBody(FIXTURE_ERROR_MAP.authorization)],
+    ['a token of an unregistered site', () => sessionCredentials(identityOf(subject(EXPORTER)).sub, 'nosuchsite'), 400, errorBody(FIXTURE_ERROR_MAP.invalidParameters)],
+  ])('answers %s on every exporter route as the fixture does, reading only the registry', async (_label, credentials, status, error) => {
+    const probes = exporterProbes();
+    const outcomes: Array<[string, unknown]> = [];
+    for (const [key, probe] of probes) outcomes.push([key, await outcomeOf(probe, await credentials())]);
+    expect(probes).toHaveLength(10);
+    expect(outcomes).toEqual(probes.map(([key]) => [key, { status, error, effects: { ...NO_EFFECTS, transactions: 1 } }]));
   });
 });
 

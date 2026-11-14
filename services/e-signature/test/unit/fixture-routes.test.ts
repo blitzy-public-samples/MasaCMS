@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { Roles, collectRouteMatrix } from '@opt2/platform/auth';
+import { ANONYMOUS_PRINCIPAL_UID, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { cfHash } from '@opt2/platform/legacy-compat';
 import { createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates, registerWritePositionHeader } from '@opt2/platform/migration-kit';
@@ -41,33 +41,34 @@ const GOOD_TOKEN = 'VALIDCSRFTOKEN';
 const CSRF = { 'x-csrf_token': GOOD_TOKEN, 'x-csrf_token_expires': '991231235959000' };
 const DOCUMENT = Buffer.from('%PDF-1.7 synthetic fixture contract');
 const CREATE = { documentName: 'contract.pdf', documentBase64: DOCUMENT.toString('base64'), signerUserId: SIGNER_USER_ID };
+// An unknown site in each body type a fixture request may carry.
+const FORM_SITE = { type: 'application/x-www-form-urlencoded', text: 'siteid=nosuch' };
+const MULTIPART_SITE = { type: 'multipart/form-data; boundary=opt2', text: '--opt2\r\nContent-Disposition: form-data; name="siteid"\r\n\r\nnosuch\r\n--opt2--\r\n' };
+const JSON_SITE = { type: 'application/json', text: '{"siteid":"nosuch"}' };
+// Identity's session without a login, which the verifier hands on as `sub` ''.
+const ANONYMOUS_SESSION = { sub: ANONYMOUS_PRINCIPAL_UID, roles: [] };
 
 /** People's answer to every read: a person, an outage or a denial. */
 type PeopleMode = 'answer' | 'unavailable' | 'denied';
 
 type Injected = Awaited<ReturnType<FastifyInstance['inject']>>;
 
+/** Status, headers and body of an answer, from `app.inject` or a socket. */
+type Answer = Pick<Injected, 'statusCode' | 'headers' | 'body'>;
+
 // js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
 const { load } = createRequire(createRequire(import.meta.url).resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
 const CONTRACT = load(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 /** Asserts that `res`, the answer to `method` on `url`, is a response the contract declares for that operation; returns `res`. */
-function conforms(res: Injected, method: string, url: string): Injected {
+function conforms<T extends Answer>(res: T, method: string, url: string): T {
   const { pathname } = new URL(url, 'http://e-signature.test');
   assertResponseMatchesOpenApi(CONTRACT, { method, path: pathname, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
   return res;
 }
 
-/** A Type 2 people `user` of `siteId`. */
-const person = (userId: string, siteId: string = TENANT_A.siteId): PersonSummary => ({
-  userId,
-  siteId,
-  type: 2,
-  fname: 'Synthetic',
-  lname: 'Signer',
-  email: 'signer@example.test',
-  inactive: 0,
-});
+/** A Type 2 people pool user of `siteId`. */
+const person = (userId: string, siteId: string = TENANT_A.siteId): PersonSummary => ({ userId, siteId, type: 2 });
 
 /** The fixture error envelope of `method` with `code` and `message`. */
 const errorBody = (method: string, code: string, message: string): string =>
@@ -80,6 +81,7 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
   let identity: http.Server;
   let stateDir: string;
   let app: FastifyInstance;
+  let origin: string;
   let peopleMode: PeopleMode = 'answer';
   const persons = [person(SIGNER_USER_ID), person(OTHER_USER_ID)];
   const consumed: Array<{ token: string; context: string }> = [];
@@ -135,7 +137,7 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     registerWritePositionHeader(app);
     const clock = fixedClock(NOW);
     await registerFixtureRoutes(app, { db: handle.app, repository: createEsignatureRepository({ db: handle.app, clock }), clock, peopleClient: people });
-    await app.ready();
+    origin = await app.listen({ port: 0, host: '127.0.0.1' });
   });
 
   afterAll(async () => {
@@ -157,7 +159,10 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     await setGates('open');
   });
 
-  /** Sends `method` to `url` as user `sub` holding `roles` on `site`, with a valid CSRF token on a POST unless `csrf` is false. */
+  /**
+   * Sends `method` to `url` as user `sub` holding `roles` on `site`, `override` as X-HTTP-Method-Override when given, with a valid
+   * CSRF token on a POST or a POST override unless `csrf` is false.
+   */
   async function send(
     method: 'GET' | 'POST',
     url: string,
@@ -168,11 +173,48 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
       payload,
       csrf = true,
       contract = true,
-    }: { sub?: string; roles?: readonly string[]; site?: string; payload?: Record<string, unknown>; csrf?: boolean; contract?: boolean } = {},
+      override,
+    }: {
+      sub?: string;
+      roles?: readonly string[];
+      site?: string;
+      payload?: Record<string, unknown>;
+      csrf?: boolean;
+      contract?: boolean;
+      override?: string;
+    } = {},
   ): Promise<Injected> {
-    const headers = { ...(await userHeaders({ sub, site, roles })), ...(method === 'POST' && csrf ? CSRF : {}) };
+    const headers = {
+      ...(await userHeaders({ sub, site, roles })),
+      ...((method === 'POST' || override === 'POST') && csrf ? CSRF : {}),
+      ...(override === undefined ? {} : { 'x-http-method-override': override }),
+    };
     const res = await app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload }) });
     return contract ? conforms(res, method, url) : res;
+  }
+
+  /** Sends `method` to `url` without any credential, as a request outside a Masa session reaches the fixture. */
+  async function sendAnonymous(method: 'GET' | 'POST', url: string, payload?: Record<string, unknown>): Promise<Injected> {
+    return conforms(await app.inject({ method, url, ...(payload === undefined ? {} : { payload }) }), method, url);
+  }
+
+  /**
+   * Sends `method` to `url` over a socket as SIGNER, or without credentials when `anonymous`, `override` as X-HTTP-Method-Override
+   * when given, with a valid CSRF token on a POST override; a socket, because `app.inject` keeps the HEAD body Node never sends.
+   */
+  async function sendOverSocket(
+    method: string,
+    url: string,
+    { override, body, anonymous = false }: { override?: string; body?: { type: string; text: string }; anonymous?: boolean } = {},
+  ): Promise<Answer> {
+    const headers = {
+      ...(anonymous ? {} : await userHeaders({ sub: SIGNER_USER_ID, roles: SIGNER })),
+      ...(override === 'POST' ? CSRF : {}),
+      ...(override === undefined ? {} : { 'x-http-method-override': override }),
+      ...(body === undefined ? {} : { 'content-type': body.type }),
+    };
+    const res = await fetch(new URL(url, origin), { method, headers, ...(body === undefined ? {} : { body: body.text }) });
+    return conforms({ statusCode: res.status, headers: Object.fromEntries(res.headers), body: await res.text() }, method, url);
   }
 
   /** A request of DOCUMENT for SIGNER, created by SIGNER; returns its fixture row. */
@@ -192,23 +234,20 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     return items.map((item) => Object.fromEntries(['seq', 'action', 'actor_user_id', 'detail', 'at', 'prev_hash', 'entry_hash'].map((key) => [key, String(item[key])])));
   }
 
-  it('declares the six contract routes with the fixture role sets on the service transport, site-checked', () => {
+  it('registers the four contract paths for every request method, public with the handler checking site and roles, and six effective-method operations', () => {
     const routes = collectRouteMatrix(app).routes.filter((route) => route.url.startsWith(FIXTURE_PREFIX));
-    expect(routes.map(({ method, url, requires, transport, siteCheck }) => [method, url.slice(FIXTURE_PREFIX.length), requires, transport, siteCheck])).toEqual([
-      ['GET', '/requests', [Roles.esignatureSigner], 'service', true],
-      ['POST', '/requests', [Roles.esignatureSigner], 'service', true],
-      ['GET', '/requests/:id/audit', READERS, 'service', true],
-      ['POST', '/requests/:id/sign', [Roles.esignatureSigner], 'service', true],
-      ['GET', '/requests/:id/verify', READERS, 'service', true],
-      ['POST', '/requests/:id/verify', READERS, 'service', true],
-    ]);
-    expect(FIXTURE_OPERATIONS.map(({ operationId }) => operationId)).toEqual([
-      'fixtureListRequests',
-      'fixtureCreateRequest',
-      'fixtureSignRequest',
-      'fixtureGetAudit',
-      'fixtureVerifyStored',
-      'fixtureVerifySupplied',
+    expect(routes.map(({ method, url, requires, transport, siteCheck, ...rest }) => [method, url.slice(FIXTURE_PREFIX.length), requires, rest.public, transport, siteCheck])).toEqual(
+      ['/requests', '/requests/:id/audit', '/requests/:id/sign', '/requests/:id/verify'].flatMap((url) =>
+        ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'].map((method) => [method, url, undefined, true, 'service', false]),
+      ),
+    );
+    expect(FIXTURE_OPERATIONS.map(({ operationId, method, url, requires }) => [operationId, method, url.slice(FIXTURE_PREFIX.length), requires])).toEqual([
+      ['fixtureListRequests', 'GET', '/requests', [Roles.esignatureSigner]],
+      ['fixtureCreateRequest', 'POST', '/requests', [Roles.esignatureSigner]],
+      ['fixtureSignRequest', 'POST', '/requests/:id/sign', [Roles.esignatureSigner]],
+      ['fixtureGetAudit', 'GET', '/requests/:id/audit', READERS],
+      ['fixtureVerifyStored', 'GET', '/requests/:id/verify', READERS],
+      ['fixtureVerifySupplied', 'POST', '/requests/:id/verify', READERS],
     ]);
   });
 
@@ -262,8 +301,167 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     expect([again.statusCode, again.body]).toEqual([409, errorBody('esignature.requests.sign', 'invalid_request', 'already-signed')]);
   });
 
+  it.each<[string, (id: string) => Promise<Injected>, string, (id: string) => unknown, (id: string) => Array<{ token: string; context: string }>]>([
+    [
+      'a POST overridden to GET lists without consuming its token',
+      () => send('POST', `${P}?itemsPerPage=1000`, { override: 'GET' }),
+      'esignature.requests',
+      (id) => expect.objectContaining({ items: expect.arrayContaining([expect.objectContaining({ request_id: id })]) }),
+      () => [],
+    ],
+    [
+      'a lower-case override naming GET lists',
+      () => send('POST', `${P}?itemsPerPage=1000`, { override: 'get' }),
+      'esignature.requests',
+      () => expect.objectContaining({ items: expect.any(Array) }),
+      () => [],
+    ],
+    [
+      'a GET overridden to POST creates, consuming the collection token',
+      () => send('GET', `${P}?${new URLSearchParams(CREATE).toString()}`, { override: 'POST' }),
+      'esignature.requests',
+      () => expect.objectContaining({ document_name: 'contract.pdf', state: 'PENDING' }),
+      () => [{ token: GOOD_TOKEN, context: '' }],
+    ],
+    [
+      'an empty override keeps the GET',
+      () => send('GET', `${P}?itemsPerPage=1000`, { override: '' }),
+      'esignature.requests',
+      () => expect.objectContaining({ items: expect.any(Array) }),
+      () => [],
+    ],
+    [
+      'an empty override keeps the POST',
+      () => send('POST', P, { override: '', payload: CREATE }),
+      'esignature.requests',
+      () => expect.objectContaining({ document_name: 'contract.pdf', state: 'PENDING' }),
+      () => [{ token: GOOD_TOKEN, context: '' }],
+    ],
+    [
+      'a GET of sign overridden to POST signs, consuming the request token',
+      (id) => send('GET', `${P}/${id}/sign?typedName=Jane%20Doe`, { override: 'POST' }),
+      'esignature.requests.sign',
+      (id) => expect.objectContaining({ request_id: id, state: 'SIGNED' }),
+      (id) => [{ token: GOOD_TOKEN, context: id }],
+    ],
+    [
+      'a POST of audit overridden to GET reads the chain without consuming its token',
+      (id) => send('POST', `${P}/${id}/audit`, { override: 'GET', sub: AUDITOR_USER_ID, roles: AUDITOR }),
+      'esignature.requests.audit',
+      (id) => expect.objectContaining({ items: [expect.objectContaining({ request_id: id, seq: 1, action: 'created' })] }),
+      () => [],
+    ],
+    [
+      'a POST of verify overridden to GET verifies the stored chain without consuming its token',
+      (id) => send('POST', `${P}/${id}/verify`, { override: 'GET' }),
+      'esignature.requests.verify',
+      () => ({ valid: true, entries: 1, brokenat: 0 }),
+      () => [],
+    ],
+    [
+      'a GET of verify overridden to POST verifies a supplied chain, consuming the request token',
+      async (id) => {
+        const entries = JSON.stringify(suppliedCopy(await auditItems(id)));
+        return send('GET', `${P}/${id}/verify?${new URLSearchParams({ entries }).toString()}`, { override: 'POST' });
+      },
+      'esignature.requests.verify',
+      () => ({ valid: true, entries: 1, brokenat: 0 }),
+      (id) => [{ token: GOOD_TOKEN, context: id }],
+    ],
+  ])('answers %s, as api.cfm dispatches on the effective method', async (_case, request, method, data, tokens) => {
+    const { request_id: id } = await createRequest();
+    consumed.length = 0;
+    const res = await request(id);
+    expect([res.statusCode, res.json().method, res.json().data]).toEqual([200, method, data(id)]);
+    expect(consumed).toEqual(tokens(id));
+  });
+
+  it.each(['PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])('answers a raw %s as api.cfm does: the site, then the operation its override selects, else notFound', async (method) => {
+    const { request_id: id } = await createRequest();
+    consumed.length = 0;
+    /** What `method` answers with: HEAD sends no body. */
+    const sent = <T>(answer: T): T | '' => (method === 'HEAD' ? '' : answer);
+    const dataOf = (answer: Answer): unknown => (answer.body === '' ? '' : JSON.parse(answer.body).data);
+
+    const unknownSite = await sendOverSocket(method, `${P}?siteid=nosuch`);
+    expect([unknownSite.statusCode, unknownSite.body]).toEqual([400, sent(errorBody('esignature.requests', 'invalid_request', 'Invalid parameters'))]);
+    const unselected = await sendOverSocket(method, P);
+    expect([unselected.statusCode, unselected.body]).toEqual([404, sent(errorBody('esignature.requests', 'invalid_request', 'Not Found'))]);
+    const undispatched = await sendOverSocket(method, P, { override: 'PUT' });
+    expect([undispatched.statusCode, undispatched.body]).toEqual([404, sent(errorBody('esignature.requests', 'invalid_request', 'Not Found'))]);
+    const anonymous = await sendOverSocket(method, `${P}/${id}/sign?siteid=${TENANT_A.siteId}`, { override: 'post', anonymous: true });
+    expect([anonymous.statusCode, anonymous.body]).toEqual([401, sent(errorBody('esignature.requests.sign', 'invalid_request', 'Insufficient Account Permissions'))]);
+
+    const before = await send('GET', `${P}?itemsPerPage=1000`);
+    const listed = await sendOverSocket(method, `${P}?itemsPerPage=1000`, { override: 'GET' });
+    expect([listed.statusCode, listed.body, listed.headers.etag]).toEqual([200, sent(before.body), before.headers.etag]);
+    expect(consumed).toEqual([]);
+
+    const created = await sendOverSocket(method, `${P}?${new URLSearchParams(CREATE).toString()}`, { override: 'POST' });
+    const signed = await sendOverSocket(method, `${P}/${id}/sign?typedName=Jane%20Doe`, { override: 'POST' });
+    expect(consumed).toEqual([
+      { token: GOOD_TOKEN, context: '' },
+      { token: GOOD_TOKEN, context: id },
+    ]);
+    const known = new Set((before.json().data.items as Array<{ request_id: string }>).map((row) => row.request_id));
+    const after = (await send('GET', `${P}?itemsPerPage=1000`)).json().data.items as Array<{ request_id: string; state: string; document_name: string }>;
+    const added = after.filter((row) => !known.has(row.request_id));
+    expect(added).toEqual([expect.objectContaining({ document_name: 'contract.pdf', state: 'PENDING' })]);
+    expect([created.statusCode, dataOf(created)]).toEqual([200, sent(added[0])]);
+    expect([signed.statusCode, dataOf(signed)]).toEqual([200, sent(after.find((row) => row.request_id === id))]);
+    expect(after.find((row) => row.request_id === id)?.state).toBe('SIGNED');
+  });
+
+  it.each<[string, string, number, string, { type: string; text: string }]>([
+    ['PUT', 'form', 404, 'Not Found', FORM_SITE],
+    ['PATCH', 'form', 404, 'Not Found', FORM_SITE],
+    ['DELETE', 'form', 404, 'Not Found', FORM_SITE],
+    ['OPTIONS', 'form', 404, 'Not Found', FORM_SITE],
+    ['PUT', 'multipart', 404, 'Not Found', MULTIPART_SITE],
+    ['POST', 'form', 400, 'Invalid parameters', FORM_SITE],
+    ['POST', 'multipart', 400, 'Invalid parameters', MULTIPART_SITE],
+    ['PUT', 'JSON', 400, 'Invalid parameters', JSON_SITE],
+    ['PATCH', 'JSON', 400, 'Invalid parameters', JSON_SITE],
+    ['DELETE', 'JSON', 400, 'Invalid parameters', JSON_SITE],
+    ['OPTIONS', 'JSON', 400, 'Invalid parameters', JSON_SITE],
+  ])('reads the unknown site of a raw %s %s body only where ColdFusion scopes it, answering %i %s', async (method, _kind, status, message, body) => {
+    const res = await sendOverSocket(method, P, { body });
+    expect([res.statusCode, res.body]).toEqual([status, errorBody('esignature.requests', 'invalid_request', message)]);
+  });
+
   it.each<[string, () => Promise<Injected>, number, string, string, string]>([
-    ['no credential', async () => conforms(await app.inject({ url: P }), 'GET', P), 401, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
+    ['no credential', () => sendAnonymous('GET', `${P}?siteid=${TENANT_A.siteId}`), 401, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
+    ['site: no credential and no site, so the default this registry lacks', () => sendAnonymous('GET', P), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: no credential and an unknown query site', () => sendAnonymous('GET', `${P}?siteid=nosuch`), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: no credential and an unknown JSON body site', () => sendAnonymous('POST', P, { siteid: 'nosuch' }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: no credential and a non-simple JSON body site', () => sendAnonymous('POST', P, { siteid: { id: TENANT_A.siteId } }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['an anonymous session with its own site', () => send('GET', P, ANONYMOUS_SESSION), 401, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
+    ['an anonymous session with another registered site', () => send('GET', `${P}?siteid=${TENANT_B.siteId}`, ANONYMOUS_SESSION), 401, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
+    ['site: an anonymous session with an unknown query site', () => send('GET', `${P}?siteid=nosuch`, ANONYMOUS_SESSION), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: an anonymous session with an unknown JSON body site', () => send('POST', P, { ...ANONYMOUS_SESSION, payload: { siteid: 'nosuch' } }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: an anonymous session with a non-simple JSON body site', () => send('POST', P, { ...ANONYMOUS_SESSION, payload: { siteid: [TENANT_A.siteId] } }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: a member with an unknown query site', () => send('GET', `${P}?siteid=nosuch`, { roles: [Roles.member] }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: a member with an unknown JSON body site', () => send('POST', P, { roles: [Roles.member], payload: { siteid: 'nosuch' } }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: a member with a non-simple JSON body site', () => send('POST', P, { roles: [Roles.member], payload: { siteid: { id: TENANT_A.siteId } } }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: a signer with an unknown query site', () => send('GET', `${P}?siteid=nosuch`), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['site: a signer with an unknown JSON body site', () => send('POST', P, { payload: { ...CREATE, siteid: 'nosuch' } }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['a JSON body site of another registered tenant', () => send('POST', P, { payload: { ...CREATE, siteid: TENANT_B.siteId } }), 403, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
+    ['site: an unknown site before an unknown override', () => send('POST', `${P}?siteid=nosuch`, { override: 'PUT' }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
+    ['path: an override naming PUT', () => send('POST', P, { override: 'PUT', payload: CREATE }), 404, 'esignature.requests', 'invalid_request', 'Not Found'],
+    ['path: an override naming DELETE', () => send('GET', P, { override: 'DELETE' }), 404, 'esignature.requests', 'invalid_request', 'Not Found'],
+    ['path: an anonymous GET of sign, before login', () => sendAnonymous('GET', `${P}/${MISSING_ID}/sign?siteid=${TENANT_A.siteId}`), 404, 'esignature.requests.sign', 'invalid_request', 'Not Found'],
+    ['path: an anonymous POST of audit, before login', () => sendAnonymous('POST', `${P}/${MISSING_ID}/audit?siteid=${TENANT_A.siteId}`), 404, 'esignature.requests.audit', 'invalid_request', 'Not Found'],
+    ['path: a member\'s override naming PUT, before the role', () => send('POST', `${P}/${MISSING_ID}/verify`, { roles: [Roles.member], override: 'PUT' }), 404, 'esignature.requests.verify', 'invalid_request', 'Not Found'],
+    ['csrf: a GET overridden to POST without a token', () => send('GET', P, { override: 'POST', csrf: false }), 400, 'esignature.requests', 'invalid_request', 'Invalid CSRF tokens'],
+    ['a member\'s GET overridden to POST, before the token', () => send('GET', P, { roles: [Roles.member], override: 'POST', csrf: false }), 403, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
+    [
+      'a rejected user token',
+      async () => conforms(await app.inject({ url: P, headers: { ...(await userHeaders({ sub: SIGNER_USER_ID, roles: SIGNER })), authorization: 'Bearer not-a-token' } }), 'GET', P),
+      401,
+      'esignature.requests',
+      'invalid_token',
+      'Invalid Access Token',
+    ],
     ['a member listing', () => send('GET', P, { roles: [Roles.member] }), 403, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
     ['an auditor creating', () => send('POST', P, { roles: AUDITOR, payload: CREATE }), 403, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
     ['a siteid other than the token site', () => send('GET', `${P}?siteid=${TENANT_B.siteId}`), 403, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
@@ -296,6 +494,10 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     ['a supplied chain that is not an array', (id) => send('POST', `${P}/${id}/verify`, { payload: { entries: '{}' } }), 400, 'esignature.requests.verify', 'Invalid parameters'],
     ['a supplied entry with a malformed hash', (id) => send('POST', `${P}/${id}/verify`, { payload: { entries: [{ seq: '1', action: 'created', actor_user_id: '', detail: '', at: '2026-06-30T14:05:09.123', prev_hash: 'zz', entry_hash: 'zz' }] } }), 400, 'esignature.requests.verify', 'Invalid parameters'],
     ['another tenant reading the request', (id) => send('GET', `${P}/${id}/verify`, { site: TENANT_B.siteId }), 404, 'esignature.requests.verify', 'Not Found'],
+    ['a GET of sign without an override', (id) => send('GET', `${P}/${id}/sign?typedName=Jane%20Doe`), 404, 'esignature.requests.sign', 'Not Found'],
+    ['a sign overridden to GET', (id) => send('POST', `${P}/${id}/sign`, { override: 'GET', payload: { typedName: 'Jane Doe' } }), 404, 'esignature.requests.sign', 'Not Found'],
+    ['a sign overridden to PUT', (id) => send('POST', `${P}/${id}/sign`, { override: 'PUT', payload: { typedName: 'Jane Doe' } }), 404, 'esignature.requests.sign', 'Not Found'],
+    ['a sign overridden to DELETE', (id) => send('GET', `${P}/${id}/sign?typedName=Jane%20Doe`, { override: 'DELETE' }), 404, 'esignature.requests.sign', 'Not Found'],
   ])('answers %s, leaving the request PENDING', async (_case, request, status, method, message) => {
     const { request_id: id } = await createRequest();
     const res = await request(id);
@@ -307,10 +509,16 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
   it('logs an unhandled exception once as a valid log record, and denials with their reason', async () => {
     const before = logLines.length;
     expect((await send('GET', `${P}?pageIndex=1%D9%A1`)).statusCode).toBe(500);
-    expect((await app.inject({ url: P })).statusCode).toBe(401);
+    expect((await sendAnonymous('GET', `${P}?siteid=${TENANT_A.siteId}`)).statusCode).toBe(401);
+    expect((await app.inject({ url: P, headers: { authorization: 'Bearer not-a-token' } })).statusCode).toBe(401);
+    expect((await send('GET', `${P}?siteid=${TENANT_B.siteId}`)).statusCode).toBe(403);
     const lines = logLines.slice(before).map((text) => JSON.parse(text) as Record<string, unknown>);
     expect(lines.filter(({ message }) => message === 'unhandled fixture exception')).toHaveLength(1);
-    expect(lines.filter(({ severity }) => severity === 'WARNING').map(({ message }) => message)).toEqual(['request denied: missing-credential']);
+    expect(lines.filter(({ severity }) => severity === 'WARNING').map(({ message }) => message)).toEqual([
+      'request denied: authorization',
+      'request denied: invalid-credential',
+      'request denied: site-mismatch',
+    ]);
     for (const line of lines) expect(validateLogRecord(line).errors).toEqual([]);
   });
 

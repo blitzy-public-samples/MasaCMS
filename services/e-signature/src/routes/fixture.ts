@@ -1,6 +1,6 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Fixture routes `esignature/…` of legacy-fixtures/cfml/api.cfm, answered as legacy-fixtures/cfml/modules/esignature.cfc answers them. */
-import { AuthDenial, Roles, type DenialRenderer, type Opt2AuthContext, type UserClaims } from '@opt2/platform/auth';
+import { Roles, hasAnyRole, type DenialRenderer, type Opt2RouteConfig } from '@opt2/platform/auth';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import {
@@ -24,7 +24,7 @@ import {
   type EsignatureDomainDeps,
 } from '../domain/signing.js';
 import {
-  fixtureDenialOverride,
+  requireFixtureLogin,
   resolveFixtureSite,
   runFixtureChecks,
   validateCreateInput,
@@ -63,17 +63,17 @@ const ASCII_INTEGER = /^[+-]?[0-9]+$/;
 const ANY_SCRIPT_INTEGER = /^[+-]?\p{Nd}+$/u;
 const DECIMAL_DIGIT = /\p{Nd}/u;
 
-/** Path params of the request routes. */
-type IdParams = { id: string };
+/** Path params of the fixture routes; the collection has no `:id`. */
+type IdParams = { id?: string };
 
-/** One fixture request after api.cfm's site check: its envelope context, site and acting user. */
+/** One fixture request after api.cfm's site check and auth.cfc's checks: its envelope context, site and acting user. */
 interface FixtureCall {
   ctx: FixtureContext;
   site: FixtureSite;
   actor: EsignatureActor;
 }
 
-/** Answers one fixture operation for a request that passed the site check. */
+/** Answers one fixture operation for a request that passed the site, login, role and CSRF checks. */
 type FixtureHandler = (call: FixtureCall, request: FastifyRequest, reply: FastifyReply, deps: FixtureRouteDeps) => Promise<FastifyReply>;
 
 /** A check value that cannot fail by itself; a thrown error still fails its step. */
@@ -126,16 +126,16 @@ function fixturePaging(params: Record<string, unknown>): RequestPaging {
   return { pageIndex, itemsPerPage: pageParam(params, 'itemsPerPage', 50, 1000) };
 }
 
-/** The verified user; every fixture route requires a user role, so the auth hook admits no request without one. */
-function userOf(request: FastifyRequest): UserClaims {
-  const { user } = request.opt2Auth;
-  if (user === undefined) throw AuthDenial.unauthenticated('missing-credential');
-  return user;
+/** The request route's `:id` segment as sent, the collection's empty one included; api.cfm passes it as the CSRF context and the request id. */
+function idOf(request: FastifyRequest): string {
+  return (request.params as IdParams).id ?? COLLECTION_CONTEXT;
 }
 
-/** The request route's `:id` segment as sent; api.cfm passes it as the CSRF context and the request id. */
-function idOf(request: FastifyRequest): string {
-  return (request.params as IdParams).id;
+/** The method api.cfm dispatches on: a non-empty X-HTTP-Method-Override, else the request method, upper-cased. */
+function effectiveMethod(request: FastifyRequest): string {
+  const override = request.headers['x-http-method-override'];
+  const value = Array.isArray(override) ? override[0] : override;
+  return (value === undefined || value === '' ? request.method : value).toUpperCase();
 }
 
 /** auth.cfc requireCsrf of a logged-in write: identity validates and consumes the token for `context`, else invalidTokens. */
@@ -162,8 +162,7 @@ const listRequestsHandler: FixtureHandler = async ({ ctx, site }, _request, repl
 };
 
 /** POST `requests`: a PENDING request for one pool signer, with its `created` audit entry. */
-const createRequestHandler: FixtureHandler = async ({ ctx, site, actor }, request, reply, deps) => {
-  await requireCsrf(request, reply, COLLECTION_CONTEXT);
+const createRequestHandler: FixtureHandler = async ({ ctx, site, actor }, _request, reply, deps) => {
   const [input] = await runFixtureChecks([{ step: 'validation', check: () => validateCreateInput(ctx.params) }]);
   const created = await withGatedTenant(deps.db, site.tenantId, (tx) => createSignatureRequest(tx, deps, input, actor));
   return sendLegacyResponse(reply, fixtureSuccess(ctx, requestRow(created.request)));
@@ -172,7 +171,6 @@ const createRequestHandler: FixtureHandler = async ({ ctx, site, actor }, reques
 /** POST `requests/{id}/sign`: the signer's typed-name signature, with its `signed` audit entry. */
 const signRequestHandler: FixtureHandler = async ({ ctx, site, actor }, request, reply, deps) => {
   const id = idOf(request);
-  await requireCsrf(request, reply, id);
   // signRequest applies existence, the signer check, the typed-name rule and the state check in esignature.cfc order.
   const [input] = await runFixtureChecks([{ step: 'validation', check: () => validateSignInput(id, ctx.params) }]);
   const signed = await withGatedTenant(deps.db, site.tenantId, (tx) => signRequest(tx, deps, input, actor));
@@ -203,7 +201,6 @@ const verifyStoredHandler: FixtureHandler = async ({ ctx, site, actor }, request
 /** POST `requests/{id}/verify`: the verdict over a supplied chain copy, hashed against the stored request id; nothing is stored. */
 const verifySuppliedHandler: FixtureHandler = async ({ ctx, site, actor }, request, reply, { db }) => {
   const id = idOf(request);
-  await requireCsrf(request, reply, id);
   const result = await withTenant(db, site.tenantId, async (tx) => {
     const [stored, entries] = await runFixtureChecks([
       { step: 'existence', check: async () => passed(await authorizeRequestReader(tx, id, actor)) },
@@ -227,7 +224,7 @@ const HANDLERS = Object.freeze({
 /** Contract `operationId` of a fixture operation. */
 export type FixtureOperationId = keyof typeof HANDLERS;
 
-/** One fixture operation of the contract: its route, envelope resource and action, and the roles that may call it. */
+/** One fixture operation of the contract: the effective method and route it answers, its envelope resource and action, and the roles that may call it. */
 export interface FixtureOperation {
   readonly operationId: FixtureOperationId;
   readonly method: 'GET' | 'POST';
@@ -237,7 +234,7 @@ export interface FixtureOperation {
   readonly requires: readonly string[];
 }
 
-/** The six fixture operations of `contracts/openapi.yaml`, which drive both route registration and error contexts. */
+/** The six fixture operations of `contracts/openapi.yaml` by the effective method they answer, which drive route registration and error contexts. */
 export const FIXTURE_OPERATIONS: readonly FixtureOperation[] = Object.freeze([
   { operationId: 'fixtureListRequests', method: 'GET', url: `${FIXTURE_PREFIX}/requests`, resource: 'requests', requires: SIGNER_ROLES },
   { operationId: 'fixtureCreateRequest', method: 'POST', url: `${FIXTURE_PREFIX}/requests`, resource: 'requests', requires: SIGNER_ROLES },
@@ -275,57 +272,84 @@ export const FIXTURE_OPERATIONS: readonly FixtureOperation[] = Object.freeze([
   },
 ]);
 
-/** Key of an operation by HTTP method and registered route URL. */
-function routeKey(method: string, url: string): string {
-  return `${method} ${url}`;
+/** Request methods every fixture route is registered for, as api.cfm runs for each; the effective method selects the operation that answers. */
+const TRANSPORT_METHODS = Object.freeze(['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'] as const);
+
+// api.cfm resolves the site, including a form or JSON body `siteid`, before esignature.cfc dispatches and auth.cfc checks login and
+// role, so the routes are public on the platform and the handler checks all four; platform `requires` would refuse first.
+const FIXTURE_ROUTE_AUTH = Object.freeze({ transport: 'service', public: true, siteCheck: false } as const satisfies Opt2RouteConfig);
+
+/** One registered fixture route: its URL, envelope resource and action, and the operations its effective methods select. */
+interface FixtureRoute {
+  readonly url: string;
+  readonly resource: string;
+  readonly action: string | undefined;
+  readonly operations: readonly FixtureOperation[];
 }
 
-const OPERATION_BY_ROUTE: ReadonlyMap<string, FixtureOperation> = new Map(FIXTURE_OPERATIONS.map((op) => [routeKey(op.method, op.url), op]));
+/** The fixture routes by registered URL, in FIXTURE_OPERATIONS order. */
+const ROUTE_BY_URL: ReadonlyMap<string, FixtureRoute> = new Map(
+  FIXTURE_OPERATIONS.map(({ url, resource, action }) => [url, { url, resource, action, operations: FIXTURE_OPERATIONS.filter((op) => op.url === url) }]),
+);
 
-/** Envelope `method` and merged params of a request to `op`. */
-function contextOf(request: FastifyRequest, op: FixtureOperation): FixtureContext {
-  return fixtureContext(request, op.resource, op.action);
+/** Envelope `method` and merged params of a request to `route`. */
+function contextOf(request: FastifyRequest, route: FixtureRoute): FixtureContext {
+  return fixtureContext(request, route.resource, route.action);
 }
 
-/** Context, site and acting user of a request, the site resolved as auth.cfc resolveSite does before esignature.cfc runs. */
-async function fixtureCall(request: FastifyRequest, op: FixtureOperation, db: TenantDb): Promise<FixtureCall> {
-  const ctx = contextOf(request, op);
-  const user = userOf(request);
-  const site = await resolveFixtureSite(ctx.params, user, db);
+/** Drops a body api.cfm never reads: ColdFusion fills the form scope only for a POST, while a JSON body merges for any method. */
+async function keepLegacyScopes(request: FastifyRequest): Promise<void> {
+  const contentType = request.headers['content-type'] ?? '';
+  if (request.method !== 'POST' && contentType.slice(0, 16).toLowerCase() !== 'application/json') request.body = undefined;
+}
+
+/**
+ * api.cfm with esignature.cfc and auth.cfc in their order: the site, the effective method's operation (notFound for another method),
+ * login, the operation's role groups and a write's CSRF token for the route id; then the operation answers.
+ */
+async function serveFixture(route: FixtureRoute, request: FastifyRequest, reply: FastifyReply, deps: FixtureRouteDeps): Promise<FastifyReply> {
+  const ctx = contextOf(request, route);
+  const { user: claims, roles } = request.opt2Auth;
+  const site = await resolveFixtureSite(ctx.params, claims, deps.db);
+  const method = effectiveMethod(request);
+  const op = route.operations.find((candidate) => candidate.method === method);
+  if (op === undefined) throw new FixtureApiError('notFound');
+  const user = requireFixtureLogin(claims);
+  if (!hasAnyRole(roles, op.requires)) throw new FixtureApiError('forbidden');
+  // auth.cfc requireCsrf skips GET and HEAD, so only the POST operations consume a token.
+  if (op.method === 'POST') await requireCsrf(request, reply, idOf(request));
   // The registered site id, not the token's spelling of it: esignature.cfc stores and filters by resolveSite's canonical id.
-  return { ctx, site, actor: { userId: user.sub, siteId: site.siteId, roles: user.roles } };
+  return HANDLERS[op.operationId]({ ctx, site, actor: { userId: user.sub, siteId: site.siteId, roles: user.roles } }, request, reply, deps);
 }
 
-/** Renders a platform auth denial of `op` as the fixture answers it, after the site check auth.cfc resolveSite runs first. */
-function fixtureDenialRenderer(db: TenantDb, op: FixtureOperation): DenialRenderer {
-  return async (denial, request) => {
-    const claims = (request.opt2Auth as Opt2AuthContext | null)?.user;
-    const answered = await fixtureDenialOverride(denial, { claims, registry: db });
-    recordOutcomeReason(request, fixtureOutcomeReason(answered));
-    return toFixtureError(answered, contextOf(request, op));
+/** Renders a platform auth denial of `route`, such as a rejected token, in the fixture envelope. */
+function fixtureDenialRenderer(route: FixtureRoute): DenialRenderer {
+  return (denial, request) => {
+    recordOutcomeReason(request, fixtureOutcomeReason(denial));
+    return toFixtureError(denial, contextOf(request, route));
   };
 }
 
-/** Registers the six e-signature fixture routes of the contract, answering their errors and auth denials in the fixture envelope. */
+/** Registers the four e-signature fixture routes of the contract for every request method, answering their errors and auth denials in the fixture envelope. */
 export const esignatureFixturePlugin: FastifyPluginAsync<FixtureRouteDeps> = async (app, deps) => {
   app.setErrorHandler((error, request, reply) => {
-    const op = OPERATION_BY_ROUTE.get(routeKey(request.method, request.routeOptions.url ?? ''));
-    if (op === undefined) throw error;
+    const route = ROUTE_BY_URL.get(request.routeOptions.url ?? '');
+    if (route === undefined) throw error;
     // toFixtureError rethrows LegacyServiceUnavailableError, which the service-kit handler answers with the legacy 503.
-    const response = toFixtureError(error, contextOf(request, op));
+    const response = toFixtureError(error, contextOf(request, route));
     // Logged as api.cfm writes its exception record; this handler replaces the service-kit one that would log it.
     if (response.status === 500 && !(error instanceof LegacyApiError)) request.log.error({ error }, 'unhandled fixture exception');
     else recordOutcomeReason(request, fixtureOutcomeReason(error));
     return sendLegacyResponse(reply, response);
   });
 
-  for (const op of FIXTURE_OPERATIONS) {
-    const handler = HANDLERS[op.operationId];
+  for (const route of ROUTE_BY_URL.values()) {
     app.route({
-      method: op.method,
-      url: op.url,
-      config: { opt2: { transport: 'service', requires: op.requires, renderDenial: fixtureDenialRenderer(deps.db, op) } },
-      handler: async (request, reply) => handler(await fixtureCall(request, op, deps.db), request, reply, deps),
+      method: [...TRANSPORT_METHODS],
+      url: route.url,
+      config: { opt2: { ...FIXTURE_ROUTE_AUTH, renderDenial: fixtureDenialRenderer(route) } },
+      preValidation: keepLegacyScopes,
+      handler: async (request, reply) => serveFixture(route, request, reply, deps),
     });
   }
 };

@@ -2,6 +2,8 @@ import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
+import { Readable } from 'node:stream';
+import inject from 'light-my-request';
 
 /** One request exactly as the double received it. */
 export interface RecordedRequest {
@@ -32,6 +34,15 @@ export interface HttpDouble {
   /** Destroys every connection, hung responses included, then stops listening; safe to call repeatedly. */
   close(): Promise<void>;
 }
+
+/** An {@link HttpDouble} served in process: its `fetch` reaches the handler without a socket. */
+export type InProcessDouble = Omit<HttpDouble, 'port'> & {
+  /** Serves calls to `url`; any other origin, and every call after `close()`, is refused. */
+  fetch: typeof fetch;
+};
+
+/** Statuses fetch delivers without a body. */
+const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 103, 204, 205, 304]);
 
 function parseQuery(search: string): Record<string, string | string[]> {
   const query = new Map<string, string | string[]>();
@@ -84,12 +95,10 @@ export function sendJson(
   sendBytes(res, status, JSON.stringify(body), { 'content-type': 'application/json; charset=utf-8', ...headers });
 }
 
-/** Starts a double on an ephemeral 127.0.0.1 port; resolves once it is listening. */
-export async function startHttpDouble(handler: DoubleHandler): Promise<HttpDouble> {
+/** Records each request, then answers it with the current handler; a handler error answers 500. */
+function recorder(handler: DoubleHandler) {
   let current = handler;
-  let closing: Promise<void> | undefined;
   const requests: RecordedRequest[] = [];
-  const sockets = new Set<Socket>();
 
   async function serve(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let recorded: RecordedRequest;
@@ -114,6 +123,24 @@ export async function startHttpDouble(handler: DoubleHandler): Promise<HttpDoubl
     }
   }
 
+  return {
+    serve,
+    requests,
+    setHandler(next: DoubleHandler) {
+      current = next;
+    },
+    clearRequests() {
+      requests.length = 0;
+    },
+  };
+}
+
+/** Starts a double on an ephemeral 127.0.0.1 port; resolves once it is listening. */
+export async function startHttpDouble(handler: DoubleHandler): Promise<HttpDouble> {
+  const { serve, ...recorded } = recorder(handler);
+  let closing: Promise<void> | undefined;
+  const sockets = new Set<Socket>();
+
   const server = createServer((req, res) => {
     void serve(req, res);
   });
@@ -134,19 +161,105 @@ export async function startHttpDouble(handler: DoubleHandler): Promise<HttpDoubl
   return {
     url: `http://127.0.0.1:${port}`,
     port,
-    requests,
-    setHandler(next) {
-      current = next;
-    },
-    clearRequests() {
-      requests.length = 0;
-    },
+    ...recorded,
     close() {
       closing ??= new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
         for (const socket of sockets) socket.destroy();
       });
       return closing;
+    },
+  };
+}
+
+/** The TypeError fetch rejects with when nothing accepts the connection. */
+function connectionRefused(): TypeError {
+  return new TypeError('fetch failed', {
+    cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+  });
+}
+
+/** A `fetch` refusing every call, as against an origin nothing listens on. */
+export function refusingFetch(): typeof fetch {
+  return () => Promise.reject(connectionRefused());
+}
+
+/** Settles as `pending` does unless `signal` aborts first, which rejects with its reason, as fetch does. */
+function unlessAborted<T>(pending: PromiseLike<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    void Promise.resolve(pending)
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
+/**
+ * Creates a double whose `fetch` serves calls to `url`, an origin without a trailing slash, in process.
+ * Requests are recorded as {@link startHttpDouble} records them, with the target exactly as sent; redirects are never followed.
+ */
+export function createInProcessDouble(handler: DoubleHandler, url = 'http://double.test'): InProcessDouble {
+  const { serve, ...recorded } = recorder(handler);
+  const open = new Set<ServerResponse>();
+  let closed = false;
+
+  async function inProcessFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
+    const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const request = new Request(input, init);
+    if (closed || !raw.startsWith(url) || new URL(raw).origin !== url) throw connectionRefused();
+    const { signal } = request;
+    signal.throwIfAborted();
+    const rest = raw.slice(url.length);
+    const target = rest.startsWith('/') ? rest : `/${rest}`;
+    const payload = request.body === null ? undefined : Buffer.from(await request.arrayBuffer());
+    let served: ServerResponse | undefined;
+
+    const exchange = inject(
+      (req, res) => {
+        // light-my-request normalises the target it is given; the handler sees it as sent.
+        req.url = target;
+        served = res;
+        open.add(res);
+        res.once('close', () => open.delete(res));
+        void serve(req, res);
+      },
+      { method: request.method, url: target, headers: Object.fromEntries(request.headers), payload, payloadAsStream: true },
+    );
+    const answered = await unlessAborted(exchange, signal).catch((error: unknown) => {
+      served?.destroy();
+      throw signal.aborted ? signal.reason : new TypeError('fetch failed', { cause: error });
+    });
+
+    const body = answered.stream();
+    const onAbort = (): void => {
+      body.destroy(signal.reason);
+      served?.destroy();
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    body.once('close', () => signal.removeEventListener('abort', onAbort));
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(answered.headers)) {
+      if (value === undefined) continue;
+      for (const item of Array.isArray(value) ? value : [value]) headers.append(name, String(item));
+    }
+    const bodyless = NULL_BODY_STATUSES.has(answered.statusCode);
+    if (bodyless) body.resume();
+    return new Response(bodyless ? null : (Readable.toWeb(body) as ReadableStream<Uint8Array>), {
+      status: answered.statusCode,
+      statusText: answered.statusMessage,
+      headers,
+    });
+  }
+
+  return {
+    url,
+    ...recorded,
+    fetch: inProcessFetch,
+    close() {
+      closed = true;
+      for (const res of open) res.destroy();
+      return Promise.resolve();
     },
   };
 }

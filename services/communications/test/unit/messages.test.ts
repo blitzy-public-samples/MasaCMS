@@ -297,6 +297,26 @@ describe.skipIf(!available)('message domain against PostgreSQL', () => {
     });
   });
 
+  it('logs only the SMTP command and code of a nodemailer error, never its message or server response', async () => {
+    const response = `502 5.5.1 STARTTLS refused for ${TO}`;
+    sendError = Object.assign(new Error(`Error upgrading connection with STARTTLS: ${response}`), { code: 'ETLS', command: 'STARTTLS', response });
+
+    const detail = await submit(LITERAL);
+
+    expect(detail.state).toBe('failed');
+    expect(logLines).toHaveLength(1);
+    expect(logLines[0]).toMatchObject({
+      severity: 'ERROR',
+      tenantId,
+      message: `The current mail server settings for the site '${siteId}' are not valid: SMTP STARTTLS ETLS`,
+      error: { type: 'Error', message: 'SMTP STARTTLS ETLS' },
+    });
+    const line = JSON.stringify(logLines[0]);
+    for (const echoed of ['Error upgrading connection', '5.5.1', TO]) {
+      expect(line).not.toContain(echoed);
+    }
+  });
+
   it('records failed mailpit-not-found when Mailpit never shows the sent message', async () => {
     mailpitId = null;
 

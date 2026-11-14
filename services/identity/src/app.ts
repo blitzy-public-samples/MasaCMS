@@ -1,4 +1,5 @@
 /** Composition root of the identity service. */
+import type { App as FirebaseApp } from 'firebase-admin/app';
 import { createPublisher, readTopicSchema, registerConsumers, type EventPublisher } from '@opt2/platform/events';
 import { serializeError } from '@opt2/platform/logging';
 import { registerMigrationHandlers, registerWritePositionHeader } from '@opt2/platform/migration-kit';
@@ -17,9 +18,11 @@ import {
 import type { TaskPort } from '@opt2/platform/tasks';
 import { tenantRegistryConsumer, type TenantDb } from '@opt2/platform/tenancy';
 import { operationStatus } from './domain/account-operations.js';
-import { createTokenService, type IdentityPlatformAdapter, type TokenSigner } from './domain/tokens.js';
+import { loadRoleMap } from './domain/roles.js';
+import { createCloudIdentityPlatformAdapter, createTokenService, type IdentityPlatformAdapter, type TokenSigner } from './domain/tokens.js';
 import { personContactRegistration } from './events/person-contact.js';
 import { createIdentityEvents, identityPayloadValidators } from './events/publish.js';
+import { GATEWAY_SERVICE } from './legacy/bridge-relay.js';
 import { mappings } from './migration/mappings/index.js';
 import { SCHEMA, createIdentityRepository } from './repo/repository.js';
 import { IDENTITY_UNITS } from './repo/tables.js';
@@ -32,8 +35,27 @@ export const SERVICE_NAME = 'identity';
 /** Equals `info.version` of `contracts/openapi.yaml`. */
 export const SERVICE_VERSION = '1.0.0';
 
-/** Identity reads only the base variables; `OPT2_ENV=cloud` with `GOOGLE_CLOUD_PROJECT` selects Identity Platform issuance. */
-export const identityEnvSchema = baseEnvSchema;
+/** Services identity calls through `OPT2_SERVICE_URLS`: itself (its outbox sweep's task target), people and strategies-content. */
+const REQUIRED_SERVICES: readonly string[] = [SERVICE_NAME, 'people', 'strategies-content'];
+
+/** Base variables with every callee's URL required, the gateway's by either entry; `OPT2_ENV=cloud` selects Identity Platform issuance in the tenants of `GOOGLE_CLOUD_PROJECT`. */
+export const identityEnvSchema = baseEnvSchema.superRefine(
+  (env, ctx) => {
+    // Failed fields keep their raw values here; a map that failed as a whole carries its own issue.
+    const urls: unknown = env.OPT2_SERVICE_URLS;
+    const mapFailed = ctx.issues.some((issue) => issue.path?.length === 1 && issue.path[0] === 'OPT2_SERVICE_URLS');
+    if (mapFailed || typeof urls !== 'object' || urls === null) return;
+    for (const name of REQUIRED_SERVICES.filter((service) => !Object.hasOwn(urls, service))) {
+      ctx.addIssue({ code: 'custom', path: ['OPT2_SERVICE_URLS', name], message: 'is required' });
+    }
+    // createService maps OPT2_GATEWAY_URL over the map's entry, so either one names the gateway.
+    if (env.OPT2_GATEWAY_URL === undefined && !Object.hasOwn(urls, GATEWAY_SERVICE)) {
+      ctx.addIssue({ code: 'custom', path: ['OPT2_GATEWAY_URL'], message: `is required (or OPT2_SERVICE_URLS.${GATEWAY_SERVICE})` });
+    }
+  },
+  // Runs even when other variables failed, so loadEnv lists every missing callee at once.
+  { when: () => true },
+);
 
 /** Parsed environment of the identity process. */
 export type IdentityEnv = LoadedEnv<typeof identityEnvSchema>;
@@ -54,8 +76,10 @@ export interface BuildAppOptions {
   db?: TenantDb;
   publisher?: EventPublisher;
   taskPort?: TaskPort;
-  /** Cloud token adapter; the cloud token service requires one. */
+  /** Cloud token adapter; in the cloud it defaults to one mapping each user-pool site to the project's tenant of that display name. */
   identityPlatform?: IdentityPlatformAdapter;
+  /** Firebase app of the default cloud adapter; defaults to the default app under application-default credentials. */
+  firebaseApp?: FirebaseApp;
   /** Local RS256 signer; defaults to the key pair in `OPT2_STATE_DIR`. */
   signer?: TokenSigner;
 }
@@ -65,6 +89,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const env = options.env ?? loadEnv(identityEnvSchema);
   // Checked before createService acquires anything; an injected publisher needs no emulator.
   const emulatorHost = options.publisher === undefined ? publisherEmulatorHost(env) : undefined;
+  // An invalid role map refuses start-up rather than every signed-in token; minting reuses this parse.
+  await loadRoleMap();
   // Read from the process environment like the route registry, which carries Masa's `MURA_<KEY>` configuration.
   const noCasePathPrefixes = legacyApiPrefixes(legacyApiSettings(process.env).context);
   const app = await createService({
@@ -110,13 +136,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     // Must precede registerMigrationHandlers, which refuses to register without it.
     registerWritePositionHeader(app);
 
+    const identityPlatform =
+      options.identityPlatform ??
+      (env.OPT2_ENV === 'cloud' && env.GOOGLE_CLOUD_PROJECT !== undefined
+        ? await createCloudIdentityPlatformAdapter({ projectId: env.GOOGLE_CLOUD_PROJECT, app: options.firebaseApp })
+        : undefined);
     const tokens = createTokenService({
       env,
       clock,
       db,
       repo: repository,
       signer: options.signer,
-      identityPlatform: options.identityPlatform,
+      identityPlatform,
     });
     await registerRoutes(app, { repository, db, clock, client, tokens });
     registerMigrationHandlers(app, {

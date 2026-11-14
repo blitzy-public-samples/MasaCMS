@@ -65,7 +65,7 @@ export interface AccountReadsDeps {
 
 /** Owner reads for people; tenants come only from `claims.tid` and the registry, never from the caller. */
 export interface AccountReads {
-  /** `getAccount`: the user's account record; null for a missing user, a group or a `pending` account. */
+  /** `getAccount`: the user's account record in the token site's user pools, the token user's own under any registered site; null for a missing user, a group or a `pending` account. */
   getAccount(db: TenantDb, claims: UserClaims, userId: string): Promise<AccountRecord | null>;
   /** `lookupAccounts`: the records `getAccount` finds among `userIds` that `where` matches, in request order. */
   lookupAccounts(db: TenantDb, claims: UserClaims, userIds: readonly string[], where?: AccountWhere): Promise<AccountRecord[]>;
@@ -211,12 +211,17 @@ export function createAccountReads(deps: AccountReadsDeps): AccountReads {
     return readAccountsIn(db, await tokenPoolTenants(db, claims), userIds, where);
   }
 
-  async function lookupAccountsAllSites(db: TenantDb, userIds: readonly string[], where?: AccountWhere): Promise<AccountRecord[]> {
+  /** Every registered site's tenant and its user pools' tenants, without repeats. */
+  async function allSiteTenants(db: TenantDb): Promise<string[]> {
     const tenants: string[] = [];
     for (const { tenantId } of await registeredTenants(db)) {
       tenants.push(tenantId, ...userPoolTenants(await registryEntryForTenant(db, tenantId)));
     }
-    return readAccountsIn(db, [...new Set(tenants)], userIds, where);
+    return [...new Set(tenants)];
+  }
+
+  async function lookupAccountsAllSites(db: TenantDb, userIds: readonly string[], where?: AccountWhere): Promise<AccountRecord[]> {
+    return readAccountsIn(db, await allSiteTenants(db), userIds, where);
   }
 
   /** The tenants a count of `scope` reads: the token site's listed pool, the token tenant when `lookupAccounts` reads it, or every registered tenant. */
@@ -296,7 +301,9 @@ export function createAccountReads(deps: AccountReadsDeps): AccountReads {
   }
 
   async function getAccount(db: TenantDb, claims: UserClaims, userId: string): Promise<AccountRecord | null> {
-    return (await readAccounts(db, claims, [userId]))[0] ?? null;
+    // `userManager.read(session.mura.userID)` finds the session user's own account whatever the site [legacy: admin/core/controllers/ceditprofile.cfc:118,127].
+    const tenants = charKey(userId) === charKey(claims.sub) ? await allSiteTenants(db) : await tokenPoolTenants(db, claims);
+    return (await readAccountsIn(db, tenants, [userId]))[0] ?? null;
   }
 
   async function listSiteGroups(db: TenantDb, claims: UserClaims, isPublic: PoolVisibility): Promise<SiteGroup[]> {

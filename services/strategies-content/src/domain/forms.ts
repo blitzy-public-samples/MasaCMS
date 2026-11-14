@@ -2,6 +2,7 @@
  * Form responses and the data manager (dataCollectionManager.cfc, carch.datamanager and carch.downloaddata), the cform
  * dialog bean inputs and form list (cform.cfc:161-210, formBuilderManager.cfc:349-368), and JSON API `submitForm`.
  */
+import { PassThrough, type Readable, type Writable } from 'node:stream';
 import {
   cfEq,
   cfIsBoolean,
@@ -483,17 +484,17 @@ export interface ResponseListing {
 }
 
 /**
- * dsp_response.cfm:1-19, 85-88: non-date `date1`/`date2` fall back to `rsDataInfo`, the columns are the summary display
- * fields (`listLast(responseDisplayFields, '~')`) else the current field list, and with `rc.minute1` the rows are read.
+ * dsp_response.cfm:1-19, 85-88: `rc` with non-date `date1`/`date2` from `rsDataInfo`, and `fieldnames` the summary
+ * display fields (`listLast(responseDisplayFields, '~')`) else the current field list.
  */
-export async function responseList(
+async function responseListRc(
   deps: ContentDeps,
   actor: Actor,
   rc: LegacyRc,
   bean: LegacyContentBean,
   rsDataInfo: DownloadSelectRow,
-  locale = DEFAULT_LOCALE,
-): Promise<ResponseListing> {
+  locale: string,
+): Promise<Record<string, unknown>> {
   let view: Record<string, unknown> = { ...rc };
   for (const [key, fallback] of [['date1', rsDataInfo.firstentered], ['date2', rsDataInfo.lastentered]] as const) {
     const value = rcGet(view, key);
@@ -504,7 +505,19 @@ export async function responseList(
     display.length > 0 && display !== '~'
       ? (cfListToArray(display, '~').at(-1) ?? '').replaceAll('^', ',')
       : await getCurrentFieldList(deps, actor, rcTextOr(view, 'contentid', ''));
-  view = withValue(view, 'fieldnames', fieldnames);
+  return withValue(view, 'fieldnames', fieldnames);
+}
+
+/** dsp_response.cfm:1-19, 85-88, 162-210: the view's `rc` and, with `rc.minute1`, every row it renders. */
+export async function responseList(
+  deps: ContentDeps,
+  actor: Actor,
+  rc: LegacyRc,
+  bean: LegacyContentBean,
+  rsDataInfo: DownloadSelectRow,
+  locale = DEFAULT_LOCALE,
+): Promise<ResponseListing> {
+  const view = await responseListRc(deps, actor, rc, bean, rsDataInfo, locale);
   const rows = rcHas(view, 'minute1') ? await getData(deps, actor, view, locale) : null;
   return { rc: view, rows };
 }
@@ -566,15 +579,20 @@ export async function dataManagerAction(deps: ContentDeps, actor: Actor, rc: Leg
   const kind = dataManagerView(bean.text('body'), rcTextOr(view, 'action', ''));
   let filteredDeletions: number | null = null;
   if (kind === 'responses' && rcHas(view, 'minute1')) {
-    const listing = await responseList(deps, actor, view, bean, rsDataInfo, locale);
+    const args = formResponsesArgs(await responseListRc(deps, actor, view, bean, rsDataInfo, locale), locale);
     const flag = rcGet(view, 'delete');
-    if (listing.rows !== null && listing.rows.length > 0 && cfIsBoolean(flag) && cfToBoolean(flag)) {
-      const rows = listing.rows;
+    if (cfIsBoolean(flag) && cfToBoolean(flag)) {
       const write = writeContextFor(actor, opts.requestId);
-      await withGatedTenant(deps.db, actor.tenantId, async (tx) => {
-        for (const row of rows) await deleteResponseInTx(deps, tx, row.responseid, true, write);
+      // The cursor reads the snapshot of its DECLARE, so the deletes leave the rows it has yet to fetch unchanged.
+      const deleted = await withGatedTenant(deps.db, actor.tenantId, async (tx) => {
+        let count = 0;
+        for await (const batch of deps.repository.forms.responseBatches(tx, args)) {
+          for (const row of batch) await deleteResponseInTx(deps, tx, row.responseid, true, write);
+          count += batch.length;
+        }
+        return count;
       });
-      filteredDeletions = rows.length;
+      if (deleted > 0) filteredDeletions = deleted;
     }
   }
   return { rc: view, bean, outcome, view: kind, rsDataInfo, filteredDeletions };
@@ -606,10 +624,28 @@ export interface DownloadDataResult {
   fileName: string;
   /** The header row's field columns, after `DATE/TIME ENTERED`. */
   columns: string[];
-  /** Each data row's cells as written: the entry time, then one cell per listed field. */
-  rows: string[][];
-  /** The CSV body: every cell followed by `,`, every row by CRLF. */
-  body: string;
+  /** The CSV bytes, read batch by batch in one tenant transaction whose connection it holds until it ends or is destroyed. */
+  body: Readable;
+}
+
+/** One downloaddata.cfm line: every cell followed by `,`, then CRLF. */
+function csvLine(cells: readonly string[]): string {
+  return `${cells.map((cell) => `${cell},`).join('')}${CRLF}`;
+}
+
+/** Writes `chunk` to `out` unless destroyed, then waits for its buffer to drain; false once `out` is destroyed. */
+function writeDrained(out: Writable, chunk: string): Promise<boolean> {
+  if (out.destroyed) return Promise.resolve(false);
+  if (out.write(chunk)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const settle = (): void => {
+      out.off('drain', settle);
+      out.off('close', settle);
+      resolve(!out.destroyed);
+    };
+    out.on('drain', settle);
+    out.on('close', settle);
+  });
 }
 
 /** downloaddata.cfm's `fixDelim`: quotes doubled, CRLF as a space, wrapped in quotes. */
@@ -636,8 +672,9 @@ function downloadCell(info: WddxValue, field: string, link: AttachmentLinkParts)
 
 /**
  * carch.downloaddata (carch.cfc:480-485, downloaddata.cfm): the current field list's `getData` rows as CSV, each row's
- * cells over the field list with `rc.columns` `fixed`, else over the row's stored `fieldlist`.
- * @throws Error('Invalid WDDX packet') for a packet legacy cannot read, which fails the download as legacy fails it.
+ * cells over the field list with `rc.columns` `fixed`, else over the row's stored `fieldlist`. Resolves with the header
+ * and first batch buffered; a later batch's failure destroys `body`.
+ * @throws Error('Invalid WDDX packet') for a first-batch packet legacy cannot read, which fails the download as legacy fails it.
  */
 export async function downloadData(deps: ContentDeps, actor: Actor, rc: LegacyRc, opts: DownloadDataOptions): Promise<DownloadDataResult> {
   const locale = opts.locale ?? DEFAULT_LOCALE;
@@ -645,18 +682,49 @@ export async function downloadData(deps: ContentDeps, actor: Actor, rc: LegacyRc
   const bean = await getActiveForm(deps, actor, contentId, rcText(rc, 'siteid'));
   const fieldnames = await getCurrentFieldList(deps, actor, contentId);
   const view = withValue(withDefaults(rc, { columns: '' }), 'fieldnames', fieldnames);
-  const packets = await getData(deps, actor, view, locale);
+  const args = formResponsesArgs(view, locale);
   const columns = cfListToArray(fieldnames);
   const fixed = cfEq(rcText(view, 'columns'), 'fixed');
-  const rows = packets.map((packet) => {
-    const info = wddx2cfml(packet.data ?? '');
-    const fields = fixed ? columns : cfListToArray(packet.fieldlist ?? '');
-    return [packet.entered === null ? '' : cfTimestampText(packet.entered), ...fields.map((field) => downloadCell(info, field, opts.link))];
-  });
-  const line = (cells: readonly string[]): string => `${cells.map((cell) => `${cell},`).join('')}${CRLF}`;
-  const body = line(['DATE/TIME ENTERED', ...columns]) + rows.map(line).join('');
+  const rowsText = (packets: readonly FormResponsePacketRow[]): string =>
+    packets
+      .map((packet) => {
+        const info = wddx2cfml(packet.data ?? '');
+        const fields = fixed ? columns : cfListToArray(packet.fieldlist ?? '');
+        return csvLine([packet.entered === null ? '' : cfTimestampText(packet.entered), ...fields.map((field) => downloadCell(info, field, opts.link))]);
+      })
+      .join('');
   const fileName = `${bean.text('title').replaceAll(' ', '-')}_${cfLsDateFormat(deps.clock.now(), 'mmddyy', locale)}.csv`;
-  return { fileName, columns, rows, body };
+  // No high-water mark: each batch is fetched only once the reader has taken the last.
+  const body = new PassThrough({ highWaterMark: 0 });
+  const result: DownloadDataResult = { fileName, columns, body };
+  return new Promise<DownloadDataResult>((resolve, reject) => {
+    let started = false;
+    // `body` reaches the caller once the first chunk is buffered, so every drain awaited waits on the caller's reads.
+    const send = (chunk: string): Promise<boolean> => {
+      const sent = writeDrained(body, chunk);
+      if (!started) {
+        started = true;
+        resolve(result);
+      }
+      return sent;
+    };
+    void withTenant(deps.db, actor.tenantId, async (tx) => {
+      let head = csvLine(['DATE/TIME ENTERED', ...columns]);
+      for await (const batch of deps.repository.forms.responseBatches(tx, args)) {
+        if (!(await send(head + rowsText(batch)))) return;
+        head = '';
+      }
+      if (!started) await send(head);
+    }).then(
+      () => {
+        if (!body.destroyed) body.end();
+      },
+      (error: Error) => {
+        if (started) body.destroy(error);
+        else reject(error);
+      },
+    );
+  });
 }
 
 // ---- cform dialogs (cform.cfc:161-210, formBuilderManager.cfc:91-368) ----

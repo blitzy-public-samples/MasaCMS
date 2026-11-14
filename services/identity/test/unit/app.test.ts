@@ -1,17 +1,20 @@
-/** Composition root of identity: the contract route set, the JWKS signer, JSON API path variants, consumers, the sweep chain and resource ownership. */
+/** Composition root of identity: the role-map start-up check, the cloud Identity Platform adapter, the contract route set, the JWKS signer, JSON API path variants, consumers, the sweep chain and resource ownership. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { deleteApp } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
+import { decodeJwt } from 'jose';
 import { parse } from 'yaml';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { collectRouteMatrix } from '@opt2/platform/auth';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { cloudUserTokenSettings, collectRouteMatrix } from '@opt2/platform/auth';
 import { subscriptionName } from '@opt2/platform/events';
-import { createLogger } from '@opt2/platform/logging';
-import { baseEnvSchema, loadEnv, type BaseEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { createLogger, serializeError } from '@opt2/platform/logging';
+import { EnvValidationError, baseEnvSchema, loadEnv, type BaseEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import type { TaskPort } from '@opt2/platform/tasks';
-import { SITE_CHANGED_TOPIC, tenantForRegisteredSite, type TenantDb } from '@opt2/platform/tenancy';
+import { SITE_CHANGED_TOPIC, SYSTEM_TENANT_ID, tenantForRegisteredSite, type TenantDb } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
   createCapturingPublisher,
@@ -25,8 +28,12 @@ import {
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { SERVICE_NAME, SERVICE_VERSION, buildApp, identityEnvSchema, type BuildAppOptions } from '../../src/app.js';
-import type { Jwks, TokenSigner } from '../../src/domain/tokens.js';
+import { SIGN_IN_WITH_CUSTOM_TOKEN_URL, type Jwks, type TokenSigner } from '../../src/domain/tokens.js';
 import { createIdentityTaskPort } from '../../src/tasks/port.js';
+import { createFakeTaskPort, createTestStateDir, headersFor, testEnv } from '../helpers/app.js';
+import { recordTenantListing, testFirebaseApp } from '../helpers/firebase.js';
+import { createRecordingDb } from '../helpers/memory-repo.js';
+import { SITE_ADMIN_A, loginSnapshotFixture, sessionRow } from '../helpers/rows.js';
 import { CLOCK } from '../helpers/service.js';
 
 type ContractOperation = Record<string, unknown>;
@@ -38,8 +45,11 @@ const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', impor
 const HTTP_METHODS = new Set(['get', 'put', 'post', 'delete', 'patch', 'head', 'options']);
 const SWEEP_QUEUE = 'identity-outbox-sweep';
 const SITE_SUBSCRIPTION = subscriptionName(SERVICE_NAME, SITE_CHANGED_TOPIC);
+const SESSION_READ = /^SELECT \* FROM "identity"\."session" WHERE "tenant_id" = \$1 AND "session_id" = \$2$/;
 const SIGNER_KEYS: Jwks = { keys: [{ kty: 'RSA', n: 'test-modulus', e: 'AQAB', kid: 'app-test-kid', alg: 'RS256', use: 'sig' }] };
 const silentLogger = createLogger({ service: SERVICE_NAME, version: SERVICE_VERSION, env: 'local', destination: { write: () => undefined } });
+// Ports of harness/repro/ports.env; the gateway comes from OPT2_GATEWAY_URL.
+const CALLEE_URLS = { identity: 'http://127.0.0.1:8111', people: 'http://127.0.0.1:8112', 'strategies-content': 'http://127.0.0.1:8114' };
 
 /** Route declaration as the route matrix and the contract both state it. */
 interface Declared {
@@ -86,7 +96,8 @@ function envFor(stateDir: string, overrides: Readonly<Record<string, string | un
     OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
     OPT2_TOKEN_ISSUER: 'opt2-local-identity',
     OPT2_TOKEN_AUDIENCE: 'opt2-local',
-    OPT2_SERVICE_URLS: JSON.stringify({ identity: 'http://127.0.0.1:8111' }),
+    OPT2_GATEWAY_URL: 'http://127.0.0.1:8100',
+    OPT2_SERVICE_URLS: JSON.stringify(CALLEE_URLS),
     OPT2_STATE_DIR: stateDir,
     PUBSUB_EMULATOR_HOST: '127.0.0.1:9',
     LOG_LEVEL: 'error',
@@ -95,11 +106,172 @@ function envFor(stateDir: string, overrides: Readonly<Record<string, string | un
   });
 }
 
+/** The issues `loadEnv(identityEnvSchema)` reports for `envFor(…, overrides)`; none when it parses. */
+function envIssues(overrides: Readonly<Record<string, string | undefined>>): string[] {
+  try {
+    envFor(tmpdir(), overrides);
+    return [];
+  } catch (err) {
+    if (err instanceof EnvValidationError) return err.issues;
+    throw err;
+  }
+}
+
 describe('identity composition constants', () => {
-  it('names the service, versions it as the contract does and reads only the base environment', () => {
+  it('names the service, versions it as the contract does and reads only the base variables', () => {
     expect(SERVICE_NAME).toBe('identity');
     expect(SERVICE_VERSION).toBe(OPENAPI.info.version);
-    expect(identityEnvSchema).toBe(baseEnvSchema);
+    expect(Object.keys(identityEnvSchema.shape)).toStrictEqual(Object.keys(baseEnvSchema.shape));
+  });
+
+  const everyCallee = [
+    'OPT2_SERVICE_URLS.identity: is required',
+    'OPT2_SERVICE_URLS.people: is required',
+    'OPT2_SERVICE_URLS.strategies-content: is required',
+  ];
+  it.each<[string, Record<string, string | undefined>, string[]]>([
+    ['parses a map naming every callee beside OPT2_GATEWAY_URL', {}, []],
+    [
+      'parses a map naming the gateway without OPT2_GATEWAY_URL',
+      { OPT2_GATEWAY_URL: undefined, OPT2_SERVICE_URLS: JSON.stringify({ ...CALLEE_URLS, gateway: 'http://127.0.0.1:8100' }) },
+      [],
+    ],
+    ['names every callee when OPT2_SERVICE_URLS is unset', { OPT2_SERVICE_URLS: undefined }, everyCallee],
+    ['names every callee when OPT2_SERVICE_URLS is {}', { OPT2_SERVICE_URLS: '{}' }, everyCallee],
+    [
+      'names only the callees a partial map lacks',
+      { OPT2_SERVICE_URLS: JSON.stringify({ people: CALLEE_URLS.people }) },
+      ['OPT2_SERVICE_URLS.identity: is required', 'OPT2_SERVICE_URLS.strategies-content: is required'],
+    ],
+    [
+      'names OPT2_GATEWAY_URL when neither it nor the map names the gateway',
+      { OPT2_GATEWAY_URL: undefined },
+      ['OPT2_GATEWAY_URL: is required (or OPT2_SERVICE_URLS.gateway)'],
+    ],
+    [
+      'names the callees beside another failed variable',
+      { PORT: 'abc', OPT2_SERVICE_URLS: '{}' },
+      [expect.stringMatching(/^PORT: /), ...everyCallee],
+    ],
+    [
+      'reports only its own issue for a map that is not JSON',
+      { OPT2_GATEWAY_URL: undefined, OPT2_SERVICE_URLS: 'not-json' },
+      ['OPT2_SERVICE_URLS: OPT2_SERVICE_URLS must be a JSON object'],
+    ],
+    [
+      'reports only its own issue for a JSON array',
+      { OPT2_GATEWAY_URL: undefined, OPT2_SERVICE_URLS: '[]' },
+      [expect.stringMatching(/^OPT2_SERVICE_URLS: /)],
+    ],
+  ])('identityEnvSchema %s', (_case, overrides, issues) => {
+    expect(envIssues(overrides)).toStrictEqual(issues);
+  });
+});
+
+describe('identity buildApp with an invalid role map', () => {
+  afterEach(() => {
+    vi.doUnmock('node:fs/promises');
+    vi.resetModules();
+  });
+
+  it.each([
+    { invalid: 'is not JSON', text: '{bad json', reason: /^role-map\.json: .+ JSON/, cause: SyntaxError },
+    {
+      invalid: 'maps a group to an unknown role',
+      text: JSON.stringify({ sourceSha: '696383140578f8dea3ece26f80cd7bfb370ddf0f', scope: 'privateUserPool', groups: [{ groupName: 'Payroll', role: 'timesheets.bogus-role' }] }),
+      reason: /^role-map\.json: role-map\.json group .+ needs a groupName and a synthetic role$/,
+      cause: TypeError,
+    },
+  ])('refuses to start when role-map.json $invalid', async ({ text, reason, cause }) => {
+    vi.resetModules();
+    vi.doMock('node:fs/promises', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs/promises')>();
+      const readFile = ((file: Parameters<typeof actual.readFile>[0], ...rest: unknown[]) =>
+        String(file).endsWith('/config/role-map.json')
+          ? Promise.resolve(text)
+          : (actual.readFile as (...args: unknown[]) => Promise<unknown>)(file, ...rest)) as typeof actual.readFile;
+      return { ...actual, readFile };
+    });
+    const fresh = await import('../../src/app.js');
+
+    const refused = await fresh.buildApp({ env: envFor(path.join(tmpdir(), 'identity-unused-state')) }).then(
+      () => undefined,
+      (err: unknown) => err as Error,
+    );
+
+    expect(refused?.name).toBe('RoleMapError');
+    expect(refused?.message).toMatch(reason);
+    expect(refused?.cause).toBeInstanceOf(cause);
+    expect(serializeError(refused).message).toBe('identity: invalid configuration file role-map.json');
+  });
+});
+
+describe('identity buildApp in the cloud', () => {
+  it('mints through the Identity Platform adapter it builds from the project tenants', async () => {
+    const session = 'S0000000-0000-0000-0000000000000001';
+    const user = SITE_ADMIN_A.account.userid;
+    const { issuer, audience } = cloudUserTokenSettings('proj');
+    const stateDir = await createTestStateDir();
+    const env = testEnv(
+      {
+        OPT2_ENV: 'cloud',
+        OPT2_DB_AUTH: undefined,
+        OPT2_TASKS_ADAPTER: 'cloud',
+        OPT2_STORAGE_ADAPTER: 'cloud',
+        GOOGLE_CLOUD_PROJECT: 'proj',
+        OPT2_TOKEN_ISSUER: issuer,
+        OPT2_TOKEN_AUDIENCE: audience,
+        LOG_LEVEL: 'error',
+      },
+      stateDir,
+    );
+    const db = createRecordingDb();
+    const stored = sessionRow({
+      tenant_id: SYSTEM_TENANT_ID,
+      session_id: session,
+      user_id: user,
+      site_id: TENANT_A.siteId,
+      login_snapshot: JSON.stringify(loginSnapshotFixture({ actor: SITE_ADMIN_A })),
+      epoch: '3',
+    });
+    db.respond((sql, values) => SESSION_READ.test(sql) && values[0] === SYSTEM_TENANT_ID && values[1] === session, [stored]);
+    const firebaseApp = await testFirebaseApp('identity-app-cloud');
+    const pageTokens = recordTenantListing(firebaseApp, [
+      { tenants: [{ tenantId: 'umbrella-2b4c6', displayName: 'umbrella' }], pageToken: 'page-2' },
+      { tenants: [{ tenantId: 'tenant-a-8d0f2', displayName: 'tenant-a' }] },
+    ]);
+    const exchanges: string[] = [];
+    const passThrough = globalThis.fetch;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      if (String(input) !== SIGN_IN_WITH_CUSTOM_TOKEN_URL) return passThrough(input, init);
+      exchanges.push(String(init?.body));
+      return Promise.resolve(new Response(JSON.stringify({ idToken: 'recorded-id-token', expiresIn: '3600', refreshToken: 'refresh' })));
+    });
+    let app: FastifyInstance | undefined;
+    try {
+      app = await buildApp({
+        env, clock: CLOCK, verifierOverride: testVerifier(SERVICE_NAME), db, publisher: createCapturingPublisher(), taskPort: createFakeTaskPort(), firebaseApp,
+      });
+      const res = await app.inject({
+        method: 'POST',
+        url: '/internal/v1/tokens',
+        headers: { ...(await headersFor('service:gateway')), 'content-type': 'application/json' },
+        payload: JSON.stringify({ sessionId: session, siteId: TENANT_A.siteId }),
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ token: 'recorded-id-token', epoch: 3, claims: { iss: issuer, aud: 'proj', sub: user, sid: session, site: TENANT_A.siteId } });
+      expect(pageTokens).toEqual([undefined, 'page-2']);
+      expect(exchanges).toHaveLength(1);
+      const body = JSON.parse(exchanges[0] ?? '{}') as { token: string; tenantId: string };
+      expect(body.tenantId).toBe('tenant-a-8d0f2');
+      expect(decodeJwt(body.token)).toMatchObject({ uid: user, tenant_id: 'tenant-a-8d0f2' });
+    } finally {
+      await app?.close();
+      fetchSpy.mockRestore();
+      await deleteApp(firebaseApp);
+      await rm(stateDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -208,12 +380,18 @@ describe.skipIf(!available)('identity buildApp over a throwaway schema', () => {
     const publisherClose = vi.spyOn(publisher, 'close');
     const portClose = vi.spyOn(port, 'close');
     const cloud = envFor(stateDir, { OPT2_ENV: 'cloud', GOOGLE_CLOUD_PROJECT: 'opt2-test', PUBSUB_EMULATOR_HOST: undefined, OPT2_JWKS_URL: undefined });
+    const firebaseApp = await testFirebaseApp('identity-app-refused-listing');
+    getAuth(firebaseApp).tenantManager().listTenants = () => Promise.reject(new Error('PERMISSION_DENIED: identitytoolkit.tenants.list'));
 
-    await expect(build({ env: cloud, db, publisher, taskPort: port })).rejects.toThrow('An Identity Platform adapter is required to mint tokens in the cloud');
-    expect(end).not.toHaveBeenCalled();
-    expect(publisherClose).not.toHaveBeenCalled();
-    expect(portClose).not.toHaveBeenCalled();
-    publisherClose.mockRestore();
-    portClose.mockRestore();
+    try {
+      await expect(build({ env: cloud, db, publisher, taskPort: port, firebaseApp })).rejects.toThrow('PERMISSION_DENIED: identitytoolkit.tenants.list');
+      expect(end).not.toHaveBeenCalled();
+      expect(publisherClose).not.toHaveBeenCalled();
+      expect(portClose).not.toHaveBeenCalled();
+    } finally {
+      publisherClose.mockRestore();
+      portClose.mockRestore();
+      await deleteApp(firebaseApp);
+    }
   });
 });

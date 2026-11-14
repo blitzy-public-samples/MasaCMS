@@ -2438,7 +2438,7 @@ paths:
         - $ref: '#/components/parameters/ListLimit'
       responses:
         '200':
-          description: One page of the clients, by client id.
+          description: One page of the clients, by client id, without their secrets.
           content:
             application/json:
               schema:
@@ -2811,6 +2811,7 @@ paths:
         - service:identity
         - service:gateway
         - service:communications
+        - service:e-signature
         - service:finance
         - service:reporting
         - service:surveys
@@ -2950,7 +2951,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AccountOperation'
         '400':
-          description: Legacy validation errors of the account part, such as a user name already taken in the user pool, or a malformed body.
+          description: Legacy validation errors of the account part, such as a user name already taken in the user pool; a malformed body; or a `siteId` that is neither the token site's user pool nor, for the token user's update of their own account, the user pool of that site.
           content:
             application/json:
               schema:
@@ -3085,7 +3086,7 @@ paths:
       - $ref: '#/components/parameters/UserId'
     get:
       operationId: getAccount
-      summary: Reads the identity columns of a `Type=2` account in the user pools of the token's site, for `userDAO.read`.
+      summary: Reads the identity columns of a `Type=2` account in the user pools of the token's site, or of the token user's own account under any registered site or its user pools, for `userDAO.read`.
       tags: [internal]
       x-opt2-transport: service
       x-opt2-requires:
@@ -3104,10 +3105,38 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
-          description: No such account in the user pools of the token's site, a group, or a `pending` account.
+          description: No such account in the user pools of the token's site (for the token's own user, under any registered site), a group, or a `pending` account.
         '503':
           $ref: '#/components/responses/Unavailable'
           description: The user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on an account unit for 30 s.
+  /internal/v1/accounts/{userId}/memberships:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      operationId: getAccountMemberships
+      summary: Reads the groups a user belongs to as `readMembershipIDs` lists them, for `userDAO.read` of a JSON API user or a roster save whatever the caller's roles.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:people
+      security: [{userToken: [], invocationCredential: []}]
+      responses:
+        '200':
+          description: The user's membership group ids from every registered tenant that name a stored group, by group name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountMemberships'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: A malformed user id.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on `identity.membership` or `identity.group_account` for 30 s.
   /internal/v1/accounts/{userId}/login-block:
     parameters:
       - $ref: '#/components/parameters/UserId'
@@ -5284,14 +5313,21 @@ components:
           $ref: '#/components/schemas/ListTotal'
         nextOffset:
           $ref: '#/components/schemas/NextOffset'
+    CredentialFreeKey:
+      type: string
+      description: A key of a group or member row; `Password` and `PasswordCreated`, in any casing, are never sent.
+      not:
+        pattern: '^[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]([Cc][Rr][Ee][Aa][Tt][Ee][Dd])?$'
     GroupAccount:
       type: object
-      description: A `tusers` row with `Type=1` in bootstrap column casing; person-style columns are normally null, and columns added later in the live catalog, such as `tablist`, follow.
+      description: A `tusers` row with `Type=1` in bootstrap column casing without `Password` and `PasswordCreated`; person-style columns are normally null, and columns added later in the live catalog, such as `tablist`, follow.
       required:
         - UserID
         - Type
         - SiteID
       additionalProperties: true
+      propertyNames:
+        $ref: '#/components/schemas/CredentialFreeKey'
       properties:
         UserID:
           $ref: '#/components/schemas/CfUuid'
@@ -5303,10 +5339,6 @@ components:
           $ref: '#/components/schemas/NullableString'
         UserName:
           $ref: '#/components/schemas/NullableString'
-        Password:
-          $ref: '#/components/schemas/NullableString'
-        PasswordCreated:
-          $ref: '#/components/schemas/NullableTimestamp'
         Email:
           $ref: '#/components/schemas/NullableString'
         Company:
@@ -5434,11 +5466,13 @@ components:
           $ref: '#/components/schemas/LegacyErrors'
     GroupMember:
       type: object
-      description: One member row of `readGroupMemberships`, every column in query order; a user's person columns come from people's person events, `photoFileExt` from strategies-content.
+      description: One member row of `readGroupMemberships`, every column in query order but `PasswordCreated`, which only the CSV download carries; a user's person columns come from people's person events, `photoFileExt` from strategies-content.
       required:
         - groupID
         - userID
       additionalProperties: true
+      propertyNames:
+        $ref: '#/components/schemas/CredentialFreeKey'
       properties:
         groupID:
           $ref: '#/components/schemas/CfUuid'
@@ -5452,8 +5486,6 @@ components:
           $ref: '#/components/schemas/NullableString'
         UserName:
           $ref: '#/components/schemas/NullableString'
-        PasswordCreated:
-          $ref: '#/components/schemas/NullableTimestamp'
         Email:
           $ref: '#/components/schemas/NullableString'
         Type:
@@ -5688,6 +5720,38 @@ components:
           $ref: '#/components/schemas/NullableString'
         lastupdatebidy:
           $ref: '#/components/schemas/NullableString'
+    OAuthClientListItem:
+      type: object
+      description: One row of the Web Services list; an `OAuthClient` without `clientsecret`, which `cwebservice.list` never shows.
+      required:
+        - clientid
+        - siteid
+        - name
+        - granttype
+      additionalProperties: false
+      properties:
+        clientid:
+          $ref: '#/components/schemas/CfUuid'
+        siteid:
+          type: string
+        userid:
+          $ref: '#/components/schemas/NullableString'
+        name:
+          $ref: '#/components/schemas/NullableString'
+        description:
+          $ref: '#/components/schemas/NullableString'
+        granttype:
+          $ref: '#/components/schemas/OAuthGrantType'
+        redirecturl:
+          $ref: '#/components/schemas/NullableString'
+        created:
+          $ref: '#/components/schemas/NullableTimestamp'
+        lastupdate:
+          $ref: '#/components/schemas/NullableTimestamp'
+        lastupdateby:
+          $ref: '#/components/schemas/NullableString'
+        lastupdatebidy:
+          $ref: '#/components/schemas/NullableString'
     OAuthClientList:
       type: object
       required:
@@ -5699,7 +5763,7 @@ components:
         items:
           type: array
           items:
-            $ref: '#/components/schemas/OAuthClient'
+            $ref: '#/components/schemas/OAuthClientListItem'
         total:
           $ref: '#/components/schemas/ListTotal'
         nextOffset:
@@ -6611,6 +6675,17 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/MembershipListItem'
+    AccountMemberships:
+      type: object
+      description: '`readMembershipIDs` of one user: the stored groups it belongs to, by group name.'
+      required:
+        - groupIds
+      additionalProperties: false
+      properties:
+        groupIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/CfUuid'
     LoginBlockRequest:
       type: object
       description: '`removeBlock` true clears the loaded strikes before the block is read, as the `removeBlock` link of `cUsers.editUser` does.'

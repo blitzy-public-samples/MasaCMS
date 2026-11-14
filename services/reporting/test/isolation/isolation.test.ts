@@ -40,7 +40,7 @@ import { LEGACY_SESSION_TRACKING_ROWS, definitionFor, jobFor } from '../helpers/
 
 type Row = Record<string, unknown>;
 
-// pgAvailable rejects when PG_* is unset, so only the presence of PG_HOST is read here, to skip rather than fail.
+// An unset PG_HOST skips the suite without probing the server.
 const PG_READY = Boolean(process.env.PG_HOST) && (await pgAvailable());
 const PLATFORM_GROUPS: readonly PlatformTableGroup[] = ['tenancy', 'migrationKit', 'events', 'outbox', 'tasks'];
 const EXPORTER = Roles.reportingExporter;
@@ -199,9 +199,11 @@ describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
   describe('export routes, tenant from the token only', () => {
     const DEFINITION_A = definitionFor(TENANT_A, 'finance.records');
     const DEFINITION_B = definitionFor(TENANT_B, 'finance.records');
+    const DEFINITION_U = definitionFor(TENANT_UMBRELLA, 'finance.records');
     const OUTPUT_A = Buffer.from('record_id,title,amount,state\r\nF1A00000-0000-4000-8000000000000001,Quarterly travel,1250.5000,SUBMITTED\r\n');
     const DONE_A = jobFor(DEFINITION_A, { format: 'csv', state: 'done' });
     const QUEUED_B = jobFor(DEFINITION_B, { format: 'csv' });
+    const QUEUED_U = jobFor(DEFINITION_U, { format: 'csv' });
     const OUTSIDERS = [TENANT_B, TENANT_UMBRELLA] as const;
     const JOB_PATHS = [`${V1_EXPORTS}/:id`, `${V1_EXPORTS}/:id/download-url`, `${FIXTURE_EXPORTS}/:id`, `${FIXTURE_EXPORTS}/:id/download`] as const;
     let doneA: ExportJobRow = DONE_A;
@@ -228,8 +230,8 @@ describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
       const key = exportObjectKey(TENANT_A.tenantId, DONE_A.job_id, 'csv');
       const put = await t.storage.put(EXPORT_BUCKET, key, OUTPUT_A, { contentType: 'text/csv' });
       doneA = { ...DONE_A, object_key: key, output_sha256: put.sha256 };
-      await t.seed('export_definition', [DEFINITION_A, DEFINITION_B]);
-      await t.seed('export_job', [doneA, QUEUED_B]);
+      await t.seed('export_definition', [DEFINITION_A, DEFINITION_B, DEFINITION_U]);
+      await t.seed('export_job', [doneA, QUEUED_B, QUEUED_U]);
     });
 
     it('a tenant A exporter lists, reads and downloads its own job on /v1 and the fixture routes', async () => {
@@ -322,13 +324,13 @@ describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
   describe('export-run task, tenant from the stored job only', () => {
     const DEFINITION = definitionFor(TENANT_A, 'finance.records', { definition_id: cfUuid() });
     const QUEUED_A = jobFor(DEFINITION, { format: 'csv' });
-    const RUN_PATH = RUN_QUEUE.targetPath.replace('{exportId}', QUEUED_A.job_id);
+    const RUN_A = jobFor(DEFINITION, { format: 'csv' });
 
-    /** Delivers `body` to the job's run route as the tasks-invoker would. */
-    async function deliver(body: TaskWireBody): Promise<InjectResponse> {
+    /** Delivers `body` to the run route of `job` as the tasks-invoker would. */
+    async function deliver(job: ExportJobRow, body: TaskWireBody): Promise<InjectResponse> {
       return built().app.inject({
         method: 'POST',
-        url: RUN_PATH,
+        url: RUN_QUEUE.targetPath.replace('{exportId}', job.job_id),
         headers: {
           authorization: `Bearer ${await mintTasksInvokerToken({ audience: SERVICE })}`,
           [CLOUD_TASKS_HEADERS.taskName]: body.name,
@@ -341,7 +343,7 @@ describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
     beforeAll(async () => {
       const t = built();
       await t.seed('export_definition', [DEFINITION]);
-      await t.seed('export_job', [QUEUED_A]);
+      await t.seed('export_job', [QUEUED_A, RUN_A]);
     });
 
     it('refuses a run task naming tenant B for a tenant A job and leaves the job queued with no output', async () => {
@@ -349,7 +351,7 @@ describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
       const wire = await queueRun(t, QUEUED_A);
       const before = await storedJob(TENANT_A, QUEUED_A.job_id);
 
-      const res = await deliver({ ...wire, tenantId: TENANT_B.tenantId });
+      const res = await deliver(QUEUED_A, { ...wire, tenantId: TENANT_B.tenantId });
 
       const refusal = errorSpec(new TaskTenantMismatchError(TENANT_B.tenantId, wire.name).type);
       expect(wire).toMatchObject({
@@ -368,15 +370,15 @@ describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
       expect(await t.storage.head(EXPORT_BUCKET, exportAttemptKey(TENANT_A.tenantId, QUEUED_A.job_id, 'csv', '2'))).toBeNull();
     });
 
-    it('runs the same task under tenant A, moving the job out of queued', async () => {
-      const wire = await queueRun(built(), QUEUED_A);
+    it("runs a tenant A job's run task under tenant A, moving the job out of queued", async () => {
+      const wire = await queueRun(built(), RUN_A);
 
-      const res = await deliver(wire);
+      const res = await deliver(RUN_A, wire);
 
-      const stored = await storedJob(TENANT_A, QUEUED_A.job_id);
-      const firstClaimKey = exportAttemptKey(TENANT_A.tenantId, QUEUED_A.job_id, 'csv', '2');
+      const stored = await storedJob(TENANT_A, RUN_A.job_id);
+      const firstClaimKey = exportAttemptKey(TENANT_A.tenantId, RUN_A.job_id, 'csv', '2');
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ jobId: QUEUED_A.job_id, state: 'done' });
+      expect(res.json()).toEqual({ jobId: RUN_A.job_id, state: 'done' });
       expect(stored).toMatchObject({ state: 'done', object_key: firstClaimKey });
       expect(await built().storage.head(EXPORT_BUCKET, firstClaimKey)).not.toBeNull();
     });

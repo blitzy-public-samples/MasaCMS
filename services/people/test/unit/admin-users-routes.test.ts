@@ -1,18 +1,21 @@
 /** The cUsers read routes over in-memory people rows, registry and identity: contract shapes, the `before()` gate, tenancy and `route()`. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, moduleRole, recordedRoutes } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
-import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { createService, fixedClock, loadEnv, throwIfRequestAborted, type FastifyInstance } from '@opt2/platform/service-kit';
 import { tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
 import type { AccountView, AdminSessionState, GroupSummary, IdentityClient, UserGroupRow } from '../../src/legacy/identity-client.js';
-import type { PeopleRepository, PersonOrderScope, PersonSortKey } from '../../src/repo/repository.js';
+import type { Page, PeopleRepository, PersonCursor, PersonOrderScope, PersonSortKey } from '../../src/repo/repository.js';
 import type { AddressRow, ExtendSubtypeRow, PersonRow } from '../../src/repo/tables.js';
 import {
   parseDomain,
@@ -41,6 +44,8 @@ const ADDRESS = 'C0000000-0000-0000-0000000000000001';
 const SUBTYPE = 'D0000000-0000-0000-0000000000000001';
 const USERS_MODULE = moduleRole('00000000000000000000000000000000008');
 const SITE_MANAGER_MODULE = moduleRole('00000000000000000000000000000000000');
+/** configBean `expirePasswords` of the routes under test, in days. */
+const EXPIRE_PASSWORDS = 30;
 
 /** One registry row as `tenant_registry` stores it. */
 function registryRow(site: string, publicPool: string, privatePool: string, domains: string[]) {
@@ -291,7 +296,7 @@ beforeAll(async () => {
   app.addHook('onError', async (_request, _reply, error) => {
     routeErrors.push(error);
   });
-  await registerAdminUserRoutes(app, { db, repository, identity, clock: fixedClock(NOW), photoFileExts, awaitPersonOpen: awaitOpen });
+  await registerAdminUserRoutes(app, { db, repository, identity, clock: fixedClock(NOW), photoFileExts, awaitPersonOpen: awaitOpen, expirePasswords: EXPIRE_PASSWORDS });
   await app.ready();
 });
 
@@ -410,7 +415,7 @@ describe('route() URL helpers [legacy: core/mura/utility.cfc:1326-1469]', () => 
 describe('registration', () => {
   const OPERATIONS = [
     'listUserGroups', 'listUsers', 'searchUsers', 'getAdvancedSearch', 'setAdvancedSearch', 'getUserEdit', 'getAddressEdit', 'routeUser', 'readCurrentUser',
-    'listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2',
+    'readPoolUser', 'listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2',
   ];
 
   it('registers exactly the contract operations of these reads, with their transport and roles', () => {
@@ -753,6 +758,147 @@ describe.each(VERSIONS)('advanced search under %s', (version) => {
   });
 });
 
+describe('list reads whose client disconnects', () => {
+  /** Pages each listing and identity's group paging serve when read to the end. */
+  const PAGES = 20;
+  const STEP_MS = 25;
+  const lines: Array<Record<string, unknown>> = [];
+  let listening: FastifyInstance;
+  let pageReads = 0;
+  let groupPages = 0;
+  /** Runs as each person page, group page or criteria save starts. */
+  let working: () => void = () => undefined;
+
+  /** One of PAGES pages of `rows`, a wait apart, as a pool too large for one scan batch pages. */
+  async function personPage(rows: PersonRow[], after: PersonCursor | null | undefined): Promise<Page<PersonRow, PersonCursor>> {
+    pageReads += 1;
+    working();
+    await sleep(STEP_MS);
+    const index = Number(after?.keys[0] ?? 0) + 1;
+    return { rows, next: index < PAGES ? { keys: [index], userid: '' } : null };
+  }
+
+  const pagingRepository = {
+    ...repository,
+    pagePersonsInOrder: (tx: TenantTx, scope: PersonOrderScope, opts: { orderBy: readonly PersonSortKey[]; after?: PersonCursor | null }) =>
+      personPage(personsInOrder(ofTenant(PERSONS, tx), scope, opts.orderBy), opts.after),
+    pageQueryPersons: (tx: TenantTx, query: { siteIds?: readonly string[] }, opts: { after?: PersonCursor | null }) =>
+      personPage(ofTenant(PERSONS, tx).filter((row) => query.siteIds === undefined || query.siteIds.some((siteId) => sameId(row.siteid, siteId))), opts.after),
+  } as unknown as PeopleRepository;
+
+  const pagingIdentity: IdentityClient = {
+    ...identity,
+    // A total past every page keeps a /v2 page reading until the listing ends.
+    countAccounts: () => Promise.resolve(10_000),
+    // Identity's group paging, each page one service call, which checks the request's signal first.
+    userGroups: async (siteId, isPublic) => {
+      for (let page = 0; page < PAGES; page += 1) {
+        throwIfRequestAborted();
+        groupPages += 1;
+        working();
+        await sleep(STEP_MS);
+      }
+      return identity.userGroups(siteId, isPublic);
+    },
+    saveAdminSessionState: async (state) => {
+      working();
+      await sleep(STEP_MS * 4);
+      return identity.saveAdminSessionState(state);
+    },
+  };
+
+  beforeAll(async () => {
+    const logger = createLogger({ service: 'people', version: '1.0.0', env: 'local', destination: { write: (chunk: string) => void lines.push(JSON.parse(chunk) as Record<string, unknown>) } });
+    listening = await createService({
+      name: 'people',
+      version: '1.0.0',
+      env: loadEnv(undefined, {
+        PORT: '8112',
+        OPT2_SERVICE_NAME: 'people',
+        OPT2_ENV: 'local',
+        OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+        OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+        OPT2_TOKEN_AUDIENCE: 'opt2-local',
+        OPT2_STATE_DIR: stateDir,
+        TZ: 'UTC',
+      }),
+      verifierOverride: testVerifier('people'),
+      logger,
+    });
+    await registerAdminUserRoutes(listening, { db, repository: pagingRepository, identity: pagingIdentity, clock: fixedClock(NOW), awaitPersonOpen: awaitOpen });
+    await listening.listen({ port: 0, host: '127.0.0.1' });
+  });
+
+  afterAll(async () => {
+    await listening?.opt2.shutdown();
+  });
+
+  beforeEach(() => {
+    lines.length = 0;
+    pageReads = 0;
+    groupPages = 0;
+    working = () => undefined;
+  });
+
+  /** Sends a site admin's request on a real socket and destroys it once the read starts working; resolves with the abandoned line. */
+  async function leave(method: 'GET' | 'POST', url: string, form?: Record<string, string>): Promise<Record<string, unknown>> {
+    const headers = await headersFor(SITE_ADMIN);
+    const { port } = listening.server.address() as AddressInfo;
+    const body = form === undefined ? undefined : new URLSearchParams(form).toString();
+    await new Promise<void>((resolve) => {
+      const req = httpRequest({
+        host: '127.0.0.1',
+        port,
+        method,
+        path: url,
+        headers: body === undefined ? headers : { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+      });
+      // The destroyed request's own socket error is the point of the test.
+      req.on('error', () => undefined);
+      req.on('close', () => resolve());
+      working = () => {
+        working = () => undefined;
+        req.destroy();
+      };
+      req.end(body);
+    });
+    const abandoned = await vi.waitFor(
+      () => {
+        const found = lines.filter((line) => line.message === 'request abandoned');
+        expect(found).toHaveLength(1);
+        return found[0] as Record<string, unknown>;
+      },
+      { timeout: 5_000 },
+    );
+    expect(lines.filter((line) => line.severity === 'ERROR')).toEqual([]);
+    return abandoned;
+  }
+
+  it.each<[url: string, route: string, reads: () => number]>([
+    ['/v1/users?ispublic=0', '/v1/users', () => pageReads],
+    ['/v2/users?ispublic=0', '/v2/users', () => pageReads],
+    ['/v1/users/search?ispublic=0&search=doe', '/v1/users/search', () => pageReads],
+    ['/v2/users/search?ispublic=0&search=doe', '/v2/users/search', () => pageReads],
+    ['/v1/users/advanced-search?ispublic=0', '/v1/users/advanced-search', () => pageReads],
+    ['/v2/users/advanced-search?ispublic=0', '/v2/users/advanced-search', () => pageReads],
+    ['/v1/users/groups?ispublic=0', '/v1/users/groups', () => groupPages],
+  ])('stops GET %s after its first page once the client disconnects', async (url, route, reads) => {
+    expect(await leave('GET', url)).toMatchObject({ route, httpMethod: 'GET' });
+    expect(reads()).toBeGreaterThanOrEqual(1);
+    expect(reads()).toBeLessThan(PAGES);
+  });
+
+  it.each(VERSIONS)('stores the criteria of a %s advanced-search POST whose client disconnects during the save, then abandons the read', async (version) => {
+    const posted = { param: '1', paramField1: 'tusers.lname^varchar', paramRelationship1: 'and', paramCriteria1: 'Doe', paramCondition1: 'Contains' };
+    expect(await leave('POST', `${version}/users/advanced-search?ispublic=0`, posted)).toMatchObject({
+      route: `${version}/users/advanced-search`,
+      httpMethod: 'POST',
+    });
+    expect(saves).toMatchObject([{ paramArray: [{ Field: 'tusers.lname^varchar', Relationship: 'and', Criteria: 'Doe', Condition: 'Contains' }] }]);
+    expect(pageReads).toBeLessThan(PAGES);
+  });
+});
+
 describe('edit reads', () => {
   it.each([
     { query: '', removeBlock: false },
@@ -814,7 +960,7 @@ describe('edit reads', () => {
   it('reads a new bean for an empty or unknown id, and keeps setispublic only for an admin', async () => {
     const fresh = await call('GET', '/v1/users/edit?userid=&setispublic=0', await headersFor(SITE_ADMIN));
     expect(fresh.body).toMatchObject({ isNew: true, tempIsPublic: 0, addresses: [], groupIds: [] });
-    expect(fresh.body?.user).toMatchObject({ Type: 2, isPublic: 1, SiteID: '', LastLogin: null, PasswordCreated: '2026-06-30T09:15:00.000' });
+    expect(fresh.body?.user).toMatchObject({ Type: 2, isPublic: 1, SiteID: '', LastLogin: null });
     expect(fresh.body?.user.UserID).toMatch(/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/);
     const moduleUser = await call('GET', `/v1/users/edit?userid=${OUTSIDER}&setispublic=0`, await headersFor([USERS_MODULE, SITE_MANAGER_MODULE, Roles.systemUser]));
     expect(moduleUser.body).toMatchObject({ isNew: true, tempIsPublic: 1 });
@@ -835,6 +981,66 @@ describe('edit reads', () => {
     expect(other.body).toMatchObject({ isNew: true, address: { addressID: missing, userID: JANE, city: null } });
     const fresh = await call('GET', `/v1/users/address?userid=${JANE}`, await headersFor(SITE_ADMIN));
     expect(fresh.body?.address.addressID).not.toBe(ADDRESS);
+  });
+
+  // A NULL PasswordCreated leaves userBean.init's now(), so only a dated old credential expires.
+  it.each<[string, string, string | null, boolean]>([
+    ['a new user', '', null, false],
+    ['a stored user without a credential date', JANE, null, false],
+    ['a stored user with a recent password', JANE, '2026-06-20T09:15:00.000', false],
+    ['a stored user with a password older than the expiry', JANE, '2026-05-01T09:15:00.000', true],
+  ])('answers passwordExpired for %s', async (_case, userId, passwordCreated, expired) => {
+    const stored = ACCOUNTS.get(JANE) as AccountView;
+    ACCOUNTS.set(JANE, { ...stored, passwordCreated });
+    try {
+      const { status, body } = await call('GET', `/v1/users/edit?userid=${userId}`, await headersFor(SITE_ADMIN));
+      expect(status).toBe(200);
+      expect(body?.passwordExpired).toBe(expired);
+    } finally {
+      ACCOUNTS.set(JANE, stored);
+    }
+  });
+});
+
+describe('credential columns', () => {
+  /** Every object key of `value`, at any depth. */
+  function keysOf(value: unknown): string[] {
+    if (Array.isArray(value)) return value.flatMap(keysOf);
+    if (typeof value !== 'object' || value === null) return [];
+    return Object.entries(value).flatMap(([key, inner]) => [key, ...keysOf(inner)]);
+  }
+
+  it.each([
+    ...VERSIONS.flatMap((version) => [`${version}/users?ispublic=0`, `${version}/users/search?ispublic=0&search=o`, `${version}/users/advanced-search?ispublic=0`]),
+    `/v1/users/edit?userid=${JANE}`,
+    '/v1/users/edit?userid=',
+    `/v1/users/address?userid=${JANE}&addressid=${ADDRESS}`,
+  ])('leaves Password and PasswordCreated out of every person row of %s', async (url) => {
+    const stored = ACCOUNTS.get(JANE) as AccountView;
+    ACCOUNTS.set(JANE, { ...stored, passwordCreated: '2026-05-01T09:15:00.000' });
+    try {
+      const { status, body } = await call('GET', url, await headersFor(S2));
+      expect(status).toBe(200);
+      const keys = keysOf(body);
+      expect(keys).toContain('UserID');
+      expect(keys.filter((key) => /^password(created)?$/i.test(key))).toEqual([]);
+    } finally {
+      ACCOUNTS.set(JANE, stored);
+    }
+  });
+
+  type Body = Record<string, unknown>;
+  type Tamper = (body: Body, key: string) => Body;
+  it.each<[string, string, string, Tamper]>(
+    ['PasswordCreated', 'Password', 'PASSWORDCREATED'].flatMap((key): [string, string, string, Tamper][] => [
+      ['PersonRecord', key, `/v1/users/edit?userid=${JANE}`, (body, name) => ({ ...body, user: { ...(body.user as Body), [name]: null } })],
+      ['UserListRow', key, '/v1/users/search?ispublic=0&search=o', (body, name) => ({ ...body, items: [{ ...(body.items as Body[])[0], [name]: null }] })],
+    ]),
+  )('the contract refuses a %s carrying %s', async (_schema, key, url, tamper) => {
+    const { body } = await call('GET', url, await headersFor(S2));
+    const response = { method: 'GET', path: url.split('?')[0] ?? url, status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(body) };
+    expect(() => assertResponseMatchesOpenApi(OPENAPI, response)).not.toThrow();
+    expect(() => assertResponseMatchesOpenApi(OPENAPI, { ...response, body: JSON.stringify(tamper(body ?? {}, key)) })).toThrow();
   });
 });
 

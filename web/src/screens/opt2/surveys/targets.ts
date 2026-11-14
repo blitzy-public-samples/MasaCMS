@@ -1,57 +1,42 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 import type { components } from '@/generated/clients/surveys';
-import { okBody, type GatewayResponse } from '@/lib/gateway-client';
 import { html, type SafeHtml } from '@/lib/html';
 import type { Opt2ActionDefinition, Opt2ScreenDefinition, ScreenContext } from '../../registry';
 import {
-  alertBox,
   block,
   controlGroup,
-  errorMessage,
   gridTable,
   opt2ActionUrl,
+  opt2Label,
   opt2View,
-  pageHeader,
   postForm,
   submitToService,
   textarea,
   type Opt2Write,
 } from '../shared';
 import {
+  NO_SURVEY,
   SURVEYS_MODULE,
   SURVEYS_ROLES,
   dateTimeText,
+  readOf,
   siteIdOf,
   surveyHeader,
   surveyIdOf,
-  surveysUrl,
+  unreadHeader,
   type Survey,
+  type Unread,
 } from './common';
 
 type SurveyTarget = components['schemas']['SurveyTarget'];
 type BulkTargetRequest = components['schemas']['BulkTargetRequest'];
 
 /** The survey, its targets and the requested id (its CSRF context), or the alert saying why no survey was read. */
-export type TargetsData = { surveyId: string; survey: Survey; targets: SurveyTarget[] } | { unread: SafeHtml };
-
-// A survey id the service cannot parse (400) or does not hold for the site (404) is shown, not raised as a 500.
-const UNREAD_STATUSES: ReadonlySet<number> = new Set([400, 404]);
-
-/**
- * The 2xx body of `operation`, or the envelope error as an alert when surveys answers 400 or 404.
- * @throws GatewayDenialError For 401 or 403; any other status throws `Error`.
- */
-function readOf<T>(
-  response: { readonly ok: true; readonly body: T } | (GatewayResponse & { readonly ok: false }),
-  operation: string,
-): { body: T } | { unread: SafeHtml } {
-  if (!response.ok && UNREAD_STATUSES.has(response.status)) return { unread: alertBox(errorMessage(response)) };
-  return { body: okBody(response, 'surveys', operation) };
-}
+export type TargetsData = { surveyId: string; survey: Survey; targets: SurveyTarget[] } | Unread;
 
 /** Survey `surveyId` (`getSurvey`), its targets (`listSurveyTargets`) and the CSRF pair of its id context. */
 async function loadTargets(ctx: ScreenContext, surveyId: string): Promise<TargetsData> {
-  if (surveyId === '') return { unread: alertBox('No survey selected.', 'info') };
+  if (surveyId === '') return NO_SURVEY;
   const request = { params: { surveyId }, query: { siteid: siteIdOf(ctx) } };
   const [surveyRes, targetsRes] = await Promise.all([
     ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}', request),
@@ -85,10 +70,7 @@ function bulkTargetRequestOf(text: string): BulkTargetRequest {
 
 /** The form holding `text`, then the target count and grid, or the bare header and reason; `alert` after the header. */
 function renderTargets(ctx: ScreenContext, data: TargetsData, text: string, alert?: SafeHtml): SafeHtml {
-  if ('unread' in data) {
-    const header = pageHeader('Targets', [{ label: 'Surveys', href: surveysUrl(ctx, 'surveys') }]);
-    return html`${header}${alert}${data.unread}`;
-  }
+  if ('unread' in data) return html`${unreadHeader(ctx, 'targets')}${alert}${data.unread}`;
   const { surveyId, survey, targets } = data;
   // No role check here: the service answered the targets read only for surveys.manager, the role the post needs.
   const form = postForm(
@@ -101,7 +83,7 @@ function renderTargets(ctx: ScreenContext, data: TargetsData, text: string, aler
     { hidden: ctx.csrf.render(surveyId) },
   );
   const grid = gridTable(
-    ['Site', 'Group', 'Added'],
+    [opt2Label(ctx, 'Site'), opt2Label(ctx, 'Group'), 'Added'],
     targets.map((target) => [target.siteId, target.groupName ?? 'All users', dateTimeText(target.created)]),
     'This survey has no targets.',
   );

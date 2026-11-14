@@ -1,7 +1,7 @@
 // The eight steps of a cut-over transition, their persisted shapes, the abort path and the plan derivation.
 import { setTimeout as delay } from 'node:timers/promises';
 
-import type { GateRequest } from '@opt2/platform/migration-kit';
+import type { GatePhase, GateRequest } from '@opt2/platform/migration-kit';
 import { callQueueControl, outboxSweepQueue, queuesCreatedBy, reconcileRecurringQueues } from '@opt2/platform/tasks';
 
 import { restartFeedFor } from '../apply/index.js';
@@ -9,6 +9,7 @@ import type { MigrationContext } from '../context.js';
 import {
   GatewayCallError,
   GatewayWaitTimeoutError,
+  currentAuthority,
   diffVersions,
   loadGroups,
   loadVersion,
@@ -19,11 +20,27 @@ import {
   type InflightRow,
   type WaitBudget,
 } from '../cutover/index.js';
-import { diffSnapshotManifests, transferFiles } from '../files/index.js';
-import { LegacyRestartError, RestartUnavailableError, countStartupRows, opt2SyncReady, restartLegacy } from '../legacy/index.js';
+import { diffSnapshotManifests, removeDroppedObjects, transferFiles } from '../files/index.js';
+import {
+  LegacyRestartError,
+  RestartUnavailableError,
+  StartupGuardFrozenError,
+  countStartupRows,
+  opt2SyncReady,
+  recoverStartupGuard,
+  restartLegacy,
+} from '../legacy/index.js';
 import { GateConflict, UnknownLegacyTableError, type DataOwner, type UnitCatalog } from '../owners/index.js';
 import { DrainTimeoutError, awaitDrained } from '../quiesce/index.js';
-import { fileUnitIds, reconcileUnits, writeReconciliationReport, type ReconcileResult } from '../reconcile/index.js';
+import {
+  DIFFERENCE_LIMIT,
+  fileUnitIds,
+  isZeroDifference,
+  reconcileUnits,
+  writeReconciliationReport,
+  type ReconcileReport,
+  type ReconcileResult,
+} from '../reconcile/index.js';
 import type { TransitionStepName } from '../reports/index.js';
 import { ProjectionTimeoutError, type Projector } from '../reverse/index.js';
 import {
@@ -37,17 +54,21 @@ import {
   type SiteMonitorHandoffResult,
   type SurveysHandoffResult,
 } from '../scheduler/index.js';
-import { SnapshotBlockedError, requireSnapshot, takeSnapshot, type SnapshotRecord } from '../snapshot/index.js';
+import { SnapshotBlockedError, latestSnapshot, requireSnapshot, takeSnapshot, type SnapshotRecord } from '../snapshot/index.js';
 import {
   LeaseUnavailableError,
   STARTUP_WINDOW_HOLDER_ENV,
   WindowNotFoundError,
   acquireLeases,
   contentUnits,
+  importWindow,
   releaseLeases,
+  type ImportResult,
   type WindowService,
 } from '../windows/index.js';
-import { freezeLegacyBound, sendReloadRequest, unfreezeLegacyBound, withGuardLock } from '../windows/reload.js';
+import { freezeLegacyBound, sendReloadRequest, unfreezeLegacyBound, withGuardLock, type FrozenRoutes } from '../windows/reload.js';
+
+import { assertClaim } from './claim.js';
 
 /** Number of one transition step. */
 export type TransitionStepNumber = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
@@ -134,11 +155,45 @@ export interface ClosedGate {
   prior: 'open' | 'legacy';
 }
 
-/** Outcome of {@link TransitionStartupGuard.ensureEmpty}: start-up predicate rows before and after any reload. */
+/** Step 3's controlled legacy restart while it holds the `target`-authoritative content gates closed around it. */
+export interface OrphanRestart {
+  /** `target`-authoritative content units whose gates it closed; legacy's start-up may rewrite any of their rows. */
+  units: string[];
+  /** Gate phase it last set on those gates. */
+  phase: GatePhase;
+  /** Set just before the restart command runs; from then on no gate of the units reopens before they are imported. */
+  restartedAt?: string;
+  /** Set once the restart command succeeded, the evidence that no earlier legacy request can still commit; only then are the units imported. */
+  completedAt?: string;
+  /** Import attempts started; each attempt's apply batch ids are distinct. */
+  importAttempts: number;
+}
+
+/** Outcome of a {@link TransitionStartupGuard} run: start-up predicate rows before and after any reload. */
 export interface StartupGuardResult {
   initialCount: number;
   reloaded: boolean;
   finalCount: number;
+}
+
+/** One unit, legacy table and tenant entry a reconciliation found differing. */
+export interface DifferingEntry {
+  unit: string;
+  legacyTable: string | null;
+  tenantId: string;
+  differenceCount: number;
+}
+
+/** Step 6's zero-tolerance reconciliation of a forward transition, kept on the transition because it writes no report file. */
+export interface PreActivationReconciliation {
+  result: ReconcileResult;
+  differences: number;
+  unitsWithDifferences: number;
+  /** Active cut-over version the comparison saw. */
+  tableVersion: string | null;
+  snapshotSeq: number | null;
+  /** The first {@link DIFFERENCE_LIMIT} differing entries. */
+  differingEntries: DifferingEntry[];
 }
 
 /** Side effects of the steps so far, persisted as they happen so an abort or a resume finds them. */
@@ -154,8 +209,14 @@ export interface TransitionProgress {
   targetOrphansCleared?: number;
   /** Content units leased only for a controlled legacy restart. */
   extraLeasedUnits: string[];
+  /** The controlled legacy restart in progress; cleared once its gates have reopened. */
+  orphanRestart?: OrphanRestart;
   snapshotSeq?: number;
   startupGuard?: StartupGuardResult;
+  /** Freeze the start-up guard keeps while rows still match its predicate; recovered before anything is reopened. */
+  startupGuardFreeze?: FrozenRoutes;
+  preActivationReconciliation?: PreActivationReconciliation;
+  /** The written report: `rollback-before` from step 6, or `post-cutover` from step 8 after activation. */
   reconciliation?: { point: string; result: ReconcileResult; differences: number; reportPath: string };
   activatedEpoch?: number;
   handoffs?: { siteMonitor?: SiteMonitorHandoffResult; surveys?: SurveysHandoffResult; restore?: RestoreResult };
@@ -220,9 +281,17 @@ export class TransitionPreconditionError extends Error {
   }
 }
 
-/** Converts Masa's start-up rewrite rows before the final snapshot of a transition moving content. */
+/** Converts the rows Masa's start-up would rewrite, keeping every other legacy-bound entry frozen until none is left. */
 export interface TransitionStartupGuard {
-  ensureEmpty(input: { holderId: string; exceptRoutes: string[] }): Promise<StartupGuardResult>;
+  /**
+   * With matching rows, hands the legacy-bound entries outside `exceptRoutes` to `onFrozen` to record before freezing them,
+   * reloads legacy and unfreezes once no row matches; a failed `onFrozen` freezes nothing and a failed freeze unfreezes what
+   * it froze, both rethrown.
+   * @throws StartupGuardFrozenError, keeping the freeze, when the reload fails or rows still match.
+   */
+  ensureEmpty(input: { holderId: string; exceptRoutes: string[]; onFrozen(frozen: FrozenRoutes): Promise<void> }): Promise<StartupGuardResult>;
+  /** Reloads legacy under a kept freeze and unfreezes it once no row matches. @throws StartupGuardFrozenError, keeping it */
+  recover(input: { holderId: string; frozen: FrozenRoutes }): Promise<StartupGuardResult>;
 }
 
 /** Ports a step uses; `persist` durably stores progress mid-step. */
@@ -510,7 +579,172 @@ async function awaitInflight(run: StepRun): Promise<InflightRow[]> {
   }
 }
 
-/** Ends every running legacy request by a controlled restart under this holder, then clears the legacy orphans it covers. */
+/** Members of a step run that the restart import and the start-up guard use; an abort builds one from its record. */
+type RestartRun = Pick<StepRun, 'deps' | 'ctx' | 'plan' | 'progress' | 'holderId' | 'persist'>;
+
+/**
+ * Runs the start-up guard, or recovers the freeze it kept, with that freeze recorded in the progress until no row matches.
+ * @throws StartupGuardFrozenError while the freeze is kept.
+ */
+async function guardStartup(run: RestartRun): Promise<StartupGuardResult> {
+  const { plan, progress, holderId } = run;
+  const kept = progress.startupGuardFreeze;
+  const onFrozen = async (frozen: FrozenRoutes): Promise<void> => {
+    progress.startupGuardFreeze = frozen;
+    await run.persist();
+  };
+  const result =
+    kept === undefined
+      ? await run.deps.startupGuard.ensureEmpty({ holderId, exceptRoutes: plan.frozenRoutes, onFrozen })
+      : await run.deps.startupGuard.recover({ holderId, frozen: kept });
+  if (progress.startupGuardFreeze !== undefined) {
+    delete progress.startupGuardFreeze;
+    await run.persist();
+  }
+  return result;
+}
+
+/** Aborts at `step` while `work` leaves the start-up guard's freeze kept; the abort recovers it before reopening anything. */
+async function abortWhileFrozen<T>(step: TransitionStepNumber, work: Promise<T>): Promise<T> {
+  try {
+    return await work;
+  } catch (error) {
+    if (!(error instanceof StartupGuardFrozenError)) throw error;
+    throw new TransitionAbortedError(step, error.message, { remaining: error.remaining }, { cause: error });
+  }
+}
+
+/** Sets `phase` on the gates of `units` this holder closed, owner by owner. */
+async function setGatePhase(run: Pick<StepRun, 'ctx' | 'holderId'>, units: readonly string[], phase: GatePhase): Promise<void> {
+  for (const { owner, units: ownerUnits } of byOwnerAndState(run.ctx.catalog, units, () => phase)) {
+    await run.ctx.owners.gate(owner, { op: 'phase', units: ownerUnits, holderId: run.holderId, phase });
+  }
+}
+
+/**
+ * Closes the gates of the `target`-authoritative content units for this holder, recorded before the close, then waits until
+ * the reverse projector has applied their owners' current writes, so legacy restarts on current data.
+ * @throws TransitionAbortedError when another holder holds a gate or the projection does not catch up in time.
+ */
+async function fenceContentForRestart(run: StepRun): Promise<OrphanRestart> {
+  const { ctx, progress, holderId } = run;
+  const authority = await currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths });
+  const units = contentUnits(ctx.catalog).filter((unit) => authority.isTargetAuthoritative(unit));
+  const previous = progress.orphanRestart;
+  const restart: OrphanRestart = { importAttempts: 0, ...previous, units: sortedUnique([...(previous?.units ?? []), ...units]), phase: 'quiet' };
+  const fresh = restart.units.filter((unit) => !progress.closedGates.some((gate) => gate.unit === unit));
+  progress.closedGates.push(...fresh.map((unit): ClosedGate => ({ owner: ctx.catalog.ownerOf(unit), unit, prior: 'open' })));
+  progress.orphanRestart = restart;
+  await run.persist();
+  const groups = byOwnerAndState(ctx.catalog, restart.units, (): GatePhase => 'quiet');
+  if (groups.length === 0) return restart;
+  for (const { owner, units: ownerUnits } of groups) {
+    try {
+      await ctx.owners.gate(owner, { op: 'close', units: ownerUnits, holderId, phase: 'quiet' });
+    } catch (error) {
+      if (!(error instanceof GateConflict)) throw error;
+      throw new TransitionAbortedError(3, `${owner} gates ${error.units.join(', ')} are held by another holder`, { owner, units: error.units }, {
+        cause: error,
+      });
+    }
+  }
+  try {
+    await run.deps.projector.awaitProjection({ owners: groups.map((group) => group.owner), timeoutMs: ctx.config.projection.defaultAwaitTimeoutMs });
+  } catch (error) {
+    if (!(error instanceof ProjectionTimeoutError)) throw error;
+    throw new TransitionAbortedError(3, error.message, { pending: error.pending }, { cause: error });
+  }
+  await setGatePhase(run, restart.units, 'executing');
+  return { ...restart, phase: 'executing' };
+}
+
+/** Sets the importing phase on the restart's gates once, recording it. */
+async function enterImporting(run: RestartRun, restart: OrphanRestart): Promise<OrphanRestart> {
+  if (restart.phase === 'importing') return restart;
+  await setGatePhase(run, restart.units, 'importing');
+  const importing: OrphanRestart = { ...restart, phase: 'importing' };
+  run.progress.orphanRestart = importing;
+  await run.persist();
+  return importing;
+}
+
+/**
+ * Imports the restart's units whole, since legacy's start-up may rewrite any of their rows, and converts any start-up
+ * predicate rows before their gates reopen; each attempt's number is persisted first, so batch ids never repeat.
+ * @throws StartupGuardFrozenError with the guard's freeze kept, or the import failure; the gates stay closed either way.
+ */
+async function importRestartedContent(run: RestartRun, restart: OrphanRestart): Promise<void> {
+  const { ctx, progress, holderId } = run;
+  let current = await enterImporting(run, restart);
+  if (current.units.length === 0) return;
+  const importOnce = async (): Promise<ImportResult> => {
+    current = { ...current, importAttempts: current.importAttempts + 1 };
+    progress.orphanRestart = current;
+    await run.persist();
+    const result = await importWindow(ctx, { windowId: holderId, attempt: current.importAttempts, units: current.units, scope: { table: true } });
+    ctx.logger.info(
+      `Transition ${holderId}: import attempt ${String(current.importAttempts)} after the legacy restart applied ${String(result.rowsImported)} rows`,
+    );
+    return result;
+  };
+  const { touchedContent } = await importOnce();
+  // A reload converts rows under these still-closed gates, so what it wrote is imported as well.
+  if ((touchedContent || progress.startupGuardFreeze !== undefined) && (await guardStartup(run)).reloaded) await importOnce();
+}
+
+/**
+ * Runs the controlled legacy restart under this holder with the restart's gates still closed, recording its intent before
+ * the command and its completion once the command succeeded. @returns the completed restart and the command's duration
+ * @throws TransitionAbortedError at step 3 with `details` when the restart is unavailable or fails; nothing records completion
+ */
+async function restartUnderHolder(
+  run: RestartRun,
+  restart: OrphanRestart,
+  details: unknown,
+): Promise<{ restart: OrphanRestart; restartedAt: string; durationMs: number }> {
+  const { ctx, progress, holderId } = run;
+  const restartedAt = ctx.clock.now().toISOString();
+  const intent: OrphanRestart = { units: restart.units, phase: restart.phase, importAttempts: restart.importAttempts, restartedAt };
+  progress.orphanRestart = intent;
+  await run.persist();
+  let durationMs: number;
+  try {
+    assertClaim();
+    // The configuration names no restart budget; the gateway lease duration bounds it, as for a window's restart.
+    ({ durationMs } = await restartLegacy(ctx.env, {
+      timeoutMs: ctx.config.windows.gatewayLeaseMs,
+      extraEnv: { [STARTUP_WINDOW_HOLDER_ENV]: holderId },
+    }));
+  } catch (error) {
+    if (!(error instanceof RestartUnavailableError) && !(error instanceof LegacyRestartError)) throw error;
+    throw new TransitionAbortedError(3, `Controlled legacy restart failed: ${error.message}`, details, { cause: error });
+  }
+  const completed: OrphanRestart = { ...intent, completedAt: ctx.clock.now().toISOString() };
+  progress.orphanRestart = completed;
+  await run.persist();
+  return { restart: completed, restartedAt, durationMs };
+}
+
+/**
+ * Ends step 3's restart: one cut short before its completion runs again under the still-closed gates, then what legacy's
+ * start-up may have written is imported before the fenced gates reopen by holder compare-and-set.
+ */
+async function finishOrphanRestart(run: StepRun): Promise<void> {
+  let restart = run.progress.orphanRestart;
+  if (restart === undefined) return;
+  if (restart.restartedAt !== undefined) {
+    if (restart.completedAt === undefined) ({ restart } = await restartUnderHolder(run, restart, { units: restart.units }));
+    await abortWhileFrozen(3, importRestartedContent(run, restart));
+  }
+  await resetGates(run, restart.units);
+  delete run.progress.orphanRestart;
+  await run.persist();
+}
+
+/**
+ * Ends every running legacy request by a controlled restart under this holder, within a write window's restart lifecycle
+ * over the content units, and clears the legacy orphans it covers.
+ */
 async function clearLegacyOrphans(run: StepRun, orphans: readonly InflightRow[]): Promise<void> {
   const { ctx, plan, progress, holderId } = run;
   if ((ctx.env.OPT2_LEGACY_RESTART_CMD ?? '').trim() === '') {
@@ -520,7 +754,7 @@ async function clearLegacyOrphans(run: StepRun, orphans: readonly InflightRow[])
       { orphans },
     );
   }
-  // The start-up the restart runs then happens under this holder's leases, so legacy-start.sh opens no window of its own.
+  // The start-up the restart runs then happens under this holder's leases and gates, so legacy-start.sh opens no window of its own.
   const extra = contentUnits(ctx.catalog).filter((unit) => !plan.setT.includes(unit));
   const missing = extra.filter((unit) => !progress.extraLeasedUnits.includes(unit));
   if (missing.length > 0) {
@@ -528,26 +762,17 @@ async function clearLegacyOrphans(run: StepRun, orphans: readonly InflightRow[])
     await run.persist();
   }
   await leaseUnits(run.deps, holderId, extra, 3);
-  const restartedAt = ctx.clock.now();
-  let durationMs: number;
-  try {
-    // The configuration names no restart budget; the gateway lease duration bounds it, as for a window's restart.
-    ({ durationMs } = await restartLegacy(ctx.env, {
-      timeoutMs: ctx.config.windows.gatewayLeaseMs,
-      extraEnv: { [STARTUP_WINDOW_HOLDER_ENV]: holderId },
-    }));
-  } catch (error) {
-    if (!(error instanceof RestartUnavailableError) && !(error instanceof LegacyRestartError)) throw error;
-    throw new TransitionAbortedError(3, `Controlled legacy restart failed: ${error.message}`, { orphans }, { cause: error });
-  }
+  const { restart, restartedAt, durationMs } = await restartUnderHolder(run, await fenceContentForRestart(run), { orphans });
+  await enterImporting(run, restart);
   const { cleared } = await ctx.gateway.clearOrphans({
     side: 'legacy',
-    evidence: { kind: 'legacy-restart', holderId, at: restartedAt.toISOString() },
+    evidence: { kind: 'legacy-restart', holderId, at: restartedAt },
     instanceIds: sortedUnique(orphans.map((row) => row.instanceId)),
   });
-  progress.legacyOrphansCleared = { restartedAt: restartedAt.toISOString(), durationMs, cleared };
+  progress.legacyOrphansCleared = { restartedAt, durationMs, cleared };
   await run.persist();
   ctx.logger.info(`Transition ${holderId}: legacy restarted in ${String(durationMs)} ms, ${String(cleared)} orphaned legacy writes cleared`);
+  await finishOrphanRestart(run);
 }
 
 /** Waits until the fixture's `cfthread` export jobs have left `queued` and `running`. */
@@ -580,6 +805,9 @@ async function confirmInflightFinished(run: StepRun): Promise<void> {
     if (left.length > 0) {
       throw new TransitionAbortedError(3, `Orphaned legacy-bound writes remain after the restart: ${describeRows(left)}`, { orphans: left });
     }
+  } else {
+    // A restart a process exit cut short still imports and reopens what it fenced.
+    await finishOrphanRestart(run);
   }
   // Closing the gates in step 5 is the evidence that these can no longer commit.
   progress.targetOrphans = orphans.filter((row) => row.side === 'target');
@@ -653,7 +881,7 @@ async function transitionSnapshot(run: StepRun): Promise<SnapshotRecord> {
   return snapshot;
 }
 
-/** Transfers the file-store objects added or changed since the file owners' `tfiles` watermark, which the table pass then advances. */
+/** Transfers the file-store objects added or changed since the file owners' `tfiles` watermark and deletes those dropped, before the table pass advances it. */
 async function transferMovedFiles(run: StepRun, snapshot: SnapshotRecord, fileFeedUnits: readonly string[]): Promise<void> {
   const { ctx, holderId } = run;
   if (!snapshot.manifestComplete) {
@@ -666,11 +894,12 @@ async function transferMovedFiles(run: StepRun, snapshot: SnapshotRecord, fileFe
   const bases = await Promise.all(owners.map(async (owner) => (await ctx.owners.watermark(owner, FILES_TABLE, 'forward'))?.snapshotSeq ?? null));
   const from = bases.some((base) => base === null) ? null : Math.min(...(bases as number[]));
   if (from !== null && from >= snapshot.seq) return;
-  const only = from === null ? undefined : (await diffSnapshotManifests(ctx, from, snapshot.seq)).toTransfer;
-  const result = await transferFiles(ctx, snapshot.seq, only === undefined ? {} : { only });
+  const diff = from === null ? undefined : await diffSnapshotManifests(ctx, from, snapshot.seq);
+  const result = await transferFiles(ctx, snapshot.seq, diff === undefined ? {} : { only: diff.toTransfer });
+  const removal = diff === undefined ? undefined : await removeDroppedObjects(ctx, diff);
   ctx.logger.info(
     `Transition ${holderId}: file objects of snapshot ${String(snapshot.seq)} since ${from === null ? 'none' : String(from)}: ` +
-      `${String(result.transferred)} stored, ${String(result.unchanged)} unchanged`,
+      `${String(result.transferred)} stored, ${String(result.unchanged)} unchanged, ${String(removal?.deleted ?? 0)} deleted`,
   );
 }
 
@@ -698,42 +927,84 @@ async function projectToLegacy(run: StepRun): Promise<void> {
   }
 }
 
-/** Reconciles `T`, and the file units when their objects move, against the live legacy database with zero tolerance. */
-async function reconcileSet(run: StepRun): Promise<void> {
-  const { ctx, plan, progress } = run;
+/** Reconciles `T`, and the file units when their objects move, at `point` against the live legacy database with zero tolerance. */
+function reconcileT(run: StepRun, point: string, snapshotSeq: number | null): Promise<ReconcileReport> {
+  const { ctx, plan } = run;
   const filesMove = tableUnits(ctx.catalog, FILES_TABLE).some((unit) => plan.setT.includes(unit));
-  const point = plan.returnsToLegacy ? ROLLBACK_BEFORE_POINT : POST_CUTOVER_POINT;
-  const report = await reconcileUnits(ctx, {
+  return reconcileUnits(ctx, {
     point,
     units: sortedUnique([...plan.setT, ...(filesMove ? fileUnitIds(ctx.config) : [])]),
     database: ctx.env.MURA_DATABASE,
-    snapshotSeq: progress.snapshotSeq ?? null,
+    snapshotSeq,
     legacySource: 'live',
   });
-  // Written before activation: a version returning groups to legacy names this report as its rollback evidence.
-  const reportPath = await writeReconciliationReport(ctx, report);
+}
+
+/** Writes `report`, records it as the transition's reconciliation and refuses any difference. @throws TransitionAbortedError at `step` */
+async function recordReport(run: StepRun, report: ReconcileReport, step: TransitionStepNumber): Promise<void> {
+  const reportPath = await writeReconciliationReport(run.ctx, report);
   const { differences, unitsWithDifferences } = report.summary;
-  progress.reconciliation = { point, result: report.result, differences, reportPath };
+  run.progress.reconciliation = { point: report.point, result: report.result, differences, reportPath };
   await run.persist();
   if (report.result !== 'zero-difference') {
     throw new TransitionAbortedError(
-      6,
-      `Reconciliation ${point} found ${String(differences)} differences in ${String(unitsWithDifferences)} units; see ${reportPath}`,
-      progress.reconciliation,
+      step,
+      `Reconciliation ${report.point} found ${String(differences)} differences in ${String(unitsWithDifferences)} units; see ${reportPath}`,
+      run.progress.reconciliation,
     );
   }
 }
 
+/** Step 6's reconciliation of `T`: `rollback-before.json` for a return to legacy, else the pre-activation verdict. @throws TransitionAbortedError */
+async function reconcileSet(run: StepRun): Promise<void> {
+  const { progress } = run;
+  const snapshotSeq = progress.snapshotSeq ?? null;
+  if (run.plan.returnsToLegacy) {
+    await recordReport(run, await reconcileT(run, ROLLBACK_BEFORE_POINT, snapshotSeq), 6);
+    return;
+  }
+  // The post-cut-over point's expectations are compared; the active version is still the one before it.
+  const report = await reconcileT(run, POST_CUTOVER_POINT, snapshotSeq);
+  const differing = report.units.filter((entry) => !isZeroDifference(entry, entry.files));
+  const { differences, unitsWithDifferences } = report.summary;
+  progress.preActivationReconciliation = {
+    result: report.result,
+    differences,
+    unitsWithDifferences,
+    tableVersion: report.tableVersion,
+    snapshotSeq: report.snapshotSeq,
+    differingEntries: differing
+      .slice(0, DIFFERENCE_LIMIT)
+      .map(({ unit, legacyTable, tenantId, differenceCount }) => ({ unit, legacyTable, tenantId, differenceCount })),
+  };
+  await run.persist();
+  if (report.result !== 'zero-difference') {
+    const units = sortedUnique(differing.map((entry) => entry.unit));
+    throw new TransitionAbortedError(
+      6,
+      `Reconciliation before activation found ${String(differences)} differences in ${String(unitsWithDifferences)} units: ${units.join(', ')}`,
+      progress.preActivationReconciliation,
+    );
+  }
+}
+
+/** Writes a forward transition's `post-cutover.json` after activation, before anything reopens, until it passes. @throws TransitionAbortedError */
+async function reconcilePostCutover(run: StepRun): Promise<void> {
+  const { ctx, plan, progress } = run;
+  if (plan.returnsToLegacy || plan.setT.length === 0) return;
+  const done = progress.reconciliation;
+  if (done?.point === POST_CUTOVER_POINT && done.result === 'zero-difference') return;
+  // Without a transition snapshot a live point records the latest ready one, as `opt2-migrate reconcile` does.
+  const snapshotSeq = progress.snapshotSeq ?? (await latestSnapshot(ctx))?.seq ?? null;
+  await recordReport(run, await reconcileT(run, POST_CUTOVER_POINT, snapshotSeq), 8);
+}
+
 /** Step 6: final state of `T` on both sides, then its reconciliation; any difference aborts. */
 async function finalStateAndReconcile(run: StepRun): Promise<void> {
-  const { plan, progress, holderId } = run;
+  const { plan, progress } = run;
   if (plan.contentToTarget) {
-    const guard = await run.deps.startupGuard.ensureEmpty({ holderId, exceptRoutes: plan.frozenRoutes });
-    progress.startupGuard = guard;
+    progress.startupGuard = await abortWhileFrozen(6, guardStartup(run));
     await run.persist();
-    if (guard.finalCount > 0) {
-      throw new TransitionAbortedError(6, `${String(guard.finalCount)} ${CONTENT_TABLE} rows still match Masa's start-up predicate`, guard);
-    }
   }
   if (plan.toTarget.length > 0) await bringToFinalState(run);
   if (plan.toLegacy.length > 0) await projectToLegacy(run);
@@ -785,9 +1056,10 @@ async function unfreezeRoutes(run: Pick<StepRun, 'ctx' | 'progress' | 'persist'>
   await run.persist();
 }
 
-/** Step 8: hands off the schedulers, reopens `T`'s gates under the new authority, releases the leases and resumes work. */
+/** Step 8: reconciles post-cut-over, hands off the schedulers, reopens `T`'s gates under the new authority, releases the leases and resumes work. */
 async function handOffAndReopen(run: StepRun): Promise<void> {
   const { ctx, plan, progress, holderId, deps } = run;
+  await reconcilePostCutover(run);
   const handoffs = (progress.handoffs ??= {});
   const monitorTo = siteMonitorDestination(plan);
   if (handoffs.siteMonitor === undefined && plan.siteMonitorEntryMoves && monitorTo === 'target') {
@@ -867,11 +1139,11 @@ export async function runTransitionStep(deps: StepDeps, record: TransitionRecord
   return { plan, progress };
 }
 
-/** Resets every gate the transition closed, or may have closed, to its prior state by holder compare-and-set. */
-async function resetGates(run: Pick<StepRun, 'ctx' | 'progress' | 'persist' | 'holderId'>): Promise<void> {
+/** Resets the gates of `only` (default every gate) the transition closed, or may have closed, to their prior state by holder compare-and-set. */
+async function resetGates(run: Pick<StepRun, 'ctx' | 'progress' | 'persist' | 'holderId'>, only?: readonly string[]): Promise<void> {
   const { ctx, progress, holderId } = run;
   const priors = new Map(progress.closedGates.map((gate) => [gate.unit, gate.prior]));
-  const units = progress.closedGates.map((gate) => gate.unit);
+  const units = progress.closedGates.map((gate) => gate.unit).filter((unit) => only === undefined || only.includes(unit));
   for (const { owner, state, units: ownerUnits } of byOwnerAndState(ctx.catalog, units, (unit) => priors.get(unit) ?? 'open')) {
     try {
       await ctx.owners.gate(owner, { op: 'open', units: ownerUnits, holderId, state });
@@ -886,9 +1158,12 @@ async function resetGates(run: Pick<StepRun, 'ctx' | 'progress' | 'persist' | 'h
 }
 
 /**
- * Undoes the side effects of an unactivated transition in reverse order (gates, freeze, queues, legacy tasks, then leases)
- * and returns the cleaned progress; each undo is idempotent and persisted, so a failed abort can be resumed.
- * @throws Error once step 7 has completed or the proposed version is already active.
+ * Undoes the side effects of an unactivated transition in reverse order (a kept start-up guard freeze, the completion and
+ * import of a started legacy restart, gates, freeze, queues, legacy tasks, then leases) and returns the cleaned progress;
+ * each undo is idempotent and persisted, so a failed abort can be resumed.
+ * @throws Error once step 7 has completed or the proposed version is already active; StartupGuardFrozenError or the
+ *   import failure, reopening nothing, while a kept guard freeze or a restart's import cannot finish; TransitionAbortedError,
+ *   a refusal that keeps every gate, lease and freeze, when a restart without completion fails again.
  */
 export async function abortTransition(deps: StepDeps, record: TransitionRecord): Promise<TransitionProgress> {
   const { ctx } = deps;
@@ -901,7 +1176,24 @@ export async function abortTransition(deps: StepDeps, record: TransitionRecord):
   if (plan !== undefined && (await ctx.gateway.status()).tableVersion === plan.to) {
     throw new Error(`Transition ${holderId} cannot abort: ${plan.to} is already active`);
   }
+  // A kept guard freeze is recovered, and a transition moving content that reached its final state is guarded even without
+  // one; while rows still match the start-up predicate this throws, and nothing below reopens legacy traffic.
+  if (plan !== undefined && (progress.startupGuardFreeze !== undefined || (plan.contentToTarget && record.lastStep >= 5))) {
+    await guardStartup({ ...run, deps, plan });
+  }
+  const restart = progress.orphanRestart;
+  if (plan !== undefined && restart?.restartedAt !== undefined) {
+    // Legacy may have run its start-up under these closed gates, so what it wrote is imported before any of them reopens,
+    // once a completed restart shows that no earlier legacy request can still commit; a failed one refuses the abort.
+    const restartRun = { ...run, deps, plan };
+    const evidenced = restart.completedAt === undefined ? (await restartUnderHolder(restartRun, restart, { units: restart.units })).restart : restart;
+    await importRestartedContent(restartRun, evidenced);
+  }
   await resetGates(run);
+  if (restart !== undefined) {
+    delete progress.orphanRestart;
+    await run.persist();
+  }
   if (plan !== undefined) await unfreezeRoutes(run, plan);
   await resumeQueues(run);
   // Only tasks a transition paused are resumed, so this is safe even when the pause's answer was lost.
@@ -917,26 +1209,46 @@ export async function abortTransition(deps: StepDeps, record: TransitionRecord):
 }
 
 /**
- * Creates the start-up guard of a transition moving content: while content is still legacy-authoritative, a reload with
- * every other legacy-bound entry frozen converts the rows, and the final snapshot carries the conversion forward. It opens
- * no reload window, whose lease would wait on the transition's own leases.
+ * Creates the start-up guard of a transition: while the transition holds the unit `tcontent` feeds, a reload with every
+ * other legacy-bound entry frozen converts the rows. It opens no reload window, whose lease would wait on the
+ * transition's own leases.
  */
 export function createTransitionStartupGuard(
   ctx: Pick<MigrationContext, 'env' | 'config' | 'gateway' | 'legacy' | 'logger'>,
 ): TransitionStartupGuard {
+  const countLive = async (): Promise<number> => countStartupRows(await ctx.legacy.live());
+  // A drive that lost its claim sends no reload; the freeze it recorded stays for the claim's next holder.
+  const reload = async (): Promise<{ status: number }> => {
+    assertClaim();
+    return sendReloadRequest(ctx);
+  };
   return {
-    async ensureEmpty({ holderId, exceptRoutes }) {
-      const initialCount = await countStartupRows(await ctx.legacy.live());
+    async ensureEmpty({ holderId, exceptRoutes, onFrozen }) {
+      const initialCount = await countLive();
       if (initialCount === 0) return { initialCount, reloaded: false, finalCount: 0 };
       ctx.logger.info(`Transition ${holderId}: ${String(initialCount)} rows match Masa's start-up predicate; reloading legacy`);
       return withGuardLock(async () => {
-        const frozen = await freezeLegacyBound(ctx, { exceptRoutes });
-        try {
-          await sendReloadRequest(ctx);
-          return { initialCount, reloaded: true, finalCount: await countStartupRows(await ctx.legacy.live()) };
-        } finally {
-          await unfreezeLegacyBound(ctx, frozen);
-        }
+        // Recorded before it exists, the freeze is never left unrecorded; legacy already holds the rows, so nothing is
+        // committed, and the freeze is lifted only once no row matches.
+        const frozen = await freezeLegacyBound(ctx, { exceptRoutes, beforeFreeze: onFrozen });
+        await recoverStartupGuard({
+          runReloadWindow: reload,
+          remainingStartupRows: countLive,
+          unfreeze: () => unfreezeLegacyBound(ctx, frozen),
+        });
+        return { initialCount, reloaded: true, finalCount: 0 };
+      });
+    },
+    async recover({ holderId, frozen }) {
+      return withGuardLock(async () => {
+        const initialCount = await countLive();
+        ctx.logger.info(`Transition ${holderId}: ${String(initialCount)} start-up predicate rows under the kept freeze; reloading legacy`);
+        await recoverStartupGuard({
+          runReloadWindow: reload,
+          remainingStartupRows: countLive,
+          unfreeze: () => unfreezeLegacyBound(ctx, frozen),
+        });
+        return { initialCount, reloaded: true, finalCount: 0 };
       });
     },
   };

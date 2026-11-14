@@ -52,6 +52,12 @@ export type PutObjectParams = paths[typeof OBJECTS_PATH]['post']['parameters']['
 /** Query of strategies-content's object read: the `content-files` key `<tenantId>/<fileId><variant>.<ext>`. */
 type GetObjectParams = paths[typeof OBJECTS_PATH]['get']['parameters']['query'];
 
+/** Query of strategies-content's object deletion: the `content-files` key. */
+type DeleteObjectParams = paths[typeof OBJECTS_PATH]['delete']['parameters']['query'];
+
+/** strategies-content `DeletedFileObject`: the key, and whether a recorded object was deleted under it. */
+export type DeletedFileObject = components['schemas']['DeletedFileObject'];
+
 /** Query of finance's attachment object read: the attachment row's tenant and CF UUID. */
 export type GetAttachmentObjectParams = financePaths[typeof OBJECTS_PATH]['get']['parameters']['query'];
 
@@ -60,6 +66,9 @@ export type ApplyResult = ApplyResponse & { writePositions: WritePositions };
 
 /** A stored object with the write positions its response header reported. */
 export type PutObjectResult = FileObject & { writePositions: WritePositions };
+
+/** An object deletion with the write positions its response header reported; none when nothing was recorded under the key. */
+export type DeleteObjectResult = DeletedFileObject & { writePositions: WritePositions };
 
 /** Query of one export page of a unit in one tenant; owners export by unit, and each table of a page names its legacy table. */
 export interface ExportParams {
@@ -158,6 +167,8 @@ export interface OwnersClient {
   putObject(params: PutObjectParams, bytes: Uint8Array): Promise<PutObjectResult>;
   /** Streams the bytes of one stored `content-files` object by its key. */
   getObject(key: string): Promise<Readable>;
+  /** Deletes one stored `content-files` object and its manifest row by key; a repeat answers `deleted: false`. */
+  deleteObject(key: string): Promise<DeleteObjectResult>;
   /** Streams the stored `finance-attachments` bytes of one finance attachment. */
   getAttachmentObject(params: GetAttachmentObjectParams): Promise<Readable>;
   /** Reads programs-sites' site-monitor cursor. */
@@ -336,6 +347,12 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
       const query: GetObjectParams = { key };
       // Streamed undecoded, so an object stored as JSON or text keeps its exact bytes.
       return (await call<Readable>(CONTENT, 'GET', OBJECTS_PATH, { query, stream: true })).body;
+    },
+
+    async deleteObject(key) {
+      const query: DeleteObjectParams = { key };
+      const response = await call<DeletedFileObject>(CONTENT, 'DELETE', OBJECTS_PATH, { query });
+      return { ...response.body, writePositions: writePositionsOf(response.headers) };
     },
 
     async getAttachmentObject(params) {

@@ -9,11 +9,13 @@ import {
   formActions,
   gridTable,
   hiddenField,
+  opt2Label,
   opt2ScreenUrl,
   opt2View,
   pageHeader,
   select,
   type GridCell,
+  type Label,
   type SelectOption,
 } from '../shared';
 import {
@@ -37,14 +39,28 @@ type FinanceRollup = components['schemas']['FinanceRollup'];
 export const RECORDS_PAGE_SIZE = 50;
 
 /** Each display column of `FinanceRecord`, the period included, labelled as legacy admin lists label them. */
-const HEADERS: readonly string[] = ['Title', 'Period', 'Amount', 'State', 'Version', 'Last Update'];
+function headers(ctx: ScreenContext): Label[] {
+  return [
+    opt2Label(ctx, 'Title'),
+    'Period',
+    'Amount',
+    opt2Label(ctx, 'State'),
+    opt2Label(ctx, 'Version'),
+    opt2Label(ctx, 'Last Update'),
+  ];
+}
 
-const ROLLUP_HEADERS: readonly string[] = ['Period', 'State', 'Record Count', 'Total Amount', 'Computed At'];
+function rollupHeaders(ctx: ScreenContext): Label[] {
+  return ['Period', opt2Label(ctx, 'State'), 'Record Count', 'Total Amount', 'Computed At'];
+}
 
-const STATE_OPTIONS: readonly SelectOption[] = [
-  { value: '', label: 'All' },
-  ...FINANCE_STATES.map((state) => ({ value: state, label: state })),
-];
+/** The state filter's options: All, then each lifecycle state as its contract value. */
+function stateOptions(ctx: ScreenContext): SelectOption[] {
+  return [
+    { value: '', label: opt2Label(ctx, 'All') },
+    ...FINANCE_STATES.map((state) => ({ value: state, label: state })),
+  ];
+}
 
 /** A positive page number of at most nine digits, as `rc.page` may carry it. */
 const PAGE_NUMBER = /^[1-9][0-9]{0,8}$/;
@@ -98,10 +114,10 @@ async function loadRecords(ctx: ScreenContext): Promise<RecordsData> {
 
 /** GET form re-listing the records of the chosen state, keeping the requested `asOf`. */
 function filterForm(ctx: ScreenContext, { state, asOf }: RecordsData): SafeHtml {
-  const fields = controlGroup('State', select('state', STATE_OPTIONS, state ?? ''));
+  const fields = controlGroup(opt2Label(ctx, 'State'), select('state', stateOptions(ctx), state ?? ''));
   const hidden = html`${hiddenField('siteid', sessionSite(ctx))}${asOf === undefined ? null : hiddenField('asOf', asOf)}`;
   return html`<form method="get"${attr('action', opt2ScreenUrl(FINANCE_MODULE, 'records'))}>${fields}${formActions(
-    [{ label: 'Filter' }],
+    [{ label: opt2Label(ctx, 'Filter') }],
     hidden,
   )}</form>`;
 }
@@ -110,10 +126,10 @@ function filterForm(ctx: ScreenContext, { state, asOf }: RecordsData): SafeHtml 
 function pager(ctx: ScreenContext, { state, asOf, page }: RecordsData, total: number): SafeHtml | null {
   const pages = Math.ceil(total / RECORDS_PAGE_SIZE);
   if (page === 1 && pages <= 1) return null;
-  const link = (label: string, target: number): SafeHtml =>
+  const link = (label: Label, target: number): SafeHtml =>
     html`<li><a${attr('href', recordsUrl(ctx, { state, asOf, page: target }))}>${label}</a></li>`;
   return html`<ul class="pagination">${page > 1 ? link('Previous', page - 1) : null}${
-    page < pages ? link('Next', page + 1) : null
+    page < pages ? link(opt2Label(ctx, 'Next'), page + 1) : null
   }</ul>`;
 }
 
@@ -140,13 +156,13 @@ function renderRecords(ctx: ScreenContext, data: RecordsData): SafeHtml {
   const { result, rollups } = data;
   const records = result.ok
     ? html`${gridTable(
-        HEADERS,
+        headers(ctx),
         result.body.data.map((record) => recordRow(ctx, record)),
         'There are currently no finance records.',
       )}${pager(ctx, data, result.body.total)}`
     : result.alert;
   const totals = rollups.ok
-    ? gridTable(ROLLUP_HEADERS, rollups.body.data.map(rollupRow), 'There are currently no rollup totals.')
+    ? gridTable(rollupHeaders(ctx), rollups.body.data.map(rollupRow), 'There are currently no rollup totals.')
     : rollups.alert;
   return html`${pageHeader('Finance Records')}${block(
     html`${filterForm(ctx, data)}${records}<h2>Rollup Totals</h2>${totals}`,

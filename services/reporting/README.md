@@ -93,11 +93,15 @@ These are served in the Masa envelope under the base path `/legacy-fixtures/cfml
 | `GET` | `/legacy-fixtures/cfml/api.cfm/reporting/exports` | `reporting.exporter` | One page of the site's jobs (`pageIndex`, `itemsPerPage`) |
 | `POST` | `/legacy-fixtures/cfml/api.cfm/reporting/exports` | `reporting.exporter` | `definitionId`, `format`, `asOf`; the job as `queued` |
 | `GET` | `/legacy-fixtures/cfml/api.cfm/reporting/exports/{id}` | `reporting.exporter` | One job, without output |
+| `POST` | `/legacy-fixtures/cfml/api.cfm/reporting/exports/{id}` | `reporting.exporter` | As the `GET` with `X-HTTP-Method-Override: GET`; any other effective method 404 `notFound` |
 | `GET` | `/legacy-fixtures/cfml/api.cfm/reporting/exports/{id}/download` | `reporting.exporter` | The output as a file stream; 409 `conflict` with message `not-ready` until `done` |
+| `POST` | `/legacy-fixtures/cfml/api.cfm/reporting/exports/{id}/download` | `reporting.exporter` | As the `GET` with `X-HTTP-Method-Override: GET`; any other effective method 404 `notFound` |
 
-The gateway routes them by the active version in `gateway/cutover/versions/`:
+A role denial answers as the fixture's earlier checks do: 400 `invalidParameters` when the requested site is unregistered, then 401 for a session without a login (a token with `sub` `''`), else 403. `/v1/reporting/**` applies the same two answers to the token's site.
 
-- `v0001`: all four are `legacy`.
+The gateway routes them by the active version in `gateway/cutover/versions/`, by route key; a `POST` answered as a `GET` carries the `GET`'s key:
+
+- `v0001`: all four route keys are `legacy`.
 - `v0002`: the create is `target`, in group `grp:reporting.export_job`. The three reads stay `legacy`, because their units include `reporting.export_definition` and `reporting.session_tracking`, which stay `legacy`-authoritative.
 
 ### OPT-2 screens
@@ -145,7 +149,7 @@ npm run test:contract
 npm run test:security
 ```
 
-- **Configuration.** The process reads `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)). Locally, `harness/repro/up.sh` starts it with these variables set inline:
+- **Configuration.** The process reads `reportingEnvSchema` in `src/app.ts`: `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)) plus the required `OPT2_SERVICE_URLS` entries named under **Required entries**, a missing one failing start-up. Locally, `harness/repro/up.sh` starts it with these variables set inline:
   - `PORT=8116` (from `harness/repro/ports.env`), `OPT2_SERVICE_NAME=reporting`, `PG_USER=reporting_app`;
   - `OPT2_TASKS_ADAPTER=local`, `OPT2_STORAGE_ADAPTER=local`, `OPT2_STATE_DIR`;
   - `OPT2_SERVICE_URLS`, `PUBSUB_EMULATOR_HOST`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `TZ`.
@@ -154,7 +158,8 @@ npm run test:security
   - `PUBSUB_EMULATOR_HOST` is required with `OPT2_ENV=local`, because the publisher carries the consumer's dead letters.
 - **Test dependencies.**
   - The contract and security suites need nothing external.
-  - The PostgreSQL-backed suites in `test/unit` read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`. They create a throwaway schema and roles through `@opt2/platform/testing`, and are skipped when PostgreSQL is unreachable.
+  - The unit suites need nothing external either: their stored-row cases run over the in-memory database of `test/helpers/memory-db.ts`. The exceptions are the PostgreSQL cases of `test/unit/{domain-jobs,fixture-routes,legacy-checks,queries,repository,run-export-output,tasks,v1-create-session}.test.ts`.
+  - Those cases and the isolation and event suites read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`. They create a throwaway schema and roles through `@opt2/platform/testing`, and are skipped when PostgreSQL is unreachable.
   - Push deliveries are injected in process, so no suite needs the Pub/Sub emulator.
 - **Cloud.** The `Dockerfile` is the Cloud Run image, built in CI and never pushed. The service runs on Cloud Run with `min_instance_count = 0`, internal-only ingress and Cloud SQL IAM authentication as a member of `reporting_app` (`infra/terraform/`, plan only).
 

@@ -179,7 +179,7 @@ function namesOf(res: Answer): unknown[] {
 
 registerLegacyApiState();
 
-// pgAvailable rejects on missing PG_* settings, and without them there is no server to probe.
+// An unset PG_HOST skips the suite without probing the server.
 const available = process.env.PG_HOST === undefined ? false : await pgAvailable();
 
 describe.skipIf(!available)('JSON API against PostgreSQL', () => {

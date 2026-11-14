@@ -5,9 +5,18 @@ import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-comp
 import { TENANT_A } from '@opt2/platform/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runGate } from '@/lib/access-gate';
+import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
+import { rbFor } from '@/lib/resource-bundles/rb';
 import { financeActions, financeScreens } from '@/screens/opt2/finance';
-import { noAccessUrl, opt2ActionUrl, opt2ScreenUrl } from '@/screens/opt2/shared';
+import { FINANCE_STATES } from '@/screens/opt2/finance/service';
+import {
+  noAccessUrl,
+  opt2ActionUrl,
+  opt2ScreenUrl,
+  OPT2_LABEL_KEYS,
+  type Opt2LabelName,
+} from '@/screens/opt2/shared';
 import type { Opt2ActionDefinition, Opt2ScreenDefinition } from '@/screens/registry';
 import {
   financeAnswers,
@@ -16,6 +25,7 @@ import {
   financeTransitionLegal,
 } from '../../fixtures/opt2/finance';
 import { opt2RoleRequest } from '../../helpers/admin-request';
+import { fragmentModel, type DomModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeReply, type FakeRouteTable } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../helpers/screen-context';
@@ -31,6 +41,9 @@ const RECORD_PATH: `/${string}` = `/v1/finance/records/${RECORD_ID}`;
 const LIST_ROUTE = routeKey('GET', 'finance', '/v1/finance/records');
 const ROLLUPS_ROUTE = routeKey('GET', 'finance', '/v1/finance/rollups');
 const recordRoute = (id: string): string => routeKey('GET', 'finance', `/v1/finance/records/${id}`);
+
+/** The detail's attachment download buttons, which every role reading the record sees. */
+const DOWNLOAD_BUTTONS: readonly string[] = financeRecordDetail.attachments.map(({ file_name }) => file_name);
 
 /** Request parameters naming finance roles and S2, as a forged post would carry them. */
 const CLAIMED_IN_RC: Readonly<Record<string, string>> = Object.freeze({
@@ -111,7 +124,6 @@ beforeEach(() => {
 });
 afterEach(() => restore());
 
-// List and detail models, action outcomes and role gates are pinned in ./finance/*.test.ts and umbrella.test.ts.
 describe('finance screens', () => {
   it.each([
     ['the paged record list', 'records', () => request(PREPARER, { page: '2' }), {
@@ -150,10 +162,16 @@ describe('finance screens', () => {
           state,
           record_id,
           role: PREPARER,
-          labels: ['Submit', 'Resubmit', 'Upload', 'Save'],
+          labels: ['Submit', 'Resubmit', ...DOWNLOAD_BUTTONS, 'Upload', 'Save'],
           actions: ['submit', 'resubmit'],
         },
-        { state, record_id, role: APPROVER, labels: ['Approve', 'Reject'], actions: ['approve', 'reject'] },
+        {
+          state,
+          record_id,
+          role: APPROVER,
+          labels: ['Approve', 'Reject', ...DOWNLOAD_BUTTONS],
+          actions: ['approve', 'reject'],
+        },
       ]),
   )('offers $role the buttons of its role in state $state', async (row) => {
     const detail = { ...financeRecordDetail, record_id: row.record_id, state: row.state };
@@ -167,6 +185,78 @@ describe('finance screens', () => {
     expect($('#mura-content .btn-group form').toArray().map((form) => $(form).attr('action'))).toEqual(
       row.actions.map((name) => opt2ActionUrl('finance', name, { siteid: SITE, id: row.record_id })),
     );
+  });
+});
+
+/** The fr admin bundle's wording of catalogued label `name`. */
+const fr = (name: Opt2LabelName): string => rbFor('fr').rbKey(OPT2_LABEL_KEYS[name]);
+
+/** The label-bearing parts of a screen body: headings, labels, buttons, grid headers, options and link texts. */
+function labelsOf(model: DomModel) {
+  return {
+    headings: model.headings,
+    labels: model.labels,
+    buttons: model.buttons.map(({ text }) => text),
+    headers: model.tables.map(({ headers }) => headers),
+    options: model.controls.flatMap(({ options }) => options.map(({ label }) => label)),
+    links: model.links.map(({ text }) => text),
+  };
+}
+
+describe('finance screens in the session locale', () => {
+  const { versions, attachments } = financeRecordDetail;
+
+  it.each([
+    {
+      name: 'records',
+      req: () => request(PREPARER, { page: '2' }),
+      routes: { [LIST_ROUTE]: { status: 200, body: { data: financeRecords, total: 120 } } },
+      expected: () => ({
+        headings: ['Finance Records', 'Rollup Totals'],
+        labels: [fr('State')],
+        buttons: [fr('Filter')],
+        headers: [
+          [fr('Title'), 'Period', 'Amount', fr('State'), fr('Version'), fr('Last Update')],
+          ['Period', fr('State'), 'Record Count', 'Total Amount', 'Computed At'],
+        ],
+        options: [fr('All'), ...FINANCE_STATES],
+        links: [...financeRecords.map(({ title }) => title), 'Previous', fr('Next')],
+      }),
+    },
+    {
+      name: 'record',
+      req: () => request(PREPARER, { id: RECORD_ID }, [PREPARER, APPROVER]),
+      routes: {},
+      expected: () => ({
+        headings: [financeRecordDetail.title, fr('Version History'), 'Attachments', 'Upload Attachment', 'Edit Record'],
+        labels: [
+          ...[fr('Title'), 'Amount', 'Period', fr('State'), fr('Version'), fr('Created'), fr('Last Update')],
+          ...versions.flatMap(() => [
+            fr('Version'),
+            fr('Action'),
+            fr('State'),
+            fr('Title'),
+            'Amount',
+            'Period',
+            'Actor',
+            fr('Created'),
+          ]),
+          ...attachments.flatMap(() => ['File Name', fr('Content Type'), 'Size (bytes)', 'SHA-256', fr('Created')]),
+          ...[fr('File'), fr('Title'), 'Amount', 'Period'],
+        ],
+        buttons: [fr('Submit'), 'Resubmit', fr('Approve'), fr('Reject'), ...DOWNLOAD_BUTTONS, 'Upload', fr('Save')],
+        headers: [],
+        options: [],
+        links: ['Finance Records'],
+      }),
+    },
+  ])('labels the $name screen from the fr admin bundle', async ({ name, req, routes, expected }) => {
+    const gateway = fakeGatewayClient({ ...financeAnswers, ...routes });
+    const ctx = makeScreenContext({ req: req(), gateway, rb: rbFor('fr') });
+    const def = screen(name);
+    const view = await def.render(ctx, await def.load(ctx));
+
+    expect(labelsOf(fragmentModel(toString(view.body)))).toEqual(expected());
   });
 });
 
@@ -187,8 +277,8 @@ describe('finance roles come from the user token only', () => {
   });
 
   it.each([
-    ['an approver', APPROVER, ['Approve', 'Reject']],
-    ['a token without finance roles', Roles.timesheetsEmployee, []],
+    ['an approver', APPROVER, ['Approve', 'Reject', ...DOWNLOAD_BUTTONS]],
+    ['a token without finance roles', Roles.timesheetsEmployee, DOWNLOAD_BUTTONS],
   ])('renders the record for %s with its token buttons and no preparer form', async (_, role, buttons) => {
     const { ctx } = ctxFor(request(role, { id: RECORD_ID, ...CLAIMED_IN_RC }));
     const def = screen('record');

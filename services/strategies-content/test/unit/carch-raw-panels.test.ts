@@ -622,7 +622,10 @@ describe('related content', () => {
 
     it('searches the site with the request filters and lists the readable results with their crumbs', async () => {
       seedSearch();
-      db.respond(/^SELECT \* FROM "content"\."category" WHERE tenant_id = \$1 AND upper\(path\) LIKE/, [{ categoryid: CATEGORY, path: CATEGORY }]);
+      // descendantIdsIn binds the listed `%id%` patterns as $2; the stored category's path is its own id.
+      db.respond(/^SELECT c\.categoryid FROM unnest\(\$2::text\[\]\) WITH ORDINALITY AS listed\(pattern, ord\) JOIN "content"\."category" c ON c\.tenant_id = \$1 AND upper\(c\.path\) LIKE/, (params) =>
+        [params[1]].flat().includes(`%${CATEGORY}%`) ? [{ categoryid: CATEGORY }] : [],
+      );
       const res = await raw('loadrelatedcontent', {
         query: { contenthistid: NODE_HIST, contentid: NODE, isNew: 'false', keywords: 'found', searchTypeSelector: 'Page^Custom', rcStartDate: '6/1/2026', rcEndDate: '6/30/2026', rcCategoryID: CATEGORY },
       });

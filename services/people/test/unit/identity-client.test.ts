@@ -232,7 +232,7 @@ describe('roster protocol calls', () => {
     ['revert', (identity, options) => identity.revert(USER_ID, OPERATION_ID, options), step('reverted')],
     ['operationState', (identity, options) => identity.operationState(USER_ID, OPERATION_ID, options), step('prepared')],
     ['readAccount', (identity, options) => identity.readAccount(USER_ID, options), { status: 404 }],
-    ['membershipGroupIds', (identity, options) => identity.membershipGroupIds(USER_ID, options), { status: 200, body: { privateGroups: [], publicGroups: [], groupIds: [] } }],
+    ['membershipGroupIds', (identity, options) => identity.membershipGroupIds(USER_ID, options), { status: 200, body: { groupIds: [] } }],
   ];
   const bounds: [IdentityCallOptions | undefined, number | undefined][] = [
     [{ timeoutMs: 1_234 }, 1_234],
@@ -267,10 +267,16 @@ describe('identity reads', () => {
     ]);
   });
 
-  it("lists membership group ids in identity's order, for the token's site", async () => {
-    const { identity, requests } = identityWith({ status: 200, body: memberships });
+  it("lists membership group ids in identity's order through getAccountMemberships, which no site scopes", async () => {
+    const { identity, requests } = identityWith({ status: 200, body: { groupIds: ['G2', 'G1'] } });
     await expect(identity.membershipGroupIds(USER_ID)).resolves.toEqual(['G2', 'G1']);
-    expect(requests[0]?.query).toEqual({ siteid: undefined });
+    expect(requests).toEqual([{ service: 'identity', method: 'GET', path: `/internal/v1/accounts/${USER_ID}/memberships` }]);
+    expect(findOperation(IDENTITY_CONTRACT, 'GET', requests[0]?.path ?? '').operation.operationId).toBe('getAccountMemberships');
+  });
+
+  it('fails closed when identity refuses getAccountMemberships', async () => {
+    const { identity } = identityWith({ status: 403, body: { apiversion: 'v1', method: 'invalid', error: { message: 'Insufficient Account Permissions', code: 'invalid_request' } } });
+    await expect(identity.membershipGroupIds(USER_ID)).rejects.toMatchObject(unavailableFrom('getAccountMemberships', 403));
   });
 
   it('maps the cusers.list group rows, absent columns as NULL', async () => {

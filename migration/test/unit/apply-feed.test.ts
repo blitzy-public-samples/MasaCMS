@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { Logger } from '@opt2/platform/logging';
-import { LEGACY_PROGRAM_ID_COLUMN, decodeRow, encodeRow, formatCanonicalTimestamp } from '@opt2/platform/migration-kit';
+import { LEGACY_PROGRAM_ID_COLUMN, decodeRow, encodeRow, formatCanonicalTimestamp, sha256Hex } from '@opt2/platform/migration-kit';
 import type { ApplyRequest, CanonicalColumn, WatermarkDirection, WatermarkRecord } from '@opt2/platform/migration-kit';
 import { TENANT_A, TENANT_B, TENANT_LIST, TENANT_UMBRELLA, businessClock } from '@opt2/platform/testing';
 import type { ConnectionPool } from 'mssql';
@@ -19,8 +19,8 @@ import { loadConfig } from '../../src/config.js';
 import { currentAuthority } from '../../src/cutover/index.js';
 import { compareCanonicalRows, describeLegacyTable, listLegacyTables, migratableTables, streamLegacyTable } from '../../src/extract/index.js';
 import type { CanonicalRow, LegacyTableRef, MigratableTable } from '../../src/extract/index.js';
-import { FileStoreUnsupportedError, diffSnapshotManifests, transferFiles } from '../../src/files/index.js';
-import type { ManifestEntry, TransferResult } from '../../src/files/index.js';
+import { FileStoreUnsupportedError, diffSnapshotManifests, removeDroppedObjects, transferFiles } from '../../src/files/index.js';
+import type { ManifestEntry, RemovalResult, TransferResult } from '../../src/files/index.js';
 import { computeDependencyOrder } from '../../src/order/index.js';
 import { UnknownUnitError, loadUnitCatalog } from '../../src/owners/index.js';
 import type { DataOwner, LegacyTableTarget, OwnersClient, UnitCatalog } from '../../src/owners/index.js';
@@ -36,7 +36,7 @@ import {
   toUnitRow,
   writeReconciliationReport,
 } from '../../src/reconcile/index.js';
-import type { ReconcileResult, UnitTableShape } from '../../src/reconcile/index.js';
+import type { ObjectEntry, ReconcileResult, UnitTableShape } from '../../src/reconcile/index.js';
 import { SnapshotNotFoundError, latestSnapshot, requireSnapshot, takeSnapshot } from '../../src/snapshot/index.js';
 import type { SnapshotKind, SnapshotRecord } from '../../src/snapshot/index.js';
 
@@ -74,6 +74,7 @@ vi.mock('../../src/files/index.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/files/index.js')>()),
   diffSnapshotManifests: vi.fn(),
   transferFiles: vi.fn(),
+  removeDroppedObjects: vi.fn(),
 }));
 
 vi.mock('../../src/order/index.js', async (importOriginal) => ({
@@ -109,6 +110,11 @@ const SPECS = {
     programIds: [1, 2],
   },
   tredirects: { columns: text('redirectID', 'URL'), keyColumns: ['redirectID'] },
+  'Program_N.finance_attachment': {
+    columns: [...text('attachment_id', 'sha256'), { name: 'content', type: 'b' }, { name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' }],
+    keyColumns: ['attachment_id', LEGACY_PROGRAM_ID_COLUMN],
+    programIds: [1, 2],
+  },
 } satisfies Record<string, TableSpec>;
 
 type TableName = keyof typeof SPECS;
@@ -122,6 +128,7 @@ interface OwnershipTarget {
   keyColumns: string[];
   columnPolicy: 'explicit' | 'whole-table';
   ownedColumns?: string[];
+  objectColumns?: Record<string, string>;
 }
 
 interface Ownership {
@@ -232,6 +239,20 @@ function withEmailStatsByClass(): Ownership {
   return ownership;
 }
 
+/** OWNERSHIP with the folded `finance.attachment` unit, whose `content` bytes finance stores as objects. */
+function withAttachments(): Ownership {
+  const ownership = structuredClone(OWNERSHIP);
+  ownership.units.push({ unit: 'finance.attachment', owner: 'finance', legacyTables: ['Program_N.finance_attachment'] });
+  ownership.tables.push({
+    table: 'Program_N.finance_attachment',
+    owner: 'finance',
+    primaryKey: ['attachment_id'],
+    programFold: true,
+    targets: [{ ...whole('finance.attachment', 'finance', ['attachment_id']), objectColumns: { content: 'finance-attachments' } }],
+  });
+  return ownership;
+}
+
 const LIVE = 'muradb';
 const CLOCK = businessClock();
 const FINISHED_AT = formatCanonicalTimestamp(CLOCK.now());
@@ -265,6 +286,8 @@ interface World {
   readonly puts: { owner: DataOwner; record: WatermarkRecord }[];
   /** Owner-exported rows per `<unit>|<tenantId>`. */
   readonly target: Map<string, readonly Row[]>;
+  /** Owner object manifests of object-column units per `<unit>|<tenantId>`, keyed by `legacyPath`. */
+  readonly targetObjects: Map<string, readonly ObjectEntry[]>;
   readonly targetUnits: Set<string>;
   readonly readers: { opened: number; disposed: number };
   nextSnapshot: Partial<SnapshotRecord>;
@@ -280,6 +303,7 @@ function createWorld(): World {
     applies: [],
     puts: [],
     target: new Map(),
+    targetObjects: new Map(),
     targetUnits: new Set(),
     readers: { opened: 0, disposed: 0 },
     nextSnapshot: {},
@@ -425,9 +449,11 @@ function project(columns: readonly CanonicalColumn[], row: Row): Row {
   return Object.fromEntries(columns.map((column) => [column.name, valueOf(row, column.name)]));
 }
 
+/** `row` as the extractor yields it over the shape's columns: values decoded, so `\x` hex of a `b` column becomes bytes. */
 function canonicalRow(shape: Pick<UnitTableShape, 'legacyTable' | 'keyed' | 'keyColumns' | 'columns' | 'folded'>, row: Row): CanonicalRow {
   const programId = valueOf(row, LEGACY_PROGRAM_ID_COLUMN);
-  return toUnitRow(shape, project(shape.columns, row), shape.folded && programId !== null ? Number(programId) : undefined);
+  const values = decodeRow(shape.columns, encodeRow(shape.columns, project(shape.columns, row)));
+  return toUnitRow(shape, values, shape.folded && programId !== null ? Number(programId) : undefined);
 }
 
 function tableRows(database: string, name: string): CanonicalRow[] {
@@ -528,6 +554,7 @@ function installFakes(): void {
     const target = targetOf(options.unit, options.legacyTable);
     const { spec } = tableIn(options.database, options.legacyTable);
     const owned = target.ownedColumns === 'whole-table' ? null : new Set([...target.ownedColumns, ...target.keyColumns].map(lower));
+    const objects = new Set(Object.keys(target.objectColumns).map(lower));
     const folded = spec.programIds !== undefined;
     return Promise.resolve({
       unit: options.unit,
@@ -535,8 +562,9 @@ function installFakes(): void {
       legacyTable: options.legacyTable,
       keyed: target.keyColumns.length > 0,
       keyColumns: folded ? [...target.keyColumns, LEGACY_PROGRAM_ID_COLUMN] : [...target.keyColumns],
-      columns: spec.columns.filter((column) => owned === null || owned.has(lower(column.name))),
+      columns: spec.columns.filter((column) => (owned === null || owned.has(lower(column.name))) && !objects.has(lower(column.name))),
       excludedColumns: [],
+      objectColumns: spec.columns.filter((column) => objects.has(lower(column.name))),
       folded,
     });
   });
@@ -555,6 +583,7 @@ function installFakes(): void {
       counts: new Map(tenants.map((tenantId) => [tenantId, byTenant.get(tenantId)?.length ?? 0])),
       rows: (tenantId: string) => (byTenant.get(tenantId) ?? []).sort(compareCanonicalRows),
       orphans: new Map(),
+      objects: new Map(),
       dispose: () => {
         world.readers.disposed += 1;
         return Promise.resolve();
@@ -567,7 +596,7 @@ function installFakes(): void {
     return Promise.resolve({
       rows,
       count: rows.length,
-      objects: null,
+      objects: shape.objectColumns.length > 0 ? [...(world.targetObjects.get(`${shape.unit}|${tenantId}`) ?? [])] : null,
       dispose: () => {
         world.readers.disposed += 1;
         return Promise.resolve();
@@ -593,6 +622,9 @@ function installFakes(): void {
   );
   vi.mocked(transferFiles).mockImplementation((_ctx, snapshotSeq) =>
     Promise.resolve({ snapshotSeq, transferred: 0, unchanged: 0, bytes: 0, orphans: [], misplaced: [] }),
+  );
+  vi.mocked(removeDroppedObjects).mockImplementation((_ctx, diff) =>
+    Promise.resolve({ from: diff.from, to: diff.to, deleted: 0, absent: 0, retained: 0, misplaced: 0 }),
   );
 }
 
@@ -967,6 +999,7 @@ describe('runFeed files step', () => {
     expect(result.files).toEqual(files);
     expect(diffSnapshotManifests).not.toHaveBeenCalled();
     expect(transferFiles).not.toHaveBeenCalled();
+    expect(removeDroppedObjects).not.toHaveBeenCalled();
     expect(vi.mocked(reconcileUnits).mock.calls[0]?.[1].units.includes('content.file_object')).toBe(reconciled);
   });
 
@@ -991,23 +1024,50 @@ describe('runFeed files step', () => {
     expect(world.applies).toEqual([]);
   });
 
-  it('transfers the objects added or changed since the tfiles watermark and leaves removed ones in place', async () => {
+  it('transfers the objects added or changed since the tfiles watermark, then deletes the removed ones before the watermark moves', async () => {
     seed({ tfiles: [file('F1', 'tenant-a')] }, { tfiles: [file('F2', 'tenant-a')] });
     const added = manifestEntry('F2');
     const removed = manifestEntry('F1');
     const only = [{ siteId: added.siteId, path: added.path }];
+    const diff = { from: 0, to: 1, added: [added], changed: [], removed: [removed], unchanged: 0, toTransfer: only };
     const transfer: TransferResult = { snapshotSeq: 1, transferred: 1, unchanged: 0, bytes: 42, orphans: [], misplaced: [] };
-    vi.mocked(diffSnapshotManifests).mockResolvedValueOnce({ from: 0, to: 1, added: [added], changed: [], removed: [removed], unchanged: 0, toTransfer: only });
+    const removal: RemovalResult = { from: 0, to: 1, deleted: 1, absent: 0, retained: 0, misplaced: 0 };
+    vi.mocked(diffSnapshotManifests).mockResolvedValueOnce(diff);
     vi.mocked(transferFiles).mockResolvedValueOnce(transfer);
+    const seen: { watermark: number | null | undefined; applies: number }[] = [];
+    vi.mocked(removeDroppedObjects).mockImplementationOnce(() => {
+      seen.push({ watermark: watermarkOf('strategies-content', 'tfiles')?.snapshotSeq, applies: world.applies.length });
+      return Promise.resolve(removal);
+    });
 
     const result = await runFeed(contextFor());
 
-    expect(result.files).toEqual({ status: 'transferred', from: 0, to: 1, transfer, removed: 1 });
+    expect(result.files).toEqual({ status: 'transferred', from: 0, to: 1, transfer, removal });
     expect(diffSnapshotManifests).toHaveBeenCalledWith(expect.anything(), 0, 1);
     expect(transferFiles).toHaveBeenCalledWith(expect.anything(), 1, { only });
-    expect(info).toHaveBeenCalledWith('feed to snapshot 1: 1 legacy files removed since snapshot 0 stay in content-files');
+    expect(removeDroppedObjects).toHaveBeenCalledWith(expect.anything(), diff);
+    expect(vi.mocked(transferFiles).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(removeDroppedObjects).mock.invocationCallOrder[0] ?? 0);
+    expect(seen).toEqual([{ watermark: 0, applies: 0 }]);
+    expect(watermarkOf('strategies-content', 'tfiles')?.snapshotSeq).toBe(1);
     expect(vi.mocked(reconcileUnits).mock.calls[0]?.[1].units).toContain('content.file_object');
     expect(requests('strategies-content').flatMap((request) => request.rows.map((change) => change.op))).toEqual(['delete', 'upsert']);
+  });
+
+  it('stops before any table batch, its watermark unmoved, when a removal fails, and deletes again on the resumed run', async () => {
+    seed({ tfiles: [file('F1', 'tenant-a')] }, { tfiles: [file('F2', 'tenant-a')] });
+    const diff = { from: 0, to: 1, added: [], changed: [], removed: [manifestEntry('F1')], unchanged: 0, toTransfer: [] };
+    vi.mocked(diffSnapshotManifests).mockResolvedValue(diff);
+    vi.mocked(removeDroppedObjects).mockRejectedValueOnce(new Error('strategies-content unavailable'));
+
+    await expect(runFeed(contextFor())).rejects.toThrow('strategies-content unavailable');
+    expect(world.applies).toEqual([]);
+    expect(watermarkOf('strategies-content', 'tfiles')?.snapshotSeq).toBe(0);
+
+    const resumed = await runFeed(contextFor(), { snapshotSeq: 1 });
+    expect(removeDroppedObjects).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(removeDroppedObjects).mock.calls.map(([, called]) => called)).toEqual([diff, diff]);
+    expect(resumed.files).toMatchObject({ status: 'transferred', from: 0, to: 1 });
+    expect(watermarkOf('strategies-content', 'tfiles')?.snapshotSeq).toBe(1);
   });
 
   it('halts the files step when the transfer meets an unsupported store', async () => {
@@ -1018,6 +1078,7 @@ describe('runFeed files step', () => {
     const result = await runFeed(contextFor());
 
     expect(result.files).toEqual({ status: 'halted', reason: error.message });
+    expect(removeDroppedObjects).not.toHaveBeenCalled();
   });
 
   it('propagates any other transfer failure', async () => {
@@ -1026,6 +1087,7 @@ describe('runFeed files step', () => {
 
     await expect(runFeed(contextFor())).rejects.toThrow('object store offline');
     expect(world.applies).toEqual([]);
+    expect(removeDroppedObjects).not.toHaveBeenCalled();
   });
 });
 
@@ -1177,6 +1239,48 @@ describe('restartFeedFor', () => {
     expect(rebaseline?.watermark).toMatchObject({ direction: 'forward', snapshotSeq: 1 });
     expect(watermarkOf('identity', 'tusers')?.snapshotSeq).toBe(1);
     expect(requests('people')).toEqual([]);
+  });
+
+  it('re-baselines an object-column unit, sending the bytes of each row the target lacks or whose stored object is missing or differs', async () => {
+    catalog = await catalogFrom(withAttachments());
+    const attachment = (id: string, programId: number, bytes: Buffer): Row => ({
+      attachment_id: id,
+      sha256: sha256Hex(bytes),
+      content: `\\x${bytes.toString('hex')}`,
+      [LEGACY_PROGRAM_ID_COLUMN]: String(programId),
+    });
+    const stored = (id: string, programId: number, bytes: Buffer): ObjectEntry => ({
+      key: `Program_${String(programId)}.finance_attachment/${id}`,
+      size: bytes.length,
+      sha256: sha256Hex(bytes),
+    });
+    const bytesOf = (name: string): Buffer => Buffer.from(`attachment ${name}`);
+    const [added, kept, corrupted, lost, removed] = [bytesOf('added'), bytesOf('kept'), bytesOf('corrupted'), bytesOf('lost'), bytesOf('removed')];
+    const table = 'Program_N.finance_attachment';
+    seed({ [table]: [] }, { [table]: [attachment('AT1', 1, added), attachment('AT2', 1, kept), attachment('AT3', 2, corrupted), attachment('AT4', 1, lost)] });
+    const exported = `finance.attachment|${UMBRELLA_ID}`;
+    world.target.set(exported, [attachment('AT2', 1, kept), attachment('AT3', 2, corrupted), attachment('AT4', 1, lost), attachment('AT5', 2, removed)]);
+    world.targetObjects.set(exported, [stored('AT2', 1, kept), { ...stored('AT3', 2, corrupted), sha256: sha256Hex(removed) }, stored('AT5', 2, removed)]);
+
+    const result = await restartFeedFor(contextFor(), { units: ['finance.attachment'] });
+
+    expect(result.tables).toEqual([
+      { table, owner: 'finance', catchUp: null, rebaseline: { units: ['finance.attachment'], inserts: 1, updates: 2, deletes: 1, batches: 2 } },
+    ]);
+    const sent = requests('finance');
+    expect(sent.map((request) => request.columns.map((column) => column.name))).toEqual(sent.map(() => ['attachment_id', 'sha256', LEGACY_PROGRAM_ID_COLUMN, 'content']));
+    const rows = sent.flatMap((request) => request.rows.map((change) => [change.op, decodeRow(request.columns, change.row)]));
+    const program = (id: number): Record<string, string> => ({ [LEGACY_PROGRAM_ID_COLUMN]: String(id) });
+    expect(rows).toHaveLength(4);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        ['upsert', { attachment_id: 'AT1', sha256: sha256Hex(added), ...program(1), content: added }],
+        ['upsert', { attachment_id: 'AT3', sha256: sha256Hex(corrupted), ...program(2), content: corrupted }],
+        ['upsert', { attachment_id: 'AT4', sha256: sha256Hex(lost), ...program(1), content: lost }],
+        ['delete', { attachment_id: 'AT5', sha256: sha256Hex(removed), ...program(2), content: null }],
+      ]),
+    );
+    expect(world.readers.disposed).toBe(world.readers.opened);
   });
 
   it('re-baselines a keyless unit by occurrence, deleting one surplus copy and inserting the missing row', async () => {

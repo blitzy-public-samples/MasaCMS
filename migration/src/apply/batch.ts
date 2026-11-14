@@ -1,5 +1,17 @@
 /** Batching of backfill and feed applies: deterministic batch ids, per-tenant owner batchers, the applier-killed fault and tenant wiring. */
-import { programTableName, sha256Hex, type ApplyRequest, type ChangeOrigin, type WatermarkRecord } from '@opt2/platform/migration-kit';
+import { subscribe, unsubscribe } from 'node:diagnostics_channel';
+import { writeSync } from 'node:fs';
+import { Writable } from 'node:stream';
+import { setTimeout as sleep } from 'node:timers/promises';
+import {
+  MIGRATION_PATH_PREFIX,
+  programTableName,
+  sha256Hex,
+  type ApplyRequest,
+  type ChangeOrigin,
+  type WatermarkRecord,
+} from '@opt2/platform/migration-kit';
+import { z } from '@opt2/platform/service-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 
 import type { MigrationConfig } from '../config.js';
@@ -38,20 +50,35 @@ export function batchSizeOf(config: Pick<MigrationConfig, 'backfill'>): number {
   return config.backfill.batchRows;
 }
 
-/** The applier-killed fault: the process exits once `killAfter` batches have been acknowledged. */
+/** Where the applier-killed fault exits: once the owner acknowledged the batch, or while its apply is in flight. */
+export type ApplyFaultPoint = 'acknowledged' | 'in-flight';
+
+/** The applier-killed fault: the process exits with 137 at `point` of its `batch`-th apply, counted from 1. */
 export interface ApplyFault {
-  killAfter: number;
+  point: ApplyFaultPoint;
+  batch: number;
 }
 
-/** An `apply:` entry of `OPT2_FAULT` is not `apply:kill-after:<positive integer>`, or there are several. */
+/** An `apply:` entry of `OPT2_FAULT` is not `apply:kill-after:<n>` or `apply:kill-in-flight:<n>` for a positive integer n, or there are several. */
 export class ApplyFaultConfigError extends Error {
   override readonly name = 'ApplyFaultConfigError';
 }
 
+/** The owner answered the armed apply before its request body was seen sent, so the in-flight kill point was missed. */
+export class InFlightKillMissedError extends Error {
+  override readonly name = 'InFlightKillMissedError';
+}
+
 const FAULT_PREFIX = 'apply:';
-const KILL_AFTER = /^apply:kill-after:([1-9]\d{0,14})$/;
+const FAULT_ENTRY = /^apply:kill-(after|in-flight):([1-9]\d{0,14})$/;
 // The status of a SIGKILLed process, so the fault reads to supervisors as abrupt process loss.
 const KILLED_EXIT_CODE = 137;
+const APPLY_PATH = `${MIGRATION_PATH_PREFIX}/apply`;
+// Diagnostics channels are process-wide by name, so these see the requests of whichever undici copy the service client loads.
+const SEND_HEADERS_CHANNEL = 'undici:client:sendHeaders';
+const BODY_SENT_CHANNEL = 'undici:request:bodySent';
+const FLUSH_POLL_MS = 1;
+const IN_FLIGHT_MARKER = 'apply:kill-in-flight';
 
 /**
  * The apply fault among the comma-separated `OPT2_FAULT` entries; entries of other packages are ignored.
@@ -65,13 +92,58 @@ export function parseApplyFault(value: string | undefined): ApplyFault | null {
   const [entry, ...rest] = entries;
   if (entry === undefined) return null;
   if (rest.length > 0) throw new ApplyFaultConfigError(`OPT2_FAULT holds ${String(entries.length)} apply entries; at most one is allowed`);
-  const match = KILL_AFTER.exec(entry);
-  if (match === null) throw new ApplyFaultConfigError(`OPT2_FAULT entry "${entry}" is not apply:kill-after:<positive integer>`);
-  return Object.freeze({ killAfter: Number(match[1]) });
+  const match = FAULT_ENTRY.exec(entry);
+  if (match === null) {
+    throw new ApplyFaultConfigError(
+      `OPT2_FAULT entry "${entry}" is not apply:kill-after:<positive integer> or apply:kill-in-flight:<positive integer>`,
+    );
+  }
+  const fault: ApplyFault = { point: match[1] === 'after' ? 'acknowledged' : 'in-flight', batch: Number(match[2]) };
+  return Object.freeze(fault);
 }
 
 /** The apply fault of this process, read from `OPT2_FAULT` once at load. */
 export const APPLY_FAULT: ApplyFault | null = parseApplyFault(process.env.OPT2_FAULT);
+
+/** The apply an in-flight kill interrupted, as its stderr marker line names it; `batch` is the apply's ordinal in its run. */
+export interface InFlightKill {
+  owner: string;
+  legacyTable: string;
+  batchId: string;
+  batch: number;
+}
+
+const inFlightKillSchema = z.object({
+  fault: z.literal(IN_FLIGHT_MARKER),
+  owner: z.string().min(1),
+  legacyTable: z.string().min(1),
+  batchId: z.string().min(1),
+  batch: z.number().int().positive(),
+});
+
+/** The marker line an in-flight kill writes to stderr before exiting: one JSON object tagged `fault: apply:kill-in-flight`. */
+export function inFlightKillLine(kill: InFlightKill): string {
+  return `${JSON.stringify({ fault: IN_FLIGHT_MARKER, ...kill })}\n`;
+}
+
+/** The last in-flight kill marker in `text`, for example a killed child's stderr tail; null when it holds none. */
+export function parseInFlightKill(text: string): InFlightKill | null {
+  for (const line of text.split('\n').reverse()) {
+    if (!line.includes(IN_FLIGHT_MARKER)) continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const parsed = inFlightKillSchema.safeParse(value);
+    if (parsed.success) {
+      const { owner, legacyTable, batchId, batch } = parsed.data;
+      return { owner, legacyTable, batchId, batch };
+    }
+  }
+  return null;
+}
 
 /** Sends batches and watermarks to owners for one command run, counting the acknowledged applies. */
 export interface BatchSender {
@@ -81,22 +153,91 @@ export interface BatchSender {
   readonly acknowledged: number;
 }
 
-/** Inputs of {@link createBatchSender}; `fault` defaults to {@link APPLY_FAULT} and `exit` to `process.exit`. */
+/** Inputs of {@link createBatchSender}; `fault` defaults to {@link APPLY_FAULT}, `exit` to `process.exit` and `writeMarker` to a synchronous stderr write. */
 export interface BatchSenderOptions {
   owners: Pick<OwnersClient, 'apply' | 'putWatermark'>;
   fault?: ApplyFault | null;
   exit?: (code: number) => never;
+  writeMarker?: (line: string) => void;
 }
 
-/** Creates a sender that calls each owner once per batch, without retries, and exits with 137 after the fault's acknowledged batch. */
+/** Whether an undici request is a `POST` to an owner's apply route, whatever its query. */
+function isApplyPost(request: unknown): request is object {
+  const { method, path } = (request ?? {}) as { method?: unknown; path?: unknown };
+  return method === 'POST' && typeof path === 'string' && path.split('?', 1)[0]?.endsWith(APPLY_PATH) === true;
+}
+
+/** Resolves once `socket` has handed every queued byte to the kernel, so that exiting cannot truncate the request. */
+async function flushed(socket: Writable): Promise<void> {
+  while (socket.writableLength > 0 && !socket.destroyed) await sleep(FLUSH_POLL_MS);
+}
+
+/** Watches undici for an apply `POST`; `sent` resolves once its whole body has left its socket. */
+function watchApplySend(): { sent: Promise<void>; dispose(): void } {
+  const sockets = new WeakMap<object, Writable>();
+  let markSent: (flushing: Promise<void>) => void = () => undefined;
+  const sent = new Promise<void>((resolve) => {
+    markSent = resolve;
+  });
+  const onHeaders = (message: unknown): void => {
+    const { request, socket } = message as { request?: unknown; socket?: unknown };
+    if (isApplyPost(request) && socket instanceof Writable) sockets.set(request, socket);
+  };
+  const onBodySent = (message: unknown): void => {
+    const { request } = message as { request?: unknown };
+    if (!isApplyPost(request)) return;
+    const socket = sockets.get(request);
+    markSent(socket === undefined ? Promise.resolve() : flushed(socket));
+  };
+  subscribe(SEND_HEADERS_CHANNEL, onHeaders);
+  subscribe(BODY_SENT_CHANNEL, onBodySent);
+  return {
+    sent,
+    dispose() {
+      unsubscribe(SEND_HEADERS_CHANNEL, onHeaders);
+      unsubscribe(BODY_SENT_CHANNEL, onBodySent);
+    },
+  };
+}
+
+/** Creates a sender that calls each owner once per batch, without retries, and exits with 137 at the fault's point of its armed batch. */
 export function createBatchSender(opts: BatchSenderOptions): BatchSender {
-  const { owners, fault = APPLY_FAULT, exit = (code: number): never => process.exit(code) } = opts;
+  const {
+    owners,
+    fault = APPLY_FAULT,
+    exit = (code: number): never => process.exit(code),
+    writeMarker = (line: string): void => {
+      writeSync(2, line);
+    },
+  } = opts;
+  let started = 0;
   let acknowledged = 0;
+
+  /** Sends the armed apply and exits once its request body has been sent, before the owner answers it. */
+  const applyInFlight = async (owner: DataOwner, request: ApplyRequest, batch: number): Promise<ApplyResult> => {
+    const watch = watchApplySend();
+    try {
+      const answered = owners.apply(owner, request).then((result) => ({ result }));
+      // Exits here, not in a channel subscriber, whose throw Node rethrows as an uncaught exception.
+      if ((await Promise.race([watch.sent.then(() => null), answered])) !== null) {
+        throw new InFlightKillMissedError(
+          `${owner} answered apply ${String(batch)} (${request.batchId}) before undici reported its POST ${APPLY_PATH} body sent`,
+        );
+      }
+      writeMarker(inFlightKillLine({ owner, legacyTable: request.legacyTable, batchId: request.batchId, batch }));
+      return exit(KILLED_EXIT_CODE);
+    } finally {
+      watch.dispose();
+    }
+  };
+
   return {
     async apply(owner, request) {
+      started += 1;
+      if (fault?.point === 'in-flight' && started === fault.batch) return applyInFlight(owner, request, started);
       const result = await owners.apply(owner, request);
       acknowledged += 1;
-      if (fault !== null && acknowledged === fault.killAfter) exit(KILLED_EXIT_CODE);
+      if (fault?.point === 'acknowledged' && acknowledged === fault.batch) exit(KILLED_EXIT_CODE);
       return result;
     },
     async putWatermark(owner, record) {

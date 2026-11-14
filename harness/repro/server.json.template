@@ -20,7 +20,8 @@
       "enable": true
     },
     "rules": [
-      "regex( pattern='^/+(gateway|legacy-fixtures|harness)(/|$)', case-sensitive=false ) and is-directory() -> { error-file( file='/dev/null', response-codes={ 404 } ); response-code( 404 ) }"
+      "regex( pattern='^/+(gateway|legacy-fixtures|harness)(/|$)', case-sensitive=false ) and is-directory() -> { error-file( file='/dev/null', response-codes={ 404 } ); response-code( 404 ) }",
+      "regex( pattern='^/+gateway/+legacy-bridge(/|$)', case-sensitive=false ) and not regex( pattern='^/+gateway/+legacy-bridge/+cfml/+(session|jobs|scheduler|site|files)[.]cfm$', case-sensitive=true ) -> { error-file( file='/dev/null', response-codes={ 404 } ); response-code( 404 ) }"
     ]
   },
   "jvm": {

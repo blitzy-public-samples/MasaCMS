@@ -156,6 +156,7 @@ function createInput(change: Partial<AccountChange> = {}): PrepareInput {
     kind: 'create',
     userId: cfUuid(),
     requestSiteId: TENANT_A.siteId,
+    actorUserId: cfUuid(),
     siteId: TENANT_A.siteId,
     actorIsSuperUser: false,
     change: {

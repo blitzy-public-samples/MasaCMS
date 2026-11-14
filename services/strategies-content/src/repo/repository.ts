@@ -2641,6 +2641,22 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       return (await categoriesUnderPath(tx, { categoryId })).map((row) => row.categoryid);
     },
 
+    /** `descendantIds` of each of `categoryIds` with one query, concatenated in list order, each id once at its first place. */
+    async descendantIdsIn(tx: TenantTx, categoryIds: readonly string[]): Promise<string[]> {
+      if (categoryIds.length === 0) {
+        return [];
+      }
+      const rows = await select<{ categoryid: string }>(
+        tx,
+        [CATEGORY],
+        `SELECT c.categoryid FROM unnest($2::text[]) WITH ORDINALITY AS listed(pattern, ord)` +
+          ` JOIN ${name(CATEGORY)} c ON c.tenant_id = $1 AND upper(c.path) LIKE upper(listed.pattern) ESCAPE ''` +
+          ' ORDER BY listed.ord, c.categoryid',
+        [tx.tenantId, categoryIds.map((categoryId) => `%${categoryId}%`)],
+      );
+      return [...new Set(rows.map((row) => row.categoryid))];
+    },
+
     /** categoryManager.makeFilenameUnique's check: whether another category of the site already uses `filename`. */
     async filenameInUse(tx: TenantTx, args: { categoryId: string; filename: string; siteId: string }): Promise<boolean> {
       const p = new SqlParams(1);

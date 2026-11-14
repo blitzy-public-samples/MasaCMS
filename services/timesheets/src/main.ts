@@ -8,9 +8,9 @@ const VERSION = '1.0.0';
 let app: Awaited<ReturnType<typeof import('./app.js').buildApp>> | undefined;
 try {
   await startTracing({ serviceName: SERVICE, version: VERSION });
-  const { loadEnv, baseEnvSchema } = await import('@opt2/platform/service-kit');
-  const { buildApp } = await import('./app.js');
-  const env = loadEnv(baseEnvSchema);
+  const { loadEnv } = await import('@opt2/platform/service-kit');
+  const { buildApp, timesheetsEnvSchema } = await import('./app.js');
+  const env = loadEnv(timesheetsEnvSchema);
   app = await buildApp({ env });
   await app.listen({ port: env.PORT, host: '0.0.0.0' });
 } catch (err) {

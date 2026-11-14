@@ -18,7 +18,6 @@ import {
 import { siteChangedPayload } from '../../src/domain/pools.js';
 import { SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { SITE_COLUMNS } from '../../src/legacy/site-fields.js';
-import { RAZUNA_KEYS } from '../../src/legacy/update-branches.js';
 import { buildTestApp, headersFor, type RecordingDb, type TestApp } from '../helpers/app.js';
 
 type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'OPTIONS' | 'PATCH';
@@ -329,19 +328,26 @@ function expectNothingWritten(ctx: TestApp): void {
   expect(ctx.publisher.published).toEqual([]);
 }
 
-/** `site.save` of tenant-a as S2 through `family`; the session-managed families send the CSRF fields. */
+/** Asserts the request read no site row, consumed no CSRF token, wrote nothing and published nothing. */
+function expectWithheld(ctx: TestApp): void {
+  expect(ctx.db.statements().filter(({ sql }) => sql.includes('"programs_sites"."site"'))).toEqual([]);
+  expect(ctx.client.requestsTo('identity')).toEqual([]);
+  expectNothingWritten(ctx);
+}
+
+/** The withheld `site.save` of tenant-a as S2 through `family`; the session-managed families send valid CSRF fields. */
 function jsonApiSave(family: JsonApiFamily): Case {
   return {
-    name: `saves the tenant-a site as s2 through the ${family} family`,
+    name: `refuses the withheld tenant-a site save as s2 through the ${family} family with the legacy 503`,
     method: 'POST',
     url: `/_api/${family}/v1/${SITE_A}/site`,
     as: 's2',
     headers: FORM,
     payload: family === 'rest' ? SITE_SAVE_FIELDS : `${SITE_SAVE_FIELDS}&${TOKEN_FIELDS}`,
-    status: 200,
+    status: 503,
     verify: ({ body }, ctx) => {
-      expect(record(body)).toMatchObject({ method: 'save', data: { siteid: SITE_A, errors: {} } });
-      expect(ctx.db.writesTo('programs_sites.site')).not.toEqual([]);
+      expect(record(body)).toEqual({ apiversion: 'v1', method: 'invalid', error: { code: 'server_error', message: 'Unhandled Exception' } });
+      expectWithheld(ctx);
     },
   };
 }
@@ -417,20 +423,7 @@ const CASES: Record<string, Case[]> = {
     as: 'other-tenant',
     status: 403,
   }),
-  jsonApiSegmentPost: jsonApiOperation('jsonApiSegmentPost', jsonApiSave('json'), {
-    name: 'rejects a JSON API site save with a CSRF token identity refuses as invalidTokens, writing nothing',
-    method: 'POST',
-    url: `/_api/json/v1/${SITE_A}/site`,
-    as: 's2',
-    headers: FORM,
-    payload: `${SITE_SAVE_FIELDS}&${TOKEN_FIELDS}`,
-    setup: (ctx) => ctx.client.csrfValid(false),
-    status: 400,
-    verify: (_answer, ctx) => {
-      expect(ctx.client.requestsTo('identity')).toHaveLength(1);
-      expectNothingWritten(ctx);
-    },
-  }),
+  jsonApiSegmentPost: jsonApiOperation('jsonApiSegmentPost', jsonApiSave('json')),
   jsonApiSegmentDelete: jsonApiOperation(
     'jsonApiSegmentDelete',
     {
@@ -583,72 +576,30 @@ const CASES: Record<string, Case[]> = {
     },
   ],
   updateSite: [
+    ...(['site-admin', 's2'] as const).map(
+      (as): Case => ({
+        name: `refuses the withheld Update of tenant-a by its ${as} with a valid CSRF token with the legacy 503`,
+        method: 'POST',
+        url: `/v1/sites/${SITE_A}/update`,
+        as,
+        headers: FORM,
+        payload: `${UPDATE_FIELDS}&tagline=Updated&${TOKEN_FIELDS}`,
+        status: 503,
+        verify: ({ body }, ctx) => {
+          expect(record(body)).toMatchObject({ apiversion: 'v1', error: { code: 'server_error', message: 'Unhandled Exception' } });
+          expectWithheld(ctx);
+        },
+      }),
+    ),
     {
-      name: 'updates tenant-a as its site admin and announces the site state',
+      name: 'answers invalidParameters for an action other than Update before any CSRF consume, read or write',
       method: 'POST',
       url: `/v1/sites/${SITE_A}/update`,
       as: 'site-admin',
       headers: FORM,
-      payload: `${UPDATE_FIELDS}&tagline=Updated&${TOKEN_FIELDS}`,
-      status: 200,
-      verify: ({ body }, ctx) => {
-        expect(record(body)).toMatchObject({ written: true, errors: {}, site: { SiteID: SITE_A, tagline: 'Updated' } });
-        expect(ctx.db.writesTo('programs_sites.site')).not.toEqual([]);
-        expect(ctx.db.writesTo('programs_sites.outbox').flatMap(({ params }) => params)).toContain('programs-sites.site.changed.v1');
-      },
-    },
-    // csettings.updateSite skips its writes on a failed CSRF check without an error status, so this answers 200.
-    {
-      name: 'skips the update and writes nothing when identity refuses the CSRF token, as legacy does',
-      method: 'POST',
-      url: `/v1/sites/${SITE_A}/update`,
-      as: 'site-admin',
-      headers: FORM,
-      payload: `${UPDATE_FIELDS}&tagline=Updated&${TOKEN_FIELDS}`,
-      setup: (ctx) => ctx.client.csrfValid(false),
-      status: 200,
-      verify: ({ body }, ctx) => {
-        expect(record(body)).toMatchObject({ written: false, errors: {}, site: { SiteID: SITE_A } });
-        expect(ctx.client.requestsTo('identity')).toHaveLength(1);
-        expectNothingWritten(ctx);
-      },
-    },
-    {
-      name: 'answers the legacy 500 for a site name longer than its tsettings column, writing nothing',
-      method: 'POST',
-      url: `/v1/sites/${SITE_A}/update`,
-      as: 'site-admin',
-      headers: FORM,
-      payload: `siteid=${SITE_A}&action=Update&site=${'S'.repeat(300)}&${TOKEN_FIELDS}`,
-      status: 500,
-      verify: ({ body }, ctx) => {
-        expect(record(body)).toMatchObject({ error: { code: 'server_error', message: 'Unhandled Exception' } });
-        expectNothingWritten(ctx);
-        // The update transaction commits, as legacy's commits the extended data before the failing UPDATE.
-        const control = ctx.db.statements().map(({ sql }) => sql.split(' ')[0]?.toUpperCase());
-        expect(control).toContain('COMMIT');
-        expect(control).not.toContain('ROLLBACK');
-      },
-    },
-    {
-      name: 'answers the legacy 503 for a placeholder-image delete, which stays on legacy, writing nothing',
-      method: 'POST',
-      url: `/v1/sites/${SITE_A}/update`,
-      as: 'site-admin',
-      headers: FORM,
-      payload: `${UPDATE_FIELDS}&deletePlaceholderImg=true&${TOKEN_FIELDS}`,
-      status: 503,
-      verify: (_answer, ctx) => expectNothingWritten(ctx),
-    },
-    {
-      name: 'answers the legacy 503 for Razuna settings, which stay on legacy, writing nothing',
-      method: 'POST',
-      url: `/v1/sites/${SITE_A}/update`,
-      as: 'site-admin',
-      headers: FORM,
-      payload: `${UPDATE_FIELDS}&${RAZUNA_KEYS.map((key) => `${key}=${key === 'servertype' ? 'cloud' : 'x'}`).join('&')}&${TOKEN_FIELDS}`,
-      status: 503,
-      verify: (_answer, ctx) => expectNothingWritten(ctx),
+      payload: `siteid=${SITE_A}&action=Add&${TOKEN_FIELDS}`,
+      status: 400,
+      verify: (_answer, ctx) => expectWithheld(ctx),
     },
   ],
   listImageSizes: [
@@ -954,6 +905,20 @@ describe('contract document', () => {
     expect(ids.filter((id) => typeof id !== 'string' || id === '')).toEqual([]);
     expect(ids.filter((id, index) => ids.indexOf(id) !== index)).toEqual([]);
   });
+
+  it('lists the withheld site.save route key of each JSON API operation only as an exclusion', () => {
+    const reason = 'Withheld and served by legacy; every site save also writes trazunasettings, a decision-list table.';
+    const keyed = contractOperations(DOC).filter(({ op }) => op['x-opt2-route-keys'] !== undefined);
+    expect(keyed).toHaveLength(105);
+    for (const { path, op } of keyed) {
+      const saveKey = path.startsWith('/_api/rest/') ? 'rest:site.save' : 'api:site.save';
+      const served = (op['x-opt2-route-keys'] as string[]).filter((key) => key.endsWith(':site.save'));
+      expect(served, `${path} serves site.save`).toEqual([]);
+      expect(op['x-opt2-route-keys-excluded'], path).toEqual([{ key: saveKey, reason }]);
+    }
+    const excludedElsewhere = contractOperations(DOC).filter(({ op }) => op['x-opt2-route-keys'] === undefined && op['x-opt2-route-keys-excluded'] !== undefined);
+    expect(excludedElsewhere).toEqual([]);
+  });
 });
 
 describe('route declarations', () => {
@@ -1012,11 +977,19 @@ describe('route declarations', () => {
 });
 
 describe('responses', () => {
-  it('cover every contract operation with at least one case and a 2xx answer', () => {
-    const ids = contractOperations(DOC).map(({ operationId }) => operationId ?? '');
-    expect(Object.keys(CASES).sort()).toEqual([...ids].sort());
-    const withoutSuccess = Object.entries(CASES).filter(([, cases]) => !cases.some(({ status }) => status >= 200 && status < 300));
+  it('cover every contract operation with at least one case, and with a 2xx answer where the contract declares one', () => {
+    const operations = contractOperations(DOC);
+    expect(Object.keys(CASES).sort()).toEqual(operations.map(({ operationId }) => operationId ?? '').sort());
+    const declaresSuccess = new Set(
+      operations
+        .filter(({ op }) => Object.keys((op.responses as Record<string, unknown> | undefined) ?? {}).some((status) => status.startsWith('2')))
+        .map(({ operationId }) => operationId),
+    );
+    const withoutSuccess = Object.entries(CASES).filter(
+      ([id, cases]) => declaresSuccess.has(id) && !cases.some(({ status }) => status >= 200 && status < 300),
+    );
     expect(withoutSuccess.map(([id]) => id)).toEqual([]);
+    expect(operations.filter(({ operationId }) => !declaresSuccess.has(operationId)).map(({ operationId }) => operationId)).toEqual(['updateSite']);
   });
 
   let ctx: TestApp | undefined;

@@ -1,9 +1,9 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** People's JSON API `user` read as the fixture's `userManager.read`, over a stubbed service client. */
+/** People's pool-user read as the fixture's `userManager.read`, over a stubbed service client. */
 import { describe, expect, it } from 'vitest';
 import { LegacyApiError, LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { ServiceUnavailableError, type ServiceClient, type ServiceRequest } from '@opt2/platform/service-kit';
-import { PEOPLE_READ_GAPS, PEOPLE_SERVICE, PeopleReadDeniedError, createPeopleClient } from '../../src/legacy/people-client.js';
+import { PEOPLE_SERVICE, PeopleReadDeniedError, createPeopleClient } from '../../src/legacy/people-client.js';
 import { SIGNER_USER_ID } from '../helpers/tokens.js';
 
 /** A service client answering every call with `answer`, or rejecting with it, and recording each request. */
@@ -28,63 +28,33 @@ async function readFailure(client: ServiceClient): Promise<unknown> {
   );
 }
 
-// A user findOne as people serializes it (jsonApiUtility.cfc:2349-2383): lower-cased keys, `type` as text, `isnew` 0.
-const USER = {
-  id: SIGNER_USER_ID,
-  userid: SIGNER_USER_ID,
-  siteid: 'umbrella',
-  fname: 'Ada',
-  lname: 'Signer',
-  email: 'ada@example.test',
-  type: 'user',
-  inactive: 0,
-  isnew: 0,
-  entityname: 'user',
-};
-const envelope = (data: Record<string, unknown>) => ({ apiversion: 'v1', method: 'findOne', data });
-const denial = (message: string, code: string) => ({ apiversion: 'v1', method: 'findOne', error: { message, code } });
+// A pool user as people's readPoolUser answers it: the stored id, site and type.
+const USER = { userid: SIGNER_USER_ID, siteid: 'umbrella', type: 2 };
+const denial = (message: string, code: string) => ({ apiversion: 'v1', method: 'invalid', error: { message, code } });
 
 describe('e-signature people client', () => {
-  it('names people as its callee and records the read gaps', () => {
+  it('names people as its callee', () => {
     expect(PEOPLE_SERVICE).toBe('people');
-    expect(PEOPLE_READ_GAPS.map((gap) => gap.id)).toEqual(['cross-permission', 'cross-site']);
-    expect(Object.isFrozen(PEOPLE_READ_GAPS)).toBe(true);
   });
 
-  it('reads the user through the JSON API with encoded path segments and nothing else', async () => {
-    const { client, calls } = stubClient({ status: 200, body: envelope(USER) });
+  it('reads the pool user with the site and id as query values, leaving their encoding to the service client', async () => {
+    const { client, calls } = stubClient({ status: 200, body: USER });
     await createPeopleClient({ client }).readPerson('tenant a/b', 'id/with ?');
-    expect(calls).toEqual([{ service: 'people', method: 'GET', path: '/_api/json/v1/tenant%20a%2Fb/user/id%2Fwith%20%3F' }]);
+    expect(calls).toEqual([
+      { service: 'people', method: 'GET', path: '/internal/v1/users/pool-user', query: { siteid: 'tenant a/b', userid: 'id/with ?' } },
+    ]);
   });
 
-  it('maps a found user to its person summary', async () => {
-    const { client } = stubClient({ status: 200, body: envelope(USER) });
+  it.each([
+    ['a parsed', USER],
+    ['a text', JSON.stringify(USER)],
+  ])('maps a found pool user from %s body to its person summary', async (_label, body) => {
+    const { client } = stubClient({ status: 200, body });
     await expect(createPeopleClient({ client }).readPerson('tenant-a', SIGNER_USER_ID)).resolves.toEqual({
       userId: SIGNER_USER_ID,
       siteId: 'umbrella',
       type: 2,
-      fname: 'Ada',
-      lname: 'Signer',
-      email: 'ada@example.test',
-      inactive: 0,
     });
-  });
-
-  it.each([
-    ['user', 0, 2, 0],
-    ['group', 1, 1, 1],
-    ['Group', 0, 1, 0],
-    [2, '', 2, 0],
-    ['1', 0, 1, 0],
-  ])('decodes type %j and inactive %j as userBean does, from a text body', async (type, inactive, expectedType, expectedInactive) => {
-    const { client } = stubClient({ status: 200, body: JSON.stringify(envelope({ ...USER, type, inactive })) });
-    const person = await createPeopleClient({ client }).readPerson('tenant-a', SIGNER_USER_ID);
-    expect(person).toMatchObject({ type: expectedType, inactive: expectedInactive });
-  });
-
-  it.each([1, '1', true])('reads a new bean (isnew %j) as no person', async (isnew) => {
-    const { client } = stubClient({ status: 200, body: envelope({ ...USER, isnew }) });
-    await expect(createPeopleClient({ client }).readPerson('tenant-a', SIGNER_USER_ID)).resolves.toBeNull();
   });
 
   it('reads a 404 as no person', async () => {
@@ -93,7 +63,7 @@ describe('e-signature people client', () => {
   });
 
   it('answers an empty user id with no person and no call', async () => {
-    const { client, calls } = stubClient({ status: 200, body: envelope(USER) });
+    const { client, calls } = stubClient({ status: 200, body: USER });
     await expect(createPeopleClient({ client }).readPerson('tenant-a', '')).resolves.toBeNull();
     expect(calls).toEqual([]);
   });

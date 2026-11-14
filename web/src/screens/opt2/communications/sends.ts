@@ -6,6 +6,7 @@ import {
   block,
   controlGroup,
   gridTable,
+  opt2Label,
   opt2View,
   postForm,
   select,
@@ -34,7 +35,7 @@ import {
 
 const SCREEN = 'sends';
 
-/** The contract's largest page, so the template choice lists every template the service returns on one page. */
+/** The contract's largest page size, at which the template choices read every page of templates. */
 const TEMPLATE_CHOICES = 1000;
 
 const SEND_FIELDS = ['templateId', 'to', 'from', 'variables', 'subject', 'bodyText', 'bodyHtml'] as const;
@@ -49,16 +50,27 @@ export interface SendsData {
   readonly templates: readonly MessageTemplate[];
 }
 
-/** The requested page of messages (`listMessages`) and the template choices (`listTemplates`), with the CSRF pair. */
+/** Every template of the site in service order (`listTemplates`): the first page, then the remaining pages together. */
+async function loadTemplateChoices(ctx: ScreenContext): Promise<MessageTemplate[]> {
+  const templatePage = async (pageIndex?: number) => {
+    const query = { pageIndex, itemsPerPage: TEMPLATE_CHOICES };
+    const response = await ctx.gateway.communications.call('get', '/v1/templates', { query });
+    return okBody(response, SERVICE, 'listTemplates').data;
+  };
+  const first = await templatePage();
+  const later = Array.from({ length: Math.max(first.totalpages - 1, 0) }, (_, index) => templatePage(index + 2));
+  return [first, ...(await Promise.all(later))].flatMap((page) => page.items);
+}
+
+/** The requested page of messages (`listMessages`) and every template as a choice, with the CSRF pair. */
 export async function loadSends(ctx: ScreenContext): Promise<SendsData> {
-  const { communications } = ctx.gateway;
   const [messages, templates] = await Promise.all([
-    communications.call('get', '/v1/messages', { query: { pageIndex: requestedPage(ctx) } }),
-    communications.call('get', '/v1/templates', { query: { itemsPerPage: TEMPLATE_CHOICES } }),
+    ctx.gateway.communications.call('get', '/v1/messages', { query: { pageIndex: requestedPage(ctx) } }),
+    loadTemplateChoices(ctx),
     ctx.csrf.tokens(CSRF_CONTEXT),
   ]);
   const page = okBody(messages, SERVICE, 'listMessages').data;
-  return { messages: page.items, page, templates: okBody(templates, SERVICE, 'listTemplates').data.items };
+  return { messages: page.items, page, templates };
 }
 
 /** The empty send form, its template preset from the request's `templateId`. */
@@ -74,23 +86,25 @@ export function sendsBody(ctx: ScreenContext, data: SendsData, form: SendForm, a
     message.to_address,
     message.subject,
     message.template_id === '' ? '' : (templateNames.get(message.template_id) ?? message.template_id),
-    stateLabel(message.state),
+    stateLabel(ctx, message.state),
     message.created,
     message.sent_at,
     buttonLink('Delivery Status', screenUrl(ctx, 'delivery-status', { messageId: message.message_id })),
   ]);
-  const headers = ['To', 'Subject', 'Template', 'State', 'Created', 'Sent', 'Actions'];
+  const headers = (['To', 'Subject', 'Template', 'State', 'Created', 'Sent', 'Actions'] as const).map((name) =>
+    opt2Label(ctx, name),
+  );
   const list = gridTable(headers, rows, 'There are no sends.');
   const choices = [
     { value: '', label: 'None (literal content)' },
     ...data.templates.map((template) => ({ value: template.template_id, label: template.name })),
   ];
   const fields = [
-    controlGroup('Template', select('templateId', choices, form.templateId)),
-    controlGroup('To', textInput('to', form.to, { maxlength: 255, required: true })),
-    controlGroup('From', textInput('from', form.from, { maxlength: 255 })),
+    controlGroup(opt2Label(ctx, 'Template'), select('templateId', choices, form.templateId)),
+    controlGroup(opt2Label(ctx, 'To'), textInput('to', form.to, { maxlength: 255, required: true })),
+    controlGroup(opt2Label(ctx, 'From'), textInput('from', form.from, { maxlength: 255 })),
     controlGroup('Variables (JSON object)', textarea('variables', form.variables, 3)),
-    controlGroup('Subject', textInput('subject', form.subject, { maxlength: 255 })),
+    controlGroup(opt2Label(ctx, 'Subject'), textInput('subject', form.subject, { maxlength: 255 })),
     controlGroup('Text Body', textarea('bodyText', form.bodyText)),
     controlGroup('HTML Body', textarea('bodyHtml', form.bodyHtml)),
   ];

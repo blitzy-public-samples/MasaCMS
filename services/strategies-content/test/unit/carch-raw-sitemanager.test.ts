@@ -18,7 +18,8 @@ import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/conte
 import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { SESSION_EFFECTS_HEADER, adminCsrf, circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
-import { carchRawActions, type CarchRawResult } from '../../src/routes/v1/carch.js';
+import { carchRawActions } from '../../src/routes/v1/carch.js';
+import type { RawActionResult } from '../../src/routes/v1/raw.js';
 import { TEST_CLOCK, buildContentApp, userHeaders, type ContentTestApp } from '../helpers/app.js';
 
 type Json = Record<string, unknown>;
@@ -99,7 +100,7 @@ function version(contentid: string, contenthistid: string, extra: Json = {}): Js
 
 let t: ContentTestApp;
 let ctx: ContentRouteContext;
-let last: { out?: CarchRawResult; error?: unknown } = {};
+let last: { out?: RawActionResult; error?: unknown } = {};
 let versions: Json[] = [];
 let stats: Json[] = [];
 const calls: ServiceRequest[] = [];
@@ -234,7 +235,7 @@ async function raw(action: RawAction, form: Record<string, string> = {}, opts: {
 }
 
 /** The session effects a raw answer carries, parsed. */
-function effectsOf(out: CarchRawResult | undefined): Json | undefined {
+function effectsOf(out: RawActionResult | undefined): Json | undefined {
   const header = out?.headers?.[SESSION_EFFECTS_HEADER];
   return header === undefined ? undefined : (JSON.parse(header) as Json);
 }
@@ -443,17 +444,45 @@ describe('getaudittrail and getimagesizeurl', () => {
 });
 
 describe('downloaddata', () => {
-  it('sends the form’s responses as the legacy CSV download with its Content-Disposition and Expires headers', async () => {
-    versions.push(version('A1000000-0009-4A5B-8C7D9E0F1A2B3C4D', 'B1000000-0009-4A5B-8C7D9E0F1A2B3C4D', { type: 'Form', title: 'Contact Us Now', moduleid: '00000000000000000000000000000000004' }));
+  const FORM = 'A1000000-0009-4A5B-8C7D9E0F1A2B3C4D';
+  const PACKET = "<wddxPacket version='1.0'><header/><data><struct><var name='NAME'><string>Ann \"A\"</string></var><var name='COMMENT'><string>Hi</string></var></struct></data></wddxPacket>";
+  const DOWNLOAD_HEADERS = ['application/msexcel', 'attachment;filename=Contact-Us-Now_063026.csv', '0'];
+
+  it.each([
+    [
+      'a readable packet as the legacy CSV download with its Content-Disposition and Expires headers',
+      PACKET,
+      200,
+      DOWNLOAD_HEADERS,
+      'DATE/TIME ENTERED,Name,Comment,\r\n2026-06-01 09:00:00.0,"Ann ""A""","Hi",\r\n',
+      undefined,
+      'COMMIT',
+    ],
+    [
+      'an unreadable first packet with the error legacy raises, before any CSV header or byte',
+      'x',
+      500,
+      [expect.not.stringContaining('msexcel'), undefined, undefined],
+      expect.not.stringContaining('DATE/TIME ENTERED'),
+      'Invalid WDDX packet',
+      'ROLLBACK',
+    ],
+  ] as const)('answers %s, reading the responses through a cursor it closes', async (_case, data, status, headers, body, failure, end) => {
+    versions.push(version(FORM, 'B1000000-0009-4A5B-8C7D9E0F1A2B3C4D', { type: 'Form', title: 'Contact Us Now', moduleid: '00000000000000000000000000000000004' }));
     t.db.respond(/^SELECT responsedisplayfields FROM "content"\."content"/, [{ responsedisplayfields: 'Name^Comment' }]);
-    const packet = "<wddxPacket version='1.0'><header/><data><struct><var name='NAME'><string>Ann \"A\"</string></var><var name='COMMENT'><string>Hi</string></var></struct></data></wddxPacket>";
-    t.db.respond(/FROM "content"\."form_response_packet"/, [{ responseid: 'R', formid: 'A1000000-0009-4A5B-8C7D9E0F1A2B3C4D', entered: PUBLISHED_AT, data: packet, fieldlist: 'Name,Comment' }]);
-    const { res, out } = await raw('downloaddata', { contentid: 'A1000000-0009-4A5B-8C7D9E0F1A2B3C4D', sortby: 'Entered', sortdirection: 'asc', keywords: '', columns: 'fixed' });
-    expect(res.statusCode, res.body).toBe(200);
-    expect(out?.contentType).toBe('application/msexcel');
-    expect(out?.headers).toEqual({ 'content-disposition': 'attachment;filename=Contact-Us-Now_063026.csv', expires: '0' });
-    expect(res.headers['content-disposition']).toBe('attachment;filename=Contact-Us-Now_063026.csv');
-    expect(res.body).toBe('DATE/TIME ENTERED,Name,Comment,\r\n2026-06-01 09:00:00.0,"Ann ""A""","Hi",\r\n');
+    t.db.respond(/^FETCH FORWARD \d+ FROM content_rows_\d+$/, [{ responseid: 'R', formid: FORM, entered: PUBLISHED_AT, data, fieldlist: 'Name,Comment' }]);
+    const { res, error } = await raw('downloaddata', { contentid: FORM, sortby: 'Entered', sortdirection: 'asc', keywords: '', columns: 'fixed' });
+    expect(res.statusCode, res.body).toBe(status);
+    expect([res.headers['content-type'], res.headers['content-disposition'], res.headers.expires]).toEqual(headers);
+    expect(res.body).toEqual(body);
+    expect((error as Error | undefined)?.message).toBe(failure);
+    const declared = t.db.statements.findIndex((statement) => /^DECLARE content_rows_\d+ NO SCROLL CURSOR FOR SELECT r\.\* FROM "content"\."form_response_packet" r /.test(statement.sql));
+    expect(t.db.statements[declared]?.tenantId).toBe(TENANT_A.tenantId);
+    expect(t.db.statements.slice(declared + 1).map((statement) => statement.sql.replace(/content_rows_\d+/, 'content_rows_N'))).toEqual([
+      'FETCH FORWARD 500 FROM content_rows_N',
+      'CLOSE content_rows_N',
+      end,
+    ]);
   });
 });
 

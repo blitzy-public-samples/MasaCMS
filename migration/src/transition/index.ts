@@ -31,7 +31,13 @@ export type {
   StepOutcome,
 } from './steps.js';
 
-export { createTransitionService, toTransitionView, TransitionInProgressError, TransitionNotFoundError } from './service.js';
+export {
+  createTransitionService,
+  toTransitionView,
+  TransitionClaimLostError,
+  TransitionInProgressError,
+  TransitionNotFoundError,
+} from './service.js';
 export type { TransitionService, TransitionServiceOptions, TransitionStartInput, TransitionView } from './service.js';
 
 export { requestTransition, TERMINAL_STATUSES, TransitionCallError } from './request.js';

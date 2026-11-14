@@ -1,16 +1,21 @@
-/** Service routes people reads identity's account, membership, strike and pool-group rows through: `getAccount`, `lookupAccounts`, `lookupAccountsAllSites`, `countAccounts`, `lookupUsernameCandidates`, `lookupMemberships`, `loadLoginBlock` and `listSiteGroups`. */
+/** Service routes people reads identity's account, membership, strike and pool-group rows through: `getAccount`, `getAccountMemberships`, `lookupAccounts`, `lookupAccountsAllSites`, `countAccounts`, `lookupUsernameCandidates`, `lookupMemberships`, `loadLoginBlock` and `listSiteGroups`. */
 import { AuthDenial, serviceRole, type Opt2AuthContext, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import type { FastifyInstance } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import type { AccountReads } from '../domain/account-reads.js';
 import type { components } from '../generated/openapi.js';
+import type { IdentityRepository } from '../repo/repository.js';
+import { membershipIds } from './admin-groups.js';
 
 type Schemas = components['schemas'];
 
-/** The database and account reads the routes delegate to. */
+/** The database, repository and account reads the routes delegate to; `repo` serves `getAccountMemberships`. */
 export interface AccountReadRouteDeps {
   db: TenantDb;
+  repo: IdentityRepository;
   accountReads: AccountReads;
+  /** Wait between `getAccountMemberships`' closed-user polls; defaults to a timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 interface AccountParams {
@@ -107,9 +112,9 @@ function requireS2User(auth: Opt2AuthContext): void {
   if (!userOf(auth).s2) throw AuthDenial.forbidden();
 }
 
-/** Registers `getAccount`, `lookupAccounts`, `lookupAccountsAllSites`, `countAccounts`, `lookupUsernameCandidates`, `lookupMemberships`, `loadLoginBlock` and `listSiteGroups`; the auth hooks answer a `siteid` other than the token's site with 403. */
+/** Registers `getAccount`, `getAccountMemberships`, `lookupAccounts`, `lookupAccountsAllSites`, `countAccounts`, `lookupUsernameCandidates`, `lookupMemberships`, `loadLoginBlock` and `listSiteGroups`; the auth hooks answer a `siteid` other than the token's site with 403. */
 export async function registerAccountReadRoutes(app: FastifyInstance, deps: AccountReadRouteDeps): Promise<void> {
-  const { db, accountReads } = deps;
+  const { db, repo, accountReads, sleep } = deps;
 
   app.get<{ Params: AccountParams }>('/internal/v1/accounts/:userId', { config: { opt2: ROUTE_AUTH } }, async (request, reply) => {
     const account = await accountReads.getAccount(db, userOf(request.opt2Auth), request.params.userId);
@@ -118,6 +123,16 @@ export async function registerAccountReadRoutes(app: FastifyInstance, deps: Acco
     reply.callNotFound();
     return reply;
   });
+
+  // `readMembershipIDs` for any session user; `listUserMemberships` admits only cUsers callers [legacy: core/mura/user/userDAO.cfc:632-644].
+  app.get<{ Params: AccountParams; Reply: Schemas['AccountMemberships'] }>(
+    '/internal/v1/accounts/:userId/memberships',
+    { schema: { params: USER_PARAMS }, config: { opt2: ROUTE_AUTH } },
+    async (request) => {
+      userOf(request.opt2Auth);
+      return { groupIds: await membershipIds({ db, repo, sleep }, request.params.userId) };
+    },
+  );
 
   app.post<{ Params: AccountParams; Body: Schemas['LoginBlockRequest']; Reply: Schemas['LoginBlock'] }>(
     '/internal/v1/accounts/:userId/login-block',

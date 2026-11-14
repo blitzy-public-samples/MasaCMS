@@ -172,7 +172,7 @@ async function sqlStateIn(tx: Tx, text: string, values: unknown[]): Promise<stri
   return state;
 }
 
-/** A fixture's own site row with every integer setting 0, since settingsDAO.update binds them unquoted. */
+/** A fixture's own site row with every integer setting 0, as backfilled Masa defaults. */
 function fixtureSiteRow(fixture: TenantFixture): Row {
   const integers = SITE.columns.filter(({ type }) => type === 'i').map(({ name }) => [name, 0] as const);
   return {
@@ -414,11 +414,13 @@ describe.skipIf(!available)('programs-sites tenant isolation', () => {
       expect(res.body).not.toContain(`Isolation site ${TENANT_B.key}`);
     });
 
-    it('lets a tenant A site-admin update only its own site and never writes tenant B', async () => {
+    it('refuses a tenant A site-admin the withheld Update of its own site with the legacy 503 and of tenant B with 403, writing neither', async () => {
       const db = created().app;
-      const tenantBRows = (): Promise<unknown[]> => db.withTenant(TENANT_B.tenantId, (tx) => readAs(tx, SITE.table));
-      const before = await tenantBRows();
+      const siteRows = (fixture: TenantFixture): Promise<unknown[]> => db.withTenant(fixture.tenantId, (tx) => readAs(tx, SITE.table));
+      const ownBefore = await siteRows(TENANT_A);
+      const otherBefore = await siteRows(TENANT_B);
       const ownAuditBefore = await auditRows(TENANT_A);
+      const otherAuditBefore = await auditRows(TENANT_B);
       const form = (siteId: string, name: string): Record<string, string> => ({
         siteid: siteId,
         action: 'Update',
@@ -430,18 +432,14 @@ describe.skipIf(!available)('programs-sites tenant isolation', () => {
       const own = await inject('POST', `/v1/sites/${TENANT_A.siteId}/update`, 'site-admin', form(TENANT_A.siteId, 'Renamed A'));
       const other = await inject('POST', `/v1/sites/${TENANT_B.siteId}/update`, 'site-admin', form(TENANT_B.siteId, 'Renamed B'));
 
-      expect(own.statusCode).toBe(200);
-      expect(own.json()).toMatchObject({ written: true, errors: {}, site: { SiteID: TENANT_A.siteId, Site: 'Renamed A' } });
+      expect(own.statusCode).toBe(503);
+      expect(own.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error' } });
       expect(other.statusCode).toBe(403);
-      const updated = await db.withTenant(TENANT_A.tenantId, (tx) =>
-        tx.query(`SELECT site, row_version FROM "${tx.schema}"."${SITE.table}" WHERE siteid = $1`, [TENANT_A.siteId]),
-      );
-      expect(updated.rows).toEqual([{ site: 'Renamed A', row_version: '1' }]);
-      const ownAudit = await auditRows(TENANT_A);
-      expect(ownAudit.changelog).toBeGreaterThan(ownAuditBefore.changelog);
-      expect(ownAudit.outbox).toBeGreaterThan(ownAuditBefore.outbox);
-      expect(await tenantBRows()).toEqual(before);
-      expect(await auditRows(TENANT_B)).toEqual({ changelog: 0, outbox: 0 });
+      expect(other.body).not.toContain(`Isolation site ${TENANT_B.key}`);
+      expect(await siteRows(TENANT_A)).toEqual(ownBefore);
+      expect(await siteRows(TENANT_B)).toEqual(otherBefore);
+      expect(await auditRows(TENANT_A)).toEqual(ownAuditBefore);
+      expect(await auditRows(TENANT_B)).toEqual(otherAuditBefore);
     });
 
     it('dead-letters and acks a site.changed event without a tenant and records nothing', async () => {

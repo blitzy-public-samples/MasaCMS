@@ -9,9 +9,11 @@ import {
   block,
   gridTable,
   opt2ActionUrl,
+  opt2Label,
   opt2ScreenUrl,
   opt2View,
   pageHeader,
+  type Label,
 } from '../shared';
 import {
   DAY_ACTION,
@@ -31,17 +33,24 @@ type TimesheetDay = TimesheetsSchemas['TimesheetDay'];
 /** A sheet with its days and the day actions the service allows the caller; `null` when no sheet id was given. */
 export type SheetData = TimesheetDetail | null;
 
-/** Button label of each day action, in the Title Case of legacy admin buttons. */
-export const DAY_ACTION_LABELS: Readonly<Record<DayAction, string>> = Object.freeze({
-  submit: 'Submit',
-  'primary-approve': 'Primary Approve',
-  'secondary-approve': 'Secondary Approve',
-  return: 'Return',
-  resubmit: 'Resubmit',
+/** Button label of each day action in the session locale of `ctx`, in the Title Case of legacy admin buttons. */
+export const DAY_ACTION_LABELS: Readonly<Record<DayAction, (ctx: ScreenContext) => Label>> = Object.freeze({
+  submit: (ctx) => opt2Label(ctx, 'Submit'),
+  'primary-approve': () => 'Primary Approve',
+  'secondary-approve': () => 'Secondary Approve',
+  return: () => 'Return',
+  resubmit: () => 'Resubmit',
 });
 
-const SUMMARY_HEADERS: readonly string[] = ['Person', 'Period', 'Due Date', 'Status', 'Overdue'];
-const DAY_HEADERS: readonly string[] = ['Work Date', 'Hours', 'State', 'Blackout', 'Actions'];
+/** The summary grid's column headers in the session locale of `ctx`. */
+function summaryHeadersOf(ctx: ScreenContext): readonly Label[] {
+  return ['Person', 'Period', opt2Label(ctx, 'Due Date'), opt2Label(ctx, 'Status'), 'Overdue'];
+}
+
+/** The day grid's column headers in the session locale of `ctx`. */
+function dayHeadersOf(ctx: ScreenContext): readonly Label[] {
+  return ['Work Date', opt2Label(ctx, 'Hours'), opt2Label(ctx, 'State'), 'Blackout', opt2Label(ctx, 'Actions')];
+}
 
 /**
  * The sheet `rc.timesheetid` as of `rc.asOf`, with the CSRF pair of every day that has an allowed action fetched;
@@ -69,7 +78,7 @@ function dayActions(ctx: ScreenContext, sheet: TimesheetDetail, day: TimesheetDa
   return join(
     day.allowedActions.map((action) =>
       actionButton(
-        DAY_ACTION_LABELS[action],
+        DAY_ACTION_LABELS[action](ctx),
         actionUrl,
         { timesheetid: sheet.timesheetId, dayid: day.dayId, dayaction: action },
         ctx.csrf.render(day.dayId),
@@ -88,17 +97,17 @@ export function sheetBody(ctx: ScreenContext, sheet: SheetData, alert?: SafeHtml
   const actionUrl = opt2ActionUrl(TIMESHEETS, DAY_ACTION, params);
   const period = `${datePart(sheet.periodStart)} - ${datePart(sheet.periodEnd)}`;
   const summary = gridTable(
-    SUMMARY_HEADERS,
-    [[sheet.personId, period, datePart(sheet.dueDate), sheet.status, yesNo(sheet.overdue)]],
+    summaryHeadersOf(ctx),
+    [[sheet.personId, period, datePart(sheet.dueDate), sheet.status, yesNo(ctx, sheet.overdue)]],
     '',
   );
   const days = gridTable(
-    DAY_HEADERS,
+    dayHeadersOf(ctx),
     sheet.days.map((day) => [
       datePart(day.workDate),
       day.hours,
       day.state,
-      yesNo(day.blackout),
+      yesNo(ctx, day.blackout),
       dayActions(ctx, sheet, day, actionUrl),
     ]),
     'This timesheet has no days.',

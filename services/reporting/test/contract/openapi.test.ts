@@ -61,6 +61,8 @@ const JOB_UNIT: ReportingUnit = 'reporting.export_job';
 const WRITE_POSITION = /^reporting=\d+$/;
 /** Headers the legacy envelope sends on every fixture JSON response. */
 const LEGACY_HEADERS = ['generator', 'strict-transport-security', 'etag'] as const;
+/** The header a POST carries to be answered as a GET. */
+const OVERRIDE_GET: Readonly<Record<string, string>> = { 'x-http-method-override': 'GET' };
 
 /** One contract operation with its OPT-2 annotations. */
 interface ContractOperation {
@@ -174,6 +176,15 @@ function declaresWritePosition(method: string, url: string, status: number): boo
   return Object.hasOwn((declared.headers ?? {}) as Json, 'X-Opt2-Write-Position');
 }
 
+/** A role-less token of user `sub` ('' for a session without a login) on `site`, as identity mints it, beside the gateway's invocation credential. */
+async function sessionHeaders(sub: string, site: string): Promise<Record<string, string>> {
+  const [user, invocation] = await Promise.all([
+    mintUserToken({ sub, sid: 'contract-session', site, roles: [] }),
+    mintServiceToken({ caller: 'gateway', audience: SERVICE }),
+  ]);
+  return { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${invocation}` };
+}
+
 /** CSRF headers identity accepts once for the collection context in the exporter's session. */
 const csrf = (): Record<string, string> => ({ ...t.client.issueCsrf(identityOf(subject('reporting.exporter')).sid, '') });
 
@@ -255,7 +266,9 @@ describe('route registrations against the contract', () => {
     keyOf('GET', FIXTURE_EXPORTS),
     keyOf('POST', FIXTURE_EXPORTS),
     keyOf('GET', `${FIXTURE_EXPORTS}/{id}`),
+    keyOf('POST', `${FIXTURE_EXPORTS}/{id}`),
     keyOf('GET', `${FIXTURE_EXPORTS}/{id}/download`),
+    keyOf('POST', `${FIXTURE_EXPORTS}/{id}/download`),
     keyOf('GET', V1_EXPORTS),
     keyOf('POST', V1_EXPORTS),
     keyOf('GET', `${V1_EXPORTS}/{id}`),
@@ -331,7 +344,9 @@ const cases: Record<string, () => Promise<CaseResult>> = {
       payload: { definitionId: definition.definition_id, format: 'csv' },
     }),
   fixtureGetExport: () => call('reporting.exporter', 'GET', `${FIXTURE_EXPORTS}/${done.job_id}?${ON_SITE_A}`),
+  fixtureGetExportByPost: () => call('reporting.exporter', 'POST', `${FIXTURE_EXPORTS}/${done.job_id}?${ON_SITE_A}`, { headers: OVERRIDE_GET }),
   fixtureDownloadExport: () => call('reporting.exporter', 'GET', `${FIXTURE_EXPORTS}/${done.job_id}/download?${ON_SITE_A}`),
+  fixtureDownloadExportByPost: () => call('reporting.exporter', 'POST', `${FIXTURE_EXPORTS}/${done.job_id}/download?${ON_SITE_A}`, { headers: OVERRIDE_GET }),
   listExports: () => call('reporting.exporter', 'GET', `${V1_EXPORTS}?${ON_SITE_A}`),
   createExport: () =>
     call('reporting.exporter', 'POST', `${V1_EXPORTS}?${ON_SITE_A}`, {
@@ -458,6 +473,41 @@ describe('fixture routes', () => {
     ['an unknown job', () => cfUuid(), 404],
   ])('answers a download of %s in the fixture error envelope', async (_label, id, status) => {
     expect((await send('reporting.exporter', 'GET', `${FIXTURE_EXPORTS}/${id()}/download?${ON_SITE_A}`)).statusCode).toBe(status);
+  });
+
+  it.each<[string, string, Record<string, string>, number]>([
+    ['a read overridden to PUT', '', { 'x-http-method-override': 'PUT' }, 404],
+    ['a plain POST read', '', {}, 404],
+    ['a download overridden to PUT', '/download', { 'x-http-method-override': 'PUT' }, 404],
+    ['a queued job download overridden to GET', '/download', OVERRIDE_GET, 409],
+  ])('answers a POST of %s in the fixture error envelope', async (_label, action, headers, status) => {
+    const id = status === 409 ? queued.job_id : done.job_id;
+    expect((await send('reporting.exporter', 'POST', `${FIXTURE_EXPORTS}/${id}${action}?${ON_SITE_A}`, { headers })).statusCode).toBe(status);
+  });
+
+  it.each<[string, () => Promise<Record<string, string>>, number]>([
+    ['an anonymous session', () => sessionHeaders('', SITE_A), 401],
+    ['a token of an unregistered site', () => sessionHeaders(identityOf(subject('member')).sub, 'nosuchsite'), 400],
+  ])('answers %s on every fixture and /v1 operation in its contract shape', async (_label, credentials, status) => {
+    const requests: Array<['GET' | 'POST', string, Record<string, string>]> = [
+      ['GET', FIXTURE_EXPORTS, {}],
+      ['POST', FIXTURE_EXPORTS, csrf()],
+      ['GET', `${FIXTURE_EXPORTS}/${done.job_id}`, {}],
+      ['POST', `${FIXTURE_EXPORTS}/${done.job_id}`, OVERRIDE_GET],
+      ['GET', `${FIXTURE_EXPORTS}/${done.job_id}/download`, {}],
+      ['POST', `${FIXTURE_EXPORTS}/${done.job_id}/download`, OVERRIDE_GET],
+      ['GET', V1_EXPORTS, {}],
+      ['POST', V1_EXPORTS, csrf()],
+      ['GET', `${V1_EXPORTS}/${done.job_id}`, {}],
+      ['GET', `${V1_EXPORTS}/${done.job_id}/download-url`, {}],
+    ];
+    const payload = { definitionId: definition.definition_id, format: 'csv' };
+    const answered: Array<[string, number]> = [];
+    for (const [method, url, headers] of requests) {
+      const res = await send(await credentials(), method, url, { headers, ...(method === 'POST' ? { payload } : {}) });
+      answered.push([`${method} ${url}`, res.statusCode]);
+    }
+    expect(answered).toEqual(requests.map(([method, url]) => [`${method} ${url}`, status]));
   });
 });
 

@@ -135,7 +135,7 @@ export type RosterKind = 'admin-add' | 'admin-update' | 'json-save' | 'profile-u
 /** One Type=2 save without a photo. */
 export interface RosterInput {
   kind: RosterKind;
-  /** The person's user-pool tenant, from the site registry of the token's tenant. */
+  /** The person's user-pool tenant, from the site registry of the token's tenant; for a profile save, of the account's own site. */
   tenantId: string;
   claims: UserClaims;
   /** The logged-in session user whose names `LastUpdateBy` records; undefined when anonymous. */
@@ -596,8 +596,7 @@ async function shapeSave(deps: RosterDeps, input: RosterInput, target: SaveTarge
   let { userId, operation } = target;
   let stored: StoredUser | null = null;
   if (operation === 'update') {
-    // A profile save writes no memberships (updateGroups=false), and identity lists them only to cUsers callers, which
-    // a profile's own user need not be.
+    // A profile save writes no memberships (updateGroups=false), so it reads none.
     stored = await loadStoredUser(deps, tenantId, userId, input.kind !== 'profile-update', budget);
     if (stored === null) {
       // userManager.save creates a user no tusers row holds; the admin and profile updates read a stored one.
@@ -615,7 +614,8 @@ async function shapeSave(deps: RosterDeps, input: RosterInput, target: SaveTarge
   if (voided) return { voided: true, userId, values: base };
 
   const set = applyUserInput(base, params);
-  const site = await resolveUserSite(deps.db, claims.tid, params, set);
+  // The profile save pools over the user's own site, which legacy posts as `siteid` (ceditprofile.cfc:127-129, userBean.cfc:227-238).
+  const site = await resolveUserSite(deps.db, input.kind === 'profile-update' ? tenantId : claims.tid, params, set);
   if (site.poolTenantId !== tenantId) throw poolMove(userId);
   const pooled: UserValues = { ...set, userid: userId, siteid: site.siteId, ispublic: site.isPublic };
   const values = applySuperUserRule(pooled, claims.s2);

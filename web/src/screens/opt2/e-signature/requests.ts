@@ -11,12 +11,14 @@ import {
   gridTable,
   hiddenField,
   opt2Gate,
+  opt2Label,
   opt2ScreenUrl,
   opt2View,
   pageHeader,
   postForm,
   textInput,
   type GridCell,
+  type Label,
 } from '../shared';
 import {
   AUDIT_SCREEN,
@@ -83,7 +85,10 @@ export interface RequestsBodyOptions {
   readonly values?: CreateRequestValues;
 }
 
-const HEADERS: readonly string[] = ['Document', 'State', 'Signer', 'Created', 'Actions'];
+/** Column headers of the request list, catalogued labels in the session locale. */
+function headers(ctx: ScreenContext): Label[] {
+  return ['Document', opt2Label(ctx, 'State'), 'Signer', opt2Label(ctx, 'Created'), opt2Label(ctx, 'Actions')];
+}
 
 /**
  * The `rc.pageIndex` page of the tenant's signature requests for a signer, with the new-request form's CSRF pair for a
@@ -152,7 +157,7 @@ export function requestsBody(ctx: ScreenContext, data: RequestsData, opts: Reque
   const requests: readonly SignatureRequest[] = data.body.items;
   const rows = requests.map((request) => requestRow(ctx, request));
   const list = block(
-    html`${gridTable(HEADERS, rows, 'There are no signature requests.')}${pagination(ctx, REQUESTS_SCREEN, data.body)}`,
+    html`${gridTable(headers(ctx), rows, 'There are no signature requests.')}${pagination(ctx, REQUESTS_SCREEN, data.body)}`,
   );
   const form = canUse(ctx.req, CREATE_ROLES) ? createForm(ctx, opts.values ?? {}) : null;
   return html`${header}${list}${form}`;

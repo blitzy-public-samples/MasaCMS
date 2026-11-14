@@ -62,6 +62,22 @@ const USERS_MODULE_ONLY: TestActor = Object.freeze({ ...SYSTEM_USER_A, roles: [R
 
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
+/** Repository reads of the people and relations a user collection page shows. */
+const RELATION_READS = ['listInterests', 'listInterestsOf', 'listAddresses', 'listAddressesOf', 'listExtendData', 'listExtendDataOf', 'listExtendSubtypes', 'listExtendSets', 'listExtendAttributes'] as const;
+
+/** `repo` noting the name of each relation read it serves in `reads`. */
+function noting(repo: PeopleRepository, reads: string[]): PeopleRepository {
+  const noted: Record<string, unknown> = {};
+  for (const name of RELATION_READS) {
+    const read = repo[name] as (...args: unknown[]) => unknown;
+    noted[name] = (...args: unknown[]) => {
+      reads.push(name);
+      return read(...args);
+    };
+  }
+  return { ...repo, ...noted } as PeopleRepository;
+}
+
 describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () => {
   let handle: ThrowawaySchema;
   let db: TenantDb;
@@ -70,6 +86,8 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
   let app: FastifyInstance;
   const consumed: CsrfConsumeRequest[] = [];
   let csrfValid = true;
+  /** The relation reads the routes made, in order. */
+  const reads: string[] = [];
 
   beforeAll(async () => {
     const clock = businessClock();
@@ -104,13 +122,14 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
       pool: db,
       logger,
     });
+    const noted = noting(repo, reads);
     await registerLegacyApiRoutes(app, {
       db,
-      repository: repo,
+      repository: noted,
       identity,
       clock,
       roster,
-      search: { db, repo, identity, clock, sleep: instant },
+      search: { db, repo: noted, identity, clock, sleep: instant },
       addresses: { db, repo, clock, fence: personFence },
       legacy: SETTINGS,
     });
@@ -378,6 +397,20 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
       const items = (res.body.data as { items: { lname: string }[] }).items;
       const names = items.map((item) => item.lname);
       expect(names).toEqual([...names].sort().reverse());
+    });
+
+    it('reads the relations of a user page in one statement each, however many users it shows', async () => {
+      const pageReads = async (itemsPerPage: string) => {
+        reads.length = 0;
+        const res = await send('GET', `${API}/user?isPublic=0&sort=-lname&fields=userid,addresses,categoryid,extendeddata&itemsPerPage=${itemsPerPage}`, SITE_ADMIN_A);
+        expect(res.status).toBe(200);
+        return { items: (res.body.data as { items: unknown[] }).items.length, reads: [...reads].sort() };
+      };
+      const [two, all] = [await pageReads('2'), await pageReads('*')];
+      expect([two.items, all.items > 2]).toEqual([2, true]);
+      expect(all.reads).toEqual(two.reads);
+      for (const name of ['listInterestsOf', 'listAddressesOf', 'listExtendDataOf', 'listExtendSubtypes']) expect(all.reads.filter((read) => read === name)).toEqual([name]);
+      expect(all.reads.filter((read) => read === 'listInterests' || read === 'listAddresses' || read === 'listExtendData')).toEqual([]);
     });
 
     it('finds many users in the order of the ids', async () => {

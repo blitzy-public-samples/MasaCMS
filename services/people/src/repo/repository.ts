@@ -540,6 +540,8 @@ export interface PeopleRepository extends Repository {
 
   /** The person's addresses, primary first [legacy: core/mura/user/userDAO.cfc:862-871]. */
   listAddresses(tx: TenantTx, userId: string): Promise<AddressRow[]>;
+  /** `listAddresses` of each of `userIds` in one statement, keyed by the id as given. */
+  listAddressesOf(tx: TenantTx, userIds: readonly string[]): Promise<Map<string, AddressRow[]>>;
   /** The address `addressId`; null when absent. */
   findAddress(tx: TenantTx, addressId: string): Promise<AddressRow | null>;
   /** The address `addressId`, row-locked until `tx` ends; null when absent. */
@@ -557,6 +559,8 @@ export interface PeopleRepository extends Repository {
 
   /** The person's interests by category id, as `readInterestGroupIDs` lists them [legacy: core/mura/user/userDAO.cfc:674-682]. */
   listInterests(tx: TenantTx, userId: string): Promise<InterestRow[]>;
+  /** `listInterests` of each of `userIds` in one statement, keyed by the id as given. */
+  listInterestsOf(tx: TenantTx, userIds: readonly string[]): Promise<Map<string, InterestRow[]>>;
   /** The person's tags by tag id. */
   listTags(tx: TenantTx, userId: string): Promise<TagRow[]>;
   /** Deletes the person's interests (only `scopeCategoryIds` when given), then inserts each new storable id [legacy: core/mura/user/userDAO.cfc:583-616]; returns the inserted rows. */
@@ -574,6 +578,8 @@ export interface PeopleRepository extends Repository {
 
   /** Stored extended values of `baseIds` (persons or addresses), by base, attribute and data id. */
   listExtendData(tx: TenantTx, baseIds: readonly string[]): Promise<ExtendDataRow[]>;
+  /** `listExtendData` of each of `baseIds` alone, in one statement, keyed by the id as given. */
+  listExtendDataOf(tx: TenantTx, baseIds: readonly string[]): Promise<Map<string, ExtendDataRow[]>>;
   /** Per attribute, deletes the stored values of `baseId`, then inserts the new row [legacy: core/mura/extend/extendManager.cfc:439-640]; returns the inserted rows. */
   replaceExtendData(tx: TenantTx, baseId: string, entries: readonly ExtendDataReplacement[], ctx?: WriteContext): Promise<ExtendDataRow[]>;
   /** Deletes every extended value of `baseId` [legacy: core/mura/extend/extendManager.cfc:1060-1091]; returns the number deleted. */
@@ -845,6 +851,15 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   const tagsSql = `SELECT * FROM ${tag} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY tagid`;
   const favoritesSql = `SELECT * FROM ${favorite} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY datecreated, favoriteid`;
   const extendDataSql = `SELECT * FROM ${extendData} WHERE tenant_id = $1 AND ${idIn('baseid', '$2')} ORDER BY baseid, attributeid, dataid`;
+  // The materialized match is planned as the single-id reads' index scan; only its rows are paired with the request positions.
+  /** The rows of `table` whose `column` equals each requested id in `$2`, under the id's 1-based request position, each id's rows by `order`. */
+  const requestedRowsSql = (table: string, column: string, order: string): string =>
+    `WITH found AS MATERIALIZED (SELECT * FROM ${table} WHERE tenant_id = $1 AND ${idIn(column, '$2')})` +
+    ` SELECT u.n AS request_position, r.* FROM found AS r JOIN unnest($2::bpchar[]) WITH ORDINALITY AS u(v, n) ON ${idEquals(`r.${column}`, 'u.v')}` +
+    ` ORDER BY u.n, ${order}`;
+  const addressesOfSql = requestedRowsSql(address, 'userid', 'r.isprimary DESC NULLS LAST, r.addressid');
+  const interestsOfSql = requestedRowsSql(interest, 'userid', 'r.categoryid');
+  const extendDataOfSql = requestedRowsSql(extendData, 'baseid', 'r.baseid, r.attributeid, r.dataid');
   const lockExtendByBaseSql = `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND ${idEquals('baseid', '$2')} ORDER BY dataid FOR UPDATE`;
   const lockExtendByAttributesSql =
     `SELECT dataid, attributeid FROM ${extendData} WHERE tenant_id = $1 AND ${idEquals('baseid', '$2')}` +
@@ -896,6 +911,16 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   /** Selects rows of unit tables once no window phase blocks reading `units`. */
   function readUnits<R extends QueryResultRow>(tx: TenantTx, units: string | readonly string[], sql: string, params: readonly unknown[]): Promise<R[]> {
     return base.read(tx, units, () => select<R>(tx, sql, params));
+  }
+
+  /** The rows a `requestedRowsSql` statement reads for each distinct id of `ids`, keyed by that id; an id matching nothing has none. */
+  async function rowsByRequest<R extends QueryResultRow>(tx: TenantTx, unit: string, sql: string, ids: readonly string[]): Promise<Map<string, R[]>> {
+    const requested = [...new Set(ids)];
+    const grouped = new Map<string, R[]>(requested.map((id) => [id, []]));
+    if (requested.length === 0) return grouped;
+    const found = await readUnits<QueryResultRow & { request_position: string | number }>(tx, unit, sql, [tx.tenantId, requested]);
+    for (const { request_position: position, ...row } of found) grouped.get(requested[Number(position) - 1] ?? '')?.push(row as R);
+    return grouped;
   }
 
   /** Deletes the rows of `table` whose keys `keys` lists, each through the platform write; returns how many existed. */
@@ -1110,6 +1135,10 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return readUnits<AddressRow>(tx, ADDRESS.unit, addressesSql, [tx.tenantId, userId]);
   }
 
+  function listAddressesOf(tx: TenantTx, userIds: readonly string[]): Promise<Map<string, AddressRow[]>> {
+    return rowsByRequest<AddressRow>(tx, ADDRESS.unit, addressesOfSql, userIds);
+  }
+
   async function findAddress(tx: TenantTx, addressId: string): Promise<AddressRow | null> {
     return (await readUnits<AddressRow>(tx, ADDRESS.unit, addressByIdSql, [tx.tenantId, addressId]))[0] ?? null;
   }
@@ -1210,6 +1239,10 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return readUnits<InterestRow>(tx, INTEREST.unit, interestsSql, [tx.tenantId, userId]);
   }
 
+  function listInterestsOf(tx: TenantTx, userIds: readonly string[]): Promise<Map<string, InterestRow[]>> {
+    return rowsByRequest<InterestRow>(tx, INTEREST.unit, interestsOfSql, userIds);
+  }
+
   function listTags(tx: TenantTx, userId: string): Promise<TagRow[]> {
     return readUnits<TagRow>(tx, TAG.unit, tagsSql, [tx.tenantId, userId]);
   }
@@ -1260,6 +1293,10 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   async function listExtendData(tx: TenantTx, baseIds: readonly string[]): Promise<ExtendDataRow[]> {
     if (baseIds.length === 0) return [];
     return readUnits<ExtendDataRow>(tx, EXTEND_DATA.unit, extendDataSql, [tx.tenantId, [...baseIds]]);
+  }
+
+  function listExtendDataOf(tx: TenantTx, baseIds: readonly string[]): Promise<Map<string, ExtendDataRow[]>> {
+    return rowsByRequest<ExtendDataRow>(tx, EXTEND_DATA.unit, extendDataOfSql, baseIds);
   }
 
   async function replaceExtendData(
@@ -1558,6 +1595,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     pageQueryPersons,
     pagePersonsInOrder,
     listAddresses,
+    listAddressesOf,
     findAddress,
     findAddressForUpdate,
     lockAddresses,
@@ -1566,11 +1604,13 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     deleteAddress,
     setPrimaryAddress,
     listInterests,
+    listInterestsOf,
     listTags,
     replaceInterests,
     replaceTags,
     listFavorites,
     listExtendData,
+    listExtendDataOf,
     replaceExtendData,
     deleteExtendDataForBase,
     listExtendSubtypes,

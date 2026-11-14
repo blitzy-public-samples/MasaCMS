@@ -2,7 +2,15 @@
 import type { ApplyRequest } from '@opt2/platform/migration-kit';
 import { z } from '@opt2/platform/service-kit';
 
-import { createApplyTenantResolver, createOwnerBatcher, type ApplyChange, type BatchSender } from '../../apply/index.js';
+import {
+  createApplyTenantResolver,
+  createOwnerBatcher,
+  hintOf,
+  type ApplyChange,
+  type BatchSender,
+  type TargetHint,
+  type TenantResolver,
+} from '../../apply/index.js';
 import { currentAuthority } from '../../cutover/index.js';
 import {
   describeLegacyTable,
@@ -13,8 +21,16 @@ import {
   type LegacyTableShape,
   type MigratableTable,
 } from '../../extract/index.js';
-import type { ApplyResult, DataOwner } from '../../owners/index.js';
-import { compareRows, describeUnitTable, readTargetUnitRows, tableLookupKey, type UnitTableShape } from '../../reconcile/index.js';
+import type { ApplyResult, DataOwner, LegacyTableTarget } from '../../owners/index.js';
+import {
+  compareRows,
+  describeUnitTable,
+  readLegacyUnitRows,
+  readTargetUnitRows,
+  tableLookupKey,
+  toUnitRow,
+  type UnitTableShape,
+} from '../../reconcile/index.js';
 import { latestSnapshot } from '../../snapshot/index.js';
 import { fail, pass, type FaultAssertion, type FaultEnv, type FaultRunOutput, type FaultScript } from './types.js';
 
@@ -31,17 +47,26 @@ const paramsSchema = z
   })
   .strict();
 
-/** Parameters of {@link duplicateBatch}: the owner, an optional legacy table (else the owner's first keyed table with rows) and the rows to send. */
+/** Parameters of {@link duplicateBatch}: the owner, an optional legacy table (else the owner's first keyed table with rows its units take) and the rows to send. */
 export type DuplicateBatchParams = z.output<typeof paramsSchema>;
 
 type Ctx = FaultEnv['ctx'];
 
-/** The table the fault resends rows of, with its first snapshot rows; `unit` is the owner unit that led to it. */
+/** The table the fault resends rows of, with snapshot rows of one tenant and program that `unit` takes and the discriminator they need. */
 interface Selection {
   table: MigratableTable;
   shape: LegacyTableShape;
   unit: string;
+  tenantId: string;
+  discriminator: TargetHint['discriminator'];
   rows: [CanonicalRow, ...CanonicalRow[]];
+}
+
+/** Unit-row keys a unit takes in one tenant and program of the snapshot. */
+interface AcceptedKeys {
+  tenantId: string;
+  legacyProgramId: number | undefined;
+  keys: ReadonlySet<string>;
 }
 
 /** The batch as sent and the owner's answer to its first send. */
@@ -61,69 +86,94 @@ function lookupKey(ctx: Ctx, name: string): string {
   return tableLookupKey(ctx.catalog.foldProgramTable(name).legacyTable);
 }
 
-/** Up to `limit` canonical rows of `table` in `database`, in extraction order; leaving the loop closes the stream. */
-async function firstRows(ctx: Ctx, table: MigratableTable, database: string, limit: number): Promise<CanonicalRow[]> {
+/** Keys of the first `limit` rows the unit takes in its first tenant with rows and that tenant's first program; null when none. */
+async function acceptedKeys(
+  ctx: Ctx,
+  shape: UnitTableShape,
+  options: { database: string; tenants: TenantResolver; limit: number },
+): Promise<AcceptedKeys | null> {
+  const unitRows = await readLegacyUnitRows(ctx, shape, { database: options.database, tenants: options.tenants });
+  try {
+    const tenantId = unitRows.tenants.find((tenant) => (unitRows.counts.get(tenant) ?? 0) > 0);
+    if (tenantId === undefined) return null;
+    const keys = new Set<string>();
+    let program: { id: number | undefined } | undefined;
+    for await (const row of unitRows.rows(tenantId)) {
+      program ??= { id: row.legacyProgramId };
+      if (row.legacyProgramId !== program.id) continue;
+      keys.add(row.key);
+      if (keys.size >= options.limit) break;
+    }
+    return program === undefined ? null : { tenantId, legacyProgramId: program.id, keys };
+  } finally {
+    await unitRows.dispose();
+  }
+}
+
+/** Full legacy rows of `table` whose unit key and program are among `accepted`, in extraction order; leaving the loop closes the stream. */
+async function acceptedRows(ctx: Ctx, table: MigratableTable, database: string, shape: UnitTableShape, accepted: AcceptedKeys): Promise<CanonicalRow[]> {
   const rows: CanonicalRow[] = [];
   for await (const row of streamLegacyTable(ctx, { table, database })) {
+    if (row.legacyProgramId !== accepted.legacyProgramId || !accepted.keys.has(toUnitRow(shape, row.row, row.legacyProgramId).key)) continue;
     rows.push(row);
-    if (rows.length >= limit) break;
+    if (rows.length >= accepted.keys.size) break;
   }
   return rows;
 }
 
 /**
- * The named table, or the owner's first keyed migratable table with rows in unit and catalog order, read from `database`.
+ * The named table, or the owner's first keyed migratable table in unit and catalog order whose unit takes rows, read from `database`.
  * Keyless tables are refused: owners insert resent keyless rows as further occurrences instead of matching them.
  */
 async function selectTable(ctx: Ctx, owner: DataOwner, database: string, params: DuplicateBatchParams): Promise<Selection | FaultAssertion> {
   const live = migratableTables(ctx.catalog, await listLegacyTables(await ctx.legacy.database(database)));
   const byKey = new Map(live.map((table) => [lookupKey(ctx, table.name), table]));
-  const read = async (table: MigratableTable, unit: string): Promise<Selection | string> => {
-    const shape = await describeLegacyTable(ctx, { table, database });
-    if (!shape.keyed) return 'keyless table: owners insert resent keyless rows as extra occurrences';
-    const [head, ...tail] = await firstRows(ctx, table, database, params.rows);
-    return head === undefined ? 'table has no rows in the latest snapshot' : { table, shape, unit, rows: [head, ...tail] };
+  let tenants: Promise<TenantResolver> | undefined;
+  const take = async (table: MigratableTable, shape: LegacyTableShape, target: LegacyTableTarget): Promise<Selection | null> => {
+    const unitShape = await describeUnitTable(ctx, { unit: target.unit, legacyTable: table.name, database });
+    tenants ??= createApplyTenantResolver(ctx, { database });
+    const accepted = await acceptedKeys(ctx, unitShape, { database, tenants: await tenants, limit: params.rows });
+    if (accepted === null) return null;
+    const [head, ...tail] = await acceptedRows(ctx, table, database, unitShape, accepted);
+    if (head === undefined) return null;
+    const { discriminator } = hintOf(target, shape.columns);
+    return { table, shape, unit: target.unit, tenantId: accepted.tenantId, discriminator, rows: [head, ...tail] };
   };
 
   if (params.table !== undefined) {
     const detail = { owner, table: params.table };
     const table = byKey.get(lookupKey(ctx, params.table));
     if (table === undefined) return fail(SECOND_IS_NOOP, detail, 'not a migratable table of the latest snapshot');
-    const unit = ctx.catalog.unitsForLegacyTable(table.name).find((target) => target.owner === owner)?.unit;
-    if (unit === undefined) return fail(SECOND_IS_NOOP, detail, `table is not owned by ${owner}`);
-    const selected = await read(table, unit);
-    return typeof selected === 'string' ? fail(SECOND_IS_NOOP, detail, selected) : selected;
+    const targets = ctx.catalog.unitsForLegacyTable(table.name).filter((target) => target.owner === owner);
+    if (targets.length === 0) return fail(SECOND_IS_NOOP, detail, `table is not owned by ${owner}`);
+    const shape = await describeLegacyTable(ctx, { table, database });
+    if (!shape.keyed) return fail(SECOND_IS_NOOP, detail, 'keyless table: owners insert resent keyless rows as extra occurrences');
+    for (const target of targets) {
+      const selected = await take(table, shape, target);
+      if (selected !== null) return selected;
+    }
+    return fail(SECOND_IS_NOOP, detail, `the owner's unit takes no row of ${table.name} in the latest snapshot`);
   }
 
   for (const unit of ctx.catalog.unitsOfOwner(owner)) {
     for (const name of ctx.catalog.legacyTablesOf(unit.id)) {
       const table = byKey.get(lookupKey(ctx, name));
-      if (table === undefined) continue;
-      const selected = await read(table, unit.id);
-      if (typeof selected !== 'string') return selected;
+      const target = table === undefined ? undefined : ctx.catalog.unitsForLegacyTable(table.name).find((candidate) => candidate.unit === unit.id);
+      if (table === undefined || target === undefined) continue;
+      const shape = await describeLegacyTable(ctx, { table, database });
+      if (!shape.keyed) continue;
+      const selected = await take(table, shape, target);
+      if (selected !== null) return selected;
     }
   }
-  return fail(SECOND_IS_NOOP, { owner }, 'owner has no keyed migratable table with rows in the latest snapshot');
-}
-
-/** The selected rows of the first row's tenant and program, placed as backfill places them, so the batcher sends one batch. */
-async function firstTenantRows(ctx: Ctx, database: string, selection: Selection): Promise<{ tenantId: string; rows: CanonicalRow[] }> {
-  const resolver = await createApplyTenantResolver(ctx, { database });
-  const tenantOf = (row: CanonicalRow): string => resolver.resolve(selection.table.name, row.row).tenantId;
-  const [head] = selection.rows;
-  const tenantId = tenantOf(head);
-  const rows = selection.rows.filter((row) => row.legacyProgramId === head.legacyProgramId && tenantOf(row) === tenantId);
-  return { tenantId, rows };
+  return fail(SECOND_IS_NOOP, { owner }, 'owner has no keyed migratable table with rows its units take');
 }
 
 /**
  * Builds the batch with the owner batcher, as backfill and feed build theirs, and sends it once: its sender swaps in the
  * fault's batch id and performs the first send. No watermark rides on it, so the owner's feed watermark stays as it was.
  */
-async function sendOnce(
-  ctx: Ctx,
-  input: { owner: DataOwner; selection: Selection; snapshotSeq: number; units: string[]; tenantId: string; rows: CanonicalRow[]; batchId: string },
-): Promise<Sent> {
+async function sendOnce(ctx: Ctx, input: { owner: DataOwner; selection: Selection; snapshotSeq: number; units: string[]; batchId: string }): Promise<Sent> {
   const sends: Sent[] = [];
   const sender: BatchSender = {
     async apply(owner, built) {
@@ -145,13 +195,14 @@ async function sendOnce(
     origin: 'migration-feed',
     columns: input.selection.shape.columns,
     units: input.units,
-    batchSize: input.rows.length,
+    batchSize: input.selection.rows.length,
     sender,
     watermark: null,
   });
-  for (const row of input.rows) {
-    const change: ApplyChange = { op: 'upsert', row: row.encoding };
-    await batcher.add(input.tenantId, change, row.legacyProgramId);
+  const { tenantId, discriminator, rows } = input.selection;
+  for (const row of rows) {
+    const change: ApplyChange = { op: 'upsert', row: row.encoding, ...(discriminator === undefined ? {} : { discriminator }) };
+    await batcher.add(tenantId, change, row.legacyProgramId);
   }
   await batcher.finish();
   const [sent] = sends;
@@ -179,15 +230,31 @@ async function ownerState(ctx: Ctx, owner: DataOwner, shapes: readonly UnitTable
   return { position: (await ctx.owners.position(owner)).position, checksum: await exportChecksum(ctx, shapes, tenantId) };
 }
 
-/** The no-op verdict on the resent batch: reported duplicate, no committed write, and an unchanged export. */
+/** The verdict on the first send: a fresh batch id of which the owner applied every selected row. */
+function firstApplied(first: ApplyResult, facts: { batchId: string; owner: DataOwner; table: string; tenantId: string; rows: number }): FaultAssertion {
+  const { rows, ...batch } = facts;
+  if (first.duplicate) return fail(FIRST_APPLIED, batch, 'batch id collided');
+  if (first.applied > 0 && first.applied === rows) return pass(FIRST_APPLIED, { batchId: facts.batchId, applied: first.applied, skipped: first.skipped });
+  const reason =
+    first.applied === 0
+      ? `the owner applied none of the ${String(rows)} rows`
+      : first.applied < rows
+        ? `the owner skipped ${String(rows - first.applied)} of ${String(rows)} selected rows`
+        : `the owner reported ${String(first.applied)} rows applied of ${String(rows)} sent`;
+  return fail(FIRST_APPLIED, { ...facts, applied: first.applied, skipped: first.skipped }, reason);
+}
+
+/** The no-op verdict on the resent batch: a fully applied first send (`firstFailure` unset), reported duplicate, no committed write, an unchanged export. */
 function secondIsNoop(
   second: ApplyResult,
   facts: { batchId: string; owner: DataOwner; table: string; tenantId: string; rows: number; before: OwnerState; after: OwnerState },
+  firstFailure: string | undefined,
 ): FaultAssertion {
   const { before, after, ...batch } = facts;
   const writePosition = second.writePositions.get(facts.owner);
   const changed = Object.keys(before.checksum).filter((unit) => before.checksum[unit] !== after.checksum[unit]);
   const problems = [
+    ...(firstFailure === undefined ? [] : [`${firstFailure}, so the repeat proves no data-write idempotency`]),
     ...(second.duplicate ? [] : ['the owner did not report the resent batch as a duplicate']),
     ...(writePosition === undefined ? [] : [`the resent batch committed a write at position ${writePosition}`]),
     ...(changed.length === 0 ? [] : [`the owner export changed for ${changed.join(', ')}`]),
@@ -236,22 +303,21 @@ async function run(env: FaultEnv, params: DuplicateBatchParams): Promise<FaultRu
     return { assertions: [refused], details };
   }
 
-  const { tenantId, rows } = await firstTenantRows(ctx, database, selection);
+  const { tenantId, rows } = selection;
   const batchId = `fault:${FAULT}:${env.clock.now().toISOString()}`;
-  Object.assign(details, { tenantId, batchId, rows: rows.length });
+  Object.assign(details, { tenantId, batchId, rows: rows.length, discriminator: selection.discriminator ?? null });
   const shapes: UnitTableShape[] = [];
   for (const unit of units) shapes.push(await describeUnitTable(ctx, { unit, legacyTable: table, database }));
 
-  const { request, result: first } = await sendOnce(ctx, { owner, selection, snapshotSeq: snapshot.seq, units, tenantId, rows, batchId });
+  const { request, result: first } = await sendOnce(ctx, { owner, selection, snapshotSeq: snapshot.seq, units, batchId });
   const before = await ownerState(ctx, owner, shapes, tenantId);
   const second = await ctx.owners.apply(owner, request);
   const after = await ownerState(ctx, owner, shapes, tenantId);
 
-  const firstApplied = first.duplicate
-    ? fail(FIRST_APPLIED, { batchId, owner, table, tenantId }, 'batch id collided')
-    : pass(FIRST_APPLIED, { batchId, applied: first.applied, skipped: first.skipped });
+  const firstVerdict = firstApplied(first, { batchId, owner, table, tenantId, rows: rows.length });
+  const firstFailure = firstVerdict.status === 'pass' ? undefined : firstVerdict.reason;
   return {
-    assertions: [firstApplied, secondIsNoop(second, { batchId, owner, table, tenantId, rows: rows.length, before, after })],
+    assertions: [firstVerdict, secondIsNoop(second, { batchId, owner, table, tenantId, rows: rows.length, before, after }, firstFailure)],
     details,
   };
 }

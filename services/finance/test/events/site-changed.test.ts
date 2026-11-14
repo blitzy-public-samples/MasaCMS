@@ -53,7 +53,7 @@ const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta
 const DLQ_TOPIC = 'finance.programs-sites.site.changed.v1.dlq';
 const WRONG_PUSH_KEY = `${TEST_PUSH_KEY.slice(0, -1)}${TEST_PUSH_KEY.endsWith('x') ? 'y' : 'x'}`;
 
-// pgAvailable rejects when PG_HOST is unset, so the suite skips on that before probing the server.
+// An unset PG_HOST skips the suite without probing the server.
 const pgReady = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 /** The tenant-a site as the fixture registry holds it: public user, category, file and display pools in umbrella, the rest its own. */

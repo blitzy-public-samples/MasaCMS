@@ -16,7 +16,7 @@ import {
   type Transport,
 } from '@opt2/platform/auth';
 import { buildPushBody, encodeEnvelope, type EventEnvelope } from '@opt2/platform/events';
-import { CSRF_CONSUME_PATH, baseEnvSchema, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { baseEnvSchema, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { SITEMONITOR_QUEUE, outboxSweepQueue } from '@opt2/platform/tasks';
 import {
   ROLE_SET,
@@ -156,7 +156,6 @@ const TOKEN_FIELDS = 'csrf_token=T&csrf_token_expires=E';
 const SIZE_ID = 'C0FFEE00-0000-0000-0000000000000001';
 const PUSH_URL = `/internal/v1/events/${SITE_CHANGED_SUBSCRIPTION}`;
 const SWEEP_QUEUE = outboxSweepQueue(SERVICE);
-const CSRF_CONSUME_CALL = `identity POST ${CSRF_CONSUME_PATH}`;
 
 const INSUFFICIENT_PERMISSIONS: HandlerDenial = {
   status: 401,
@@ -385,31 +384,9 @@ function jsonApiRead(mode: JsonApiMode, method: ProbeRequest['method'], lead: st
   });
 }
 
-/** The verb's own `site` write on the entity path, where the verb has one. */
+/** The `site.delete` write of the entity path under DELETE; the withheld `site.save` is not served, so POST and PUT have none. */
 function jsonApiWrites(mode: JsonApiMode, method: ProbeRequest['method'], lead: string): Probe[] {
   const url = `${lead}/_api/${mode}/v1/${SITE_A}/site`;
-  if (method === 'POST' && mode === 'json') {
-    // jsonApiUtility.cfc:1980: a session-managed save consumes the CSRF token before allowAction runs.
-    const request: ProbeRequest = { method, url, headers: FORM, payload: `${TOKEN_FIELDS}&domain=${SITE_A}.example.test` };
-    return [
-      probe(`${lead}json site.save with a valid CSRF token`, request, ['s2'], {
-        subjects: ['s2', 'site-admin'],
-        denyCheck: { 'site-admin': INSUFFICIENT_PERMISSIONS },
-        deniedCalls: [CSRF_CONSUME_CALL],
-      }),
-    ];
-  }
-  if (method === 'POST' && mode === 'rest') {
-    // jsonApiUtility.cfc:1800-1806, 1998-1999: allowAction('site') is isSuperUser; REST is sessionless, so no CSRF check precedes it.
-    return [
-      probe(`${lead}rest site.save`, { ...REST_SAVE, url }, ['s2'], {
-        denyCheck: {
-          ...denials(everyoneBut('s2', 'other-tenant', 'service:tasks-invoker'), INSUFFICIENT_PERMISSIONS),
-          'other-tenant': SITE_MISMATCH,
-        },
-      }),
-    ];
-  }
   if (method === 'DELETE') {
     // jsonApiUtility.cfc:3317-3325: a stored site needs allowAction before any CSRF check; the S2 call then fails, deleting nothing.
     return [

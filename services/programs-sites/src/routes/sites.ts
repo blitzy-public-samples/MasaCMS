@@ -1,9 +1,9 @@
 /**
- * Site-settings routes of `csettings.list`, `editSite`, `updateSite{action=Update}`, the admin layout's site read and
- * the admin gate's `sanitizeHref`.
+ * Site-settings routes of `csettings.list`, `editSite`, the refused `updateSite`, the admin layout's site read and the
+ * admin gate's `sanitizeHref`.
  */
 import { AuthDenial, Roles, assertSiteMatches, serviceRole, type UserClaims } from '@opt2/platform/auth';
-import { cfEq } from '@opt2/platform/legacy-compat';
+import { LegacyServiceUnavailableError, cfEq } from '@opt2/platform/legacy-compat';
 import {
   csrfPreHandler,
   legacyParamsOf,
@@ -109,23 +109,9 @@ function clientGoneSignal(reply: FastifyReply): AbortSignal {
   return controller.signal;
 }
 
-/** `rc.siteID`: the posted `siteid`, or the request's site when absent or empty (admin Application.cfc:401-412). */
-function rcSiteId(request: FastifyRequest): string {
-  const posted = fieldText(legacyParamsOf(request), 'siteid');
-  return posted === undefined || posted === '' ? (request.params as SiteParams).siteId : posted;
-}
-
-/** The Edit Site form as `rc` holds it: url then form fields, with `siteid` resolved as `rcSiteId` resolves it. */
-function updateFormOf(request: FastifyRequest): Record<string, unknown> {
-  const form = legacyParamsOf(request);
-  const key = Object.keys(form).find((name) => name.toLowerCase() === 'siteid') ?? 'siteid';
-  form[key] = rcSiteId(request);
-  return form;
-}
-
 /**
  * Registers `GET /v1/sites`, `POST /v1/sites/order`, `GET /v1/sites/:siteId`, `GET /v1/sites/:siteId/shell`,
- * `GET /v1/sites/:siteId/user-pool-sites`, `POST /v1/sites/:siteId/update` and `GET /v1/href-domains`.
+ * `GET /v1/sites/:siteId/user-pool-sites`, the refusing `POST /v1/sites/:siteId/update` and `GET /v1/href-domains`.
  */
 export async function registerSiteRoutes(app: FastifyInstance, deps: SiteRouteDeps): Promise<void> {
   /** Sites screen rows for an S2 user [csettings.cfc:97-114]. */
@@ -217,23 +203,17 @@ export async function registerSiteRoutes(app: FastifyInstance, deps: SiteRouteDe
     },
   );
 
-  /** Edit Site save of an existing site; a failed CSRF check writes nothing [csettings.cfc:170-225]. */
-  app.post<{ Params: SiteParams; Reply: Schemas['SiteUpdateResult'] }>(
+  /** Edit Site save [csettings.cfc:170-225]: its Update branch is withheld, so a valid form answers the legacy 503. */
+  app.post<{ Params: SiteParams }>(
     '/v1/sites/:siteId/update',
     {
       config: { opt2: { transport: 'service', requires: S2_OR_SITE_ADMIN } },
       schema: { params: SITE_PARAMS_SCHEMA },
-      preHandler: [validateUpdateForm, csrfPreHandler({ contextOf: rcSiteId, onReject: markCsrfRejected })],
+      preHandler: [validateUpdateForm],
     },
     async (request) => {
-      const claims = userOf(request);
-      const { siteId } = request.params;
-      assertSiteMatches(siteId, claims);
-      if (csrfRejected.has(request)) {
-        const { site } = await deps.sites.readSite(deps.db, claims, siteId);
-        return { written: false, errors: {}, site };
-      }
-      return deps.sites.updateSite(deps.db, claims, siteId, updateFormOf(request));
+      assertSiteMatches(request.params.siteId, userOf(request));
+      throw new LegacyServiceUnavailableError('The Edit Site save is withheld and served by legacy', 'auto', 'withheld');
     },
   );
 

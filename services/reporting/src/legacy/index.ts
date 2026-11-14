@@ -1,6 +1,6 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Fixture routes `reporting/exports…` of legacy-fixtures/cfml/api.cfm, answered as legacy-fixtures/cfml/modules/reporting.cfc answers them. */
-import { AuthDenial, Roles, type DenialRenderer, type Opt2RouteConfig } from '@opt2/platform/auth';
+import { AuthDenial, Roles, type DenialRenderer, type Opt2AuthContext, type Opt2RouteConfig } from '@opt2/platform/auth';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import {
@@ -14,7 +14,14 @@ import {
 import type { ReportingDeps } from '../domain/deps.js';
 import { createExportJob, getExportJob, listExportJobs, openExportOutput } from '../domain/jobs.js';
 import type { JobPaging } from '../repo/queries.js';
-import { createExportFields, requireExportJob, requireReadyOutput, resolveFixtureSite, type FixtureSite } from './checks.js';
+import {
+  createExportFields,
+  fixtureDenialOverride,
+  requireExportJob,
+  requireReadyOutput,
+  resolveFixtureSite,
+  type FixtureSite,
+} from './checks.js';
 import {
   FIXTURE_MODULE,
   FixtureApiError,
@@ -48,6 +55,9 @@ const JSON_MEDIA_TYPE = /^application\/json/i;
 
 /** Methods the reporting fixture paths answer. */
 type FixtureHttpMethod = 'GET' | 'POST';
+
+/** Request methods every fixture path accepts; `effectiveMethod` picks the operation it answers as. */
+const TRANSPORT_METHODS: readonly FixtureHttpMethod[] = Object.freeze(['GET', 'POST']);
 
 /** Path params of the fixture routes. */
 type RouteParams = { id?: string };
@@ -228,26 +238,33 @@ const FIXTURE_PATHS: readonly FixturePath[] = Object.freeze([
   { url: `${FIXTURE_PREFIX}/${EXPORTS}/:id/download`, fixture: { resource: EXPORTS, action: 'download' }, methods: [['GET', downloadExport]] },
 ]);
 
-/** Renders a platform auth denial in the fixture error envelope of the denied route. */
-const renderDenial: DenialRenderer = (denial, request) => toFixtureError(denial, contextOf(request));
+/** Renders a platform auth denial in the fixture error envelope of the denied route, as the fixture answers it after resolveSite and requireLogin. */
+function fixtureDenialRenderer(deps: ReportingDeps): DenialRenderer {
+  return async (denial, request) => {
+    const ctx = contextOf(request);
+    const claims = (request.opt2Auth as Opt2AuthContext | null)?.user;
+    const answered = await fixtureDenialOverride(denial, { claims, params: ctx.params }, deps);
+    recordOutcomeReason(request, fixtureOutcomeReason(answered));
+    return toFixtureError(answered, ctx);
+  };
+}
 
 /** The auth declaration of every reporting fixture route; `resolveFixtureSite` checks the site against the token. */
-const FIXTURE_AUTH: Opt2RouteConfig = Object.freeze({
-  requires: Object.freeze([Roles.reportingExporter]),
-  transport: 'service',
-  siteCheck: false,
-  renderDenial,
-});
+function fixtureAuth(deps: ReportingDeps): Opt2RouteConfig {
+  return Object.freeze({
+    requires: Object.freeze([Roles.reportingExporter]),
+    transport: 'service',
+    siteCheck: false,
+    renderDenial: fixtureDenialRenderer(deps),
+  });
+}
 
-/**
- * Registers one fixture path for exactly its declared methods. As api.cfm does, the site is resolved first, then the
- * effective method (X-HTTP-Method-Override included) picks the operation, and a method the path lacks answers notFound.
- */
-function registerPath(scope: FastifyInstance, deps: ReportingDeps, path: FixturePath): void {
+/** Registers one fixture path for every transport method; as api.cfm does, the site resolves first, then the effective method picks the operation or answers notFound. */
+function registerPath(scope: FastifyInstance, deps: ReportingDeps, auth: Opt2RouteConfig, path: FixturePath): void {
   scope.route<{ Params: RouteParams }, FixtureRouteConfig>({
-    method: path.methods.map(([method]) => method),
+    method: [...TRANSPORT_METHODS],
     url: path.url,
-    config: { opt2: FIXTURE_AUTH, fixture: path.fixture },
+    config: { opt2: auth, fixture: path.fixture },
     handler: async (request, reply) => {
       const ctx = contextOf(request);
       const site = await resolveFixtureSite(ctx.params, request, deps);
@@ -259,8 +276,9 @@ function registerPath(scope: FastifyInstance, deps: ReportingDeps, path: Fixture
   });
 }
 
-/** Registers the four reporting fixture routes in their own encapsulated context, so their error handler serves only them. */
+/** Registers the three reporting fixture paths for GET and POST in their own encapsulated context, so their error handler serves only them. */
 export async function registerFixtureRoutes(app: FastifyInstance, deps: ReportingDeps): Promise<void> {
+  const auth = fixtureAuth(deps);
   await app.register(async (scope) => {
     scope.setErrorHandler((error, request, reply) => {
       // Rethrows a LegacyServiceUnavailableError, which the service-kit handler answers as the legacy 503.
@@ -269,6 +287,6 @@ export async function registerFixtureRoutes(app: FastifyInstance, deps: Reportin
       else recordOutcomeReason(request, fixtureOutcomeReason(error));
       return sendLegacyResponse(reply, response);
     });
-    for (const path of FIXTURE_PATHS) registerPath(scope, deps, path);
+    for (const path of FIXTURE_PATHS) registerPath(scope, deps, auth, path);
   });
 }

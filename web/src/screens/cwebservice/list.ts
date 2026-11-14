@@ -9,8 +9,8 @@ import { relativeAdminUrl, type BoundAdminParams } from '@/lib/urls';
 import type { ShellView } from '@/shell/document';
 import type { PageScreen, ScreenContext } from '../registry';
 
-/** A `toauthclients` row as identity lists it. */
-export type WebServiceClient = components['schemas']['OAuthClient'];
+/** A `toauthclients` row as identity lists it, without its secret. */
+export type WebServiceClient = components['schemas']['OAuthClientListItem'];
 
 /** What the list view renders: the session site's clients, in the order identity returns them. */
 export interface WebServiceListData {

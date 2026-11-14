@@ -127,6 +127,7 @@ const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
   { method: 'POST', url: '/internal/v1/task-queues/:queue/pause', transport: 'service', requires: QUEUE_CONTROL, siteCheck: true },
   { method: 'POST', url: '/internal/v1/task-queues/:queue/resume', transport: 'service', requires: QUEUE_CONTROL, siteCheck: true },
   { method: 'GET', url: '/internal/v1/users/current', transport: 'service', requires: [serviceRole('identity')], siteCheck: true },
+  { method: 'GET', url: '/internal/v1/users/pool-user', transport: 'service', requires: [serviceRole('e-signature')], siteCheck: true },
   { method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive', transport: 'service', public: true, siteCheck: false },
   { method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive', transport: 'service', public: true, siteCheck: false },
   { method: 'GET', url: '/v1/profile', transport: 'service', requires: PROFILE, siteCheck: true },
@@ -154,6 +155,9 @@ const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
  * users lists, whose `siteid=all` only S2 may send.
  */
 const HANDLER_SITE_BOUND: ReadonlySet<string> = new Set(['GET /v1/users', 'GET /v2/users']);
+
+/** Routes whose handler refuses an admitted workload without a user token with 401 before any effect: e-signature's pool-user read. */
+const HANDLER_USER_BOUND: ReadonlySet<string> = new Set(['GET /internal/v1/users/pool-user']);
 
 function tenantOfSite(siteId: string): string {
   if (siteId === DEFAULT_SITE.siteId) return DEFAULT_SITE.tenantId;
@@ -499,6 +503,7 @@ const PROBES: Readonly<Record<string, () => Probe | Promise<Probe>>> = {
   'POST /internal/v1/task-queues/:queue/pause': () => control('pause'),
   'POST /internal/v1/task-queues/:queue/resume': () => control('resume'),
   'GET /internal/v1/users/current': () => get(CURRENT_USER_URL),
+  'GET /internal/v1/users/pool-user': () => get(`/internal/v1/users/pool-user?${ON_SITE_A}&userid=${STRANGER_ID}`),
   'GET /legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive': () =>
     get(`/legacy-fixtures/cfml/api.cfm/people/persons/${STRANGER_ID}/archive?siteid=notasite`, false),
   'POST /legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive': () =>
@@ -571,6 +576,7 @@ function expectedOutcome(entry: RouteMatrixEntry, request: Probe, subject: RoleS
       return DENIED_403;
     }
   }
+  if (presented !== 'user' && HANDLER_USER_BOUND.has(routeKey(entry))) return DENIED_401;
   const siteBound = request.site === true && (entry.siteCheck || HANDLER_SITE_BOUND.has(routeKey(entry)));
   if (presented === 'user' && siteBound && subjectSiteFor(subject, SITE_A) !== SITE_A) return DENIED_403;
   return REACHED;

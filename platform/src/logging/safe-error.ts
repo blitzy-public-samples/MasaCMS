@@ -60,9 +60,30 @@ const GRPC_STATUS_TEXT = String.raw`gRPC status (?:${GRPC_STATUS.map((name, code
 /** Alternatives matching exactly each of ABORT_MESSAGES. */
 const ABORT_TEXT = [...ABORT_MESSAGES.values()].join('|');
 
-/** Every text `safeErrorMessage` produces besides REDACTED, plus the sanitized message of @opentelemetry/instrumentation-pg. */
+/** SMTP command nodemailer names as in flight when it fails; `AUTH` carries an RFC 4422 mechanism name. */
+const SMTP_COMMAND = String.raw`(?:CONN|API|EHLO|HELO|LHLO|STARTTLS|AUTH [A-Z0-9_-]{1,20}|MAIL FROM|RCPT TO|DATA|RSET)`;
+
+/** Text that is exactly one SMTP_COMMAND. */
+const SMTP_COMMAND_TEXT = new RegExp(`^${SMTP_COMMAND}$`);
+
+/** Gate unit `<schema>.<table>`. */
+const UNIT = String.raw`[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*`;
+
+/** Supplied text of a migration-kit gate error: its fixed phrase, then one or more units separated by `, `. */
+const GATE_TEXT = `(?:Unit gate (?:closed|race|compare-and-set refused) for|Target is not write-authoritative for|Legacy write window in progress for|Open operation or closed gate blocks) ${UNIT}(?:, ${UNIT})*`;
+
+/** Task queue name: lower-case words joined by `-`. */
+const QUEUE = '[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*';
+
+/** Recurring chain task name `<queue>-<slot start epoch s>`. */
+const SLOT = '(?:[a-z][a-z0-9]*-)+[0-9]+';
+
+/** Supplied text of a RecurringSlotsTombstonedError, naming only its queue and probed chain task names. */
+const RECURRING_TEXT = `No live chain task on queue ${QUEUE}: tombstoned slots ${SLOT}(?:, ${SLOT})*`;
+
+/** Every text `safeErrorMessage` produces besides REDACTED, platform errors' supplied texts included, plus the sanitized message of @opentelemetry/instrumentation-pg. */
 const SAFE_TEXT = new RegExp(
-  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|(?:[a-z][a-z0-9-]*: )?invalid environment(?: \([A-Z][A-Z0-9_]*(?:, [A-Z][A-Z0-9_]*)*\))?|${GRPC_STATUS_TEXT}|${ABORT_TEXT})$`,
+  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|(?:[a-z][a-z0-9-]*: )?invalid environment(?: \([A-Z][A-Z0-9_]*(?:\.[a-z][a-z0-9-]*)?(?:, [A-Z][A-Z0-9_]*(?:\.[a-z][a-z0-9-]*)?)*\))?|(?:[a-z][a-z0-9-]*: )?invalid configuration file [a-z][a-z0-9-]*\.json|${GRPC_STATUS_TEXT}|${ABORT_TEXT}|SMTP ${SMTP_COMMAND} E[A-Z0-9_]+|${GATE_TEXT}|${RECURRING_TEXT})$`,
 );
 
 /** Most causes `safeErrorMessage` follows past an error without identifiers; also ends a cyclic chain. */
@@ -110,10 +131,13 @@ function ownSafeMessage(err: unknown): string {
   if (SQLSTATE.test(code) && stringProperty(err, 'severity') !== undefined) return `PostgreSQL error ${code}`;
   const syscall = stringProperty(err, 'syscall');
   if (SYSTEM_CODE.test(code) && syscall !== undefined && SYSCALL.test(syscall)) return `${syscall} ${code}`;
+  // A nodemailer error's message and response may echo server replies and addresses; its code and command never do.
+  const command = stringProperty(err, 'command');
+  if (SYSTEM_CODE.test(code) && command !== undefined && SMTP_COMMAND_TEXT.test(command)) return `SMTP ${command} ${code}`;
   return NAMED_CODE.test(code) ? code : REDACTED;
 }
 
-/** Message of `err` from its supplied safe text or diagnostic identifiers (SQLSTATE, system call and code, Node or Fastify code, gRPC status, Node's abort text), else from its nearest cause's; otherwise REDACTED. */
+/** Message of `err` from its supplied safe text or diagnostic identifiers (SQLSTATE, system call and code, SMTP command and code, Node or Fastify code, gRPC status, Node's abort text), else from its nearest cause's; otherwise REDACTED. */
 export function safeErrorMessage(err: unknown): string {
   let message = ownSafeMessage(err);
   let link = err;

@@ -3,10 +3,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import { loadSends, sendAction, sendMessage, sendsBody, sendsScreen } from '@/screens/opt2/communications/sends';
-import { COMMUNICATIONS_IDS, messages, sendInvalid } from '../../../fixtures/opt2/communications';
+import { COMMUNICATIONS_IDS, messageTemplates, messages, sendInvalid } from '../../../fixtures/opt2/communications';
 import { fragmentModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
-import { routeKey } from '../../../helpers/fake-gateway';
+import { routeKey, type FakeRoute } from '../../../helpers/fake-gateway';
 import {
   NOT_FOUND_ANSWER,
   POSTED_CSRF,
@@ -19,6 +19,19 @@ import {
 
 const MESSAGES_ROUTE = routeKey('GET', 'communications', '/v1/messages');
 const SEND_ROUTE = routeKey('POST', 'communications', '/v1/messages');
+const TEMPLATES_ROUTE = routeKey('GET', 'communications', '/v1/templates');
+
+/** A template the service lists only on page 2. */
+const PAGE_TWO_TEMPLATE = Object.freeze({
+  ...messageTemplates[0]!,
+  template_id: 'C0330001-0000-0000-0000000000009999',
+  name: 'page-two-template',
+});
+
+/** Templates over two pages, the fixture templates then {@link PAGE_TWO_TEMPLATE}; `pageTwo` replaces page 2's answer. */
+function twoTemplatePages(pageTwo = listAnswer([PAGE_TWO_TEMPLATE], 2, 2)): FakeRoute {
+  return (request) => (request.query['pageIndex'] === '2' ? pageTwo : listAnswer(messageTemplates, 1, 2));
+}
 
 const EMPTY_SEND = Object.freeze({
   templateId: '',
@@ -86,6 +99,40 @@ describe('communications sends screen', () => {
     const [table] = fragmentModel(toString(sendsBody(ctx, await loadSends(ctx), EMPTY_SEND))).tables;
 
     expect(table?.rows.map((row) => row[2])).toEqual([outside.template_id, '']);
+  });
+
+  it('lists, presets and names a template from a later page, requesting each page once', async () => {
+    const ctx = screenContext(senderRequest({ rc: { templateId: PAGE_TWO_TEMPLATE.template_id } }), {
+      [TEMPLATES_ROUTE]: twoTemplatePages(),
+      [MESSAGES_ROUTE]: listAnswer([{ ...messages[0]!, template_id: PAGE_TWO_TEMPLATE.template_id }]),
+    });
+    const model = fragmentModel(toString((await sendsScreen.render(ctx, await sendsScreen.load(ctx))).body));
+    const choice = model.controls.find((control) => control.name === 'templateId');
+
+    expect(choice?.options.map((option) => option.value)).toEqual([
+      '',
+      ...messageTemplates.map((template) => template.template_id),
+      PAGE_TWO_TEMPLATE.template_id,
+    ]);
+    expect(choice?.options.filter((option) => option.selected)).toEqual([
+      { value: PAGE_TWO_TEMPLATE.template_id, label: 'page-two-template', selected: true },
+    ]);
+    expect(model.tables[0]?.rows.map((row) => row[2])).toEqual(['page-two-template']);
+    expect(
+      communicationsCalls(ctx.gateway)
+        .filter((call) => call.path === '/v1/templates')
+        .map((call) => call.query),
+    ).toEqual([{ itemsPerPage: '1000' }, { pageIndex: '2', itemsPerPage: '1000' }]);
+  });
+
+  it.each([
+    { status: 403, error: GatewayDenialError },
+    { status: 503, error: GatewayUnavailableError },
+    { status: 400, error: Error },
+  ])('fails the load on a $status answer for a later template page', async ({ status, error }) => {
+    const ctx = screenContext(senderRequest(), { [TEMPLATES_ROUTE]: twoTemplatePages({ status }) });
+
+    await expect(loadSends(ctx)).rejects.toBeInstanceOf(error);
   });
 
   it.each([

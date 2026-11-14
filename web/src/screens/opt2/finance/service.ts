@@ -4,7 +4,16 @@ import type { components } from '@/generated/clients/finance';
 import { assertNotDenied, type GatewayResponse, type WebServiceName } from '@/lib/gateway-client';
 import type { SafeHtml } from '@/lib/html';
 import type { Opt2Module, ScreenContext } from '../../registry';
-import { alertBox, errorMessage, opt2ActionUrl, opt2Gate, opt2ScreenUrl, type Opt2Params } from '../shared';
+import {
+  alertBox,
+  errorMessage,
+  opt2ActionUrl,
+  opt2Gate,
+  opt2Label,
+  opt2ScreenUrl,
+  type Label,
+  type Opt2Params,
+} from '../shared';
 
 type Schemas = components['schemas'];
 
@@ -39,19 +48,19 @@ export const FINANCE_STATES: readonly FinanceState[] = Object.freeze([
   'REJECTED',
 ]);
 
-/** A lifecycle action without fields, the role whose holders see its button, and the button label. */
+/** A lifecycle action without fields, the role whose holders see its button, and its button label in `ctx`'s locale. */
 export interface Transition {
   readonly action: Exclude<Schemas['TransitionAction'], 'edit'>;
-  readonly label: string;
+  readonly label: (ctx: ScreenContext) => Label;
   readonly role: typeof PREPARER | typeof APPROVER;
 }
 
 /** The detail screen's transition buttons; the finance service decides whether each applies to the record. */
 export const TRANSITIONS: readonly Transition[] = Object.freeze([
-  { action: 'submit', label: 'Submit', role: PREPARER },
-  { action: 'resubmit', label: 'Resubmit', role: PREPARER },
-  { action: 'approve', label: 'Approve', role: APPROVER },
-  { action: 'reject', label: 'Reject', role: APPROVER },
+  { action: 'submit', label: (ctx) => opt2Label(ctx, 'Submit'), role: PREPARER },
+  { action: 'resubmit', label: () => 'Resubmit', role: PREPARER },
+  { action: 'approve', label: (ctx) => opt2Label(ctx, 'Approve'), role: APPROVER },
+  { action: 'reject', label: (ctx) => opt2Label(ctx, 'Reject'), role: APPROVER },
 ]);
 
 /** A read's 2xx body, or the alert for an answer the screen shows: invalid input (400) or no such record (404). */

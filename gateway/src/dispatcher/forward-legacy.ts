@@ -1,7 +1,7 @@
 // Forwards a request to the legacy Masa origin; request and response bytes pass unchanged except the session cookie mapping.
 import { channel } from 'node:diagnostics_channel';
-import type { IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http';
-import { pipeline, type Readable } from 'node:stream';
+import type { IncomingHttpHeaders, OutgoingHttpHeaders, ServerResponse } from 'node:http';
+import type { Readable } from 'node:stream';
 import type { FastifyReplyFromHooks, FastifyReplyFromResponse } from '@fastify/reply-from';
 import type { HeaderMap } from '@opt2/platform/auth';
 import { isLegacySessionCookie, parseSetCookie } from '@opt2/platform/legacy-compat';
@@ -138,6 +138,43 @@ async function collect(stream: Readable): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+/** The error Node's stream utilities report for a stream that closed before it ended. */
+function prematureClose(): Error {
+  return Object.assign(new Error('Premature close'), { code: 'ERR_STREAM_PREMATURE_CLOSE' });
+}
+
+/**
+ * Pipes `body` to `res` as pipeline does, with two `close` listeners on `res` where pipeline adds seven.
+ * A client gone first destroys `body`, a failed or cut `body` destroys `res`, and either end is logged once.
+ */
+function streamToClient(request: FastifyRequest, res: ServerResponse, body: Readable): void {
+  let failed = false;
+  let finished = false;
+  const fail = (error: Error): void => {
+    if (failed) return;
+    failed = true;
+    request.log.warn({ error: serializeError(error) }, 'legacy response stream ended early');
+    body.destroy();
+    res.destroy(error);
+  };
+  body.on('error', fail);
+  body.once('close', () => {
+    if (!body.readableEnded) fail(prematureClose());
+  });
+  res.on('error', fail);
+  // 'finish', not writableFinished, which stays false while the socket still holds the last bytes.
+  res.once('finish', () => {
+    finished = true;
+  });
+  res.once('close', () => {
+    if (!finished) fail(prematureClose());
+  });
+  // Either side may have closed while beforeSend ran, before these listeners existed.
+  if (body.destroyed) fail(body.errored ?? prematureClose());
+  else if (res.destroyed) fail(prematureClose());
+  else body.pipe(res);
+}
+
 /**
  * Writes legacy's status, the reply's headers and `body` to the client as they are.
  * Bypasses Fastify's send, whose onSend hooks add gateway headers and whose Buffer path adds a content type and length.
@@ -153,9 +190,7 @@ function sendAsLegacy(request: FastifyRequest, reply: FastifyReply, body: Readab
     reply.raw.end(body);
     return;
   }
-  pipeline(body, reply.raw, (error) => {
-    if (error) request.log.warn({ error: serializeError(error) }, 'legacy response stream ended early');
-  });
+  streamToClient(request, reply.raw, body);
 }
 
 /** Runs a dispatcher callback; a failure is logged, never thrown, because legacy has already executed. */

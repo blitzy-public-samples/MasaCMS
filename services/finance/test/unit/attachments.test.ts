@@ -51,6 +51,7 @@ const APPLY_COLUMNS: readonly CanonicalColumn[] = [...financeAttachmentMapping.l
 const fixtureRecord = recordRow({ title: 'Fixture attachments' });
 const v1Record = recordRow({ title: 'v1 attachments' });
 const migratedRecord = recordRow({ title: 'Migrated attachments' });
+const typedRecord = recordRow({ title: 'Typed attachments' });
 
 let nowMs = TEST_CLOCK.now().getTime();
 const clock = { now: (): Date => new Date(nowMs) };
@@ -121,7 +122,7 @@ async function applyAttachment(batchId: string, legacyRow: Record<string, unknow
 beforeAll(async () => {
   t = await buildTestApp({
     clock,
-    seed: { record: [fixtureRecord, v1Record, migratedRecord], program_binding: [programBindingRow(TENANT_A.siteId)] },
+    seed: { record: [fixtureRecord, v1Record, migratedRecord, typedRecord], program_binding: [programBindingRow(TENANT_A.siteId)] },
   });
   stateDir = t.stateDir;
   const body = multipart('file', FILE_NAME, CONTENT_TYPE, BYTES);
@@ -292,6 +293,45 @@ describe('/v1 attachments and local signed URLs', () => {
     const res = await t.app.inject({ url });
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual(FORBIDDEN);
+  });
+});
+
+describe('attachment Content-Type parameters', () => {
+  const STORED_TYPE = 'text/plain; charset=utf-8';
+
+  /** The fixture download of `typedRecord`'s attachment `attachmentId`. */
+  async function fixtureDownload(attachmentId: string): Promise<Injected> {
+    return t.app.inject({ url: `${FIXTURE_PREFIX}/records/${typedRecord.record_id}/attachments/${attachmentId}`, headers: await asApprover() });
+  }
+
+  /** The download of `typedRecord`'s attachment `attachmentId` through its /v1 signed URL. */
+  async function signedDownload(attachmentId: string): Promise<Injected> {
+    const res = await t.app.inject({
+      url: `/v1/finance/records/${typedRecord.record_id}/attachments/${attachmentId}/download-url`,
+      headers: await asApprover(),
+    });
+    expect(res.statusCode).toBe(200);
+    return t.app.inject({ url: res.json<{ data: { url: string } }>().data.url });
+  }
+
+  // finance.cfc stores fileUpload's contentType/contentSubType, which keeps the part's parameters, lower-cased.
+  it.each([
+    ['fixture', 'text/plain; charset=utf-8', `${FIXTURE_PREFIX}/records/${typedRecord.record_id}/attachments`, fixtureDownload],
+    ['/v1', 'Text/Plain; Charset=UTF-8', `/v1/finance/records/${typedRecord.record_id}/attachments`, signedDownload],
+  ])('stores a %s upload sent as %s with its parameters and downloads it under that content type', async (_route, sent, url, download) => {
+    const body = multipart('file', 'notes.txt', sent, CSV_BYTES);
+    const res = await t.app.inject({ method: 'POST', url, headers: { ...(await asPreparer()), ...body.headers }, payload: body.payload });
+    expect(res.statusCode).toBe(200);
+    const { attachment_id: attachmentId, content_type: contentType } = res.json<{ data: FixtureAttachment }>().data;
+    expect(contentType).toBe(STORED_TYPE);
+    expect(storedAttachment(attachmentId)?.content_type).toBe(STORED_TYPE);
+    const key = attachmentObjectKey(TENANT_A.tenantId, attachmentId, 'notes.txt');
+    expect((await t.storage.head(ATTACHMENT_BUCKET, key))?.contentType).toBe(STORED_TYPE);
+
+    const file = await download(attachmentId);
+    expect(file.statusCode).toBe(200);
+    expect(file.headers['content-type']).toBe(STORED_TYPE);
+    expect(file.rawPayload.equals(CSV_BYTES)).toBe(true);
   });
 });
 

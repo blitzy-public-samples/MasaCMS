@@ -2,6 +2,8 @@
 import { validate as validateUuid } from 'uuid';
 import { PUBSUB_INVOKER_ROLE } from '../auth/index.js';
 import type { Logger } from '../logging/index.js';
+// The event-scope module rather than the service-kit barrel, so events never loads the Fastify factory.
+import { recordEventScope } from '../service-kit/event-scope.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from '../service-kit/index.js';
 import { isTenantId, type TenantDb } from '../tenancy/index.js';
 import { consumeEnvelope, type ConsumerDefinition } from './consumer.js';
@@ -308,10 +310,14 @@ export function registerPushSubscription<P>(app: FastifyInstance, opts: PushSubs
     }
     const classified = classify(push, expectation);
     if ('rejection' in classified) {
+      // A rejected envelope's tenant may be missing or invalid, so only its eventId is bound.
+      const { eventId } = classified.rejection;
+      if (eventId !== undefined) recordEventScope(request, { eventId });
       await deadLetter(push, classified.rejection, logger);
       return reply.code(204).send();
     }
     const { envelope } = classified;
+    recordEventScope(request, { eventId: envelope.eventId, tenantId: envelope.tenantId });
     try {
       await consumeEnvelope(db, consumer, envelope, {
         subscription,

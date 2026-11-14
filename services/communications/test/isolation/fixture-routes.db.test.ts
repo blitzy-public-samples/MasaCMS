@@ -40,7 +40,7 @@ interface Call {
   headers?: Record<string, string>;
 }
 
-// pgAvailable rejects when PG_HOST is unset; that case skips the suite instead.
+// An unset PG_HOST skips the suite without probing the server.
 const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 const title = available
   ? 'communications fixture routes over PostgreSQL'

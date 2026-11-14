@@ -20,6 +20,7 @@ import {
 import type { TenantDb } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
+  TENANT_B,
   TENANT_UMBRELLA,
   assertResponseMatchesOpenApi,
   createCapturingPublisher,
@@ -37,7 +38,7 @@ import { normaliseParams } from '../../src/domain/person.js';
 import type { RosterDeps } from '../../src/domain/roster-protocol.js';
 import { createPeopleEvents } from '../../src/events/publish.js';
 import { peoplePayloadValidators } from '../../src/events/topics.js';
-import type { AccountView, IdentityClient, LegacyErrors } from '../../src/legacy/identity-client.js';
+import type { AccountPrepareRequest, AccountView, IdentityClient, LegacyErrors } from '../../src/legacy/identity-client.js';
 import { createPeopleRepository, type PeopleRepository } from '../../src/repo/repository.js';
 import { EXTEND_ATTRIBUTE, EXTEND_SET, EXTEND_SUBTYPE, PEOPLE_UNITS } from '../../src/repo/tables.js';
 import { registerAdminProfileRoutes } from '../../src/routes/admin-profile.js';
@@ -64,15 +65,17 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
   let app: FastifyInstance;
   const accounts = new Map<string, AccountView>();
   const identityCalls: string[] = [];
+  const prepared: AccountPrepareRequest[] = [];
   const consumed: CsrfConsumeRequest[] = [];
   let csrfValid = true;
   let prepareErrors: LegacyErrors | undefined;
   const logger = createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } });
 
-  /** An identity double that holds `accounts`, accepts every account step and refuses membership reads, as for a non-cUsers caller. */
+  /** An identity double that holds `accounts`, accepts every account step and refuses membership reads, which a profile makes none of. */
   const identity: IdentityClient = {
     async prepare(userId, operationId, change) {
       identityCalls.push('prepare');
+      prepared.push(change);
       if (prepareErrors !== undefined) return { ok: false, errors: prepareErrors };
       return { ok: true, operationId, userId, kind: change.kind, state: 'prepared' };
     },
@@ -98,7 +101,7 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
     usernameCandidates: () => Promise.reject(new Error('unexpected usernameCandidates')),
     lookupMemberships: () => Promise.reject(new Error('identity lists memberships only to cUsers callers')),
     userMemberships: () => Promise.reject(new Error('identity lists memberships only to cUsers callers')),
-    membershipGroupIds: () => Promise.reject(new Error('identity lists memberships only to cUsers callers')),
+    membershipGroupIds: () => Promise.reject(new Error('unexpected membershipGroupIds')),
     siteGroups: () => Promise.reject(new Error('unexpected siteGroups')),
     userGroups: () => Promise.reject(new Error('unexpected userGroups')),
     loginBlock: () => Promise.reject(new Error('unexpected loginBlock')),
@@ -155,6 +158,7 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
 
   beforeEach(() => {
     identityCalls.length = 0;
+    prepared.length = 0;
     consumed.length = 0;
     csrfValid = true;
     prepareErrors = undefined;
@@ -182,10 +186,10 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
     return { userId, addressId, account };
   }
 
-  /** The user token of `userId` on tenant-a's admin, with the gateway's invocation credential. */
-  async function headersFor(userId: string, roles: string[] = [Roles.systemUser]): Promise<Record<string, string>> {
+  /** The user token of `userId` on `site`'s admin, S2 when `roles` hold `s2`, with the gateway's invocation credential. */
+  async function headersFor(userId: string, roles: string[] = [Roles.systemUser], site: string = TENANT_A.siteId): Promise<Record<string, string>> {
     const [user, gateway] = await Promise.all([
-      mintUserToken({ sub: userId, sid: `SESSION-${userId}`, site: TENANT_A.siteId, roles }),
+      mintUserToken({ sub: userId, sid: `SESSION-${userId}`, site, roles, s2: roles.includes(Roles.s2) }),
       mintServiceToken({ caller: 'gateway', audience: SERVICE }),
     ]);
     return { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${gateway}` };
@@ -216,8 +220,9 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
     const { userId, addressId } = await seedUser(fixture.siteId, isPublic);
     const res = await send('GET', '/v1/profile', await headersFor(userId, [...roles]));
     expect(res.statusCode).toBe(200);
+    expect(Object.keys(res.json().user)).not.toContain('PasswordCreated');
     expect(res.json()).toMatchObject({
-      user: { UserID: userId, Type: 2, SiteID: fixture.siteId, Fname: 'Pat', UserName: 'pat', isPublic, LastLogin: '2026-06-29T08:30:00.000', PasswordCreated: '2026-06-30T10:00:00.000' },
+      user: { UserID: userId, Type: 2, SiteID: fixture.siteId, Fname: 'Pat', UserName: 'pat', isPublic, LastLogin: '2026-06-29T08:30:00.000' },
       addresses: [{ addressID: addressId, userID: userId, city: 'Oslo', isPrimary: 1 }],
       categoryIds: [CATEGORY],
       errors: {},
@@ -247,6 +252,21 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
     expect(await storedPerson(other.userId)).toEqual(otherBefore);
   });
 
+  it("reads and saves an S2 user's own profile under a token of a site whose user pools do not hold the account", async () => {
+    const { userId } = await seedUser(TENANT_A.siteId, 0);
+    const headers = await headersFor(userId, [Roles.systemUser, Roles.s2], TENANT_B.siteId);
+
+    const read = await send('GET', `/v1/profile?siteid=${TENANT_B.siteId}`, headers);
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toMatchObject({ user: { UserID: userId, SiteID: TENANT_A.siteId, Fname: 'Pat' }, addresses: [{ city: 'Oslo' }] });
+
+    const res = await send('POST', '/v1/profile:update', { ...headers, ...FORM }, profileForm({ fname: 'Kai', lname: 'Lee', email: 'kai@example.com', jobtitle: 'Analyst' }));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ written: true, redirect: { action: 'home.redirect', params: {} }, errors: {} });
+    expect(prepared).toMatchObject([{ kind: 'update', siteId: TENANT_A.siteId, account: { isPublic: 0 }, updateGroups: false }]);
+    expect(await storedPerson(userId)).toEqual({ fname: 'Kai', jobtitle: 'Analyst' });
+  });
+
   it('re-renders the posted values with legacy\'s errors and writes nothing', async () => {
     const { userId } = await seedUser(TENANT_A.siteId, 0);
     const before = await storedPerson(userId);
@@ -255,6 +275,7 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body).toMatchObject({ written: false, userBean: { UserID: userId, Fname: 'Robin', Email: '' } });
+    expect(Object.keys(body.userBean)).not.toContain('PasswordCreated');
     expect(body.redirect).toBeUndefined();
     expect(Object.keys(body.errors).sort()).toEqual(['email', 'username']);
     expect(await storedPerson(userId)).toEqual(before);

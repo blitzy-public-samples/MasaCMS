@@ -330,36 +330,88 @@ export async function extendSetData(
   scope?: ExtendDataScope,
   config: Pick<ExtendConfig, 'saveEmptyExtendedValues'> = EXTEND_CONFIG_DEFAULTS,
 ): Promise<ExtendSetData> {
-  const siteId = scope?.siteId ?? '';
-  const stored = await repo.listExtendData(tx, [baseId]);
-  const attributeIds = [...new Set(stored.map((row) => row.attributeid))];
-  // The inner join on attributeID, with the site predicate only when the bean has a site.
-  const attributes =
-    attributeIds.length === 0 ? [] : await repo.listExtendAttributes(tx, siteId === '' ? { attributeIds } : { attributeIds, siteId });
-  const byId = new Map(attributes.map((attribute) => [attribute.attributeid, attribute]));
-  const rows: { name: string; extendSetId: string; value: ExtendValue }[] = [];
-  const storedIds = new Set<number>();
-  for (const row of stored) {
-    const attribute = byId.get(row.attributeid);
-    if (attribute === undefined) continue;
-    if (!config.saveEmptyExtendedValues && row.attributevalue === null) continue;
-    storedIds.add(row.attributeid);
-    rows.push({ name: attribute.name ?? '', extendSetId: attribute.extendsetid ?? '', value: storedValue(row, attribute) });
+  const [data] = await assembleExtendSetData(repo, tx, [{ baseId, scope }], [await repo.listExtendData(tx, [baseId])], config);
+  return data as ExtendSetData;
+}
+
+/** One base of `extendSetsData`: its id and the scope `extendSetData` takes for it. */
+export interface ExtendDataBase {
+  baseId: string;
+  scope?: ExtendDataScope;
+}
+
+/** `extendSetData` of each of `bases`, in their order: one stored-value read, attributes once per bean site and definition defaults once per site, type and subtype. */
+export async function extendSetsData(
+  repo: PeopleRepository,
+  tx: TenantTx,
+  bases: readonly ExtendDataBase[],
+  config: Pick<ExtendConfig, 'saveEmptyExtendedValues'> = EXTEND_CONFIG_DEFAULTS,
+): Promise<ExtendSetData[]> {
+  if (bases.length === 0) return [];
+  const stored = await repo.listExtendDataOf(tx, bases.map((base) => base.baseId));
+  return assembleExtendSetData(repo, tx, bases, bases.map((base) => stored.get(base.baseId) ?? []), config);
+}
+
+/** getAllExtendSetData of each base from its `stored` rows, in base order. */
+async function assembleExtendSetData(
+  repo: PeopleRepository,
+  tx: TenantTx,
+  bases: readonly ExtendDataBase[],
+  stored: readonly (readonly ExtendDataRow[])[],
+  config: Pick<ExtendConfig, 'saveEmptyExtendedValues'>,
+): Promise<ExtendSetData[]> {
+  const siteOf = (base: ExtendDataBase): string => base.scope?.siteId ?? '';
+  const attributeIdsBySite = new Map<string, Set<number>>();
+  for (const [index, base] of bases.entries()) {
+    const ids = attributeIdsBySite.get(siteOf(base)) ?? new Set<number>();
+    for (const row of stored[index] ?? []) ids.add(row.attributeid);
+    attributeIdsBySite.set(siteOf(base), ids);
   }
-  if (scope !== undefined && siteId !== '' && scope.type !== '' && scope.subtype !== '') {
-    for (const { set, attribute } of await definitionRows(repo, tx, scope)) {
-      if (storedIds.has(attribute.attributeid)) continue;
-      rows.push({ name: attribute.name ?? '', extendSetId: set.extendsetid, value: dynamicDefault(attribute.defaultvalue) });
+  const attributesBySite = new Map<string, Map<number, ExtendAttributeRow>>();
+  for (const [siteId, ids] of attributeIdsBySite) {
+    const attributeIds = [...ids];
+    // The inner join on attributeID, with the site predicate only when the bean has a site.
+    const attributes =
+      attributeIds.length === 0 ? [] : await repo.listExtendAttributes(tx, siteId === '' ? { attributeIds } : { attributeIds, siteId });
+    attributesBySite.set(siteId, new Map(attributes.map((attribute) => [attribute.attributeid, attribute])));
+  }
+  const definitions = new Map<string, Awaited<ReturnType<typeof definitionRows>>>();
+  const results: ExtendSetData[] = [];
+  for (const [index, base] of bases.entries()) {
+    const { scope } = base;
+    const siteId = siteOf(base);
+    const byId = attributesBySite.get(siteId) ?? new Map<number, ExtendAttributeRow>();
+    const rows: { name: string; extendSetId: string; value: ExtendValue }[] = [];
+    const storedIds = new Set<number>();
+    for (const row of stored[index] ?? []) {
+      const attribute = byId.get(row.attributeid);
+      if (attribute === undefined) continue;
+      if (!config.saveEmptyExtendedValues && row.attributevalue === null) continue;
+      storedIds.add(row.attributeid);
+      rows.push({ name: attribute.name ?? '', extendSetId: attribute.extendsetid ?? '', value: storedValue(row, attribute) });
     }
+    if (scope !== undefined && siteId !== '' && scope.type !== '' && scope.subtype !== '') {
+      const key = JSON.stringify([scope.siteId, scope.type, scope.subtype]);
+      let defined = definitions.get(key);
+      if (defined === undefined) {
+        defined = await definitionRows(repo, tx, scope);
+        definitions.set(key, defined);
+      }
+      for (const { set, attribute } of defined) {
+        if (storedIds.has(attribute.attributeid)) continue;
+        rows.push({ name: attribute.name ?? '', extendSetId: set.extendsetid, value: dynamicDefault(attribute.defaultvalue) });
+      }
+    }
+    const data: Record<string, ExtendValue> = Object.create(null) as Record<string, ExtendValue>;
+    const spellings = new Map<string, string>();
+    const entries: Array<readonly [string, ExtendValue]> = [];
+    for (const row of rows) {
+      entries.push([row.name, row.value]);
+      setCi(data, spellings, row.name, row.value);
+    }
+    results.push({ data, entries, extendSetId: rows.map((row) => row.extendSetId).join(',') });
   }
-  const data: Record<string, ExtendValue> = Object.create(null) as Record<string, ExtendValue>;
-  const spellings = new Map<string, string>();
-  const entries: Array<readonly [string, ExtendValue]> = [];
-  for (const row of rows) {
-    entries.push([row.name, row.value]);
-    setCi(data, spellings, row.name, row.value);
-  }
-  return { data, entries, extendSetId: rows.map((row) => row.extendSetId).join(',') };
+  return results;
 }
 
 /**

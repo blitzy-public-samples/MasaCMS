@@ -8,7 +8,7 @@ import { FixtureApiError, toFixtureError } from '../../src/legacy/envelope.js';
 import type { CreateRequestInput, SignInput, SuppliedAuditEntry } from '../../src/domain/signing.js';
 import {
   FIXTURE_CHECK_ORDER,
-  fixtureDenialOverride,
+  requireFixtureLogin,
   resolveFixtureSite,
   runFixtureChecks,
   validateCreateInput,
@@ -89,8 +89,26 @@ describe('resolveFixtureSite', () => {
     await expect(resolveFixtureSite(params, c, registry())).resolves.toEqual({ siteId: expected, tenantId: c.tid });
   });
 
-  it.each([[{ siteid: 'nope' }], [{ siteid: { a: 1 } }], [{ siteid: ['tenant-a'] }]])('unknown or complex %j -> invalidParameters', async (params) => {
-    const err = await rejection(resolveFixtureSite(params, claims('tenant-a'), registry()));
+  it.each([
+    ['without a token', {}, undefined, 'default'],
+    ['without a token', { siteid: 'TENANT-B' }, undefined, 'tenant-b'],
+    ['without a token', { siteid: null }, undefined, 'default'],
+    ['for a session without a login', {}, claims('tenant-a', { sub: '' }), 'tenant-a'],
+    ['for a session without a login', { siteid: 'tenant-b' }, claims('tenant-a', { sub: '' }), 'tenant-b'],
+  ])('%s, %j resolves %s and its tenant, leaving the refusal to requireFixtureLogin', async (_case, params, c, expected) => {
+    await expect(resolveFixtureSite(params, c, registry())).resolves.toEqual({ siteId: expected, tenantId: tenantIdForSite(expected) });
+  });
+
+  it.each([
+    [{ siteid: 'nope' }, claims('tenant-a')],
+    [{ siteid: { a: 1 } }, claims('tenant-a')],
+    [{ siteid: ['tenant-a'] }, claims('tenant-a')],
+    [{ siteid: 'nope' }, undefined],
+    [{ siteid: { a: 1 } }, undefined],
+    [{ siteid: 'nope' }, claims('tenant-a', { sub: '' })],
+    [{ siteid: ['tenant-a'] }, claims('tenant-a', { roles: [] })],
+  ])('unknown or complex %j -> invalidParameters, whoever asks', async (params, c) => {
+    const err = await rejection(resolveFixtureSite(params, c, registry()));
     expect(err).toBeInstanceOf(FixtureApiError);
     expect((err as FixtureApiError).type).toBe('invalidParameters');
     expect((err as FixtureApiError).message).toBe('Invalid parameters');
@@ -121,29 +139,25 @@ describe('resolveFixtureSite', () => {
   });
 });
 
-describe('fixtureDenialOverride', () => {
-  it('keeps non-forbidden denials and denials without claims', async () => {
-    const d = AuthDenial.unauthenticated('missing-credential');
-    expect(await fixtureDenialOverride(d, { claims: claims('tenant-a'), registry: registry() })).toBe(d);
-    const f = AuthDenial.forbidden();
-    expect(await fixtureDenialOverride(f, { registry: registry() })).toBe(f);
-    const m = AuthDenial.siteMismatch();
-    expect(await fixtureDenialOverride(m, { claims: claims('tenant-a'), registry: registry() })).toBe(m);
+describe('requireFixtureLogin', () => {
+  it('returns a logged-in user\'s claims, whatever their roles', () => {
+    const c = claims('tenant-a', { roles: [] });
+    expect(requireFixtureLogin(c)).toBe(c);
   });
-  it('unregistered token site -> invalidParameters', async () => {
-    const r = await fixtureDenialOverride(AuthDenial.forbidden(), { claims: claims('tenant-a'), registry: registry(['default']) });
-    expect(r).toBeInstanceOf(FixtureApiError);
-    expect((r as FixtureApiError).type).toBe('invalidParameters');
-  });
-  it('empty token site resolves default', async () => {
-    const f = AuthDenial.forbidden();
-    expect(await fixtureDenialOverride(f, { claims: claims(''), registry: registry() })).toBe(f);
-  });
-  it('anonymous session -> authorization; else unchanged', async () => {
-    const r = await fixtureDenialOverride(AuthDenial.forbidden(), { claims: claims('tenant-a', { sub: '' }), registry: registry() });
-    expect((r as FixtureApiError).type).toBe('authorization');
-    const f = AuthDenial.forbidden();
-    expect(await fixtureDenialOverride(f, { claims: claims('tenant-a'), registry: registry() })).toBe(f);
+
+  it.each([
+    ['no user token', undefined],
+    ['a session without a login', claims('tenant-a', { sub: '' })],
+  ])('%s -> authorization 401', (_case, c) => {
+    let err: unknown;
+    try {
+      requireFixtureLogin(c);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(FixtureApiError);
+    expect((err as FixtureApiError).type).toBe('authorization');
+    expect(toFixtureError(err, { method: 'esignature.requests', params: {} }).status).toBe(401);
   });
 });
 

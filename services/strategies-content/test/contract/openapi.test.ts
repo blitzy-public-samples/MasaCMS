@@ -56,6 +56,7 @@ const SERVED_OPERATIONS = [
   'migrationGate',
   'migrationPutObject',
   'migrationGetObject',
+  'migrationDeleteObject',
   'getFileDownloadUrl',
   'getLocalContentFile',
   'pushSiteChanged',
@@ -400,6 +401,27 @@ describe('migration objects', () => {
     expect(res.statusCode).toBe(status);
   });
 
+  it.each<[string, Json[], boolean]>([
+    ['a recorded object', [objectRow()], true],
+    ['a key no row records', [], false],
+  ])('deletes the bytes under %s, answering the contract DeletedFileObject with the position of any row deletion', async (_label, rows, deleted) => {
+    await t.storage.put(CONTENT_FILES_BUCKET, key, OBJECT_BYTES, { contentType: 'image/png' });
+    t.db.respond(/^DELETE FROM "content"\."file_object"/, rows);
+    const res = await call({ method: 'DELETE', url: `${url}?key=${encodeURIComponent(key)}`, headers: await serviceHeaders('migration') });
+    expect({ status: res.statusCode, body: res.json(), position: res.headers[WRITE_POSITION_HEADER_LC] }).toEqual({
+      status: 200,
+      body: { key, deleted },
+      position: deleted ? `${SERVICE}=${FAKE_XID}` : undefined,
+    });
+    expect(await t.storage.head(CONTENT_FILES_BUCKET, key)).toBeNull();
+    expect(publicationSteps()).toEqual(['recover', 'stage', 'lock', 'claim', 'lock', 'claim', 'settle']);
+  });
+
+  it('answers the contract 400 for a deletion key outside the contract pattern', async () => {
+    const res = await call({ method: 'DELETE', url: `${url}?key=${encodeURIComponent(`${TENANT_A.tenantId}/../${FILE_A}.png`)}`, headers: await serviceHeaders('migration') });
+    expect(res.statusCode).toBe(400);
+  });
+
   it.each<[string, () => Promise<Record<string, string>>, number]>([
     ['no credential', async () => ({}), 401],
     ['another service', () => serviceHeaders('people'), 403],
@@ -485,6 +507,7 @@ describe('migration handlers over the content mappings', () => {
 
   it('exports the content.file unit with the object manifest of content.file_object', async () => {
     const row = { object_key: `${TENANT_A.tenantId}/${FILE_A}.png`, size: '23', sha256: sha256(OBJECT_BYTES), content_type: 'image/png' };
+    for (const key of [row.object_key, `${TENANT_A.tenantId}/${FILE_A}_small.png`]) await t.storage.put(CONTENT_FILES_BUCKET, key, OBJECT_BYTES, { contentType: 'image/png' });
     t.db.respond(/^SELECT "object_key", .* FROM "content"\."file_object" ORDER BY/, [row, { ...row, object_key: `${TENANT_A.tenantId}/${FILE_A}_small.png`, content_type: null }]);
     const res = await call({ method: 'GET', url: `/internal/v1/migration/export?unit=content.file&tenantId=${TENANT_A.tenantId}`, headers: await migration() });
     const body = res.json() as Json;

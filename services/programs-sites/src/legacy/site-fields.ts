@@ -1,4 +1,4 @@
-/** Port of Masa's site settings bean, its DAO read and update rules and the site list order (core/mura/settings). */
+/** Port of Masa's site settings bean, its DAO read and the site list order (core/mura/settings). */
 import {
   cfEq,
   cfIsBoolean,
@@ -49,11 +49,6 @@ export function targetNameFor(legacyName: string): string | undefined {
   return COLUMN_BY_LOWER_NAME.get(legacyName.toLowerCase())?.targetName;
 }
 
-/** Legacy catalog name of a `programs_sites.site` column, case-insensitively; undefined for any other name. */
-export function legacyNameFor(targetName: string): string | undefined {
-  return COLUMN_BY_LOWER_NAME.get(targetName.toLowerCase())?.legacyName;
-}
-
 /** Columns `settingsDAO.read` selects into the bean, in select order (settingsDAO.cfc:78-87,108). */
 export const READ_FIELDS: readonly string[] = Object.freeze([
   'siteid', 'pagelimit', 'domain', 'domainAlias', 'enforcePrimaryDomain', 'contact', 'locking', 'site', 'mailserverip',
@@ -73,119 +68,6 @@ export const READ_FIELDS: readonly string[] = Object.freeze([
   'resourceSSL', 'resourceDomain', 'showDashboard', 'placeholderImgID', 'placeholderImgExt', 'scaffolding',
   'lastdeployment',
 ]);
-
-/**
- * How `settingsDAO.update` binds a column: `raw` writes the value as is (unquoted, quoted or a non-null param);
- * `trimNull` is `<cfif v neq ''>trim(v)<cfelse>null`; `blankNull` is `<cfif len(trim(v))>trim(v)<cfelse>null`;
- * `emptyNull` is `null="#v eq ''#"` with the untrimmed value; the rest are the bean's effective getters.
- */
-type UpdateRule =
-  | 'raw'
-  | 'trimNull'
-  | 'blankNull'
-  | 'emptyNull'
-  | 'emailBroadcaster'
-  | 'dataCollection'
-  | 'useSSL'
-  | 'loginURL'
-  | 'editProfileURL';
-
-// legacy: core/mura/settings/settingsDAO.cfc:321-416, in SET order.
-const UPDATE_RULES: readonly (readonly [string, UpdateRule])[] = [
-  ['site', 'raw'],
-  ['pagelimit', 'raw'],
-  ['domain', 'trimNull'],
-  ['domainalias', 'trimNull'],
-  ['enforceprimarydomain', 'raw'],
-  ['contact', 'trimNull'],
-  ['locking', 'raw'],
-  ['mailserverip', 'trimNull'],
-  ['mailserverusername', 'trimNull'],
-  ['mailserverpassword', 'trimNull'],
-  ['emailbroadcaster', 'emailBroadcaster'],
-  ['emailbroadcasterlimit', 'raw'],
-  ['extranet', 'raw'],
-  ['extranetpublicreg', 'raw'],
-  ['extranetssl', 'raw'],
-  ['cache', 'raw'],
-  ['cachecapacity', 'raw'],
-  ['cachefreememorythreshold', 'raw'],
-  ['viewdepth', 'raw'],
-  ['nextn', 'raw'],
-  ['datacollection', 'dataCollection'],
-  ['exportlocation', 'trimNull'],
-  ['columncount', 'raw'],
-  ['primarycolumn', 'raw'],
-  ['publicsubmission', 'raw'],
-  ['columnnames', 'trimNull'],
-  ['contactname', 'trimNull'],
-  ['contactaddress', 'trimNull'],
-  ['contactcity', 'trimNull'],
-  ['contactstate', 'trimNull'],
-  ['contactzip', 'trimNull'],
-  ['contactemail', 'trimNull'],
-  ['contactphone', 'trimNull'],
-  ['publicuserpoolid', 'raw'],
-  ['privateuserpoolid', 'raw'],
-  ['displaypoolid', 'raw'],
-  ['filepoolid', 'raw'],
-  ['categorypoolid', 'raw'],
-  ['contentpoolid', 'raw'],
-  ['feedmanager', 'raw'],
-  ['largeimageheight', 'raw'],
-  ['largeimagewidth', 'raw'],
-  ['smallimageheight', 'raw'],
-  ['smallimagewidth', 'raw'],
-  ['mediumimageheight', 'raw'],
-  ['mediumimagewidth', 'raw'],
-  ['sendloginscript', 'emptyNull'],
-  ['sendauthcodescript', 'emptyNull'],
-  ['mailinglistconfirmscript', 'emptyNull'],
-  ['publicsubmissionapprovalscript', 'emptyNull'],
-  ['reminderscript', 'emptyNull'],
-  ['extranetpublicregnotify', 'emptyNull'],
-  ['loginurl', 'loginURL'],
-  ['editprofileurl', 'editProfileURL'],
-  ['commentapprovaldefault', 'raw'],
-  ['accountactivationscript', 'emptyNull'],
-  ['googleapikey', 'emptyNull'],
-  ['usedefaultsmtpserver', 'raw'],
-  ['sitelocale', 'emptyNull'],
-  ['mailserversmtpport', 'emptyNull'],
-  ['mailserverpopport', 'emptyNull'],
-  ['mailservertls', 'emptyNull'],
-  ['mailserverssl', 'emptyNull'],
-  ['theme', 'trimNull'],
-  ['tagline', 'raw'],
-  ['haschangesets', 'raw'],
-  ['baseid', 'raw'],
-  ['enforcechangesets', 'raw'],
-  ['contentpendingscript', 'emptyNull'],
-  ['contentapprovalscript', 'emptyNull'],
-  ['contentrejectionscript', 'emptyNull'],
-  ['contentcanceledscript', 'emptyNull'],
-  ['enablelockdown', 'raw'],
-  ['customtaggroups', 'trimNull'],
-  ['hascomments', 'raw'],
-  ['haslockablenodes', 'raw'],
-  ['recaptchasitekey', 'blankNull'],
-  ['recaptchasecret', 'blankNull'],
-  ['recaptchalanguage', 'blankNull'],
-  ['jsonapi', 'raw'],
-  ['usessl', 'useSSL'],
-  ['isremote', 'raw'],
-  ['resourcessl', 'raw'],
-  ['resourcedomain', 'blankNull'],
-  ['remotecontext', 'blankNull'],
-  ['remoteport', 'raw'],
-  ['showdashboard', 'raw'],
-  ['placeholderimgid', 'blankNull'],
-  ['placeholderimgext', 'blankNull'],
-  ['scaffolding', 'raw'],
-];
-
-/** Target columns `settingsDAO.update` sets, in SET order; siteid, orderno, deploy, lastdeployment, type are not. */
-export const UPDATE_COLUMNS: readonly string[] = Object.freeze(UPDATE_RULES.map(([column]) => column));
 
 /** CF simple value as the bean holds it; numbers and booleans are held in CF string form, e.g. "1", "600". */
 export type SiteValue = string | Date;
@@ -211,15 +93,11 @@ export type SiteData = Record<string, unknown>;
 /** Global settings the site bean's effective getters consult (configBean). */
 export interface LegacyGlobalConfig {
   readonly emailBroadcaster: boolean;
-  readonly dataCollection: boolean;
-  readonly indexFile: string;
 }
 
-/** configBean defaults: broadcaster off, data collection on, empty indexFile (configBean.cfc:93,209-210,1623-1629). */
+/** configBean defaults: broadcaster off (configBean.cfc:210). */
 export const LEGACY_GLOBAL_CONFIG_DEFAULTS: LegacyGlobalConfig = Object.freeze({
   emailBroadcaster: false,
-  dataCollection: true,
-  indexFile: '',
 });
 
 /**
@@ -577,11 +455,6 @@ export function readBean(row: SiteRow, initBaseId = ''): SiteBean {
   return { values: draft, isNew: 0 };
 }
 
-/** getUseSSL (settingsBean.cfc:396-402): '1' when useSSL or the deprecated extranetSSL is true, as CF booleans. */
-export function effectiveUseSSL(bean: SiteBean): '1' | '0' {
-  return cfToBoolean(getSiteValue(bean, 'useSSL')) || cfToBoolean(getSiteValue(bean, 'extranetSSL')) ? '1' : '0';
-}
-
 /**
  * getEmailBroadcaster (settingsBean.cfc:435-441): the stored flag is not the effective one; legacy resolves it from the
  * global config, '0' while the global broadcaster is off (the monitor's bounce step applies it in jobs.cfm).
@@ -591,108 +464,6 @@ export function effectiveEmailBroadcaster(
   config: LegacyGlobalConfig = LEGACY_GLOBAL_CONFIG_DEFAULTS,
 ): string {
   return config.emailBroadcaster ? getSiteText(bean, 'EmailBroadcaster') : '0';
-}
-
-/**
- * getDataCollection (settingsBean.cfc:427-433): the stored flag is not the effective one; legacy resolves it from the
- * global config, '0' while global data collection is off.
- */
-export function effectiveDataCollection(
-  bean: SiteBean,
-  config: LegacyGlobalConfig = LEGACY_GLOBAL_CONFIG_DEFAULTS,
-): string {
-  return config.dataCollection ? getSiteText(bean, 'dataCollection') : '0';
-}
-
-/** getLoginURL(parseMuraTag=false) (settingsBean.cfc:547-557): the stored URL, else `<indexFile>?display=login`. */
-export function effectiveLoginURL(bean: SiteBean, config: LegacyGlobalConfig = LEGACY_GLOBAL_CONFIG_DEFAULTS): string {
-  const url = getSiteText(bean, 'loginURL');
-  return url !== '' ? url : `${config.indexFile}?display=login`;
-}
-
-/**
- * getEditProfileURL(parseMuraTag=false) (settingsBean.cfc:559-569): the stored URL, else
- * `<indexFile>?display=editProfile`.
- */
-export function effectiveEditProfileURL(
-  bean: SiteBean,
-  config: LegacyGlobalConfig = LEGACY_GLOBAL_CONFIG_DEFAULTS,
-): string {
-  const url = getSiteText(bean, 'editProfileURL');
-  return url !== '' ? url : `${config.indexFile}?display=editProfile`;
-}
-
-function columnValue(bean: SiteBean, column: string, rule: UpdateRule, config: LegacyGlobalConfig): string | null {
-  switch (rule) {
-    case 'emailBroadcaster':
-      return effectiveEmailBroadcaster(bean, config);
-    case 'dataCollection':
-      return effectiveDataCollection(bean, config);
-    case 'useSSL':
-      return effectiveUseSSL(bean);
-    // The DAO's null test reads the parsed getter, which falls back to a non-empty URL, so these are never null.
-    case 'loginURL':
-      return effectiveLoginURL(bean, config);
-    case 'editProfileURL':
-      return effectiveEditProfileURL(bean, config);
-    default:
-      break;
-  }
-  const value = getSiteText(bean, column);
-  switch (rule) {
-    case 'trimNull':
-      return value === '' ? null : javaTrim(value);
-    case 'blankNull':
-      return javaTrim(value) === '' ? null : javaTrim(value);
-    case 'emptyNull':
-      return value === '' ? null : value;
-    default:
-      return value;
-  }
-}
-
-/** Values `settingsDAO.update` writes for `bean` (settingsDAO.cfc:321-416) by UPDATE_COLUMNS; null is SQL NULL. */
-export function updateColumnValues(
-  bean: SiteBean,
-  config: LegacyGlobalConfig = LEGACY_GLOBAL_CONFIG_DEFAULTS,
-): Record<string, string | null> {
-  const values: Record<string, string | null> = {};
-  for (const [column, rule] of UPDATE_RULES) values[column] = columnValue(bean, column, rule, config);
-  return values;
-}
-
-// Character lengths of the bounded text columns in the live tsettings catalog; the others are int or nvarchar(max).
-const COLUMN_LENGTHS: Readonly<Record<string, number>> = Object.freeze({
-  site: 50, locking: 50, domain: 255, exportlocation: 100, contact: 50, mailserverip: 50, mailserverusername: 255,
-  mailserverpassword: 255, extranetpublicregnotify: 255, contactname: 50, contactaddress: 50, contactcity: 50,
-  contactstate: 50, contactzip: 50, contactemail: 100, contactphone: 50, privateuserpoolid: 50, publicuserpoolid: 50,
-  displaypoolid: 50, filepoolid: 25, categorypoolid: 25, smallimageheight: 20, smallimagewidth: 20,
-  mediumimageheight: 20, mediumimagewidth: 20, largeimageheight: 20, largeimagewidth: 20, loginurl: 255,
-  editprofileurl: 255, googleapikey: 100, theme: 50, mailserversmtpport: 5, mailserverpopport: 5, mailservertls: 5,
-  mailserverssl: 5, sitelocale: 50, tagline: 255, baseid: 35, enablelockdown: 255, customtaggroups: 255,
-  recaptchasitekey: 50, recaptchasecret: 50, recaptchalanguage: 25, resourcedomain: 100, remotecontext: 100,
-  placeholderimgid: 35, placeholderimgext: 10,
-});
-
-/** Column values as SQL Server stores them in tsettings, and the legacy names of the columns it refuses. */
-export interface FittedColumnValues {
-  readonly values: Record<string, string | null>;
-  /** Legacy catalog names of the overflowing columns in `values` order; Msg 2628 names the first. */
-  readonly overflowing: readonly string[];
-}
-
-/** SQL Server's length rule over `values` in UTF-16 units: an excess of spaces alone is cut off, any other overflows. */
-export function fitColumnValues(values: Readonly<Record<string, string | null>>): FittedColumnValues {
-  const fitted: Record<string, string | null> = {};
-  const overflowing: string[] = [];
-  for (const [column, value] of Object.entries(values)) {
-    const length = Object.hasOwn(COLUMN_LENGTHS, column) ? COLUMN_LENGTHS[column] : undefined;
-    fitted[column] = value;
-    if (value === null || length === undefined || value.length <= length) continue;
-    if (/^ +$/.test(value.slice(length))) fitted[column] = value.slice(0, length);
-    else overflowing.push(legacyNameFor(column) ?? column);
-  }
-  return { values: fitted, overflowing };
 }
 
 /** Column the site list sorts by. */

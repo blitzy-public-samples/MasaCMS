@@ -12,6 +12,7 @@ import {
   defaultFetchRemote,
   doAutoImport,
   importRemoteFeed,
+  previewFeedImport,
   remoteFetchOptions,
   type FeedBean,
   type FeedData,
@@ -19,6 +20,7 @@ import {
 } from '../../src/domain/feeds.js';
 import { XmlElementUndefinedError, XmlParseError, feedItemRemoteId, parseFeedXml, rssChannelItems } from '../../src/legacy/remote-feed.js';
 import { ADMIN, END, HOME, SITE, SITE_ID, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
+import { roundTripCounter } from '../helpers/round-trips.js';
 
 const recorded = (name: string): Promise<string> => readFile(new URL(`../fixtures/legacy-feed/${name}.xml`, import.meta.url), 'utf8');
 
@@ -28,6 +30,7 @@ const ATOM = `<?xml version="1.0" encoding="utf-8"?>
 /** An RSS 2.0 body whose single item has an empty pubDate. */
 const UNDATED = `<?xml version="1.0"?><rss version="2.0"><channel><title>U</title>
 <item><title>Undated</title><link>http://undated.example/1</link><guid>undated-1</guid><pubDate></pubDate><description>d</description></item></channel></rss>`;
+const PUB_DATE = 'Tue, 10 Jun 2025 04:00:00 GMT';
 
 /** A fetch answering `body` and recording each URL it was asked for. */
 function stubFetch(body: string, status = 200): FetchRemote & { calls: string[] } {
@@ -198,6 +201,31 @@ describe.skipIf(!(await pgAvailable()))('feed import', () => {
     await expect(importRemoteFeed(fx.deps, ADMIN, SITE, args, stubFetch('', 503))).rejects.toBeInstanceOf(RemoteFeedHttpError);
     await expect(importRemoteFeed(fx.deps, ADMIN, SITE, args, stubFetch('<rss><channel>'))).rejects.toBeInstanceOf(XmlParseError);
     await expect(importRemoteFeed(fx.deps, ADMIN, SITE, args, stubFetch(await recorded('rss20-empty')))).rejects.toBeInstanceOf(XmlElementUndefinedError);
+  });
+
+  it('previews every item against one batched active-version read, matching stored ids as SQL Server = does', async () => {
+    const body = `<?xml version="1.0"?><rss version="2.0"><channel><title>B</title>${[1, 2, 3, 4]
+      .map((n) => `<item><title>Batch ${n}</title><link>http://batch.example/${n}</link><guid>batch-${n}</guid><pubDate>${PUB_DATE}</pubDate><description>b${n}</description></item>`)
+      .join('')}</channel></rss>`;
+    const ids = rssChannelItems(parseFeedXml(body)).map((item) => feedItemRemoteId(item));
+    const feed = await remoteFeed({ maxitems: 4 });
+    await importRemoteFeed(fx.deps, ADMIN, SITE, { feedId: feed.text('feedid'), remoteId: ids[1] }, stubFetch(body));
+    await fx.inTenant((tx) => tx.query(`UPDATE ${fx.handle.schema}.content SET remoteid = lower(remoteid) || '  ' WHERE remoteid = $1`, [ids[1]]));
+    const counter = roundTripCounter(fx.handle);
+    const deps = { ...fx.deps, db: counter.db };
+    const previews: Array<Array<[string, boolean]>> = [];
+    const counts = [];
+    for (const maxitems of [1, 4]) {
+      const sized = await remoteFeed({ maxitems });
+      counts.push(
+        await counter.measure(async () => {
+          const preview = await previewFeedImport(deps, ADMIN, { feedId: sized.text('feedid'), siteId: SITE_ID }, stubFetch(body));
+          previews.push(preview.items.map((item) => [item.title, item.isNew]));
+        }),
+      );
+    }
+    expect(previews).toEqual([[['Batch 1', true]], [['Batch 1', true], ['Batch 3', true], ['Batch 4', true]]]);
+    expect(counts[1]).toEqual(counts[0]);
   });
 
   describe('doAutoImport', () => {

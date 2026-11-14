@@ -35,8 +35,23 @@ export const SERVICE_NAME = 'people';
 /** Equals `info.version` of `contracts/openapi.yaml`. */
 export const SERVICE_VERSION = '1.0.0';
 
-/** People reads only the base variables; `OPT2_FAULT` is read by `./domain/faults.ts` alone. */
-export const peopleEnvSchema = baseEnvSchema;
+/** Services people calls through `OPT2_SERVICE_URLS`: itself (its outbox sweep's task target), identity and strategies-content. */
+const REQUIRED_SERVICES: readonly string[] = [SERVICE_NAME, 'identity', 'strategies-content'];
+
+/** Base variables with every callee's URL required; `OPT2_FAULT` is read by `./domain/faults.ts` alone. */
+export const peopleEnvSchema = baseEnvSchema.superRefine(
+  (env, ctx) => {
+    // Failed fields keep their raw values here; a map that failed as a whole carries its own issue.
+    const urls: unknown = env.OPT2_SERVICE_URLS;
+    const mapFailed = ctx.issues.some((issue) => issue.path?.length === 1 && issue.path[0] === 'OPT2_SERVICE_URLS');
+    if (mapFailed || typeof urls !== 'object' || urls === null) return;
+    for (const name of REQUIRED_SERVICES.filter((service) => !Object.hasOwn(urls, service))) {
+      ctx.addIssue({ code: 'custom', path: ['OPT2_SERVICE_URLS', name], message: 'is required' });
+    }
+  },
+  // Runs even when other variables failed, so loadEnv lists every missing callee at once.
+  { when: () => true },
+);
 
 /** Parsed environment of the people process, which `peopleEnvSchema` leaves the base environment. */
 export type PeopleEnv = BaseEnv;

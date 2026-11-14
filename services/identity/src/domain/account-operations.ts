@@ -107,13 +107,15 @@ export interface AccountChange {
   switchToPrivate?: boolean;
 }
 
-/** A roster create or update of the account part; `requestSiteId` and `actorIsSuperUser` come from the verified user token. */
+/** A roster create or update of the account part; `requestSiteId`, `actorUserId` and `actorIsSuperUser` come from the verified user token. */
 export interface PrepareInput {
   operationId: string;
   kind: AccountOperationKind;
   userId: string;
-  /** Legacy site id of the request, whose user pools the account must belong to. */
+  /** Legacy site id of the request, whose user pools the account must belong to unless it is the token user's own update. */
   requestSiteId: string;
+  /** The token's `sub`. */
+  actorUserId: string;
   /** The user pool site the caller derived for the account. */
   siteId: string;
   change: AccountChange;
@@ -465,6 +467,17 @@ async function userPoolSite(db: TenantDb, requestSiteId: string, isPublic: numbe
   return isPublic === 0 ? entry.privateUserPoolId : entry.publicUserPoolId;
 }
 
+/**
+ * `input.siteId` as the registry spells it when it is the token site's pool or, for the token user's own update, its own site's pool,
+ * over which the profile save pools [legacy: admin/core/controllers/ceditprofile.cfc:127-129, core/mura/user/userBean.cfc:227-238]; null otherwise.
+ */
+async function acceptedPoolSite(db: TenantDb, input: PrepareInput, isPublic: number): Promise<string | null> {
+  const named = (siteId: string | null): string | null => (siteId !== null && siteId.toLowerCase() === input.siteId.toLowerCase() ? siteId : null);
+  const tokenPool = named(await userPoolSite(db, input.requestSiteId, isPublic));
+  if (tokenPool !== null || input.kind !== 'update' || charKey(input.userId) !== charKey(input.actorUserId)) return tokenPool;
+  return named(await userPoolSite(db, input.siteId, isPublic));
+}
+
 /** Whether another Type=2 account of any tenant, or another user's open operation, holds `username` [legacy: core/mura/user/userBean.cfc:411-424]. */
 async function usernameHeld(deps: AccountOperationDeps, username: string, userId: string): Promise<boolean> {
   const { db, repo } = deps;
@@ -741,10 +754,8 @@ export async function prepareAccountOperation(deps: AccountOperationDeps, input:
   // userBean.set picks the pool before userManager forces S2 users private, so an S2 save keeps the pool its posted visibility chose.
   const poolIsPublic = change.switchToPublic === true ? 1 : change.switchToPrivate === true ? 0 : change.isPublic;
   const s2 = input.actorIsSuperUser ? change.s2 : 0;
-  const siteId = await userPoolSite(db, input.requestSiteId, poolIsPublic);
-  if (siteId === null || siteId.toLowerCase() !== input.siteId.toLowerCase()) {
-    throw new LegacyApiError('badRequest');
-  }
+  const siteId = await acceptedPoolSite(db, input, poolIsPublic);
+  if (siteId === null) throw new LegacyApiError('badRequest');
 
   const waited = await awaitAccountOpen(db, tenantId, userId, { sleep: deps.sleep });
   // bean.setValue trims every posted simple value.

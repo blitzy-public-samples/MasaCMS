@@ -41,6 +41,13 @@ export {
   setPushConfig,
   peekBacklog,
   peekDeadLetterEventIds,
+  openMessageLease,
+  witnessPrefix,
+  witnessName,
+  listTopicIds,
+  listSubscriptionIds,
+  createWitnessSubscription,
+  removeSubscription,
   redactEndpoint,
 } from './subscriptions.js';
-export type { SavedPushConfig, SubscriptionLike, PubSubLike, Opt2Subscription } from './subscriptions.js';
+export type { SavedPushConfig, SubscriptionLike, PubSubLike, Opt2Subscription, LeasedMessage, MessageLease } from './subscriptions.js';

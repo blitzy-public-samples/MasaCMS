@@ -1,9 +1,8 @@
-/** Programs-sites repository helpers against a throwaway `programs_sites` schema: column-scoped site writes, row versions, gates, image sizes, site extend data and tenant isolation. */
+/** Programs-sites repository helpers against a throwaway `programs_sites` schema: site order and deploy writes, row versions, gates, image sizes, site extend data and tenant isolation. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   GateClosedError,
-  RepositoryError,
   UnitNotAuthoritativeError,
   UnitReadBlockedError,
   ensureUnitGates,
@@ -13,15 +12,8 @@ import {
 } from '@opt2/platform/migration-kit';
 import { tenantIdForSite, withMetadata, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
-import {
-  OWNER,
-  SCHEMA,
-  SITE_UPDATE_COLUMNS,
-  createProgramsSitesRepository,
-  type ExtendDataValues,
-  type ProgramsSitesRepository,
-} from '../../src/repo/repository.js';
-import { SITE, UNITS, type ExtendDataRow, type SiteRow } from '../../src/repo/tables.js';
+import { OWNER, SCHEMA, createProgramsSitesRepository, type ProgramsSitesRepository } from '../../src/repo/repository.js';
+import { SITE, UNITS, type SiteRow } from '../../src/repo/tables.js';
 
 const CLOCK = fixedClock(new Date(2026, 5, 30, 12, 0, 0));
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
@@ -31,8 +23,6 @@ const SUBTYPE = 'S0000000-0000-0000-0000000000000001';
 const OTHER_SUBTYPE = 'S0000000-0000-0000-0000000000000002';
 const BASE_ID = 'B0000000-0000-0000-0000000000000001';
 const SIZE_ID = 'ABCDEF00-AAAA-AAAA-AAAAAAAAAAAAAAAA';
-const VALUES: ExtendDataValues = { attributevalue: '5', stringvalue: '5', datetimevalue: null, numericvalue: 5, remoteid: '' };
-const IMPORTED_DATA_ID = 2147483000;
 
 function siteRow(siteid: string, orderno: number | null): Record<string, unknown> {
   return { siteid, site: `Site ${siteid}`, emailbroadcasterlimit: 0, orderno, deploy: 0, lastdeployment: LAST_DEPLOYMENT };
@@ -46,16 +36,6 @@ describe('programs-sites repository identity', () => {
     expect(Object.isFrozen(repository)).toBe(true);
     expect(repository).toMatchObject({ owner: OWNER, schema: SCHEMA });
     expect(repository.units()).toEqual([...UNITS]);
-  });
-
-  it('lists exactly the settingsDAO.update SET columns, all declared on programs_sites.site', () => {
-    const declared = new Set(SITE.columns.map((column) => column.name));
-
-    expect(SITE_UPDATE_COLUMNS).toHaveLength(90);
-    expect(SITE_UPDATE_COLUMNS.filter((column) => !declared.has(column))).toEqual([]);
-    for (const column of ['siteid', 'orderno', 'deploy', 'lastdeployment', 'row_version', 'tenant_id']) {
-      expect(SITE_UPDATE_COLUMNS).not.toContain(column);
-    }
   });
 });
 
@@ -121,48 +101,30 @@ describe.skipIf(!available)('programs-sites repository against PostgreSQL', () =
     expect(await inTenant((tx) => repository.readSite(tx, 'ALPHA'))).toBeNull();
   });
 
-  it('updates only the SET columns, adds 1 to row_version and writes one changelog row', async () => {
-    const logged = (await changelog()).length;
-    const stored = await gated(async (tx) => {
-      const before = (await repository.readSite(tx, 'zeta')) as SiteRow;
-      const after = { ...before, site: 'Renamed', domain: 'zeta.example', siteid: 'other', orderno: 99, deploy: 1, lastdeployment: null, filedir: 'x', row_version: '77' };
-      return repository.updateSiteRow(tx, before, after);
-    });
-
-    expect(stored).toMatchObject({ siteid: 'zeta', site: 'Renamed', domain: 'zeta.example', orderno: 2, deploy: 0, filedir: null, row_version: '1' });
-    expect(stored?.lastdeployment).toEqual(LAST_DEPLOYMENT);
-    expect((await changelog()).slice(logged)).toEqual([{ table: 'site', op: 'update' }]);
-  });
-
   it('rolls the site write and its changelog row back together', async () => {
     const logged = (await changelog()).length;
     const failed = gated(async (tx) => {
-      const before = (await repository.readSite(tx, 'zeta')) as SiteRow;
-      await repository.updateSiteRow(tx, before, { site: 'Lost' });
+      await repository.updateOrderNo(tx, 'zeta', 7);
       throw new Error('abort');
     });
 
     await expect(failed).rejects.toThrow('abort');
     expect(await changelog()).toHaveLength(logged);
-    expect(await inTenant((tx) => repository.readSite(tx, 'zeta'))).toMatchObject({ site: 'Site zeta', row_version: '0' });
+    expect(await inTenant((tx) => repository.readSite(tx, 'zeta'))).toMatchObject({ orderno: 2, row_version: '0' });
   });
 
   it.each([
     ['updateOrderNo', 'orderno', 7, (tx: TenantTx, siteId: string) => repository.updateOrderNo(tx, siteId, 7)],
     ['updateDeploy', 'deploy', 1, (tx: TenantTx, siteId: string) => repository.updateDeploy(tx, siteId, 1)],
-  ] as const)('%s sets only %s and adds 1 to row_version; null for an absent site', async (_name, column, value, write) => {
+  ] as const)('%s sets only %s, adds 1 to row_version and writes one changelog row; null for an absent site', async (_name, column, value, write) => {
     const before = (await inTenant((tx) => repository.readSite(tx, 'zeta'))) as SiteRow;
+    const logged = (await changelog()).length;
     const stored = await gated((tx) => write(tx, 'zeta'));
 
     expect(stored).toEqual({ ...before, [column]: value, row_version: '1' });
+    expect((await changelog()).slice(logged)).toEqual([{ table: 'site', op: 'update' }]);
     expect(await gated((tx) => write(tx, 'missing'))).toBeNull();
     expect(await gated((tx) => write(tx, 'zeta'), otherTenantId)).toBeNull();
-  });
-
-  it('returns null from updateSiteRow when the site is absent', async () => {
-    const before = { ...siteRow('missing', 1), tenant_id: tenantId, row_version: '0' } as unknown as SiteRow;
-
-    expect(await gated((tx) => repository.updateSiteRow(tx, before, { site: 'x' }))).toBeNull();
   });
 
   it('gives concurrent writers of one site distinct row versions', async () => {
@@ -274,54 +236,13 @@ describe.skipIf(!available)('programs-sites repository against PostgreSQL', () =
       });
     });
 
-    it('replaces every row of one base and attribute under fresh ascending negative ids, one changelog row per write, and leaves other rows', async () => {
-      await gated((tx) => repository.insert(tx, 'extend_data', { dataid: IMPORTED_DATA_ID, baseid: BASE_ID, attributeid: 12, siteid: 'alpha', attributevalue: 'imported' }));
-      const logged = (await changelog()).length;
-      const replace = (): Promise<ExtendDataRow | null> =>
-        gated((tx) => repository.replaceSiteExtendData(tx, { baseId: BASE_ID, siteId: 'alpha', attributeId: 10, values: VALUES }));
-
-      const first = await replace();
-      const second = await replace();
-
-      expect(first).toMatchObject({ dataid: -2147483648, baseid: BASE_ID, attributeid: 10, siteid: 'alpha', ...VALUES });
-      expect(second).toMatchObject({ dataid: -2147483647 });
-      expect(second?.dataid).toBeGreaterThan(first?.dataid ?? 0);
-      expect((await changelog()).slice(logged).map((row) => row.op)).toEqual(['delete', 'delete', 'insert', 'delete', 'insert']);
-      expect((await inTenant((tx) => repository.readSiteExtendData(tx, BASE_ID))).map((row) => [row.attributeid, row.dataid])).toEqual([
-        [10, -2147483647],
-        [11, 3],
-        [12, IMPORTED_DATA_ID],
+    it("reads one base's stored values by attribute and dataid, confined to the transaction tenant", async () => {
+      expect((await inTenant((tx) => repository.readSiteExtendData(tx, BASE_ID))).map((row) => [row.attributeid, row.dataid, row.attributevalue])).toEqual([
+        [10, 1, 'old1'],
+        [10, 2, 'old2'],
+        [11, 3, 'keep'],
       ]);
-    });
-
-    it('fails with a RepositoryError and writes nothing when dataid has no sequence', async () => {
-      const owned = async (target: string): Promise<void> => {
-        const client = await handle.migratorPool.connect();
-        try {
-          await client.query(`SET ROLE ${handle.roles.owner}`);
-          await client.query(`ALTER SEQUENCE ${handle.schema}.extend_data_dataid_seq OWNED BY ${target}`);
-        } finally {
-          await client.query('RESET ROLE');
-          client.release();
-        }
-      };
-      await owned('NONE');
-      try {
-        const failure = await gated((tx) =>
-          repository.replaceSiteExtendData(tx, { baseId: BASE_ID, siteId: 'alpha', attributeId: 10, values: VALUES }),
-        ).catch((err: unknown) => err);
-
-        expect(failure).toBeInstanceOf(RepositoryError);
-        expect(failure).toMatchObject({ message: 'extend_data: column dataid has no id sequence' });
-        expect((await inTenant((tx) => repository.readSiteExtendData(tx, BASE_ID))).map((row) => row.dataid)).toEqual([1, 2, 3]);
-      } finally {
-        await owned(`${handle.schema}.extend_data.dataid`);
-      }
-    });
-
-    it('only deletes when the values are null', async () => {
-      expect(await gated((tx) => repository.replaceSiteExtendData(tx, { baseId: BASE_ID, siteId: 'alpha', attributeId: 11, values: null }))).toBeNull();
-      expect((await inTenant((tx) => repository.readSiteExtendData(tx, BASE_ID))).map((row) => row.dataid)).toEqual([1, 2]);
+      expect(await inTenant((tx) => repository.readSiteExtendData(tx, 'B0000000-0000-0000-0000000000000009'))).toEqual([]);
       expect(await inTenant((tx) => repository.readSiteExtendData(tx, BASE_ID), otherTenantId)).toEqual([]);
     });
   });

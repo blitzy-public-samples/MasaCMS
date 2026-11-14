@@ -30,7 +30,7 @@ import {
   type UploadedFile,
 } from '../../src/domain/files.js';
 import { UnregisteredTenantError } from '../../src/domain/pools.js';
-import { CONTENT_FILES_BUCKET, exportObjects } from '../../src/migration/objects.js';
+import { CONTENT_FILES_BUCKET, createExportObjects } from '../../src/migration/objects.js';
 import { StagedObjectsPendingError, recoverStagedObjects } from '../../src/migration/staged-objects.js';
 import { createContentRepository, type ContentRepository, type FileInput } from '../../src/repo/repository.js';
 import { CONTENT_UNITS, type FileRow } from '../../src/repo/tables.js';
@@ -394,11 +394,11 @@ describe.skipIf(!(await pgAvailable()))('domain/files', () => {
         if (c.kept && !c.committed) {
           await read(UMBRELLA, (tx) => tx.query(
             `UPDATE ${handle.schema}.staged_object SET recorded_at = clock_timestamp() - interval '2 minutes' WHERE object_key = $1`, [objectKey]));
-          await expect(read(UMBRELLA, (tx) => exportObjects(tx, { unit: 'content.file', tenantId: UMBRELLA }))).rejects.toBeInstanceOf(StagedObjectsPendingError);
+          await expect(read(UMBRELLA, (tx) => createExportObjects({ storage })(tx, { unit: 'content.file', tenantId: UMBRELLA }))).rejects.toBeInstanceOf(StagedObjectsPendingError);
           expect(await recoverStagedObjects(deps, UMBRELLA, 0)).toBe(1);
           expect(await storage.head(CONTENT_FILES_BUCKET, objectKey)).toBeNull();
           expect(await staged()).toEqual([]);
-          await expect(read(UMBRELLA, (tx) => exportObjects(tx, { unit: 'content.file', tenantId: UMBRELLA }))).resolves.toHaveProperty('objects');
+          await expect(read(UMBRELLA, (tx) => createExportObjects({ storage })(tx, { unit: 'content.file', tenantId: UMBRELLA }))).resolves.toHaveProperty('objects');
         }
       });
     });

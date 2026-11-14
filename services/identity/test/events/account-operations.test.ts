@@ -97,7 +97,7 @@ const SERVICE_SET_GROUP_COLUMNS: ReadonlySet<string> = new Set([
 ]);
 const LEGACY_UNAVAILABLE = { apiversion: 'v1', error: { code: 'server_error', message: 'Unhandled Exception' } };
 
-// pgAvailable rejects when PG_* is unset, so a missing PG_HOST skips the suite before it is asked.
+// An unset PG_HOST skips the suite without probing the server.
 const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('identity account operations against PostgreSQL', () => {

@@ -3,6 +3,7 @@ import type { CreateTaskInput, TaskContext, TaskHandler, TaskPort } from './port
 import { queueDefinition, recurringQueues, targetUrl } from './queues.js';
 import type { Clock } from '../service-kit/index.js';
 import { LegacyServiceUnavailableError } from '../legacy-compat/index.js';
+import { SAFE_ERROR_TEXT } from '../logging/safe-error.js';
 import { SpanKind, startLinkedRootSpan } from '../tracing/index.js';
 
 /** Start, in epoch seconds, of the slot containing `epochS`. */
@@ -81,6 +82,11 @@ export class RecurringSlotsTombstonedError extends LegacyServiceUnavailableError
     readonly probed: readonly string[],
   ) {
     super(`No live chain task on queue ${queue}: tombstoned slots ${probed.join(', ')}`, 'auto', 'recurring-slots-tombstoned');
+  }
+
+  /** The message, which names only the queue and its probed slot task names, for logs and spans. */
+  get [SAFE_ERROR_TEXT](): string {
+    return this.message;
   }
 }
 

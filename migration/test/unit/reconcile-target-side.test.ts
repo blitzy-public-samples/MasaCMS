@@ -39,6 +39,7 @@ const CONTENT_SHAPE: UnitTableShape = {
     { name: 'Amount', type: 'd', scale: 4 },
   ],
   excludedColumns: ['tcontent_ID'],
+  objectColumns: [],
   folded: false,
 };
 
@@ -63,6 +64,7 @@ const PROGRAM_SHAPE: UnitTableShape = {
     { name: 'legacy_program_id', type: 'i' },
   ],
   excludedColumns: [],
+  objectColumns: [],
   folded: true,
 };
 
@@ -82,8 +84,32 @@ const KEYLESS_SHAPE: UnitTableShape = {
     { name: 'Email', type: 's' },
   ],
   excludedColumns: [],
+  objectColumns: [],
   folded: false,
 };
+
+/** A folded finance-attachment share whose `content` bytes the owner stores as objects. */
+const ATTACHMENT_SHAPE: UnitTableShape = {
+  unit: 'finance.attachment',
+  owner: 'finance',
+  legacyTable: 'Program_N.finance_attachment',
+  keyed: true,
+  keyColumns: ['attachment_id', 'legacy_program_id'],
+  columns: [
+    { name: 'attachment_id', type: 's' },
+    { name: 'sha256', type: 's' },
+    { name: 'legacy_program_id', type: 'i' },
+  ],
+  excludedColumns: [],
+  objectColumns: [{ name: 'content', type: 'b' }],
+  folded: true,
+};
+
+/** The owner exports the attachment columns without `content`. */
+const ATTACHMENT_EXPORT_COLUMNS: CanonicalColumn[] = [
+  { name: 'attachment_id', type: 's' },
+  { name: 'sha256', type: 's' },
+];
 
 function exportTable(legacyTable: string, columns: CanonicalColumn[], rows: { values: Values; legacyProgramId?: number }[]): ExportTable {
   return {
@@ -301,6 +327,53 @@ describe('readTargetUnitRows', () => {
 
     expect(result).toMatchObject({ objects: expected, count: 0 });
     expect(await drain(result)).toEqual([]);
+  });
+
+  it.each([undefined, false, true])(
+    'reads an object-column shape from rows without its object column and keys the manifest by legacyPath (includeObjects %s)',
+    async (includeObjects) => {
+      const rows = [{ values: { attachment_id: 'AT1', sha256: 'ab' }, legacyProgramId: 1 }];
+      const { deps } = ownersServing([
+        page([exportTable('finance_attachment', ATTACHMENT_EXPORT_COLUMNS, rows)], 'cursor-1', [
+          { key: `${TENANT}/K1.pdf`, size: 3, sha256: 'AB', contentType: 'application/pdf', legacyPath: 'Program_1.finance_attachment/AT1' },
+        ]),
+        page([exportTable('finance_attachment', ATTACHMENT_EXPORT_COLUMNS, [])], null, [
+          { key: `${TENANT}/K2.pdf`, size: 0, sha256: '01', legacyPath: 'Program_2.finance_attachment/AT1' },
+        ]),
+      ]);
+
+      const result = await readTargetUnitRows(deps, ATTACHMENT_SHAPE, TENANT, { includeObjects });
+
+      expect(result).toMatchObject({
+        count: 1,
+        objects: [
+          { key: 'Program_1.finance_attachment/AT1', size: 3, sha256: 'ab' },
+          { key: 'Program_2.finance_attachment/AT1', size: 0, sha256: '01' },
+        ],
+      });
+      expect(await drain(result)).toEqual([toUnitRow(ATTACHMENT_SHAPE, { attachment_id: 'AT1', sha256: 'ab', legacy_program_id: '1' }, 1)]);
+    },
+  );
+
+  it('reads an empty object-column table as no rows and no objects', async () => {
+    const { deps } = ownersServing([page([exportTable('finance_attachment', ATTACHMENT_EXPORT_COLUMNS, [])], null)]);
+
+    const result = await readTargetUnitRows(deps, ATTACHMENT_SHAPE, TENANT);
+
+    expect(result).toMatchObject({ count: 0, objects: [] });
+    expect(await drain(result)).toEqual([]);
+  });
+
+  it('throws TargetShapeError for an object-column manifest entry without a legacyPath', async () => {
+    const { deps } = ownersServing([
+      page([exportTable('finance_attachment', ATTACHMENT_EXPORT_COLUMNS, [])], null, [{ key: `${TENANT}/K1.pdf`, size: 3, sha256: 'ab' }]),
+    ]);
+
+    await expect(readTargetUnitRows(deps, ATTACHMENT_SHAPE, TENANT)).rejects.toMatchObject({
+      name: 'TargetShapeError',
+      missingColumns: ['content'],
+      message: `Owner export of unit finance.attachment lists object ${TENANT}/K1.pdf without the legacyPath of its Program_N.finance_attachment row`,
+    });
   });
 
   it('lets an owner failure propagate', async () => {

@@ -58,6 +58,8 @@ describe.skipIf(!available)('finance fixture routes', () => {
   let identity: http.Server;
   let app: FastifyInstance;
   const consumed: Array<{ sessionId: string; token: string; context: string }> = [];
+  /** HTTP status identity's consume route answers; a non-2xx one carries no verdict. */
+  let identityStatus = 200;
   const logLines: string[] = [];
   /** Spies on each request logger's `error`, holding the calls before the logger serializes them. */
   const errorSpies: { mock: { calls: unknown[][] } }[] = [];
@@ -88,8 +90,9 @@ describe.skipIf(!available)('finance fixture routes', () => {
       req.on('end', () => {
         const consume = JSON.parse(Buffer.concat(chunks).toString('utf8')) as (typeof consumed)[number];
         consumed.push(consume);
+        res.statusCode = identityStatus;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ valid: consume.token === GOOD_TOKEN }));
+        res.end(identityStatus === 200 ? JSON.stringify({ valid: consume.token === GOOD_TOKEN }) : '{}');
       });
     });
     await new Promise<void>((resolve) => identity.listen(0, '127.0.0.1', resolve));
@@ -137,6 +140,7 @@ describe.skipIf(!available)('finance fixture routes', () => {
 
   beforeEach(async () => {
     consumed.length = 0;
+    identityStatus = 200;
     await setGates('open');
   });
 
@@ -313,6 +317,15 @@ describe.skipIf(!available)('finance fixture routes', () => {
     ['a write without a CSRF token', (id) => post(`/records/${id}/submit`, PREPARER, undefined, false), 400, 'request rejected: invalidTokens'],
     ['an edit missing fields', (id) => post(`/records/${id}/edit`, PREPARER, { title: 'Only a title' }), 400, 'request rejected: invalidParameters'],
     ['a role that may not take the action', (id) => post(`/records/${id}/submit`, APPROVER), 403, 'request denied: forbidden'],
+    [
+      'identity unable to consume the token',
+      (id) => {
+        identityStatus = 503;
+        return post(`/records/${id}/submit`, PREPARER);
+      },
+      503,
+      'service unavailable',
+    ],
     ['an unknown record', () => get(`/records/${MISSING_ID}`), 404, null],
     ['an unhandled exception', () => get('/records?pageIndex=1%D9%A1'), 500, null],
   ])('logs %s with its fixed reason, if any, ahead of the completion line, storing nothing', async (_case, send, status, warning) => {
@@ -410,12 +423,20 @@ describe.skipIf(!available)('finance fixture routes', () => {
     expect((await get(`/records/${id}/attachments`)).json().data).toMatchObject({ items: [], totalitems: 0 });
   });
 
-  it('fails a write closed with the legacy 503 while the finance units are legacy-authoritative', async () => {
+  it.each<[string, () => Promise<void>]>([
+    ['the finance units are legacy-authoritative', () => setGates('legacy')],
+    [
+      'identity cannot consume its token',
+      async () => {
+        identityStatus = 503;
+      },
+    ],
+  ])('fails a write closed with a 503 in the fixture envelope while %s', async (_case, close) => {
     const { record_id: id } = await createRecord();
-    await setGates('legacy');
+    await close();
     const res = await post(`/records/${id}/submit`, PREPARER);
-    expect(res.statusCode).toBe(503);
-    expect(res.json().method).not.toBe('finance.records.submit');
+    expect([res.statusCode, res.body]).toEqual([503, errorBody('finance.records.submit', 'server_error', 'Unhandled Exception')]);
+    expect(res.headers.etag).toBe(cfHash(res.body));
     await setGates('open');
     expect((await get(`/records/${id}`)).json().data.state).toBe('IN-PROGRESS');
   });

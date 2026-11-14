@@ -73,6 +73,8 @@ const AUTHORS = id(2, 'B');
 const MEMBERS = id(4, 'B');
 const B_STAFF = id(5, 'B');
 const MISSING_GROUP = id(99, 'B');
+/** The administrator whose token a roster save of another user carries. */
+const ADMIN_ACTOR = id(1, 'F');
 
 /** The value of `key` in a Java properties file of the legacy tree. */
 function legacyProperty(path: string, key: string): string {
@@ -176,7 +178,7 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
   }
 
   function input(kind: AccountOperationKind, userId: string, changes: Partial<AccountChange>, overrides: Partial<PrepareInput> = {}): PrepareInput {
-    return { operationId: next('C'), kind, userId, requestSiteId: SITE_A, siteId: SITE_A, actorIsSuperUser: false, change: change(changes), ...overrides };
+    return { operationId: next('C'), kind, userId, requestSiteId: SITE_A, actorUserId: ADMIN_ACTOR, siteId: SITE_A, actorIsSuperUser: false, change: change(changes), ...overrides };
   }
 
   async function prepared(prepare: PrepareInput, d: AccountOperationDeps = deps()): Promise<PrepareInput> {
@@ -518,6 +520,25 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       expect(result).toMatchObject({ outcome: 'prepared', operation: { state: 'prepared', before: { account: { username, siteid: UMBRELLA, ispublic: 1 }, groupIds: [MEMBERS] } } });
       expect(await operationOf(prepare.operationId, UMBRELLA)).toMatchObject({ state: 'prepared', kind: 'update' });
       expect(await registered(prepare.operationId)).toBe(true);
+    });
+
+    it.each([
+      ['the token user updating their own account', 'prepared', SITE_B, true, 0],
+      ["an update of another user's account", 'badRequest', SITE_B, false, 0],
+      ['the token user naming their own site, whose public pool is another site', 'badRequest', SITE_C, true, 1],
+    ] as const)('answers an account saved in the pool of a site outside a tenant-a token: %s is %s', async (_label, expected, home, own, ispublic) => {
+      const username = uname('abroad');
+      const userId = await seedUser(username, { site: home, account: { ispublic } });
+      const prepare = input('update', userId, { username, isPublic: ispublic }, own ? { siteId: home, actorUserId: userId } : { siteId: home });
+
+      const outcome = await prepareAccountOperation(deps(), prepare).then(
+        (result) => result.outcome,
+        (err: unknown) => (err as { type?: unknown }).type,
+      );
+
+      expect(outcome).toBe(expected);
+      expect((await operationOf(prepare.operationId, home))?.state ?? null).toBe(expected === 'prepared' ? 'prepared' : null);
+      expect(await registered(prepare.operationId)).toBe(expected === 'prepared');
     });
 
     it.each([

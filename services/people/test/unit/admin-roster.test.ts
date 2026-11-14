@@ -65,6 +65,7 @@ interface UpdateResult {
   redirect?: Redirect;
   errors: Record<string, string>;
   userBean?: Record<string, unknown>;
+  passwordExpired?: boolean;
 }
 interface RouteResult {
   written?: boolean;
@@ -502,11 +503,36 @@ describe.skipIf(!PG_AVAILABLE)('cUsers roster writes over PostgreSQL', () => {
       expect(Object.keys(body.errors).sort()).toEqual(errorKeys);
       if (taken) expect(body.errors.username).toBe(USERNAME_TAKEN);
       expect(body.userBean).toMatchObject({ UserID: userId, Fname: 'Robin', UserName: 'robin.roster', SiteID: SITE, Type: 2, isPublic: 0, categoryid: `${CATEGORY_1},${CATEGORY_2}` });
+      expect(Object.keys(body.userBean ?? {})).not.toContain('PasswordCreated');
+      expect(body.passwordExpired).toBe(false);
       expect(accountSteps(identity).map(([step]) => step)).toEqual(steps);
       expect(identity.account(userId)).toBeUndefined();
       expect(identity.isUserClosed(userId)).toBe(false);
       for (const table of ['person', 'user_address', 'user_interest', 'user_tag'] as const) expect(await rowsOf(db, table, userId)).toEqual([]);
     }));
+
+  // The routes read MURA_EXPIREPASSWORDS from the environment they are registered under.
+  it.each<[string, string | undefined, boolean]>([
+    ['passwords never expire', undefined, false],
+    ['they expire after 30 days', '30', true],
+  ])("answers a stored user's failed update with its password expiry when %s", async (_name, setting, expired) => {
+    const previous = process.env.MURA_EXPIREPASSWORDS;
+    if (setting === undefined) delete process.env.MURA_EXPIREPASSWORDS;
+    else process.env.MURA_EXPIREPASSWORDS = setting;
+    try {
+      await onPeople(async ({ app, identity }) => {
+        identity.seedAccounts(accountFor(SYSTEM_USER_A_PERSON, { passwordCreated: '2026-01-02T09:00:00.000' }));
+        const fields = userForm('Update', { email: '', usernameNoCache: 'system_user_a', passwordNoCache: '', password2: '' });
+        const { status, body } = await send<UpdateResult>(app, UPDATE_USER, SITE_ADMIN_A, { fields, query: userQuery(STORED_USER) });
+        expect(status).toBe(200);
+        expect(body).toMatchObject({ written: false, userBean: { UserID: STORED_USER }, passwordExpired: expired });
+        expect(Object.keys(body.errors)).toEqual(['email']);
+      });
+    } finally {
+      if (previous === undefined) delete process.env.MURA_EXPIREPASSWORDS;
+      else process.env.MURA_EXPIREPASSWORDS = previous;
+    }
+  });
 
   it.each<[string, string]>([
     ['an Add', 'Add'],

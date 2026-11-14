@@ -4,12 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Roles, type Role } from '@opt2/platform/auth';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
+import { rbFor } from '@/lib/resource-bundles/rb';
 import type { Opt2ActionDefinition, ScreenContext, SubmitResult } from '@/screens/registry';
 import { alertBox, noAccessUrl, opt2ScreenUrl } from '@/screens/opt2/shared';
 import { surveysScreens } from '@/screens/opt2/surveys';
 import { scheduleAction, scheduleBody } from '@/screens/opt2/surveys/schedule';
 import { bulkTargetAction, targetsBody } from '@/screens/opt2/surveys/targets';
-import { SURVEY_IDS, surveyTargets, surveysAnswers } from '../../fixtures/opt2/surveys';
+import { SURVEY_IDS, surveyResponses, surveyTargets, surveys, surveysAnswers } from '../../fixtures/opt2/surveys';
 import { opt2RoleRequest } from '../../helpers/admin-request';
 import { fragmentModel, type DomModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
@@ -24,6 +25,9 @@ const MULTI = SURVEY_IDS.multiSiteSurvey;
 const BULK_ROUTE = routeKey('POST', 'surveys', `/v1/surveys/${MULTI}/targets/bulk` as const);
 const CSRF_POSTED = { csrf_token: FIXED_CSRF.token, csrf_token_expires: FIXED_CSRF.expires };
 const ROLE_LIKE_RC = { roles: Roles.surveysManager, role: Roles.surveysManager };
+
+/** Admin-bundle `key` in French, as the session locale `fr` resolves it. */
+const fr = (key: string): string => rbFor('fr').rbKey(key);
 
 /** A request of the tenant-a subject holding `role`, `rc` laid over the session site. */
 const requestFor = (role: Role, rc: Record<string, string> = {}): AdminRequest =>
@@ -168,5 +172,47 @@ describe('surveys body helpers', () => {
     const model = fragmentModel(String(body));
     expect(model.alerts).toEqual([{ text: 'Rejected', className: 'alert alert-error' }]);
     expect(model.controls.find(({ name }) => name === 'targets')?.value).toBe('');
+  });
+});
+
+describe('surveys labels', () => {
+  const rowLinks = [fr('email.schedule'), 'Targets', 'Responses'];
+
+  it.each([
+    {
+      screen: 'surveys',
+      rc: {},
+      routes: { [routeKey('GET', 'surveys', '/v1/surveys')]: { status: 200, body: { data: surveys, total: 500 } } },
+      headers: [fr('params.title'), fr('email.status'), 'Launch', 'Reminders', fr('params.created'), ''],
+      labels: [],
+      links: [...rowLinks, ...rowLinks, fr('sitemanager.next')],
+    },
+    {
+      screen: 'responses',
+      rc: { surveyid: MULTI },
+      routes: {
+        [routeKey('GET', 'surveys', `/v1/surveys/${MULTI}/responses`)]: {
+          status: 200,
+          body: { data: surveyResponses.multiSite, total: 500 },
+        },
+      },
+      headers: [],
+      labels: ['Respondent Site', 'Respondent', fr('formbuilder.matrix.answers'), 'Submitted'],
+      links: ['Surveys', fr('email.schedule'), 'Targets', fr('sitemanager.next')],
+    },
+  ])('renders the $screen labels from the French admin bundle', async ({ screen, rc, routes, ...expected }) => {
+    const def = surveysScreens.find((candidate) => candidate.screen === screen);
+    if (def === undefined) throw new TypeError(`surveys/${screen} is not registered`);
+    const req = opt2RoleRequest(Roles.surveysManager, { rc: { siteid: SITE, ...rc }, session: { rb: 'fr' } });
+    const ctx = ctxFor(req, routes);
+
+    const model = fragmentModel(String((await def.render(ctx, await def.load(ctx))).body));
+
+    expect(fr('email.schedule')).not.toBe('Schedule');
+    expect({
+      headers: model.tables.flatMap((table) => table.headers),
+      labels: model.labels,
+      links: model.links.map(({ text }) => text),
+    }).toEqual(expected);
   });
 });

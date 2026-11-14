@@ -25,6 +25,7 @@ Every endpoint is `${LEGACY_ORIGIN}/gateway/legacy-bridge/cfml/<page>.cfm?op=<op
   - It declares no `this.*` settings and overrides only `onRequestStart`.
 - Guard order in the overridden `onRequestStart`:
   1. **Allow-list.** Only `session.cfm`, `jobs.cfm`, `scheduler.cfm`, `site.cfm` and `files.cfm` are served, matched case-sensitively. Anything else gets 404 with an empty body.
+     - Requests ColdFusion never receives, such as an upper-case `.CFM` extension or a static file under the bridge folder, get the same bodiless 404 from a web-server rule in `harness/repro/server.json.template`.
   2. **Assertion.** Any verification failure gets 403 with an empty body. Masa never runs for a rejected request.
   3. **Reload flag.** When the URL carries the key named by `application.appReloadKey` (default `appreload`, `core/appcfc/onApplicationStart_include.cfm:80`), the guard sets `request.muraAppreloaded = true`, Masa's own "already reloaded in this request" flag (`core/appcfc/onApplicationStart_include.cfm:88`). Deleting the key first could not stop the reload: Masa re-decodes `url` with `setEncoding` (`core/appcfc/onRequestStart_include.cfm:82`) before its reload check.
   4. Masa's `onRequestStart` runs: session defaults, session cookies, `Generator` and HSTS headers.

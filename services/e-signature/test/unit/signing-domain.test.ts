@@ -53,16 +53,8 @@ const LIST_TENANT = tenantIdForSite(LIST_SITE);
 /** A CF-format Masa UserID ending in `n`. */
 const userId = (n: number): string => `E5160000-0000-0000-${n.toString(16).toUpperCase().padStart(16, '0')}`;
 
-/** A people `user` read result of type `type` stored under `siteId`. */
-const person = (n: number, siteId: string, type = 2): PersonSummary => ({
-  userId: userId(n),
-  siteId,
-  type,
-  fname: 'Synthetic',
-  lname: `Person ${String(n)}`,
-  email: `person${String(n)}@example.test`,
-  inactive: 0,
-});
+/** A people pool-user read result of type `type` stored under `siteId`. */
+const person = (n: number, siteId: string, type = 2): PersonSummary => ({ userId: userId(n), siteId, type });
 
 const SIGNER = person(1, TENANT_A.siteId);
 const POOL_SIGNER = person(2, TENANT_UMBRELLA.siteId);

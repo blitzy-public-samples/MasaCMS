@@ -9,7 +9,7 @@ import type { ProjectorHooks } from '../reverse/index.js';
 import type { WindowHooks } from '../windows/index.js';
 
 /** Faults the running migration service injects in its own process. */
-export const REGISTRY_FAULT_NAMES = ['projector-delay', 'projector-crash', 'window-import-interrupted'] as const;
+export const REGISTRY_FAULT_NAMES = ['projector-delay', 'projector-crash', 'projector-hold', 'window-import-interrupted'] as const;
 
 /** Name of a registry fault. */
 export type RegistryFaultName = (typeof REGISTRY_FAULT_NAMES)[number];
@@ -19,7 +19,10 @@ export type FaultRequest = components['schemas']['FaultRequest'];
 
 const PROJECTOR_DELAY = 'projector-delay' satisfies RegistryFaultName;
 const PROJECTOR_CRASH = 'projector-crash' satisfies RegistryFaultName;
+const PROJECTOR_HOLD = 'projector-hold' satisfies RegistryFaultName;
 const WINDOW_IMPORT_INTERRUPTED = 'window-import-interrupted' satisfies RegistryFaultName;
+/** Faults armed only under `OPT2_ENV=local`. */
+const LOCAL_ONLY: ReadonlySet<RegistryFaultName> = new Set([PROJECTOR_CRASH, PROJECTOR_HOLD]);
 
 /** Exit status of a projector crash, as for a process killed by SIGKILL. */
 const CRASH_EXIT_CODE = 137;
@@ -38,6 +41,13 @@ function paramSchemas(defaultDelayMs: number) {
     'projector-delay': z.object({ delayMs: z.number().int().min(0).default(defaultDelayMs) }).strict(),
     'projector-crash': z
       .object({ point: z.literal('after-legacy-commit'), afterBatches: z.number().int().min(1).default(1) })
+      .strict(),
+    'projector-hold': z
+      .object({
+        point: z.enum(['first-change', 'between-participants']),
+        holdMs: z.number().int().min(0).default(0),
+        fail: z.boolean().default(false),
+      })
       .strict(),
     'window-import-interrupted': z.object({ windowId: z.string().regex(CF_ID).optional() }).strict(),
   } as const satisfies Record<RegistryFaultName, z.ZodType>;
@@ -110,7 +120,11 @@ export interface FaultRegistry {
   clear(name: string): boolean;
   /** The armed faults, sorted by name. */
   active(): ActiveFault[];
-  /** `projector-delay` sleeps before each batch; `projector-crash` exits the process after the n-th batch's legacy commit. */
+  /**
+   * `projector-delay` sleeps before each batch; `projector-crash` exits the process after the n-th batch's legacy commit;
+   * `projector-hold` holds the open batch transaction before an operation's first change, or before a participant's
+   * first change after another participant's, then optionally fails it.
+   */
   projectorHooks(): ProjectorHooks;
   /** `window-import-interrupted` fails each import attempt of every window, or of the one named. */
   windowHooks(): WindowHooks;
@@ -136,6 +150,8 @@ function paramsText(fault: ActiveFault): string {
       return `delayMs=${String(fault.params.delayMs)}`;
     case PROJECTOR_CRASH:
       return `point=${fault.params.point} afterBatches=${String(fault.params.afterBatches)}`;
+    case PROJECTOR_HOLD:
+      return `point=${fault.params.point} holdMs=${String(fault.params.holdMs)} fail=${String(fault.params.fail)}`;
     case WINDOW_IMPORT_INTERRUPTED:
       return fault.params.windowId === undefined ? 'every window' : `window ${fault.params.windowId}`;
   }
@@ -173,6 +189,17 @@ export function createFaultRegistry(
       const fault = faults.get(PROJECTOR_DELAY);
       if (fault?.name === PROJECTOR_DELAY) await sleep(fault.params.delayMs);
     },
+    beforeOperationChange: async ({ batchId, operationId, owner, written }) => {
+      const fault = faults.get(PROJECTOR_HOLD);
+      if (fault?.name !== PROJECTOR_HOLD) return;
+      // Read once: re-arming during a hold changes only later changes.
+      const { point, holdMs, fail } = fault.params;
+      const fires = point === 'first-change' ? written.length === 0 : written.length > 0 && !written.includes(owner);
+      if (!fires) return;
+      ctx.logger.warn(`fault ${PROJECTOR_HOLD} holding batch ${batchId} for ${String(holdMs)} ms before the ${owner} change of operation ${operationId}`);
+      await sleep(holdMs);
+      if (fail) throw new FaultInjectedError(PROJECTOR_HOLD);
+    },
     afterLegacyCommit: async ({ batchId }) => {
       const fault = faults.get(PROJECTOR_CRASH);
       if (fault?.name !== PROJECTOR_CRASH || batchId === lastCrashBatchId) return;
@@ -200,7 +227,7 @@ export function createFaultRegistry(
   return Object.freeze({
     set(name: string, params: unknown = {}): ActiveFault {
       const fault = registryName(name);
-      if (fault === PROJECTOR_CRASH && ctx.env.OPT2_ENV !== 'local') {
+      if (LOCAL_ONLY.has(fault) && ctx.env.OPT2_ENV !== 'local') {
         throw new FaultParamsError(fault, [`local only (OPT2_ENV=${ctx.env.OPT2_ENV})`]);
       }
       const parsed = schemas[fault].safeParse(params);

@@ -41,7 +41,8 @@ const HTTP_CONFLICT = 409;
 const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([serviceRole('people')]) });
 
 // Prepare's `siteId` is the account's user pool site, which may be a pool other than the token's site; the domain
-// accepts it only when it is the pool the tenant registry gives the token's site, so the generic `siteid` check is off.
+// accepts it only when it is the pool the tenant registry gives the token's site, or the token user's own site for
+// their own update, so the generic `siteid` check is off.
 const PREPARE_AUTH: Opt2RouteConfig = Object.freeze({ ...ROUTE_AUTH, siteCheck: false });
 
 const OPERATION_URL = '/internal/v1/accounts/:userId/operations/:operationId';
@@ -192,6 +193,7 @@ export async function registerAccountRoutes(app: FastifyInstance, deps: AccountR
         kind,
         userId,
         requestSiteId: user.site,
+        actorUserId: user.sub,
         siteId,
         actorIsSuperUser: user.s2,
         change: changeOf(request.body),

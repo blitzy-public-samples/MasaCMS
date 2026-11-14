@@ -56,8 +56,8 @@ const SCHEMA = 'people';
 const GATEWAY_CALLER = 'gateway';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
 
-/** Local ports of people and its identity callee, as `harness/repro/ports.env` fixes them. */
-const LOCAL_PORTS = Object.freeze({ identity: 8111, people: 8112 } as const);
+/** Local ports of people and its identity and strategies-content callees, as `harness/repro/ports.env` fixes them. */
+const LOCAL_PORTS = Object.freeze({ identity: 8111, people: 8112, 'strategies-content': 8114 } as const);
 
 const localUrl = (port: number): string => `http://127.0.0.1:${String(port)}`;
 
@@ -560,7 +560,7 @@ export async function buildTestApp(
 const PG_VARIABLES = ['PG_HOST', 'PG_USER', 'PG_PASSWORD', 'PG_DATABASE'] as const;
 const PG_GATE_HOLDER = 'people-test-app';
 
-/** Whether every bootstrap `PG_*` variable is set and the server accepts a connection; `pgAvailable` alone throws when one is unset. */
+/** Whether every bootstrap `PG_*` variable is set and the server accepts a connection; `pgAvailable` alone rejects when PG_HOST is set and another is unset. */
 async function pgReady(): Promise<boolean> {
   return PG_VARIABLES.every((name) => Boolean(process.env[name])) ? pgAvailable() : false;
 }

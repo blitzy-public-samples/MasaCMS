@@ -1,7 +1,6 @@
 // `cUsers.editUser`: the controller's `editUser()` and the user form of `admin/core/views/cusers/edituser.cfm` (server-only).
 import {
   LegacyServiceUnavailableError,
-  cfDateAdd,
   cfEq,
   cfListToArray,
   cfLsTimeFormat,
@@ -57,7 +56,6 @@ export interface EditUserBean {
   readonly photoFileId: string;
   /** `tfiles.fileExt` of the photo; `''` when the photo id has no file row. */
   readonly photoFileExt: string;
-  readonly passwordCreated: string;
   /** `getgroupid()`. */
   readonly groupIds: readonly string[];
   /** `getCategoryID()`. */
@@ -253,7 +251,6 @@ function beanOf(person: Struct, groupIds: readonly string[], categoryIds: readon
     subscribe: text(person, 'Subscribe', '1'),
     photoFileId: text(person, 'photoFileID'),
     photoFileExt: text(person, 'photoFileExt'),
-    passwordCreated: text(person, 'PasswordCreated'),
     groupIds,
     categoryIds,
     errors,
@@ -279,29 +276,26 @@ function addressOf(row: Struct): EditUserAddress {
 }
 
 /**
- * `rc.userBean` when the restored flash context carries a failed save, else the person people read for `userid`.
+ * `rc.userBean` and its `getPasswordExpired()` when the restored flash context carries a failed save, else the person
+ * people read for `userid` with its verdict.
  * @throws TypeError When the preserved value is not a person write result.
  */
-function editBean(rc: CusersRc, edit: PeopleSchemas['UserEditData']): EditUserBean {
+function editBean(rc: CusersRc, edit: PeopleSchemas['UserEditData']): { bean: EditUserBean; passwordExpired: boolean } {
   const preserved = rc[USER_BEAN_RC_KEY];
-  if (preserved === undefined) return beanOf(edit.user, edit.groupIds, edit.categoryIds, edit.errors);
+  if (preserved === undefined) {
+    return { bean: beanOf(edit.user, edit.groupIds, edit.categoryIds, edit.errors), passwordExpired: edit.passwordExpired };
+  }
   const result: unknown = JSON.parse(rcText(preserved, USER_BEAN_RC_KEY));
   const person = isStruct(result) ? member(result, 'userBean') : undefined;
   if (!isStruct(result) || !isStruct(person)) throw new TypeError(`rc.${USER_BEAN_RC_KEY} is not a person write result`);
-  return beanOf(
+  const expired = member(result, 'passwordExpired');
+  const bean = beanOf(
     person,
     listMember(person, 'groupid', edit.groupIds),
     listMember(person, 'categoryid', edit.categoryIds),
     errorsOf(result),
   );
-}
-
-/** userBean `getPasswordExpired()`: only a stored user can be expired, and an undated password always is. */
-function passwordExpired(bean: EditUserBean, exists: boolean, now: Date): boolean {
-  const expireIn = legacySettings().expirePasswords;
-  if (expireIn === 0 || !exists) return false;
-  const created = parseLegacyDate(bean.passwordCreated);
-  return created === null || cfDateAdd('d', expireIn, created).getTime() < now.getTime();
+  return { bean, passwordExpired: typeof expired === 'boolean' ? expired : edit.passwordExpired };
 }
 
 /** Whether the photo id has a file row, so `getFileMetaData('photofileid').getIsNew()` is false. */
@@ -354,7 +348,7 @@ export async function loadEditUser(
     ...(rc['removeBlock'] === undefined ? {} : { removeBlock: rcText(rc['removeBlock'], 'removeBlock') }),
   };
   const edit = okBody(await ctx.gateway.people.call('get', '/v1/users/edit', { query }), 'people', 'getUserEdit');
-  const bean = editBean(rc, edit);
+  const { bean, passwordExpired } = editBean(rc, edit);
   // `cf_filetools` prints the file name of a non-image file, which people's person record does not carry.
   if (hasPhotoFile(bean) && !IMAGE_FILE_EXTENSIONS.has(bean.photoFileExt.toLowerCase())) {
     throw new LegacyServiceUnavailableError('No contract serves a photo file name', 'admin', 'photo-filename-unserved');
@@ -375,7 +369,7 @@ export async function loadEditUser(
     tempIsPublic: setIsPublic !== undefined && rc.isAdmin ? rcText(setIsPublic, 'setispublic') : bean.isPublic,
     lockedSuper: edit.lockedSuper,
     blockedUntil: bean.username === '' ? null : parseLegacyDate(edit.blockedUntil),
-    passwordExpired: passwordExpired(bean, exists, ctx.now),
+    passwordExpired,
     addresses,
     privateGroups: edit.privateGroups,
     publicGroups: edit.publicGroups,

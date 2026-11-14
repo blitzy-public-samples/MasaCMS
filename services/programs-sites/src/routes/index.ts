@@ -35,5 +35,5 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await registerSiteRoutes(app, { db: deps.db, sites });
   registerUserSiteRoutes(app, { db: deps.db, repository: deps.repository });
   await registerImageSizeRoutes(app, { db: deps.db, imageSizes });
-  await registerJsonApiSiteRoutes(app, { db: deps.db, repository: deps.repository, sites });
+  await registerJsonApiSiteRoutes(app, { db: deps.db, repository: deps.repository });
 }

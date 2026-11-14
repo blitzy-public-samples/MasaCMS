@@ -970,6 +970,17 @@ const CASES: Record<string, Case[]> = {
     },
     { name: 'answers an unknown user with the 404 envelope', method: 'GET', url: `/internal/v1/accounts/${UNKNOWN_ID}`, headers: relay('people', 'editor'), status: 404 },
   ],
+  getAccountMemberships: [
+    {
+      name: "reads the editor's groups for the editor's own token",
+      method: 'GET',
+      url: `/internal/v1/accounts/${EDITOR.account.userid}/memberships`,
+      headers: relay('people', 'editor'),
+      status: 200,
+      verify: (body) => expect(body).toEqual({ groupIds: [EDITOR_GROUP] }),
+    },
+    { name: 'refuses a malformed user id', method: 'GET', url: '/internal/v1/accounts/x/memberships', headers: relay('people', 'editor'), status: 400 },
+  ],
   lookupAccounts: [
     {
       name: 'looks up the editor among unknown ids',

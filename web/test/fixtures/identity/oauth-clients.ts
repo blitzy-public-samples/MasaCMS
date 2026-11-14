@@ -2,6 +2,7 @@ import type { components } from '@/generated/clients/identity';
 import { USER_IDS } from '../session';
 
 type OAuthClient = components['schemas']['OAuthClient'];
+type OAuthClientListItem = components['schemas']['OAuthClientListItem'];
 type OAuthClientDetail = components['schemas']['OAuthClientDetail'];
 type LegacyErrors = components['schemas']['LegacyErrors'];
 
@@ -62,7 +63,12 @@ export const oauthClients: readonly OAuthClient[] = Object.freeze([
   authorizationCodeClient,
 ]);
 
-export const emptyOAuthClients: readonly OAuthClient[] = Object.freeze([]);
+/** The stored clients as identity's list answers them, each without its secret. */
+export const oauthClientRows: readonly OAuthClientListItem[] = Object.freeze(
+  oauthClients.map(({ clientsecret: _secret, ...row }) => Object.freeze(row)),
+);
+
+export const emptyOAuthClients: readonly OAuthClientListItem[] = Object.freeze([]);
 
 export const existingClientEdit: OAuthClientDetail = Object.freeze({
   client: clientCredentialsClient,

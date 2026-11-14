@@ -6,13 +6,18 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+// The service transport reads the invocation credential from this header; @opt2/platform/testing does not re-export it.
+import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import {
   RepositoryError,
   UnitNotAuthoritativeError,
   closeGates,
   encodeKey,
+  encodeRow,
   ensureUnitGates,
   openGates,
+  type CanonicalColumn,
+  type ObjectManifestEntry,
   type RepositoryRow,
   type WriteContext,
 } from '@opt2/platform/migration-kit';
@@ -26,7 +31,8 @@ import {
   type StoragePort,
 } from '@opt2/platform/storage';
 import { tenantDbFromPool, tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
-import { TENANT_A, createThrowawaySchema, fixedClock, pgAvailable, seedRegistry, type ThrowawaySchema } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, mintServiceToken, pgAvailable, seedRegistry, type ThrowawaySchema } from '@opt2/platform/testing';
+import { financeAttachmentMapping } from '../../src/migration/mappings/finance-attachment.js';
 import {
   collectStagedObjects,
   createFinanceRepository,
@@ -36,6 +42,8 @@ import {
 } from '../../src/repo/repository.js';
 import {
   ATTACHMENT_BUCKET,
+  ATTACHMENT_CONTENT_FIELD,
+  FINANCE_ATTACHMENT,
   OWNED_TABLES,
   PROGRAM_BINDING,
   STAGED_OBJECT,
@@ -43,6 +51,7 @@ import {
   attachmentObjectKey,
   type FinanceRecordRow,
 } from '../../src/repo/tables.js';
+import { buildTestApp, type TestApp } from '../helpers/app.js';
 
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
 const ACTOR = '11111111-2222-3333-4444555566667777';
@@ -652,5 +661,101 @@ describe.skipIf(!available)('finance repository writes against PostgreSQL', () =
       expect(record.legacy_program_id).toBe(programs);
       expect(await select('SELECT * FROM <s>.program_binding')).toEqual([]);
     });
+  });
+
+  describe('attachment applies through the migration handlers', () => {
+    const bytes = Buffer.from('%PDF-1.4 finance attachment bytes over the handlers');
+    /** The owned fixture columns plus the `varbinary(max)` content the feed carries. */
+    const columns: readonly CanonicalColumn[] = [...financeAttachmentMapping.legacyColumns, { name: ATTACHMENT_CONTENT_FIELD, type: 'b' }];
+    // The apply holds a Program_<id> batch to the tenant PROGRAM_SITES maps the program to: Program_2 is tenant B's.
+    const program = 2;
+    const legacyTable = `Program_${program}.finance_attachment`;
+    const tenant = TENANT_B.tenantId;
+    let t: TestApp<TenantDb>;
+    let batches = 0;
+
+    beforeAll(async () => {
+      t = await buildTestApp({ db: handle.app, stagingDb, storage: local, clock: fixedClock(NOW) });
+    });
+
+    afterAll(async () => {
+      await t?.app.close();
+    });
+
+    /** Posts one `Program_2.finance_attachment` row of tenant B as `op` through `POST /internal/v1/migration/apply`. */
+    async function apply(op: 'upsert' | 'delete', origin: string, legacyRow: Record<string, unknown>): Promise<Awaited<ReturnType<TestApp['app']['inject']>>> {
+      batches += 1;
+      const token = await mintServiceToken({ caller: 'migration', audience: 'finance', roles: ['platform.migration'] });
+      return t.app.inject({
+        method: 'POST',
+        url: '/internal/v1/migration/apply',
+        headers: { [INVOCATION_HEADER]: `Bearer ${token}` },
+        payload: {
+          batchId: `repository-handlers-${batches}`,
+          origin,
+          legacyTable,
+          tenantId: tenant,
+          columns,
+          rows: [{ op, row: encodeRow(columns, legacyRow) }],
+        },
+      });
+    }
+
+    /** The export rows and object manifest entries of tenant B's attachment unit that belong to `attachment`, a target row. */
+    async function exported(attachment: RepositoryRow): Promise<{ rows: { key: string; legacyProgramId?: number }[]; objects: ObjectManifestEntry[] }> {
+      const token = await mintServiceToken({ caller: 'migration', audience: 'finance', roles: ['platform.migration'] });
+      const res = await t.app.inject({
+        url: `/internal/v1/migration/export?unit=${FINANCE_ATTACHMENT.unit}&tenantId=${tenant}`,
+        headers: { [INVOCATION_HEADER]: `Bearer ${token}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const page = res.json<{ tables: { rows: { key: string; legacyProgramId?: number }[] }[]; objects?: ObjectManifestEntry[] }>();
+      const rowKey = financeAttachmentMapping.encodeLegacyKey(attachment);
+      const legacyPath = `${legacyTable}/${String(attachment.attachment_id)}`;
+      return {
+        rows: page.tables.flatMap((table) => table.rows).filter((row) => row.key === rowKey),
+        objects: (page.objects ?? []).filter((object) => object.legacyPath === legacyPath),
+      };
+    }
+
+    it.each([
+      ['its bytes', bytes],
+      ['NULL', null],
+    ] as [string, Buffer | null][])(
+      'deletes an attachment row whose content column carries %s, leaving its stored object out of the export',
+      async (_label, content) => {
+        const attachment: RepositoryRow = {
+          attachment_id: cfUuid(),
+          record_id: cfUuid(),
+          file_name: 'Invoice.PDF',
+          content_type: 'application/pdf',
+          size_bytes: bytes.length,
+          sha256: sha256(bytes),
+          created: NOW,
+          createdbyid: ACTOR,
+        };
+        const id = attachment.attachment_id as string;
+        const legacyRow = { ...financeAttachmentMapping.toLegacy(attachment), [ATTACHMENT_CONTENT_FIELD]: bytes };
+        const upserted = await apply('upsert', 'backfill', legacyRow);
+        expect(upserted.json()).toMatchObject({ duplicate: false, applied: 1, skipped: 0 });
+        const [stored] = await select<{ object_key: string }>(`SELECT object_key FROM <s>.attachment WHERE attachment_id = '${id}'`, tenant);
+        const key = stored?.object_key as string;
+        expect(await local.get(ATTACHMENT_BUCKET, key)).toEqual(bytes);
+        expect(await exported(attachment)).toMatchObject({
+          rows: [{ legacyProgramId: program }],
+          objects: [{ key, size: bytes.length, sha256: sha256(bytes) }],
+        });
+
+        const deleted = await apply('delete', 'migration-feed', { ...legacyRow, [ATTACHMENT_CONTENT_FIELD]: content });
+        expect(deleted.statusCode).toBe(200);
+        expect(deleted.json()).toMatchObject({ duplicate: false, applied: 1, skipped: 0 });
+        expect(await select(`SELECT attachment_id FROM <s>.attachment WHERE attachment_id = '${id}'`, tenant)).toEqual([]);
+        const changeKey = encodeKey(FINANCE_ATTACHMENT.columns, FINANCE_ATTACHMENT.key, { attachment_id: id });
+        const logged = (await changes(FINANCE_ATTACHMENT.table, tenant)).filter((change) => change.key === changeKey);
+        expect(logged.map(({ op, origin }) => `${op} ${origin}`)).toEqual(['insert backfill', 'delete migration-feed']);
+        expect(await exported(attachment)).toEqual({ rows: [], objects: [] });
+        expect(await local.head(ATTACHMENT_BUCKET, key)).not.toBeNull();
+      },
+    );
   });
 });

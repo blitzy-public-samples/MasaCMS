@@ -16,7 +16,7 @@ import {
 } from '@/screens/cwebservice/list';
 import type { ScreenContext } from '@/screens/registry';
 import { CSRF_CWEBSERVICE } from '../../fixtures/identity/csrf';
-import { oauthClients } from '../../fixtures/identity/oauth-clients';
+import { oauthClientRows } from '../../fixtures/identity/oauth-clients';
 import { adminS2Request } from '../../helpers/admin-request';
 import { fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
@@ -161,7 +161,7 @@ describe('cwebservice.list', () => {
 
     it('lists only the first 1000 clients when the site holds more, as the legacy iterator shows them', async () => {
       const window = Array.from({ length: 1000 }, (_, n) => ({
-        ...oauthClients[n % oauthClients.length],
+        ...oauthClientRows[n % oauthClientRows.length],
         clientid: `0B000000-0000-0000-${String(n).padStart(16, '0')}`,
       }));
       const gateway = fakeGatewayClient({

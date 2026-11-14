@@ -1,20 +1,19 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Consumer contract of e-signature on people: the user read the people client sends, and its reading of each answer, against people's contract. */
+/** Consumer contract of e-signature on people: the pool-user read the people client sends, and its reading of each answer, against people's contract. */
 import { readFileSync } from 'node:fs';
 import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
+import { AuthDenial, renderAuthDenial, serviceRole } from '@opt2/platform/auth';
 import {
-  LEGACY_JSON_CONTENT_TYPE,
   LegacyServiceUnavailableError,
   apiUnavailableResponse,
-  buildEnvelope,
   legacyErrorResponse,
-  routeKeyForRequest,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
 import {
   ServiceUnavailableError,
   decodeServiceBody,
+  type FastifyRequest,
   type ServiceClient,
   type ServiceRequest,
   type ServiceResponse,
@@ -32,12 +31,10 @@ import { PEOPLE_SERVICE, PeopleReadDeniedError, createPeopleClient, type PersonS
 import { OTHER_USER_ID, SIGNER_USER_ID } from '../helpers/tokens.js';
 
 const peopleDoc = load(readFileSync(new URL('../../../people/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const ownDoc = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as { 'x-opt2-calls'?: unknown };
 
 const SITE_ID = 'tenant-a';
-const READ_PATH = `/_api/json/v1/tenant-a/user/${SIGNER_USER_ID}`;
-const LINKS_BASE = 'http://tenant-a.example.test/index.cfm/_api/json/v1/tenant-a';
-// createUUID() of the new bean findOne returns for an unknown user (userBean.cfc:266-270).
-const GENERATED_USER_ID = '5E1F0A2B-7C3D-4E5F-8091A2B3C4D5E6F7';
+const READ_PATH = '/internal/v1/users/pool-user';
 
 type Recorded = ServiceResponse | Error;
 
@@ -69,91 +66,29 @@ function fromLegacy(response: SerializedLegacyResponse, status = response.status
   return recorded(status, response.headers, response.body);
 }
 
-/** A 200 `findOne` envelope of `data`, with params suppressed as the JSON API does by default. */
-function foundEnvelope(data: Record<string, unknown>): ServiceResponse {
-  const wire = JSON.stringify(buildEnvelope({ method: 'findOne', data }));
-  return recorded(200, { 'Content-Type': LEGACY_JSON_CONTENT_TYPE }, wire);
+/** The query people's handlers and denials read back from the read e-signature sends. */
+const READ_QUERY = { siteid: SITE_ID, userid: SIGNER_USER_ID };
+
+/** People's answer to the read when the auth hooks or its handler refuse it with `denial`. */
+function denied(denial: AuthDenial): ServiceResponse {
+  return fromLegacy(renderAuthDenial(denial, { query: READ_QUERY } as unknown as FastifyRequest));
 }
 
-/** Links findOne builds for a user (jsonApiUtility.cfc:3374-3420). */
-function userLinks(userId: string): Record<string, string> {
-  return {
-    entities: LINKS_BASE,
-    all: `${LINKS_BASE}/user`,
-    properties: `${LINKS_BASE}/user/properties`,
-    self: `${LINKS_BASE}/user/${userId}`,
-  };
-}
+/** A stored pool user as people's readPoolUser answers it. */
+const POOL_USER = { userid: SIGNER_USER_ID, siteid: SITE_ID, type: 2 };
 
-/** A stored user as people's findOne serializes it: lower-cased keys, `type` as text, numbers and `isnew` as integers. */
-const USER_DATA = {
-  id: SIGNER_USER_ID,
-  userid: SIGNER_USER_ID,
-  siteid: SITE_ID,
-  remoteid: '',
-  groupname: '',
-  fname: 'Ada',
-  lname: 'Signer',
-  username: 'asigner',
-  email: 'ada.signer@example.test',
-  company: 'Program 1',
-  jobtitle: 'Coordinator',
-  mobilephone: '',
-  website: '',
-  type: 'user',
-  subtype: 'Default',
-  s2: 0,
-  lastlogin: '2026-06-29T08:30:00',
-  lastupdate: '2026-06-01T10:00:00',
-  lastupdateby: 'Admin User',
-  created: '2026-01-15T09:00:00',
-  perm: 0,
-  inactive: 0,
-  ispublic: 0,
-  subscribe: 1,
-  keepprivate: 0,
-  photofileid: '',
-  tags: '',
-  primaryaddressid: '',
-  isnew: 0,
-  entityname: 'user',
-  links: userLinks(SIGNER_USER_ID),
-};
-
-/** The new bean findOne answers for an unknown user: userBean defaults, a generated id and `isnew` 1 (userDAO.cfc:111-117). */
-const NEW_BEAN_DATA = {
-  ...USER_DATA,
-  id: GENERATED_USER_ID,
-  userid: GENERATED_USER_ID,
-  fname: '',
-  lname: '',
-  username: '',
-  email: '',
-  company: '',
-  jobtitle: '',
-  lastlogin: '',
-  lastupdateby: '',
-  ispublic: 1,
-  isnew: 1,
-  links: userLinks(GENERATED_USER_ID),
-};
-
-/** The person summary people-client builds from a stored user's data; `type` text `user` decodes to 2 (userBean.cfc:753-765). */
-function personOf(data: typeof USER_DATA, inactive: number): PersonSummary {
-  return { userId: data.userid, siteId: data.siteid, type: 2, fname: data.fname, lname: data.lname, email: data.email, inactive };
-}
+/** The person summary people-client builds from `POOL_USER`. */
+const SIGNER_PERSON: PersonSummary = { userId: SIGNER_USER_ID, siteId: SITE_ID, type: 2 };
 
 const RECORDED = {
-  found: foundEnvelope(USER_DATA),
-  foundNullInactive: foundEnvelope({ ...USER_DATA, inactive: '' }),
-  isNew: foundEnvelope(NEW_BEAN_DATA),
-  notFound: fromLegacy(legacyErrorResponse('invalidMethodCall', { method: 'findOne', mura404: true })),
-  unauthorized: fromLegacy(legacyErrorResponse('authorization', { method: 'findOne' })),
-  invalidToken: fromLegacy(
-    legacyErrorResponse('invalidAccessToken', { method: 'findOne', wwwAuthenticate: 'Bearer error="invalid_access_token"' }),
-  ),
-  forbidden: fromLegacy(legacyErrorResponse('authorization'), 403),
-  unavailable: fromLegacy(apiUnavailableResponse({ method: 'findOne' })),
+  found: recorded(200, { 'Content-Type': 'application/json' }, JSON.stringify(POOL_USER)),
+  // service-kit's not-found handler, which the read calls for an id no pool person holds.
+  notFound: fromLegacy(legacyErrorResponse('invalidMethodCall', { params: { ...READ_QUERY, userid: OTHER_USER_ID }, mura404: true })),
+  unauthorized: denied(AuthDenial.unauthenticated('missing-credential')),
+  invalidToken: denied(AuthDenial.invalidToken()),
+  siteMismatch: denied(AuthDenial.siteMismatch()),
+  forbidden: denied(AuthDenial.forbidden()),
+  unavailable: fromLegacy(apiUnavailableResponse()),
   badGateway: recorded(
     502,
     { 'Content-Type': 'text/html; charset=UTF-8' },
@@ -189,21 +124,20 @@ async function sentRead(): Promise<{ call: ServiceRequest; operation: OperationM
 }
 
 describe('e-signature people client request against the people contract', () => {
-  it('sends one GET of the user item to people, with no query, body, headers or token override', async () => {
+  it('sends one GET of the pool user to people, with the site and id as its query and no body, headers or token override', async () => {
     expect(PEOPLE_SERVICE).toBe('people');
     const { call } = await sentRead();
-    expect(call).toEqual({ service: PEOPLE_SERVICE, method: 'GET', path: READ_PATH });
+    expect(call).toEqual({ service: PEOPLE_SERVICE, method: 'GET', path: READ_PATH, query: READ_QUERY });
     expect(call.userToken).toBeUndefined();
     const headerNames = Object.keys(call.headers ?? {}).map((name) => name.toLowerCase());
     expect(headerNames).not.toContain('authorization');
     expect(headerNames).not.toContain('x-serverless-authorization');
   });
 
-  it("resolves to people's jsonItemGet on the JSON API item template", async () => {
+  it("resolves to people's readPoolUser", async () => {
     const { operation } = await sentRead();
-    // People declares the read on its per-segment item template, not on a catch-all `{path}` template.
-    expect(operation.template).toBe('/_api/json/v1/{siteid}/{segment}/{item}');
-    expect(operation.operation.operationId).toBe('jsonItemGet');
+    expect(operation.template).toBe(READ_PATH);
+    expect(operation.operation.operationId).toBe('readPoolUser');
   });
 
   it('sends only path, query and header parameters the operation declares', async () => {
@@ -218,15 +152,13 @@ describe('e-signature people client request against the people contract', () => 
     ).not.toThrow();
   });
 
-  it('targets a service-transport operation a forwarded user token reaches, keyed as the user findOne', async () => {
-    const { call, operation } = await sentRead();
+  it("targets a service-transport operation that admits e-signature's workload with the forwarded user token, on a declared call edge", async () => {
+    const { operation } = await sentRead();
     const declared = operation.operation;
     expect(declared['x-opt2-transport']).toBe('service');
-    expect(declared['x-opt2-public'] === true || Array.isArray(declared['x-opt2-requires'])).toBe(true);
-    expect(declared.security).toContainEqual({ userToken: [], invocationCredential: [] });
-    const { key } = routeKeyForRequest({ method: call.method, path: call.path, query: sentQuery(call), headers: call.headers ?? {} });
-    expect(key).toBe('api:user.findone');
-    expect(declared['x-opt2-route-keys']).toContain(key);
+    expect(declared['x-opt2-requires']).toEqual([serviceRole('e-signature')]);
+    expect(declared.security).toEqual([{ userToken: [], invocationCredential: [] }]);
+    expect(ownDoc['x-opt2-calls']).toContain(PEOPLE_SERVICE);
   });
 });
 
@@ -246,35 +178,21 @@ interface ResponseCase {
 
 const RESPONSE_CASES: readonly ResponseCase[] = [
   {
-    name: 'found user reads as its person summary',
+    name: 'found pool user reads as its person summary',
     userId: SIGNER_USER_ID,
     response: RECORDED.found,
     origin: 'people',
-    expected: { kind: 'person', value: personOf(USER_DATA, 0) },
+    expected: { kind: 'person', value: SIGNER_PERSON },
   },
   {
-    name: "found user with a NULL inactive column reads as active, userBean's default",
-    userId: SIGNER_USER_ID,
-    response: RECORDED.foundNullInactive,
-    origin: 'people',
-    expected: { kind: 'person', value: personOf(USER_DATA, 0) },
-  },
-  {
-    name: 'new bean (isnew 1) for an unknown user reads as no person',
+    name: 'legacy 404 envelope for an id no pool person holds reads as no person',
     userId: OTHER_USER_ID,
-    response: RECORDED.isNew,
-    origin: 'people',
-    expected: { kind: 'person', value: null },
-  },
-  {
-    name: 'legacy 404 envelope reads as no person',
-    userId: SIGNER_USER_ID,
     response: RECORDED.notFound,
     origin: 'people',
     expected: { kind: 'person', value: null },
   },
   {
-    name: '401 authorization denial rejects with PeopleReadDeniedError',
+    name: '401 for a missing user token rejects with PeopleReadDeniedError',
     userId: SIGNER_USER_ID,
     response: RECORDED.unauthorized,
     origin: 'people',
@@ -289,6 +207,13 @@ const RESPONSE_CASES: readonly ResponseCase[] = [
   },
   {
     name: '403 site mismatch rejects with PeopleReadDeniedError',
+    userId: SIGNER_USER_ID,
+    response: RECORDED.siteMismatch,
+    origin: 'people',
+    expected: { kind: 'denied', status: 403, type: 'authorization' },
+  },
+  {
+    name: '403 for a workload without service:e-signature rejects with PeopleReadDeniedError',
     userId: SIGNER_USER_ID,
     response: RECORDED.forbidden,
     origin: 'people',
@@ -329,7 +254,7 @@ describe("e-signature people client reading people's answers", () => {
   it.each(RESPONSE_CASES)('$name', async ({ userId, response, origin, expected }) => {
     const findings = contractFindings({
       method: 'GET',
-      path: `/_api/json/v1/${SITE_ID}/user/${userId}`,
+      path: READ_PATH,
       status: response.status,
       contentType: response.headers['content-type'],
       body: response.body,

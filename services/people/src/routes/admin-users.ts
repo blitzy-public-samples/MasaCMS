@@ -1,6 +1,6 @@
 // The people reads of the cUsers admin circuit: group and user lists, search, advanced search, the Edit User and Edit
 // Address reads, and `route()` with its return-URL sanitising [legacy: admin/core/controllers/cusers.cfc:172-451,498-518].
-import { Roles, hasAnyRole, serviceRole, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
+import { AuthDenial, Roles, hasAnyRole, serviceRole, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import {
   LegacyServiceUnavailableError,
   accessControlOriginDomains,
@@ -18,7 +18,7 @@ import {
   type ApiKeyHint,
   type LegacyQuery,
 } from '@opt2/platform/legacy-compat';
-import { legacyParamsOf, type Clock, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
+import { abandonOnDisconnect, legacyParamsOf, type Clock, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import {
   registryEntries,
   registryEntryForTenant,
@@ -31,6 +31,7 @@ import {
 } from '@opt2/platform/tenancy';
 import { listAddresses } from '../domain/addresses.js';
 import { extendSetData, type ExtendValue } from '../domain/extended-data.js';
+import { expirePasswordsSetting, passwordExpired } from '../domain/password-expiry.js';
 import { newUserValues, type UserValues } from '../domain/person.js';
 import { awaitPersonOpen, observePersons, type PersonObserver, type PersonObserverDeps } from '../domain/roster-protocol.js';
 import {
@@ -78,6 +79,8 @@ type GroupOption = Schemas['GroupOption'];
 type UserListRow = Schemas['UserListRow'];
 type RouteRedirect = Schemas['RouteRedirect'];
 type CurrentUserQuery = operations['readCurrentUser']['parameters']['query'];
+type PoolUser = Schemas['PoolUser'];
+type PoolUserQuery = operations['readPoolUser']['parameters']['query'];
 
 /** What the cUsers reads use; `photoFileExts` is strategies-content's photo lookup, without which every `photoFileExt` is ''. */
 export type AdminUserRouteDeps = {
@@ -90,6 +93,8 @@ export type AdminUserRouteDeps = {
   sleep?: SearchDeps['sleep'];
   /** The roster protocol's wait on a user an open operation closes; defaults to `awaitPersonOpen`. */
   awaitPersonOpen?: (db: TenantDb, tenantId: string, userId: string, opts: { clock: Clock }) => Promise<void>;
+  /** configBean `expirePasswords`; defaults to `MURA_EXPIREPASSWORDS` of `process.env`. */
+  expirePasswords?: number;
 };
 
 /** What `sanitizeHref` checks an absolute URL against. */
@@ -126,6 +131,19 @@ const CURRENT_USER_QUERY = {
   },
 } as const;
 
+// Only e-signature's signer check reads it; the auth hooks hold `siteid` to the user token's site.
+const POOL_USER_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([serviceRole('e-signature')]) });
+
+// The readPoolUser query as the contract declares it; Fastify validates it once, before the handler.
+const POOL_USER_QUERY = {
+  type: 'object',
+  required: ['userid'],
+  properties: {
+    siteid: { type: 'string', minLength: 1 },
+    userid: { type: 'string', minLength: 1 },
+  },
+} as const;
+
 /** userBean properties whose datatype registerEntity hints for the JSON API serializer (jsonApiUtility.cfc:261-271; userBean.cfc:78-123). */
 const USER_ENTITY_HINTS: readonly ApiKeyHint[] = Object.freeze([
   ...['type', 's2', 'perm', 'inactive', 'ispublic', 'subscribe', 'keepprivate', 'isnew'].map((key): ApiKeyHint => ({ key, hint: 'integer' })),
@@ -135,9 +153,9 @@ const USER_ENTITY_HINTS: readonly ApiKeyHint[] = Object.freeze([
 /** addressBean `numeric` properties registerEntity hints as floats, which an `addresses` query's cells take (addressBean.cfc:83-98). */
 const ADDRESS_ENTITY_HINTS: readonly ApiKeyHint[] = Object.freeze(['isprimary', 'longitude', 'latitude'].map((key): ApiKeyHint => ({ key, hint: 'float' })));
 
-/** `tusers` columns in bootstrap casing without `Password`, plus `photoFileExt`, with the kind each value takes on the wire. */
+/** `tusers` columns in bootstrap casing without `Password` and `PasswordCreated`, plus `photoFileExt`, with the kind each value takes on the wire. */
 const TUSERS_COLUMNS: ReadonlyArray<readonly [name: string, kind: 's' | 'i' | 't']> = [
-  ['UserID', 's'], ['GroupName', 's'], ['Fname', 's'], ['Lname', 's'], ['UserName', 's'], ['PasswordCreated', 't'],
+  ['UserID', 's'], ['GroupName', 's'], ['Fname', 's'], ['Lname', 's'], ['UserName', 's'],
   ['Email', 's'], ['Company', 's'], ['JobTitle', 's'], ['mobilePhone', 's'], ['Website', 's'], ['Type', 'i'],
   ['subType', 's'], ['Ext', 'i'], ['ContactForm', 's'], ['Admin', 'i'], ['S2', 'i'], ['LastLogin', 't'],
   ['LastUpdate', 't'], ['LastUpdateBy', 's'], ['LastUpdateByID', 's'], ['Perm', 'i'], ['InActive', 'i'], ['isPublic', 'i'],
@@ -148,6 +166,9 @@ const TUSERS_COLUMNS: ReadonlyArray<readonly [name: string, kind: 's' | 'i' | 't
 
 /** Bootstrap spelling of each `tusers` column, by lower-cased name. */
 const TUSERS_SPELLING: ReadonlyMap<string, string> = new Map(TUSERS_COLUMNS.map(([name]) => [name.toLowerCase(), name]));
+
+/** Lower-cased credential columns a legacy user query selects and no user list row carries. */
+const CREDENTIAL_COLUMNS: ReadonlySet<string> = new Set(['password', 'passwordcreated']);
 
 /** `tuseraddresses` columns in bootstrap casing. */
 const ADDRESS_COLUMNS = [
@@ -252,10 +273,11 @@ function wireCell(value: unknown): unknown {
   return value instanceof Date ? localTimestamp(value) : value;
 }
 
-/** A legacy user query row with its `tusers` columns in bootstrap casing. */
+/** A legacy user query row with its `tusers` columns in bootstrap casing, less its credential columns. */
 function userListRow(row: Readonly<Record<string, unknown>>): UserListRow {
   const wire: Record<string, unknown> = {};
   for (const [column, value] of Object.entries(row)) {
+    if (CREDENTIAL_COLUMNS.has(column.toLowerCase())) continue;
     const name = TUSERS_SPELLING.get(column.toLowerCase()) ?? column;
     Object.defineProperty(wire, name, { value: wireCell(value), writable: true, enumerable: true, configurable: true });
   }
@@ -588,6 +610,27 @@ async function readCurrentUser(deps: AdminUserRouteDeps, claims: UserClaims | un
   });
 }
 
+// ---- The pool user of the e-signature fixture's poolUserId [legacy: legacy-fixtures/cfml/modules/esignature.cfc:274-285] ----
+
+/** `userManager.read(userid)` within the token site's public and private user pools, observed as every person read is; null when neither holds the id. */
+async function readPoolUser(deps: AdminUserRouteDeps, claims: UserClaims, userId: string): Promise<PoolUser | null> {
+  const entry = await tokenSite(deps.db, claims);
+  const pools = [...new Set([userPool(entry, true).tenantId, userPool(entry, false).tenantId])];
+  const read = await observePersons(
+    observerDeps(deps),
+    (observer) => findPersonRows(deps, observer, pools, userId),
+    async (stored) => {
+      // A person identity does not list (a missing or pending account) has no complete `tusers` row to read.
+      const account = stored === null ? undefined : await deps.identity.readAccount(stored.person.userid);
+      return stored === null || account === undefined ? null : { stored, account };
+    },
+  );
+  if (read === null) return null;
+  const { person, categoryIds, extend } = read.stored;
+  const values = userBeanValues({ person, account: read.account, groupIds: [], categoryIds, extend, photoFileExt: '' }, deps.clock);
+  return { userid: values.userid, siteid: values.siteid, type: cfToNumber(values.type) };
+}
+
 // ---- Advanced-search criteria and the session's retained values ----
 
 /** The session's advanced-search criteria as identity holds them, with admin request start-up's `param` defaults [legacy: admin/Application.cfc:459-466]. */
@@ -659,6 +702,8 @@ interface Admitted {
   ctx: CusersContext;
   /** The merged request values as admin request start-up reads them, before `before()` defaults any. */
   params: Readonly<Record<string, unknown>>;
+  /** Lets the client's disconnect stop the rest of this read; called only before reads, never before a write. */
+  abandonOnDisconnect(): void;
 }
 
 /** A route handler behind cUsers `before()`: a refused gate answers the denial, every other request runs `handler`. */
@@ -670,7 +715,7 @@ function cusersHandler<R>(handler: (admitted: Admitted) => Promise<R>, options?:
       return undefined;
     }
     const params = legacyParamsOf(request);
-    return handler({ claims: access, ctx: normaliseCusersParams(params, access, options), params });
+    return handler({ claims: access, ctx: normaliseCusersParams(params, access, options), params, abandonOnDisconnect: () => abandonOnDisconnect(request) });
   };
 }
 
@@ -688,6 +733,7 @@ interface UserListReads<L, A> {
 export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminUserRouteDeps): Promise<void> {
   const { identity } = deps;
   const search: SearchDeps = { db: deps.db, repo: deps.repository, identity, photoFileExts: deps.photoFileExts, clock: deps.clock, sleep: deps.sleep };
+  const expirePasswords = deps.expirePasswords ?? expirePasswordsSetting(process.env);
 
   /** A user list page on the wire; `listUnassignedUsers` marks its people without a stored group membership, or all with `allUnassigned`. */
   async function userListPage(page: UsersPage<Record<string, unknown>>, allUnassigned: boolean): Promise<Schemas['UserListPageV2']> {
@@ -711,13 +757,30 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
 
   /** Registers `reads` under `prefix` behind the cUsers gate, each route with its roles and service transport. */
   function registerUserListReads<L, A>(prefix: '/v1' | '/v2', reads: UserListReads<L, A>): void {
-    app.get(`${prefix}/users`, { config: { opt2: LIST_USERS_AUTH } }, cusersHandler((admitted) => reads.listUsers(admitted), { allowAllSites: true }));
-    app.get(`${prefix}/users/search`, { config: { opt2: CUSERS_AUTH } }, cusersHandler((admitted) => reads.searchUsers(admitted)));
+    app.get(
+      `${prefix}/users`,
+      { config: { opt2: LIST_USERS_AUTH } },
+      cusersHandler((admitted) => {
+        admitted.abandonOnDisconnect();
+        return reads.listUsers(admitted);
+      }, { allowAllSites: true }),
+    );
+    app.get(
+      `${prefix}/users/search`,
+      { config: { opt2: CUSERS_AUTH } },
+      cusersHandler((admitted) => {
+        admitted.abandonOnDisconnect();
+        return reads.searchUsers(admitted);
+      }),
+    );
     // `cUsers.advancedSearch` of the session's stored criteria.
     app.get(
       `${prefix}/users/advanced-search`,
       { config: { opt2: CUSERS_AUTH } },
-      cusersHandler(async (admitted) => reads.advancedSearch(admitted, storedCriteria(await identity.adminSessionState()))),
+      cusersHandler(async (admitted) => {
+        admitted.abandonOnDisconnect();
+        return reads.advancedSearch(admitted, storedCriteria(await identity.adminSessionState()));
+      }),
     );
     // Admin request start-up's capture of a non-empty `param`, then `cUsers.advancedSearch` [legacy: admin/Application.cfc:459-498].
     app.post(
@@ -727,6 +790,8 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
         const previous = storedCriteria(await identity.adminSessionState());
         const criteria = buildAdvancedSearchCriteria(new Map(Object.entries(admitted.params)), previous);
         if (criteria !== previous) await identity.saveAdminSessionState(sessionCriteria(criteria));
+        // Legacy keeps the posted criteria whether or not its client stays, so only the read after the save is abandoned.
+        admitted.abandonOnDisconnect();
         return reads.advancedSearch(admitted, criteria);
       }),
     );
@@ -736,7 +801,9 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
   app.get(
     '/v1/users/groups',
     { config: { opt2: CUSERS_AUTH } },
-    cusersHandler(async ({ ctx }): Promise<Schemas['UserGroupsPage']> => {
+    cusersHandler(async (admitted): Promise<Schemas['UserGroupsPage']> => {
+      admitted.abandonOnDisconnect();
+      const { ctx } = admitted;
       // userManager's numeric `isPublic` rejects a boolean word before any read [legacy: core/mura/user/userManager.cfc:119-123].
       const groups = await identity.userGroups(ctx.siteid, numericArgument(ctx.ispublic, 'isPublic', 'getUserGroups'));
       return { items: groups.map(groupListRow), nextn: pageNextN(groups, ctx) };
@@ -821,6 +888,7 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
         tempIsPublic: poolFlag(simpleText(tempIsPublic)),
         lockedSuper: bean.exists && cfToBoolean(bean.values.s2) && !isSuperViewer(claims),
         blockedUntil,
+        passwordExpired: passwordExpired(bean.values, expirePasswords, deps.clock.now()),
         addresses: bean.addresses.map(addressRecord),
         privateGroups: privateGroups.map((group) => groupOption(group, siteNames)),
         publicGroups: publicGroups.map((group) => groupOption(group, siteNames)),
@@ -873,6 +941,21 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
     async (request, reply) => {
       const data = await readCurrentUser(deps, request.opt2Auth.user, request.query);
       return reply.type('application/json').send(createApiSerializer([...USER_ENTITY_HINTS, ...ADDRESS_ENTITY_HINTS]).serialize({ data }));
+    },
+  );
+
+  // The signer read of the e-signature fixture's `poolUserId`, for the user token's own site only.
+  app.get<{ Querystring: PoolUserQuery }>(
+    '/internal/v1/users/pool-user',
+    { schema: { querystring: POOL_USER_QUERY }, config: { opt2: POOL_USER_AUTH } },
+    async (request, reply) => {
+      const claims = request.opt2Auth.user;
+      if (claims === undefined || claims.sub === '') throw AuthDenial.unauthenticated('missing-credential');
+      const user = await readPoolUser(deps, claims, request.query.userid);
+      if (user !== null) return reply.type('application/json').send(user);
+      // The service's not-found handler answers the legacy 404 envelope.
+      reply.callNotFound();
+      return reply;
     },
   );
 }

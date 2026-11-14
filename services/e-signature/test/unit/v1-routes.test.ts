@@ -40,18 +40,10 @@ const AUDITOR_ROLES = [Roles.systemUser, Roles.esignatureAuditor];
 const DENIED_USER_ID = 'A1B2C3D4-0000-0000-00000000000000DD';
 const B_SIGNER_ID = 'A1B2C3D4-0000-0000-00000000000000B1';
 
-/** A Type 2 user of the tenant-a or tenant-b site, as people's `user` read returns it. */
-const person = (userId: string, siteId: string = TENANT_A.siteId): PersonSummary => ({
-  userId,
-  siteId,
-  type: 2,
-  fname: 'Synthetic',
-  lname: 'Signer',
-  email: 'signer@example.test',
-  inactive: 0,
-});
+/** A Type 2 user of the tenant-a or tenant-b site, as people's pool-user read returns it. */
+const person = (userId: string, siteId: string = TENANT_A.siteId): PersonSummary => ({ userId, siteId, type: 2 });
 
-/** People answering from the fixture users, refusing DENIED_USER_ID as its JSON API refuses another user's record. */
+/** People answering from the fixture users, refusing the read of DENIED_USER_ID. */
 const people: PeopleClient = {
   readPerson: (_siteId, userId) => {
     if (userId.toUpperCase() === DENIED_USER_ID) return Promise.reject(new PeopleReadDeniedError(401, 'authorization'));

@@ -20,6 +20,7 @@ import {
   OAUTH_CLIENT_IDS,
   existingClientEdit,
   newClientEdit,
+  oauthClientRows,
   oauthClients,
   saveErrors,
 } from '../../fixtures/identity/oauth-clients';
@@ -160,11 +161,11 @@ describe('cwebservice before()', () => {
     const ctx = contextFor(adminOn('list'), {
       [routeKey('GET', 'identity', '/v1/oauth-clients')]: {
         status: 200,
-        body: { items: oauthClients, total: 3, nextOffset: null },
+        body: { items: oauthClientRows, total: 3, nextOffset: null },
       },
     });
 
-    await expect(pageOf('list').load?.(ctx)).resolves.toEqual({ clients: oauthClients });
+    await expect(pageOf('list').load?.(ctx)).resolves.toEqual({ clients: oauthClientRows });
     expect(ctx.req.rc).toMatchObject({ ...CWEBSERVICE_RC_DEFAULTS, siteid: SITE });
   });
 

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { Roles, collectRouteMatrix, moduleRole, type Role } from '@opt2/platform/auth';
-import { LEGACY_ADMIN_SENTINEL_ID, isCfUuid } from '@opt2/platform/legacy-compat';
+import { LEGACY_ADMIN_SENTINEL_ID, apiUnavailableResponse, isCfUuid } from '@opt2/platform/legacy-compat';
 import {
   CSRF_CONSUME_PATH,
   IDENTITY_SERVICE,
@@ -76,6 +76,8 @@ const DISPLAY_FIELDS = /^SELECT responsedisplayfields FROM/;
 const FULL_FIELDS = /^SELECT DISTINCT formfield/;
 const READ_RESPONSE = /^SELECT \* FROM "content"\."form_response_packet" WHERE tenant_id = \$1 AND .* LIMIT 1$/;
 const RESPONSES = /^SELECT r\.\* FROM "content"\."form_response_packet" r/;
+const RESPONSE_CURSOR = /^DECLARE content_rows_\d+ NO SCROLL CURSOR FOR SELECT r\.\* FROM "content"\."form_response_packet" r /;
+const RESPONSE_BATCH = /^FETCH FORWARD \d+ FROM content_rows_\d+$/;
 const RESPONSE_LOCK = /^SELECT \* FROM "content"\."form_response_(packet|question)" WHERE tenant_id = \$1 AND \(responseid = ANY.* FOR UPDATE$/;
 const FORM_VERSIONS_LOCK = /^SELECT \* FROM "content"\."content" WHERE tenant_id = \$1 AND \(siteid = \$2 AND contentid = ANY.* FOR UPDATE$/;
 const FILE_COLUMNS = /^SELECT fileid, fileext, filesize, filename AS assocfilename/;
@@ -564,19 +566,39 @@ describe('carch.search', () => {
     expect([ran(SEARCH), saved]).toEqual([false, []]);
   });
 
-  it('searches the site, pages by 30 from startrow, stores session.keywords and reads the clipboard', async () => {
-    t.db.respond(SEARCH, [{ ...versionRow(), supersort: 0, priority: 2, haskids: 0 }]);
-    identity.state = { mura: { copyContentID: CHILD, copySiteID: SITE } };
-    const rc = await rcOf(`${SEARCH_URL}?keywords=About&startrow=31`);
-    expect(rc.rslist).toEqual([expect.objectContaining({ contentid: NODE, title: 'About' })]);
-    expect(rc.nextn).toMatchObject({ totalRecords: 1, recordsPerPage: 30, startRow: 31 });
-    expect([rc.copyContentID, rc.copySiteID]).toEqual([CHILD, SITE]);
+  /** A getPrivateSearch row of tenant-a. */
+  const searchRow = (overrides: Json = {}): Json => ({ ...versionRow(overrides), supersort: 0, priority: 2, haskids: 0 });
+
+  /** `count` search matches, `about-1` first. */
+  const matches = (count: number): Json[] => Array.from({ length: count }, (_, i) => searchRow({ filename: `about-${String(i + 1)}` }));
+
+  it.each([
+    ['no page', ''],
+    ['page 1', '&page=1'],
+    ['page 2', '&page=2'],
+    ['page x', '&page=x'],
+    ['page -4', '&page=-4'],
+  ] as const)('halts %s of 65 matches with the legacy 503 after the search and the session.keywords write', async (_name, query) => {
+    t.db.respond(SEARCH, matches(65));
+    const res = await call('GET', `${SEARCH_URL}?keywords=About${query}`);
+    expect([res.statusCode, res.json()], res.body).toEqual([503, JSON.parse(apiUnavailableResponse().body)]);
     expect(saved).toEqual([{ keywords: 'About' }]);
+    expect([SEARCH, CRUMBS, WRITE].map((pattern) => ran(pattern))).toEqual([true, false, false]);
     expect(paramsOfFirst(SEARCH)).toContain(SITE);
   });
 
-  it('reads a startrow that is no positive number as the first row', async () => {
-    expect(((await rcOf(`${SEARCH_URL}?keywords=x&startrow=-4`)).nextn as Json).startRow).toBe(1);
+  it.each([
+    ['no match', 0, '', 1],
+    ['a page past the last', 65, '&page=4', 91],
+  ] as const)('answers %s with no rows, its pager, the clipboard and session.keywords', async (_name, count, query, startRow) => {
+    t.db.respond(SEARCH, matches(count));
+    identity.state = { mura: { copyContentID: CHILD, copySiteID: SITE } };
+    const rc = await rcOf(`${SEARCH_URL}?keywords=About${query}`);
+    expect(rc.rslist).toEqual([]);
+    expect(rc.nextn).toMatchObject({ totalRecords: count, recordsPerPage: 30, startRow });
+    expect(rc).not.toHaveProperty('site');
+    expect([rc.copyContentID, rc.copySiteID]).toEqual([CHILD, SITE]);
+    expect(saved).toEqual([{ keywords: 'About' }]);
   });
 });
 
@@ -910,14 +932,18 @@ describe('carch.hist and carch.audit', () => {
   });
 });
 
-describe('carch.multiFileUpload and the version summary', () => {
-  it('reads the upload screen of the parent named by the path', async () => {
-    t.db.respond(CRUMBS, [crumb(NODE)]);
-    t.db.respond(PAGE_COUNT, [{ counter: 7 }]);
-    const rc = await rcOf(`/v1/sites/${SITE}/content/${NODE}/multi-file-upload?contentid=${CHILD}`);
-    expect(rc).toMatchObject({ parentid: NODE, contentid: CHILD, crumbdata: [expect.objectContaining({ contentid: NODE })], perm: 'editor', rsCount: [], rsPageCount: [{ counter: 7 }], rsRestrictGroups: [] });
-    expect(paramsOfFirst(CRUMBS)).toEqual([[NODE, NODE.toLowerCase()], SITE]);
-    expect(paramsOfFirst(ITEM_COUNT)).toEqual([[CHILD, CHILD.toLowerCase()], SITE]);
+describe('carch.multiFileUpload, carch.imagedetails and the version summary', () => {
+  it.each([
+    ['the upload screen of a parent', `/v1/sites/${SITE}/content/${NODE}/multi-file-upload`],
+    ['the upload screen of a child', `/v1/sites/${SITE}/content/${NODE}/multi-file-upload?contentid=${CHILD}`],
+    ['the details of listed files', `/v1/sites/${SITE}/files/image-details?fileid=${FILE_PNG},${FILE_JPG}`],
+    ['the details of a version’s file', `/v1/sites/${SITE}/files/image-details?contenthistid=${HIST}`],
+    ['the details of no file', `/v1/sites/${SITE}/files/image-details`],
+  ] as const)('halts %s with the legacy 503 after before(), reading and writing no content', async (_name, url) => {
+    const res = await call('GET', url);
+    expect([res.statusCode, res.json()], res.body).toEqual([503, JSON.parse(apiUnavailableResponse().body)]);
+    expect([CRUMBS, PAGE_COUNT, ITEM_COUNT, FILE_COLUMNS, VERSION, WRITE].map((pattern) => ran(pattern))).toEqual([false, false, false, false, false, false]);
+    expect(identityCalls('GET', '/v1/sessions/current/admin-state')).toHaveLength(1);
   });
 
   it('summarises a stored version with its node stats', async () => {
@@ -1065,18 +1091,21 @@ describe('carch.datamanager', () => {
     expect(paramsOfFirst(FORM_VERSIONS_LOCK)).toEqual([TENANT_A.tenantId, SITE, [NODE, NODE.toLowerCase()], ['Form']]);
   });
 
-  it('deletes the filtered responses and stores a new search in session.mura', async () => {
-    t.db.respond(RESPONSES, [packet(), packet({ responseid: 'R2' })]);
+  it('deletes the filtered responses in their cursor order and stores a new search in session.mura', async () => {
+    t.db.respond(RESPONSE_BATCH, [packet(), packet({ responseid: 'R2' })]);
     identity.state = { locale: 'en_US', mura: { nextN: 20 } };
     const body = await writeOf(DELETE_URL, { minute1: '0', hour1: '0', minute2: '59', hour2: '23', delete: 'true', newSearch: '1', keywords: 'Ann', filterBy: 'name' });
     expect(body.data).toMatchObject({ outcome: 'none', filteredDeletions: 2, keywords: 'Ann' });
     expect(body.saved).toBe(false);
     expect(saved).toEqual([{ mura: { nextN: 20, filterBy: 'name', datakeywords: 'Ann' } }]);
     expect(consumed).toEqual([]);
+    expect([ran(RESPONSES), ran(RESPONSE_CURSOR)]).toEqual([false, true]);
+    const locks = t.db.statements.filter((statement) => RESPONSE_LOCK.test(statement.sql)).map((statement) => statement.params[1]);
+    expect(locks).toEqual([[RESPONSE, RESPONSE.toLowerCase()], [RESPONSE, RESPONSE.toLowerCase()], ['R2', 'r2'], ['R2', 'r2']]);
   });
 });
 
-describe('selectmedia, imagedetails, selectfields and variationtargeting', () => {
+describe('selectmedia, selectfields and variationtargeting', () => {
   it('lists the png, jpg, jpeg and svg files of a node, its children and grandchildren once each', async () => {
     t.db.respond(ACTIVE, [versionRow({ fileid: FILE_PNG, fileext: 'PNG' })]);
     t.db.respond(NEST, (params) =>
@@ -1092,24 +1121,6 @@ describe('selectmedia, imagedetails, selectfields and variationtargeting', () =>
       { fileid: FILE_PNG, title: 'About', contentid: NODE, imageURL: expect.stringContaining(FILE_PNG) },
       { fileid: FILE_JPG, title: 'Child', contentid: CHILD, imageURL: expect.stringContaining(FILE_JPG) },
     ]);
-  });
-
-  it('details the listed files with their renditions, a missing file without metadata', async () => {
-    t.db.respond(FILE_COLUMNS, [{ fileid: FILE_PNG, fileext: 'png', filesize: 10, assocfilename: 'a.png', contenttype: 'image', contentsubtype: 'png' }]);
-    const rc = await rcOf(`/v1/sites/${SITE}/files/image-details?fileid=${FILE_PNG},${FILE_JPG}`);
-    const images = rc.images as Json[];
-    expect(images.map((image) => [image.fileid, (image.rsMeta as Json | null)?.assocfilename ?? null])).toEqual([[FILE_PNG, 'a.png'], [FILE_JPG, null]]);
-    expect(Object.keys(images[0] ?? {})).toEqual(['fileid', 'rsMeta', 'sourceImage', 'small', 'medium', 'large']);
-    expect(images[0]?.medium).toEqual(expect.stringContaining(FILE_PNG));
-    expect(rc).not.toHaveProperty('contentBean');
-  });
-
-  it('details the file of a version when no fileid is given', async () => {
-    t.db.respond(VERSION, [versionRow({ fileid: FILE_PNG, fileext: 'png', filesize: 10 })]);
-    const rc = await rcOf(`/v1/sites/${SITE}/files/image-details?contenthistid=${HIST}`);
-    expect(rc.fileid).toBe(FILE_PNG);
-    expect(rc.contentBean).toMatchObject({ contenthistid: HIST, isNew: 0 });
-    expect((rc.images as Json[]).map((image) => image.fileid)).toEqual([FILE_PNG]);
   });
 
   it('offers the feed fields and the site’s content attributes sorted case-sensitively, less the requested fields', async () => {

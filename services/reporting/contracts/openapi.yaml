@@ -167,6 +167,53 @@ paths:
           $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixtureGetExportByPost
+      summary: Answers as `fixtureGetExport` when `X-HTTP-Method-Override` is `GET`.
+      description: Any other effective method answers 404 `notFound`.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - reporting.exporter
+      x-opt2-site-check: false
+      x-opt2-route-keys: ['fixture:reporting/exports/{id}@get']
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureSiteId'
+        - $ref: '#/components/parameters/UseDataNamespace'
+        - $ref: '#/components/parameters/MethodOverride'
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureMergedFields'
+      responses:
+        '200':
+          description: The job.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json;charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/FixtureExportJobEnvelope'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+          description: The job is outside the site, or the effective method is not `GET`.
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /legacy-fixtures/cfml/api.cfm/reporting/exports/{id}/download:
     parameters:
       - $ref: '#/components/parameters/FixtureExportId'
@@ -198,6 +245,44 @@ paths:
           $ref: '#/components/responses/FixtureForbidden'
         '404':
           $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureNotReady'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixtureDownloadExportByPost
+      summary: Answers as `fixtureDownloadExport` when `X-HTTP-Method-Override` is `GET`.
+      description: Any other effective method answers 404 `notFound`.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - reporting.exporter
+      x-opt2-site-check: false
+      x-opt2-route-keys: ['fixture:reporting/exports/{id}/download@get']
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureSiteId'
+        - $ref: '#/components/parameters/UseDataNamespace'
+        - $ref: '#/components/parameters/MethodOverride'
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureMergedFields'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureExportFile'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+          description: The job is outside the site, or the effective method is not `GET`.
         '409':
           $ref: '#/components/responses/FixtureNotReady'
         '500':
@@ -1078,6 +1163,7 @@ components:
       schema:
         type: integer
         minimum: 1
+        maximum: 1000
     UseDataNamespace:
       name: useDataNamespace
       in: query
@@ -1210,6 +1296,16 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/CreateExportRequest'
+    FixtureMergedFields:
+      required: false
+      description: Optional query fields sent as a form or JSON body, merged over the query string as the fixture merges url, form and a JSON body.
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            type: object
+        application/json:
+          schema:
+            type: object
     Push:
       required: true
       content:

@@ -1,7 +1,7 @@
 /** Unit suite for the site settings bean's validate() port in src/legacy/validation.ts. */
 import { describe, expect, it } from 'vitest';
 import { applySet, newSiteBean, type SiteBean } from '../../src/legacy/site-fields.js';
-import { SITE_ERROR_INVALID, SITE_ERROR_REQUIRED, hasSiteErrors, validateSite } from '../../src/legacy/validation.js';
+import { SITE_ERROR_INVALID, SITE_ERROR_REQUIRED, validateSite } from '../../src/legacy/validation.js';
 
 function beanWithSiteId(siteId: string): SiteBean {
   return applySet(newSiteBean(), { siteID: siteId });
@@ -16,7 +16,6 @@ describe('validateSite', () => {
   it('reports an empty site id as required', () => {
     const errors = validateSite(beanWithSiteId(''));
     expect(errors).toStrictEqual({ siteid: SITE_ERROR_REQUIRED });
-    expect(hasSiteErrors(errors)).toBe(true);
   });
 
   it.each(['admin', 'ADMIN', 'Admin', 'tasks', 'TASKS', 'Tasks'])(
@@ -24,7 +23,6 @@ describe('validateSite', () => {
     (siteId) => {
       const errors = validateSite(beanWithSiteId(siteId));
       expect(errors).toStrictEqual({ siteid: SITE_ERROR_INVALID });
-      expect(hasSiteErrors(errors)).toBe(true);
     },
   );
 
@@ -33,7 +31,6 @@ describe('validateSite', () => {
     (siteId) => {
       const errors = validateSite(beanWithSiteId(siteId));
       expect(errors).toStrictEqual({});
-      expect(hasSiteErrors(errors)).toBe(false);
     },
   );
 
@@ -43,6 +40,5 @@ describe('validateSite', () => {
 
     const errors = validateSite(applySet(reserved, { siteID: 'default' }));
     expect(errors).toStrictEqual({});
-    expect(hasSiteErrors(errors)).toBe(false);
   });
 });

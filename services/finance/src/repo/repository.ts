@@ -317,6 +317,14 @@ export function createFinanceRepository({ db, stagingDb, storage, clock = system
     );
   }
 
+  /** Deletes a row, dropping an attachment row's `content`; its stored object stays, as the export manifest lists remaining rows only. */
+  function remove<R = RepositoryRow>(tx: TenantTx, table: string, key: RepositoryRow, ctx: WriteContext = {}): Promise<R | null> {
+    if (table !== FINANCE_ATTACHMENT.table) return base.delete<R>(tx, table, key, ctx);
+    const stripped: RepositoryRow = { ...key };
+    delete stripped[ATTACHMENT_CONTENT_FIELD];
+    return base.delete<R>(tx, table, stripped, ctx);
+  }
+
   function insertRecord(tx: TenantTx, row: NewFinanceRecord, ctx: WriteContext = {}): Promise<FinanceRecordRow> {
     const stored = { ...row, record_id: row.record_id ?? cfUuid(), row_version: row.row_version ?? '1' };
     return insert<FinanceRecordRow>(tx, FINANCE_RECORD.table, stored, ctx);
@@ -376,6 +384,7 @@ export function createFinanceRepository({ db, stagingDb, storage, clock = system
     update,
     upsert,
     replaceOne,
+    delete: remove,
     db,
     storage,
     insertRecord,

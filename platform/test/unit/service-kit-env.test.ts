@@ -138,6 +138,18 @@ describe('loadEnv', () => {
   });
 
   it.each([
+    ['PORT=abc and PG_HOST unset', { ...localEnv, PORT: 'abc', PG_HOST: undefined }, ['PORT: Invalid input: expected number, received NaN', 'PG_HOST: is required when OPT2_DB_AUTH=password']],
+    ['PORT=abc, OPT2_TASKS_ADAPTER=cloud and OPT2_JWKS_URL unset', { ...localEnv, PORT: 'abc', OPT2_TASKS_ADAPTER: 'cloud', OPT2_JWKS_URL: undefined }, ['PORT: Invalid input: expected number, received NaN', 'OPT2_JWKS_URL: is required when OPT2_ENV=local', 'OPT2_TASKS_ADAPTER: must equal OPT2_ENV']],
+    ['PORT=abc and CLOUD_SQL_INSTANCE unset in the cloud', { ...cloudEnv, PORT: 'abc', CLOUD_SQL_INSTANCE: undefined }, ['PORT: Invalid input: expected number, received NaN', 'CLOUD_SQL_INSTANCE: is required when OPT2_DB_AUTH=iam']],
+    ['an out-of-range PG_PORT, not also reported missing', { ...localEnv, PG_PORT: '70000', PG_HOST: undefined }, ['PG_PORT: Too big: expected number to be <=65535', 'PG_HOST: is required when OPT2_DB_AUTH=password']],
+    ['an invalid PUBSUB_EMULATOR_HOST, not also reported set, in the cloud', { ...cloudEnv, PUBSUB_EMULATOR_HOST: 'localhost:0', GOOGLE_CLOUD_PROJECT: undefined }, ['PUBSUB_EMULATOR_HOST: port must be from 1 to 65535', 'GOOGLE_CLOUD_PROJECT: is required when OPT2_ENV=cloud']],
+    ['an invalid OPT2_ENV, which skips the mode rules', { ...localEnv, OPT2_ENV: 'staging', OPT2_TASKS_ADAPTER: 'cloud', OPT2_JWKS_URL: undefined, PG_USER: undefined }, ['OPT2_ENV: Invalid option: expected one of "local"|"cloud"', 'PG_USER: is required when OPT2_DB_AUTH=password']],
+    ['an unset OPT2_ENV, which skips the mode rules', { ...cloudEnv, OPT2_ENV: undefined, PG_PASSWORD: PG_SECRET }, ['OPT2_ENV: is required', 'PG_PASSWORD: must be unset when OPT2_DB_AUTH=iam']],
+  ])('lists the cross-variable issues after the parse issues for %s', (_case, source, expected) => {
+    expect(issuesOf(source)).toEqual(expected);
+  });
+
+  it.each([
     ['PUBSUB_EMULATOR_HOST', 'localhost', 'PUBSUB_EMULATOR_HOST: Invalid string'],
     ['PUBSUB_EMULATOR_HOST', 'localhost:0', 'PUBSUB_EMULATOR_HOST: port must be from 1 to 65535'],
     ['PUBSUB_EMULATOR_HOST', 'localhost:99999', 'PUBSUB_EMULATOR_HOST: port must be from 1 to 65535'],
@@ -349,6 +361,15 @@ describe('EnvValidationError safe text', () => {
     ['an invalid PG_PORT and LOG_LEVEL from loadEnv', () => rejectionOf({ ...localEnv, PG_PORT: 'notaport', LOG_LEVEL: 'verbose' }), 'people: invalid environment (PG_PORT, LOG_LEVEL)'],
     ['a nested OPT2_SERVICE_URLS entry from loadEnv', () => rejectionOf({ ...localEnv, OPT2_SERVICE_URLS: '{"people":"not a url"}' }), 'people: invalid environment (OPT2_SERVICE_URLS)'],
     ['an invalid service name from loadEnv', () => rejectionOf({ ...localEnv, OPT2_SERVICE_NAME: 'Bad Name' }), 'invalid environment (OPT2_SERVICE_NAME)'],
+    [
+      'a required OPT2_SERVICE_URLS entry',
+      () =>
+        new EnvValidationError(
+          ['OPT2_SERVICE_URLS.people: is required', 'OPT2_SERVICE_URLS.strategies-content: is required', 'OPT2_GATEWAY_URL: is required (or OPT2_SERVICE_URLS.gateway)'],
+          'identity',
+        ),
+      'identity: invalid environment (OPT2_SERVICE_URLS.people, OPT2_SERVICE_URLS.strategies-content, OPT2_GATEWAY_URL)',
+    ],
     ['repeated names', () => new EnvValidationError(['PG_HOST: is required', 'PG_PORT: is required', 'PG_HOST: must be set'], 'people'), 'people: invalid environment (PG_HOST, PG_PORT)'],
     ['issues without a variable name', () => new EnvValidationError([': custom', 'pg_host: is required'], 'people'), 'people: invalid environment'],
     ['no service', () => new EnvValidationError(['TZ: is required']), 'invalid environment (TZ)'],

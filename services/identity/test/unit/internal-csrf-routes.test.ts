@@ -49,6 +49,7 @@ const CONSUME_CALLERS = [
   'identity',
   'gateway',
   'communications',
+  'e-signature',
   'finance',
   'reporting',
   'surveys',
@@ -176,7 +177,7 @@ describe('route declarations', () => {
 describe('auth denials', () => {
   it('refuse consumeCsrfToken to callers outside its admitted services and to calls without an invocation credential', async () => {
     const body = tokenBody('S-denied');
-    for (const caller of ['e-signature', 'web', 'migration']) {
+    for (const caller of ['stub', 'web', 'migration']) {
       expect((await send(CONSUME, await headersFor(caller, 'S-denied'), body)).statusCode).toBe(403);
     }
     expect((await send(CONSUME, await headersFor(null, 'S-denied'), body)).statusCode).toBe(401);

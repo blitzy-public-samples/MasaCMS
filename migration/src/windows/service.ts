@@ -346,6 +346,7 @@ function fencedOwners(owners: OwnersClient): OwnersClient {
     gate: (...args) => fenced(() => owners.gate(...args)),
     putObject: (...args) => fenced(() => owners.putObject(...args)),
     getObject: (...args) => fenced(() => owners.getObject(...args)),
+    deleteObject: (...args) => fenced(() => owners.deleteObject(...args)),
     getAttachmentObject: (...args) => fenced(() => owners.getAttachmentObject(...args)),
     siteMonitorState: () => fenced(() => owners.siteMonitorState()),
     putSiteMonitorState: (...args) => fenced(() => owners.putSiteMonitorState(...args)),

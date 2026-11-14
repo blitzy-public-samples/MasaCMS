@@ -2,17 +2,23 @@
 import { attr, html, join } from '@/lib/html';
 import type { SafeHtml } from '@/lib/html';
 
-export type HeaderLink = { label: string; href: string };
+/** Label text: a string is encoded, markup (a bundle label) is kept. */
+export type Label = string | SafeHtml;
+
+export type HeaderLink = { label: Label; href: string };
 
 /** Grid cell content: markup is kept, strings and numbers are encoded, `null`/`undefined` render empty. */
 export type GridCell = SafeHtml | string | number | null | undefined;
 
+/** A labelled read-only value: `[label, value]`. */
+export type ValueRow = readonly [label: Label, value: GridCell];
+
 export type AlertKind = 'error' | 'warning' | 'info';
 
-export type SelectOption = { value: string; label: string };
+export type SelectOption = { value: string; label: Label };
 
 /** A submit button; `formAction` sends the form to that URL instead of the form's own action. */
-export type FormButton = { label: string; primary?: boolean; name?: string; value?: string; formAction?: string };
+export type FormButton = { label: Label; primary?: boolean; name?: string; value?: string; formAction?: string };
 
 const VAR_WIDTH = html` class="var-width"`;
 
@@ -26,7 +32,7 @@ const PRIMARY_BUTTON = html` class="btn mura-primary"`;
 const BUTTON = html` class="btn"`;
 
 /** Module page header with an optional button group of links. */
-export function pageHeader(title: string, links: readonly HeaderLink[] = []): SafeHtml {
+export function pageHeader(title: Label, links: readonly HeaderLink[] = []): SafeHtml {
   const nav =
     links.length > 0
       ? html`<div class="nav-module-specific btn-group">${links.map(
@@ -46,9 +52,9 @@ export function block(content: SafeHtml): SafeHtml {
  * @param opts.varWidthColumn zero-based column whose header and cells take the variable width; default 0.
  */
 export function gridTable(
-  headers: readonly string[],
+  headers: readonly Label[],
   rows: ReadonlyArray<readonly GridCell[]>,
-  emptyMessage: string,
+  emptyMessage: Label,
   opts: { varWidthColumn?: number } = {},
 ): SafeHtml {
   if (rows.length === 0) return html`<div class="help-block-empty">${emptyMessage}</div>`;
@@ -76,9 +82,14 @@ function withControlId(control: SafeHtml, id: string): SafeHtml {
 }
 
 /** Labelled form control row whose label targets `controlId`, else the id textInput, select or textarea gave `control`. */
-export function controlGroup(label: string, control: SafeHtml, controlId?: string): SafeHtml {
+export function controlGroup(label: Label, control: SafeHtml, controlId?: string): SafeHtml {
   const target = controlId ?? CONTROL_IDS.get(control);
   return html`<div class="mura-control-group"><label${attr('for', target)}>${label}</label>${control}</div>`;
+}
+
+/** Read-only label and value rows, as legacy edit views show stored values, each value on a line of its own. */
+export function valueRows(rows: readonly ValueRow[]): SafeHtml {
+  return html`${rows.map(([label, value]) => controlGroup(label, html`<div>${value}</div>`))}`;
 }
 
 /** Single-line input with id `opts.id`, default `name`; a `file` input carries no value. */
@@ -113,10 +124,16 @@ export function select(
   return withControlId(html`<select${attr('name', name)}${attr('id', id)}>${items}</select>`, id);
 }
 
-/** Multi-line text input with id `opts.id`, default `name`. */
-export function textarea(name: string, value = '', rows = 6, opts: { id?: string } = {}): SafeHtml {
+/** Multi-line text input with id `opts.id`, default `name`; `opts.readonly` shows a value without editing. */
+export function textarea(name: string, value = '', rows = 6, opts: { id?: string; readonly?: boolean } = {}): SafeHtml {
   const id = opts.id ?? name;
-  return withControlId(html`<textarea${attr('name', name)}${attr('id', id)}${attr('rows', rows)}>${value}</textarea>`, id);
+  return withControlId(
+    html`<textarea${attr('name', name)}${attr('id', id)}${attr('rows', rows)}${attr(
+      'readonly',
+      opts.readonly === true,
+    )}>${value}</textarea>`,
+    id,
+  );
 }
 
 /** Hidden form field. */
@@ -145,7 +162,7 @@ export function formActions(buttons: readonly FormButton[], hidden?: SafeHtml): 
 export function postForm(
   actionUrl: string,
   fields: SafeHtml,
-  submitLabel: string,
+  submitLabel: Label,
   opts: { multipart?: boolean; hidden?: SafeHtml } = {},
 ): SafeHtml {
   const enctype = opts.multipart === true ? html` enctype="multipart/form-data"` : null;
@@ -157,7 +174,7 @@ export function postForm(
 
 /** One-button POST form carrying `hidden` fields and `extra` markup (CSRF fields). */
 export function actionButton(
-  label: string,
+  label: Label,
   actionUrl: string,
   hidden: Readonly<Record<string, string>> = {},
   extra?: SafeHtml,

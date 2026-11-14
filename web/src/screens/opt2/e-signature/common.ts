@@ -4,7 +4,16 @@ import type { components } from '@/generated/clients/e-signature';
 import { okBody, type GatewayResponse } from '@/lib/gateway-client';
 import { attr, html, type SafeHtml } from '@/lib/html';
 import type { Rc, ScreenContext } from '../../registry';
-import { alertBox, errorMessage, opt2ActionUrl, opt2ScreenUrl, type HeaderLink, type Opt2Params } from '../shared';
+import {
+  alertBox,
+  errorMessage,
+  opt2ActionUrl,
+  opt2Label,
+  opt2ScreenUrl,
+  type HeaderLink,
+  type Label,
+  type Opt2Params,
+} from '../shared';
 
 export type ESignatureSchemas = components['schemas'];
 
@@ -61,8 +70,8 @@ export function actionUrl(ctx: ScreenContext, action: string, params: Opt2Params
   return opt2ActionUrl(ESIGNATURE, action, siteParams(ctx, params));
 }
 
-/** Link to `href` with encoded `text`. */
-export function link(href: string, text: string): SafeHtml {
+/** Link to `href` with `text`, encoded unless it is a bundle label. */
+export function link(href: string, text: Label): SafeHtml {
   return html`<a${attr('href', href)}>${text}</a>`;
 }
 
@@ -83,10 +92,10 @@ export function requestLinks(ctx: ScreenContext, id: string | undefined, current
 
 /** Previous and Next links of a paged list on `screen`; nothing when it has one page. */
 export function pagination(ctx: ScreenContext, screen: string, page: Paged, params: Opt2Params = {}): SafeHtml | null {
-  const pageLink = (label: string, pageIndex: number): SafeHtml =>
+  const pageLink = (label: Label, pageIndex: number): SafeHtml =>
     html`<li>${link(screenUrl(ctx, screen, { ...params, pageIndex }), label)}</li>`;
   const previous = page.pageindex > 1 ? pageLink('Previous', page.pageindex - 1) : null;
-  const next = page.pageindex < page.totalpages ? pageLink('Next', page.pageindex + 1) : null;
+  const next = page.pageindex < page.totalpages ? pageLink(opt2Label(ctx, 'Next'), page.pageindex + 1) : null;
   return previous === null && next === null ? null : html`<ul class="pagination">${previous}${next}</ul>`;
 }
 

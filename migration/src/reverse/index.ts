@@ -6,7 +6,7 @@ import { createAwaiter, type AwaitProjectionRequest, type AwaitProjectionResult 
 import { createProjectorLoop, liveTenantSites, type CycleResult, type ProjectorHooks, type StartupGuardRunner } from './projector.js';
 
 export { PROJECTOR_LOCK_KEY } from './projector.js';
-export type { ProjectorHooks, StartupGuardRunner, CycleResult } from './projector.js';
+export type { ProjectorHooks, OperationChangePoint, StartupGuardRunner, CycleResult } from './projector.js';
 export { ProjectionTimeoutError } from './await.js';
 export type { AwaitProjectionRequest, AwaitProjectionResult, PendingPosition, ReadBudget } from './await.js';
 export { CHECKPOINT_TABLE, readCheckpoints, ProjectionConflictError } from './apply-legacy.js';

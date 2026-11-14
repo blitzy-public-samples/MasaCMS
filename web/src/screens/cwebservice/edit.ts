@@ -11,10 +11,13 @@ import { siteBeanOf, sitePaths } from '@/lib/site-paths';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellView } from '@/shell/document';
 import type { PageScreen, ScreenContext } from '../registry';
-import { effectiveGrantType, type WebServiceClient } from './list';
+import { effectiveGrantType } from './list';
 
 /** Field name to legacy validation message, in the order identity reports them. */
 export type WebServiceErrors = IdentityComponents['schemas']['LegacyErrors'];
+
+/** A stored client as identity reads it for the form, its secret included. */
+type StoredClient = IdentityComponents['schemas']['OAuthClient'];
 
 /** A system user of the site's private pool, as people lists it. */
 type ConnectedAccount = PeopleComponents['schemas']['UserListRow'];
@@ -82,7 +85,7 @@ function newClientState(clientid: string, siteid: string): WebServiceEditState {
 }
 
 /** The bean of a stored client. */
-function storedClientState(client: WebServiceClient): WebServiceEditState {
+function storedClientState(client: StoredClient): WebServiceEditState {
   return {
     clientid: client.clientid,
     clientsecret: client.clientsecret ?? '',

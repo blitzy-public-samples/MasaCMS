@@ -71,13 +71,12 @@ const HOME_REDIRECT: Schemas['AdminRedirect'] = Object.freeze({ action: ADMIN_HO
 /** How a bean value is written into its record column. */
 type ColumnKind = 'text' | 'integer' | 'timestamp';
 
-/** The `userDAO.read` columns the bean holds, in bootstrap order, by record name and bean key; UserID, Type and SiteID are set apart. */
+/** The `userDAO.read` columns the bean holds but its credential, in bootstrap order, by record name and bean key; UserID, Type and SiteID are set apart. */
 const PERSON_RECORD_COLUMNS: ReadonlyArray<readonly [column: string, key: string, kind: ColumnKind]> = Object.freeze([
   ['GroupName', 'groupname', 'text'],
   ['Fname', 'fname', 'text'],
   ['Lname', 'lname', 'text'],
   ['UserName', 'username', 'text'],
-  ['PasswordCreated', 'passwordcreated', 'timestamp'],
   ['Email', 'email', 'text'],
   ['Company', 'company', 'text'],
   ['JobTitle', 'jobtitle', 'text'],
@@ -220,10 +219,10 @@ function failOnUnsetUserBean(): never {
 
 /** The legacy 503 of a session user identity holds no account of. */
 function accountUnknown(userId: string): LegacyServiceUnavailableError {
-  return new LegacyServiceUnavailableError(`User ${userId} has no account in the token site's user pools`, 'auto', 'person-unknown');
+  return new LegacyServiceUnavailableError(`User ${userId} has no account under any registered site`, 'auto', 'person-unknown');
 }
 
-/** The session user's account and the tenant of its user-pool site, from identity and the site registry only. */
+/** The session user's own account under any registered site and the tenant of its user-pool site, from identity and the site registry only. */
 async function sessionAccount(roster: RosterDeps, claims: UserClaims): Promise<{ account: AccountView; tenantId: string }> {
   const account = await roster.identity.readAccount(claims.sub);
   if (account === undefined) throw accountUnknown(claims.sub);
@@ -234,7 +233,7 @@ async function sessionAccount(roster: RosterDeps, claims: UserClaims): Promise<{
   return { account, tenantId };
 }
 
-// The bean's memberships are left empty: the screen shows none, and identity lists them only to cUsers callers.
+// The bean's memberships are left empty: the screen shows none.
 /** `edit()`: `userManager.read(session.mura.userID)` and the data of every Edit Profile tab [legacy: admin/core/controllers/ceditprofile.cfc:117-123]. */
 async function readProfile(roster: RosterDeps, claims: UserClaims): Promise<ProfileData> {
   // The located account names the tenant, which no roster save moves; the profile shows the account read with the person.

@@ -19,7 +19,16 @@ import type { Clock } from '@opt2/platform/service-kit';
 import type { EndResult, HydrateResult, MarkUsedResult, UsedSinceResult } from '../../src/session/bridge-client.js';
 import type { LegacyDescribe, LegacyDescribeUser, LegacyUsedToken } from '../../src/session/identity-client.js';
 import { TEST_BRIDGE_KEY, TEST_CLOCK } from './env.js';
-import { sendBytes, sendJson, startHttpDouble, type HttpDouble, type RecordedRequest } from './http-double.js';
+import {
+  createInProcessDouble,
+  sendBytes,
+  sendJson,
+  startHttpDouble,
+  type DoubleHandler,
+  type HttpDouble,
+  type InProcessDouble,
+  type RecordedRequest,
+} from './http-double.js';
 
 /** Path of the bridge's session page, the only bridge page the double serves. */
 export const BRIDGE_SESSION_PATH = '/gateway/legacy-bridge/cfml/session.cfm';
@@ -137,7 +146,7 @@ export type LegacyResponder = (
   session: LegacySession | undefined,
 ) => LegacyResponseSpec | Promise<LegacyResponseSpec>;
 
-/** Options of {@link startLegacyOrigin}. */
+/** Options of {@link startLegacyOrigin} and {@link createInProcessLegacyOrigin}. */
 export interface LegacyOriginOptions {
   /** A request attaching no session starts one and sets its cookies, as ColdFusion does; default true. */
   autoCreateSession?: boolean;
@@ -163,6 +172,12 @@ export type LegacyOrigin = HttpDouble & {
   /** The session's used-token ledger in wire form. */
   usedTokens(legacySessionId: string): LegacyUsedToken[];
 };
+
+/** The legacy origin double served in process through its `fetch`, with no socket. */
+export type InProcessLegacyOrigin = Omit<LegacyOrigin, 'port'> & Pick<InProcessDouble, 'fetch'>;
+
+/** What the legacy origin double adds to the double that serves it. */
+type LegacyOriginMembers = Omit<LegacyOrigin, keyof HttpDouble>;
 
 /** A bridge error answer `{error, message}` with its status, as Application.cfc's raise() throws it. */
 class BridgeFail extends Error {
@@ -520,8 +535,8 @@ function specCookies(spec: LegacyResponseSpec, session: LegacySession | undefine
   return session === undefined || alreadySet ? [] : setCookiesFor(session, now);
 }
 
-/** Starts the legacy origin double on an ephemeral loopback port. */
-export async function startLegacyOrigin(opts: LegacyOriginOptions = {}): Promise<LegacyOrigin> {
+/** The legacy origin's request handler, and the double members it adds over whichever double serves it. */
+function legacyOriginCore(opts: LegacyOriginOptions) {
   const autoCreate = opts.autoCreateSession ?? true;
   const bridgeKey = opts.bridgeKey ?? TEST_BRIDGE_KEY;
   const clock = opts.clock ?? TEST_CLOCK;
@@ -675,13 +690,13 @@ export async function startLegacyOrigin(opts: LegacyOriginOptions = {}): Promise
     else sendJson(res, status, body, headers);
   };
 
-  const double = await startHttpDouble(async (req, res) => {
+  const handler: DoubleHandler = async (req, res) => {
     if (req.path === BRIDGE_SESSION_PATH) bridge(req, res);
     else if (req.path.startsWith(BRIDGE_PREFIX)) sendBytes(res, 404, '');
     else await page(req, res);
-  });
+  };
 
-  const origin: LegacyOrigin = {
+  const over = <D extends Omit<HttpDouble, 'port'>>(double: D): D & LegacyOriginMembers => ({
     ...double,
     sessions,
     bridgeCalls,
@@ -705,7 +720,19 @@ export async function startLegacyOrigin(opts: LegacyOriginOptions = {}): Promise
       timers.clear();
       return double.close();
     },
-  };
-  return origin;
+  });
+  return { handler, over };
+}
+
+/** Starts the legacy origin double on an ephemeral loopback port. */
+export async function startLegacyOrigin(opts: LegacyOriginOptions = {}): Promise<LegacyOrigin> {
+  const { handler, over } = legacyOriginCore(opts);
+  return over(await startHttpDouble(handler));
+}
+
+/** Creates the legacy origin double served in process at `http://legacy-origin.test`. */
+export function createInProcessLegacyOrigin(opts: LegacyOriginOptions = {}): InProcessLegacyOrigin {
+  const { handler, over } = legacyOriginCore(opts);
+  return over(createInProcessDouble(handler, 'http://legacy-origin.test'));
 }
 

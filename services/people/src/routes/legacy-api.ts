@@ -30,7 +30,6 @@ import {
   type ApiNameContext,
   type LegacyApiErrorType,
   type LegacyJsonSerializer,
-  type LegacyQuery,
   type RouteKeyRequest,
   type SerializedLegacyResponse,
   type VariantDeclaration,
@@ -49,10 +48,17 @@ import {
 } from '@opt2/platform/service-kit';
 import { registryEntries, tenantIdForSite, withTenant, type TenantDb, type TenantRegistryEntry, type TenantTx } from '@opt2/platform/tenancy';
 import { listAddresses, saveAddress, type AddressDeps } from '../domain/addresses.js';
-import { EXTEND_CONFIG_DEFAULTS, extendSetData, loadSubmittedAttributes, validateExtendedData } from '../domain/extended-data.js';
+import { EXTEND_CONFIG_DEFAULTS, extendSetData, extendSetsData, loadSubmittedAttributes, validateExtendedData, type ExtendSetData } from '../domain/extended-data.js';
 import { applyUserInput, newUserValues, normaliseParams, resolveUserSite, type UserValues } from '../domain/person.js';
 import { PhotoBranchError, observePersons, runRosterOperation, type PersonObserver, type PersonObserverDeps, type RosterDeps } from '../domain/roster-protocol.js';
-import { getAdvancedSearch, newAdvancedSearchCriteria, viewerScope, type SearchDeps, type SearchParamEntry } from '../domain/search.js';
+import {
+  getAdvancedSearchWindow,
+  newAdvancedSearchCriteria,
+  viewerScope,
+  type AdvancedSearchHold,
+  type SearchDeps,
+  type SearchParamEntry,
+} from '../domain/search.js';
 import {
   ADDRESS_BEAN_DEFAULTS,
   addressBeanValues,
@@ -642,10 +648,10 @@ async function findPersonRows(call: ApiCall, observer: PersonObserver, tenants: 
   return null;
 }
 
-/** `readMembershipIDs` of users: identity's ordered list where it admits the caller, else its owner lookup for people. */
+/** `readMembershipIDs` of users: identity's ordered list for one user, its stored rows by user for a feed's many. */
 async function membershipsOf(call: ApiCall, userIds: readonly string[]): Promise<Map<string, string[]>> {
   const { identity } = call.deps;
-  if (userIds.length === 1 && (call.caller.superUser || call.caller.adminUser)) {
+  if (userIds.length === 1) {
     const [userId] = userIds as [string];
     return new Map([[userId, await identity.membershipGroupIds(userId)]]);
   }
@@ -1136,8 +1142,8 @@ function assertNoCountOnly(props: Readonly<Struct>): void {
   if (cfIsBoolean(countOnly) && cfToBoolean(countOnly)) throw serverError();
 }
 
-/** The user feed's query: getAdvancedSearch of the plan over the token site's pools, `top maxItems` applied (userGateway.cfc:164-592). */
-async function userFeedRows(call: ApiCall, feed: UserFeedPlan): Promise<Struct[]> {
+/** The user feed's getAdvancedSearch of the plan over the token site's pools (userGateway.cfc:164-592). */
+function userFeedSearch(call: ApiCall, feed: UserFeedPlan) {
   const user = call.caller.user;
   if (user === undefined) throw new LegacyApiError('authorization');
   const criteria = {
@@ -1146,42 +1152,70 @@ async function userFeedRows(call: ApiCall, feed: UserFeedPlan): Promise<Struct[]
     ...(feed.isPublic === undefined ? {} : { ispublic: feed.isPublic }),
     ...(feed.groupId === undefined ? {} : { groupID: feed.groupId }),
   };
-  const query: LegacyQuery = await getAdvancedSearch(call.deps.search, viewerScope(user), criteria, {
-    siteid: call.siteId,
-    ...(feed.sortBy === undefined ? {} : { sortBy: feed.sortBy, sortDirection: feed.sortDirection }),
-  });
-  const rows = query.rows.map((row) => ({ ...row }));
-  return feed.maxItems > 0 ? rows.slice(0, feed.maxItems) : rows;
+  const options = { siteid: call.siteId, ...(feed.sortBy === undefined ? {} : { sortBy: feed.sortBy, sortDirection: feed.sortDirection }) };
+  return { viewer: viewerScope(user), criteria, options };
 }
 
-/** One row of a userGateway query as the userIterator packages it: a new bean set from the row, with its memberships and interests (userIterator.cfc:93-104). */
-async function userItemBeans(call: ApiCall, rows: readonly Struct[]): Promise<UserBean[]> {
-  const ids = rows.map((row) => textOf(valueOf(row, 'userid')) ?? '');
-  const memberships = await membershipsOf(call, ids);
-  const beans: UserBean[] = [];
-  for (const [index, row] of rows.entries()) {
-    const userId = ids[index] ?? '';
-    const cells = new Map(Object.entries(row).map(([name, value]) => [name.toLowerCase(), value ?? ''] as const));
-    const set = applyUserInput({ ...newUserValues(call.deps.clock), userid: '' }, cells);
-    const siteId = String(set.siteid);
-    const { categoryIds, extend } = await withTenant(call.deps.db, tenantOfSite(call, siteId), async (tx) => ({
-      categoryIds: (await call.deps.repository.listInterests(tx, userId)).map((interest) => interest.categoryid),
-      extend: await extendSetData(call.deps.repository, tx, userId, { siteId, type: '2', subtype: String(set.subtype) }),
-    }));
-    const meta = new Map([
-      ['groupid', (memberships.get(userId) ?? []).join(',')],
-      ['categoryid', categoryIds.join(',')],
-    ]);
-    const values = withExtendSetData(applyUserInput(set, meta), extend);
-    const wantsAddresses = listHasNoCase(cfListToArray(urlFields(call) ?? ''), 'addresses');
-    const addresses = wantsAddresses ? await withTenant(call.deps.db, tenantOfSite(call, siteId), (tx) => listAddresses(call.deps.repository, tx, userId)) : [];
-    beans.push({ values, exists: true, addresses, extendData: extend.data });
+/** One row of a userGateway query as the userIterator starts its bean: set from the row, with the tenant holding its relations (userIterator.cfc:93-104). */
+interface UserItem {
+  userId: string;
+  set: UserValues;
+  tenantId: string;
+}
+
+/** The interests, extended data and addresses a user item's bean reads. */
+interface UserItemRelations {
+  categoryIds: string[];
+  extend: ExtendSetData;
+  addresses: AddressRow[];
+}
+
+/** The user item of one search row. */
+function userItem(call: ApiCall, row: Readonly<Struct>): UserItem {
+  const cells = new Map(Object.entries(row).map(([name, value]) => [name.toLowerCase(), value ?? ''] as const));
+  const set = applyUserInput({ ...newUserValues(call.deps.clock), userid: '' }, cells);
+  return { userId: textOf(valueOf(row, 'userid')) ?? '', set, tenantId: tenantOfSite(call, String(set.siteid)) };
+}
+
+/** The relations of `items`, in their order: one fenced read per tenant covering its users, addresses only `withAddresses`. */
+async function userItemRelations(call: ApiCall, observer: PersonObserver, items: readonly UserItem[], withAddresses: boolean): Promise<UserItemRelations[]> {
+  const repo = call.deps.repository;
+  const byTenant = new Map<string, UserItem[]>();
+  for (const item of items) byTenant.set(item.tenantId, [...(byTenant.get(item.tenantId) ?? []), item]);
+  const relations = new Map<UserItem, UserItemRelations>();
+  for (const [tenantId, members] of byTenant) {
+    const userIds = members.map((item) => item.userId);
+    // getAllValues builds each bean's extended data for its site, Type 2 and subtype (beanExtendable.cfc:139-151).
+    const scopes = members.map((item) => ({ baseId: item.userId, scope: { siteId: String(item.set.siteid), type: '2', subtype: String(item.set.subtype) } }));
+    const read = async (tx: TenantTx) => ({
+      interests: await repo.listInterestsOf(tx, userIds),
+      extend: await extendSetsData(repo, tx, scopes),
+      addresses: withAddresses ? await repo.listAddressesOf(tx, userIds) : new Map<string, AddressRow[]>(),
+    });
+    const found = await observer.read(tenantId, read, () => userIds, userIds);
+    members.forEach((item, index) => {
+      relations.set(item, {
+        categoryIds: (found.interests.get(item.userId) ?? []).map((interest) => interest.categoryid),
+        extend: found.extend[index] as ExtendSetData,
+        addresses: found.addresses.get(item.userId) ?? [],
+      });
+    });
   }
-  return beans;
+  return items.map((item) => relations.get(item) as UserItemRelations);
+}
+
+/** A user item's bean with its memberships and interests (userIterator.cfc:93-104). */
+function userItemBean(item: UserItem, relations: UserItemRelations, memberships: ReadonlyMap<string, string[]>): UserBean {
+  const meta = new Map([
+    ['groupid', (memberships.get(item.userId) ?? []).join(',')],
+    ['categoryid', relations.categoryIds.join(',')],
+  ]);
+  const values = withExtendSetData(applyUserInput(item.set, meta), relations.extend);
+  return { values, exists: true, addresses: relations.addresses, extendData: relations.extend.data };
 }
 
 /** A queryIterator's page over `count` rows: `nextN`, then the url's `itemsPerPage`, `pageIndex` and `startIndex` (queryIterator.cfc; jsonApiUtility.cfc:3160-3180). */
-interface IteratorPage {
+export interface IteratorPage {
   count: number;
   maxRecordsPerPage: number;
   pageIndex: number;
@@ -1189,7 +1223,7 @@ interface IteratorPage {
   positions: number[];
 }
 
-function iteratorPage(count: number, nextN: number, params: Readonly<Struct>): IteratorPage {
+export function iteratorPage(count: number, nextN: number, params: Readonly<Struct>): IteratorPage {
   let max = nextN !== 0 && Number.isFinite(nextN) ? nextN : count;
   let pageIndex = 1;
   let recordIndex = 0;
@@ -1227,6 +1261,35 @@ function iteratorPage(count: number, nextN: number, params: Readonly<Struct>): I
     positions.push(recordIndex - 1);
   }
   return { count, maxRecordsPerPage: max, pageIndex, positions };
+}
+
+/** The page size `iteratorPage` takes from `nextN` and `itemsPerPage`; undefined when it is the row count. */
+function iteratorPageSize(nextN: number, params: Readonly<Struct>): number | undefined {
+  const itemsPerPage = valueOf(params, 'itemsperpage');
+  if (cfIsNumeric(itemsPerPage)) {
+    const n = cfToNumber(itemsPerPage);
+    return n !== 0 ? n : undefined;
+  }
+  if (itemsPerPage === '*') return undefined;
+  return nextN !== 0 && Number.isFinite(nextN) ? nextN : undefined;
+}
+
+/** Every row position `iteratorPage(count, nextN, params)` can return over the first `maxItems` rows (all for 0), whatever `count` is. */
+export function iteratorPageHold(nextN: number, maxItems: number, params: Readonly<Struct>): AdvancedSearchHold {
+  const cap = maxItems > 0 ? maxItems : Number.POSITIVE_INFINITY;
+  const size = iteratorPageSize(nextN, params);
+  if (size === undefined || !Number.isFinite(size)) return { keep: () => true, reach: cap };
+  const start = valueOf(params, 'startindex');
+  const startRow = cfIsNumeric(start) ? cfToNumber(start) : undefined;
+  const pageParam = valueOf(params, 'pageindex');
+  let page = 1;
+  if (startRow !== undefined) page = size !== 1 ? Math.ceil(startRow / size) : startRow;
+  else if (cfIsNumeric(pageParam)) page = cfToNumber(pageParam);
+  // setPage falls back to page 1 once the page's first row passes the count, and a start row can move that first row back.
+  const from = Math.min((page - 1) * size, startRow ? startRow - 1 : Number.POSITIVE_INFINITY);
+  const to = page * size;
+  const bound = Math.max(size, from < to ? to : 0);
+  return { keep: (index) => index < size || (index >= from && index < to), reach: Math.min(cap, Math.max(0, Math.ceil(bound))) };
 }
 
 /** `packageIteratorArray` of a user or address iterator (jsonApiUtility.cfc:287-366). */
@@ -1304,13 +1367,27 @@ async function itemsOf(call: ApiCall, beans: readonly (UserBean | AddressBean)[]
   return items;
 }
 
-/** A user iterator's page and its packaged result. */
-async function packagedUsers(call: ApiCall, rows: readonly Struct[], feed: UserFeedPlan, baseUrl: () => string, reorder?: string[]): Promise<EntityCollection> {
-  const page = iteratorPage(rows.length, feed.nextN, call.url);
-  const pageRows = page.positions.flatMap((position) => (rows[position] === undefined ? [] : [rows[position]]));
-  let items = await itemsOf(call, await userItemBeans(call, pageRows));
-  if (reorder !== undefined) items = reorderByIds(items, reorder);
-  return packagePage(call, page, items, baseUrl());
+/** A user iterator's page of the feed's query, `top maxItems` applied, and its packaged result; the page's rows, relations and memberships are observed together. */
+async function packagedUsers(call: ApiCall, feed: UserFeedPlan, baseUrl: () => string, reorder?: string[]): Promise<EntityCollection> {
+  const { viewer, criteria, options } = userFeedSearch(call, feed);
+  const hold = iteratorPageHold(feed.nextN, feed.maxItems, call.url);
+  const withAddresses = listHasNoCase(cfListToArray(urlFields(call) ?? ''), 'addresses');
+  const { page, items, relations, memberships } = await observePersons(
+    observerDeps(call),
+    async (observer) => {
+      const found = await getAdvancedSearchWindow(call.deps.search, viewer, criteria, options, hold, observer);
+      const pageOf = iteratorPage(feed.maxItems > 0 ? Math.min(found.count, feed.maxItems) : found.count, feed.nextN, call.url);
+      const pageItems = pageOf.positions.flatMap((position) => {
+        const row = found.rows.get(position);
+        return row === undefined ? [] : [userItem(call, row)];
+      });
+      return { page: pageOf, items: pageItems, relations: await userItemRelations(call, observer, pageItems, withAddresses) };
+    },
+    async (people) => ({ ...people, memberships: await membershipsOf(call, people.items.map((item) => item.userId)) }),
+  );
+  let entities = await itemsOf(call, items.map((item, index) => userItemBean(item, relations[index] as UserItemRelations, memberships)));
+  if (reorder !== undefined) entities = reorderByIds(entities, reorder);
+  return packagePage(call, page, entities, baseUrl());
 }
 
 /** findMany's order: for each requested id, the first item whose `id` equals it (jsonApiUtility.cfc:2697-2709). */
@@ -1330,7 +1407,7 @@ async function findAll(call: ApiCall): Promise<EntityCollection> {
   applyFeedProps(call, feed, call.url);
   assertNoCountOnly(call.url);
   assertNoOffset(call);
-  return packagedUsers(call, await userFeedRows(call, feed), feed, () => scopeBaseUrl(call, 'findall'));
+  return packagedUsers(call, feed, () => scopeBaseUrl(call, 'findall'));
 }
 
 /** Legacy's address feed lists every address of the site, a group's too, and group addresses are identity's rows people cannot read. */
@@ -1351,7 +1428,7 @@ async function findMany(call: ApiCall): Promise<EntityCollection> {
   assertNoOffset(call);
   const sorted = (textOf(valueOf(call.url, 'sort')) ?? '') !== '';
   const reorder = sorted ? undefined : ids;
-  if (call.entity === 'user') return packagedUsers(call, await userFeedRows(call, feed), feed, () => scopeBaseUrl(call, 'findmany'), reorder);
+  if (call.entity === 'user') return packagedUsers(call, feed, () => scopeBaseUrl(call, 'findmany'), reorder);
 
   const tenants = userTenants(tokenEntry(call));
   const beans: AddressBean[] = [];
@@ -1427,7 +1504,7 @@ async function findQuery(call: ApiCall): Promise<EntityCollection> {
   applyFeedProps(call, feed, props);
   assertNoCountOnly(call.url);
   assertNoOffset(call);
-  return packagedUsers(call, await userFeedRows(call, feed), feed, () => baseUrl);
+  return packagedUsers(call, feed, () => baseUrl);
 }
 
 // --- validate ---

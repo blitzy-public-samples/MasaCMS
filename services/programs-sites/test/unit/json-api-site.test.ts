@@ -251,20 +251,17 @@ describe('token site check', () => {
 });
 
 describe('save', () => {
-  it('consumes a valid CSRF token, then denies a tenant-a save by a site-admin without S2 as authorization', async () => {
+  it.each<[string, 'site-admin' | 's2', string]>([
+    ['a site-admin on the json entity route', 'site-admin', '/_api/json/v1/tenant-a/site'],
+    ['an S2 user on the json entity route', 's2', '/_api/json/v1/tenant-a/site'],
+    ['an S2 user on the rest entity route', 's2', '/_api/rest/v1/tenant-a/site'],
+  ])('answers the withheld site.save of %s with the legacy 503 before any site read, CSRF consume or write', async (_label, as, url) => {
     t.client.csrfValid(true);
-    const res = await send('POST', '/_api/json/v1/tenant-a/site', {
-      headers: { ...(await headersFor('site-admin')), ...FORM },
-      payload: `domain=saved.example.test&${CSRF_FIELDS}`,
-    });
-    const { status, code, message } = LEGACY_ERROR_MAP.authorization;
-    expect(res.statusCode).toBe(401);
-    expect(res.statusCode).toBe(status);
-    expect(res.json()).toEqual({ apiversion: 'v1', method: 'save', error: INSUFFICIENT });
-    expect({ code, message }).toEqual(INSUFFICIENT);
-    expect(t.client.requestsTo('identity').map((call) => call.json)).toEqual([
-      expect.objectContaining({ token: 'T', context: TENANT_A.siteId }),
-    ]);
+    const res = await send('POST', url, { headers: { ...(await headersFor(as)), ...FORM }, payload: `domain=saved.example.test&${CSRF_FIELDS}` });
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toEqual({ apiversion: 'v1', method: 'invalid', error: { code: 'server_error', message: 'Unhandled Exception' } });
+    expect(t.client.requestsTo('identity')).toEqual([]);
+    expect(readAnySite()).toBe(false);
     expect(t.db.writes()).toEqual([]);
   });
 });

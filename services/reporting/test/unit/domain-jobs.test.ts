@@ -41,6 +41,8 @@ const CLOCK = fixedClock(NOW);
 const REQUESTER = '1B2C3D4E-5F60-7182-93A4B5C6D7E8F90A';
 const JOB_ID = 'ABCDEF01-2345-6789-ABCDEF0123456789';
 const DEFINITION_ID = '2C3D4E5F-6071-8293-A4B5C6D7E8F90A1B';
+// A stored id holding hex letters, so its lower- and mixed-case spellings differ from it.
+const FOLDED_DEFINITION_ID = '26856349-A11B-D451-4A71F7EE11B3F662';
 const OUTPUT = Buffer.from('Title,Amount\r\nTravel,10.5000\r\n');
 const LEGAL_MOVES = new Set(['queued>running', 'running>done', 'running>failed']);
 const TARGET_STATES = ['running', 'done', 'failed'] as const;
@@ -265,12 +267,11 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
     await handle.drop();
   });
 
-  /** A create request for a csv job of a new site's only definition. */
-  async function siteWithDefinition(): Promise<CreateExportInput> {
+  /** A create request for a csv job of a new site's only definition, stored as `definitionId`. */
+  async function siteWithDefinition(definitionId = cfUuid()): Promise<CreateExportInput> {
     sites += 1;
     const siteId = `domain-jobs-${String(sites)}`;
     const tenantId = tenantIdForSite(siteId);
-    const definitionId = cfUuid();
     await handle.app.withTenant(tenantId, (tx) =>
       tx.query(
         `INSERT INTO ${handle.schema}.export_definition (tenant_id, definition_id, siteid, name, source, columns)
@@ -413,6 +414,22 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
       expect(runs.map((run) => run.payload)).toStrictEqual([{ jobId: job.job_id, asOf }]);
     });
 
+    it.each<[string, string]>([
+      ['in lower case', '26856349-a11b-d451-4a71f7ee11b3f662'],
+      ['in mixed case', '26856349-a11B-D451-4a71F7ee11b3F662'],
+      ['with trailing spaces', '26856349-A11B-D451-4A71F7EE11B3F662   '],
+      ['in lower case with a trailing space', '26856349-a11b-d451-4a71f7ee11b3f662 '],
+    ])('queues a job of the stored definition named %s, as SQL Server matches char(35)', async (_case, definitionId) => {
+      const input = await siteWithDefinition(FOLDED_DEFINITION_ID);
+      const { enqueue, runs } = recordingEnqueue();
+
+      const job = await createExportJob(depsWith(enqueue), { ...input, definitionId });
+
+      expect(job).toMatchObject({ state: 'queued', definition_id: FOLDED_DEFINITION_ID });
+      expect(await jobsOf(input)).toEqual([job]);
+      expect(runs.map((run) => run.payload)).toStrictEqual([{ jobId: job.job_id, asOf: '2026-06-30' }]);
+    });
+
     it.each<[string, Partial<CreateExportInput>]>([
       ['format docx', { format: 'docx' }],
       ['format CSV', { format: 'CSV' }],
@@ -441,7 +458,10 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
 
     it.each<[string, (input: CreateExportInput, other: CreateExportInput) => CreateExportInput]>([
       ['an unknown definition', (input) => ({ ...input, definitionId: cfUuid() })],
+      ['an unknown definition in lower case', (input) => ({ ...input, definitionId: cfUuid().toLowerCase() })],
+      ['a definition with a leading space', (input) => ({ ...input, definitionId: ` ${input.definitionId}` })],
       ["another site's definition", (input, other) => ({ ...input, definitionId: other.definitionId })],
+      ["another site's definition in lower case", (input, other) => ({ ...input, definitionId: other.definitionId.toLowerCase() })],
       ['an unknown definition before a bad format and asOf', (input) => ({ ...input, definitionId: cfUuid(), format: 'docx', params: { asOf: 'x' } })],
     ])('refuses %s with notFound and stores and schedules nothing', async (_case, request) => {
       const input = await siteWithDefinition();

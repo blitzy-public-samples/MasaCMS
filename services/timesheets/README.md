@@ -138,7 +138,7 @@ npm run export-transitions           # regenerate the transition table and its e
 npm run export-transitions -- --check
 ```
 
-- **Configuration.** `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)). Locally `harness/repro/up.sh` starts it on port 8118 (`harness/repro/ports.env`) with `PORT=8118` and `PG_USER=timesheets_app` set inline. Standalone, after `npm run repro:secrets` in `harness/` (key files and the `db-timesheets-app` password under `${OPT2_STATE_DIR}/secrets/`, default state directory `$HOME/.opt2/state`) and with `PG_DATABASE` exported as the database `opt2-db bootstrap` set up:
+- **Configuration.** `timesheetsEnvSchema` in `src/app.ts`: `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)) plus the required `OPT2_SERVICE_URLS` entries named at the end of this item, a missing one failing start-up. Locally `harness/repro/up.sh` starts it on port 8118 (`harness/repro/ports.env`) with `PORT=8118` and `PG_USER=timesheets_app` set inline. Standalone, after `npm run repro:secrets` in `harness/` (key files and the `db-timesheets-app` password under `${OPT2_STATE_DIR}/secrets/`, default state directory `$HOME/.opt2/state`) and with `PG_DATABASE` exported as the database `opt2-db bootstrap` set up:
 
   ```sh
   PORT=8118 OPT2_SERVICE_NAME=timesheets OPT2_ENV=local TZ=UTC \

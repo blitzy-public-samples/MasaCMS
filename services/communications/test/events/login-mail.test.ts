@@ -18,7 +18,7 @@ const WAIT = { timeout: 10_000, interval: 50 };
 // Time for a second after-commit send, were one queued, to reach the fake transport.
 const SETTLE_MS = 250;
 
-// pgAvailable rejects when PG_HOST is unset; that case skips the suite instead.
+// An unset PG_HOST skips the suite without probing the server.
 const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 const title = available ? 'login-mail consumer' : 'login-mail consumer (requires PostgreSQL: PG_HOST unset or unreachable)';
 

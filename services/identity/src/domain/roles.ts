@@ -2,6 +2,7 @@
 import { readFile } from 'node:fs/promises';
 import { Roles, SYNTHETIC_ROLES, isCoreModuleId, moduleRole } from '@opt2/platform/auth';
 import { cfDateTimeFormat, cfListAppend, cfListToArray, sqlServerDatetime } from '@opt2/platform/legacy-compat';
+import { SAFE_ERROR_TEXT } from '@opt2/platform/logging';
 import type { TenantRegistryEntry } from '@opt2/platform/tenancy';
 import type { CredentialRow, LoginSnapshot, LoginStateRow, PersonContactRow, UserAccountRow } from '../repo/tables.js';
 
@@ -268,9 +269,27 @@ export function parseRoleMap(value: unknown): RoleMap {
   return { sourceSha: map.sourceSha, scope: map.scope, groups: map.groups.map(({ groupName, role }) => ({ groupName, role })) };
 }
 
-/** The committed `config/role-map.json`, read and checked once per process. */
+/** Start-up refusal of an unreadable, non-JSON or invalid `role-map.json`; `cause` is the read, JSON or shape error. */
+export class RoleMapError extends Error {
+  override readonly name = 'RoleMapError';
+
+  constructor(cause: Error) {
+    super(`role-map.json: ${cause.message}`, { cause });
+  }
+
+  /** Names the service and the file, never its path, contents or the cause's text. */
+  get [SAFE_ERROR_TEXT](): string {
+    return 'identity: invalid configuration file role-map.json';
+  }
+}
+
+/** The committed `config/role-map.json`, read and checked once per process; rejects with a `RoleMapError`. */
 export function loadRoleMap(): Promise<RoleMap> {
-  roleMapPromise ??= readFile(ROLE_MAP_URL, 'utf8').then((text) => parseRoleMap(JSON.parse(text)));
+  roleMapPromise ??= readFile(ROLE_MAP_URL, 'utf8')
+    .then((text) => parseRoleMap(JSON.parse(text)))
+    .catch((err: unknown) => {
+      throw new RoleMapError(err as Error);
+    });
   return roleMapPromise;
 }
 

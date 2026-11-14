@@ -5,9 +5,9 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cert, deleteApp, initializeApp, type App } from 'firebase-admin/app';
+import { deleteApp, type App } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { SignJWT, createLocalJWKSet, decodeJwt, decodeProtectedHeader, exportPKCS8 } from 'jose';
+import { SignJWT, createLocalJWKSet, decodeJwt, decodeProtectedHeader } from 'jose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   ANONYMOUS_PRINCIPAL_UID,
@@ -26,6 +26,7 @@ import { applyLogin, endSession, ensureSession } from '../../src/domain/sessions
 import {
   MAX_CUSTOM_CLAIMS_BYTES,
   SIGN_IN_WITH_CUSTOM_TOKEN_URL,
+  createCloudIdentityPlatformAdapter,
   createFirebaseIdentityPlatformAdapter,
   createLocalTokenSigner,
   createTokenService,
@@ -35,6 +36,7 @@ import {
 } from '../../src/domain/tokens.js';
 import { createIdentityRepository, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
 import { IDENTITY_UNITS, type LoginSnapshot } from '../../src/repo/tables.js';
+import { recordTenantListing, testFirebaseApp, type RecordedTenantPage } from '../helpers/firebase.js';
 
 const NOW = new Date(2026, 5, 30, 12, 0, 0);
 const CLOCK = fixedClock(NOW);
@@ -85,14 +87,6 @@ function recordedFetch(status: number, body: string): { fetchImpl: typeof fetch;
     return Promise.resolve(new Response(body, { status }));
   }) as unknown as typeof fetch;
   return { fetchImpl, calls };
-}
-
-/** A Firebase app of project `proj` signing custom tokens with a test key; its credential's access token is `access-1`. */
-async function testFirebaseApp(name: string): Promise<App> {
-  const keys = await testSigningKeys();
-  const credential = cert({ projectId: 'proj', clientEmail: 'sa@proj.iam.gserviceaccount.com', privateKey: await exportPKCS8(keys.privateKey) });
-  credential.getAccessToken = () => Promise.resolve({ access_token: 'access-1', expires_in: 3600 });
-  return initializeApp({ projectId: 'proj', credential }, name);
 }
 
 /** An HTTP server on 127.0.0.1 answering through `handle`; `close` is idempotent and drops held connections. */
@@ -347,6 +341,76 @@ describe('Firebase Identity Platform adapter', () => {
       const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool, fetchImpl: ok.fetchImpl, app });
       await expect(adapter.mintIdToken('umbrella', userId(1), custom)).rejects.toBe(denied);
       expect(ok.calls).toHaveLength(0);
+    } finally {
+      await deleteApp(app);
+    }
+  });
+
+  const LISTED_PAGES: readonly RecordedTenantPage[] = [
+    {
+      tenants: [{ tenantId: 'default-k3j2h', displayName: 'default' }, { tenantId: 'unnamed-1' }, { tenantId: 'umbrella-9x8y7', displayName: 'umbrella' }],
+      pageToken: 'page-2',
+    },
+    { tenants: [{ tenantId: 'unnamed-2' }, { tenantId: 'tenant-a-4f5g6', displayName: 'tenant-a' }] },
+  ];
+
+  it.each([
+    { pool: 'umbrella', tenantId: 'umbrella-9x8y7' },
+    { pool: 'tenant-a', tenantId: 'tenant-a-4f5g6' },
+  ])('signs user-pool site $pool in to tenant $tenantId, listed across every tenant page', async ({ pool, tenantId }) => {
+    const app = await testFirebaseApp(`identity-tokens-cloud-${pool}`);
+    try {
+      const pageTokens = recordTenantListing(app, LISTED_PAGES);
+      const ok = recordedFetch(200, JSON.stringify({ idToken: 'id-token', expiresIn: '3600' }));
+      const adapter = await createCloudIdentityPlatformAdapter({ projectId: 'proj', fetchImpl: ok.fetchImpl, app });
+
+      expect(await adapter.mintIdToken(pool, userId(1), custom)).toEqual({ idToken: 'id-token', expiresIn: 3600 });
+      expect(pageTokens).toEqual([undefined, 'page-2']);
+      const body = JSON.parse(String(ok.calls[0]?.init.body)) as { token: string; tenantId: string };
+      expect(body.tenantId).toBe(tenantId);
+      expect(decodeJwt(body.token)).toMatchObject({ uid: userId(1), tenant_id: tenantId });
+    } finally {
+      await deleteApp(app);
+    }
+  });
+
+  it.each([
+    {
+      refusal: 'two tenants sharing a display name',
+      pages: [{ tenants: [{ tenantId: 'tenant-a-1', displayName: 'tenant-a' }], pageToken: 'page-2' }, { tenants: [{ tenantId: 'tenant-a-2', displayName: 'tenant-a' }] }],
+      pool: 'tenant-a',
+      message: /^Identity Platform tenants tenant-a-1 and tenant-a-2 share the display name tenant-a$/,
+    },
+    {
+      refusal: 'a user-pool site no tenant is named after',
+      pages: [{ tenants: [{ tenantId: 'tenant-a-1', displayName: 'tenant-a' }] }],
+      pool: 'tenant-b',
+      message: /^No Identity Platform tenant has the display name of user-pool site tenant-b$/,
+    },
+  ])('refuses $refusal before any exchange', async ({ refusal, pages, pool, message }) => {
+    const app = await testFirebaseApp(`identity-tokens-cloud-${refusal.replace(/\W/g, '-')}`);
+    try {
+      recordTenantListing(app, pages);
+      const ok = recordedFetch(200, JSON.stringify({ idToken: 'id-token', expiresIn: '3600' }));
+      const minted = createCloudIdentityPlatformAdapter({ projectId: 'proj', fetchImpl: ok.fetchImpl, app }).then((adapter) =>
+        adapter.mintIdToken(pool, userId(1), custom),
+      );
+
+      await expect(minted).rejects.toThrow(message);
+      expect(ok.calls).toHaveLength(0);
+    } finally {
+      await deleteApp(app);
+    }
+  });
+
+  it('answers a tenant listing that outlasts its budget with ServiceUnavailableError', async () => {
+    const app = await testFirebaseApp('identity-tokens-cloud-stalled-listing');
+    try {
+      getAuth(app).tenantManager().listTenants = () => new Promise(() => undefined);
+      const built = createCloudIdentityPlatformAdapter({ projectId: 'proj', app, timeoutMs: 100 });
+
+      await expect(built).rejects.toBeInstanceOf(ServiceUnavailableError);
+      await expect(built).rejects.toMatchObject({ service: 'identity-platform', cause: { name: 'TimeoutError' } });
     } finally {
       await deleteApp(app);
     }

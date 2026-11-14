@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
-import { createServer, maxHeaderSize, type IncomingMessage } from 'node:http';
+import { createServer, maxHeaderSize, request as httpRequest, type IncomingMessage } from 'node:http';
 import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { text } from 'node:stream/consumers';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { DestinationStream } from 'pino';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -41,9 +42,10 @@ import {
   startTracing,
 } from '../../src/tracing/index.js';
 import { ServiceUnavailableError, UnknownServiceError } from '../../src/service-kit/client.js';
-import { currentRequestContext } from '../../src/service-kit/context.js';
+import { currentRequestContext, throwIfRequestAborted } from '../../src/service-kit/context.js';
 import {
   LEGACY_POST_LIMIT_BYTES,
+  abandonOnDisconnect,
   createService,
   defaultSurfaceOf,
   isUnstorableTextError,
@@ -55,6 +57,7 @@ import {
   type LegacyParamsOptions,
 } from '../../src/service-kit/create-service.js';
 import { loadEnv, type BaseEnv } from '../../src/service-kit/env.js';
+import { recordEventScope } from '../../src/service-kit/event-scope.js';
 
 vi.mock('../../src/tracing/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/tracing/index.js')>();
@@ -857,6 +860,39 @@ describe('body parsing and legacy params', () => {
   });
 
   it.each([
+    ['in one chunk', (bytes: Buffer): Buffer | Readable => bytes],
+    ['a byte at a time', (bytes: Buffer): Buffer | Readable => Readable.from(Array.from(bytes, (byte) => Buffer.from([byte])))],
+  ])('reports each file part with its fileUpload content type, parameters included, sent %s', async (_label, payload) => {
+    const app = await echo();
+    const boundary = 'opt2boundary';
+    const res = await app.inject({
+      method: 'POST',
+      url: '/echo',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: payload(
+        Buffer.from(
+          [
+            `--${boundary}\r\nContent-Disposition: form-data; name="title"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nHello\r\n`,
+            `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\none\r\n`,
+            `--${boundary}\r\nContent-Disposition: form-data; name="blob"\r\nContent-Type: application/octet-stream; x=1\r\n\r\ntwo\r\n`,
+            `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="b.bin"\r\n\r\nthree\r\n`,
+            `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="c.htm"\r\nContent-Type:  Text/HTML ;\r\n Q=1\r\n\r\nfour\r\n`,
+            `--${boundary}--\r\n`,
+          ].join(''),
+        ),
+      ),
+    });
+    expect(res.statusCode).toBe(200);
+    const files = res.json<{ files: Array<Record<string, unknown>> }>().files;
+    expect(files.map(({ field, mimetype, contentType, data }) => ({ field, mimetype, contentType, data }))).toEqual([
+      { field: 'file', mimetype: 'text/plain', contentType: 'text/plain; charset=utf-8', data: 'one' },
+      { field: 'blob', mimetype: 'application/octet-stream', contentType: 'application/octet-stream; x=1', data: 'two' },
+      { field: 'file', mimetype: 'text/plain', contentType: 'text/plain', data: 'three' },
+      { field: 'file', mimetype: 'text/html', contentType: ' text/html ; q=1', data: 'four' },
+    ]);
+  });
+
+  it.each([
     { sent: 'with its Content-Length', kind: 'file', count: 4, mib: 75, declared: true, pulled: [0, 0] },
     { sent: 'chunked, as files', kind: 'file', count: 4, mib: 75, declared: false, pulled: [LEGACY_POST_LIMIT_BYTES, LEGACY_POST_LIMIT_BYTES + 4 * MIB] },
     { sent: 'chunked, as fields', kind: 'field', count: 300, mib: 1, declared: false, pulled: [LEGACY_POST_LIMIT_BYTES, LEGACY_POST_LIMIT_BYTES + 4 * MIB] },
@@ -1111,6 +1147,117 @@ describe('request scope and context', () => {
   });
 });
 
+describe('abandoned requests', () => {
+  const STEPS = 20;
+  const STEP_MS = 25;
+
+  /** A service whose GET and POST /scan await STEPS steps, each after `throwIfRequestAborted()`; `optIn` lets a disconnect abandon it. */
+  async function scanService(optIn: boolean) {
+    const { app, lines } = await build();
+    let steps = 0;
+    let markStarted = (): void => undefined;
+    let markEnded = (): void => undefined;
+    const started = new Promise<void>((resolve) => (markStarted = resolve));
+    const ended = new Promise<void>((resolve) => (markEnded = resolve));
+    app.route({
+      method: ['GET', 'POST'],
+      url: '/scan',
+      config: { opt2: { requires: ['s2'] } },
+      handler: async (request) => {
+        if (optIn) abandonOnDisconnect(request);
+        try {
+          for (let step = 0; step < STEPS; step += 1) {
+            throwIfRequestAborted();
+            steps += 1;
+            markStarted();
+            await sleep(STEP_MS);
+          }
+          return { steps, params: legacyParamsOf(request) };
+        } finally {
+          markEnded();
+        }
+      },
+    });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    return { app, lines, started, ended, steps: () => steps };
+  }
+
+  /** GETs /scan on the listening `app` and destroys the request once the handler has started, resolving when its socket closes. */
+  function leaveScan(app: FastifyInstance, started: Promise<void>): Promise<void> {
+    const { port } = app.server.address() as AddressInfo;
+    return new Promise((resolve) => {
+      const req = httpRequest({ host: '127.0.0.1', port, path: '/scan', headers: { ...AUTHENTICATED, 'x-request-id': 'req-left' } });
+      // The destroyed request's own socket error is the point of the test.
+      req.on('error', () => undefined);
+      req.on('close', () => resolve());
+      req.end();
+      void started.then(() => req.destroy());
+    });
+  }
+
+  const abandonedLines = (lines: LogLine[]): LogLine[] => lines.filter((line) => line.message === 'request abandoned');
+
+  it('stops an opted-in read once its client disconnects and logs it as abandoned, not as an error', async () => {
+    const { app, lines, started, ended, steps } = await scanService(true);
+    await leaveScan(app, started);
+    await ended;
+    expect(steps()).toBeLessThan(STEPS);
+    const [abandoned] = await vi.waitFor(() => {
+      const found = abandonedLines(lines);
+      expect(found).toHaveLength(1);
+      return found;
+    });
+    expect(validateLogRecord(abandoned).errors).toStrictEqual([]);
+    expect(abandoned).toMatchObject({
+      severity: 'INFO',
+      requestId: 'req-left',
+      route: '/scan',
+      httpMethod: 'GET',
+      tenantId: TENANT_A_ID,
+      userId: USER_ID,
+    });
+    expect(abandoned?.latencyMs).toEqual(expect.any(Number));
+    expect(lines.filter((line) => line.severity === 'ERROR' || line.message === 'unhandled error')).toStrictEqual([]);
+  });
+
+  it('runs a read that did not opt in to its end after its client disconnects', async () => {
+    const { app, lines, started, ended, steps } = await scanService(false);
+    await leaveScan(app, started);
+    await ended;
+    expect(steps()).toBe(STEPS);
+    expect(abandonedLines(lines)).toStrictEqual([]);
+    expect(lines.filter((line) => line.severity === 'ERROR')).toStrictEqual([]);
+  });
+
+  it.each([
+    ['JSON', 'application/json', '{"siteid":"tenant-a"}'],
+    ['form', 'application/x-www-form-urlencoded', 'siteid=tenant-a'],
+  ])('answers an opted-in POST with a consumed %s body on a real socket in full', async (_label, contentType, body) => {
+    const { app, lines } = await scanService(true);
+    const { port } = app.server.address() as AddressInfo;
+    const res = await fetch(`http://127.0.0.1:${String(port)}/scan`, {
+      method: 'POST',
+      headers: { ...AUTHENTICATED, 'content-type': contentType },
+      body,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toStrictEqual({ steps: STEPS, params: { siteid: 'tenant-a' } });
+    expect(abandonedLines(lines)).toStrictEqual([]);
+  });
+
+  it.each([
+    ['GET', undefined],
+    ['POST', '{"siteid":"tenant-a"}'],
+  ] as const)('answers an opted-in %s under inject in full', async (method, payload) => {
+    const { app, lines } = await scanService(true);
+    const res = await app.inject({ method, url: '/scan', headers: { ...AUTHENTICATED, 'content-type': 'application/json' }, payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ steps: STEPS });
+    expect(abandonedLines(lines)).toStrictEqual([]);
+    expect(completedLines(lines)).toMatchObject([{ route: '/scan', httpMethod: method, statusCode: 200 }]);
+  });
+});
+
 describe('HTTP server span name', () => {
   const ROUTE = '/v1/surveys/:surveyId/tasks';
 
@@ -1337,6 +1484,36 @@ describe('request log line', () => {
       }
       expect(lines.slice(-1 - warnings.length)).toStrictEqual([...warnings, ...completed]);
       expect(JSON.stringify(lines)).not.toContain('push-key-value');
+    },
+  );
+
+  const DELIVERY = { eventId: '3f1c2a4e-5b6d-4e7f-8a9b-0c1d2e3f4a5b', tenantId: tenantIdForSite('tenant-b') };
+
+  it.each([
+    { label: 'a verified user', headers: AUTHENTICATED, scope: PRINCIPAL, verified: TENANT_A_ID },
+    { label: 'no verified user', headers: {}, scope: { tenantId: DELIVERY.tenantId, userId: undefined }, verified: undefined },
+  ])(
+    'logs a recorded delivery with $label by its eventId and the verified tenant, else its own, leaving the verified scope unchanged',
+    async ({ headers, scope, verified }) => {
+      const { app, lines } = await build();
+      let seen: unknown;
+      app.post('/deliveries/:id', { config: { opt2: { public: true } } }, async (request) => {
+        recordEventScope(request, DELIVERY);
+        seen = { store: currentRequestContext()?.tenantId, request: request.opt2.tenantId };
+        throw new LegacyServiceUnavailableError();
+      });
+      const res = await app.inject({ method: 'POST', url: '/deliveries/a', headers });
+      expect(res.statusCode).toBe(503);
+      expect(seen).toStrictEqual({ store: verified, request: verified });
+      const outcome = lines.filter((line) => line.severity === 'WARNING' || line.message === 'request completed');
+      expect(outcome.map((line) => line.message)).toStrictEqual(['service unavailable', 'request completed']);
+      for (const line of outcome) {
+        expect(validateLogRecord(line).errors).toStrictEqual([]);
+        expect({ tenantId: line.tenantId, userId: line.userId, eventId: line.eventId }).toStrictEqual({
+          ...scope,
+          eventId: DELIVERY.eventId,
+        });
+      }
     },
   );
 });

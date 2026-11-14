@@ -50,10 +50,22 @@ import { OperationTracker, classifyRow, splitAtHold, type FenceRequest, type Row
 /** Advisory lock key (`'opt2revp'`) electing the one projecting instance; bound as `$1::bigint` text. */
 export const PROJECTOR_LOCK_KEY = 0x6f70743272657670n;
 
-/** Fault points of a projector batch; both default to no-ops, and a throw from either aborts the whole cycle. */
+/** A change of an operation about to be written in a batch's open SQL Server transaction. */
+export interface OperationChangePoint {
+  batchId: string;
+  operationId: string;
+  /** Owner of the change. */
+  owner: string;
+  /** Owners whose changes of this operation the batch transaction has already written. */
+  written: readonly string[];
+}
+
+/** Fault points of a projector batch; each defaults to a no-op, and a throw from any aborts the whole cycle. */
 export interface ProjectorHooks {
   /** Runs before a batch touches the legacy file store or database. */
   beforeBatch?(): Promise<void>;
+  /** Runs inside the batch's SQL Server transaction before each change carrying an operation id; a throw rolls the batch back. */
+  beforeOperationChange?(info: OperationChangePoint): Promise<void>;
   /** Runs after a batch's SQL Server commit and before its checkpoint mirror. */
   afterLegacyCommit?(info: { owner: string; tenantId: string; batchId: string }): Promise<void>;
 }
@@ -685,9 +697,9 @@ class ProjectorCycle {
 
   /**
    * One batch: file-store operations first, since the bridge may read `tfiles` rows this batch's transaction would lock,
-   * and the other owners' parts its split-table rows may merge; then every change in `(xid, seq)` order and every
-   * part's checkpoint, with the site refreshes and cache purges it owes, in one SQL Server transaction; then the hooks,
-   * checkpoint mirrors, owed effects and reverse watermarks.
+   * and the other owners' parts its split-table rows may merge; then every change in `(xid, seq)` order, an operation's
+   * after its `beforeOperationChange` hook, and every part's checkpoint, with the site refreshes and cache purges it owes,
+   * in one SQL Server transaction; then the commit hooks, checkpoint mirrors, owed effects and reverse watermarks.
    */
   async #project(parts: readonly BatchPart[]): Promise<void> {
     const { hooks } = this.#deps;
@@ -714,7 +726,19 @@ class ProjectorCycle {
     const superseded = await supersededInserts(this.#ctx, pool, changes, catalogs);
     const batchId = randomUUID();
     const write = async (tx: Transaction): Promise<CheckpointRow[]> => {
-      for (const change of changes) await applyLegacyChange(tx, change, this.#applyOptions(change, catalogs, others, superseded));
+      // Per call: the start-up guard may roll a first attempt back and write the batch again.
+      const written = new Map<string, readonly string[]>();
+      for (const change of changes) {
+        const { operationId, owner } = change;
+        if (operationId === undefined) {
+          await applyLegacyChange(tx, change, this.#applyOptions(change, catalogs, others, superseded));
+          continue;
+        }
+        const before = written.get(operationId) ?? [];
+        await callHook(() => hooks?.beforeOperationChange?.({ batchId, operationId, owner, written: before }));
+        await applyLegacyChange(tx, change, this.#applyOptions(change, catalogs, others, superseded));
+        if (!before.includes(owner)) written.set(operationId, [...before, owner]);
+      }
       const stored: CheckpointRow[] = [];
       for (const part of decoded) {
         const { xid, seq } = parseCursor(part.endCursor);

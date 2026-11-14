@@ -76,6 +76,15 @@ const AS_OF_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 // SQL Server datetime's floor year.
 const MIN_AS_OF_YEAR = 1753;
 const QUOTED_STRING_SPECIAL = /["\\]/g;
+const SPACE = 0x20;
+
+/** `definitionId` as SQL Server's char(35) comparison matches the stored upper-case CF UUIDs: ignoring case and trailing spaces. */
+function storedDefinitionId(definitionId: string): string {
+  let end = definitionId.length;
+  // A scan rather than / +$/, which backtracks quadratically on a long run of spaces that does not end the text.
+  while (end > 0 && definitionId.charCodeAt(end - 1) === SPACE) end -= 1;
+  return definitionId.slice(0, end).toUpperCase();
+}
 
 /** True when `format` is an export output format. */
 function isExportFormat(format: string): format is ExportFormat {
@@ -155,7 +164,7 @@ async function recoverJobs(deps: CreateExportDeps, tenantId: string, siteId: str
 /** Fails the site's taskless jobs, commits a queued job of `input.definitionId`, then schedules its run; throws `notFound`, then `invalidParameters`, and on a failed schedule fails the job and throws the legacy 503. */
 export async function createExportJob(deps: CreateExportDeps, input: CreateExportInput): Promise<ExportJobRow> {
   const { definition, format, asOf } = await withGatedTenant(deps.db, input.tenantId, async (tx): Promise<CheckedCreate> => {
-    const definition = await findDefinition(tx, input.definitionId);
+    const definition = await findDefinition(tx, storedDefinitionId(input.definitionId));
     if (definition === null) throw new ReportingDomainError('notFound');
     const format = input.format;
     if (!isExportFormat(format)) throw new ReportingDomainError('invalidParameters');

@@ -30,7 +30,7 @@ import {
   type TenantTx,
 } from '@opt2/platform/tenancy';
 import type { UserClaims } from '@opt2/platform/auth';
-import { systemClock, type Clock } from '@opt2/platform/service-kit';
+import { systemClock, throwIfRequestAborted, type Clock } from '@opt2/platform/service-kit';
 import type { AccountCountRequest, AccountView, AccountWhere, IdentityClient } from '../legacy/identity-client.js';
 import {
   LEGACY_CHAR_CI_COLLATION,
@@ -46,7 +46,7 @@ import {
 } from '../repo/repository.js';
 import { ADDRESS, FAVORITE, INTEREST, PERSON, TAG, type ExtendAttributeRow, type ExtendDataRow, type PersonRow } from '../repo/tables.js';
 import { castColumnFor, EXTEND_CONFIG_DEFAULTS, type ExtendConfig } from './extended-data.js';
-import { observePersons, type PersonObserverDeps } from './roster-protocol.js';
+import { observePersons, type PersonObserver, type PersonObserverDeps } from './roster-protocol.js';
 
 /** Columns of getSearch and getAdvancedSearch, in userGateway's `fieldList` order [legacy: core/mura/user/userGateway.cfc:82]. */
 export const SEARCH_FIELD_LIST = [
@@ -964,30 +964,33 @@ interface PersonBatch<B> {
   loaded: B;
 }
 
-/** What `match` keeps of each page of `pager` in `tenantId`, each page and its `load` rows observed with `match`'s identity reads; a stopped consumer reads no further page. */
+/** What `match` keeps of each page of `pager` in `tenantId`, each page and its `load` rows observed with `match`'s identity reads (in `observer` when given); a stopped consumer or an abandoned request reads no further page. */
 async function* personBatches<B, T>(
   deps: SearchDeps,
   tenantId: string,
   pager: PersonPager,
   load: (tx: TenantTx, persons: PersonRow[]) => Promise<B>,
   match: (batch: PersonBatch<B>) => Promise<readonly T[]>,
+  observer?: PersonObserver,
 ): AsyncGenerator<T> {
   let after: PersonCursor | null = null;
   do {
+    throwIfRequestAborted();
     const cursor: PersonCursor | null = after;
-    const { page, matched } = await observePersons(
-      observerDeps(deps),
-      (observer) =>
-        observer.read(
-          tenantId,
-          async (tx) => {
-            const read = await pager(tx, cursor);
-            return { page: read, loaded: await load(tx, read.rows) };
-          },
-          ({ page: read }) => personIds(read.rows),
-        ),
-      async ({ page: read, loaded }) => ({ page: read, matched: read.rows.length === 0 ? [] : await match({ persons: read.rows, loaded }) }),
-    );
+    const people = (reader: PersonObserver) =>
+      reader.read(
+        tenantId,
+        async (tx) => {
+          const read = await pager(tx, cursor);
+          return { page: read, loaded: await load(tx, read.rows) };
+        },
+        ({ page: read }) => personIds(read.rows),
+      );
+    const identity = async ({ page: read, loaded }: Awaited<ReturnType<typeof people>>) => ({
+      page: read,
+      matched: read.rows.length === 0 ? [] : await match({ persons: read.rows, loaded }),
+    });
+    const { page, matched } = observer === undefined ? await observePersons(observerDeps(deps), people, identity) : await identity(await people(observer));
     yield* matched;
     after = page.next;
   } while (after !== null);
@@ -1258,6 +1261,9 @@ const SEARCH_PERSON_COLUMNS = ['lname', 'fname', 'company', 'email', 'jobtitle']
 /** Most username candidates a search asks identity for; past it the search reads every pool person with its username. */
 const USERNAME_CANDIDATE_LIMIT = 5000;
 
+/** `maxLength` of identity's `UsernameCandidateRequest` pattern; a longer prefilter reads every pool person with its username. */
+const USERNAME_CANDIDATE_PATTERN_MAX = 2000;
+
 /** The person prefilter of a search: `pattern` or a username candidate; undefined when every pool person must be read. */
 async function searchNameLike(
   deps: SearchDeps,
@@ -1268,6 +1274,8 @@ async function searchNameLike(
 ): Promise<PersonNameLike | undefined> {
   // A prefilter without a literal matches every value.
   if (!/[^%]/.test(pattern)) return undefined;
+  // JSON Schema counts maxLength in code points.
+  if ([...pattern].length > USERNAME_CANDIDATE_PATTERN_MAX) return undefined;
   const candidates = await deps.identity.usernameCandidates({ publicPool, pattern, where, limit: USERNAME_CANDIDATE_LIMIT });
   if (!candidates.complete) return undefined;
   return { pattern, orUserIds: candidates.items.filter(({ username }) => like.test(username)).map(({ userId }) => userId) };
@@ -1654,12 +1662,13 @@ function sortValues(ctx: ExtendContext, sortBy: string, column: keyof ExtendData
   return values;
 }
 
-/** Validates getAdvancedSearch's criteria and options in legacy's order, then prepares the batched scan of its pools. */
+/** Validates getAdvancedSearch's criteria and options in legacy's order, then prepares the batched scan of its pools, read through `observer` when given. */
 async function prepareAdvancedSearch(
   deps: SearchDeps,
   viewer: ViewerScope,
   criteria: AdvancedSearchCriteria & UserFeedKeys,
   { siteid = '', isPublic = '', sortBy = 'lname', sortDirection = 'asc', countOnly = false }: AdvancedSearchOptions,
+  observer?: PersonObserver,
 ): Promise<AdvancedScan> {
   const feed = userFeed(criteria, isPublic);
   const siteId = siteid !== '' ? siteid : feed.siteId !== '' ? feed.siteId : viewer.site;
@@ -1718,7 +1727,7 @@ async function prepareAdvancedSearch(
   const poolTenants = tenantIds.filter((tenant) => pools.some((pool) => pool.tenantId === tenant));
   // Identity lists Type=2 accounts only, so a grouped feed of another type matches no account and reads none.
   const streams = (): AsyncGenerator<SortedMatch>[] =>
-    !grouped || numericParam(feed.type, 'INTEGER') === 2 ? poolTenants.map((tenant) => personBatches(deps, tenant, pager, load, match)) : [];
+    !grouped || numericParam(feed.type, 'INTEGER') === 2 ? poolTenants.map((tenant) => personBatches(deps, tenant, pager, load, match, observer)) : [];
 
   return {
     compare,
@@ -1809,6 +1818,48 @@ export async function getAdvancedSearchPage(
   }
   const exts = await photoExtensions(deps, page.rows.map(({ candidate }) => candidate));
   return rowsOf(page, ({ candidate }) => resultRow(candidate, SEARCH_FIELD_LIST, exts));
+}
+
+/** The rows of an advanced search a caller may show, decided before the match count is known. */
+export interface AdvancedSearchHold {
+  /** Whether the row at 0-based `index` of the ordered matches is kept. */
+  keep(index: number): boolean;
+  /** No row at or past this index is kept; Infinity for no bound. */
+  reach: number;
+}
+
+/** An advanced search's match count and the SEARCH_FIELD_LIST rows its hold kept, by 0-based row index. */
+export interface AdvancedSearchWindow {
+  count: number;
+  rows: ReadonlyMap<number, Record<string, unknown>>;
+}
+
+/** `getAdvancedSearch` counting every match but keeping, with their photo extensions, only the rows `hold` names; with `observer`, its person batches are read in the caller's observation. */
+export async function getAdvancedSearchWindow(
+  deps: SearchDeps,
+  viewer: ViewerScope,
+  criteria: AdvancedSearchCriteria & UserFeedKeys,
+  options: Omit<AdvancedSearchOptions, 'countOnly'>,
+  hold: AdvancedSearchHold,
+  observer?: PersonObserver,
+): Promise<AdvancedSearchWindow> {
+  const scan = await prepareAdvancedSearch(deps, viewer, criteria, options, observer);
+  // A selection's limit must be a whole number of rows.
+  const reach = Math.max(0, Math.ceil(hold.reach));
+  const kept: [number, SortedMatch][] = [];
+  let count = 0;
+  if (scan.ordered) {
+    for await (const match of scan.matches()) {
+      if (count < reach && hold.keep(count)) kept.push([count, match]);
+      count += 1;
+    }
+  } else {
+    const matches = await selected(scan, reach);
+    count = matches.count;
+    for (const [index, match] of matches.leading().entries()) if (hold.keep(index)) kept.push([index, match]);
+  }
+  const exts = await photoExtensions(deps, kept.map(([, { candidate }]) => candidate));
+  return { count, rows: new Map(kept.map(([index, { candidate }]) => [index, resultRow(candidate, SEARCH_FIELD_LIST, exts)])) };
 }
 
 /** `utility.getNextN` [legacy: core/mura/utility.cfc:126-178]. */

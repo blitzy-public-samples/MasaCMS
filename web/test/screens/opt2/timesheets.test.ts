@@ -3,19 +3,23 @@ import { load } from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Roles, type Role } from '@opt2/platform/auth';
 import { secure } from '@/lib/access-gate';
+import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
+import { rbFor } from '@/lib/resource-bundles/rb';
 import type { Opt2ActionDefinition, Opt2ScreenDefinition } from '@/screens/registry';
-import { canUse, noAccessUrl } from '@/screens/opt2/shared';
+import { canUse, noAccessUrl, OPT2_LABEL_KEYS, type Opt2LabelName } from '@/screens/opt2/shared';
 import { timesheetsActions, timesheetsScreens } from '@/screens/opt2/timesheets';
 import { SHEETS_PER_PAGE } from '@/screens/opt2/timesheets/sheets';
 import { loadShellData, renderAdminDocument, serializeAdminDocument } from '@/shell/document';
 import {
   TIMESHEETS_AS_OF,
   TIMESHEET_IDS,
+  timesheetDetailByRole,
   timesheetSheets,
   timesheetsAnswersByRole,
 } from '../../fixtures/opt2/timesheets';
 import { opt2RoleRequest } from '../../helpers/admin-request';
+import { fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeRouteTable } from '../../helpers/fake-gateway';
 import { makeScreenContext, renderScreenPage } from '../../helpers/screen-context';
@@ -165,7 +169,6 @@ beforeEach(() => {
 });
 afterEach(() => restoreEnv());
 
-// Each screen's list, detail and day-action behaviour is proven in ./timesheets/; this suite adds what spans them.
 describe('timesheets screens in the shell', () => {
   it.each(PAGES)('renders the $name under the active OPT-2 group in legacy admin classes', async (testCase) => {
     const markup = await testCase.render();
@@ -178,6 +181,56 @@ describe('timesheets screens in the shell', () => {
     const classes = moduleClasses(markup);
     expect(classes.length).toBeGreaterThan(0);
     expect(classes.filter((name) => !isLegacyClass(name))).toEqual([]);
+  });
+});
+
+describe('timesheets labels', () => {
+  const rb = rbFor('fr');
+  /** Catalogue label `name` in French, as DOM text. */
+  const fr = (name: Opt2LabelName): string => load(rb.rbKey(OPT2_LABEL_KEYS[name]), null, false).text();
+  const flag = (on: boolean): string => fr(on ? 'Yes' : 'No');
+  const detail = timesheetDetailByRole.employee;
+
+  it.each([
+    {
+      name: 'sheets',
+      req: () => requestAs(Roles.timesheetsEmployee, { pageIndex: '2' }),
+      routes: listOf(timesheetSheets, SHEETS_PER_PAGE * 3),
+      flagColumns: [4],
+      expected: () => ({
+        headers: [['Period', 'Person', fr('Due Date'), fr('Status'), 'Overdue']],
+        flags: [timesheetSheets.map(({ overdue }) => flag(overdue))],
+        buttons: [],
+        links: ['Previous', fr('Next')],
+      }),
+    },
+    {
+      name: 'sheet',
+      req: () => requestAs(Roles.timesheetsEmployee, { timesheetid: TIMESHEET_IDS.sheetReturned }),
+      routes: timesheetsAnswersByRole.employee,
+      flagColumns: [4, 3],
+      expected: () => ({
+        headers: [
+          ['Person', 'Period', fr('Due Date'), fr('Status'), 'Overdue'],
+          ['Work Date', fr('Hours'), fr('State'), 'Blackout', fr('Actions')],
+        ],
+        flags: [[flag(detail.overdue)], detail.days.map(({ blackout }) => flag(blackout))],
+        buttons: [fr('Submit'), 'Resubmit'],
+        links: ['Timesheets'],
+      }),
+    },
+  ])('renders timesheets/$name with the bundle labels of the session locale', async (testCase) => {
+    const def = screen(testCase.name);
+    const ctx = makeScreenContext({ req: testCase.req(), gateway: fakeGatewayClient(testCase.routes), rb });
+
+    const model = fragmentModel(toString((await def.render(ctx, await def.load(ctx))).body));
+
+    expect({
+      headers: model.tables.map(({ headers }) => headers),
+      flags: model.tables.map(({ rows }, table) => rows.map((row) => row[testCase.flagColumns[table] ?? -1])),
+      buttons: model.buttons.map(({ text }) => text),
+      links: model.links.filter(({ href }) => !href.includes('timesheetid=')).map(({ text }) => text),
+    }).toEqual(testCase.expected());
   });
 });
 

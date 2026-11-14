@@ -829,6 +829,7 @@ describe.skipIf(!available)('groups domain', () => {
           kind: 'update',
           userId,
           requestSiteId: REPLAY_SITE,
+          actorUserId: SUPER.userId,
           siteId: REPLAY_SITE,
           actorIsSuperUser: true,
           change: { username, password: '', s2, perm: 0, inActive: 0, isPublic: 0, remoteID: '', groupIds: joins ? [groupId] : [] },

@@ -122,7 +122,6 @@ beforeEach(async () => {
     readSite: vi.fn<SitesDomain['readSite']>(async () => ({ site: SITE, isNew: 0, extendSets: [], imageSizes: [] })),
     readShellSite: vi.fn<SitesDomain['readShellSite']>(async () => ({ site: SHELL_SITE, isNew: 0 })),
     readUserPoolSites: vi.fn<SitesDomain['readUserPoolSites']>(async () => ({ sites: [SHELL_SITE] })),
-    updateSite: vi.fn<SitesDomain['updateSite']>(async () => ({ written: true, errors: {}, site: SITE })),
     saveOrderAndDeploy: vi.fn<SitesDomain['saveOrderAndDeploy']>(async () => ({ written: true, sites: [SITE_ROW] })),
     hrefDomains: vi.fn<SitesDomain['hrefDomains']>(async () => DOMAINS),
   };
@@ -495,32 +494,30 @@ describe('GET /v1/sites/:siteId/user-pool-sites', () => {
 
 describe('POST /v1/sites/:siteId/update', () => {
   const url = '/v1/sites/tenant-a/update';
+  const boundary = 'opt2-site-routes';
+  const multipart = [
+    ...Object.entries({ siteid: 'tenant-a', action: 'Update', csrf_token: 'T', csrf_token_expires: 'E' }).map(
+      ([name, value]) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+    ),
+    `--${boundary}\r\nContent-Disposition: form-data; name="newPlaceholderImg"; filename="placeholder.png"\r\n`,
+    'Content-Type: image/png\r\n\r\nPNG\r\n',
+    `--${boundary}--\r\n`,
+  ].join('');
 
-  it('writes nothing and answers the stored site when the token is rejected', async () => {
-    identity.valid = false;
-    const payload = `siteid=tenant-a&action=Update&site=Renamed&${TOKEN_FIELDS}`;
-    const res = await send('POST', url, 'site-admin', FORM, payload);
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ written: false, errors: {}, site: SITE });
-    expect(sites.updateSite).not.toHaveBeenCalled();
-    expect(identity.calls).toEqual([expect.objectContaining({ context: 'tenant-a' })]);
-  });
-
-  it.each([
-    [
-      'a lower-case action',
-      { siteid: 'tenant-a', action: 'update', site: 'Renamed', useSSL: 1 },
-      'tenant-a',
-      { siteid: 'tenant-a', action: 'update', site: 'Renamed', useSSL: '1' },
-    ],
-    ['an empty siteid', { siteid: '', action: 'Update' }, 'tenant-a', { siteid: 'tenant-a', action: 'Update' }],
-    ['a posted SiteID', { SiteID: 'TENANT-A', action: 'Update' }, 'TENANT-A', { SiteID: 'TENANT-A', action: 'Update' }],
-  ])('updates with %s resolved as rc.siteID', async (_label, body, context, form) => {
-    const res = await send('POST', url, 's2', { ...JSON_BODY, 'x-csrf_token': 'T', 'x-csrf_token_expires': 'E' }, body);
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ written: true, errors: {}, site: SITE });
-    expect(identity.calls).toEqual([expect.objectContaining({ context })]);
-    expect(sites.updateSite).toHaveBeenCalledWith(db, expect.objectContaining({ site: 'tenant-a' }), 'tenant-a', form);
+  it.each<[string, SubjectName, Record<string, string>, string | Record<string, unknown>]>([
+    ['a site admin posting the form with a valid token', 'site-admin', FORM, `siteid=tenant-a&action=Update&site=Renamed&${TOKEN_FIELDS}`],
+    ['an S2 user posting the form without Razuna fields', 's2', FORM, `siteid=&action=Update&tagline=Hi&${TOKEN_FIELDS}`],
+    ['an S2 user posting JSON with a lower-case action', 's2', { ...JSON_BODY, 'x-csrf_token': 'T', 'x-csrf_token_expires': 'E' }, { SiteID: 'TENANT-A', action: 'update' }],
+    ['a site admin posting multipart with a file part', 'site-admin', { 'content-type': `multipart/form-data; boundary=${boundary}` }, multipart],
+  ])('refuses the withheld Update of %s with the legacy 503 before any CSRF consume, read or write', async (_label, as, headers, body) => {
+    const res = await send('POST', url, as, headers, body);
+    const { statusCode: status, body: answer } = res;
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: url, status, contentType: res.headers['content-type'], body: answer });
+    expect(status).toBe(503);
+    expect(res.json()).toEqual({ apiversion: 'v1', method: 'invalid', error: { code: 'server_error', message: 'Unhandled Exception' } });
+    expect(identity.calls).toEqual([]);
+    for (const operation of Object.values(sites)) expect(operation).not.toHaveBeenCalled();
+    expect(logLines.find((line) => line.message === 'service unavailable')).toMatchObject({ error: expect.objectContaining({ type: 'LegacyServiceUnavailableError' }) });
   });
 
   it.each([
@@ -530,40 +527,19 @@ describe('POST /v1/sites/:siteId/update', () => {
     ['an absent siteid', url, JSON_BODY, { action: 'Update', site: 'Renamed' }],
     ['a complex JSON value', url, JSON_BODY, { siteid: 'tenant-a', action: 'Update', site: { name: 'Renamed' } }],
     ['a path siteId of 26 characters', `/v1/sites/${'a'.repeat(26)}/update`, FORM, 'siteid=&action=Update'],
-  ])('answers invalidParameters for %s before the CSRF check and the update', async (_label, path, headers, body) => {
+  ])('answers invalidParameters for %s before any CSRF consume, read or write', async (_label, path, headers, body) => {
     const token = { 'x-csrf_token': 'T', 'x-csrf_token_expires': 'E' };
     const res = await send('POST', path, 's2', { ...headers, ...token }, body);
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
     expect(identity.calls).toHaveLength(0);
-    expect(sites.updateSite).not.toHaveBeenCalled();
-    expect(sites.readSite).not.toHaveBeenCalled();
+    for (const operation of Object.values(sites)) expect(operation).not.toHaveBeenCalled();
   });
 
   it('admits a path siteId of 25 characters to the site check', async () => {
     const res = await send('POST', `/v1/sites/${'a'.repeat(25)}/update`, 's2', FORM, 'siteid=&action=Update');
     expect(res.statusCode).toBe(403);
     expect(identity.calls).toHaveLength(0);
-    expect(sites.updateSite).not.toHaveBeenCalled();
-  });
-
-  it('passes multipart file parts by name and lets a foreign branch answer the legacy 503', async () => {
-    const boundary = 'opt2-site-routes';
-    const fields = { siteid: 'tenant-a', action: 'Update', csrf_token: 'T', csrf_token_expires: 'E' };
-    const payload = [
-      ...Object.entries(fields).map(
-        ([name, value]) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
-      ),
-      `--${boundary}\r\nContent-Disposition: form-data; name="newPlaceholderImg"; filename="placeholder.png"\r\n`,
-      'Content-Type: image/png\r\n\r\nPNG\r\n',
-      `--${boundary}--\r\n`,
-    ].join('');
-    const foreign = new LegacyServiceUnavailableError('foreign branch', 'auto', 'foreign-branch');
-    sites.updateSite.mockRejectedValueOnce(foreign);
-    const res = await send('POST', url, 's2', { 'content-type': `multipart/form-data; boundary=${boundary}` }, payload);
-    expect(res.statusCode).toBe(503);
-    const form = sites.updateSite.mock.calls[0]?.[3];
-    expect(form).toMatchObject({ siteid: 'tenant-a', newPlaceholderImg: 'placeholder.png' });
   });
 });
 

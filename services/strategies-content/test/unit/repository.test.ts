@@ -6,6 +6,7 @@ import { OutsideTenantTransactionError, withTenant, type TenantTx } from '@opt2/
 import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
+import { cfId as batchId } from '../helpers/content-fixture.js';
 
 const cfId = (prefix: string, n: number): string => `${prefix}${String(n).padStart(7, '0')}-AAAA-BBBB-CCCCDDDDEEEEFFFF`;
 const NOW = new Date(2026, 5, 30, 10, 15, 42, 123);
@@ -646,6 +647,112 @@ describe.skipIf(!(await pgAvailable()))('repo/repository', () => {
     expect(verdicts.map((row) => [row.content_id, row.type])).toEqual([['node2', 'Read']]);
     await inA((tx) => repo.projections.replaceUserMemberships(tx, cfId('U', 81), SITE, []));
     expect(await inA((tx) => repo.projections.groupsOfUser(tx, cfId('U', 81)))).toEqual([]);
+  });
+
+  describe('batched reads answer as their one-item reads', () => {
+    const rb = (n: number): string => batchId('RB', n);
+    const cb = (n: number): string => batchId('CB', n);
+    const cp = (n: number): string => batchId('CP', n);
+    const END = '00000000000000000000000000000000END';
+    /** Rows in a stable order with their key order, since neither read orders rows of one remote id. */
+    const shape = (rows: readonly Record<string, unknown>[] | undefined) =>
+      [...(rows ?? [])].sort((a, b) => String(a.contenthistid).localeCompare(String(b.contenthistid))).map((row) => [Object.keys(row), row]);
+
+    beforeAll(async () => {
+      await inA(async (tx) => {
+        await repo.content.insertVersion(tx, version(rb(1), rb(101), { remoteid: 'Remote-One ' }));
+        await repo.content.insertVersion(tx, version(rb(2), rb(102), { remoteid: 'REMOTE-TWO' }));
+        await repo.content.insertVersion(tx, version(rb(3), rb(103), { remoteid: 'remote-two' }));
+        await repo.content.insertVersion(tx, version(rb(2), rb(104), { remoteid: 'REMOTE-TWO', active: 0 }));
+        await repo.content.insertVersion(tx, version(rb(4), rb(105), { remoteid: 'REMOTE-ONE', siteid: 'other-site' }));
+        await repo.content.insertVersion(tx, version(rb(5), rb(106), { remoteid: '' }));
+        // CB1 holds CB2 and CB3, CB4's path names CB2 as well, and CB5's path spells CB1 in lower case.
+        const paths: Array<[number, string | null]> = [
+          [1, `'${cb(1)}'`],
+          [2, `'${cb(1)}','${cb(2)}'`],
+          [3, `'${cb(1)}','${cb(3)}'`],
+          [4, `'${cb(4)}','${cb(2)}'`],
+          [5, `'${cb(1).toLowerCase()}','${cb(5)}'`],
+          [6, null],
+        ];
+        for (const [n, path] of paths) await repo.categories.insertCategory(tx, { categoryid: cb(n), siteid: SITE, name: `CB${n}`, path });
+        // CP1 > CP2 > CP3 with stored paths; CP4 under CP2 and CP5 under a missing parent without one; CP7 and CP8 parent each other.
+        const tree: Array<[number, string, string | null, Record<string, unknown>]> = [
+          [1, END, cp(1), { menutitle: '' }],
+          [2, cp(1), `${cp(1)},${cp(2)}`, { restricted: 1, restrictgroups: 'Members' }],
+          [3, cp(2), `${cp(1)},${cp(2)},${cp(3)}`, {}],
+          [4, cp(2), null, { menutitle: '' }],
+          [5, batchId('CX', 1), null, {}],
+          [7, cp(8), null, {}],
+          [8, cp(7), null, {}],
+        ];
+        for (const [n, parentid, path, extra] of tree) {
+          await repo.content.insertVersion(tx, version(cp(n), batchId('CH', n), { parentid, path, title: `CP${n}`, ...extra }));
+        }
+        await repo.content.insertVersion(tx, version(cp(2), batchId('CH', 20), { parentid: cp(1), path: `${cp(1)},${cp(2)}`, title: 'old', active: 0 }));
+        await repo.content.insertVersion(tx, version(cp(1), batchId('CH', 21), { parentid: END, path: cp(1), title: 'elsewhere', siteid: 'other-site' }));
+      });
+    });
+
+    it.each([
+      [
+        'stored paths and walks mixed, one item repeated',
+        [
+          { contentId: cp(3), path: `${cp(1)},${cp(2)},${cp(3)}` },
+          { contentId: cp(4), path: '' },
+          { contentId: cp(3), path: `${cp(1).toLowerCase()} ,${cp(2)}` },
+          { contentId: cp(4) },
+          { contentId: cp(3), path: `${cp(4)},${cp(1)}` },
+          { contentId: cp(3), path: `${cp(1)},${cp(2)},${cp(3)}` },
+        ],
+        [3, 3, 2, 3, 2, 3],
+      ],
+      [
+        'walks ending at a missing parent, the root and a parent loop',
+        [{ contentId: cp(5) }, { contentId: END.toLowerCase() }, { contentId: cp(7), path: '' }, { contentId: 'nowhere' }],
+        [1, 0, 51, 0],
+      ],
+      ['paths naming no stored id', [{ contentId: cp(3), path: ',,' }, { contentId: cp(3), path: 'nowhere' }], [0, 0]],
+      ['no item', [], []],
+    ] as Array<[string, Array<{ contentId: string; path?: string }>, number[]]>)('crumbPaths of %s gives each item the crumbs crumbPath reads for it', async (_label, items, sizes) => {
+      const batched = await inA((tx) => repo.content.crumbPaths(tx, { siteId: SITE, items }));
+      const single = [];
+      for (const item of items) single.push(await inA((tx) => repo.content.crumbPath(tx, { ...item, siteId: SITE })));
+      expect(batched.map((crumbs) => crumbs.length)).toEqual(sizes);
+      expect(batched).toEqual(single);
+    });
+
+    it.each([
+      ['one category', [cb(1)], [cb(1), cb(2), cb(3), cb(5)]],
+      ['overlapping categories', [cb(2), cb(1)], [cb(2), cb(4), cb(1), cb(3), cb(5)]],
+      ['a repeated id and its lower-case form', [cb(4), cb(1), cb(4), cb(1).toLowerCase()], [cb(4), cb(1), cb(2), cb(3), cb(5)]],
+      ['an id holding a LIKE wildcard', [cb(3).replace('B', '_')], [cb(3)]],
+      ['a missing id', ['nowhere'], []],
+      ['no id', [], []],
+    ])('descendantIdsIn of %s lists what descendantIds lists for each, first place kept', async (_label, listed, expected) => {
+      const batched = await inA((tx) => repo.categories.descendantIdsIn(tx, listed));
+      const each = new Set<string>();
+      for (const categoryId of listed) {
+        for (const id of await inA((tx) => repo.categories.descendantIds(tx, categoryId))) each.add(id);
+      }
+      expect(batched).toEqual([...each]);
+      expect(batched).toEqual(expected);
+    });
+
+    it.each([
+      ['distinct ids', ['remote-one', 'remote-two'], [1, 2]],
+      ['case and trailing-space variants of one id, repeated', ['REMOTE-ONE', 'remote-one  ', 'Remote-One ', 'REMOTE-ONE'], [1, 1, 1, 1]],
+      ['an empty id among a blank and a missing one', ['', ' ', 'remote-none', 'Remote-Two'], [0, 0, 0, 2]],
+      ['no id', [], []],
+    ])('readActiveByRemoteIds of %s holds each id as readActiveByRemoteId reads it', async (_label, remoteIds, sizes) => {
+      const batched = await inA((tx) => repo.content.readActiveByRemoteIds(tx, { siteId: SITE, remoteIds }));
+      expect([...batched.keys()]).toEqual([...new Set(remoteIds)]);
+      expect(remoteIds.map((remoteId) => batched.get(remoteId)?.length)).toEqual(sizes);
+      for (const remoteId of remoteIds) {
+        const single = await inA((tx) => repo.content.readActiveByRemoteId(tx, { siteId: SITE, remoteId }));
+        expect(shape(batched.get(remoteId))).toEqual(shape(single));
+      }
+    });
   });
 
   it('isolates tenants, rejects calls outside a tenant transaction and honours legacy gates', async () => {

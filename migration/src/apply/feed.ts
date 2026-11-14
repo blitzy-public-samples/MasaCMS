@@ -1,12 +1,21 @@
 /** Forward change feed: snapshot-to-snapshot table diffs applied to the owners' legacy-authoritative units, and the feed restart after a rollback. */
+import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 
-import { LEGACY_PROGRAM_ID_COLUMN, encodeRow, formatCanonicalTimestamp, type WatermarkRecord } from '@opt2/platform/migration-kit';
+import {
+  LEGACY_PROGRAM_ID_COLUMN,
+  encodeRow,
+  formatCanonicalTimestamp,
+  sha256Hex,
+  type CanonicalColumn,
+  type CanonicalValue,
+  type WatermarkRecord,
+} from '@opt2/platform/migration-kit';
 
 import { ownerBySchema } from '../config.js';
 import type { MigrationContext } from '../context.js';
 import { currentAuthority, type CurrentAuthority } from '../cutover/index.js';
-import { diffKeyedStreams, diffMultisetStreams, type KeyedChange, type MultisetChange } from '../diff/index.js';
+import { diffKeyedStreams, diffMultisetStreams, type KeyedChange, type MultisetChange, type RowSource } from '../diff/index.js';
 import {
   describeLegacyTable,
   listLegacyTables,
@@ -18,17 +27,21 @@ import {
   type LegacyTableShape,
   type MigratableTable,
 } from '../extract/index.js';
-import { FileStoreUnsupportedError, SUPPORTED_FILE_STORE, diffSnapshotManifests, transferFiles, type TransferResult } from '../files/index.js';
+import { FileStoreUnsupportedError, SUPPORTED_FILE_STORE, diffSnapshotManifests, removeDroppedObjects, transferFiles, type RemovalResult, type TransferResult } from '../files/index.js';
 import { compareTableNames, computeDependencyOrder } from '../order/index.js';
 import type { DataOwner, LegacyTableTarget } from '../owners/index.js';
 import {
   describeUnitTable,
   fileUnitIds,
+  objectLegacyPath,
   readLegacyUnitRows,
   readTargetUnitRows,
   reconcileUnits,
   writeReconciliationReport,
+  type ObjectEntry,
   type ReconcileResult,
+  type TargetUnitRows,
+  type UnitTableShape,
 } from '../reconcile/index.js';
 import { latestSnapshot, requireSnapshot, takeSnapshot, type SnapshotRecord } from '../snapshot/index.js';
 import {
@@ -101,7 +114,7 @@ export interface FeedOptions {
 
 /** What the feed did with the legacy file store. */
 export type FeedFilesResult =
-  | { status: 'transferred'; from: number; to: number; transfer: TransferResult; removed: number }
+  | { status: 'transferred'; from: number; to: number; transfer: TransferResult; removal: RemovalResult }
   | { status: 'up-to-date'; from: number; to: number }
   | { status: 'skipped-target-authoritative'; units: string[] }
   | { status: 'not-applicable'; reason: string }
@@ -516,7 +529,7 @@ interface FilesInput {
   bases: ReadonlyMap<string, ReadonlyMap<DataOwner, number>>;
 }
 
-/** Transfers file-store objects added or changed since the file owner's `tfiles` watermark, which the later table pass advances. */
+/** Transfers file-store objects added or changed since the file owner's `tfiles` watermark and deletes those dropped, before the later table pass advances it. */
 async function feedFiles(ctx: FeedContext, input: FilesInput): Promise<FeedFilesResult> {
   const { to } = input;
   const filesTable = input.tables.find((table) => tableKey(table.name) === FILES_TABLE);
@@ -551,10 +564,8 @@ async function feedFiles(ctx: FeedContext, input: FilesInput): Promise<FeedFiles
     if (error instanceof FileStoreUnsupportedError) return { status: 'halted', reason: error.message };
     throw error;
   }
-  if (diff.removed.length > 0) {
-    ctx.logger.info(`feed to snapshot ${String(to.seq)}: ${String(diff.removed.length)} legacy files removed since snapshot ${String(from)} stay in content-files`);
-  }
-  return { status: 'transferred', from, to: to.seq, transfer, removed: diff.removed.length };
+  const removal = await removeDroppedObjects(ctx, diff);
+  return { status: 'transferred', from, to: to.seq, transfer, removal };
 }
 
 /** Units the point after a feed reconciles: every legacy-authoritative unit with a migratable table, plus the file units when their objects were fed. */
@@ -634,7 +645,38 @@ interface RebaselineInput {
   batchSize: number;
 }
 
-/** Turns each restarted unit's exported rows into its legacy rows at the snapshot; the owner's last unit carries the table's watermark. */
+/** Column a re-baseline diff compares each row's stored object under; U+0000 keeps it apart from every SQL Server column name. */
+const OBJECT_DIGEST: CanonicalColumn = { name: '\u0000object', type: 's' };
+
+/** Size and SHA-256 of one object as comparable text. */
+function objectDigest(entry: Pick<ObjectEntry, 'size' | 'sha256'>): string {
+  return `${String(entry.size)}:${entry.sha256}`;
+}
+
+/** `rows` with `digestOf(row)` under {@link OBJECT_DIGEST}; leaving the iteration releases `rows`. */
+async function* withDigest(rows: RowSource<CanonicalRow>, digestOf: (row: CanonicalRow) => string | null): AsyncGenerator<CanonicalRow, void, undefined> {
+  for await (const row of rows) yield { ...row, row: { ...row.row, [OBJECT_DIGEST.name]: digestOf(row) } };
+}
+
+/** Diff sides of an object-backed unit with each row's object digest (target's by `legacyPath`, legacy's from its bytes). */
+function withObjectDigests(
+  shape: UnitTableShape,
+  objectColumn: CanonicalColumn,
+  current: TargetUnitRows,
+  legacyRows: RowSource<CanonicalRow>,
+): { before: RowSource<CanonicalRow>; after: RowSource<CanonicalRow>; columns: CanonicalColumn[] } {
+  const byPath = new Map<string, string[]>();
+  for (const entry of current.objects ?? []) byPath.set(entry.key, [...(byPath.get(entry.key) ?? []), objectDigest(entry)]);
+  const stored = new Map([...byPath].map(([path, digests]) => [path, digests.sort().join(',')]));
+  const targetDigest = (row: CanonicalRow): string | null => stored.get(objectLegacyPath(shape, row)) ?? null;
+  const legacyDigest = (row: CanonicalRow): string | null => {
+    const bytes = row.row[objectColumn.name] ?? null;
+    return bytes === null ? null : objectDigest({ size: Buffer.byteLength(bytes), sha256: sha256Hex(bytes) });
+  };
+  return { before: withDigest(current.rows, targetDigest), after: withDigest(legacyRows, legacyDigest), columns: [...shape.columns, OBJECT_DIGEST] };
+}
+
+/** Turns each restarted unit's exported rows and stored objects into its legacy rows at the snapshot; the owner's last unit carries the table's watermark. */
 async function rebaselineOwner(ctx: TableDiffContext, input: RebaselineInput): Promise<RestartTableResult['rebaseline']> {
   const { table, owner, snapshot, tenants } = input;
   const counts: RestartTableResult['rebaseline'] = { units: [], inserts: 0, updates: 0, deletes: 0, batches: 0 };
@@ -645,7 +687,9 @@ async function rebaselineOwner(ctx: TableDiffContext, input: RebaselineInput): P
     const hint = hintOf(target, tableShape.columns);
     // The owner's mapping reads a column split from the row even when the unit owns no share of that column.
     const carried = shape.columns.some((column) => lower(column.name) === hint.predicateColumn) ? undefined : hint.carried;
-    const columns = carried === undefined ? shape.columns : [...shape.columns, carried.column];
+    // describeUnitTable sets apart at most one object column; its bytes ride on the batch so the owner stores the object.
+    const [objectColumn] = shape.objectColumns;
+    const columns = [...shape.columns, ...(carried === undefined ? [] : [carried.column]), ...shape.objectColumns];
     const batcher = createOwnerBatcher({
       owner,
       legacyTable: table.name,
@@ -659,25 +703,39 @@ async function rebaselineOwner(ctx: TableDiffContext, input: RebaselineInput): P
       sender: input.sender,
       watermark: index === input.targets.length - 1 ? forwardWatermark(ctx, table.name, snapshot) : null,
     });
+    // Legacy rows already encode over `columns` unless a split column is carried; a deleted target row holds no object bytes.
+    const encodingOf = (op: ApplyChange['op'], row: CanonicalRow): string => {
+      if (carried === undefined && (objectColumn === undefined || op !== 'delete')) return row.encoding;
+      const values: Record<string, CanonicalValue> = { ...row.row };
+      if (carried !== undefined) values[carried.column.name] = carried.value;
+      if (objectColumn !== undefined && op === 'delete') values[objectColumn.name] = null;
+      return encodeRow(columns, values);
+    };
     const add = (tenantId: string, op: ApplyChange['op'], row: CanonicalRow): Promise<void> =>
       batcher.add(
         tenantId,
         {
           op,
-          row: carried === undefined ? row.encoding : encodeRow(columns, { ...row.row, [carried.column.name]: carried.value }),
+          row: encodingOf(op, row),
           ...(hint.discriminator === undefined ? {} : { discriminator: hint.discriminator }),
         },
         row.legacyProgramId,
       );
 
-    const legacy = await readLegacyUnitRows(ctx, shape, { database: snapshot.databaseName, tenants });
+    // The legacy rows of an object-backed unit also carry the object bytes, after the compared columns.
+    const legacyShape = objectColumn === undefined ? shape : { ...shape, columns: [...shape.columns, objectColumn], objectColumns: [] };
+    const legacy = await readLegacyUnitRows(ctx, legacyShape, { database: snapshot.databaseName, tenants });
     try {
       for (const tenantId of [...new Set([...tenants.siteTenants(), ...legacy.tenants])].sort()) {
         const current = await readTargetUnitRows(ctx, shape, tenantId);
         try {
           if (shape.keyed) {
-            const writableColumns = shape.columns.map((column) => column.name);
-            for await (const change of diffKeyedStreams(current.rows, legacy.rows(tenantId), { columns: shape.columns, writableColumns })) {
+            const sides =
+              objectColumn === undefined
+                ? { before: current.rows, after: legacy.rows(tenantId), columns: shape.columns }
+                : withObjectDigests(shape, objectColumn, current, legacy.rows(tenantId));
+            const writableColumns = sides.columns.map((column) => column.name);
+            for await (const change of diffKeyedStreams(sides.before, sides.after, { columns: sides.columns, writableColumns })) {
               if (change.op === 'delete') {
                 await add(tenantId, 'delete', change.before);
                 counts.deletes += 1;

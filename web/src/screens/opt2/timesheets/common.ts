@@ -1,8 +1,9 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
 import { Roles, type Role } from '@opt2/platform/auth';
 import type { components } from '@/generated/clients/timesheets';
-import type { Rc } from '../../registry';
-import type { Opt2Params } from '../shared';
+import type { SafeHtml } from '@/lib/html';
+import type { Rc, ScreenContext } from '../../registry';
+import { opt2Label, type Opt2Params } from '../shared';
 
 export type TimesheetsSchemas = components['schemas'];
 
@@ -38,7 +39,7 @@ export function datePart(value: string): string {
   return value.slice(0, 10);
 }
 
-/** `Yes` or `No` for a flag column. */
-export function yesNo(flag: boolean): string {
-  return flag ? 'Yes' : 'No';
+/** The bundle's `Yes` or `No` in the session locale of `ctx`, for a flag column. */
+export function yesNo(ctx: ScreenContext, flag: boolean): SafeHtml {
+  return opt2Label(ctx, flag ? 'Yes' : 'No');
 }

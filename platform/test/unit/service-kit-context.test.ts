@@ -5,6 +5,7 @@ import { fixedClock } from '../../src/service-kit/clock.js';
 import {
   NoRequestContextError,
   REQUEST_ID_HEADER,
+  RequestAbortedError,
   currentRequestContext,
   newRequestContext,
   recordWritePosition,
@@ -12,6 +13,7 @@ import {
   requestIdFrom,
   requireRequestContext,
   runWithRequestContext,
+  throwIfRequestAborted,
   type RequestContextStore,
 } from '../../src/service-kit/context.js';
 
@@ -185,6 +187,36 @@ describe('requireRequestContext', () => {
   it('returns the active store inside a request', () => {
     const store = newRequestContext();
     expect(runWithRequestContext(store, requireRequestContext)).toBe(store);
+  });
+});
+
+describe('throwIfRequestAborted', () => {
+  it.each<[string, () => void]>([
+    ['outside a request', throwIfRequestAborted],
+    ['in a request without a signal', () => runWithRequestContext(newRequestContext(), throwIfRequestAborted)],
+    ['in a request whose signal has not aborted', () => runWithRequestContext({ ...newRequestContext(), signal: new AbortController().signal }, throwIfRequestAborted)],
+  ])('does nothing %s', (_label, run) => {
+    expect(run).not.toThrow();
+  });
+
+  it("throws the signal's RequestAbortedError once it has aborted, also after an await", async () => {
+    const disconnect = new AbortController();
+    const reason = new RequestAbortedError();
+    const store = { ...newRequestContext(), signal: disconnect.signal };
+    const thrown = await runWithRequestContext(store, async () => {
+      throwIfRequestAborted();
+      disconnect.abort(reason);
+      await nextTick();
+      try {
+        throwIfRequestAborted();
+      } catch (error) {
+        return error;
+      }
+      return undefined;
+    });
+    expect(thrown).toBe(reason);
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown).toMatchObject({ name: 'RequestAbortedError', message: 'The client disconnected before the answer' });
   });
 });
 

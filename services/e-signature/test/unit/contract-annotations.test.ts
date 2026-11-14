@@ -14,6 +14,7 @@ interface Operation {
   'x-opt2-transport'?: unknown;
   'x-opt2-requires'?: unknown;
   'x-opt2-public'?: unknown;
+  'x-opt2-site-check'?: unknown;
   'x-opt2-route-keys'?: unknown;
 }
 
@@ -29,6 +30,8 @@ interface Contract {
 const LABEL = 'SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/';
 const FIXTURE_PREFIX = '/legacy-fixtures/cfml/api.cfm/';
 const METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'] as const;
+// A fixture route checks an optional user token itself, so it is reachable without one.
+const OPTIONAL_USER_SECURITY: SecurityRequirement[] = [{}, { userToken: [], invocationCredential: [] }];
 
 // js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
 const requireHere = createRequire(import.meta.url);
@@ -84,8 +87,8 @@ describe('e-signature contract annotations', () => {
     expect(String(contract.info.description).slice(0, LABEL.length)).toBe(LABEL);
   });
 
-  it('calls only people', () => {
-    expect(contract['x-opt2-calls']).toEqual(['people']);
+  it('calls only identity and people', () => {
+    expect(contract['x-opt2-calls']).toEqual(['identity', 'people']);
   });
 
   it('gives every operation a unique operationId', () => {
@@ -98,9 +101,9 @@ describe('e-signature contract annotations', () => {
     expect(contract.security).toEqual([{ userToken: [], invocationCredential: [] }]);
   });
 
-  it.each(operations)('$label resolves a security requirement of declared schemes', ({ op }) => {
+  it.each(operations)('$label resolves a security requirement of declared schemes', ({ op, path }) => {
     if (op['x-opt2-public'] === true) {
-      expect(op.security).toEqual([]);
+      expect(op.security).toEqual(path.startsWith(FIXTURE_PREFIX) ? OPTIONAL_USER_SECURITY : []);
     } else {
       const resolved = securityOf(op);
       expect(resolved).not.toEqual([]);
@@ -136,6 +139,13 @@ describe('e-signature contract annotations', () => {
       .map((queue) => queue.targetPath);
     const taskPaths = Object.keys(contract.paths).filter((path) => expectedTransport(path) === 'cloud-tasks');
     expect(taskPaths.sort()).toEqual(queuePaths.sort());
+  });
+
+  it.each(fixtureOperations)('$label is public with its own site check, on a path declaring every request method and the method override', ({ op, path }) => {
+    expect([op['x-opt2-public'], op['x-opt2-site-check']]).toEqual([true, false]);
+    const item = contract.paths[path] ?? {};
+    expect(METHODS.filter((method) => item[method] !== undefined)).toEqual(['get', 'put', 'post', 'delete', 'options', 'head', 'patch']);
+    expect(item.parameters).toContainEqual({ $ref: '#/components/parameters/MethodOverride' });
   });
 
   it.each(fixtureOperations)('$label maps to a well-formed e-signature fixture route key', ({ method, path }) => {

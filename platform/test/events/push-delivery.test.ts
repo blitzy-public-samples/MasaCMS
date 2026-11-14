@@ -39,6 +39,7 @@ import {
   pushTo,
   seedRegistry,
   testEnvelope,
+  testPgConfig,
   testVerifier,
   type TestTopic,
   type ThrowawaySchema,
@@ -81,7 +82,8 @@ interface PushResponse {
 async function requireBackends(): Promise<void> {
   const problems: string[] = [];
   try {
-    if (!(await pgAvailable())) problems.push(`PostgreSQL at ${process.env.PG_HOST}:${process.env.PG_PORT ?? 5432} is unreachable`);
+    const { host, port } = testPgConfig();
+    if (!(await pgAvailable())) problems.push(`PostgreSQL at ${host}:${String(port)} is unreachable`);
   } catch (err) {
     problems.push(err instanceof Error ? err.message : String(err));
   }

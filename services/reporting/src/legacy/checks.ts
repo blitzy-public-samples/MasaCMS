@@ -1,6 +1,6 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Reporting fixture checks of legacy-fixtures/cfml api.cfm, lib/auth.cfc and modules/reporting.cfc that the platform hooks leave to handlers. */
-import { AuthDenial, assertSiteMatches } from '@opt2/platform/auth';
+import { AuthDenial, assertSiteMatches, type UserClaims } from '@opt2/platform/auth';
 import type { FastifyRequest } from '@opt2/platform/service-kit';
 import { siteForTenant, tenantForRegisteredSite, withTenant } from '@opt2/platform/tenancy';
 import type { ReportingDeps } from '../domain/deps.js';
@@ -14,7 +14,7 @@ export type FixtureCheckStep = 'path' | 'site' | 'login' | 'role' | 'csrf' | 'ex
 /**
  * The reporting fixture's check order: api.cfm path and site, then reporting.cfc with auth.cfc, a create's definition before
  * its fields. Login and role run in the platform `onRequest` hook (`config.opt2.requires`) and csrf in the route's
- * `csrfPreHandler`, so those three answer before site.
+ * `csrfPreHandler`, so those three answer before site; `fixtureDenialOverride` answers a role denial with site and login first.
  */
 export const FIXTURE_CHECK_ORDER: readonly FixtureCheckStep[] = Object.freeze([
   'path',
@@ -42,6 +42,9 @@ type FixtureParams = Readonly<Record<string, unknown>>;
 /** A fixture request's site: its registered legacy id and the verified token's tenant. */
 export type FixtureSite = { siteId: string; tenantId: string };
 
+/** A platform auth denial's context: the verified claims, when a user token was presented, and the params naming the requested site. */
+export type FixtureDenialContext = { claims: UserClaims | undefined; params: FixtureParams };
+
 /** The create fields `createExportJob` receives, read from the request as reporting.cfc reads them. */
 export type CreateExportFields = Pick<CreateExportInput, 'definitionId' | 'format' | 'params'>;
 
@@ -67,11 +70,16 @@ function registeredSite(deps: Pick<ReportingDeps, 'db'>, tenantId: string, siteI
   });
 }
 
-/**
- * The request's site as auth.cfc resolveSite picks it: `siteid`, else the token's site, else `default`, as its registered id.
- * Throws invalidParameters for an unknown or complex site, then a 403 `AuthDenial` when it is not the token's site; the
- * tenant is always the verified token's `tid`.
- */
+/** The registered id of the site auth.cfc resolveSite picks: `siteid`, else the token's site, else `default`; null when unknown or complex. */
+async function requestedSite(params: FixtureParams, claims: UserClaims, deps: Pick<ReportingDeps, 'db'>): Promise<string | null> {
+  const supplied = param(params, 'siteid') ?? '';
+  // The token's site stands for the session site. resolveSite raises for an unknown site instead of falling back to
+  // `default` as contentServer.cfc does for the JSON API, so fallbackSiteId does not apply.
+  const requested = supplied === '' ? claims.site || DEFAULT_SITE_ID : supplied;
+  return typeof requested === 'string' ? registeredSite(deps, claims.tid, requested) : null;
+}
+
+/** The request's registered site, as auth.cfc resolveSite picks it, with the token's `tid`; throws invalidParameters for an unknown or complex site, then a 403 `AuthDenial` for another site. */
 export async function resolveFixtureSite(
   params: FixtureParams,
   request: Pick<FastifyRequest, 'opt2Auth'>,
@@ -79,14 +87,23 @@ export async function resolveFixtureSite(
 ): Promise<FixtureSite> {
   const claims = request.opt2Auth.user;
   if (claims === undefined) throw AuthDenial.unauthenticated('missing-credential');
-  const supplied = param(params, 'siteid') ?? '';
-  // The token's site stands for the session site. resolveSite raises for an unknown site instead of falling back to
-  // `default` as contentServer.cfc does for the JSON API, so fallbackSiteId does not apply.
-  const requested = supplied === '' ? claims.site || DEFAULT_SITE_ID : supplied;
-  const siteId = typeof requested === 'string' ? await registeredSite(deps, claims.tid, requested) : null;
+  const siteId = await requestedSite(params, claims, deps);
   if (siteId === null) throw new FixtureApiError('invalidParameters');
   assertSiteMatches(siteId, claims);
   return { siteId, tenantId: claims.tid };
+}
+
+/** The fixture's answer to a platform role denial, decided before resolveSite and requireLogin: invalidParameters for an unregistered requested site, authorization for an anonymous session's token, else `denial`. */
+export async function fixtureDenialOverride(
+  denial: AuthDenial,
+  ctx: FixtureDenialContext,
+  deps: Pick<ReportingDeps, 'db'>,
+): Promise<AuthDenial | FixtureApiError> {
+  const { claims, params } = ctx;
+  if (denial.reason !== 'forbidden' || claims === undefined) return denial;
+  if ((await requestedSite(params, claims, deps)) === null) return new FixtureApiError('invalidParameters');
+  // Identity mints sub '' for a session without a login, which auth.cfc requireLogin answers 401, not 403.
+  return claims.sub === '' ? new FixtureApiError('authorization') : denial;
 }
 
 /**

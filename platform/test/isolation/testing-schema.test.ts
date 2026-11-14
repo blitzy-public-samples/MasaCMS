@@ -10,6 +10,7 @@ import { rlsSql, tenantIdForSite } from '../../src/tenancy/index.js';
 import { runCleanup } from '../../src/testing/cleanup.js';
 import {
   createThrowawaySchema,
+  dropThrowawaySchemas,
   pgAvailable,
   rewriteMigrationSql,
   testPgConfig,
@@ -114,7 +115,15 @@ describe('testPgConfig', () => {
 
 describe('pgAvailable', () => {
   it.each([
-    ['PG_HOST is unset', { ...SYNTHETIC_PG, PG_HOST: undefined }, 'need PG_HOST in the environment'],
+    ['PG_HOST is unset', { ...SYNTHETIC_PG, PG_HOST: undefined }],
+    ['PG_HOST is empty', { ...SYNTHETIC_PG, PG_HOST: '' }],
+    ['no PG_* variable is set', {}],
+  ])('resolves false when %s', async (_label, env) => {
+    await expect(pgAvailable(env)).resolves.toBe(false);
+  });
+
+  it.each([
+    ['PG_PASSWORD is unset', { ...SYNTHETIC_PG, PG_PASSWORD: undefined }, 'need PG_PASSWORD in the environment'],
     ['PG_PORT is invalid', { ...SYNTHETIC_PG, PG_PORT: 'abc' }, 'need PG_PORT to be an integer from 1 to 65535, got "abc"'],
   ])('rejects naming the variable when %s', async (_label, env, message) => {
     await expect(pgAvailable(env)).rejects.toThrow(message);
@@ -311,5 +320,64 @@ describe.skipIf(!available)('createThrowawaySchema lifecycle', () => {
     await expect(createThrowawaySchema({ service: 'testing-schema', extraSql: ['SELECT 1', 'SELECT * FROM missing_table'] })).rejects.toThrow(
       /extraSql\[1\] failed/,
     );
+  });
+
+  it('sweeps a creation that has not taken the bootstrap lock yet, and the creation rejects', async () => {
+    const service = `sweep-${randomBytes(3).toString('hex')}`;
+    const outcome = createThrowawaySchema({ service }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    await dropThrowawaySchemas();
+
+    expect(await outcome).toMatchObject({ message: expect.stringMatching(/bootstrap failed: drop\(\) was called before the schema was created/) });
+    expect(await residue(service.replace('-', '_'))).toEqual([]);
+  });
+
+  it('sweeps a creation blocked inside a migration step, and the creation names the step it could not run', async () => {
+    const service = `sweep-${randomBytes(3).toString('hex')}`;
+    const key = randomBytes(4).readUInt32BE() >>> 1;
+    const holder = new pg.Client(testPgConfig());
+    await holder.connect();
+    try {
+      await holder.query('SELECT pg_advisory_lock($1)', [key]);
+      const outcome = createThrowawaySchema({ service, extraSql: [`SELECT pg_advisory_xact_lock(${key})`, 'SELECT 1'] }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const waiting = `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid = $1 AND objsubid = 1
+                          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`;
+      await expect.poll(async () => (await holder.query(waiting, [key])).rowCount, { timeout: 30_000, interval: 20 }).toBe(1);
+
+      const sweeping = dropThrowawaySchemas();
+      await holder.query('SELECT pg_advisory_unlock($1)', [key]);
+      await sweeping;
+
+      expect(await outcome).toMatchObject({ message: expect.stringMatching(/extraSql\[1\] failed: Cannot use a pool after calling end on the pool/) });
+    } finally {
+      await holder.end();
+    }
+    expect(await residue(service.replace('-', '_'))).toEqual([]);
+  });
+
+  it.each([
+    ['nobody dropped', async (): Promise<void> => undefined],
+    [
+      'whose drop() already rejected',
+      async (handle: ThrowawaySchema): Promise<void> => {
+        const end = handle.adminPool.end.bind(handle.adminPool) as () => Promise<void>;
+        Object.assign(handle.adminPool, { end: () => end().then(() => Promise.reject(new Error('end failed'))) });
+        await expect(handle.drop()).rejects.toThrow('end failed');
+      },
+    ],
+  ])('sweeps a completed handle %s without an error', async (_label, before) => {
+    const handle = await createThrowawaySchema({ service: 'testing-schema' });
+    await before(handle);
+
+    await expect(dropThrowawaySchemas()).resolves.toBeUndefined();
+
+    expect(await residue(stemOf(handle))).toEqual([]);
+    expect(() => handle.connect('app')).toThrow('has been dropped');
   });
 });

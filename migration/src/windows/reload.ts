@@ -191,18 +191,27 @@ function freezeBudget(ctx: Pick<MigrationContext, 'config'>): WaitBudget {
 
 /**
  * Freezes every legacy-bound entry of the active version, waits until every live gateway instance has seen the freeze,
- * then until no live instance holds an in-flight request on those entries other than `exceptRoutes`.
- * @throws GatewayWaitTimeoutError, or any gateway failure, after unfreezing what it froze.
+ * then until no live instance holds an in-flight request on those entries other than `exceptRoutes`. `beforeFreeze`
+ * receives the routes about to be frozen, with the epoch before the freeze, so a caller records them before they exist.
+ * @throws GatewayWaitTimeoutError, or any gateway failure, after unfreezing what it froze; a `beforeFreeze` failure, freezing nothing.
  */
-export async function freezeLegacyBound(ctx: FreezeContext, opts: { exceptRoutes?: readonly string[] } = {}): Promise<FrozenRoutes> {
+export async function freezeLegacyBound(
+  ctx: FreezeContext,
+  opts: { exceptRoutes?: readonly string[]; beforeFreeze?: (planned: FrozenRoutes) => Promise<void> } = {},
+): Promise<FrozenRoutes> {
   const status = await ctx.gateway.status();
   // Without an active version the gateway forwards nothing, so no legacy request can start.
-  if (status.tableVersion === null) return { routes: [], epoch: status.epoch };
+  if (status.tableVersion === null) {
+    const none: FrozenRoutes = { routes: [], epoch: status.epoch };
+    await opts.beforeFreeze?.(none);
+    return none;
+  }
   const version = loadVersion(ctx.config.paths.cutoverDir, status.tableVersion);
   const legacyBound = [...new Set(legacyBoundEntries(version).map((entry) => entry.route))].sort();
   // A transition calls this with its own entries frozen; unfreezing them here would release them before its activation.
   const alreadyFrozen = new Set(status.frozen);
   const routes = legacyBound.filter((route) => !alreadyFrozen.has(route));
+  await opts.beforeFreeze?.({ routes, epoch: status.epoch });
   const epoch = routes.length === 0 ? status.epoch : (await ctx.gateway.freeze(routes)).epoch;
   const except = new Set(opts.exceptRoutes);
   try {

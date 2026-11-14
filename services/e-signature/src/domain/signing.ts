@@ -164,7 +164,7 @@ async function inUserPools(tx: TenantTx, actorSiteId: string, userSiteId: string
 /** The stored UserID of a Type 2 user of the site's public or private user pool, as esignature.cfc poolUserId resolves it; throws `invalidParameters` otherwise. */
 async function poolUserId(tx: TenantTx, deps: EsignatureDomainDeps, actor: EsignatureActor, userId: string): Promise<string> {
   const person = await deps.peopleClient.readPerson(actor.siteId, userId);
-  // People also finds users stored under the site's own id, which is not always one of its pools, so membership is checked here.
+  // esignature.cfc checks the read user's type and pool site itself; so does this, whatever people's read already narrowed.
   if (person === null || person.type !== USER_TYPE || !(await inUserPools(tx, actor.siteId, person.siteId))) {
     throw new EsignatureDomainError('invalidParameters');
   }

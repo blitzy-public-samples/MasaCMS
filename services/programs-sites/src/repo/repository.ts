@@ -1,6 +1,5 @@
 /** The only write path of schema `programs_sites`: the platform repository plus the site, image-size and site extend helpers. */
 import {
-  RepositoryError,
   createRepository,
   qualified,
   type Repository,
@@ -35,25 +34,6 @@ export const OWNER = 'programs-sites';
 /** Schema the programs-sites service owns. */
 export const SCHEMA = 'programs_sites';
 
-/** `programs_sites.site` columns `settingsDAO.update` sets, in SET order (settingsDAO.cfc:321-416). */
-export const SITE_UPDATE_COLUMNS: readonly string[] = Object.freeze([
-  'site', 'pagelimit', 'domain', 'domainalias', 'enforceprimarydomain', 'contact', 'locking', 'mailserverip',
-  'mailserverusername', 'mailserverpassword', 'emailbroadcaster', 'emailbroadcasterlimit', 'extranet',
-  'extranetpublicreg', 'extranetssl', 'cache', 'cachecapacity', 'cachefreememorythreshold', 'viewdepth', 'nextn',
-  'datacollection', 'exportlocation', 'columncount', 'primarycolumn', 'publicsubmission', 'columnnames',
-  'contactname', 'contactaddress', 'contactcity', 'contactstate', 'contactzip', 'contactemail', 'contactphone',
-  'publicuserpoolid', 'privateuserpoolid', 'displaypoolid', 'filepoolid', 'categorypoolid', 'contentpoolid',
-  'feedmanager', 'largeimageheight', 'largeimagewidth', 'smallimageheight', 'smallimagewidth', 'mediumimageheight',
-  'mediumimagewidth', 'sendloginscript', 'sendauthcodescript', 'mailinglistconfirmscript',
-  'publicsubmissionapprovalscript', 'reminderscript', 'extranetpublicregnotify', 'loginurl', 'editprofileurl',
-  'commentapprovaldefault', 'accountactivationscript', 'googleapikey', 'usedefaultsmtpserver', 'sitelocale',
-  'mailserversmtpport', 'mailserverpopport', 'mailservertls', 'mailserverssl', 'theme', 'tagline', 'haschangesets',
-  'baseid', 'enforcechangesets', 'contentpendingscript', 'contentapprovalscript', 'contentrejectionscript',
-  'contentcanceledscript', 'enablelockdown', 'customtaggroups', 'hascomments', 'haslockablenodes', 'recaptchasitekey',
-  'recaptchasecret', 'recaptchalanguage', 'jsonapi', 'usessl', 'isremote', 'resourcessl', 'resourcedomain',
-  'remotecontext', 'remoteport', 'showdashboard', 'placeholderimgid', 'placeholderimgext', 'scaffolding',
-]);
-
 /** An image size to save; without `sizeid` it is inserted under a new CF UUID. */
 export type ImageSizeInput = Pick<ImageSizeRow, 'siteid' | 'name' | 'height' | 'width'> & { sizeid?: string };
 
@@ -68,25 +48,12 @@ export interface SiteExtendDefinitions {
   rcsets: ExtendRcSetRow[];
 }
 
-/** Value columns of one `extend_data` row. */
-export type ExtendDataValues = Pick<ExtendDataRow, 'attributevalue' | 'stringvalue' | 'datetimevalue' | 'numericvalue' | 'remoteid'>;
-
-/** One attribute's stored value for `baseId`; `values: null` only deletes. */
-export interface SiteExtendDataReplacement {
-  baseId: string;
-  siteId: string;
-  attributeId: number;
-  values: ExtendDataValues | null;
-}
-
 /** The platform repository of schema `programs_sites` plus typed helpers; every helper runs in the caller's open tenant transaction. */
 export interface ProgramsSitesRepository extends Repository {
   /** The site row with exactly `siteId`; null when absent. */
   readSite(tx: TenantTx, siteId: string): Promise<SiteRow | null>;
   /** Every site of the transaction tenant by `orderno` ascending, NULLs first, ties by `siteid`. */
   listSites(tx: TenantTx): Promise<SiteRow[]>;
-  /** Sets `after`'s SITE_UPDATE_COLUMNS on the stored site `before.siteid`, leaves every other column, and adds 1 to `row_version`; null when the row is gone. */
-  updateSiteRow(tx: TenantTx, before: SiteRow, after: Readonly<RepositoryRow>, ctx?: WriteContext): Promise<SiteRow | null>;
   /** Sets `orderno` and adds 1 to `row_version`; null when the site is absent. */
   updateOrderNo(tx: TenantTx, siteId: string, orderNo: number, ctx?: WriteContext): Promise<SiteRow | null>;
   /** Sets `deploy` and adds 1 to `row_version`; null when the site is absent. */
@@ -103,8 +70,6 @@ export interface ProgramsSitesRepository extends Repository {
   readSiteExtendDefinitions(tx: TenantTx, siteId: string): Promise<SiteExtendDefinitions>;
   /** Every stored extend value of `baseId`, by `attributeid` then `dataid`. */
   readSiteExtendData(tx: TenantTx, baseId: string): Promise<ExtendDataRow[]>;
-  /** Deletes every row of the replacement's base and attribute, then inserts its values under a new `dataid`; returns the inserted row, or null. */
-  replaceSiteExtendData(tx: TenantTx, replacement: SiteExtendDataReplacement, ctx?: WriteContext): Promise<ExtendDataRow | null>;
 }
 
 /** Settings of `createProgramsSitesRepository`; `schema` differs from `programs_sites` only for throwaway test schemas. */
@@ -152,8 +117,6 @@ export function createProgramsSitesRepository({ clock, schema = SCHEMA }: Progra
     `SELECT r.* FROM ${rcSet} r JOIN ${subtype} t ON t.tenant_id = r.tenant_id AND t.subtypeid = r.subtypeid` +
     ' WHERE r.tenant_id = $1 AND r.siteid = $2 ORDER BY r.orderno ASC NULLS FIRST, r.relatedcontentsetid';
   const extendDataSql = `SELECT * FROM ${data} WHERE tenant_id = $1 AND baseid = $2 ORDER BY attributeid, dataid`;
-  const lockExtendDataSql = `SELECT dataid FROM ${data} WHERE tenant_id = $1 AND baseid = $2 AND attributeid = $3 ORDER BY dataid FOR UPDATE`;
-  const nextIdSql = 'SELECT nextval(pg_get_serial_sequence($1, $2)::regclass)::text AS id';
 
   function readSite(tx: TenantTx, siteId: string): Promise<SiteRow | null> {
     return base.findByKey<SiteRow>(tx, SITE.table, { siteid: siteId });
@@ -174,14 +137,6 @@ export function createProgramsSitesRepository({ clock, schema = SCHEMA }: Progra
       return null;
     }
     return base.update<SiteRow>(tx, SITE.table, { siteid: current.siteid }, { ...patch, row_version: nextRowVersion(current) }, ctx);
-  }
-
-  function updateSiteRow(tx: TenantTx, before: SiteRow, after: Readonly<RepositoryRow>, ctx: WriteContext = {}): Promise<SiteRow | null> {
-    const patch: RepositoryRow = {};
-    for (const column of SITE_UPDATE_COLUMNS) {
-      patch[column] = after[column];
-    }
-    return writeSite(tx, before.siteid, patch, ctx);
   }
 
   function updateOrderNo(tx: TenantTx, siteId: string, orderNo: number, ctx: WriteContext = {}): Promise<SiteRow | null> {
@@ -239,51 +194,10 @@ export function createProgramsSitesRepository({ clock, schema = SCHEMA }: Progra
     return base.read(tx, EXTEND_DATA.unit, async () => (await tx.query<ExtendDataRow>(extendDataSql, [tx.tenantId, baseId])).rows);
   }
 
-  /** The next target `dataid`: the negative, ascending sequence 0004_extend_data_id_sequence.sql owns by the column. */
-  async function nextDataId(tx: TenantTx): Promise<number> {
-    const id = await base.read(
-      tx,
-      EXTEND_DATA.unit,
-      async () => (await tx.query<{ id: string | null }>(nextIdSql, [data, 'dataid'])).rows[0]?.id ?? null,
-    );
-    if (id === null) {
-      throw new RepositoryError('column dataid has no id sequence', EXTEND_DATA.table);
-    }
-    return Number(id);
-  }
-
-  async function replaceSiteExtendData(
-    tx: TenantTx,
-    replacement: SiteExtendDataReplacement,
-    ctx: WriteContext = {},
-  ): Promise<ExtendDataRow | null> {
-    const { baseId, siteId, attributeId } = replacement;
-    const stale = await base.read(
-      tx,
-      EXTEND_DATA.unit,
-      async () => (await tx.query<{ dataid: number }>(lockExtendDataSql, [tx.tenantId, baseId, attributeId])).rows,
-    );
-    for (const { dataid } of stale) {
-      await base.delete(tx, EXTEND_DATA.table, { dataid }, ctx);
-    }
-    if (replacement.values === null) {
-      return null;
-    }
-    const row: Omit<ExtendDataRow, 'tenant_id'> = {
-      dataid: await nextDataId(tx),
-      baseid: baseId,
-      attributeid: attributeId,
-      siteid: siteId,
-      ...replacement.values,
-    };
-    return base.insert<ExtendDataRow>(tx, EXTEND_DATA.table, row, ctx);
-  }
-
   return Object.freeze({
     ...base,
     readSite,
     listSites,
-    updateSiteRow,
     updateOrderNo,
     updateDeploy,
     listImageSizes,
@@ -292,6 +206,5 @@ export function createProgramsSitesRepository({ clock, schema = SCHEMA }: Progra
     deleteImageSize,
     readSiteExtendDefinitions,
     readSiteExtendData,
-    replaceSiteExtendData,
   });
 }

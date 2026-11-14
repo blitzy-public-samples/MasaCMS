@@ -76,6 +76,7 @@ const editData = (overrides: Partial<UserEditData> = {}): UserEditData => ({
   tempIsPublic: 0,
   lockedSuper: false,
   blockedUntil: null,
+  passwordExpired: false,
   addresses: [{ addressID: EDITOR_ADDRESS_ID, userID: EDITOR_ID, siteID: 'default', addressName: 'Primary', isPrimary: 1 }],
   privateGroups: [ADMIN_GROUP, EDITOR_GROUP],
   publicGroups: [],
@@ -488,16 +489,20 @@ describe('cUsers.editUser subtypes', () => {
 });
 
 describe('cUsers.editUser passwords', () => {
-  const daysAgo = (days: number): string => new Date(NOW.getTime() - days * 86_400_000).toISOString().slice(0, 19);
+  /** A failed save's write result as cUsers.update preserves it, with people's verdict when given. */
+  const preservedSave = (passwordExpired?: boolean): string =>
+    JSON.stringify({ written: false, errors: {}, userBean: EDITOR, ...(passwordExpired === undefined ? {} : { passwordExpired }) });
 
-  it.each<[string, UserEditData, boolean]>([
-    ['a password older than the expiry', editData({ user: { ...EDITOR, PasswordCreated: daysAgo(40) } }), true],
-    ['a recent password', editData({ user: { ...EDITOR, PasswordCreated: daysAgo(10) } }), false],
-    ['an undated password', editData({ user: { ...EDITOR, PasswordCreated: null } }), true],
-    ['a new user', NEW_USER, false],
-  ])('shows the expiry state of %s when passwords expire after 30 days', async (_label, edit, expired) => {
+  it.each<[string, UserEditData, Readonly<Record<string, string>>, boolean]>([
+    ['a stored user people reads as expired', editData({ passwordExpired: true }), {}, true],
+    ['a stored user people reads as current', editData(), {}, false],
+    ['a new user', NEW_USER, {}, false],
+    ["a failed save people reads as expired over the stored user's verdict", editData(), { [USER_BEAN_RC_KEY]: preservedSave(true) }, true],
+    ["a failed save people reads as current over the stored user's verdict", editData({ passwordExpired: true }), { [USER_BEAN_RC_KEY]: preservedSave(false) }, false],
+    ["a failed save without a verdict, keeping the stored user's", editData({ passwordExpired: true }), { [USER_BEAN_RC_KEY]: preservedSave() }, true],
+  ])('shows the expiry state of %s when passwords expire after 30 days', async (_label, edit, preserved, expired) => {
     useMuraSettings({ MURA_EXPIREPASSWORDS: '30' });
-    const ctx = contextFor(editUserRequest({ userid: edit.isNew ? '' : EDITOR_ID }), edit);
+    const ctx = contextFor(editUserRequest({ userid: edit.isNew ? '' : EDITOR_ID, ...preserved }), edit);
 
     const body = await formOf(ctx);
 

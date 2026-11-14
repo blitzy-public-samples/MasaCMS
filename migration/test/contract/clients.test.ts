@@ -172,6 +172,20 @@ const OWNER_SPECIFIC: readonly ClientCase[] = [
     check: async (result) => expect(await text(result as Readable)).toBe(BYTES.toString()),
   },
   {
+    name: 'deleteObject from strategies-content',
+    run: (owners) => owners.deleteObject(`${TENANT}/${FILE_ID}_small.jpg`),
+    answer: () => jsonAnswer(200, { key: `${TENANT}/${FILE_ID}_small.jpg`, deleted: true }, { 'x-opt2-write-position': 'strategies-content=78' }),
+    operations: ['strategies-content DELETE /internal/v1/migration/objects'],
+    check: (result) => expect(result).toEqual({ key: `${TENANT}/${FILE_ID}_small.jpg`, deleted: true, writePositions: new Map([['strategies-content', '78']]) }),
+  },
+  {
+    name: 'deleteObject of a key strategies-content no longer records',
+    run: (owners) => owners.deleteObject(`${TENANT}/${FILE_ID}_small.jpg`),
+    answer: () => jsonAnswer(200, { key: `${TENANT}/${FILE_ID}_small.jpg`, deleted: false }),
+    operations: ['strategies-content DELETE /internal/v1/migration/objects'],
+    check: (result) => expect(result).toEqual({ key: `${TENANT}/${FILE_ID}_small.jpg`, deleted: false, writePositions: new Map() }),
+  },
+  {
     name: 'getAttachmentObject from finance',
     run: (owners) => owners.getAttachmentObject({ tenantId: TENANT, attachmentId: FILE_ID }),
     answer: () => streamAnswer(BYTES),

@@ -31,7 +31,7 @@ import { CONTENT_CONFIG_DEFAULTS } from '../../src/domain/context.js';
 import { contentConsumers } from '../../src/events/consumers.js';
 import { registerJobRoutes } from '../../src/jobs/index.js';
 import { mappings, units } from '../../src/migration/mappings/index.js';
-import { exportObjects } from '../../src/migration/objects.js';
+import { createExportObjects } from '../../src/migration/objects.js';
 import { OWNER, SCHEMA, createContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 import { registerCommentsProxyRoutes } from '../../src/routes/comments-proxy.js';
@@ -492,7 +492,7 @@ export async function buildContentApp(options: ContentTestAppOptions = {}): Prom
     registerMigrationObjectRoutes(app, { domain: { db, repository }, storage, clock: TEST_CLOCK });
     registerFileRoutes(app, { domain: { db, repository }, storage, clock: TEST_CLOCK });
     registerCommentsProxyRoutes(app, { domain: { db, repository, clock: TEST_CLOCK, config: CONTENT_CONFIG_DEFAULTS } });
-    registerMigrationHandlers(app, { owner: OWNER, repository: repository.platform, mappings, units, db, exportObjects });
+    registerMigrationHandlers(app, { owner: OWNER, repository: repository.platform, mappings, units, db, exportObjects: createExportObjects({ storage }) });
     registerConsumers(app, { service: SERVICE, consumers: contentConsumers(repository), publisher, db });
     registerJobRoutes(app, { repository, clock: TEST_CLOCK, storage });
     registerContentQueueControl(app, { port: taskPort, serviceUrls: env.OPT2_SERVICE_URLS, clock: TEST_CLOCK });

@@ -13,6 +13,7 @@ export interface RequestContextStore {
   tenantId?: string; // verified claims.tid only, never a header or body value
   site?: string; // claims.site (legacy site id)
   readonly writePositions: Map<string, string>; // owner -> commit xid8 as a decimal string
+  signal?: AbortSignal; // aborts once the client disconnects; set only for a request that opted in to abandonment
 }
 
 /** The process-wide request context store. */
@@ -30,6 +31,20 @@ export class NoRequestContextError extends Error {
   constructor() {
     super('No request context is active');
   }
+}
+
+/** The request's client disconnected before its answer. */
+export class RequestAbortedError extends Error {
+  override readonly name: string = 'RequestAbortedError';
+
+  constructor() {
+    super('The client disconnected before the answer');
+  }
+}
+
+/** Throws the active request's abort reason once its signal has aborted; a no-op outside a request or without a signal. */
+export function throwIfRequestAborted(): void {
+  requestContext.getStore()?.signal?.throwIfAborted();
 }
 
 /** Returns the first inbound `x-request-id` when it is 1-200 visible ASCII characters, otherwise a new UUID. */

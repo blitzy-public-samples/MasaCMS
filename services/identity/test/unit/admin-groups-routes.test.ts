@@ -337,11 +337,52 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     const stored = await send('GET', `/v1/groups/${ids.editors}`, await admin());
     const unknown = await send('GET', `/v1/groups/${UNKNOWN_GROUP}`, await admin());
 
-    expect(stored.json()).toMatchObject({ isNew: false, group: { UserID: ids.editors, GroupName: 'Editors', Password: null, Type: 1, SiteID: SITE } });
+    expect(stored.json()).toMatchObject({ isNew: false, group: { UserID: ids.editors, GroupName: 'Editors', Type: 1, SiteID: SITE } });
     const fresh = unknown.json<{ isNew: boolean; group: { UserID: string; isPublic: number; subType: string } }>();
     expect(fresh).toMatchObject({ isNew: true, group: { isPublic: 1, subType: 'Default' } });
     expect(fresh.group.UserID).toHaveLength(35);
     expect(fresh.group.UserID).not.toBe(UNKNOWN_GROUP);
+  });
+
+  /** Every object key of `value`, at any depth. */
+  function keysOf(value: unknown): string[] {
+    if (Array.isArray(value)) return value.flatMap(keysOf);
+    if (typeof value !== 'object' || value === null) return [];
+    return Object.entries(value).flatMap(([key, inner]) => [key, ...keysOf(inner)]);
+  }
+
+  it.each<[string, () => Promise<{ json: () => unknown }>]>([
+    ['a stored group', async () => send('GET', `/v1/groups/${ids.editors}`, await admin())],
+    ['a new group bean', async () => send('GET', `/v1/groups/${UNKNOWN_GROUP}`, await admin())],
+    ["a group's members", async () => send('GET', `/v1/groups/${ids.editors}/members`, await admin())],
+    ['a created group', async () => {
+      const userid = nextId('B');
+      return send('POST', '/v1/groups', await admin(), { userid, groupname: 'Keyless', isPublic: '0', ...csrfFields(userid) });
+    }],
+    ['an updated group', async () => {
+      const userid = nextId('B');
+      await send('POST', '/v1/groups', await admin(), { userid, groupname: 'Keyless', isPublic: '0', ...csrfFields(userid) });
+      return send('PUT', `/v1/groups/${userid}`, await admin(), { groupname: 'Keyless Too', isPublic: '0', ...csrfFields(userid) });
+    }],
+  ])('leaves Password and PasswordCreated out of %s', async (_case, answer) => {
+    const keys = keysOf((await answer()).json());
+    expect(keys.some((key) => key === 'UserID' || key === 'userID')).toBe(true);
+    expect(keys.filter((key) => /^password(created)?$/i.test(key))).toEqual([]);
+  });
+
+  type Body = Record<string, unknown>;
+  type Tamper = (body: Body, key: string) => Body;
+  it.each<[string, string, string, Tamper]>(
+    ['Password', 'PasswordCreated', 'passwordcreated'].flatMap((key): [string, string, string, Tamper][] => [
+      ['GroupAccount', key, `/v1/groups/${UNKNOWN_GROUP}`, (body, name) => ({ ...body, group: { ...(body.group as Body), [name]: null } })],
+      ['GroupMember', key, `/v1/groups/${UNKNOWN_GROUP}/members`, (body, name) => ({ ...body, items: [{ groupID: UNKNOWN_GROUP, userID: ADMIN_USER, [name]: null }] })],
+    ]),
+  )('the contract refuses a %s carrying %s', async (_schema, key, url, tamper) => {
+    const res = await send('GET', url, await admin());
+    const response = { method: 'GET', path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body };
+    expect(res.statusCode).toBe(200);
+    expect(() => assertResponseMatchesOpenApi(OPENAPI, { ...response, body: JSON.stringify(tamper(res.json(), 'Notes')) })).not.toThrow();
+    expect(() => assertResponseMatchesOpenApi(OPENAPI, { ...response, body: JSON.stringify(tamper(res.json(), key)) })).toThrow();
   });
 
   it('refuses photo and extended-attribute saves as invalid parameters before any write', async () => {
@@ -556,6 +597,8 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
       'IsPublic', 'SiteID', 'Subscribe', 'Notes', 'description', 'Interests', 'keepPrivate', 'PhotoFileID', 'IMName', 'IMService',
       'Created', 'RemoteID', 'Tags', 'tablist', 'photoFileExt',
     ];
+    /** The keys of a JSON member row: every query column but `PasswordCreated`, which only the CSV carries. */
+    const JSON_MEMBER_KEYS = MEMBER_KEYS.filter((key) => key !== 'PasswordCreated');
     const staff = { groupId: '', full: '', bare: '', nested: '' };
 
     /** The full person state people publishes for `userId`. */
@@ -594,17 +637,18 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
       const res = await send('GET', `/v1/groups/${staff.groupId}/members`, await admin());
 
       expect(res.statusCode).toBe(200);
-      const [bare, full, nested] = res.json<{ items: Record<string, unknown>[] }>().items;
-      expect(Object.keys(full ?? {})).toEqual(MEMBER_KEYS);
+      const { items } = res.json<{ items: Record<string, unknown>[] }>();
+      const [bare, full, nested] = items;
+      for (const item of items) expect(Object.keys(item)).toEqual(JSON_MEMBER_KEYS);
       expect(full).toEqual({
         groupID: staff.full, userID: staff.full, GroupName: null, Fname: 'Fay', Lname: 'Full', UserName: 'ufull',
-        PasswordCreated: '2026-01-02T03:04:05.670', Email: 'fay@example.com', Company: 'Co', JobTitle: 'Analyst', MobilePhone: '555-0100',
+        Email: 'fay@example.com', Company: 'Co', JobTitle: 'Analyst', MobilePhone: '555-0100',
         Website: 'https://fay.example.test', Type: 2, subType: 'Default', ContactForm: 'cf', S2: 0, LastLogin: '2026-06-29T08:00:00.003',
         LastUpdate: '2026-06-30T12:00:00.120', LastUpdateBy: 'Ada Admin', LastUpdateByID: ADMIN_USER, Perm: 1, InActive: 0, IsPublic: 0,
         SiteID: SITE, Subscribe: 1, Notes: 'n', description: 'd', Interests: 'i', keepPrivate: 1, PhotoFileID: STORED_PHOTO, IMName: 'im',
         IMService: 'AIM', Created: '2025-12-31T23:59:59.997', RemoteID: 'R-1', Tags: 't', tablist: 'Basic,Advanced', photoFileExt: 'jpg',
       });
-      expect(bare).toMatchObject({ userID: staff.bare, Lname: 'Bare', InActive: 1, PasswordCreated: null, LastLogin: null, JobTitle: null, PhotoFileID: MISSING_PHOTO, photoFileExt: null });
+      expect(bare).toMatchObject({ userID: staff.bare, Lname: 'Bare', InActive: 1, LastLogin: null, JobTitle: null, PhotoFileID: MISSING_PHOTO, photoFileExt: null });
       expect(nested).toMatchObject({
         userID: staff.nested, Type: 1, GroupName: 'Nested', Lname: 'Nest', JobTitle: 'Group Job', Perm: 1, tablist: 'Basic', subType: 'Default',
         Subscribe: 1, LastUpdate: '2026-06-30T12:00:00.123', Created: '2026-06-30T12:00:00.123', PhotoFileID: STORED_PHOTO, photoFileExt: 'jpg',

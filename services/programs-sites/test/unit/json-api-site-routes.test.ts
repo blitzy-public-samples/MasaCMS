@@ -30,9 +30,6 @@ import {
   testVerifier,
   writeTestSecrets,
 } from '@opt2/platform/testing';
-import { SiteColumnTruncationError, type SitesDomain } from '../../src/domain/sites.js';
-import type { components } from '../../src/generated/openapi.js';
-import { SITE_ERROR_REQUIRED } from '../../src/legacy/validation.js';
 import type { ProgramsSitesRepository } from '../../src/repo/repository.js';
 import {
   JSON_API_SITE_PATHS,
@@ -49,19 +46,17 @@ type Subject = 's2' | 'site-admin';
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
-const UUID_SITE = 'C0FFEE00-1234-5678-9ABCDEF012345678';
 const ORIGIN_DOMAINS: Readonly<Record<string, string[]>> = {
   default: ['localhost'],
   [TENANT_A.siteId]: ['tenant-a.example.test', 'alias.example.test'],
 };
-const REGISTRY = ['default', TENANT_A.siteId, TENANT_B.siteId, 'tenant-c', UUID_SITE].map((siteId) => ({
+const REGISTRY = ['default', TENANT_A.siteId, TENANT_B.siteId, 'tenant-c'].map((siteId) => ({
   site_id: siteId,
   tenant_id: tenantIdForSite(siteId),
   domains: ORIGIN_DOMAINS[siteId] ?? [],
 }));
 const SETTINGS: JsonApiLegacySettings = { adminSSL: false, context: '', appReloadKey: 'appreload', adminDomain: '' };
 const BASE = 'http://localhost/index.cfm/_api';
-const SITE: components['schemas']['Site'] = { SiteID: 'tenant-a', Site: 'Tenant A' };
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 const JSON_BODY = { 'content-type': 'application/json' };
 const TOKEN_FIELDS = 'csrf_token=T&csrf_token_expires=E';
@@ -89,7 +84,6 @@ let identity: StubIdentity;
 let app: FastifyInstance;
 let rows: Map<string, Record<string, unknown>>;
 let repository: { readSite: Mock<ProgramsSitesRepository['readSite']> };
-let sites: { [K in Exclude<keyof SitesDomain, 'emitStateEvents'>]: Mock<SitesDomain[K]> };
 
 let metadataReads: number;
 
@@ -131,7 +125,7 @@ const db: TenantDb = {
 
 function seededRows(): Map<string, Record<string, unknown>> {
   return new Map(
-    ['default', TENANT_A.siteId, TENANT_B.siteId, UUID_SITE].map((siteid) => [
+    ['default', TENANT_A.siteId, TENANT_B.siteId].map((siteid) => [
       siteid,
       { siteid, site: `Site ${siteid}`, domain: `${siteid.toLowerCase()}.example.test` },
     ]),
@@ -186,7 +180,6 @@ async function startApp(legacy: JsonApiLegacySettings | undefined): Promise<Fast
   await registerJsonApiSiteRoutes(service, {
     db,
     repository: repository as unknown as ProgramsSitesRepository,
-    sites: { ...sites, emitStateEvents: vi.fn() },
     legacy,
   });
   await service.ready();
@@ -219,14 +212,6 @@ beforeEach(async () => {
     readSite: vi.fn<ProgramsSitesRepository['readSite']>(
       async (_tx, siteId) => (rows.get(siteId) ?? null) as StoredSite,
     ),
-  };
-  sites = {
-    listSites: vi.fn<SitesDomain['listSites']>(async () => []),
-    readSite: vi.fn<SitesDomain['readSite']>(async () => ({ site: SITE, isNew: 0, extendSets: [], imageSizes: [] })),
-    readShellSite: vi.fn<SitesDomain['readShellSite']>(async () => ({ site: { SiteID: SITE.SiteID }, isNew: 0 })),
-    updateSite: vi.fn<SitesDomain['updateSite']>(async () => ({ written: true, errors: {}, site: SITE })),
-    saveOrderAndDeploy: vi.fn<SitesDomain['saveOrderAndDeploy']>(async () => ({ written: true, sites: [] })),
-    hrefDomains: vi.fn<SitesDomain['hrefDomains']>(async () => ({ allowedDomains: [], siteDomain: '' })),
   };
   app = await startApp(SETTINGS);
 });
@@ -404,7 +389,6 @@ describe('findOne', () => {
       });
       expect(res.headers.etag).toMatch(/^[0-9A-F]{64}$/);
       expect(reads()).toEqual([[TENANT_A.tenantId, 'tenant-a']]);
-      expect(sites.updateSite).not.toHaveBeenCalled();
     },
   );
 
@@ -435,7 +419,7 @@ describe('findOne', () => {
       method: reported,
       data: siteValues(`${BASE}/json/v1/tenant-a`, 'tenant-a', 'tenant-a.example.test'),
     });
-    expect(sites.updateSite).not.toHaveBeenCalled();
+    expect(identity.calls).toEqual([]);
   });
 
   it('reports the site id as the path spells it and links from the registered id', async () => {
@@ -532,11 +516,7 @@ describe('findOne', () => {
 
   it('rejects registration under a malformed MURA_ setting of process.env, naming it', async () => {
     vi.stubEnv('MURA_PORT', 'garbage');
-    const deps = {
-      db,
-      repository: repository as unknown as ProgramsSitesRepository,
-      sites: { ...sites, emitStateEvents: vi.fn() },
-    };
+    const deps = { db, repository: repository as unknown as ProgramsSitesRepository };
     await expect(registerJsonApiSiteRoutes(app, deps)).rejects.toThrow(/^ {2}MURA_PORT: /m);
   });
 });
@@ -602,282 +582,38 @@ describe('site checks', () => {
     expect(res.json()).toEqual(legacyError('invalid', 'Insufficient Account Permissions'));
     expect(repository.readSite).not.toHaveBeenCalled();
     expect(identity.calls).toEqual([]);
-    expect(sites.updateSite).not.toHaveBeenCalled();
   });
 });
 
 describe('save', () => {
-  const posted = {
-    domain: 'saved.example.test',
-    csrf_token: 'T',
-    csrf_token_expires: 'E',
-    method: 'undefined',
-    siteid: 'tenant-a',
-    entityname: 'site',
-    id: 'tenant-a',
-  };
+  const boundary = 'opt2-json-api-site';
+  const multipart = [
+    `--${boundary}\r\nContent-Disposition: form-data; name="domain"\r\n\r\nsaved.example.test\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="newPlaceholderImg"; filename="placeholder.png"\r\n`,
+    'Content-Type: image/png\r\n\r\nPNG\r\n',
+    `--${boundary}--\r\n`,
+  ].join('');
+  const CSRF_HEADERS = { 'x-csrf_token': 'T', 'x-csrf_token_expires': 'E' };
 
-  it.each([
-    ['json', FORM, `domain=saved.example.test&${TOKEN_FIELDS}`],
-    ['ajax', { ...FORM, 'x-csrf_token': 'T', 'x-csrf_token_expires': 'E' }, 'domain=saved.example.test'],
-  ])(
-    'POST /_api/%s/v1/tenant-a/site consumes the token under the site id and answers the reloaded site',
-    async (family, headers, payload) => {
-      sites.updateSite.mockImplementationOnce(async (_db, _claims, siteId) => {
-        rows.set(siteId, { ...rows.get(siteId), domain: 'saved.example.test' });
-        return { written: true, errors: {}, site: SITE };
-      });
-      const res = await send('POST', `/_api/${family}/v1/tenant-a/site`, { as: 's2', headers, payload });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({
-        apiversion: 'v1',
-        method: 'save',
-        data: {
-          ...siteValues(`${BASE}/json/v1/tenant-a`, 'tenant-a', 'saved.example.test'),
-          saveerrors: '',
-          errors: {},
-        },
-      });
-      expect(identity.calls).toEqual([
-        {
-          path: '/internal/v1/csrf/consume',
-          sessionId: expect.any(String),
-          token: 'T',
-          expires: 'E',
-          context: 'tenant-a',
-        },
-      ]);
-      expect(sites.updateSite).toHaveBeenCalledWith(
-        db,
-        expect.objectContaining({ site: 'tenant-a', tid: TENANT_A.tenantId, s2: true }),
-        'tenant-a',
-        posted,
-        { locale: '' },
-      );
-      expect(reads()).toEqual([
-        [TENANT_A.tenantId, 'tenant-a'],
-        [TENANT_A.tenantId, 'tenant-a'],
-      ]);
-    },
-  );
-
-  it('answers invalidTokens and writes nothing when identity rejects the token', async () => {
-    identity.valid = false;
-    const res = await send('POST', '/_api/json/v1/tenant-a/site', { as: 's2', headers: FORM, payload: TOKEN_FIELDS });
-    expect(res.statusCode).toBe(400);
-    expect(res.json()).toEqual(legacyError('save', 'Invalid CSRF tokens'));
-    expect(identity.calls).toHaveLength(1);
-    expect(sites.updateSite).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['an S2 token without a token', 's2' as const, 'domain=x.example.test'],
-    ['an anonymous caller, who has no session', undefined, TOKEN_FIELDS],
-  ])('answers invalidTokens without consuming anything for %s', async (_label, as, payload) => {
-    const res = await send('POST', '/_api/json/v1/tenant-a/site', { as, headers: FORM, payload });
-    expect(res.statusCode).toBe(400);
-    expect(res.json()).toEqual(legacyError('save', 'Invalid CSRF tokens'));
-    expect(identity.calls).toEqual([]);
-    expect(sites.updateSite).not.toHaveBeenCalled();
-  });
-
-  it('answers the legacy 503 and writes nothing when identity fails', async () => {
-    identity.status = 500;
-    const res = await send('POST', '/_api/json/v1/tenant-a/site', { as: 's2', headers: FORM, payload: TOKEN_FIELDS });
-    expect(res.statusCode).toBe(503);
-    expect(res.json()).toEqual({ apiversion: 'v1', method: 'invalid', error: UNAVAILABLE });
-    expect(sites.updateSite).not.toHaveBeenCalled();
-  });
-
-  it('consumes the token, then denies a token without S2 with authorization', async () => {
-    const res = await send('POST', '/_api/json/v1/tenant-a/site', {
-      as: 'site-admin',
-      headers: FORM,
-      payload: TOKEN_FIELDS,
-    });
-    expect(res.statusCode).toBe(401);
-    expect(res.json()).toEqual(legacyError('save', 'Insufficient Account Permissions'));
-    expect(identity.calls).toHaveLength(1);
-    expect(sites.updateSite).not.toHaveBeenCalled();
-  });
-
-  it('saves over the sessionless REST API for an S2 token without consuming a token', async () => {
-    const res = await send('POST', '/_api/rest/v1/tenant-a/site', {
-      as: 's2',
-      headers: FORM,
-      payload: 'domain=saved.example.test',
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      apiversion: 'v1',
-      method: 'save',
-      data: {
-        ...siteValues(`${BASE}/rest/v1/tenant-a`, 'tenant-a', 'tenant-a.example.test'),
-        saveerrors: '',
-        errors: {},
-      },
-    });
-    expect(identity.calls).toEqual([]);
-    expect(sites.updateSite).toHaveBeenCalledWith(
-      db,
-      expect.objectContaining({ site: 'tenant-a', s2: true }),
-      'tenant-a',
-      expect.objectContaining({ domain: 'saved.example.test' }),
-      { locale: '' },
-    );
-  });
-
-  it.each([
-    ['an anonymous caller', undefined],
-    ['a token without S2', 'site-admin' as const],
-  ])('denies a REST save by %s with authorization', async (_label, as) => {
-    const res = await send('POST', '/_api/rest/v1/tenant-a/site', {
-      as,
-      headers: FORM,
-      payload: 'domain=x.example.test',
-    });
-    expect(res.statusCode).toBe(401);
-    expect(res.json()).toEqual(legacyError('save', 'Insufficient Account Permissions'));
-    expect(sites.updateSite).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['reapplies the posted values', 'domain=posted.example.test', 'posted.example.test', ''],
-    [
-      'keeps the stored values when the request sets saveErrors',
-      'domain=posted.example.test&saveErrors=true',
-      'tenant-a.example.test',
-      true,
-    ],
-  ])('answers 403 with the domain errors and %s', async (_label, payload, domain, saveerrors) => {
-    sites.updateSite.mockResolvedValueOnce({ written: true, errors: { siteid: SITE_ERROR_REQUIRED }, site: SITE });
-    const res = await send('POST', '/_api/rest/v1/tenant-a/site', { as: 's2', headers: FORM, payload });
-    expect(res.statusCode).toBe(403);
-    expect(res.json()).toEqual({
-      apiversion: 'v1',
-      method: 'save',
-      data: {
-        ...siteValues(`${BASE}/rest/v1/tenant-a`, 'tenant-a', domain),
-        saveerrors,
-        errors: { siteid: SITE_ERROR_REQUIRED },
-      },
-    });
-  });
-
-  it.each([
-    ['a save', '/_api/json/v1/tenant-a/site', 'save'],
-    ['a direct save', '/_api/json/v1/tenant-a/site?method=Save&entityName=site&id=tenant-a', 'Save'],
-  ])('answers %s of a value longer than its tsettings column 500 server_error under its method', async (_label, url, method) => {
-    sites.updateSite.mockRejectedValueOnce(new SiteColumnTruncationError('Site'));
-    const res = await send('POST', url, { as: 's2', headers: FORM, payload: `site=${'S'.repeat(300)}&${TOKEN_FIELDS}` });
-    expect(res.statusCode).toBe(500);
-    expect(res.json()).toEqual({ apiversion: 'v1', method, error: UNAVAILABLE });
-  });
-
-  it('lets any other update failure through to the platform error handler', async () => {
-    sites.updateSite.mockRejectedValueOnce(new Error('next week is an invalid date or time string.'));
-    const res = await send('POST', '/_api/json/v1/tenant-a/site', { as: 's2', headers: FORM, payload: TOKEN_FIELDS });
-    expect(res.statusCode).toBe(500);
-    expect(res.json()).toMatchObject({ apiversion: 'v1', error: UNAVAILABLE });
-  });
-
-  it('answers a direct save 200 with the method as requested, errors included', async () => {
-    sites.updateSite.mockResolvedValueOnce({ written: true, errors: { siteid: SITE_ERROR_REQUIRED }, site: SITE });
-    const res = await send('POST', '/_api/rest/v1/tenant-a/site?method=Save&entityName=site&id=tenant-a', { as: 's2' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
-      apiversion: 'v1',
-      method: 'Save',
-      data: { errors: { siteid: SITE_ERROR_REQUIRED } },
-    });
-    expect(sites.updateSite).toHaveBeenCalledWith(
-      db,
-      expect.anything(),
-      'tenant-a',
-      expect.objectContaining({ method: 'Save', id: 'tenant-a' }),
-      { locale: '' },
-    );
-  });
-
-  it('flattens the saved site when useDataNamespace is false', async () => {
-    const res = await send('POST', '/_api/rest/v1/tenant-a/site', {
-      as: 's2',
-      headers: FORM,
-      payload: 'useDataNamespace=false',
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      apiversion: 'v1',
-      method: 'save',
-      ...siteValues(`${BASE}/rest/v1/tenant-a`, 'tenant-a', 'tenant-a.example.test'),
-      saveerrors: '',
-      errors: {},
-    });
-  });
-
-  it('passes multipart fields by value and file parts by name', async () => {
-    const boundary = 'opt2-json-api-site';
-    const payload = [
-      `--${boundary}\r\nContent-Disposition: form-data; name="domain"\r\n\r\nsaved.example.test\r\n`,
-      `--${boundary}\r\nContent-Disposition: form-data; name="newPlaceholderImg"; filename="placeholder.png"\r\n`,
-      'Content-Type: image/png\r\n\r\nPNG\r\n',
-      `--${boundary}--\r\n`,
-    ].join('');
-    const headers = { 'content-type': `multipart/form-data; boundary=${boundary}` };
-    const res = await send('POST', '/_api/rest/v1/tenant-a/site', { as: 's2', headers, payload });
-    expect(res.statusCode).toBe(200);
-    expect(sites.updateSite.mock.calls[0]?.[3]).toMatchObject({
-      domain: 'saved.example.test',
-      newplaceholderimg: 'placeholder.png',
-    });
-  });
-
-  it.each([
-    ['a direct save without an id', '/_api/json/v1/tenant-a/site?method=save&entityName=site', 'tenant-a', 'save', 0],
-    [
-      'a direct save of another site id',
-      '/_api/json/v1/tenant-a/site?method=save&entityName=site&id=tenant-b',
-      'tenant-a',
-      'save',
-      0,
-    ],
-    ['the save of a registered site without a row', '/_api/json/v1/tenant-c/site', 'tenant-c', 'invalid', 1],
-  ])('answers %s with the legacy 503 before any token is consumed', async (_label, url, site, reported, readCount) => {
-    const res = await send('POST', url, { as: 's2', site, headers: FORM, payload: TOKEN_FIELDS });
+  it.each<[string, Verb, string, Call, string]>([
+    ['a json entity POST', 'POST', '/_api/json/v1/tenant-a/site', { as: 's2', headers: FORM, payload: `domain=saved.example.test&${TOKEN_FIELDS}` }, 'invalid'],
+    ['an ajax entity POST with header tokens', 'POST', '/_api/ajax/v1/tenant-a/site', { as: 's2', headers: { ...FORM, ...CSRF_HEADERS }, payload: 'domain=saved.example.test' }, 'invalid'],
+    ['a rest entity POST', 'POST', '/_api/rest/v1/tenant-a/site', { as: 's2', headers: FORM, payload: 'domain=saved.example.test' }, 'invalid'],
+    ['a json entity PUT', 'PUT', '/_api/json/v1/tenant-a/site', { as: 's2', headers: FORM, payload: TOKEN_FIELDS }, 'invalid'],
+    ['a site-admin json entity POST', 'POST', '/_api/json/v1/tenant-a/site', { as: 'site-admin', headers: FORM, payload: TOKEN_FIELDS }, 'invalid'],
+    ['an anonymous json entity PUT', 'PUT', '/_api/json/v1/tenant-a/site', {}, 'invalid'],
+    ['a direct method=save', 'POST', '/_api/json/v1/tenant-a/site?method=save&entityName=site', { as: 's2', headers: FORM, payload: TOKEN_FIELDS }, 'save'],
+    ['a direct method=Save naming the site', 'POST', '/_api/rest/v1/tenant-a/site?method=Save&entityName=site&id=tenant-a', { as: 's2' }, 'Save'],
+    ['the save path segment', 'POST', '/_api/json/v1/tenant-a/save?entityname=site', { as: 's2', headers: FORM, payload: TOKEN_FIELDS }, 'invalid'],
+    ['a bundle deploy', 'POST', '/_api/json/v1/tenant-a/site', { as: 's2', headers: FORM, payload: `bundleFile=site.zip&${TOKEN_FIELDS}` }, 'invalid'],
+    ['a multipart body with a file part', 'POST', '/_api/rest/v1/tenant-a/site', { as: 's2', headers: { 'content-type': `multipart/form-data; boundary=${boundary}` }, payload: multipart }, 'invalid'],
+    ['a registered site without a row', 'POST', '/_api/json/v1/tenant-c/site', { as: 's2', site: 'tenant-c', headers: FORM, payload: TOKEN_FIELDS }, 'invalid'],
+  ])('answers the withheld site.save of %s with the legacy 503 before any site read, CSRF consume or write', async (_label, method, url, call, reported) => {
+    const res = await send(method, url, call);
     expect(res.statusCode).toBe(503);
     expect(res.json()).toEqual({ apiversion: 'v1', method: reported, error: UNAVAILABLE });
-    expect(repository.readSite).toHaveBeenCalledTimes(readCount);
+    expect(repository.readSite).not.toHaveBeenCalled();
     expect(identity.calls).toEqual([]);
-    expect(sites.updateSite).not.toHaveBeenCalled();
-  });
-
-  it('saves a direct call whose id is the site but for case and trailing spaces, under that context', async () => {
-    const url = '/_api/json/v1/tenant-a/site?method=save&entityName=site&id=TENANT-A%20';
-    const res = await send('POST', url, { as: 's2', headers: FORM, payload: TOKEN_FIELDS });
-    expect(res.statusCode).toBe(200);
-    expect(identity.calls).toEqual([expect.objectContaining({ context: 'TENANT-A ' })]);
-    expect(sites.updateSite).toHaveBeenCalledWith(
-      db,
-      expect.anything(),
-      'tenant-a',
-      expect.objectContaining({ id: 'TENANT-A ' }),
-      { locale: '' },
-    );
-  });
-
-  it('saves a uuid-named site through a direct call without an id, consuming the token under context new', async () => {
-    const url = `/_api/json/v1/${UUID_SITE}/site?method=save&entityName=site`;
-    const res = await send('POST', url, { as: 's2', site: UUID_SITE, headers: FORM, payload: TOKEN_FIELDS });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ method: 'save', data: { siteid: UUID_SITE, id: UUID_SITE } });
-    expect(identity.calls).toEqual([expect.objectContaining({ context: 'new' })]);
-    expect(sites.updateSite).toHaveBeenCalledWith(
-      db,
-      expect.objectContaining({ site: UUID_SITE }),
-      UUID_SITE,
-      expect.anything(),
-      { locale: '' },
-    );
   });
 });
 
@@ -918,18 +654,12 @@ describe('CORS origin echo', () => {
   });
 
   it.each([
-    ['a json save', 'POST', '/_api/json/v1/tenant-a/site', { as: 's2', headers: FORM, payload: TOKEN_FIELDS }, 200],
-    ['a rest save', 'POST', '/_api/rest/v1/tenant-a/site', { as: 's2', headers: FORM, payload: 'domain=x.test' }, 200],
+    ['a withheld json save', 'POST', '/_api/json/v1/tenant-a/site', { as: 's2', headers: FORM, payload: TOKEN_FIELDS }, 503],
+    ['a withheld rest save', 'POST', '/_api/rest/v1/tenant-a/site', { as: 's2', headers: FORM, payload: 'domain=x.test' }, 503],
     ['an unknown site', 'GET', '/_api/ajax/v1/tenant-a/site?siteid=unknown', {}, 400],
-    ['a save without a token', 'POST', '/_api/json/v1/tenant-a/site', { as: 's2', headers: FORM, payload: 'x=1' }, 400],
+    ['a delete without a token', 'DELETE', '/_api/json/v1/tenant-a/site', { as: 's2' }, 400],
     ['a body legacy cannot read', 'POST', '/_api/json/v1/tenant-a/site', { headers: JSON_BODY, payload: '[1]' }, 500],
-    [
-      'a rest save without S2',
-      'POST',
-      '/_api/rest/v1/tenant-a/site',
-      { as: 'site-admin', headers: FORM, payload: 'x=1' },
-      401,
-    ],
+    ['a rest delete without S2', 'DELETE', '/_api/rest/v1/tenant-a/site', { as: 'site-admin' }, 401],
     ['another site', 'GET', '/_api/json/v1/tenant-b/site', { as: 's2' }, 403],
     ['a method not served here', 'GET', '/_api/json/v1/tenant-a/site?method=swagger', {}, 503],
     [
@@ -1064,7 +794,6 @@ describe('path, method and case forms', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual(TENANT_A_FIND_ONE);
     expect(identity.calls).toEqual([]);
-    expect(sites.updateSite).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1077,8 +806,8 @@ describe('path, method and case forms', () => {
 
   it.each([
     ['/_api/json/v1/tenant-a/site/x/y/z', 'GET', 200],
-    ['/_api/json/v1/tenant-a/site/x/y/z', 'POST', 400],
-  ] as const)('%s under %s resolves as the entity route of the path site', async (url, method, status) => {
+    ['/_api/json/v1/tenant-a/site/x/y/z', 'POST', 503],
+  ] as const)('%s under %s resolves as the entity route of the path site, a POST being the withheld save', async (url, method, status) => {
     const res = await app.inject({ method, url });
     expect(res.statusCode).toBe(status);
   });
@@ -1095,15 +824,11 @@ describe('path, method and case forms', () => {
     expect(repository.readSite).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['PUT', 400, legacyError('save', 'Invalid CSRF tokens')],
-    ['DELETE', 401, legacyError('delete', 'Insufficient Account Permissions')],
-  ] as const)('anonymous %s of the entity path answers the %s the method it resolves to raises', async (method, status, body) => {
-    const res = await send(method, '/_api/json/v1/tenant-a/site');
-    expect(res.statusCode).toBe(status);
-    expect(res.json()).toEqual(body);
+  it('anonymous DELETE of the entity path answers the authorization error the delete it resolves to raises', async () => {
+    const res = await send('DELETE', '/_api/json/v1/tenant-a/site');
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual(legacyError('delete', 'Insufficient Account Permissions'));
     expect(identity.calls).toEqual([]);
-    expect(sites.updateSite).not.toHaveBeenCalled();
   });
 });
 
@@ -1162,7 +887,6 @@ describe('findAll, findMany and findQuery', () => {
   ])('GET %s answers the paged site feed of the scope site', async (query, method, items, link) => {
     const res = await send('GET', `/_api/json/v1/tenant-a${query}`);
     expect(dataOf(res, method)).toEqual(collection(TENANT_A_BASE, items, link));
-    expect(sites.updateSite).not.toHaveBeenCalled();
   });
 
   it('reads each listed site of the feed in its own tenant', async () => {
@@ -1321,7 +1045,6 @@ describe('delete', () => {
     expect(res.statusCode).toBe(401);
     expect(res.json()).toEqual(legacyError('delete', 'Insufficient Account Permissions'));
     expect(identity.calls).toEqual([]);
-    expect(sites.updateSite).not.toHaveBeenCalled();
   });
 
   it('answers an S2 json delete without a token as invalidTokens, consuming nothing', async () => {
@@ -1340,8 +1063,6 @@ describe('delete', () => {
     expect(res.json()).toEqual(legacyError('delete', 'Unhandled Exception', 'server_error'));
     expect(identity.calls).toHaveLength(consumed);
     expect(identity.calls.map((consume) => consume.context)).toEqual(consumed === 1 ? ['tenant-a'] : []);
-    expect(sites.updateSite).not.toHaveBeenCalled();
-    expect(sites.saveOrderAndDeploy).not.toHaveBeenCalled();
   });
 
   it.each([

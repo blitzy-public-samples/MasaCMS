@@ -17,6 +17,7 @@ import {
   type PushSubscriptionOptions,
 } from '../../src/events/push.js';
 import { createLogger, validateLogRecord } from '../../src/logging/index.js';
+import { UnitNotAuthoritativeError } from '../../src/migration-kit/gates.js';
 import { createService } from '../../src/service-kit/create-service.js';
 import { loadEnv } from '../../src/service-kit/env.js';
 import type { TenantDb, TenantTx } from '../../src/tenancy/index.js';
@@ -150,10 +151,16 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
-/** A createService app of the stub service with the test transports and a captured logger; `pool` becomes `app.opt2.db`. */
-async function serviceApp(pool?: TenantDb): Promise<{ app: FastifyInstance; lines: LogLine[] }> {
+/** A createService app of the stub service with the test transports and a captured logger, parsed and raw; `pool` becomes `app.opt2.db`. */
+async function serviceApp(pool?: TenantDb): Promise<{ app: FastifyInstance; lines: LogLine[]; raw: string[] }> {
   const lines: LogLine[] = [];
-  const destination: DestinationStream = { write: (chunk: string) => void lines.push(JSON.parse(chunk) as LogLine) };
+  const raw: string[] = [];
+  const destination: DestinationStream = {
+    write: (chunk: string) => {
+      raw.push(chunk);
+      lines.push(JSON.parse(chunk) as LogLine);
+    },
+  };
   const app = await createService({
     name: SERVICE,
     version: '1.0.0',
@@ -172,7 +179,7 @@ async function serviceApp(pool?: TenantDb): Promise<{ app: FastifyInstance; line
     ...(pool === undefined ? {} : { pool }),
   });
   apps.push(app);
-  return { app, lines };
+  return { app, lines, raw };
 }
 
 /** The stub app with the test subscription mounted over a fresh memory database, fake publisher and consumer. */
@@ -180,9 +187,9 @@ async function mounted(opts: { consumer?: NoteConsumer; publisher?: ReturnType<t
   const db = memoryDb();
   const publisher = opts.publisher ?? fakePublisher();
   const consumer = opts.consumer ?? noteConsumer();
-  const { app, lines } = await serviceApp(db);
+  const { app, lines, raw } = await serviceApp(db);
   registerPushSubscription(app, { subscription: SUBSCRIPTION, consumer, payloadSchema: noteSchema(), publisher });
-  return { app, lines, db, publisher, consumer };
+  return { app, lines, raw, db, publisher, consumer };
 }
 
 /** POSTs `payload` to the push route, objects as JSON, with the push key unless `url` replaces it. */
@@ -488,6 +495,78 @@ describe('push delivery route', () => {
     expect(response.statusCode).toBe(500);
     expect(publisher.publishRaw).not.toHaveBeenCalled();
     expect(linesMatching(lines, /^unhandled error$/)).toHaveLength(1);
+  });
+
+  const BOTH = { eventId: EVENT_ID, tenantId: TENANT_A.tenantId };
+  const EVENT_ONLY = { eventId: EVENT_ID, tenantId: undefined };
+  const INVALID_TENANT = JSON.stringify(envelopeJson({ tenantId: 'tenant-a' }));
+  const INVALID_TENANT_WARNING = `delivery ${MESSAGE_ID} on ${SUBSCRIPTION} dead-lettered as invalid-tenant: envelope tenantId is not a UUID`;
+
+  it.each<{
+    name: string;
+    data: string;
+    consumer?: Partial<ConsumerDefinition<NotePayload>>;
+    publishFailure?: Error;
+    status: number;
+    outcome: Array<[string, string]>;
+    scope: { eventId: string | undefined; tenantId: string | undefined };
+  }>([
+    { name: 'a consumed delivery', data: JSON.stringify(envelopeJson()), status: 204, outcome: [], scope: BOTH },
+    {
+      name: 'a delivery its unit gate refuses',
+      data: JSON.stringify(envelopeJson()),
+      consumer: { apply: () => Promise.reject(new UnitNotAuthoritativeError(['communications.scheduled_task'])) },
+      status: 503,
+      outcome: [['WARNING', 'service unavailable']],
+      scope: BOTH,
+    },
+    {
+      name: 'a delivery whose effect fails',
+      data: JSON.stringify(envelopeJson()),
+      consumer: { apply: () => Promise.reject(new Error('database unavailable')) },
+      status: 500,
+      outcome: [['ERROR', 'unhandled error']],
+      scope: BOTH,
+    },
+    {
+      name: 'a delivery dead-lettered for its tenant',
+      data: INVALID_TENANT,
+      status: 204,
+      outcome: [['WARNING', INVALID_TENANT_WARNING]],
+      scope: EVENT_ONLY,
+    },
+    {
+      name: 'a delivery whose dead letter cannot be published',
+      data: INVALID_TENANT,
+      publishFailure: new Error('pubsub unavailable'),
+      status: 500,
+      outcome: [['ERROR', 'unhandled error']],
+      scope: EVENT_ONLY,
+    },
+    {
+      name: 'a delivery dead-lettered without an envelope',
+      data: 'not json',
+      status: 204,
+      outcome: [['WARNING', `delivery ${MESSAGE_ID} on ${SUBSCRIPTION} dead-lettered as schema-invalid: message data is not JSON`]],
+      scope: { eventId: undefined, tenantId: undefined },
+    },
+  ])('writes the eventId and tenant of $name on its outcome and completion lines', async (row) => {
+    const { app, lines, raw } = await mounted({ consumer: noteConsumer(row.consumer), publisher: fakePublisher(row.publishFailure) });
+    const response = await deliver(app, pushBodyFor(row.data));
+
+    expect(response.statusCode).toBe(row.status);
+    const outcome = lines.filter(({ severity, message }) => severity !== 'INFO' || message === 'request completed');
+    expect(outcome.map(({ severity, message }) => [severity, message])).toStrictEqual([...row.outcome, ['INFO', 'request completed']]);
+    expect(outcome.at(-1)).toMatchObject({ route: PUSH_ROUTE, statusCode: row.status });
+    for (const line of outcome) {
+      expect(validateLogRecord(line)).toEqual({ valid: true, errors: [] });
+      expect({ eventId: line.eventId, tenantId: line.tenantId }).toStrictEqual(row.scope);
+      expect(line).not.toHaveProperty('userId');
+    }
+    for (const chunk of raw) {
+      expect(chunk.match(/"eventId":/g)?.length ?? 0).toBeLessThanOrEqual(1);
+      expect(chunk.match(/"tenantId":/g)?.length ?? 0).toBeLessThanOrEqual(1);
+    }
   });
 });
 

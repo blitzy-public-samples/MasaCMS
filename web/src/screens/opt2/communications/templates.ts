@@ -2,7 +2,17 @@
 import { okBody } from '@/lib/gateway-client';
 import { html, type SafeHtml } from '@/lib/html';
 import type { Opt2ActionDefinition, Opt2ScreenDefinition, ScreenContext, SubmitResult } from '../../registry';
-import { block, controlGroup, gridTable, opt2View, postForm, submitToService, textarea, textInput } from '../shared';
+import {
+  block,
+  controlGroup,
+  gridTable,
+  opt2Label,
+  opt2View,
+  postForm,
+  submitToService,
+  textarea,
+  textInput,
+} from '../shared';
 import {
   CSRF_CONTEXT,
   MODULE,
@@ -59,10 +69,13 @@ export function templatesBody(
     template.lastupdate,
     buttonLink('Send', screenUrl(ctx, 'sends', { templateId: template.template_id })),
   ]);
-  const list = gridTable(['Name', 'Subject', 'Created', 'Last Update', 'Actions'], rows, 'There are no templates.');
+  const headers = (['Name', 'Subject', 'Created', 'Last Update', 'Actions'] as const).map((name) =>
+    opt2Label(ctx, name),
+  );
+  const list = gridTable(headers, rows, 'There are no templates.');
   const fields = [
-    controlGroup('Name', textInput('name', form.name, { maxlength: 100, required: true })),
-    controlGroup('Subject', textInput('subject', form.subject, { maxlength: 255, required: true })),
+    controlGroup(opt2Label(ctx, 'Name'), textInput('name', form.name, { maxlength: 100, required: true })),
+    controlGroup(opt2Label(ctx, 'Subject'), textInput('subject', form.subject, { maxlength: 255, required: true })),
     controlGroup('Text Body', textarea('bodyText', form.bodyText)),
     controlGroup('HTML Body', textarea('bodyHtml', form.bodyHtml)),
   ];

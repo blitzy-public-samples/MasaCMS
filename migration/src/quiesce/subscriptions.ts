@@ -1,4 +1,4 @@
-/** Pub/Sub adapter for quiescence: OPT-2 subscription discovery, push-config save and restore, and non-acking backlog and DLQ peeks. */
+/** Pub/Sub adapter for quiescence: OPT-2 subscription discovery, push-config save and restore, non-acking backlog and DLQ peeks, leased pulls and witness subscriptions. */
 import { PubSub, v1, type protos } from '@google-cloud/pubsub';
 import {
   consumerOfSubscription,
@@ -20,7 +20,32 @@ export interface SubscriptionLike {
   seek(snapshotOrTime: Date): Promise<unknown>;
 }
 
-/** The subset of a `PubSub` client used by quiescence; {@link createPubSub} adds `pullOnce` and `peekEventIds`. */
+/** A pulled message, leased until it is acknowledged or released. */
+export interface LeasedMessage {
+  ackId: string;
+  messageId: string;
+  data: Buffer;
+  attributes: Record<string, string>;
+  /** RFC 3339 publish time. */
+  publishTime?: string;
+  orderingKey?: string;
+  /** Present only when Pub/Sub counts attempts, on subscriptions with a dead-letter policy. */
+  deliveryAttempt?: number;
+  /** The `eventId` attribute, else the JSON envelope's `eventId`. */
+  eventId?: string;
+}
+
+/** Leasing pull access to one subscription. */
+export interface MessageLease {
+  /** Messages the subscription holds now, at most `maxMessages`; [] when it holds none. */
+  pull(maxMessages: number): Promise<LeasedMessage[]>;
+  acknowledge(ackIds: readonly string[]): Promise<void>;
+  /** Ends the leases unacked, so Pub/Sub redelivers the messages. */
+  release(ackIds: readonly string[]): Promise<void>;
+  close(): Promise<void>;
+}
+
+/** The subset of a `PubSub` client used by quiescence; {@link createPubSub} adds the optional members. */
 export interface PubSubLike {
   projectId?: string;
   getSubscriptions(): Promise<[SubscriptionLike[], ...unknown[]]>;
@@ -30,6 +55,14 @@ export interface PubSubLike {
   pullOnce?(fullName: string): Promise<number>;
   /** Event ids of every message a fully qualified subscription holds, all released unacked, sorted; [] when it does not exist. */
   peekEventIds?(fullName: string): Promise<string[]>;
+  /** Opens a lease client on a fully qualified subscription. */
+  leaseMessages?(fullName: string): Promise<MessageLease>;
+  /** Short ids of the project's topics, sorted. */
+  topicIds?(): Promise<string[]>;
+  /** Creates the pull subscription `name` on `topic`, both short ids. */
+  createWitness?(topic: string, name: string): Promise<void>;
+  /** Deletes the subscription with short id `name`; resolves when it does not exist. */
+  deleteSubscription?(name: string): Promise<void>;
 }
 
 /** An OPT-2 consumer subscription `<consumer>.<topic>`; `name` is the short id. */
@@ -42,6 +75,7 @@ export interface Opt2Subscription {
 }
 
 const FULL_NAME_PREFIX = /^projects\/[^/]+\/subscriptions\//;
+const TOPIC_NAME_PREFIX = /^projects\/[^/]+\/topics\//;
 const GRPC_NOT_FOUND = 5;
 /** Largest pull of a dead-letter peek; Pub/Sub returns at most 1000 messages per pull. */
 const PEEK_PULL_MAX = 1000;
@@ -61,6 +95,31 @@ function eventIdOf(message: protos.google.pubsub.v1.IPubsubMessage | null | unde
     if (error instanceof SyntaxError) return undefined;
     throw error;
   }
+}
+
+/** RFC 3339 form of a protobuf timestamp; undefined when it is unset. */
+function rfc3339(timestamp: protos.google.protobuf.ITimestamp | null | undefined): string | undefined {
+  if (timestamp?.seconds == null) return undefined;
+  return new Date(Number(timestamp.seconds.toString()) * 1000 + Math.trunc((timestamp.nanos ?? 0) / 1e6)).toISOString();
+}
+
+/** A received message as a {@link LeasedMessage}; undefined without an ack id or message id, which cannot be settled or pushed. */
+function leasedMessage(received: protos.google.pubsub.v1.IReceivedMessage): LeasedMessage | undefined {
+  const { ackId, message, deliveryAttempt } = received;
+  if (!ackId || !message?.messageId) return undefined;
+  const data = typeof message.data === 'string' ? Buffer.from(message.data, 'base64') : Buffer.from(message.data ?? []);
+  const publishTime = rfc3339(message.publishTime);
+  const eventId = eventIdOf({ attributes: message.attributes, data });
+  return {
+    ackId,
+    messageId: message.messageId,
+    data,
+    attributes: { ...message.attributes },
+    ...(publishTime === undefined ? {} : { publishTime }),
+    ...(message.orderingKey ? { orderingKey: message.orderingKey } : {}),
+    ...(deliveryAttempt ? { deliveryAttempt } : {}),
+    ...(eventId === undefined ? {} : { eventId }),
+  };
 }
 
 /** Creates a Pub/Sub client for `GOOGLE_CLOUD_PROJECT`, on the emulator when `PUBSUB_EMULATOR_HOST` is set. */
@@ -122,7 +181,41 @@ export function createPubSub(env: Pick<MigrationEnv, 'GOOGLE_CLOUD_PROJECT' | 'P
     return [...eventIds].sort();
   }
 
-  return Object.assign(pubsub, { pullOnce, peekEventIds });
+  async function leaseMessages(fullName: string): Promise<MessageLease> {
+    const client = new v1.SubscriberClient((await pubsub.getClientConfig()) as SubscriberClientOptions);
+    return {
+      async pull(maxMessages) {
+        const [response] = await client.pull({ subscription: fullName, maxMessages, returnImmediately: true });
+        return (response.receivedMessages ?? []).flatMap((received) => leasedMessage(received) ?? []);
+      },
+      async acknowledge(ackIds) {
+        if (ackIds.length > 0) await client.acknowledge({ subscription: fullName, ackIds: [...ackIds] });
+      },
+      async release(ackIds) {
+        if (ackIds.length > 0) await client.modifyAckDeadline({ subscription: fullName, ackIds: [...ackIds], ackDeadlineSeconds: 0 });
+      },
+      close: () => client.close(),
+    };
+  }
+
+  async function topicIds(): Promise<string[]> {
+    const [topics] = await pubsub.getTopics();
+    return topics.map((topic) => topic.name.replace(TOPIC_NAME_PREFIX, '')).sort();
+  }
+
+  async function createWitness(topic: string, name: string): Promise<void> {
+    await pubsub.createSubscription(topic, name);
+  }
+
+  async function deleteSubscription(name: string): Promise<void> {
+    try {
+      await pubsub.subscription(name).delete();
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code !== GRPC_NOT_FOUND) throw error;
+    }
+  }
+
+  return Object.assign(pubsub, { pullOnce, peekEventIds, leaseMessages, topicIds, createWitness, deleteSubscription });
 }
 
 /** Short subscription id: `fullName` without its `projects/<project>/subscriptions/` prefix. */
@@ -190,6 +283,57 @@ export async function peekDeadLetterEventIds(pubsub: PubSubLike, subscription: s
     throw new TypeError('peekDeadLetterEventIds needs a Pub/Sub client with peekEventIds, as created by createPubSub');
   }
   return pubsub.peekEventIds(pubsub.subscription(dlqReplaySubscriptionName(subscription)).name);
+}
+
+/** Opens a lease client on the subscription named `name`. */
+export async function openMessageLease(pubsub: PubSubLike, name: string): Promise<MessageLease> {
+  if (pubsub.leaseMessages === undefined) {
+    throw new TypeError('openMessageLease needs a Pub/Sub client with leaseMessages, as created by createPubSub');
+  }
+  return pubsub.leaseMessages(pubsub.subscription(name).name);
+}
+
+/** Name prefix of the witness subscriptions of `fault`; its `_` keeps them out of {@link listOpt2Subscriptions}. */
+export function witnessPrefix(fault: string): string {
+  return `witness_${fault}_`;
+}
+
+/** Witness subscription name `witness_<fault>_<runId>.<topic>`. */
+export function witnessName(fault: string, runId: string, topic: string): string {
+  return `${witnessPrefix(fault)}${runId}.${topic}`;
+}
+
+/** Short ids of the project's topics, sorted. */
+export async function listTopicIds(pubsub: PubSubLike): Promise<string[]> {
+  if (pubsub.topicIds === undefined) {
+    throw new TypeError('listTopicIds needs a Pub/Sub client with topicIds, as created by createPubSub');
+  }
+  return pubsub.topicIds();
+}
+
+/** Short ids of the project's subscriptions that start with `prefix`, sorted. */
+export async function listSubscriptionIds(pubsub: PubSubLike, prefix: string): Promise<string[]> {
+  const [subscriptions] = await pubsub.getSubscriptions();
+  return subscriptions
+    .map((subscription) => subscriptionId(subscription.name))
+    .filter((name) => name.startsWith(prefix))
+    .sort();
+}
+
+/** Creates the pull subscription `name` on `topic`, which receives every message published to `topic` from then on. */
+export async function createWitnessSubscription(pubsub: PubSubLike, topic: string, name: string): Promise<void> {
+  if (pubsub.createWitness === undefined) {
+    throw new TypeError('createWitnessSubscription needs a Pub/Sub client with createWitness, as created by createPubSub');
+  }
+  await pubsub.createWitness(topic, name);
+}
+
+/** Deletes the subscription named `name`; one that does not exist counts as deleted. */
+export async function removeSubscription(pubsub: PubSubLike, name: string): Promise<void> {
+  if (pubsub.deleteSubscription === undefined) {
+    throw new TypeError('removeSubscription needs a Pub/Sub client with deleteSubscription, as created by createPubSub');
+  }
+  await pubsub.deleteSubscription(name);
 }
 
 /** `url` without its query string, which may carry the local push key. */

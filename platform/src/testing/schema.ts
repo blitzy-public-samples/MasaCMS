@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import pg from 'pg';
 import { envPort, optionalEnvString } from '../service-kit/index.js';
 import { tenantDbFromPool, type TenantDb } from '../tenancy/index.js';
+import { runCleanup } from './cleanup.js';
 
 /** PostgreSQL connection settings of the bootstrap user, read from `PG_*`. */
 export interface PgConfig {
@@ -67,6 +68,8 @@ const PG_PORT = optionalEnvString(envPort());
 const DEFAULT_PG_PORT = 5432;
 // Concurrent GRANT/REVOKE on the same pg_database row fail with "tuple concurrently updated".
 const BOOTSTRAP_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('opt2.testing.throwaway-schema'))";
+// drop() of every schema created or being created and not yet dropped.
+const live = new Set<() => Promise<void>>();
 
 /** Reads the bootstrap user's connection settings; throws naming every missing required variable or an invalid PG_PORT. */
 export function testPgConfig(env: NodeJS.ProcessEnv = process.env): PgConfig {
@@ -87,8 +90,11 @@ export function testPgConfig(env: NodeJS.ProcessEnv = process.env): PgConfig {
   };
 }
 
-/** True when the `PG_*` server accepts a connection within 2 s, false when unreachable; rejects on bad settings or server errors. */
+/** True when the `PG_*` server accepts a connection within 2 s; false when PG_HOST is unset or the server is unreachable; rejects on other bad settings or server errors. */
 export async function pgAvailable(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  if (!env.PG_HOST) {
+    return false;
+  }
   const client = new pg.Client({ ...testPgConfig(env), connectionTimeoutMillis: CONNECT_TIMEOUT_MS });
   try {
     await client.connect();
@@ -150,7 +156,11 @@ export async function createThrowawaySchema(opts: ThrowawaySchemaOptions): Promi
   const pools = new Set<pg.Pool>();
   const clients = new Set<pg.PoolClient>();
   let dropping: Promise<void> | undefined;
-  const drop = (): Promise<void> => (dropping ??= dropAll(adminPool, pools, clients, schema, roles));
+  const drop = (): Promise<void> => {
+    live.delete(drop);
+    return (dropping ??= dropAll(adminPool, pools, clients, schema, roles));
+  };
+  live.add(drop);
   const connect = (role: ThrowawayRole, { max = 1 }: { max?: number } = {}): pg.Pool => {
     if (dropping !== undefined) {
       throw new Error(`Throwaway schema ${schema} has been dropped`);
@@ -168,7 +178,7 @@ export async function createThrowawaySchema(opts: ThrowawaySchemaOptions): Promi
   const appPool = connect('app', { max: 4 });
   let step = 'bootstrap';
   try {
-    await bootstrap(adminPool, config.database, schema, roles, passwords);
+    await bootstrap(adminPool, config.database, schema, roles, passwords, () => dropping !== undefined);
     for (const { label, sql } of await scripts(opts)) {
       step = label;
       await inTransaction(migratorPool, async (client) => {
@@ -198,12 +208,18 @@ export async function createThrowawaySchema(opts: ThrowawaySchemaOptions): Promi
   });
 }
 
+/** Drops every throwaway schema not yet dropped, including those still being created, without waiting for their creation. */
+export function dropThrowawaySchemas(): Promise<void> {
+  return runCleanup('Throwaway schema', [...live]);
+}
+
 async function bootstrap(
   adminPool: pg.Pool,
   database: string,
   schema: string,
   roles: ThrowawayRoles,
   passwords: Record<ThrowawayRole, string>,
+  isDropped: () => boolean,
 ): Promise<void> {
   const s = quoteIdent(schema);
   const owner = quoteIdent(roles.owner);
@@ -212,6 +228,10 @@ async function bootstrap(
   // Role chain and grants mirror opt2-db bootstrap, including UPDATE on sequences, so isolation results transfer to the real roles.
   await inTransaction(adminPool, async (client) => {
     await client.query(BOOTSTRAP_LOCK_SQL);
+    // A drop() that ran first may already have found nothing under this lock, so creating now would leak.
+    if (isDropped()) {
+      throw new Error('drop() was called before the schema was created');
+    }
     for (const statement of [
       // A non-superuser CREATEROLE creator needs SET for CREATE SCHEMA … AUTHORIZATION and INHERIT for drop().
       "SET LOCAL createrole_self_grant = 'set, inherit'",

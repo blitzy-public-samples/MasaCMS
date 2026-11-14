@@ -226,13 +226,14 @@ async function loadVerdictSource(
   actor: Actor,
   nodes: readonly NodeRef[],
   memberships: UserMemberships | undefined,
+  readPools: () => Promise<SitePools> = () => sitePools(deps, actor),
 ): Promise<VerdictSource> {
   const held = memberships ?? (await loadMemberships(deps, actor));
   if (held.names.length === 0) {
     return { memberships: held, pools: null, rows: [], groups: new Map() };
   }
   // Crumbs are read in the token tenant, whose content belongs to the token's site, so that site's pools apply.
-  const pools = await sitePools(deps, actor);
+  const pools = await readPools();
   const bySite = new Map<string, string[]>();
   for (const node of nodes) {
     bySite.set(node.siteId, [...(bySite.get(node.siteId) ?? []), node.contentId]);
@@ -289,11 +290,20 @@ async function permOf(deps: PermissionDeps, actor: Actor, node: NodeRef, members
 }
 
 /** The crumb walk of getNodePerm and getNodePermPublic: the first verdict that is not `none`; '' for no crumbs. */
-async function walkCrumbs(
+function walkCrumbs(
   deps: PermissionDeps,
   actor: Actor,
   crumbs: readonly CrumbNode[],
   memberships: UserMemberships | undefined,
+): Promise<NodeVerdict | ''> {
+  return walkWith(actor, crumbs, (nodes) => loadVerdictSource(deps, actor, nodes, memberships));
+}
+
+/** The crumb walk over the verdict source `load` reads for the crumbs' nodes, read only when no shortcut decides. */
+async function walkWith(
+  actor: Actor,
+  crumbs: readonly CrumbNode[],
+  load: (nodes: readonly NodeRef[]) => Promise<VerdictSource>,
 ): Promise<NodeVerdict | ''> {
   const nodes = crumbs.map(nodeOf);
   const [first] = nodes;
@@ -303,7 +313,7 @@ async function walkCrumbs(
   if (privileged(actor, first.siteId)) {
     return 'editor';
   }
-  const source = await loadVerdictSource(deps, actor, nodes, memberships);
+  const source = await load(nodes);
   let verdict: NodeVerdict = 'none';
   for (const node of nodes) {
     verdict = verdictOf(actor, source, node);
@@ -367,15 +377,64 @@ export function getModulePerm(actor: Actor, moduleId: string): boolean {
   );
 }
 
+/** What a restriction reads: the actor's memberships, the site's user pools and the verdict of a crumb walk. */
+interface RestrictionReads {
+  memberships(): Promise<UserMemberships>;
+  pools(): Promise<SitePools>;
+  walk(crumbs: readonly CrumbNode[], memberships: UserMemberships | undefined): Promise<NodeVerdict | ''>;
+}
+
+/** `load` run at most once, its promise shared by every call. */
+function once<T>(load: () => Promise<T>): () => Promise<T> {
+  let held: Promise<T> | undefined;
+  return () => (held ??= load());
+}
+
 /**
  * setRestriction [permission.cfc:364-445]: the restricted-crumb walk, the S2 shortcut, the module-access verdict and the
  * restrict-group membership check; `hasModuleAccess` defaults to the actor's Site Manager module permission.
  */
-export async function setRestriction(
+export function setRestriction(
   deps: PermissionDeps,
   actor: Actor,
   crumbs: readonly CrumbNode[],
   hasModuleAccess?: boolean,
+): Promise<Restriction> {
+  return restrictionOf(actor, crumbs, hasModuleAccess, {
+    memberships: () => loadMemberships(deps, actor),
+    pools: () => sitePools(deps, actor),
+    walk: (walked, memberships) => walkCrumbs(deps, actor, walked, memberships),
+  });
+}
+
+/** setRestriction of each crumb list, in order, reading the memberships, the site pools and the node verdicts once for all. */
+export async function setRestrictions(
+  deps: PermissionDeps,
+  actor: Actor,
+  crumbLists: readonly (readonly CrumbNode[])[],
+  hasModuleAccess?: boolean,
+): Promise<Restriction[]> {
+  const memberships = once(() => loadMemberships(deps, actor));
+  const pools = once(() => sitePools(deps, actor));
+  const nodes = new Map<string, NodeRef>();
+  for (const node of crumbLists.flat().map(nodeOf)) {
+    nodes.set(`${node.siteId}\u0000${node.contentId}`, node);
+  }
+  const source = once(async () => loadVerdictSource(deps, actor, [...nodes.values()], await memberships(), pools));
+  const reads: RestrictionReads = { memberships, pools, walk: (walked) => walkWith(actor, walked, source) };
+  const restrictions: Restriction[] = [];
+  for (const crumbs of crumbLists) {
+    restrictions.push(await restrictionOf(actor, crumbs, hasModuleAccess, reads));
+  }
+  return restrictions;
+}
+
+/** The setRestriction verdict of `crumbs` over `reads`. */
+async function restrictionOf(
+  actor: Actor,
+  crumbs: readonly CrumbNode[],
+  hasModuleAccess: boolean | undefined,
+  reads: RestrictionReads,
 ): Promise<Restriction> {
   const r: Restriction = {
     allow: true,
@@ -409,9 +468,9 @@ export async function setRestriction(
     if (r.hasModuleAccess) {
       // A site Admin's walk ends at the first crumb as `editor` and returns below, so it needs no memberships.
       if (!privileged(actor, crumbs[0]?.siteid ?? '')) {
-        memberships = await loadMemberships(deps, actor);
+        memberships = await reads.memberships();
       }
-      const verdict = await walkCrumbs(deps, actor, crumbs, memberships);
+      const verdict = await reads.walk(crumbs, memberships);
       r.perm = verdict === 'deny' || verdict === '' ? 'none' : verdict;
       if (r.perm !== 'none' || r.restrictGroups === '') {
         r.allow = true;
@@ -425,8 +484,8 @@ export async function setRestriction(
       r.allow = true;
       r.perm = 'read';
     } else {
-      const held = memberships ?? (await loadMemberships(deps, actor));
-      const pools = held.names.length > 0 ? await sitePools(deps, actor) : null;
+      const held = memberships ?? (await reads.memberships());
+      const pools = held.names.length > 0 ? await reads.pools() : null;
       if (cfListItems(r.restrictGroups).some((group) => memberOfGroup(held, pools, group))) {
         r.allow = true;
         r.perm = 'read';

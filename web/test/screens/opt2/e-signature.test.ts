@@ -1,5 +1,5 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
-// Only what e-signature/*.test.ts and umbrella.test.ts leave open: nav per screen, trust, unposted CSRF, chain order.
+// E-signature screens in the admin shell: OPT-2 nav, token-only trust, unposted CSRF fields and audit chain order.
 import { load } from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Roles, type Role } from '@opt2/platform/auth';
@@ -68,6 +68,14 @@ async function bodyOf(slug: string, ctx: ScreenContext): Promise<string> {
 
 function eSignatureCalls(gateway: FakeGatewayClient) {
   return gateway.calls.filter((call) => call.service === 'e-signature');
+}
+
+/** The value texts of each audit entry's label and value rows, entries in rendered order. */
+function auditEntries(markup: string): string[][] {
+  const $ = load(markup, null, false);
+  return $('div.block-content div.block-content')
+    .toArray()
+    .map((entry) => $(entry).children('div.mura-control-group').toArray().map((row) => $(row).children('div').text()));
 }
 
 /** `gate`'s decision for `req`, with the `secure()` of that request. */
@@ -183,8 +191,8 @@ describe('e-signature chain order', () => {
   const auditorOn = (id: string) => ctxFor(opt2RoleRequest(AUDITOR, { rc: { id } }), routes);
 
   it('lists audit entries in the order e-signature answers, hashes verbatim', async () => {
-    const [table] = fragmentModel(await bodyOf('audit', auditorOn(SIGNED_ID))).tables;
-    expect(table?.rows).toEqual(
+    const entries = auditEntries(await bodyOf('audit', auditorOn(SIGNED_ID)));
+    expect(entries).toEqual(
       answered.map((entry) => [
         String(entry.seq),
         entry.action,
@@ -195,7 +203,7 @@ describe('e-signature chain order', () => {
         entry.entry_hash,
       ]),
     );
-    expect(table?.rows.flatMap((row) => row.slice(5)).every((hash) => /^[0-9a-f]{64}$/.test(hash))).toBe(true);
+    expect(entries.flatMap((row) => row.slice(5)).every((hash) => /^[0-9a-f]{64}$/.test(hash))).toBe(true);
   });
 
   it('starts the copy form from the chain in the order e-signature answers', async () => {

@@ -14,8 +14,40 @@ import {
 } from '../../src/legacy/jsonapi-entities.js';
 
 const API_UTILITY = new URL('../../../../core/mura/client/api/json/v1/jsonApiUtility.cfc', import.meta.url);
+const CORE_MURA = new URL('../../../../core/mura/', import.meta.url);
 const CONTRACT = new URL('../../contracts/openapi.yaml', import.meta.url);
 const sourceLines = readFileSync(API_UTILITY, 'utf8').split('\n');
+
+const CONTENT_CHAIN = ['content/contentBean.cfc', 'bean/beanExtendable.cfc', 'bean/bean.cfc'];
+/** Each entity bean's extends chain under core/mura, its own component first (cfobject.cfc declares no property). */
+const BEAN_CHAINS: Readonly<Record<ContentEntityName, readonly string[]>> = {
+  contentnav: CONTENT_CHAIN,
+  content: CONTENT_CHAIN,
+  comment: ['content/contentCommentBean.cfc', 'bean/bean.cfc'],
+  changeset: ['content/changeset/changesetBean.cfc', 'bean/bean.cfc'],
+  feed: ['content/feed/feedBean.cfc', 'bean/beanFeed.cfc', 'bean/bean.cfc'],
+  category: ['category/categoryBean.cfc', 'bean/bean.cfc'],
+  contentCategoryAssign: ['content/contentCategoryAssignBean.cfc', 'bean/beanORM.cfc', 'bean/bean.cfc'],
+  file: ['content/file/fileBean.cfc', 'bean/beanORM.cfc', 'bean/bean.cfc'],
+  fileMetaData: ['content/contentFileMetaDataBean.cfc', 'bean/beanORMVersioned.cfc', 'bean/beanORM.cfc', 'bean/bean.cfc'],
+  changesetCategoryAssignment: ['content/changeset/changesetCategoryAssignmentBean.cfc', 'bean/beanORM.cfc', 'bean/bean.cfc'],
+  stats: ['content/contentStatsBean.cfc', 'bean/bean.cfc'],
+  variationTargeting: ['content/contentVariationTargetingBean.cfc', 'bean/beanORM.cfc', 'bean/bean.cfc'],
+};
+
+/** `[name, nonPersistent]` of each uncommented property declaration of a component under core/mura. */
+function cfcProperties(path: string): [string, boolean][] {
+  const text = readFileSync(new URL(path, CORE_MURA), 'utf8')
+    .replace(/<!---[\s\S]*?--->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  return [...text.matchAll(/<cfproperty\b([^>]*)>|(?<![\w.])property\s+([^;{}]*?);/gi)].map((match) => {
+    const attrs = match[1] ?? match[2] ?? '';
+    const name = /\bname\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1];
+    if (name === undefined) throw new Error(`no property name in ${path}: ${attrs}`);
+    return [name, /\bpersistent\s*=\s*["']?false/i.test(attrs) && !/\b(cfc|relatesTo)\s*=/i.test(attrs)];
+  });
+}
 
 /** The `fields="…"` value on a 1-based line of jsonApiUtility.cfc. */
 function legacyFields(line: number): string {
@@ -138,6 +170,24 @@ describe('CONTENT_ENTITIES', () => {
     expect(CONTENT_ENTITIES.content.hasOne.map((p) => p.name)).toEqual(['parent', 'site', 'changeset', 'stats']);
     expect(CONTENT_ENTITIES.changeset.hasOne).toEqual([]);
   });
+
+  it.each(Object.keys(BEAN_CHAINS) as ContentEntityName[])(
+    '%s declares the properties of its bean chain, the first declaration of a name winning as in getProperties',
+    (name) => {
+      const declared = new Set<string>();
+      const nonPersistent = new Set<string>();
+      for (const path of BEAN_CHAINS[name]) {
+        for (const [property, skipped] of cfcProperties(path)) {
+          const lower = property.toLowerCase();
+          if (declared.has(lower)) continue;
+          declared.add(lower);
+          if (skipped) nonPersistent.add(lower);
+        }
+      }
+      expect([...CONTENT_ENTITIES[name].declaredProperties].sort()).toEqual([...declared].sort());
+      expect([...CONTENT_ENTITIES[name].nonPersistentProperties].sort()).toEqual([...nonPersistent].sort());
+    },
+  );
 
   it('is frozen', () => {
     expect(Object.isFrozen(CONTENT_ENTITIES)).toBe(true);

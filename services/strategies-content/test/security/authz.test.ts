@@ -137,6 +137,7 @@ const EXPECTED: readonly ExpectedRoute[] = [
   ),
   { method: 'POST', url: '/internal/v1/migration/objects', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
   { method: 'GET', url: '/internal/v1/migration/objects', transport: 'service', requires: MIGRATION_ONLY, admitted: 404 },
+  { method: 'DELETE', url: '/internal/v1/migration/objects', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
   { method: 'POST', url: '/internal/v1/migration/apply', transport: 'service', requires: MIGRATION_ONLY, admitted: 400 },
   { method: 'GET', url: '/internal/v1/migration/export', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
   { method: 'GET', url: '/internal/v1/migration/changes', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
@@ -346,6 +347,10 @@ const PROBES: Readonly<Record<string, () => ProbeRequest>> = {
   }),
   'GET /internal/v1/migration/objects': () => ({
     method: 'GET',
+    url: `/internal/v1/migration/objects?key=${encodeURIComponent(`${TENANT_A.tenantId}/${FILE_ID}.png`)}`,
+  }),
+  'DELETE /internal/v1/migration/objects': () => ({
+    method: 'DELETE',
     url: `/internal/v1/migration/objects?key=${encodeURIComponent(`${TENANT_A.tenantId}/${FILE_ID}.png`)}`,
   }),
   'POST /internal/v1/migration/apply': () => ({ method: 'POST', url: '/internal/v1/migration/apply', headers: JSON_HEADERS, payload: {} }),
@@ -761,7 +766,7 @@ describe('undeclared routes', () => {
   it.each([
     ['GET', '/v1/sites/tenant-a/undeclared', 's2'],
     ['GET', '/internal/v1/undeclared', 'service:migration'],
-    ['DELETE', '/internal/v1/migration/objects', 'service:migration'],
+    ['DELETE', '/internal/v1/migration/apply', 'service:migration'],
     ['POST', '/v1/sites/tenant-a/header-prompts', 's2'],
     ['GET', '/v1/sites/tenant-a/undeclared', 'anonymous'],
   ] as const)('answers %s %s as %s with the legacy 404 and no effect', async (method, url, subject) => {

@@ -48,6 +48,8 @@ const SITE_B = 'tenant-b';
 const UMBRELLA = 'umbrella';
 const DEFAULT = 'default';
 const REGISTERED_SITES = [DEFAULT, SITE_A, SITE_B, UMBRELLA] as const;
+/** The administrator whose token a roster update of another user carries. */
+const ADMIN_ACTOR = 'ADDE0000-0000-0000-0000000000000001';
 const HOST = 'www.example.test:8080';
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 const ALL_PLACEHOLDERS = '#firstName#|#lastName#|#username#|#password#|#contactEmail#|#contactName#|#returnURL#';
@@ -578,7 +580,7 @@ describe.skipIf(!available)('login mail against PostgreSQL', () => {
       const operationId = id('C');
       const change: AccountChange = { username: user.username, password: '', s2: 0, perm: 0, inActive: 0, isPublic: 0, remoteID: '', groupIds: null };
       const prepared = await prepareAccountOperation(operationDeps(), {
-        operationId, kind: 'update', userId: user.userId, requestSiteId: SITE_A, siteId: SITE_A, actorIsSuperUser: false, change,
+        operationId, kind: 'update', userId: user.userId, requestSiteId: SITE_A, actorUserId: ADMIN_ACTOR, siteId: SITE_A, actorIsSuperUser: false, change,
       });
       expect(prepared.outcome).toBe('prepared');
       const sleeps: number[] = [];
@@ -747,7 +749,7 @@ describe.skipIf(!available)('login mail against PostgreSQL', () => {
         username: user.username, password: '', s2: 0, perm: 0, inActive: 0, isPublic: 0, remoteID: '', groupIds: null, ...change,
       };
       const prepared = await prepareAccountOperation(operationDeps(), {
-        operationId, kind: 'update', userId: user.userId, requestSiteId: SITE_A, siteId: SITE_A, actorIsSuperUser: false, change: accountChange,
+        operationId, kind: 'update', userId: user.userId, requestSiteId: SITE_A, actorUserId: ADMIN_ACTOR, siteId: SITE_A, actorIsSuperUser: false, change: accountChange,
       });
       expect(prepared.outcome).toBe('prepared');
       const sleeps: number[] = [];

@@ -1,5 +1,5 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** E-signature fixture checks of legacy-fixtures/cfml api.cfm, lib/auth.cfc and modules/esignature.cfc that the platform auth hooks leave to handlers. */
+/** E-signature fixture checks of legacy-fixtures/cfml api.cfm, lib/auth.cfc and modules/esignature.cfc, which the fixture route handlers run. */
 import { Buffer } from 'node:buffer';
 import { AuthDenial, type UserClaims } from '@opt2/platform/auth';
 import { cfNumberString } from '@opt2/platform/legacy-compat';
@@ -12,7 +12,7 @@ export type FixtureCheckStep = 'path' | 'site' | 'login' | 'role' | 'existence' 
 
 /**
  * Order in which the e-signature fixture checks a request: api.cfm path and site, then esignature.cfc with auth.cfc the rest.
- * The platform auth hooks decide login and role before any handler runs; `fixtureDenialOverride` answers the site error first.
+ * The effective method selects the operation after the site check; a write's CSRF token is checked after the role.
  */
 export const FIXTURE_CHECK_ORDER: readonly FixtureCheckStep[] = Object.freeze([
   'path',
@@ -34,12 +34,6 @@ type FixtureParams = Readonly<Record<string, unknown>>;
 export interface FixtureSite {
   siteId: string;
   tenantId: string;
-}
-
-/** A platform auth denial's context: the verified claims, when a user token was presented, and the e-signature tenant registry. */
-export interface FixtureDenialContext {
-  claims?: UserClaims;
-  registry: RegistrySource;
 }
 
 /** One handler check; it fails by throwing or by returning a failed `ValidationResult`. */
@@ -125,31 +119,33 @@ function cfBase64Decode(text: string): Buffer | null {
   return out.subarray(0, length);
 }
 
-/** The request's site as auth.cfc resolveSite picks it: `siteid`, else the token's site, else `default`; throws invalidParameters for an unknown site. */
-export async function resolveFixtureSite(params: FixtureParams, claims: UserClaims, registry: RegistrySource): Promise<FixtureSite> {
-  const supplied = param(params, 'siteid') ?? '';
-  // The token's site stands for the session site; resolveSite raises for an unknown site instead of falling back, so fallbackSiteId does not apply.
-  const requested = supplied === '' ? claims.site || DEFAULT_SITE_ID : supplied;
-  const tenantId = typeof requested === 'string' ? await tenantForRegisteredSite(registry, requested) : null;
-  if (tenantId === null) throw new FixtureApiError('invalidParameters');
-  // The tenant is only ever the verified token's, so a registered site of another tenant is not this token's site.
-  if (tenantId.toLowerCase() !== claims.tid.toLowerCase()) throw AuthDenial.siteMismatch();
-  const siteId = await siteForTenant(registry, tenantId);
-  if (siteId === null) throw new FixtureApiError('invalidParameters');
-  return { siteId, tenantId: claims.tid };
+/** Whether `claims` are a logged-in user's: identity mints `sub` '' for a session without a login. */
+function isLoggedIn(claims: UserClaims | undefined): claims is UserClaims {
+  return claims !== undefined && claims.sub !== '';
 }
 
 /**
- * The fixture's answer to a platform role denial: invalidParameters when the token's site is unregistered, as resolveSite raises before
- * requireAny; authorization for a token without a logged-in user, as requireLogin raises; else `denial`.
+ * The request's site as auth.cfc resolveSite picks it: `siteid`, else the token's site, else `default`; throws invalidParameters for a
+ * non-string or unknown site, then site mismatch when a logged-in user's token is for another tenant.
  */
-export async function fixtureDenialOverride(denial: AuthDenial, ctx: FixtureDenialContext): Promise<AuthDenial | FixtureApiError> {
-  if (denial.reason !== 'forbidden' || ctx.claims === undefined) return denial;
-  if ((await tenantForRegisteredSite(ctx.registry, ctx.claims.site || DEFAULT_SITE_ID)) === null) {
-    return new FixtureApiError('invalidParameters');
-  }
-  // Identity mints sub '' for a session without a login; the fixture answers that session 401, not 403.
-  return ctx.claims.sub === '' ? new FixtureApiError('authorization') : denial;
+export async function resolveFixtureSite(params: FixtureParams, claims: UserClaims | undefined, registry: RegistrySource): Promise<FixtureSite> {
+  const supplied = param(params, 'siteid') ?? '';
+  // The token's site stands for the session site; resolveSite raises for an unknown site instead of falling back, so fallbackSiteId does not apply.
+  const requested = supplied === '' ? claims?.site || DEFAULT_SITE_ID : supplied;
+  const tenantId = typeof requested === 'string' ? await tenantForRegisteredSite(registry, requested) : null;
+  if (tenantId === null) throw new FixtureApiError('invalidParameters');
+  // A logged-in user's tenant is only ever the verified token's; anyone else is refused by requireFixtureLogin next, as requireLogin refuses them.
+  const loggedIn = isLoggedIn(claims);
+  if (loggedIn && tenantId.toLowerCase() !== claims.tid.toLowerCase()) throw AuthDenial.siteMismatch();
+  const siteId = await siteForTenant(registry, tenantId);
+  if (siteId === null) throw new FixtureApiError('invalidParameters');
+  return { siteId, tenantId: loggedIn ? claims.tid : tenantId };
+}
+
+/** auth.cfc requireLogin: the logged-in user's claims; throws authorization without a user token or for a session without a login. */
+export function requireFixtureLogin(claims: UserClaims | undefined): UserClaims {
+  if (!isLoggedIn(claims)) throw new FixtureApiError('authorization');
+  return claims;
 }
 
 /** esignature.cfc createRequest's fields: documentName (1-255 characters), the decoded non-empty documentBase64, and a non-empty signerUserId. */

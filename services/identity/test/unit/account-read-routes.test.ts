@@ -35,6 +35,7 @@ const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', impor
 };
 const CONTRACT_PATHS = [
   '/internal/v1/accounts/{userId}',
+  '/internal/v1/accounts/{userId}/memberships',
   '/internal/v1/accounts/{userId}/login-block',
   '/internal/v1/accounts:lookup',
   '/internal/v1/accounts:lookup-all-sites',
@@ -197,7 +198,7 @@ beforeAll(async () => {
   });
   registerWritePositionHeader(app);
   const accountReads = createAccountReads({ repo, closedUserWaitMs: SHORT_MS, gateWaitMs: SHORT_MS, clock: CLOCK });
-  await registerAccountReadRoutes(app, { db: handle?.app ?? NO_DB, accountReads });
+  await registerAccountReadRoutes(app, { db: handle?.app ?? NO_DB, repo, accountReads, sleep: () => Promise.resolve() });
   await app.ready();
 });
 
@@ -244,8 +245,8 @@ describe('route declarations', () => {
           requires: operation['x-opt2-requires'],
         })),
     );
-    expect(expected).toHaveLength(8);
-    expect(declared).toHaveLength(8);
+    expect(expected).toHaveLength(9);
+    expect(declared).toHaveLength(9);
     expect(declared).toEqual(expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))));
   });
 });
@@ -253,6 +254,7 @@ describe('route declarations', () => {
 describe('auth denials', () => {
   it.each([
     ['GET', `/internal/v1/accounts/${ACTIVE}`, undefined],
+    ['GET', `/internal/v1/accounts/${ACTIVE}/memberships`, undefined],
     ['POST', `/internal/v1/accounts/${ACTIVE}/login-block`, { removeBlock: false }],
     ['POST', '/internal/v1/accounts:lookup', { userIds: [ACTIVE] }],
     ['POST', '/internal/v1/accounts:lookup-all-sites', { userIds: [ACTIVE] }],
@@ -270,6 +272,7 @@ describe('auth denials', () => {
 
   it.each([
     ['GET', `/internal/v1/accounts/${ACTIVE}?siteid=tenant-b`, undefined],
+    ['GET', `/internal/v1/accounts/${ACTIVE}/memberships?siteid=tenant-b`, undefined],
     ['POST', `/internal/v1/accounts/${ACTIVE}/login-block?siteid=tenant-b`, { removeBlock: true }],
     ['POST', '/internal/v1/accounts:lookup?siteid=umbrella', { userIds: [ACTIVE] }],
     ['POST', '/internal/v1/accounts:lookup-all-sites?siteid=umbrella', { userIds: [ACTIVE] }],
@@ -350,7 +353,7 @@ describe('auth denials', () => {
     expect(res.json()).toMatchObject({ error: { message: 'Invalid parameters' } });
   });
 
-  it.each(['/internal/v1/groups', '/internal/v1/groups?ispublic=2', '/internal/v1/groups?ispublic=0&siteid='])(
+  it.each(['/internal/v1/groups', '/internal/v1/groups?ispublic=2', '/internal/v1/groups?ispublic=0&siteid=', '/internal/v1/accounts/not-a-uuid/memberships'])(
     'answer %s with the legacy 400',
     async (url) => {
       expect((await send('GET', url, await headersFor('people'))).statusCode).toBe(400);
@@ -368,6 +371,18 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
 
     expect((await send('GET', `/internal/v1/accounts/${ACTIVE}`, headers)).json()).toEqual(ACTIVE_RECORD);
     expect((await send('GET', `/internal/v1/accounts/${PUBLIC}?siteid=TENANT-A`, headers)).json()).toEqual(PUBLIC_RECORD);
+  });
+
+  it.each([
+    ['tenant-a', OTHER_TENANT, 'tenant-b', 'bea'],
+    ['tenant-a', DEFAULT_USER, 'default', 'dee'],
+    ['tenant-b', ACTIVE.toLowerCase(), 'tenant-a', 'ada'],
+  ])("answers getAccount under a token of %s for the token user's own account %s stored under %s", async (site, userId, siteId, username) => {
+    const own = `Bearer ${await mintUserToken({ sub: userId, site, roles: [Roles.systemUser] })}`;
+    const res = await send('GET', `/internal/v1/accounts/${userId}`, { ...(await headersFor('people')), authorization: own });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ UserID: userId.toUpperCase(), SiteID: siteId, UserName: username });
   });
 
   it.each(
@@ -519,6 +534,24 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
     });
   });
 
+  it("answers getAccountMemberships for any user token with the stored groups of every registered tenant by group name, a dangling id left out", async () => {
+    // Stored in tenant-b and held in umbrella, its name sorts ahead of `Admin` while its id sorts after GROUP's.
+    const abroad = id(12, 'D');
+    await gated('tenant-b', (tx) => repo.insertGroup(tx, groupInput({ userid: abroad, groupname: 'abroad', siteid: 'tenant-b' }), null));
+    await gated('umbrella', (tx) => repo.addMembership(tx, ACTIVE, abroad));
+    try {
+      for (const site of ['tenant-a', 'tenant-b']) {
+        const res = await send('GET', `/internal/v1/accounts/${ACTIVE}/memberships`, await headersFor('people', site));
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toEqual({ groupIds: [abroad, GROUP] });
+      }
+      expect((await send('GET', `/internal/v1/accounts/${MISSING}/memberships`, await headersFor('people'))).json()).toEqual({ groupIds: [] });
+    } finally {
+      await gated('umbrella', (tx) => repo.removeMembership(tx, ACTIVE, abroad));
+      await gated('tenant-b', (tx) => repo.deleteGroupRow(tx, abroad));
+    }
+  });
+
   it.each([
     ['0', [['Admin', 1, 'tenant-a'], ['Authors', 0, 'tenant-a'], ['editors', 0, 'tenant-a']], 0],
     ['1', [['Members', 0, 'umbrella']], 1],
@@ -538,6 +571,7 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
       const headers = await headersFor('people', 'tenant-a', [Roles.systemUser, Roles.s2]);
       for (const [method, url, payload] of [
         ['GET', `/internal/v1/accounts/${ACTIVE}`, undefined],
+        ['GET', `/internal/v1/accounts/${ACTIVE}/memberships`, undefined],
         ['POST', `/internal/v1/accounts/${ACTIVE}/login-block`, { removeBlock: false }],
         ['POST', '/internal/v1/accounts:lookup', { userIds: [MISSING, ACTIVE] }],
         ['POST', '/internal/v1/accounts:lookup-all-sites', { userIds: [MISSING, ACTIVE] }],

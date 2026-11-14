@@ -1,8 +1,8 @@
 import type { components } from '@/generated/clients/programs-sites';
-import { SITE_IDS, siteListItemById, siteTenantA } from './sites';
+import { SITE_IDS, siteListItemById } from './sites';
 
-type SiteErrors = components['schemas']['SiteErrors'];
-type SiteUpdateResult = components['schemas']['SiteUpdateResult'];
+/** A legacy bean's errors: field name to message, as the Sites screen renders them. */
+type SiteErrors = Readonly<Record<string, string>>;
 type SiteOrderUpdate = components['schemas']['SiteOrderUpdate'];
 type SiteOrderResult = components['schemas']['SiteOrderResult'];
 
@@ -27,24 +27,6 @@ export const SITE_ERRORS_MULTI = {
   ...SITE_ERRORS_SITEID_REQUIRED,
   ...SITE_ERRORS_DUPLICATE_DOMAIN,
 } as const satisfies SiteErrors;
-
-export const SITE_UPDATE_RESULT_SUCCESS = {
-  written: true,
-  site: siteTenantA,
-  errors: {},
-} as const satisfies SiteUpdateResult;
-
-export const SITE_UPDATE_RESULT_WITH_ERRORS = {
-  written: true,
-  site: siteTenantA,
-  errors: SITE_ERRORS_SITEID_REQUIRED,
-} as const satisfies SiteUpdateResult;
-
-export const SITE_UPDATE_RESULT_CSRF_SKIPPED = {
-  written: false,
-  site: siteTenantA,
-  errors: {},
-} as const satisfies SiteUpdateResult;
 
 export const SITE_ORDER_UPDATE = {
   orderID: `${SITE_IDS.default},${SITE_IDS.umbrella},${SITE_IDS.tenantA},${SITE_IDS.tenantB}`,

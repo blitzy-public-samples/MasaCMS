@@ -29,6 +29,24 @@ export const SERVICE_VERSION = '1.0.0';
 // Project of the harness's local Pub/Sub topology; OPT2_ENV=cloud makes GOOGLE_CLOUD_PROJECT required.
 const LOCAL_PROJECT_ID = 'opt2-local';
 
+/** Services timesheets calls through `OPT2_SERVICE_URLS`: identity (CSRF checks) and reporting (export scope checks). */
+const REQUIRED_SERVICES: readonly string[] = ['identity', 'reporting'];
+
+/** Base variables with every callee's URL required. */
+export const timesheetsEnvSchema = baseEnvSchema.superRefine(
+  (env, ctx) => {
+    // Failed fields keep their raw values here; a map that failed as a whole carries its own issue.
+    const urls: unknown = env.OPT2_SERVICE_URLS;
+    const mapFailed = ctx.issues.some((issue) => issue.path?.length === 1 && issue.path[0] === 'OPT2_SERVICE_URLS');
+    if (mapFailed || typeof urls !== 'object' || urls === null) return;
+    for (const name of REQUIRED_SERVICES.filter((service) => !Object.hasOwn(urls, service))) {
+      ctx.addIssue({ code: 'custom', path: ['OPT2_SERVICE_URLS', name], message: 'is required' });
+    }
+  },
+  // Runs even when other variables failed, so loadEnv lists every missing callee at once.
+  { when: () => true },
+);
+
 /** Dependencies `buildApp` uses instead of building its own from the environment. */
 export interface BuildAppOptions {
   env?: BaseEnv;
@@ -40,7 +58,7 @@ export interface BuildAppOptions {
 
 /** Builds the timesheets Fastify app with every route and hook registered; never listens. */
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const env = options.env ?? loadEnv(baseEnvSchema);
+  const env = options.env ?? loadEnv(timesheetsEnvSchema);
   const clock = options.clock ?? systemClock;
   // Checked before createService acquires anything; an injected publisher needs no emulator.
   const emulatorHost = options.publisher === undefined ? publisherEmulatorHost(env) : undefined;

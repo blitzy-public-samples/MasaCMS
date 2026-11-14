@@ -9,6 +9,7 @@ import * as context from '../../src/service-kit/context.js';
 import * as createServiceModule from '../../src/service-kit/create-service.js';
 import * as csrfHook from '../../src/service-kit/csrf-hook.js';
 import * as env from '../../src/service-kit/env.js';
+import * as eventScope from '../../src/service-kit/event-scope.js';
 import * as signalBoundFetch from '../../src/service-kit/fetch.js';
 import * as kit from '../../src/service-kit/index.js';
 import {
@@ -51,6 +52,8 @@ const VALUE_EXPORTS = {
       'recordWritePosition',
       'REQUEST_ID_HEADER',
       'NoRequestContextError',
+      'RequestAbortedError',
+      'throwIfRequestAborted',
     ],
   ],
   './client.js': [
@@ -67,6 +70,7 @@ const VALUE_EXPORTS = {
   './create-service.js': [
     createServiceModule,
     [
+      'abandonOnDisconnect',
       'createService',
       'defaultSurfaceOf',
       'isUnstorableTextError',
@@ -77,6 +81,7 @@ const VALUE_EXPORTS = {
       'LEGACY_POST_LIMIT_BYTES',
     ],
   ],
+  './event-scope.js': [eventScope, ['recordEventScope']],
   './csrf-hook.js': [csrfHook, ['csrfPreHandler', 'csrfTokenFrom', 'CSRF_CONSUME_PATH', 'IDENTITY_SERVICE']],
 } as const satisfies Record<string, readonly [Record<string, unknown>, readonly string[]]>;
 

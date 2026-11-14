@@ -4,6 +4,7 @@ import { AuthDenial, Roles, type Opt2RouteConfig } from '@opt2/platform/auth';
 import {
   LEGACY_ERROR_MAP,
   LegacyApiError,
+  LegacyServiceUnavailableError,
   buildEnvelope,
   errorSpec,
   serializeResponse,
@@ -13,6 +14,7 @@ import {
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import {
   csrfPreHandler,
+  isUnstorableTextError,
   multipartFilesOf,
   recordOutcomeReason,
   sendLegacyResponse,
@@ -37,7 +39,7 @@ import {
 } from '../domain/records.js';
 import { getRollups, rebuildRollups } from '../domain/rollup.js';
 import { requireProgram, validateRecordInput } from '../legacy/checks.js';
-import { fixtureOutcomeReason } from '../legacy/envelope.js';
+import { fixtureMethod, fixtureOutcomeReason, logUnavailable } from '../legacy/envelope.js';
 import {
   attachmentRow,
   recordDetail,
@@ -110,17 +112,20 @@ const V2_ROLLUPS_PATH = '/v2/finance/rollups';
 const READER_AUTH: Opt2RouteConfig = Object.freeze({
   transport: 'service',
   requires: Object.freeze([Roles.financePreparer, Roles.financeApprover]),
+  renderDenial,
 });
 
 /** Exporters read the record list beside the preparers and approvers. */
 const RECORD_LIST_AUTH: Opt2RouteConfig = Object.freeze({
   transport: 'service',
   requires: Object.freeze([Roles.financePreparer, Roles.financeApprover, Roles.reportingExporter]),
+  renderDenial,
 });
 
 const PREPARER_AUTH: Opt2RouteConfig = Object.freeze({
   transport: 'service',
   requires: Object.freeze([Roles.financePreparer]),
+  renderDenial,
 });
 
 // The fixture's paging defaults and bounds, envelope.cfc page().
@@ -165,8 +170,8 @@ const RECORD_LIST_QUERY_SCHEMA = {
   properties: {
     state: { type: 'string', enum: FINANCE_STATES },
     period: { type: 'string', pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' },
-    page: { type: 'integer', minimum: 1, default: DEFAULT_PAGE },
-    pageSize: { type: 'integer', minimum: 1, default: DEFAULT_PAGE_SIZE },
+    page: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: DEFAULT_PAGE },
+    pageSize: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: DEFAULT_PAGE_SIZE },
   },
 } as const;
 
@@ -195,6 +200,9 @@ const DOMAIN_ERROR_STATUS: Readonly<Record<FinanceDomainErrorType, number>> = Ob
 });
 
 const DOMAIN_ERROR_CODE = LEGACY_ERROR_MAP.invalidParameters.code;
+
+/** The `server_error` row at the fail-closed 503. */
+const UNAVAILABLE: LegacyErrorSpec = Object.freeze({ ...LEGACY_ERROR_MAP.server_error, status: 503 });
 
 /** The verified tenant, actor and roles; every route requires a user role, so a request without them is unauthenticated. */
 function callerOf(request: FastifyRequest): VerifiedCaller {
@@ -232,8 +240,9 @@ async function everyRow<R>(read: (paging: RecordPaging) => Promise<Page<R>>): Pr
   }
 }
 
-/** The repository paging of a list's `page` and `pageSize`. */
+/** The repository paging of a list's `page` and `pageSize`; throws `invalidParameters` for a ±Infinity the schema coercion admits. */
 function pagingOf({ page, pageSize }: PageQuery): RecordPaging {
+  if (!Number.isFinite(page) || !Number.isFinite(pageSize)) throw new FinanceDomainError('invalidParameters');
   return { pageIndex: page, itemsPerPage: pageSize };
 }
 
@@ -268,7 +277,7 @@ function envelopeMethod(request: FastifyRequest): string {
     case V2_VERSIONS_PATH:
       return 'finance.records.versions';
     case TRANSITION_PATH:
-      return `finance.records.${(request.params as TransitionParams).action}`;
+      return fixtureMethod('records', (request.params as TransitionParams).action);
     case ATTACHMENTS_PATH:
     case V2_ATTACHMENTS_PATH:
     case DOWNLOAD_URL_PATH:
@@ -286,7 +295,28 @@ function errorEnvelope(method: string, { status, code, message }: LegacyErrorSpe
   return serializeResponse(buildEnvelope({ method, error: { code, message } }), { statusCode: status });
 }
 
-/** The fixture error answer to a domain, lifecycle or check failure; undefined for an error the service-kit handler renders. */
+/** The error envelope of `method` for `denial`, at its 401 or 403 status, with its bearer challenge when it carries one. */
+function denialResponse(method: string, denial: AuthDenial): SerializedLegacyResponse {
+  const response = errorEnvelope(method, { ...errorSpec(denial.type), status: denial.statusCode });
+  if (denial.wwwAuthenticate !== undefined) response.headers['WWW-Authenticate'] = denial.wwwAuthenticate;
+  return response;
+}
+
+/** Renders an auth-hook denial of a route with the route's fixture method; registerAuth records its reason. */
+function renderDenial(denial: AuthDenial, request: FastifyRequest): SerializedLegacyResponse {
+  return denialResponse(envelopeMethod(request), denial);
+}
+
+/** Code and error-map type of Fastify's own request error: a schema-validation failure, or a client error below 500. */
+function fastifyRequestError(error: unknown): { code: string; type: 'invalidParameters' | 'badRequest' } | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const { validation, code, statusCode = 500 } = error as { validation?: unknown; code?: unknown; statusCode?: number };
+  if (typeof code !== 'string') return undefined;
+  if (validation !== undefined) return { code, type: 'invalidParameters' };
+  return code.startsWith('FST_') && statusCode < 500 ? { code, type: 'badRequest' } : undefined;
+}
+
+/** The route-method fixture error answer to a domain, lifecycle, check, auth, request or fail-closed failure; undefined for any other error. */
 function errorResponse(error: unknown, method: () => string): SerializedLegacyResponse | undefined {
   if (error instanceof TransitionRejectedError) {
     return serializeResponse(error.toEnvelope({ method: method() }), { statusCode: error.statusCode });
@@ -294,23 +324,25 @@ function errorResponse(error: unknown, method: () => string): SerializedLegacyRe
   if (error instanceof FinanceDomainError) {
     return errorEnvelope(method(), { status: DOMAIN_ERROR_STATUS[error.type], code: DOMAIN_ERROR_CODE, message: error.message });
   }
-  // A tenant without a program, or a signed URL refused for its file name, answers with this route's fixture method rather than
-  // the service-kit handler's 'invalid'; denials keep the platform's renderer.
-  if (error instanceof LegacyApiError && !(error instanceof AuthDenial)) {
-    return errorEnvelope(method(), errorSpec(error.type));
-  }
-  return undefined;
+  if (error instanceof AuthDenial) return denialResponse(method(), error);
+  // A tenant without a program, or a signed URL refused for its file name.
+  if (error instanceof LegacyApiError) return errorEnvelope(method(), errorSpec(error.type));
+  if (error instanceof LegacyServiceUnavailableError) return errorEnvelope(method(), UNAVAILABLE);
+  if (isUnstorableTextError(error)) return errorEnvelope(method(), LEGACY_ERROR_MAP.invalidParameters);
+  const requestError = fastifyRequestError(error);
+  return requestError === undefined ? undefined : errorEnvelope(method(), LEGACY_ERROR_MAP[requestError.type]);
 }
 
 /**
  * The contract's `/v1/finance` and `/v2/finance` operations, with an error handler encapsulated to them that records each answered
- * error's fixed outcome reason; other errors reach service-kit's.
+ * error's fixed outcome reason, or logs a fail-closed 503 as service-kit does; other errors reach service-kit's.
  */
 export const financeV1Plugin: FastifyPluginAsync<FinanceV1Deps> = async (instance, deps) => {
   instance.setErrorHandler((error, request, reply) => {
     const response = errorResponse(error, () => envelopeMethod(request));
     if (response === undefined) throw error;
-    recordOutcomeReason(request, fixtureOutcomeReason(error));
+    if (error instanceof LegacyServiceUnavailableError) logUnavailable(request, error);
+    else recordOutcomeReason(request, fastifyRequestError(error)?.code ?? fixtureOutcomeReason(error));
     return sendLegacyResponse(reply, response);
   });
 
@@ -319,9 +351,8 @@ export const financeV1Plugin: FastifyPluginAsync<FinanceV1Deps> = async (instanc
     RECORD_LIST_OPTIONS,
     async (request): Promise<{ data: FixtureRecord[]; total: number }> => {
       const { state, period } = request.query;
-      const page = await readInProgram(deps, callerOf(request).tenantId, (tx) =>
-        listRecords(tx, pagingOf(request.query), { state, period }),
-      );
+      const paging = pagingOf(request.query);
+      const page = await readInProgram(deps, callerOf(request).tenantId, (tx) => listRecords(tx, paging, { state, period }));
       return listAnswer(page, recordRow);
     },
   );
@@ -373,8 +404,8 @@ export const financeV1Plugin: FastifyPluginAsync<FinanceV1Deps> = async (instanc
     const attachment = await writeInProgram(deps, tenantId, async (tx) => {
       // finance.cfc answers a missing record before a missing file.
       await getRecord(tx, id);
-      const { filename, mimetype, size, sha256, stream } = uploadedFile(request);
-      return uploadAttachment(tx, deps, { recordId: id, fileName: filename, contentType: mimetype, size, sha256, body: stream }, actor);
+      const { filename, contentType, size, sha256, stream } = uploadedFile(request);
+      return uploadAttachment(tx, deps, { recordId: id, fileName: filename, contentType, size, sha256, body: stream }, actor);
     });
     return { data: attachmentRow(attachment) };
   });
@@ -412,7 +443,8 @@ export const financeV1Plugin: FastifyPluginAsync<FinanceV1Deps> = async (instanc
     RECORD_PAGE_OPTIONS,
     async (request): Promise<{ data: FixtureVersion[]; total: number }> => {
       const id = storedId(request.params.id);
-      const page = await readInProgram(deps, callerOf(request).tenantId, (tx) => listVersions(tx, id, pagingOf(request.query)));
+      const paging = pagingOf(request.query);
+      const page = await readInProgram(deps, callerOf(request).tenantId, (tx) => listVersions(tx, id, paging));
       return listAnswer(page, versionRow);
     },
   );
@@ -422,7 +454,8 @@ export const financeV1Plugin: FastifyPluginAsync<FinanceV1Deps> = async (instanc
     RECORD_PAGE_OPTIONS,
     async (request): Promise<{ data: FixtureAttachment[]; total: number }> => {
       const id = storedId(request.params.id);
-      const page = await readInProgram(deps, callerOf(request).tenantId, (tx) => listAttachments(tx, id, pagingOf(request.query)));
+      const paging = pagingOf(request.query);
+      const page = await readInProgram(deps, callerOf(request).tenantId, (tx) => listAttachments(tx, id, paging));
       return listAnswer(page, attachmentRow);
     },
   );
@@ -432,7 +465,8 @@ export const financeV1Plugin: FastifyPluginAsync<FinanceV1Deps> = async (instanc
     V2_ROLLUP_OPTIONS,
     async (request): Promise<{ data: FixtureRollup[]; total: number }> => {
       // `asOf` is accepted and unused, as on `/v1`.
-      const page = await readInProgram(deps, callerOf(request).tenantId, (tx) => getRollups(tx, { paging: pagingOf(request.query) }));
+      const paging = pagingOf(request.query);
+      const page = await readInProgram(deps, callerOf(request).tenantId, (tx) => getRollups(tx, { paging }));
       return listAnswer(page, rollupRow);
     },
   );

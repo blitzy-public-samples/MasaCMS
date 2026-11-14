@@ -257,23 +257,22 @@ const HINT_DATATYPES: Readonly<Record<EntityPropertyHint, string>> = Object.free
   date: 'datetime',
 });
 
-// bean.cfc:80 declares isNew persistent=false, so findProperties never lists it.
-const NON_PERSISTENT_BASE_PROPERTIES: ReadonlySet<string> = new Set(['isnew']);
-
 /** CFML listFindNoCase. */
 function listFindNoCase(list: string, value: string): boolean {
   const lower = value.toLowerCase();
   return cfListToArray(list).some((item) => item.toLowerCase() === lower);
 }
 
-/** The findProperties entries `config` can describe, keyed by lower-cased name, in primary key, hint, relation order. */
+/** Listed declared properties `config` can describe, keyed by lower-cased name, in primary key, hint, relation order. */
 function describedProperties(config: ContentEntityConfig): Map<string, Struct> {
   const props = new Map<string, Struct>();
-  if (config.primaryKey !== '')
-    props.set(config.primaryKey.toLowerCase(), { fieldtype: 'id', name: config.primaryKey.toLowerCase() });
+  const listed = (name: string): boolean =>
+    config.declaredProperties.has(name) && !config.nonPersistentProperties.has(name);
+  const primaryKey = config.primaryKey.toLowerCase();
+  if (listed(primaryKey)) props.set(primaryKey, { fieldtype: 'id', name: primaryKey });
   for (const [name, hint] of Object.entries(config.hints)) {
     const lower = name.toLowerCase();
-    if (NON_PERSISTENT_BASE_PROPERTIES.has(lower)) continue;
+    if (!listed(lower)) continue;
     props.set(lower, { fieldtype: props.get(lower)?.['fieldtype'] ?? '', name: lower, datatype: HINT_DATATYPES[hint] });
   }
   const relations: [RelationProp, string][] = [
@@ -281,6 +280,8 @@ function describedProperties(config: ContentEntityConfig): Map<string, Struct> {
     ...config.hasOne.map((p): [RelationProp, string] => [p, 'many-to-one']),
   ];
   for (const [prop, fieldtype] of relations) {
+    // A reference another bean appends (bean.cfc:1065-1086), such as file's fileMetaData, is not a property of this bean.
+    if (!listed(prop.name.toLowerCase())) continue;
     const entry: Struct = { fieldtype, loadkey: prop.loadkey, fkcolumn: prop.column, name: prop.name.toLowerCase() };
     // A one-to-many property has no column of its own, so getProperties types it as an untyped (varchar) string.
     if (fieldtype === 'one-to-many') entry['datatype'] = 'varchar';
@@ -293,7 +294,8 @@ function describedProperties(config: ContentEntityConfig): Map<string, Struct> {
 /**
  * findProperties (jsonApiUtility.cfc:1548-1618) from the registration alone. Entity-level metadata the registration
  * does not hold (orderby, bundleable, historical, dynamic, scaffold, table) takes bean.cfc's defaults, and only the
- * properties the registration describes (primary key, hinted properties, relations) are listed.
+ * properties the registration describes (primary key, hinted properties, relations) are listed. A requested name the
+ * bean does not declare raises server_error, as `props[p]` does.
  */
 export function findPropertiesFor(config: ContentEntityConfig, call: JsonApiCall): Record<string, unknown> {
   const fields = (config.fields ?? []).join(',');
@@ -302,7 +304,10 @@ export function findPropertiesFor(config: ContentEntityConfig, call: JsonApiCall
   const names = requested.length > 0 ? requested : [...described.keys()];
   const properties = names
     .filter((name) => fields === '' || listFindNoCase(fields, name))
-    .flatMap((name) => described.get(name) ?? []);
+    .flatMap((name) => {
+      if (!config.declaredProperties.has(name)) throw serverError();
+      return described.get(name) ?? [];
+    });
 
   const endpoint = call.apiContext.endpoint;
   const actor = call.actor;
@@ -364,8 +369,9 @@ export type BeanFeedResult<R> = { count: number } | { items: R[]; page: Collecti
 
 /**
  * A feed request legacy answers with rows the in-memory feed cannot compute: an aggregate SELECT (sum, avg, count, min,
- * max, groupBy) SQL Server accepts, or an inner join on one of the entity's relations. The service-kit error handler
- * answers it with the legacy 500 and logs it as unhandled.
+ * max, groupBy) SQL Server accepts, an inner join on one of the entity's relations, or a LIKE class whose `--`, range
+ * end or tested character's collation order is not reproduced. The service-kit error handler answers it with the legacy
+ * 500 and logs it as unhandled.
  */
 export class UnsupportedFeedQueryError extends Error {
   override readonly name: string = 'UnsupportedFeedQueryError';
@@ -384,7 +390,7 @@ interface FeedParam {
   criteria: string;
   isNull: boolean;
   /** The compiled pattern of a `like` param. */
-  pattern?: RegExp;
+  pattern?: LikePattern;
 }
 
 /** One ORDER BY item before validateSort: the term text and whether its table is the entity's own. */
@@ -537,23 +543,128 @@ function timeOf(value: unknown): number | undefined {
   return typeof value === 'string' ? parseCfDate(value)?.getTime() : undefined;
 }
 
-/**
- * A SQL Server LIKE pattern (`%`, `_` and `[...]` classes) as a case-insensitive regular expression. A `[^...]` class
- * never reaches it: findQuery splits a criteria on `^` before it becomes a pattern.
- */
-function likeRegExp(pattern: string): RegExp {
-  let source = '';
-  for (let i = 0; i < pattern.length; i++) {
-    const ch = pattern.charAt(i);
-    const close = ch === '[' ? pattern.indexOf(']', i + 2) : -1;
-    if (ch === '%') source += '[\\s\\S]*';
-    else if (ch === '_') source += '[\\s\\S]';
-    else if (close > 0) {
-      source += `[${pattern.slice(i + 1, close).replace(/[\\\]]/g, '\\$&')}]`;
-      i = close;
-    } else source += ch.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+/** The test of one pattern character position against one code unit of the value. */
+type LikeToken = (ch: string) => boolean;
+
+/** One `%`-free run of a LIKE pattern, one token per character position. */
+type LikeRun = readonly LikeToken[];
+
+const LIKE_RANGE_END = /^[0-9A-Za-z]$/;
+
+/** COLLATOR's rank of each code unit below U+0180 whose SQL Server order, as nvarchar and as varchar, it reproduces. */
+function likeRanks(): ReadonlyMap<string, number> {
+  const units = Array.from({ length: 0x180 }, (_, code) => String.fromCharCode(code))
+    .filter((ch) => !'ª²³¹º¼½¾ÐÞðþĸŉŒœŠšŸ'.includes(ch))
+    .sort((a, b) => COLLATOR.compare(a, b));
+  const ranks = new Map<string, number>();
+  units.forEach((ch, i) => {
+    const previous = units[i - 1];
+    const tied = previous !== undefined && COLLATOR.compare(previous, ch) === 0;
+    ranks.set(ch, tied ? (ranks.get(previous) ?? i) : i);
+  });
+  return ranks;
+}
+
+const LIKE_RANKS = likeRanks();
+
+/** A code unit as a case-insensitive non-unicode JS regex compares it (ES Canonicalize). */
+function likeFold(ch: string): string {
+  const upper = ch.toUpperCase();
+  return upper.length !== 1 || (ch.charCodeAt(0) >= 128 && upper.charCodeAt(0) < 128) ? ch : upper;
+}
+
+/** The rank of a range endpoint SQL Server and COLLATOR order alike (an ASCII letter or digit), else undefined. */
+function likeRangeEnd(ch: string): number | undefined {
+  return LIKE_RANGE_END.test(ch) ? LIKE_RANKS.get(ch) : undefined;
+}
+
+/** The token of a LIKE `[...]` class's content under SQL Server's `^`, `-` and collation-range rules. */
+function likeClass(content: string): LikeToken {
+  const body = content.replace(/^\^+/, '');
+  const negated = body !== content;
+  const unsupported = (): never => {
+    throw new UnsupportedFeedQueryError(`LIKE class [${content}]`);
+  };
+  if (body.includes('--')) return unsupported;
+  const members = new Set<string>();
+  const ranges: [number, number][] = [];
+  let unranked = false;
+  for (let i = 0; i < body.length; i++) {
+    if (body.charAt(i + 1) !== '-' || i + 2 >= body.length) members.add(likeFold(body.charAt(i)));
+    else {
+      const from = likeRangeEnd(body.charAt(i));
+      const to = likeRangeEnd(body.charAt(i + 2));
+      if (from === undefined || to === undefined) unranked = true;
+      else ranges.push([from, to]);
+      i += 2;
+      // A `-` right after a range and before another character is dropped.
+      if (body.charAt(i + 1) === '-' && i + 2 < body.length) i++;
+    }
   }
-  return new RegExp(`^${source}$`, 'i');
+  return (ch) => {
+    const rank = LIKE_RANKS.get(ch);
+    const inRange = rank !== undefined && ranges.some(([from, to]) => from <= rank && rank <= to);
+    if (members.has(likeFold(ch)) || inRange) return !negated;
+    if (unranked || (rank === undefined && ranges.length > 0)) return unsupported();
+    return negated;
+  };
+}
+
+/** Whether `run` matches `text` at offset `at`. */
+function likeRunAt(run: LikeRun, text: string, at: number): boolean {
+  return at + run.length <= text.length && run.every((token, i) => token(text.charAt(at + i)));
+}
+
+/** A SQL Server LIKE pattern (`%`, `_` and `[...]` classes) matched case-insensitively without backtracking. */
+class LikePattern {
+  /** The run before the first `%`, matched at the start. */
+  private readonly head: LikeRun;
+  /** The runs between `%`s, in order. */
+  private readonly middle: readonly LikeRun[];
+  /** The run after the last `%`, matched at the end; undefined when the pattern has no `%`. */
+  private readonly tail: LikeRun | undefined;
+
+  constructor(pattern: string) {
+    const ended: LikeRun[] = [];
+    let tokens: LikeToken[] = [];
+    for (let i = 0; i < pattern.length; i++) {
+      const ch = pattern.charAt(i);
+      if (ch === '%') {
+        ended.push(tokens);
+        tokens = [];
+      } else if (ch === '_') tokens.push(() => true);
+      else if (ch === '[') {
+        // A class ends at the first `]` after its `[`, or at the end of the pattern.
+        const close = pattern.indexOf(']', i + 1);
+        const end = close < 0 ? pattern.length : close;
+        tokens.push(likeClass(pattern.slice(i + 1, end)));
+        i = end;
+      } else {
+        const folded = likeFold(ch);
+        tokens.push((unit) => likeFold(unit) === folded);
+      }
+    }
+    const [head, ...middle] = ended;
+    this.head = head ?? tokens;
+    this.middle = middle;
+    this.tail = head === undefined ? undefined : tokens;
+  }
+
+  /** Whether `text` matches; each middle run takes its leftmost fit, which is optimal for fixed-length runs. */
+  matches(text: string): boolean {
+    if (this.tail === undefined) return text.length === this.head.length && likeRunAt(this.head, text, 0);
+    if (!likeRunAt(this.head, text, 0)) return false;
+    let cursor = this.head.length;
+    for (const run of this.middle) {
+      const latest = text.length - run.length;
+      let at = cursor;
+      while (at <= latest && !likeRunAt(run, text, at)) at++;
+      if (at > latest) return false;
+      cursor = at + run.length;
+    }
+    const start = text.length - this.tail.length;
+    return start >= cursor && likeRunAt(this.tail, text, start);
+  }
 }
 
 /** queryParam.setCondition (queryParam.cfc:159-196): the SQL operator, '' for an unknown condition. */
@@ -676,7 +787,7 @@ function paramTruth(param: FeedParam, row: Readonly<Struct>): Truth {
     return null;
   }
   if (value === null || value === undefined) return null;
-  if (param.pattern !== undefined) return param.pattern.test(cfText(value).trimEnd());
+  if (param.pattern !== undefined) return param.pattern.matches(cfText(value).trimEnd());
   if (param.condition === 'in' || param.condition === 'not in') {
     const items = cfListToArray(param.criteria);
     const found = (items.length > 0 ? items : ['']).some((item) => compareNonNull(value, item, param.type) === 0);
@@ -778,7 +889,7 @@ class BeanFeed<R extends Readonly<Struct>> {
       type,
       condition: operator,
       ...value,
-      ...(operator === 'like' && !value.isNull ? { pattern: likeRegExp(value.criteria) } : {}),
+      ...(operator === 'like' && !value.isNull ? { pattern: new LikePattern(value.criteria) } : {}),
     });
   }
 

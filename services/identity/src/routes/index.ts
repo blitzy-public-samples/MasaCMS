@@ -144,7 +144,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await registerCsrfRoutes(app, { csrf });
   await registerAccountRoutes(app, { accounts });
   // people's account reads are identity contract operations too.
-  await registerAccountReadRoutes(app, { db, accountReads: createAccountReads({ repo, clock }) });
+  await registerAccountReadRoutes(app, { db, repo, accountReads: createAccountReads({ repo, clock }) });
   await registerAdminSessionRoutes(app, { login, sessions, csrf, loginMail, permissions, db });
   await registerAdminGroupRoutes(app, { groups, content: createContentClient(client), sessions, csrf });
   await registerAdminPermissionRoutes(app, { permissions, reverseLookup, csrf });

@@ -338,7 +338,7 @@ describe.skipIf(!available)('cwebservice screens against PostgreSQL', () => {
     );
   }
 
-  it('list the token site clients by clientid, an empty grant type read as client_credentials, ignoring the requested site spelling', async () => {
+  it('list the token site clients by clientid without their secrets, an empty grant type read as client_credentials, ignoring the requested site spelling', async () => {
     const first = await seedClient(SITE, { clientid: '10000000-0000-0000-0000000000000001', name: 'First', granttype: '' });
     const second = await seedClient(SITE, { clientid: '10000000-0000-0000-0000000000000002', name: 'Second', granttype: 'password', description: 'Two' });
     await seedClient(OTHER_SITE, { clientid: '10000000-0000-0000-0000000000000003', name: 'Elsewhere' });
@@ -353,6 +353,7 @@ describe.skipIf(!available)('cwebservice screens against PostgreSQL', () => {
       { clientid: second.clientid, name: 'Second', granttype: 'password', description: 'Two' },
     ]);
     expect(seeded[0]?.created).toMatch(LOCAL_TIMESTAMP);
+    expect(items.filter((item) => Object.hasOwn(item, 'clientsecret'))).toEqual([]);
   });
 
   describe('list windows', () => {

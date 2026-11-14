@@ -34,6 +34,15 @@ const SPAN_ID = '00f067aa0ba902b7';
 const PARENT_SPAN_ID = 'b7ad6b7169203331';
 const LINKED_SPAN_ID = '53995c3f42cd8ad8';
 const UNAVAILABLE = 'Service identity unavailable (ECONNREFUSED)';
+/** Synthetic legacy session id `<app>_<CFID>_<CFTOKEN>` of real length, assembled at run time like `SECRET`. */
+const CFID = ['7031', '442'].join('');
+const CFTOKEN = ['5e55'.repeat(4), ['C10A5E55', '10DE', '4A11', 'B0E5', '1D5E55104C10'].join('-')].join('-');
+const LEGACY_SID = [`MURA${'c10a'.repeat(16)}`, CFID, CFTOKEN].join('_');
+/** Synthetic target-primary session id (a CF UUID) and the `JSESSIONID` value naming it. */
+const TARGET_SID = ['C10D5E55', '10DE', '4A11', 'B0E51D5E55104C10'].join('-');
+const JSESSIONID = TARGET_SID.replaceAll('-', '');
+const SESSION_PARTS = [LEGACY_SID, CFID, CFTOKEN, TARGET_SID, JSESSIONID];
+const SESSION_STATE = `/internal/v1/sessions/${REDACTED}/state`;
 
 /** Plain finished server span; `overrides` replace its members. */
 function readable(overrides: Partial<ReadableSpan> = {}): ReadableSpan {
@@ -198,6 +207,58 @@ describe('RedactingSpanExporter', () => {
     expect(serialized([copy])).not.toContain(SECRET);
   });
 
+  it.each<{ name: string; path: string; expected: string }>([
+    { name: 'a state check', path: `/internal/v1/sessions/${LEGACY_SID}/state`, expected: SESSION_STATE },
+    { name: 'an admin-site read', path: `/internal/v1/sessions/${LEGACY_SID}/admin-site`, expected: `/internal/v1/sessions/${REDACTED}/admin-site` },
+    { name: 'a snapshot read', path: `/internal/v1/sessions/${LEGACY_SID}/snapshot`, expected: `/internal/v1/sessions/${REDACTED}/snapshot` },
+    { name: 'an end call', path: `/internal/v1/sessions/${LEGACY_SID}:end`, expected: `/internal/v1/sessions/${REDACTED}:end` },
+    {
+      name: 'a mark-used call',
+      path: `/internal/v1/legacy-sessions/${LEGACY_SID}:mark-used`,
+      expected: `/internal/v1/legacy-sessions/${REDACTED}:mark-used`,
+    },
+    {
+      name: 'an encoded session id',
+      path: `/internal/v1/legacy-sessions/${encodeURIComponent(`${LEGACY_SID}/${CFID}:${CFTOKEN}`)}:mark-used`,
+      expected: `/internal/v1/legacy-sessions/${REDACTED}:mark-used`,
+    },
+    { name: 'an upper-case path', path: `/INTERNAL/V1/SESSIONS/${LEGACY_SID}/STATE`, expected: `/INTERNAL/V1/SESSIONS/${REDACTED}/STATE` },
+    { name: 'a target-primary session id', path: `/internal/v1/sessions/${TARGET_SID}/snapshot`, expected: `/internal/v1/sessions/${REDACTED}/snapshot` },
+    { name: 'a JSESSIONID value', path: `/internal/v1/sessions/${JSESSIONID}:end`, expected: `/internal/v1/sessions/${REDACTED}:end` },
+    { name: 'a method-like tail before another segment', path: `/internal/v1/sessions/${LEGACY_SID}:end/state`, expected: SESSION_STATE },
+  ])('masks the session id of $name in the span name, url.path, url.full and http.target', ({ path, expected }) => {
+    const attributes = { 'url.path': path, 'url.full': `http://identity:8111${path}?siteid=default`, 'http.target': `${path}?siteid=default` };
+
+    const copy = redact(readable({ name: `GET ${path}`, attributes }));
+
+    expect(copy.name).toBe(`GET ${expected}`);
+    expect(copy.attributes).toEqual({
+      'url.path': expected,
+      'url.full': `http://identity:8111${expected}?siteid=${REDACTED}`,
+      'http.target': `${expected}?siteid=${REDACTED}`,
+    });
+    for (const part of SESSION_PARTS) expect(serialized([copy])).not.toContain(part);
+    expect(redact(copy)).toMatchObject({ name: copy.name, attributes: copy.attributes });
+  });
+
+  it.each([
+    ['GET', '/v1/sessions/current/sites'],
+    ['POST', '/v1/sessions/login'],
+    ['POST', '/v1/sessions/logout'],
+    ['POST', '/internal/v1/sessions:adopt'],
+    ['GET', '/internal/v1/sessions/:sid/state'],
+    ['POST', '/internal/v1/sessions/:sid(.+)::end'],
+    ['POST', '/internal/v1/legacy-sessions/:sid(.+)::mark-used'],
+    ['POST', '/internal/v1/sessions/{sid}:end'],
+  ])('keeps %s %s, which names no session, in the span name, url.path, url.full and http.route', (method, path) => {
+    const attributes = { 'url.path': path, 'url.full': `http://identity:8111${path}`, 'http.route': path };
+
+    const copy = redact(readable({ name: `${method} ${path}`, attributes }));
+
+    expect(copy.name).toBe(`${method} ${path}`);
+    expect(copy.attributes).toEqual(attributes);
+  });
+
   it.each(SERVICE_CALLERS)('keeps the client span name of callee %s', (service) => {
     expect(redact(readable({ name: `POST ${service}`, kind: SpanKind.CLIENT })).name).toBe(`POST ${service}`);
   });
@@ -309,7 +370,7 @@ describe('tracing privacy end to end', () => {
     return exporter;
   }
 
-  it('exports HTTP and undici client and server spans without query values or credentials, keeping their trace', async () => {
+  it('exports HTTP and undici client and server spans without query values, session ids or credentials, keeping their trace', async () => {
     const exporter = await traced();
     const http = createRequire(import.meta.url)('http') as typeof Http;
     const received: string[] = [];
@@ -320,18 +381,21 @@ describe('tracing privacy end to end', () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
     const target = `${PATH}?key=${SECRET}&token=${SECRET}&${SECRET}`;
+    const sessionTarget = `/internal/v1/sessions/${LEGACY_SID}/state?siteid=default`;
     try {
       await startSpan('deliver', SpanKind.INTERNAL, async () => {
-        await new Promise<void>((resolve, reject) => {
-          http
-            .get({ host: '127.0.0.1', port, path: target, auth: `user:${SECRET}`, agent: false }, (response) => {
-              response.resume();
-              response.on('end', resolve);
-            })
-            .on('error', reject);
-        });
-        const response = await fetch(`http://127.0.0.1:${port}${target}`);
-        await response.text();
+        for (const path of [target, sessionTarget]) {
+          await new Promise<void>((resolve, reject) => {
+            http
+              .get({ host: '127.0.0.1', port, path, auth: `user:${SECRET}`, agent: false }, (response) => {
+                response.resume();
+                response.on('end', resolve);
+              })
+              .on('error', reject);
+          });
+          const response = await fetch(`http://127.0.0.1:${port}${path}`);
+          await response.text();
+        }
       });
     } finally {
       server.closeAllConnections();
@@ -343,25 +407,34 @@ describe('tracing privacy end to end', () => {
     const clients = spans.filter((span) => span.kind === SpanKind.CLIENT);
     const servers = spans.filter((span) => span.kind === SpanKind.SERVER);
 
-    expect(received).toEqual([target, target]);
+    const masked = [
+      { path: PATH, query: `key=${REDACTED}&token=${REDACTED}&${REDACTED}` },
+      { path: SESSION_STATE, query: `siteid=${REDACTED}` },
+    ];
+    const requestOf = (client: ReadableSpan) =>
+      masked.find(({ path, query }) => String(client.attributes['url.full']).endsWith(`:${port}${path}?${query}`));
+
+    expect(received).toEqual([target, target, sessionTarget, sessionTarget]);
     expect(clients.map((span) => span.instrumentationScope.name).sort()).toEqual([
       '@opentelemetry/instrumentation-http',
+      '@opentelemetry/instrumentation-http',
+      '@opentelemetry/instrumentation-undici',
       '@opentelemetry/instrumentation-undici',
     ]);
-    expect(servers).toHaveLength(2);
+    expect(servers).toHaveLength(4);
+    expect(clients.map((client) => requestOf(client)?.path).sort()).toEqual([PATH, PATH, SESSION_STATE, SESSION_STATE]);
     const text = serialized(spans);
-    expect(text).not.toContain(SECRET);
+    for (const part of [SECRET, LEGACY_SID, CFTOKEN]) expect(text).not.toContain(part);
     expect(text).not.toContain(Buffer.from(`user:${SECRET}`).toString('base64'));
     for (const client of clients) {
       expect(client.name).toBe('GET');
       expect(client.spanContext().traceId).toBe(outer?.spanContext().traceId);
       expect(client.parentSpanContext?.spanId).toBe(outer?.spanContext().spanId);
-      expect(client.attributes['url.full']).toMatch(new RegExp(`:${port}${PATH}\\?key=\\[REDACTED\\]&token=\\[REDACTED\\]&\\[REDACTED\\]$`));
       expect(client.attributes['http.response.status_code']).toBe(200);
       const server = servers.find((span) => span.parentSpanContext?.spanId === client.spanContext().spanId);
       expect(server?.spanContext().traceId).toBe(outer?.spanContext().traceId);
-      expect(server?.attributes['url.path']).toBe(PATH);
-      expect(server?.attributes['url.query']).toBe(`key=${REDACTED}&token=${REDACTED}&${REDACTED}`);
+      expect(server?.attributes['url.path']).toBe(requestOf(client)?.path);
+      expect(server?.attributes['url.query']).toBe(requestOf(client)?.query);
       expect(server?.ended).toBe(true);
     }
   });

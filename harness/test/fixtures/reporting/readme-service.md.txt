@@ -26,8 +26,11 @@ The admin circuits `clogin`, `cperm` and `cwebservice`, and the group actions of
 
 ## How to run
 
+Run from `services/identity` with the service's environment set: the PostgreSQL `PG_*` and `OPT2_*` variables, as `harness/repro/up.sh` sets them.
+
 ```sh
 npm ci
+npm run build
 npm test
 PORT=8111 npm start
 ```

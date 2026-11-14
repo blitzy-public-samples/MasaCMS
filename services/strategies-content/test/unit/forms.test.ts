@@ -1,7 +1,11 @@
 /** Form responses, the data manager and the cform dialog inputs (GS-CO-14) over a throwaway `content` schema and local storage. */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { PassThrough } from 'node:stream';
+import { text } from 'node:stream/consumers';
+import { setTimeout } from 'node:timers/promises';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { LEGACY_JSON_CONTENT_TYPE, cfTimestampText, isCfUuid } from '@opt2/platform/legacy-compat';
 import { TENANT_UMBRELLA, pgAvailable } from '@opt2/platform/testing';
+import type { ContentDeps } from '../../src/domain/content.js';
 import { UndefinedLegacyMethodError } from '../../src/domain/context.js';
 import { ImageUploadHaltedError, type UploadedFile } from '../../src/domain/files.js';
 import {
@@ -27,6 +31,7 @@ import {
 } from '../../src/domain/forms.js';
 import { formBeanJson, renderCformResponse } from '../../src/legacy/admin-render-forms.js';
 import { wddxStructGet, type WddxStruct } from '../../src/domain/wddx.js';
+import { DEFAULT_ROW_BATCH_SIZE } from '../../src/repo/repository.js';
 import { ADMIN, NOW, SITE_ID, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
 
 const FORM = cfId('F', 1);
@@ -55,6 +60,17 @@ const part = (fieldName: string, fileName: string, contentType = 'application/pd
   bytes: Buffer.from(`bytes of ${fileName}`),
 });
 const link = { scheme: 'http', domain: 'tenant-a.local', serverPort: ':8080', context: '' };
+
+/** A packet of string `fields` as cfwddx writes it, CR and LF as char codes. */
+const packetOf = (fields: Readonly<Record<string, string>>): string =>
+  "<wddxPacket version='1.0'><header/><data><struct>" +
+  Object.entries(fields)
+    .map(([name, value]) => `<var name='${name}'><string>${value.replaceAll('\r', "<char code='0d'/>").replaceAll('\n', "<char code='0a'/>")}</string></var>`)
+    .join('') +
+  '</struct></data></wddxPacket>';
+
+/** downloaddata.cfm's `fixDelim`. */
+const fixDelim = (value: string): string => `"${value.replaceAll('"', '""').replaceAll('\r\n', ' ')}"`;
 
 describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
   let fx: ContentFixture;
@@ -226,7 +242,7 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
     const result = await downloadData(fx.deps, ADMIN, { siteid: SITE_ID, contentid: FORM, sortBy: 'Entered', sortDirection: 'asc', keywords: '', columns: 'fixed', date1: '', date2: '' }, { link });
     expect(result.columns).toEqual(['Email', 'name']);
     expect(result.fileName).toMatch(/^My-Form_\d{6}\.csv$/);
-    expect(result.body).toBe(`DATE/TIME ENTERED,Email,name,\r\n2026-06-01 09:30:00.0,"b2@x.com","Bobby",\r\n`);
+    expect(await text(result.body)).toBe(`DATE/TIME ENTERED,Email,name,\r\n2026-06-01 09:30:00.0,"b2@x.com","Bobby",\r\n`);
   });
 
   it('deletes the filtered responses on the response view', async () => {
@@ -252,10 +268,13 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
     await updateResponse(fx.deps, ADMIN, { formid: OTHER_FORM, siteid: SITE_ID, fieldnames: 'attachmentx', attachmentx: fileId });
     const csv = await downloadData(fx.deps, ADMIN, { siteid: SITE_ID, contentid: OTHER_FORM, sortBy: 'Entered', sortDirection: 'asc', keywords: '', date1: '', date2: '' }, { link });
     expect(csv.columns).toEqual(['attachmentx', 'quote']);
+    const [header, ...lines] = (await text(csv.body)).split('\r\n');
+    expect(header).toBe('DATE/TIME ENTERED,attachmentx,quote,');
     // Both rows share the fixed clock's entry time, so their order is the responseid tiebreak.
-    expect(csv.rows.map((r) => r.slice(1)).sort((a, b) => b.length - a.length)).toEqual([
-      ['"run.exe"', '"say ""hi"" bye"'],
-      [`http://tenant-a.local:8080/index.cfm/_api/render/file/?fileID=${fileId}`],
+    expect(lines.map((line) => line.replace(`${cfTimestampText(NOW)},`, '')).sort()).toEqual([
+      '',
+      '"run.exe","say ""hi"" bye",',
+      `http://tenant-a.local:8080/index.cfm/_api/render/file/?fileID=${fileId},`,
     ]);
     expect(csv.fileName).toMatch(/^Another_/);
   });
@@ -283,5 +302,143 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
     expect(renderCformResponse('json', formJson).contentType).toBe(LEGACY_JSON_CONTENT_TYPE);
     expect((await getForms(fx.deps, ADMIN, SITE_ID)).map((f) => f.title)).toEqual(['Another', 'My Form']);
     expect((await getForms(fx.deps, ADMIN, SITE_ID, OTHER_FORM.toLowerCase())).map((f) => f.title)).toEqual(['My Form']);
+  });
+
+  // Runs after the form list above, which this suite's active form would join.
+  describe('more responses than one cursor batch', () => {
+    const BIG_FORM = cfId('F', 4);
+    const MANY = 2 * DEFAULT_ROW_BATCH_SIZE + 201;
+    const FIRST_ENTERED = new Date(2026, 4, 1, 8, 0, 0, 0);
+    const big = Array.from({ length: MANY }, (_, i) => ({
+      responseid: cfId('R', i + 1),
+      entered: new Date(FIRST_ENTERED.getTime() + i * 1000),
+      n: String(i + 1),
+      note: `say "hi"\r\nrow ${i + 1} of the streamed download`,
+      fieldlist: i % 2 === 0 ? 'note,n' : 'n',
+    }));
+    const rcOf = (contentid: string, columns: string) => ({ siteid: SITE_ID, contentid, sortBy: 'Entered', sortDirection: 'asc', keywords: '', columns, date1: '', date2: '' });
+
+    /** Inserts `rows` as packets of `formId` in one statement. */
+    const insertPackets = (formId: string, rows: ReadonlyArray<{ responseid: string; entered: Date; fieldlist: string; data: string }>) =>
+      fx.inTenant((tx) =>
+        tx.query(
+          `INSERT INTO ${fx.handle.schema}.form_response_packet (tenant_id, responseid, formid, siteid, fieldlist, data, entered)` +
+            ' SELECT $1::uuid, r.responseid, $2::text, $3::text, r.fieldlist, r.data, r.entered' +
+            ' FROM unnest($4::text[], $5::text[], $6::text[], $7::timestamp[]) AS r(responseid, fieldlist, data, entered)',
+          [ADMIN.tenantId, formId, SITE_ID, rows.map((r) => r.responseid), rows.map((r) => r.fieldlist), rows.map((r) => r.data), rows.map((r) => r.entered)],
+        ),
+      );
+
+    /** downloaddata.cfm's bytes for `big`: over `n,note` with `columns=fixed`, else over each row's `fieldlist`. */
+    const legacyCsv = (fixed: boolean): string =>
+      'DATE/TIME ENTERED,n,note,\r\n' +
+      big
+        .map((row) => `${cfTimestampText(row.entered)},${(fixed ? ['n', 'note'] : row.fieldlist.split(',')).map((f) => `${fixDelim(f === 'n' ? row.n : row.note)},`).join('')}\r\n`)
+        .join('');
+
+    /** `fx.deps` whose response batches count what they fetched and record that their cursor closed. */
+    const trackedDeps = (): { deps: ContentDeps; tracked: { fetched: number; closed: boolean } } => {
+      const tracked = { fetched: 0, closed: false };
+      const forms = fx.repo.forms;
+      const repository = {
+        ...fx.repo,
+        forms: {
+          ...forms,
+          async *responseBatches(...args: Parameters<typeof forms.responseBatches>) {
+            try {
+              for await (const batch of forms.responseBatches(...args)) {
+                tracked.fetched += 1;
+                yield batch;
+              }
+            } finally {
+              tracked.closed = true;
+            }
+          },
+        },
+      };
+      return { deps: { ...fx.deps, repository }, tracked };
+    };
+
+    beforeAll(async () => {
+      await fx.inTenant((tx) =>
+        fx.repo.content.insertVersion(tx, {
+          contentid: BIG_FORM, contenthistid: cfId('H', 4), siteid: SITE_ID, type: 'Form', subtype: 'Default', moduleid: '00000000000000000000000000000000004',
+          active: 1, approved: 1, display: 1, title: 'Big Form', body: '<form></form>', responsedisplayfields: 'n^note~n', sortby: 'Entered', sortdirection: 'asc', nextn: 10,
+        }),
+      );
+      await insertPackets(BIG_FORM, big.map((row) => ({ ...row, data: packetOf({ n: row.n, note: row.note }) })));
+    });
+
+    it.each([
+      ['the field list with columns=fixed', 'fixed', true],
+      ['each row’s own field list', '', false],
+    ] as const)('streams %s over three batches as downloaddata.cfm writes it, fetching no batch before the reader drains the last', async (_case, columns, fixed) => {
+      const { deps, tracked } = trackedDeps();
+      const result = await downloadData(deps, ADMIN, rcOf(BIG_FORM, columns), { link });
+      await setTimeout(50);
+      expect(tracked.fetched).toBe(1);
+      expect([result.columns, result.fileName]).toEqual([['n', 'note'], expect.stringMatching(/^Big-Form_\d{6}\.csv$/)]);
+      expect(await text(result.body)).toBe(legacyCsv(fixed));
+      expect(tracked).toEqual({ fetched: 3, closed: true });
+    });
+
+    it('releases the cursor, transaction and connection when the reader destroys the body mid-stream, writing nothing after', async () => {
+      const { deps, tracked } = trackedDeps();
+      const result = await downloadData(deps, ADMIN, rcOf(BIG_FORM, 'fixed'), { link });
+      const first = await new Promise<Buffer>((resolve) => result.body.once('data', resolve));
+      expect(first.toString()).toMatch(/^DATE\/TIME ENTERED,n,note,\r\n/);
+      const write = vi.spyOn(result.body as PassThrough, 'write');
+      result.body.destroy();
+      // The suite's pool holds 4 connections, so 4 transactions open together only once the download released its own.
+      let entered = 0;
+      let together = (): void => undefined;
+      const all = new Promise<void>((resolve) => {
+        together = resolve;
+      });
+      const held = Promise.all(
+        Array.from({ length: 4 }, () =>
+          fx.inTenant(async (tx) => {
+            await tx.query('SELECT 1');
+            entered += 1;
+            if (entered === 4) together();
+            await all;
+          }),
+        ),
+      );
+      const outcome = await Promise.race([held.then(() => 'served'), setTimeout(10_000, 'starved')]);
+      together();
+      expect(outcome).toBe('served');
+      expect(tracked.closed).toBe(true);
+      expect(tracked.fetched).toBeLessThan(3);
+      expect(write).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the first batch rejects downloadData', cfId('F', 5), 'V', 1, 'downloadData'],
+      ['a later batch destroys the body with its error', cfId('F', 6), 'W', DEFAULT_ROW_BATCH_SIZE + 1, 'body'],
+    ] as const)('an invalid packet in %s', async (_case, formId, prefix, count, failing) => {
+      await insertPackets(
+        formId,
+        Array.from({ length: count }, (_, i) => ({
+          responseid: cfId(prefix, i + 1),
+          entered: new Date(FIRST_ENTERED.getTime() + i * 1000),
+          fieldlist: 'n',
+          data: i === count - 1 ? '<not wddx' : packetOf({ n: String(i + 1) }),
+        })),
+      );
+      const download = downloadData(fx.deps, ADMIN, rcOf(formId, 'fixed'), { link });
+      await expect(failing === 'downloadData' ? download : download.then((result) => text(result.body))).rejects.toThrow('Invalid WDDX packet');
+    });
+
+    it('deletes the filtered responses streamed over every batch, only for a true boolean `delete`, counting them', async () => {
+      const rc = { siteid: SITE_ID, contentid: BIG_FORM, action: '', date1: '', hour1: '0', minute1: '0', date2: '', hour2: '23', minute2: '59' };
+      const csrf = { validateCsrfTokens: async () => true };
+      const remaining = async () => (await fx.rows('form_response_packet', 'formid = $1', [BIG_FORM])).length;
+      expect((await dataManagerAction(fx.deps, ADMIN, { ...rc, delete: 'maybe' }, csrf)).filteredDeletions).toBeNull();
+      expect(await remaining()).toBe(MANY);
+      expect((await dataManagerAction(fx.deps, ADMIN, { ...rc, delete: 'yes' }, csrf)).filteredDeletions).toBe(MANY);
+      expect(await remaining()).toBe(0);
+      expect((await dataManagerAction(fx.deps, ADMIN, { ...rc, delete: 'yes' }, csrf)).filteredDeletions).toBeNull();
+    });
   });
 });

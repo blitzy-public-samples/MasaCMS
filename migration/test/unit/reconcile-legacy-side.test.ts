@@ -28,6 +28,7 @@ import {
   createTenantResolver,
   describeUnitTable,
   fileUnitIds,
+  objectLegacyPath,
   readLegacyObjects,
   readLegacyUnitRows,
   toUnitRow,
@@ -191,6 +192,8 @@ const OWNERSHIP = {
     { unit: 'content.trash', owner: 'strategies-content', legacyTables: ['ttrash'] },
     { unit: 'people.trash', owner: 'people', legacyTables: ['ttrash'] },
     { unit: 'identity.trash', owner: 'identity', legacyTables: ['ttrash'] },
+    { unit: 'finance.attachment', owner: 'finance', legacyTables: ['Program_N.finance_attachment'] },
+    { unit: 'reporting.export_job', owner: 'reporting', legacyTables: ['synthetic.export_job'] },
   ],
   tables: [
     {
@@ -312,10 +315,42 @@ const OWNERSHIP = {
         targetOf('identity.trash', 'identity', 'classMap owner = identity', ['objectID']),
       ],
     },
+    {
+      table: 'Program_N.finance_attachment',
+      owner: 'finance',
+      primaryKey: ['attachment_id'],
+      programFold: true,
+      tenantResolution: 'program_site',
+      targets: [{ ...targetOf('finance.attachment', 'finance', null, ['attachment_id']), objectColumns: { content: 'finance-attachments' } }],
+    },
+    {
+      table: 'synthetic.export_job',
+      owner: 'reporting',
+      primaryKey: ['job_id'],
+      siteIdColumn: 'siteID',
+      tenantResolution: 'siteID',
+      targets: [{ ...targetOf('reporting.export_job', 'reporting', null, ['job_id']), objectColumns: { OUTPUT: 'reporting-exports' } }],
+    },
   ],
 };
 
 const varchar = (...names: string[]): ColumnSpec[] => names.map((name) => ({ name, type: 'varchar' }));
+
+const ATTACHMENT_A1 = Buffer.from('program 1 attachment 1');
+const ATTACHMENT_A2 = Buffer.from('program 1 attachment 2, longer');
+const ATTACHMENT_B1 = Buffer.from('program 2 attachment 1');
+const OUTPUT_J1 = Buffer.from('job,output\n1,ok\n');
+const OUTPUT_J3 = Buffer.from('%PDF-1.7 export');
+const ATTACHMENT_COLUMNS: ColumnSpec[] = [...varchar('attachment_id', 'record_id'), { name: 'content', type: 'varbinary' }, ...varchar('sha256')];
+const attachment = (id: string, record: string, content: Buffer): Row => ({ attachment_id: id, record_id: record, content, sha256: sha256Hex(content) });
+const exportJob = (id: string, site: string, output: Buffer | null): Row => ({
+  job_id: id,
+  siteID: site,
+  output,
+  output_sha256: output === null ? null : sha256Hex(output),
+});
+/** The object entry the legacy side expects for `bytes` under `legacyPath`. */
+const expected = (legacyPath: string, bytes: Buffer, orphan = false) => ({ key: legacyPath, size: bytes.length, sha256: sha256Hex(bytes), orphan });
 
 /** Legacy tables of the main fake database; rows are in primary-key order, as SQL Server returns them. */
 const TABLES: Record<string, FakeTable> = {
@@ -423,6 +458,17 @@ const TABLES: Record<string, FakeTable> = {
       { objectID: 'U98', parentID: 'NA', siteID: 'tenant-a', objectClass: 'user', objectType: 'Group', objectSubType: 'Default' },
     ],
   },
+  'Program_1.finance_attachment': {
+    columns: ATTACHMENT_COLUMNS,
+    primaryKey: ['attachment_id'],
+    rows: [attachment('AT1', 'R1', ATTACHMENT_A1), attachment('AT2', 'R1', ATTACHMENT_A2)],
+  },
+  'Program_2.finance_attachment': { columns: ATTACHMENT_COLUMNS, primaryKey: ['attachment_id'], rows: [attachment('AT1', 'R7', ATTACHMENT_B1)] },
+  'synthetic.export_job': {
+    columns: [...varchar('job_id', 'siteID'), { name: 'output', type: 'varbinary' }, ...varchar('output_sha256')],
+    primaryKey: ['job_id'],
+    rows: [exportJob('J1', 'tenant-a', OUTPUT_J1), exportJob('J2', 'tenant-a', null), exportJob('J3', 'tenant-b', OUTPUT_J3)],
+  },
 };
 
 const RAW: Record<string, readonly Row[]> = {
@@ -519,6 +565,7 @@ describe('describeUnitTable', () => {
         { name: 'Title', type: 's' },
       ],
       excludedColumns: ['tcontent_ID'],
+      objectColumns: [],
       folded: false,
     });
   });
@@ -554,6 +601,30 @@ describe('describeUnitTable', () => {
     await expect(describeUnitTable(deps, { unit: 'content.content', legacyTable: 'tusers', database })).rejects.toThrow(
       'unit content.content takes no rows of legacy table tusers',
     );
+  });
+
+  it.each([
+    ['a folded table', 'finance.attachment', 'Program_N.finance_attachment', ['attachment_id', 'record_id', 'sha256', 'legacy_program_id'], 'content'],
+    ['a table naming it in another case', 'reporting.export_job', 'synthetic.export_job', ['job_id', 'siteID', 'output_sha256'], 'output'],
+  ])('sets the object column of %s apart from the compared columns, in catalog spelling', async (_case, unit, legacyTable, columns, objectColumn) => {
+    const { deps, database } = setup();
+    const shape = await describeUnitTable(deps, { unit, legacyTable, database });
+    expect(shape.columns.map((column) => column.name)).toEqual(columns);
+    expect(shape.objectColumns).toEqual([{ name: objectColumn, type: 'b' }]);
+  });
+
+  it.each([
+    ['an object column the table lacks', 'reporting.export_job', 'synthetic.export_job', { nothing: 'reporting-exports' }, 'object column nothing of unit reporting.export_job is not a column of synthetic.export_job'],
+    ['two object columns', 'reporting.export_job', 'synthetic.export_job', { output: 'b', output_sha256: 'b' }, 'object manifests address one object column'],
+    ['a composite key', 'people.person', 'tusers', { Fname: 'b' }, 'keyed on [UserID, SiteID]'],
+    ['a keyless table', 'programs_sites.system_object', 'tsystemobjects', { Name: 'b' }, 'keyed on []'],
+  ])('rejects %s', async (_case, unit, legacyTable, objectColumns, message) => {
+    const { deps, database } = setup();
+    const odd: UnitCatalog = {
+      ...catalog,
+      unitsForLegacyTable: (table) => catalog.unitsForLegacyTable(table).map((target) => ({ ...target, objectColumns })),
+    };
+    await expect(describeUnitTable({ ...deps, catalog: odd }, { unit, legacyTable, database })).rejects.toThrow(message);
   });
 });
 
@@ -749,6 +820,69 @@ describe('readLegacyUnitRows', () => {
       unitsForLegacyTable: (table) => catalog.unitsForLegacyTable(table).map((target) => ({ ...target, rowPredicate: 'Type > 1' })),
     };
     await expect(readLegacyUnitRows({ ...deps, catalog: odd }, shape, { database, tenants })).rejects.toThrow('cannot evaluate');
+  });
+
+  it.each([
+    [
+      'Program_<id> tables per program',
+      'finance.attachment',
+      'Program_N.finance_attachment',
+      new Map([
+        [A, [expected('Program_1.finance_attachment/AT1', ATTACHMENT_A1), expected('Program_1.finance_attachment/AT2', ATTACHMENT_A2)]],
+        [B, [expected('Program_2.finance_attachment/AT1', ATTACHMENT_B1)]],
+      ]),
+    ],
+    [
+      'the qualified table, with no object for a NULL value',
+      'reporting.export_job',
+      'synthetic.export_job',
+      new Map([
+        [A, [expected('synthetic.export_job/J1', OUTPUT_J1)]],
+        [B, [expected('synthetic.export_job/J3', OUTPUT_J3)]],
+      ]),
+    ],
+  ])('keys the expected objects by legacyPath, naming %s, and leaves the bytes out of the rows', async (_case, unit, table, objects) => {
+    const { deps, database } = setup();
+    const shape = await describeUnitTable(deps, { unit, legacyTable: table, database });
+    const tenants = await createTenantResolver(deps, { database });
+    const legacy = await readLegacyUnitRows(deps, shape, { database, tenants });
+    expect(legacy.objects).toEqual(objects);
+    const rows = [...(await collect(legacy)).values()].flat();
+    expect(rows).toHaveLength(3);
+    for (const row of rows) expect(Object.keys(row.row)).toEqual(shape.columns.map((column) => column.name));
+  });
+
+  it('expects no objects of a table without object columns', async () => {
+    const { deps, database } = setup();
+    const shape = await describeUnitTable(deps, { unit: 'content.content', legacyTable: 'tcontent', database });
+    const legacy = await readLegacyUnitRows(deps, shape, { database, tenants: await createTenantResolver(deps, { database }) });
+    await legacy.dispose();
+    expect(legacy.objects).toEqual(new Map());
+  });
+});
+
+describe('objectLegacyPath', () => {
+  const shape = (legacyTable: string, folded: boolean): Pick<UnitTableShape, 'unit' | 'legacyTable' | 'keyColumns' | 'folded'> => ({
+    unit: 'u.t',
+    legacyTable,
+    keyColumns: folded ? ['id', 'legacy_program_id'] : ['id'],
+    folded,
+  });
+
+  it.each([
+    ['a folded generic name', 'Program_N.finance_attachment', true, 2, 'Program_2.finance_attachment/X'],
+    ['a folded physical name', '[Program_1].[finance_attachment]', true, 7, 'Program_7.finance_attachment/X'],
+    ['a synthetic table', 'synthetic.export_job', false, undefined, 'synthetic.export_job/X'],
+    ['a dbo table', 'dbo.tfiles', false, undefined, 'tfiles/X'],
+  ])('names the row of %s', (_case, legacyTable, folded, legacyProgramId, path) => {
+    expect(objectLegacyPath(shape(legacyTable, folded), { row: { id: 'X' }, legacyProgramId })).toBe(path);
+  });
+
+  it.each([
+    ['without a key value', 'synthetic.export_job', false, { id: null }, undefined, 'has no key value'],
+    ['of a folded table without a program', 'Program_N.finance_attachment', true, { id: 'X' }, undefined, 'has no program'],
+  ])('rejects a row %s', (_case, legacyTable, folded, row, legacyProgramId, message) => {
+    expect(() => objectLegacyPath(shape(legacyTable, folded), { row, legacyProgramId })).toThrow(message);
   });
 });
 
@@ -999,5 +1133,145 @@ describe('reconciling through spilled sides', () => {
 
     await expect(reconcile({ sortRunBytes: 1, spillDir }, { targetRows })).rejects.toThrow('owner unreachable');
     expect(await readdir(spillDir)).toEqual([]);
+  });
+});
+
+describe('reconciling object columns through the owners exports', () => {
+  type Manifest = NonNullable<ExportResponse['objects']>;
+  interface TenantExport {
+    rows: { values: Record<string, CanonicalValue>; legacyProgramId?: number }[];
+    objects: Manifest;
+  }
+  const ATTACHMENT_EXPORT: CanonicalColumn[] = [
+    { name: 'attachment_id', type: 's' },
+    { name: 'record_id', type: 's' },
+    { name: 'sha256', type: 's' },
+  ];
+  const JOB_EXPORT: CanonicalColumn[] = [
+    { name: 'job_id', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'output_sha256', type: 's' },
+  ];
+  const UNITS = ['finance.attachment', 'reporting.export_job'];
+
+  /** A stored object as the owners list it: a key of their own, the upper-case hash of the bytes and the row's legacyPath. */
+  const stored = (legacyPath: string, bytes: Buffer): Manifest[number] => ({
+    key: `tenant/${sha256Hex(legacyPath).slice(0, 12)}.bin`,
+    size: bytes.length,
+    sha256: sha256Hex(bytes).toUpperCase(),
+    contentType: 'application/octet-stream',
+    legacyPath,
+  });
+  const attachmentRow = (id: string, record: string, bytes: Buffer, legacyProgramId: number) => ({
+    values: { attachment_id: id, record_id: record, sha256: sha256Hex(bytes) },
+    legacyProgramId,
+  });
+  const jobRow = (id: string, site: string, bytes: Buffer | null) => ({
+    values: { job_id: id, siteid: site, output_sha256: bytes === null ? null : sha256Hex(bytes) },
+  });
+
+  /** The owners' exports of the legacy fixture data, attachments of tenant A passed through `objectsOfA`. */
+  function exports(objectsOfA: (objects: Manifest) => Manifest = (objects) => objects): Record<string, { legacyTable: string; columns: CanonicalColumn[]; tenants: Record<string, TenantExport> }> {
+    return {
+      'finance.attachment': {
+        legacyTable: 'finance_attachment',
+        columns: ATTACHMENT_EXPORT,
+        tenants: {
+          [A]: {
+            rows: [attachmentRow('AT1', 'R1', ATTACHMENT_A1, 1), attachmentRow('AT2', 'R1', ATTACHMENT_A2, 1)],
+            objects: objectsOfA([stored('Program_1.finance_attachment/AT1', ATTACHMENT_A1), stored('Program_1.finance_attachment/AT2', ATTACHMENT_A2)]),
+          },
+          [B]: { rows: [attachmentRow('AT1', 'R7', ATTACHMENT_B1, 2)], objects: [stored('Program_2.finance_attachment/AT1', ATTACHMENT_B1)] },
+        },
+      },
+      'reporting.export_job': {
+        legacyTable: 'synthetic.export_job',
+        columns: JOB_EXPORT,
+        tenants: {
+          [A]: { rows: [jobRow('J1', 'tenant-a', OUTPUT_J1), jobRow('J2', 'tenant-a', null)], objects: [stored('synthetic.export_job/J1', OUTPUT_J1)] },
+          [B]: { rows: [jobRow('J3', 'tenant-b', OUTPUT_J3)], objects: [stored('synthetic.export_job/J3', OUTPUT_J3)] },
+        },
+      },
+    };
+  }
+
+  /** Owners serving `served` as one page per tenant, its table always present and its manifest on that page. */
+  function ownersOf(served: ReturnType<typeof exports>): OwnersClient {
+    return {
+      async *exportPages(_owner: string, params: ExportParams): AsyncGenerator<ExportResponse> {
+        const unit = served[params.unit];
+        if (unit === undefined) throw new Error(`no export of ${params.unit}`);
+        const tenant = unit.tenants[params.tenantId] ?? { rows: [], objects: [] };
+        const rows = tenant.rows.map(({ values, legacyProgramId }) => ({
+          key: 'owner-key',
+          row: encodeRow(unit.columns, values),
+          hash: 'owner-hash',
+          ...(legacyProgramId === undefined ? {} : { legacyProgramId }),
+        }));
+        const table = { unit: params.unit, legacyTable: unit.legacyTable, targetTable: 'schema.table', keyless: false, columns: unit.columns, rows };
+        yield await Promise.resolve({ unit: params.unit, tenantId: params.tenantId, next: null, tables: [table], objects: tenant.objects });
+      },
+    } as unknown as OwnersClient;
+  }
+
+  function reconcile(served: ReturnType<typeof exports>, tables?: Record<string, FakeTable>) {
+    const { deps, database } = setup({ tables });
+    const ctx = { ...deps, owners: ownersOf(served), env: {}, clock: fixedClock('2026-06-30T12:00:00.000Z'), gateway: {} } as unknown as ReconcileContext;
+    return reconcileUnits(ctx, { point: 'post-cutover', units: UNITS, database }, { tableVersion: () => Promise.resolve('v0002') });
+  }
+
+  it('compares each legacy value with the stored object of the same legacyPath and finds no difference for equal bytes', async () => {
+    const report = await reconcile(exports());
+
+    expect(report.result).toBe('zero-difference');
+    expect(report.fileStore.status).toBe('not-applicable');
+    const measured = report.units.map((entry) => [entry.unit, entry.tenantId, entry.legacyCount, entry.files?.legacyObjects, entry.files?.targetObjects]);
+    expect(measured).toHaveLength(4);
+    expect(measured).toEqual(
+      expect.arrayContaining([
+        ['finance.attachment', A, 2, 2, 2],
+        ['finance.attachment', B, 1, 1, 1],
+        ['reporting.export_job', A, 2, 1, 1],
+        ['reporting.export_job', B, 1, 1, 1],
+      ]),
+    );
+  });
+
+  it('reconciles empty object-backed tables without a shape error', async () => {
+    const empty = (name: string): FakeTable => ({ ...(TABLES[name] as FakeTable), rows: [] });
+    const served = exports();
+    for (const unit of Object.values(served)) unit.tenants = {};
+    const tables = { 'Program_1.finance_attachment': empty('Program_1.finance_attachment'), 'Program_2.finance_attachment': empty('Program_2.finance_attachment'), 'synthetic.export_job': empty('synthetic.export_job') };
+
+    const report = await reconcile(served, tables);
+
+    expect(report).toMatchObject({ result: 'zero-difference', units: [] });
+  });
+
+  it.each<[string, (objects: Manifest) => Manifest, object]>([
+    [
+      'a changed stored hash',
+      ([first, ...rest]) => [{ ...(first as Manifest[number]), sha256: sha256Hex(ATTACHMENT_B1) }, ...rest],
+      { kind: 'object-mismatch', key: 'Program_1.finance_attachment/AT1', column: 'sha256', legacy: sha256Hex(ATTACHMENT_A1), target: sha256Hex(ATTACHMENT_B1) },
+    ],
+    [
+      'a changed stored size',
+      ([first, ...rest]) => [{ ...(first as Manifest[number]), size: ATTACHMENT_A1.length + 1 }, ...rest],
+      { kind: 'object-mismatch', key: 'Program_1.finance_attachment/AT1', column: 'size', legacy: String(ATTACHMENT_A1.length), target: String(ATTACHMENT_A1.length + 1) },
+    ],
+    ['a missing target object', (objects) => objects.slice(0, 1), { kind: 'object-missing-in-target', key: 'Program_1.finance_attachment/AT2' }],
+    [
+      'an extra target object',
+      (objects) => [...objects, stored('Program_1.finance_attachment/AT9', ATTACHMENT_B1)],
+      { kind: 'object-extra-in-target', key: 'Program_1.finance_attachment/AT9', target: sha256Hex(ATTACHMENT_B1) },
+    ],
+  ])('reports %s as an object difference with zero tolerance', async (_case, objectsOfA, difference) => {
+    const report = await reconcile(exports(objectsOfA));
+
+    expect(report.result).toBe('difference');
+    expect(report.summary).toMatchObject({ unitsWithDifferences: 1, differences: 1 });
+    const entry = report.units.find((candidate) => candidate.unit === 'finance.attachment' && candidate.tenantId === A);
+    expect(entry).toMatchObject({ differenceCount: 1, legacySha256: entry?.targetSha256 });
+    expect(entry?.differences).toEqual([expect.objectContaining(difference)]);
   });
 });

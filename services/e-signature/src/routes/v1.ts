@@ -135,7 +135,7 @@ function pageOf<T>(items: readonly T[], total: number, paging: RequestPaging): F
 /** The fixture error a `/v1` failure answers; undefined for an error service-kit renders, such as a denial or the legacy 503. */
 function answeredError(error: unknown): EsignatureDomainError | FixtureApiError | undefined {
   if (error instanceof EsignatureDomainError || error instanceof FixtureApiError) return error;
-  // People refuses some cross-user reads the fixture's userManager.read allows; the fixture answers those forbidden too.
+  // People refused the signer read for this caller; the fixture's own refusals answer forbidden.
   if (error instanceof PeopleReadDeniedError) return new FixtureApiError('forbidden');
   // A paging parameter the querystring schema refuses, as the fixture's page() refuses it.
   if (error instanceof Error && (error as { validation?: unknown }).validation !== undefined) return new FixtureApiError('invalidParameters');

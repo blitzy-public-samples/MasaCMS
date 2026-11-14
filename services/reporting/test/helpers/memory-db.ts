@@ -241,6 +241,11 @@ function predicate(term: string, params: readonly unknown[]): (row: Row) => bool
     const [, column = ''] = m;
     return (row) => row[column] !== null && row[column] !== undefined;
   }
+  m = /^(\w+) IS NULL$/.exec(term);
+  if (m !== null) {
+    const [, column = ''] = m;
+    return (row) => row[column] === null || row[column] === undefined;
+  }
   m = /^\(\$(\d+)::bpchar IS NULL OR (\w+) COLLATE C > \$\1::bpchar\)$/.exec(term);
   if (m !== null) {
     const [, index, column = ''] = m;
@@ -434,6 +439,18 @@ export function createMemoryDb(options: { now: () => Date }): MemoryDb {
     return answer(returning === undefined ? [] : changed.map((row) => project(returning, row)), 'UPDATE', changed.length);
   };
 
+  /** Removes the rows the session's tenant sees that match the WHERE clause, every visible row without one. */
+  const deleteRows: Handler = (m, params, session, tx) => {
+    const [, , name = '', where, returning] = m;
+    const table = tableName(name);
+    const matches = whereOf(where, params);
+    const rows = rowsOf(tx, table);
+    const removed = rows.filter((row) => visible(table, row, session) && matches(row));
+    rows.splice(0, rows.length, ...rows.filter((row) => !removed.includes(row)));
+    xidOf(tx);
+    return answer(returning === undefined ? [] : removed.map((row) => project(returning, row)), 'DELETE', removed.length);
+  };
+
   const countRows: Handler = (m, _params, session, tx) => {
     const [, , name = ''] = m;
     const table = tableName(name);
@@ -506,6 +523,25 @@ export function createMemoryDb(options: { now: () => Date }): MemoryDb {
     return answer(rows.map((row) => ({ ...row, [cursorColumn]: [text(row[keyColumn])] })));
   };
 
+  /** The migration export's first page of a single integer-key table: the tenant's rows by numeric key, each with its key text as the cursor. */
+  const integerExportPage: Handler = (m, params, session, tx) => {
+    const [, keyColumn = '', cursorColumn = '', name = ''] = m;
+    const table = tableName(name);
+    const [tenantId, limit] = params;
+    const keyOf = (row: Row): bigint => {
+      const key = text(row[keyColumn]);
+      if (!/^-?\d+$/.test(key)) throw new UnsupportedStatementError(`ORDER BY ${keyColumn} of non-integer ${key} is not evaluated in memory`);
+      return BigInt(key);
+    };
+    const rows = rowsOf(tx, table)
+      .filter((row) => visible(table, row, session) && text(row.tenant_id) === text(tenantId))
+      .map((row) => [keyOf(row), row] as const)
+      .sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))
+      .slice(0, Number(limit))
+      .map(([, row]) => row);
+    return answer(rows.map((row) => ({ ...row, [cursorColumn]: [text(row[keyColumn])] })));
+  };
+
   const control = (command: string, run?: (session: Session, name: string) => void): Handler => {
     return (m, _params, session) => {
       run?.(session, m[1] ?? '');
@@ -551,6 +587,7 @@ export function createMemoryDb(options: { now: () => Date }): MemoryDb {
     [/^SELECT subscription, count\(\*\)::text AS count FROM \w+\.inbox GROUP BY subscription$/, inboxBySubscription],
     [/^SELECT c\.xid::text AS xid, c\.seq::text AS seq, c\.table, c\.op, c\.key, c\.before, c\.after, c\.columns, c\.origin, c\.actor_user_id, c\.actor_service, to_char\(c\.at, 'YYYY-MM-DD HH24:MI:SS\.MS'\) AS at, c\.request_id, c\.operation_id FROM \w+\.changelog AS c WHERE c\.xid < \$1::xid8 AND \(c\.xid, c\.seq\) > \(\$2::xid8, \$3::bigint\) ORDER BY c\.xid, c\.seq LIMIT \$4$/, changes],
     [/^SELECT \*, ARRAY\[\((\w+)\)::text\] AS (\w+) FROM \w+\.(\w+) WHERE tenant_id = \$1 ORDER BY \(\1\)::text COLLATE C NULLS FIRST LIMIT \$2$/, exportPage],
+    [/^SELECT \*, ARRAY\[\((\w+)\)::text\] AS (\w+) FROM \w+\.(\w+) WHERE tenant_id = \$1 ORDER BY \1 NULLS FIRST LIMIT \$2$/, integerExportPage],
     [/^SELECT legacy_table, direction, .+ FROM \w+\.migration_watermark WHERE \(\$1::text IS NULL OR legacy_table = \$1\) AND \(\$2::text IS NULL OR direction = \$2\) ORDER BY legacy_table, direction$/, watermarks],
     [/^SELECT ([\w, ]+) FROM (\w+)\.(unit_gate) WHERE (?:\$1::text\[\] IS NULL OR )?unit = ANY\(\$1::text\[\]\)(?: ORDER BY (unit))?(?: FOR SHARE(?: NOWAIT)?)?$/, (m, params, session, tx) => {
       const units = params[0] === null ? undefined : (params[0] as unknown[]).map(text);
@@ -568,6 +605,7 @@ export function createMemoryDb(options: { now: () => Date }): MemoryDb {
     [/^INSERT INTO \w+\.migration_watermark \(legacy_table, direction, snapshot_seq, backup_lsn, finished_at\) VALUES \(\$1, \$2, \$3, \$4, \$5\) ON CONFLICT \(legacy_table, direction\) DO UPDATE SET snapshot_seq = EXCLUDED\.snapshot_seq, backup_lsn = EXCLUDED\.backup_lsn, finished_at = EXCLUDED\.finished_at RETURNING legacy_table, direction, .+$/, watermarkUpsert],
     [/^INSERT INTO (\w+)\.(\w+) \(([\w, ]+)\) VALUES (.+)$/, insert],
     [/^UPDATE (\w+)\.(\w+) SET (.+?)(?: WHERE (.+?))?(?: RETURNING (.+))?$/, update],
+    [/^DELETE FROM (\w+)\.(\w+)(?: WHERE (.+?))?(?: RETURNING (.+))?$/, deleteRows],
     [SELECT_ONE, select],
   ];
 

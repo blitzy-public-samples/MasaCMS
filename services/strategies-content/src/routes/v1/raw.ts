@@ -1,4 +1,5 @@
 /** `/v1/raw/<circuit>/<action>`: the content admin actions answered as the legacy fragment, JSON or download bytes. */
+import type { Readable } from 'node:stream';
 import type { Opt2RouteConfig } from '@opt2/platform/auth';
 import {
   legacyParamsOf,
@@ -18,9 +19,12 @@ import { cfeedRawActions } from './cfeed.js';
 import { cformRawActions } from './cform.js';
 import { cnavRawActions } from './cnav.js';
 
+/** A raw entry's answer: a renderer's result, whose download body may be a stream. */
+export type RawActionResult = Omit<AdminRenderResult, 'body'> & { body: AdminRenderResult['body'] | Readable };
+
 /** Raw admin response entry: renders one legacy fragment, JSON or download. */
 export interface RawActionSpec {
-  run(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<AdminRenderResult>;
+  run(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<RawActionResult>;
   /** The `validateCSRFTokens` context, only where the action validates its token before anything else. */
   csrfContext?: (request: FastifyRequest) => string;
 }

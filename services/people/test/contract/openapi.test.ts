@@ -411,6 +411,7 @@ const ADVANCED_CRITERIA = 'param=1&paramField1=tusers.lname%5Evarchar&paramRelat
 const ADMIN_UPDATE = `userid=${MODULE_USER}&siteid=${SITE_A}&type=2&action=Update&fname=Morgan&lname=Modular&username=module_user_a&email=module_user_a@tenant-a.opt2.test&ispublic=0&${TOKEN_FIELDS}`;
 const ARCHIVE_FIELDS = `effectiveFrom=${ARCHIVE_EFFECTIVE_FROM}&${TOKEN_FIELDS}`;
 const archivePath = (userId: string, siteId: string): string => `/legacy-fixtures/cfml/api.cfm/people/persons/${userId}/archive?siteid=${siteId}`;
+const POOL_STRANGER = 'A0000000-0000-0000-00000000000000FF';
 const CURRENT_USER_QUERY = `siteid=${SITE_A}&endpoint=${encodeURIComponent(`http://localhost/index.cfm/_api/json/v1/${SITE_A}`)}&adminpath=${encodeURIComponent('http://localhost/admin')}`;
 const FAVORITE_COLUMNS = FAVORITE.columns.filter(({ name }) => name !== 'tenant_id').map(({ name, type }) => ({ name, type }));
 const UMBRELLA_MEMBERS = (DEFAULT_PEOPLE_SEED[TENANT_UMBRELLA.tenantId]?.groupNames ?? [])[0];
@@ -766,6 +767,19 @@ const CASES: Record<string, Case[]> = {
       verify: ({ body }) => expect(record(record(body).data).userid).toBe(SYSTEM_USER),
     },
   ],
+  readPoolUser: [
+    {
+      name: "reads a tenant-a pool user for e-signature's signer check",
+      inject: send('GET', `/internal/v1/users/pool-user?siteid=${SITE_A}&userid=${SYSTEM_USER}`, async () => ({ ...(await userHeaders(SYSTEM_USER_A)), ...(await asService('e-signature')()) })),
+      status: 200,
+      verify: ({ body }) => expect(record(body)).toEqual({ userid: SYSTEM_USER, siteid: SITE_A, type: 2 }),
+    },
+    {
+      name: 'answers the legacy 404 for an id no pool person holds',
+      inject: send('GET', `/internal/v1/users/pool-user?siteid=${SITE_A}&userid=${POOL_STRANGER}`, async () => ({ ...(await userHeaders(SYSTEM_USER_A)), ...(await asService('e-signature')()) })),
+      status: 404,
+    },
+  ],
   migrationApply: [
     {
       name: 'applies an empty tusersfavorites batch',
@@ -1074,7 +1088,7 @@ describe('registered routes', () => {
       ...['archivePerson', 'getPersonArchive'],
       ...['listUserGroups', 'listUsers', 'searchUsers', 'getAdvancedSearch', 'setAdvancedSearch', 'downloadAdvancedSearchCsv', 'downloadUsersCsv'],
       ...['getUserEdit', 'updateUser', 'getAddressEdit', 'updateAddress', 'routeUser', 'getProfile', 'updateProfile'],
-      ...['listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2', 'readCurrentUser'],
+      ...['listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2', 'readCurrentUser', 'readPoolUser'],
       ...['Apply', 'Export', 'Changes', 'Position', 'WatermarkGet', 'WatermarkPost', 'Gate'].map((name) => `migration${name}`),
       ...['pushSiteChanged', 'pushGroupChanged', 'outboxSweep', 'queuePause', 'queueResume', 'queueEnsure', 'healthz'],
     ];

@@ -25,6 +25,7 @@ import {
 } from '@opt2/platform/service-kit';
 import { tenantForRegisteredSite } from '@opt2/platform/tenancy';
 import { createAddress, updateAddress, type AddressActor, type AddressDeps } from '../domain/addresses.js';
+import { expirePasswordsSetting, passwordExpired } from '../domain/password-expiry.js';
 import { applyUserInput, newUserValues, normaliseParams, resolveUserSite, restrictAdminInput, type UserValues } from '../domain/person.js';
 import { PhotoBranchError, personFence, runRosterOperation, type RosterDeps, type RosterKind } from '../domain/roster-protocol.js';
 import type { LegacyErrors } from '../domain/validation.js';
@@ -43,6 +44,8 @@ type PersonRecord = Schemas['PersonRecord'];
 /** Dependencies of {@link registerAdminRosterRoutes}: the roster write protocol's collaborators, which the address saves share. */
 export interface AdminRosterRouteDeps {
   roster: RosterDeps;
+  /** configBean `expirePasswords`; defaults to `MURA_EXPIREPASSWORDS` of `process.env`. */
+  expirePasswords?: number;
 }
 
 const CUSERS_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: CUSERS_ROUTE_REQUIRES });
@@ -99,9 +102,9 @@ const ADDRESS_SAVES: ReadonlyArray<readonly [action: string, save: typeof create
   ['Add', createAddress],
 ]);
 
-/** The `tusers` values a user bean holds, in bootstrap casing without `Password`, with the kind each takes on the wire. */
+/** The `tusers` values a user bean holds, in bootstrap casing without `Password` and `PasswordCreated`, with the kind each takes on the wire. */
 const BEAN_COLUMNS: ReadonlyArray<readonly [name: string, kind: 's' | 'i' | 't']> = Object.freeze([
-  ['UserID', 's'], ['GroupName', 's'], ['Fname', 's'], ['Lname', 's'], ['UserName', 's'], ['PasswordCreated', 't'],
+  ['UserID', 's'], ['GroupName', 's'], ['Fname', 's'], ['Lname', 's'], ['UserName', 's'],
   ['Email', 's'], ['Company', 's'], ['JobTitle', 's'], ['mobilePhone', 's'], ['Website', 's'], ['Type', 'i'],
   ['subType', 's'], ['ContactForm', 's'], ['S2', 'i'], ['LastLogin', 't'], ['LastUpdate', 't'], ['LastUpdateBy', 's'],
   ['LastUpdateByID', 's'], ['Perm', 'i'], ['InActive', 'i'], ['isPublic', 'i'], ['SiteID', 's'], ['Subscribe', 'i'],
@@ -265,7 +268,7 @@ async function savedRedirect(roster: RosterDeps, claims: UserClaims, ctx: Cusers
 // A failed save answers without `redirect`: the form re-renders from `userBean` and `errors`, which web keeps in
 // `session.mura.editBean` before it redirects to `cUsers.edituser` with `preserve='all'`.
 /** `update()` of a Type=2 add or update: the S2 restrictions, the save under the roster write protocol, then `route()` [legacy: admin/core/controllers/cusers.cfc:290-353]. */
-async function saveUser(roster: RosterDeps, request: FastifyRequest): Promise<UpdateResult> {
+async function saveUser(roster: RosterDeps, expirePasswords: number, request: FastifyRequest): Promise<UpdateResult> {
   const { claims, ctx, kind } = admittedOf(admittedSaves, request);
   const target = await restrictionTarget(roster, claims, ctx.userid);
   const { input: params } = restrictAdminInput(normaliseParams(ctx.params), {
@@ -281,7 +284,10 @@ async function saveUser(roster: RosterDeps, request: FastifyRequest): Promise<Up
     postedFiles: new Map(multipartFilesOf(request).map((file) => [file.field, file.filename])),
     requestId: request.id,
   });
-  if (!result.ok) return { written: false, errors: messageMap(result.errors), userBean: retainedBean(result.values) };
+  if (!result.ok) {
+    const expired = passwordExpired(result.values, expirePasswords, roster.clock.now());
+    return { written: false, errors: messageMap(result.errors), userBean: retainedBean(result.values), passwordExpired: expired };
+  }
   return { written: true, redirect: await savedRedirect(roster, claims, ctx, params), errors: {} };
 }
 
@@ -328,6 +334,7 @@ async function saveAddress(addresses: AddressDeps, roster: RosterDeps, request: 
 export async function registerAdminRosterRoutes(app: FastifyInstance, deps: AdminRosterRouteDeps): Promise<void> {
   const { roster } = deps;
   const addresses: AddressDeps = { db: roster.db, repo: roster.repo, clock: roster.clock, fence: personFence };
+  const expirePasswords = deps.expirePasswords ?? expirePasswordsSetting(process.env);
 
   app.post<{ Reply: UpdateResult }>(
     '/v1/users::update',
@@ -338,7 +345,7 @@ export async function registerAdminRosterRoutes(app: FastifyInstance, deps: Admi
         csrfPreHandler({ contextOf: (request) => admittedOf(admittedSaves, request).ctx.userid, onReject: failOnUnsetUserBean }),
       ],
     },
-    async (request) => saveUser(roster, request),
+    async (request) => saveUser(roster, expirePasswords, request),
   );
 
   app.post<{ Reply: RouteResult }>(

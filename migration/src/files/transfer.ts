@@ -1,8 +1,10 @@
-// Moves the bytes of each manifest object to strategies-content's `content-files`, under the tenant of its `tfiles` row.
+// Moves the bytes of each manifest object to strategies-content's `content-files`, under the tenant of its `tfiles` row, and
+// deletes the objects a later snapshot no longer holds.
 import { resolveTenant, sha256Hex, type TenantSource } from '@opt2/platform/migration-kit';
 
 import { BridgeHashMismatchError, type LegacyFileBytes } from '../legacy/bridge.js';
 
+import type { ManifestDiff } from './feed.js';
 import {
   readSnapshotFileOwners,
   snapshotDatabase,
@@ -52,6 +54,20 @@ export interface TransferResult {
   bytes: number;
   orphans: ManifestKey[];
   misplaced: ManifestKey[];
+}
+
+/** Outcome of one removal; counts are distinct `content-files` keys, except `misplaced`, which counts manifest copies. */
+export interface RemovalResult {
+  from: number;
+  to: number;
+  /** Keys whose stored object the owner deleted. */
+  deleted: number;
+  /** Keys the owner no longer recorded, as on a repeated run. */
+  absent: number;
+  /** Keys snapshot `to` still plans for transfer, so their objects stay. */
+  retained: number;
+  /** Dropped copies outside their `tfiles` site's directory, which were never transferred. */
+  misplaced: number;
 }
 
 /** Raised when bytes read from the legacy store do not hash to the manifest's SHA-256; nothing is sent for that object. */
@@ -246,5 +262,46 @@ export async function transferFiles(
     result.bytes += bytes.byteLength;
   }
   finishSite();
+  return result;
+}
+
+/**
+ * Deletes from strategies-content the objects of the copies `diff` removed or changed, placed as snapshot `diff.from` placed
+ * them, unless snapshot `diff.to` still plans their key for transfer. Runs after the transfer of `diff.toTransfer`, so an object
+ * whose key moved is stored under its new key first; a repeated run answers the keys already deleted as `absent`.
+ */
+export async function removeDroppedObjects(
+  ctx: Pick<FilesContext, 'db' | 'legacy' | 'config' | 'owners' | 'logger'>,
+  diff: Pick<ManifestDiff, 'from' | 'to' | 'removed' | 'changed'>,
+): Promise<RemovalResult> {
+  const result: RemovalResult = { from: diff.from, to: diff.to, deleted: 0, absent: 0, retained: 0, misplaced: 0 };
+  const dropped = [...diff.removed, ...diff.changed.map((change) => change.before)];
+  if (dropped.length === 0) return result;
+
+  const plan = await plannerFor(ctx, await snapshotDatabase(ctx, diff.from));
+  const keys = new Set<string>();
+  for (const entry of dropped) {
+    const planned = plan(entry);
+    if (planned.status === 'misplaced') result.misplaced += 1;
+    else keys.add(planned.key);
+  }
+  // Several copies can share one key, such as orphans of two sites, so a key still planned by any copy keeps its object.
+  const expected = new Set<string>();
+  for await (const planned of streamPlannedObjects(ctx, diff.to, {})) {
+    if (planned.status === 'transfer') expected.add(planned.key);
+  }
+  for (const key of keys) {
+    if (expected.has(key)) {
+      result.retained += 1;
+    } else if ((await ctx.owners.deleteObject(key)).deleted) {
+      result.deleted += 1;
+    } else {
+      result.absent += 1;
+    }
+  }
+  ctx.logger.info(
+    `files of snapshot ${String(diff.to)} dropped since snapshot ${String(diff.from)}: ${String(result.deleted)} deleted, ` +
+      `${String(result.absent)} already absent, ${String(result.retained)} still planned, ${String(result.misplaced)} misplaced`,
+  );
   return result;
 }

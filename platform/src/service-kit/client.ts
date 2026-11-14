@@ -7,7 +7,7 @@ import { INVOCATION_HEADER, type InvocationMinter } from '../auth/index.js';
 import { LegacyServiceUnavailableError } from '../legacy-compat/index.js';
 import { isSafeFailureCode, SAFE_ERROR_TEXT } from '../logging/safe-error.js';
 import { injectHttpHeaders, withCallee } from '../tracing/index.js';
-import { currentRequestContext, REQUEST_ID_HEADER } from './context.js';
+import { currentRequestContext, REQUEST_ID_HEADER, throwIfRequestAborted } from './context.js';
 
 /** Upper bound of one service call, from credential acquisition to the last body byte. */
 export const SERVICE_CALL_TIMEOUT_MS = 10_000;
@@ -169,6 +169,8 @@ export function createServiceClient(options: ServiceClientOptions): ServiceClien
     options.dispatcher ?? new Agent({ connectTimeout: timeoutMs, headersTimeout: timeoutMs, bodyTimeout: timeoutMs });
 
   async function send<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
+    // An abandoned request sends no further call; a call already in flight runs to its answer.
+    throwIfRequestAborted();
     const base = options.serviceUrls[req.service];
     if (base === undefined) throw new UnknownServiceError(req.service);
     const url = new URL(req.path, base);

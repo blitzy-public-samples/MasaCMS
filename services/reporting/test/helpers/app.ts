@@ -13,7 +13,6 @@ import { UNIT_GATE_TABLE, qualified, type GatePhase, type GateState } from '@opt
 import {
   CSRF_CONSUME_PATH,
   IDENTITY_SERVICE,
-  baseEnvSchema,
   loadEnv,
   type BaseEnv,
   type CsrfConsumeRequest,
@@ -57,7 +56,7 @@ import {
   type RoleSubject,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
-import { buildApp } from '../../src/app.js';
+import { buildApp, reportingEnvSchema } from '../../src/app.js';
 import { SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import {
   EXPORT_BUCKET,
@@ -102,7 +101,7 @@ function processZone(): string {
 
 /** Environment of a test app; the JWKS URL is never fetched, as the test verifier replaces the remote key set. */
 export function testEnv(stateDir: string): BaseEnv {
-  return loadEnv(baseEnvSchema, {
+  return loadEnv(reportingEnvSchema, {
     PORT: '8116',
     OPT2_SERVICE_NAME: SERVICE,
     OPT2_ENV: 'local',
@@ -385,6 +384,9 @@ export function createScriptedClient(lookup: ScopeLookup): ScriptedClient {
 
 /** Database of a test app: the in-memory stand-in, or a throwaway PostgreSQL schema migrated from `db/migrations`. */
 export type TestDbMode = 'recording' | 'pg';
+
+/** Declares one describe block: `describe` itself, or a conditional form such as `describe.skipIf(condition)`. */
+export type DescribeBlock = (name: string, fn: () => void) => unknown;
 
 /** Owned tables {@link TestApp.seed} writes, the `table` names of `OWNED_TABLES`. */
 export type SeedTable = Extract<MemoryTable, 'export_definition' | 'export_job' | 'session_tracking'>;

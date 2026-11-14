@@ -8,7 +8,22 @@ exports[`e-signature screen markup > audit renders the audit chain 1`] = `
   "headings": [
     "Audit Chain",
   ],
-  "labels": [],
+  "labels": [
+    "Sequence",
+    "Action",
+    "Actor",
+    "Detail",
+    "At",
+    "Previous Hash",
+    "Hash",
+    "Sequence",
+    "Action",
+    "Actor",
+    "Detail",
+    "At",
+    "Previous Hash",
+    "Hash",
+  ],
   "links": [
     {
       "href": "/opt2/admin/e-signature/requests?siteid=tenant-a",
@@ -23,39 +38,7 @@ exports[`e-signature screen markup > audit renders the audit chain 1`] = `
       "text": "Verify",
     },
   ],
-  "tables": [
-    {
-      "headers": [
-        "Sequence",
-        "Action",
-        "Actor",
-        "Detail",
-        "At",
-        "Previous Hash",
-        "Hash",
-      ],
-      "rows": [
-        [
-          "1",
-          "created",
-          "5A000000-0000-0000-0000000000000003",
-          "a049f1c1c0daa458e64b981eb0473ad5fc47c20aa8386aca60b76c6b9f0d1f7f",
-          "2026-06-28T10:00:00.000",
-          "0000000000000000000000000000000000000000000000000000000000000000",
-          "a63b0bd3068273b22c735ec1320165c19472e87887d7dca1b23f305f2798df03",
-        ],
-        [
-          "2",
-          "signed",
-          "E51600F0-0000-0000-0000000000000001",
-          "Jordan Ellis",
-          "2026-06-30T09:15:00.000",
-          "a63b0bd3068273b22c735ec1320165c19472e87887d7dca1b23f305f2798df03",
-          "5a1f5241b50f0957ab069accfeeb9b172584c7370f9a7fdd327a8f4b5cc877fa",
-        ],
-      ],
-    },
-  ],
+  "tables": [],
   "title": "",
 }
 `;

@@ -2,18 +2,19 @@
 import { okBody } from '@/lib/gateway-client';
 import { attr, html, type SafeHtml } from '@/lib/html';
 import type { Opt2ScreenDefinition, ScreenContext } from '../../registry';
-import { block, gridTable, opt2View, pageHeader } from '../shared';
+import { block, gridTable, opt2Label, opt2View, pageHeader } from '../shared';
 import {
   PAGE_SIZE,
   SURVEYS_MODULE,
   SURVEYS_ROLES,
+  SURVEY_SCREENS,
   dateTimeText,
   pageIndexOf,
   pager,
+  screenLabel,
   siteIdOf,
   surveysUrl,
   type Survey,
-  type SurveyScreen,
 } from './common';
 
 /** One page of the site's surveys and the count of all of them. */
@@ -22,12 +23,6 @@ export interface SurveyListData {
   total: number;
   pageIndex: number;
 }
-
-const ROW_LINKS: ReadonlyArray<readonly [SurveyScreen, string]> = [
-  ['schedule', 'Schedule'],
-  ['targets', 'Targets'],
-  ['responses', 'Responses'],
-];
 
 /** Page `rc.pageIndex` of the session site's surveys (`listSurveys`). */
 async function loadList(ctx: ScreenContext): Promise<SurveyListData> {
@@ -41,10 +36,10 @@ async function loadList(ctx: ScreenContext): Promise<SurveyListData> {
 
 /** Links from one survey row to its schedule, targets and responses screens. */
 function rowLinks(ctx: ScreenContext, survey: Survey): SafeHtml {
-  return html`<div class="btn-group">${ROW_LINKS.map(
-    ([screen, label]) =>
-      html`<a class="btn"${attr('href', surveysUrl(ctx, screen, { surveyid: survey.surveyId }))}>${label}</a>`,
-  )}</div>`;
+  return html`<div class="btn-group">${SURVEY_SCREENS.map((screen) => {
+    const href = surveysUrl(ctx, screen, { surveyid: survey.surveyId });
+    return html`<a class="btn"${attr('href', href)}>${screenLabel(ctx, screen)}</a>`;
+  })}</div>`;
 }
 
 /** The survey grid with its launch time and reminder count, then the pager. */
@@ -58,7 +53,7 @@ function renderList(ctx: ScreenContext, data: SurveyListData): SafeHtml {
     rowLinks(ctx, survey),
   ]);
   const grid = gridTable(
-    ['Title', 'Status', 'Launch', 'Reminders', 'Created', ''],
+    [opt2Label(ctx, 'Title'), opt2Label(ctx, 'Status'), 'Launch', 'Reminders', opt2Label(ctx, 'Created'), ''],
     rows,
     'There are no surveys for this site.',
   );

@@ -292,9 +292,9 @@ describe('toFixtureError', () => {
   });
 
   it.each([new LegacyServiceUnavailableError(), new UnitNotAuthoritativeError(['finance.records'])])(
-    'rethrows %s for the service-kit legacy 503',
+    'answers %s with the fixture server_error envelope at 503',
     (err) => {
-      expect(thrownBy(() => toFixtureError(err, CTX))).toBe(err);
+      expectFixtureResponse(toFixtureError(err, CTX), 503, errorBody(CTX.method, 'server_error', 'Unhandled Exception'));
     },
   );
 });

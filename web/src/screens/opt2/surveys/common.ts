@@ -1,12 +1,24 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 import { Roles, type Role } from '@opt2/platform/auth';
 import type { components } from '@/generated/clients/surveys';
-import { okBody } from '@/lib/gateway-client';
+import { okBody, type GatewayResponse } from '@/lib/gateway-client';
 import { attr, html, type SafeHtml } from '@/lib/html';
 import type { Opt2Module, ScreenContext } from '../../registry';
-import { opt2ScreenUrl, pageHeader, type HeaderLink, type Opt2Params } from '../shared';
+import {
+  alertBox,
+  errorMessage,
+  opt2Label,
+  opt2ScreenUrl,
+  pageHeader,
+  type HeaderLink,
+  type Label,
+  type Opt2Params,
+} from '../shared';
 
 export type Survey = components['schemas']['Survey'];
+
+/** Why a survey screen shows no survey: the alert under its bare header. */
+export type Unread = { readonly unread: SafeHtml };
 
 export const SURVEYS_MODULE: Opt2Module = 'surveys';
 
@@ -19,13 +31,26 @@ export const PAGE_SIZE = 50;
 /** Screens of one survey, in header-link order. */
 export type SurveyScreen = 'schedule' | 'targets' | 'responses';
 
-const SURVEY_SCREENS: readonly SurveyScreen[] = ['schedule', 'targets', 'responses'];
+/** Every survey screen, in header-link and survey-row link order. */
+export const SURVEY_SCREENS: readonly SurveyScreen[] = ['schedule', 'targets', 'responses'];
 
-const SCREEN_LABELS: Readonly<Record<SurveyScreen, string>> = {
-  schedule: 'Schedule',
-  targets: 'Targets',
-  responses: 'Responses',
+/** Label of each survey screen; targets and responses have no admin-bundle key. */
+const SCREEN_LABELS: Readonly<Record<SurveyScreen, (ctx: ScreenContext) => Label>> = {
+  schedule: (ctx) => opt2Label(ctx, 'Schedule'),
+  targets: () => 'Targets',
+  responses: () => 'Responses',
 };
+
+/** Label of survey screen `screen` in the session locale of `ctx`. */
+export function screenLabel(ctx: ScreenContext, screen: SurveyScreen): Label {
+  return SCREEN_LABELS[screen](ctx);
+}
+
+// A survey id the service cannot parse (400) or does not hold for the site (404) is shown, not raised as a 500.
+const UNREAD_STATUSES: ReadonlySet<number> = new Set([400, 404]);
+
+/** The unread state of a request naming no survey; `/v1/surveys/{surveyId}` has no empty-id form, so none is sent. */
+export const NO_SURVEY: Unread = Object.freeze({ unread: alertBox('No survey selected.', 'info') });
 
 /** The session site, sent as `siteid` on every surveys call. */
 export function siteIdOf(ctx: ScreenContext): string {
@@ -49,26 +74,36 @@ export function surveysUrl(ctx: ScreenContext, screen: string, params: Opt2Param
 }
 
 /**
- * The survey `surveyId` of the session site, with its schedule.
- * @throws GatewayDenialError When the service answers 401 or 403.
+ * The 2xx body of surveys `operation`, or its envelope error as an alert when the service answers 400 or 404.
+ * @throws GatewayDenialError For 401 or 403; any other status throws `Error`.
  */
-export async function loadSurvey(ctx: ScreenContext, surveyId: string): Promise<Survey> {
-  const res = await ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}', {
-    params: { surveyId },
-    query: { siteid: siteIdOf(ctx) },
-  });
-  return okBody(res, 'surveys', 'getSurvey').data;
+export function readOf<T>(
+  response: { readonly ok: true; readonly body: T } | (GatewayResponse & { readonly ok: false }),
+  operation: string,
+): { readonly body: T } | Unread {
+  if (!response.ok && UNREAD_STATUSES.has(response.status)) return { unread: alertBox(errorMessage(response)) };
+  return { body: okBody(response, 'surveys', operation) };
+}
+
+/** Header link to the survey list. */
+function listLink(ctx: ScreenContext): HeaderLink {
+  return { label: 'Surveys', href: surveysUrl(ctx, 'surveys') };
+}
+
+/** Header of survey screen `current` when no survey was read: its label, linking the list. */
+export function unreadHeader(ctx: ScreenContext, current: SurveyScreen): SafeHtml {
+  return pageHeader(screenLabel(ctx, current), [listLink(ctx)]);
 }
 
 /** Header of survey screen `current`: its label and the survey title, linking the list and the other screens. */
 export function surveyHeader(ctx: ScreenContext, survey: Survey, current: SurveyScreen): SafeHtml {
-  const links: HeaderLink[] = [{ label: 'Surveys', href: surveysUrl(ctx, 'surveys') }];
+  const links: HeaderLink[] = [listLink(ctx)];
   for (const screen of SURVEY_SCREENS) {
     if (screen !== current) {
-      links.push({ label: SCREEN_LABELS[screen], href: surveysUrl(ctx, screen, { surveyid: survey.surveyId }) });
+      links.push({ label: screenLabel(ctx, screen), href: surveysUrl(ctx, screen, { surveyid: survey.surveyId }) });
     }
   }
-  return pageHeader(`${SCREEN_LABELS[current]}: ${survey.title}`, links);
+  return pageHeader(html`${screenLabel(ctx, current)}${`: ${survey.title}`}`, links);
 }
 
 /** A service `LocalTimestamp` to the second, as `yyyy-mm-dd hh:mm:ss`; `''` for null. */
@@ -86,9 +121,9 @@ export function pager(
 ): SafeHtml | null {
   const pages = Math.ceil(total / PAGE_SIZE);
   if (pages <= 1) return null;
-  const link = (label: string, page: number): SafeHtml =>
+  const link = (label: Label, page: number): SafeHtml =>
     html`<a class="btn"${attr('href', surveysUrl(ctx, screen, { ...params, pageIndex: page }))}>${label}</a>`;
   return html`<div class="btn-group">${pageIndex > 1 ? link('Previous', pageIndex - 1) : null}${
-    pageIndex < pages ? link('Next', pageIndex + 1) : null
+    pageIndex < pages ? link(opt2Label(ctx, 'Next'), pageIndex + 1) : null
   }</div><p>Page ${pageIndex} of ${pages}</p>`;
 }

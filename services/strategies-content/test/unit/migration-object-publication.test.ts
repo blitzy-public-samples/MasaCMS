@@ -1,10 +1,11 @@
 /**
  * `storeMigrationObject` over a throwaway `content` schema and local storage: per-key serialization, backup and restore of
- * replaced versions after failed manifest writes, puts, commits and crashes, recovery of the ledger, and the same-hash no-op.
+ * replaced versions after failed manifest writes, puts, commits and crashes, recovery of the ledger, the same-hash no-op, and
+ * the object manifest export of the bytes stored now.
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, open, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,13 +16,13 @@ import { createLogger } from '@opt2/platform/logging';
 import { createService, loadEnv, newRequestContext, runWithRequestContext } from '@opt2/platform/service-kit';
 import { createLocalStorageAdapter, type LocalStorageAdapter, type ObjectHead, type StoragePort } from '@opt2/platform/storage';
 import type { TenantDb } from '@opt2/platform/tenancy';
-import { TENANT_A, createThrowawaySchema, fixedClock, pgAvailable, seedRegistry, testVerifier, writeTestSecrets, type ThrowawaySchema } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, fixedClock, pgAvailable, seedRegistry, testVerifier, writeTestSecrets, type ThrowawaySchema } from '@opt2/platform/testing';
 import { StagedObjectMissingError, StagedObjectsPendingError, recoverStagedObjects, settleStagedObject, stageObject } from '../../src/migration/staged-objects.js';
 import { hasStaleStagedObjects, type StagedObjectEntry } from '../../src/repo/files.js';
 import { registerMigrationObjectRoutes } from '../../src/routes/migration-objects.js';
 import {
   CONTENT_FILES_BUCKET,
-  exportObjects,
+  createExportObjects,
   storeMigrationObject,
   type MigrationObjectRequest,
   type StoreObjectDeps,
@@ -171,7 +172,8 @@ async function backdate(key: string): Promise<void> {
   ));
 }
 
-const manifest = (tenantId = TENANT_A.tenantId) => db.withTenant(tenantId, (tx) => exportObjects(tx, { unit: 'content.file', tenantId, limit: 1000 }));
+const manifest = (tenantId = TENANT_A.tenantId) =>
+  db.withTenant(tenantId, (tx) => createExportObjects({ storage })(tx, { unit: 'content.file', tenantId, limit: 1000 }));
 
 /** The entries of `key` in its tenant's object manifest. */
 async function listed(key: string): Promise<ObjectManifestEntry[]> {
@@ -554,5 +556,73 @@ describe.skipIf(!(await pgAvailable()))('migration object publication', () => {
     expect(await store(deps({ storage: recorded.storage }), request(fileId, bytes))).toEqual({ ...first, created: rewritten });
     expect(recorded.writes).toEqual(rewritten ? ['put object'] : []);
     expect(await stateOf(key)).toEqual(published(bytes));
+  });
+
+  describe('object manifest export', () => {
+    const original = Buffer.from('published manifest version');
+
+    /** Publishes `bytes` as the original of a fresh file id of `tenantId` and returns its key. */
+    async function publish(tenantId: string, bytes: Buffer): Promise<string> {
+      const fileId = nextFileId();
+      await store(deps(), { ...request(fileId, bytes), tenantId });
+      return `${tenantId}/${fileId}.pdf`;
+    }
+
+    it.each<[string, (key: string) => Promise<Buffer | null>]>([
+      ['still holds the published bytes', async () => original],
+      [
+        'was replaced in storage without its row',
+        async (key) => {
+          const replaced = Buffer.from('bytes stored outside any publication');
+          await storage.put(CONTENT_FILES_BUCKET, key, replaced, { contentType: PDF });
+          return replaced;
+        },
+      ],
+      [
+        'had its payload rewritten in place under its write-time metadata',
+        async (key) => {
+          const corrupted = Buffer.from(original.toString('latin1').toUpperCase(), 'latin1');
+          const file = await open(path.join(stateDir, 'storage', CONTENT_FILES_BUCKET, ...key.split('/')), 'r+');
+          try {
+            await file.write(corrupted, 0, corrupted.length, 0);
+          } finally {
+            await file.close();
+          }
+          return corrupted;
+        },
+      ],
+      [
+        'was deleted from storage',
+        async (key) => {
+          await storage.delete(CONTENT_FILES_BUCKET, key);
+          return null;
+        },
+      ],
+    ])('exports the size and SHA-256 of the bytes stored now when the object %s', async (_label, disturb) => {
+      const key = await publish(TENANT_B.tenantId, original);
+      const stored = await disturb(key);
+      const { row } = await stateOf(key);
+      expect(row).toEqual({ sha256: sha256(original), size: original.length });
+
+      const entries = await listed(key);
+      expect(entries).toEqual(stored === null ? [] : [manifestOf(key, stored)]);
+      // Reconciliation pairs entries by key, so a hash unlike the row's recorded legacy hash is an object mismatch.
+      expect(entries.map((entry) => entry.sha256 === row?.sha256)).toEqual(stored === null ? [] : [stored.equals(original)]);
+    });
+
+    it('pages past a row whose object is missing, keeping that row as the position', async () => {
+      const tenantId = TENANT_UMBRELLA.tenantId;
+      const firstBytes = Buffer.from('first paged object');
+      const lastBytes = Buffer.from('last paged object');
+      const firstKey = await publish(tenantId, firstBytes);
+      const missingKey = await publish(tenantId, Buffer.from('missing paged object'));
+      const lastKey = await publish(tenantId, lastBytes);
+      await storage.delete(CONTENT_FILES_BUCKET, missingKey);
+      const page = (after?: string) =>
+        db.withTenant(tenantId, (tx) => createExportObjects({ storage })(tx, { unit: 'content.file', tenantId, limit: 2, ...(after === undefined ? {} : { after }) }));
+
+      expect(await page()).toEqual({ objects: [manifestOf(firstKey, firstBytes)], next: missingKey });
+      expect(await page(missingKey)).toEqual({ objects: [manifestOf(lastKey, lastBytes)], next: null });
+    });
   });
 });

@@ -1,4 +1,4 @@
-/** Apply folder's public API: every export of the backfill, forward feed and batch modules. */
+/** Apply folder's public API: every export of the backfill, forward feed and batch modules, and the shared target hint. */
 export { runBackfill, BackfillAuthorityError } from './backfill.js';
 export type { BackfillContext, BackfillOptions, BackfillResult, BackfillTableResult } from './backfill.js';
 
@@ -17,6 +17,9 @@ export type {
   RestartTableResult,
 } from './feed.js';
 
+export { hintOf } from './targets.js';
+export type { TargetHint } from './targets.js';
+
 export {
   batchIdFor,
   createBatchSender,
@@ -24,11 +27,14 @@ export {
   createApplyTenantResolver,
   batchSizeOf,
   parseApplyFault,
+  parseInFlightKill,
+  inFlightKillLine,
   fanOut,
   umbrellaTenantId,
   APPLY_FAULT,
   DEFAULT_BATCH_SIZE,
   ApplyFaultConfigError,
+  InFlightKillMissedError,
 } from './batch.js';
 export type {
   BatchDirection,
@@ -41,5 +47,7 @@ export type {
   ApplyChange,
   ApplyColumn,
   ApplyFault,
+  ApplyFaultPoint,
+  InFlightKill,
   TenantResolver,
 } from './batch.js';

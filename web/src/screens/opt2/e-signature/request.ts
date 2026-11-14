@@ -2,7 +2,18 @@
 import { html, type SafeHtml } from '@/lib/html';
 import type { ShellView } from '@/shell/document';
 import type { ScreenContext } from '../../registry';
-import { block, canUse, controlGroup, gridTable, opt2View, pageHeader, postForm, textInput } from '../shared';
+import {
+  block,
+  canUse,
+  controlGroup,
+  gridTable,
+  opt2Label,
+  opt2View,
+  pageHeader,
+  postForm,
+  textInput,
+  valueRows,
+} from '../shared';
 import {
   ESIGNATURE,
   MISSING_ID,
@@ -29,19 +40,20 @@ export interface RequestBodyOptions {
 }
 
 const TITLE = 'Signature Request';
-const SUMMARY_FIELDS = [
-  ['Document', 'document_name'],
-  ['State', 'state'],
-  ['Signer', 'signer_user_id'],
-  ['Created', 'created'],
-  ['Created By', 'createdbyid'],
-  ['Document SHA-256', 'document_sha256'],
-] as const satisfies ReadonlyArray<readonly [string, keyof SignatureRequestDetail]>;
 const SIGNATURE_HEADERS: readonly string[] = ['Typed Name', 'Signed By', 'Signed At'];
 
-/** Whether the request takes the typed-name form: still PENDING and the token holds the signer role. */
+/**
+ * Whether the request takes the typed-name form: still PENDING, and the verified token holds the signer role and is
+ * the request's signer, whose id e-signature compares case-insensitively.
+ */
 function signable(ctx: ScreenContext, detail: SignatureRequestDetail): boolean {
-  return detail.state === 'PENDING' && canUse(ctx.req, SIGNER_ROLES);
+  const userId = ctx.req.user?.sub;
+  return (
+    detail.state === 'PENDING' &&
+    canUse(ctx.req, SIGNER_ROLES) &&
+    userId !== undefined &&
+    userId.toUpperCase() === detail.signer_user_id.toUpperCase()
+  );
 }
 
 /**
@@ -60,8 +72,15 @@ export async function loadRequest(ctx: ScreenContext): Promise<RequestData> {
 }
 
 /** Read-only label and value rows, as legacy edit views show stored values; a grid row would overflow on the hash. */
-function summaryRows(detail: SignatureRequestDetail): SafeHtml {
-  return html`${SUMMARY_FIELDS.map(([label, field]) => controlGroup(label, html`<div>${detail[field]}</div>`))}`;
+function summaryRows(ctx: ScreenContext, detail: SignatureRequestDetail): SafeHtml {
+  return valueRows([
+    ['Document', detail.document_name],
+    [opt2Label(ctx, 'State'), detail.state],
+    ['Signer', detail.signer_user_id],
+    [opt2Label(ctx, 'Created'), detail.created],
+    [opt2Label(ctx, 'Created By'), detail.createdbyid],
+    ['Document SHA-256', detail.document_sha256],
+  ]);
 }
 
 // BLITZY [A11Y]: legacy admin.css leaves the Sign button no focus change and 3.96:1 contrast; kept, legacy CSS only.
@@ -85,7 +104,7 @@ export function requestBody(ctx: ScreenContext, data: RequestData, opts: Request
   const id = requestIdOf(ctx.req.rc);
   const form = signable(ctx, detail) ? signForm(ctx, id, opts.typedName ?? '') : null;
   return html`${pageHeader(TITLE, requestLinks(ctx, id, REQUEST_SCREEN))}${alert}${block(
-    html`${summaryRows(detail)}${signatureTable(detail.signature)}${form}`,
+    html`${summaryRows(ctx, detail)}${signatureTable(detail.signature)}${form}`,
   )}`;
 }
 

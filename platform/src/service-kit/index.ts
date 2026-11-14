@@ -24,6 +24,8 @@ export {
   recordWritePosition,
   REQUEST_ID_HEADER,
   NoRequestContextError,
+  RequestAbortedError,
+  throwIfRequestAborted,
   type RequestContextStore,
 } from './context.js';
 export {
@@ -39,6 +41,7 @@ export {
 } from './client.js';
 export { createSignalBoundFetch } from './fetch.js';
 export {
+  abandonOnDisconnect,
   createService,
   defaultSurfaceOf,
   isUnstorableTextError,
@@ -53,6 +56,7 @@ export {
   type Opt2RequestScope,
   type LegacySurface,
 } from './create-service.js';
+export { recordEventScope } from './event-scope.js';
 export {
   csrfPreHandler,
   csrfTokenFrom,

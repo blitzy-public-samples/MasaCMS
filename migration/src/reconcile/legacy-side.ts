@@ -8,6 +8,7 @@ import {
   encodeKey,
   encodeRow,
   parseProgramTable,
+  programTableName,
   resolveTenant,
   sha256Hex,
   type CanonicalColumn,
@@ -62,6 +63,8 @@ export interface UnitTableShape {
   columns: CanonicalColumn[];
   /** Non-key IDENTITY columns left out, since rows the target creates get SQL Server-generated values on projection. */
   excludedColumns: string[];
+  /** Columns the owner stores as objects, outside `columns`: compared through its object manifest by {@link objectLegacyPath}. */
+  objectColumns: CanonicalColumn[];
   folded: boolean;
 }
 
@@ -88,6 +91,8 @@ export interface LegacyUnitRows {
   /** Rows of `tenantId` in `compareCanonicalRows` order; tenants are read once each, in ascending order, and one without rows yields none. */
   rows(tenantId: string): RowSource<CanonicalRow>;
   orphans: ReadonlyMap<string, LegacyOrphans>;
+  /** Objects per tenant the owner is expected to store for the shape's object columns, keyed by `legacyPath`; empty without such columns. */
+  objects: ReadonlyMap<string, ObjectEntry[]>;
   /** Removes any spill files, read or not. */
   dispose(): Promise<void>;
 }
@@ -522,7 +527,8 @@ export function toUnitRow(
 
 /**
  * Comparison shape of `unit`'s share of `legacyTable` in `database`: the owned columns in catalog order plus the key,
- * keyed when the live table has a primary key or the unit names key columns, without non-key IDENTITY columns.
+ * keyed when the live table has a primary key or the unit names key columns, without non-key IDENTITY columns and with
+ * the target's object columns set apart. @throws Error for an object column the table lacks or its manifest cannot address.
  */
 export async function describeUnitTable(
   deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog'>,
@@ -548,17 +554,41 @@ export async function describeUnitTable(
   const keyColumns = !keyed ? [] : described.folded ? [...baseKey, LEGACY_PROGRAM_ID_COLUMN] : baseKey;
   const keySet = new Set(keyColumns);
   const owned = target.ownedColumns === 'whole-table' ? undefined : new Set(target.ownedColumns.map((name) => spelled(name, 'owned')));
+  const objectNames = new Set(Object.keys(target.objectColumns).map((name) => spelled(name, 'object')));
   const identity = new Set(catalog.identityColumns);
 
   const columns: CanonicalColumn[] = [];
   const excludedColumns: string[] = [];
+  const objectColumns: CanonicalColumn[] = [];
   for (const column of described.columns) {
     const programColumn = described.folded && column.name === LEGACY_PROGRAM_ID_COLUMN;
     if (!programColumn && !keySet.has(column.name) && owned !== undefined && !owned.has(column.name)) continue;
-    if (!programColumn && !keySet.has(column.name) && identity.has(column.name)) excludedColumns.push(column.name);
+    if (objectNames.has(column.name)) objectColumns.push(column);
+    else if (!programColumn && !keySet.has(column.name) && identity.has(column.name)) excludedColumns.push(column.name);
     else columns.push(column);
   }
-  return { unit, owner: target.owner, legacyTable, keyed, keyColumns, columns, excludedColumns, folded: described.folded };
+  // A manifest `legacyPath` is `<table>/<key>`: it addresses one object column of a table keyed on one column.
+  if (objectColumns.length > 1 || (objectColumns.length === 1 && baseKey.length !== 1)) {
+    throw new Error(
+      `unit ${unit} stores object column(s) ${objectColumns.map((column) => column.name).join(', ')} of ${legacyTable} keyed on ` +
+        `[${baseKey.join(', ')}]; object manifests address one object column of a table with a one-column key`,
+    );
+  }
+  return { unit, owner: target.owner, legacyTable, keyed, keyColumns, columns, excludedColumns, objectColumns, folded: described.folded };
+}
+
+/** Owner-manifest `legacyPath` of a unit row's object: `<table>/<key value>`, the table `Program_<id>.<table>` for a folded row. */
+export function objectLegacyPath(
+  shape: Pick<UnitTableShape, 'unit' | 'legacyTable' | 'keyColumns' | 'folded'>,
+  row: Pick<CanonicalRow, 'row' | 'legacyProgramId'>,
+): string {
+  const key = shape.keyColumns[0];
+  const value = key === undefined ? undefined : row.row[key];
+  if (typeof value !== 'string') throw new Error(`a ${shape.legacyTable} row of unit ${shape.unit} has no key value to name its object`);
+  const { schema, table } = parseQualifiedName(shape.legacyTable);
+  if (!shape.folded) return `${qualifiedName(schema, table)}/${value}`;
+  if (row.legacyProgramId === undefined) throw new Error(`a folded ${shape.legacyTable} row of unit ${shape.unit} has no program to name its object`);
+  return `${programTableName(row.legacyProgramId, table)}/${value}`;
 }
 
 /** Literals of a predicate value list: quoted text or integers, in comparison form; undefined for anything else. */
@@ -778,7 +808,7 @@ export function unitRowSorter(shape: Pick<UnitTableShape, 'legacyTable' | 'keyed
   return new UnitRowSorter(shape, (encoding, legacyProgramId) => toUnitRow(shape, decodeRow(shape.columns, encoding), legacyProgramId), options);
 }
 
-/** Streams the unit's projected legacy rows into a bounded sorter, grouped by resolved tenant. */
+/** Streams the unit's projected legacy rows into a bounded sorter, grouped by resolved tenant, with the objects its object columns hold. */
 export async function readLegacyUnitRows(
   deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog' | 'config'>,
   shape: UnitTableShape,
@@ -789,11 +819,18 @@ export async function readLegacyUnitRows(
   const memo = indexesOf(tenants);
   const selector = await rowSelectorFor(deps, (spec) => valueIndex(deps, memo, spec), database, shape, target.rowPredicate);
   const tenantColumns = tenantColumnsOf(tenantSourceOf(factsFor(deps, shape.legacyTable)));
-  const encoded = shape.columns.flatMap((column) => (shape.folded && column.name === LEGACY_PROGRAM_ID_COLUMN ? [] : [column.name]));
+  const encoded = [...shape.columns, ...shape.objectColumns].flatMap((column) =>
+    shape.folded && column.name === LEGACY_PROGRAM_ID_COLUMN ? [] : [column.name],
+  );
   const columns = [...new Set([...encoded, ...selector.columns, ...tenantColumns])];
+  const valueOfColumn = (source: CanonicalRow, name: string): CanonicalValue => {
+    if (!(name in source.row)) throw new Error(`legacy table ${shape.legacyTable} of database ${database} yields no column ${name}`);
+    return source.row[name] ?? null;
+  };
 
   const sorter = unitRowSorter(shape, options);
   const orphans = new Map<string, LegacyOrphans>();
+  const objects = new Map<string, ObjectEntry[]>();
   try {
     const stream = streamLegacyTable(deps, {
       table: shape.legacyTable,
@@ -805,12 +842,14 @@ export async function readLegacyUnitRows(
       if (!selector.accepts(source.row)) continue;
       const { tenantId, orphan } = tenants.resolve(shape.legacyTable, source.row);
       const values: Record<string, CanonicalValue> = {};
-      for (const column of shape.columns) {
-        if (!(column.name in source.row)) throw new Error(`legacy table ${shape.legacyTable} of database ${database} yields no column ${column.name}`);
-        values[column.name] = source.row[column.name] ?? null;
-      }
+      for (const column of shape.columns) values[column.name] = valueOfColumn(source, column.name);
       const row = toUnitRow(shape, values, source.legacyProgramId);
       await sorter.add(tenantId, row);
+      // Only the size and hash of the bytes are kept; a NULL value stores no object.
+      for (const column of shape.objectColumns) {
+        const bytes = valueOfColumn(source, column.name);
+        if (bytes !== null) push(objects, tenantId, { key: objectLegacyPath(shape, row), size: Buffer.byteLength(bytes), sha256: sha256Hex(bytes), orphan });
+      }
       if (!orphan) continue;
       const listed = orphans.get(tenantId) ?? { keys: [], count: 0 };
       orphans.set(tenantId, listed);
@@ -828,6 +867,7 @@ export async function readLegacyUnitRows(
     counts: new Map(sortedTenants.map((tenantId) => [tenantId, sorter.count(tenantId)])),
     rows: (tenantId) => sorter.rows(tenantId),
     orphans,
+    objects,
     dispose: () => sorter.dispose(),
   };
 }

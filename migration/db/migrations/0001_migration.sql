@@ -31,7 +31,9 @@ CREATE TABLE migration.transition (
   requested_by text NOT NULL,
   started_at timestamp(3) without time zone NOT NULL,
   updated_at timestamp(3) without time zone NOT NULL,
-  finished_at timestamp(3) without time zone
+  finished_at timestamp(3) without time zone,
+  claimed_by text,
+  claim_expires_at timestamp(3) without time zone
 );
 CREATE UNIQUE INDEX transition_active_uidx ON migration.transition ((true)) WHERE state NOT IN ('completed', 'aborted', 'failed');
 

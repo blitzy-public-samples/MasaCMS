@@ -4,6 +4,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { OPEN_OPERATION_TABLE, UNIT_GATE_TABLE, qualified, type GatePhase, type GateState } from './ddl.js';
 import { withMetadata, withTenant, type MetadataTx, type Queryable, type TenantDb, type TenantTx } from '../tenancy/index.js';
 import { LegacyServiceUnavailableError } from '../legacy-compat/index.js';
+import { SAFE_ERROR_TEXT } from '../logging/safe-error.js';
 import { Roles } from '../auth/index.js';
 import { currentRequestContext } from '../service-kit/index.js';
 
@@ -72,6 +73,11 @@ export interface OpenGatesOptions {
   state?: Exclude<GateState, 'closed'>;
 }
 
+/** `phrase` followed by `units`: a gate error's safe text, never its caller's message, which may name operations and users. */
+function unitsText(phrase: string, units: readonly string[]): string {
+  return `${phrase} ${units.join(', ')}`;
+}
+
 /** A write waited its full budget on a closed gate. */
 export class GateClosedError extends LegacyServiceUnavailableError {
   override readonly name: string = 'GateClosedError';
@@ -81,6 +87,11 @@ export class GateClosedError extends LegacyServiceUnavailableError {
     message = `Unit gate closed for ${units.join(', ')}; the write waited out its budget`,
   ) {
     super(message, 'auto', 'unit-gate-closed');
+  }
+
+  /** Fixed phrase and units, for logs and spans. */
+  get [SAFE_ERROR_TEXT](): string {
+    return unitsText('Unit gate closed for', this.units);
   }
 }
 
@@ -94,6 +105,11 @@ export class GateRaceError extends LegacyServiceUnavailableError {
   ) {
     super(message, 'auto', 'unit-gate-race');
   }
+
+  /** Fixed phrase and units, for logs and spans. */
+  get [SAFE_ERROR_TEXT](): string {
+    return unitsText('Unit gate race for', this.units);
+  }
 }
 
 /** The target is not write-authoritative for a unit: its gate is `legacy` or missing. */
@@ -105,6 +121,11 @@ export class UnitNotAuthoritativeError extends LegacyServiceUnavailableError {
     message = `Target is not write-authoritative for ${units.join(', ')}`,
   ) {
     super(message, 'auto', 'unit-not-authoritative');
+  }
+
+  /** Fixed phrase and units, for logs and spans. */
+  get [SAFE_ERROR_TEXT](): string {
+    return unitsText('Target is not write-authoritative for', this.units);
   }
 }
 
@@ -118,6 +139,11 @@ export class UnitReadBlockedError extends LegacyServiceUnavailableError {
   ) {
     super(message, 'auto', 'unit-read-blocked');
   }
+
+  /** Fixed phrase and units, for logs and spans. */
+  get [SAFE_ERROR_TEXT](): string {
+    return unitsText('Legacy write window in progress for', this.units);
+  }
 }
 
 /** An operation could not start on a closed unit, or a gate could not close past an open operation, within the budget. */
@@ -130,6 +156,11 @@ export class OperationBlockedError extends LegacyServiceUnavailableError {
   ) {
     super(message, 'auto', 'operation-blocked');
   }
+
+  /** Fixed phrase and units, for logs and spans. */
+  get [SAFE_ERROR_TEXT](): string {
+    return unitsText('Open operation or closed gate blocks', this.units);
+  }
 }
 
 /** Compare-and-set refused: another holder owns the gate, the caller is not the holder, or the gate is missing. */
@@ -141,6 +172,11 @@ export class GateConflictError extends Error {
     message = `Unit gate compare-and-set refused for ${units.join(', ')}`,
   ) {
     super(message);
+  }
+
+  /** Fixed phrase and units, for logs and spans. */
+  get [SAFE_ERROR_TEXT](): string {
+    return unitsText('Unit gate compare-and-set refused for', this.units);
   }
 }
 

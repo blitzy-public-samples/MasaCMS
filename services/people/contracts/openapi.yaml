@@ -3328,6 +3328,44 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
           description: The user stayed closed by an open roster operation for 10 s, or identity or the database is unavailable.
+  /internal/v1/users/pool-user:
+    get:
+      operationId: readPoolUser
+      summary: Reads a user of the token site's public or private user pool by id, as the e-signature fixture's signer check reads `userManager.read`.
+      description: The pools come from the registry entry of the token's tenant; an id no person of either pool holds, a group id included, answers 404.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:e-signature
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - name: userid
+          in: query
+          required: true
+          description: The `UserID` to read, compared ignoring case.
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: The pool user's stored id, site and type.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PoolUser'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: No user token travels beside the invocation credential, or the user token is invalid.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The user stayed closed by an open roster operation for 10 s, the token's tenant has no registry entry, or identity or the database is unavailable.
 
   /internal/v1/migration/apply:
     post:
@@ -5839,6 +5877,24 @@ components:
           allOf:
             - $ref: '#/components/schemas/SerializedKeys'
             - $ref: '#/components/schemas/UserEntity'
+    PoolUser:
+      type: object
+      description: The `userBean` values the e-signature signer check reads.
+      required:
+        - userid
+        - siteid
+        - type
+      additionalProperties: false
+      properties:
+        userid:
+          type: string
+          description: The stored `UserID`.
+        siteid:
+          type: string
+          description: The user's `SiteID`.
+        type:
+          type: integer
+          description: '`getType()`: 2 for a user.'
     AddressEntity:
       type: object
       description: An address as the JSON API serializes it, with lower-cased keys and its extended attributes; a save adds `saveErrors` and `errors`.
@@ -6125,12 +6181,19 @@ components:
             $ref: '#/components/schemas/GroupListRow'
         nextn:
           $ref: '#/components/schemas/NextN'
+    CredentialFreeKey:
+      type: string
+      description: A key of a person row; `Password` and `PasswordCreated`, in any casing, are never sent.
+      not:
+        pattern: '^[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]([Cc][Rr][Ee][Aa][Tt][Ee][Dd])?$'
     UserListRow:
       type: object
-      description: One person row in bootstrap column casing; list rows carry the `cusers.listUsers` columns, search rows the full user field list with `photoFileExt`.
+      description: One person row in bootstrap column casing without the credential columns; list rows carry the `cusers.listUsers` columns, search rows the full user field list with `photoFileExt`.
       required:
         - UserID
       additionalProperties: true
+      propertyNames:
+        $ref: '#/components/schemas/CredentialFreeKey'
       properties:
         UserID:
           $ref: '#/components/schemas/CfUuid'
@@ -6142,8 +6205,6 @@ components:
           $ref: '#/components/schemas/NullableString'
         UserName:
           $ref: '#/components/schemas/NullableString'
-        PasswordCreated:
-          $ref: '#/components/schemas/NullableTimestamp'
         Email:
           $ref: '#/components/schemas/NullableString'
         Company:
@@ -6405,12 +6466,14 @@ components:
 
     PersonRecord:
       type: object
-      description: A `tusers` row with `Type=2` in bootstrap column casing without `Password`, plus `photoFileExt`; columns added later in the live catalog, such as `tablist`, follow.
+      description: A `tusers` row with `Type=2` in bootstrap column casing without `Password` and `PasswordCreated`, plus `photoFileExt`; columns added later in the live catalog, such as `tablist`, follow.
       required:
         - UserID
         - Type
         - SiteID
       additionalProperties: true
+      propertyNames:
+        $ref: '#/components/schemas/CredentialFreeKey'
       properties:
         UserID:
           $ref: '#/components/schemas/CfUuid'
@@ -6422,8 +6485,6 @@ components:
           $ref: '#/components/schemas/NullableString'
         UserName:
           $ref: '#/components/schemas/NullableString'
-        PasswordCreated:
-          $ref: '#/components/schemas/NullableTimestamp'
         Email:
           $ref: '#/components/schemas/NullableString'
         Company:
@@ -6578,6 +6639,7 @@ components:
         - tempIsPublic
         - lockedSuper
         - blockedUntil
+        - passwordExpired
         - addresses
         - privateGroups
         - publicGroups
@@ -6603,6 +6665,9 @@ components:
         blockedUntil:
           description: End of the person's login block after too many strikes; null when not blocked, new or without a username, including after removeBlock clears the strikes.
           $ref: '#/components/schemas/NullableTimestamp'
+        passwordExpired:
+          type: boolean
+          description: The person's `getPasswordExpired()`; false while passwords never expire or for a new person.
         addresses:
           type: array
           items:
@@ -6946,6 +7011,9 @@ components:
           $ref: '#/components/schemas/LegacyErrors'
         userBean:
           $ref: '#/components/schemas/PersonRecord'
+        passwordExpired:
+          type: boolean
+          description: The `getPasswordExpired()` of a failed person save's `userBean`, which the re-opened Edit User form shows.
     RouteResult:
       type: object
       description: Where the request redirects; `written` reports whether an address write changed anything.

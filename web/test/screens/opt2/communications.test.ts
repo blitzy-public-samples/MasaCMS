@@ -218,7 +218,6 @@ beforeEach(() => {
 });
 afterEach(() => restoreEnv());
 
-// Registrations, per-screen markup, paging and CSRF headers are asserted in communications/*.test.ts, not here.
 describe('communications screens in the admin shell', () => {
   it.each(SCREEN_CASES)('renders $name from legacy admin classes with Communications active', async (screen) => {
     const html = await pageHtml(screen.def, ctxFor(senderRequest(screen.rc)));

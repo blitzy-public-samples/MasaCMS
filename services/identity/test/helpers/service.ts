@@ -401,7 +401,7 @@ export async function buildIdentityApp(seed: IdentitySeed = defaultSeed(), opts:
   await registerSessionRoutes(app, { sessions });
   await registerCsrfRoutes(app, { csrf });
   await registerAccountRoutes(app, { accounts: { db, repo, events, clock: CLOCK, sleep: noSleep } });
-  await registerAccountReadRoutes(app, { db, accountReads: createAccountReads({ repo, clock: CLOCK, closedUserWaitMs: 0, gateWaitMs: 0 }) });
+  await registerAccountReadRoutes(app, { db, repo, accountReads: createAccountReads({ repo, clock: CLOCK, closedUserWaitMs: 0, gateWaitMs: 0 }), sleep: noSleep });
   await registerLegacyApiRoutes(app, { groups, login, sessions, csrf, rest, client: people, db, fetch: outbound.fetch, legacy: LEGACY_SETTINGS });
   if (opts.ready !== false) await app.ready();
 

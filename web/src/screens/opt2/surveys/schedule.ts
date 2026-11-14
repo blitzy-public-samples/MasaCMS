@@ -1,41 +1,39 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 import type { components } from '@/generated/clients/surveys';
-import { assertNotDenied, type GatewayResponse } from '@/lib/gateway-client';
 import { html, type SafeHtml } from '@/lib/html';
 import type { RequestContext } from '@/lib/request-context';
 import type { Opt2ActionDefinition, Opt2ScreenDefinition, ScreenContext } from '../../registry';
 import {
-  alertBox,
   block,
   controlGroup,
-  errorMessage,
   gridTable,
   opt2ActionUrl,
+  opt2Label,
   opt2View,
-  pageHeader,
   postForm,
   submitToService,
   textInput,
   type Opt2Write,
 } from '../shared';
 import {
+  NO_SURVEY,
   SURVEYS_MODULE,
   SURVEYS_ROLES,
   dateTimeText,
+  readOf,
   siteIdOf,
   surveyHeader,
   surveyIdOf,
-  surveysUrl,
+  unreadHeader,
   type Survey,
+  type Unread,
 } from './common';
 
 type ScheduledTaskView = components['schemas']['ScheduledTaskView'];
 type ScheduleRequest = components['schemas']['ScheduleRequest'];
 
 /** The survey with its schedule and the tasks communications holds for it, or the alert shown in their place. */
-export type ScheduleData =
-  | { readonly survey: Survey; readonly tasks: readonly ScheduledTaskView[] }
-  | { readonly alert: SafeHtml };
+export type ScheduleData = { readonly survey: Survey; readonly tasks: readonly ScheduledTaskView[] } | Unread;
 
 /** The schedule form's text: launch time as `yyyy-mm-ddThh:mm:ss` and reminder offsets in minutes, comma-separated. */
 interface ScheduleValues {
@@ -43,50 +41,27 @@ interface ScheduleValues {
   reminders: string;
 }
 
-/** A surveys read's answer: the contract's `{data}` body when `ok`, otherwise the body as relayed. */
-type ReadAnswer<T> =
-  | (GatewayResponse<{ data: T }> & { readonly ok: true })
-  | (GatewayResponse<unknown> & { readonly ok: false });
-
 // The service takes integer offsets; other text goes as NaN (JSON null), which it answers invalidParameters.
 const INTEGER = /^[+-]?\d+$/;
 
-/** Read answers the screen shows under its header: a malformed survey id (400) or no such survey of the site (404). */
-const SHOWN_READ_STATUSES: ReadonlySet<number> = new Set([400, 404]);
-
-/**
- * The `data` of a surveys read, or its envelope error as an alert on 400 or 404.
- * @throws GatewayDenialError On 401 or 403; the handlers answer the access gate's redirect.
- * @throws Error On any other non-2xx status.
- */
-function readData<T>(res: ReadAnswer<T>, operation: string): { readonly data: T } | { readonly alert: SafeHtml } {
-  if (res.ok) return { data: res.body.data };
-  assertNotDenied(res, 'surveys', operation);
-  if (!SHOWN_READ_STATUSES.has(res.status)) throw new Error(`${operation} answered HTTP ${res.status}`);
-  return { alert: alertBox(errorMessage(res)) };
-}
-
-/**
- * The survey (`getSurvey`), then its tasks (`listSurveyTasks`) with the CSRF pair of its id context; an empty id
- * is not sent, since `/v1/surveys/{surveyId}` has no empty-id form.
- */
+/** The survey (`getSurvey`), then its tasks (`listSurveyTasks`) with the CSRF pair of its id context. */
 async function loadSchedule(ctx: ScreenContext, surveyId: string): Promise<ScheduleData> {
-  if (surveyId === '') return { alert: alertBox('No survey selected.', 'info') };
+  if (surveyId === '') return NO_SURVEY;
   const query = { siteid: siteIdOf(ctx) };
-  const survey = readData(
+  const survey = readOf(
     await ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}', { params: { surveyId }, query }),
     'getSurvey',
   );
-  if ('alert' in survey) return survey;
+  if ('unread' in survey) return survey;
   // The form posts the stored id, which the service takes as the CSRF context, so the pair is issued for that id.
-  const storedId = survey.data.surveyId;
+  const storedId = survey.body.data.surveyId;
   const [tasks] = await Promise.all([
     ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}/tasks', { params: { surveyId }, query }),
     ctx.csrf.prefetch([storedId]),
   ]);
-  const taskList = readData(tasks, 'listSurveyTasks');
-  if ('alert' in taskList) return taskList;
-  return { survey: survey.data, tasks: taskList.data };
+  const taskList = readOf(tasks, 'listSurveyTasks');
+  if ('unread' in taskList) return taskList;
+  return { survey: survey.body.data, tasks: taskList.body.data };
 }
 
 /** The stored schedule as form text; empty when the survey was never scheduled. */
@@ -125,10 +100,7 @@ function renderSchedule(
   data: ScheduleData,
   { alert, values }: { alert?: SafeHtml; values?: ScheduleValues } = {},
 ): SafeHtml {
-  if ('alert' in data) {
-    const header = pageHeader('Schedule', [{ label: 'Surveys', href: surveysUrl(ctx, 'surveys') }]);
-    return html`${header}${alert}${data.alert}`;
-  }
+  if ('unread' in data) return html`${unreadHeader(ctx, 'schedule')}${alert}${data.unread}`;
   const { survey, tasks } = data;
   const shown = values ?? storedValues(survey);
   const form = postForm(
@@ -150,13 +122,14 @@ function renderSchedule(
     ]),
     'No reminders are scheduled.',
   );
+  const status = opt2Label(ctx, 'Status');
   const taskGrid = gridTable(
-    ['Task', 'Kind', 'Scheduled For', 'Status'],
+    ['Task', 'Kind', 'Scheduled For', status],
     tasks.map((task) => [task.taskName, task.kind, dateTimeText(task.scheduleTime), task.status]),
     'No launch or reminder tasks are scheduled.',
   );
   return html`${surveyHeader(ctx, survey, 'schedule')}${alert}${block(
-    html`<p>Status: ${survey.status}</p>${form}<h2>Reminders</h2>${reminders}<h2>Tasks</h2>${taskGrid}`,
+    html`<p>${status}: ${survey.status}</p>${form}<h2>Reminders</h2>${reminders}<h2>Tasks</h2>${taskGrid}`,
   )}`;
 }
 

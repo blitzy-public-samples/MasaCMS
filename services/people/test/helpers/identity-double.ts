@@ -1,6 +1,7 @@
 /** Identity as its contract declares it: an in-process service client with identity's roster account-operation states. */
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
+import { Roles, moduleRole } from '@opt2/platform/auth';
 import {
   apiUnavailableResponse,
   cfDateTimeFormat,
@@ -340,6 +341,16 @@ function legacyAnswer(response: SerializedLegacyResponse): Answer {
 const unavailable = (): Answer => legacyAnswer(apiUnavailableResponse());
 const notFound = (): Answer => legacyAnswer(legacyErrorResponse('invalidMethodCall', { mura404: true }));
 const badRequest = (): Answer => legacyAnswer(legacyErrorResponse('badRequest'));
+const forbidden = (): Answer => ({ ...legacyAnswer(legacyErrorResponse('authorization')), status: 403 });
+
+const USERS_MODULE = moduleRole('00000000000000000000000000000000008');
+const SITE_MANAGER_MODULE = moduleRole('00000000000000000000000000000000000');
+
+/** Identity's cUsers gate of the forwarded user token: S2, a site admin, or the Users and Site Manager grants together. */
+function cusersCaller(): boolean {
+  const roles = currentRequestContext()?.user?.roles ?? [];
+  return roles.includes(Roles.s2) || roles.includes(Roles.siteAdmin) || (roles.includes(USERS_MODULE) && roles.includes(SITE_MANAGER_MODULE));
+}
 
 /** The ServiceUnavailableError the service client raises for a refused, reset or timed-out call. */
 function refused(code: 'ECONNREFUSED' | 'ECONNRESET' | 'ETIMEDOUT'): ServiceUnavailableError {
@@ -474,6 +485,14 @@ function ilikeC(pattern: string): (value: string) => boolean {
     .join('');
   const regex = new RegExp(`^${source}$`, 'u');
   return (value) => regex.test(lower(value));
+}
+
+/** `readMembershipIDs`' `order by tusers.groupname`: NULL names first, then names ignoring case, ties by id. */
+function byGroupName(a: DoubleGroup, b: DoubleGroup): number {
+  const left = a.GroupName?.toLowerCase() ?? null;
+  const right = b.GroupName?.toLowerCase() ?? null;
+  if (left !== right) return left === null ? -1 : right === null ? 1 : left < right ? -1 : 1;
+  return charKey(a.UserID) < charKey(b.UserID) ? -1 : charKey(a.UserID) > charKey(b.UserID) ? 1 : 0;
 }
 
 /** Legacy's group order: `Perm` descending with NULLs last, then group name with NULLs first, ignoring case. */
@@ -843,7 +862,19 @@ export function createIdentityDouble(options: IdentityDoubleOptions = {}): Ident
       return json({ items: userIds.map((userId) => ({ userId, groupIds: [...groupIdsOf(userId)] })) });
     },
 
+    // `readMembershipIDs` inner-joins the groups: a held id naming no seeded group is left out.
+    async getAccountMemberships(call) {
+      const userId = call.params.userId ?? '';
+      if (!(await awaitOpen([userId], call))) return unavailable();
+      const held = groupIdsOf(userId).flatMap((groupId) => {
+        const group = groups.get(charKey(groupId));
+        return group === undefined ? [] : [group];
+      });
+      return json({ groupIds: held.sort(byGroupName).map((group) => group.UserID) });
+    },
+
     async listUserMemberships(call) {
+      if (!cusersCaller()) return forbidden();
       const userId = call.params.userId ?? '';
       if (!(await awaitOpen([userId], call))) return unavailable();
       const summary = ({ UserID, GroupName }: DoubleGroup): Record<string, unknown> => ({ UserID, GroupName });

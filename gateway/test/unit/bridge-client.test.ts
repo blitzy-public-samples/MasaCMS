@@ -22,13 +22,20 @@ import {
   type LegacyDescribeUser,
   type LegacyUsedToken,
 } from '../../src/session/bridge-client.js';
-import { TEST_BRIDGE_KEY, TEST_CLOCK, UNREACHABLE_URL } from '../helpers/env.js';
-import { sendBytes, sendJson, startHttpDouble, type HttpDouble, type RecordedRequest } from '../helpers/http-double.js';
+import { TEST_BRIDGE_KEY, TEST_CLOCK } from '../helpers/env.js';
 import {
+  createInProcessDouble,
+  refusingFetch,
+  sendBytes,
+  sendJson,
+  type InProcessDouble,
+  type RecordedRequest,
+} from '../helpers/http-double.js';
+import {
+  createInProcessLegacyOrigin,
   parseWireTime,
-  startLegacyOrigin,
   type CreatedSession,
-  type LegacyOrigin,
+  type InProcessLegacyOrigin,
   type LegacySession,
 } from '../helpers/legacy-origin.js';
 
@@ -187,14 +194,20 @@ async function failureOf(pending: Promise<unknown>): Promise<ServiceUnavailableE
   return error as ServiceUnavailableError;
 }
 
-let double: HttpDouble;
+let double: InProcessDouble;
 
 function client(overrides: Partial<BridgeClientOptions> = {}): BridgeClient {
-  return createBridgeClient({ legacyOrigin: double.url, hmacKey: VECTOR_KEY, clock: fixedClock(NOW), ...overrides });
+  return createBridgeClient({
+    legacyOrigin: double.url,
+    hmacKey: VECTOR_KEY,
+    clock: fixedClock(NOW),
+    fetch: double.fetch,
+    ...overrides,
+  });
 }
 
-beforeAll(async () => {
-  double = await startHttpDouble(answerByOp);
+beforeAll(() => {
+  double = createInProcessDouble(answerByOp);
 });
 
 beforeEach(() => {
@@ -331,6 +344,15 @@ describe('createBridgeClient', () => {
     expect(timeout).toHaveBeenCalledWith(SERVICE_CALL_TIMEOUT_MS);
   });
 
+  it('sends through the global fetch when none is injected', async () => {
+    const globalFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(double.fetch);
+
+    await expect(client({ fetch: undefined }).describe(COOKIES, CALL)).resolves.toEqual({ body: DESCRIBE, setCookies: [] });
+
+    expect(globalFetch).toHaveBeenCalledTimes(1);
+    expect(double.requests[0]?.url).toBe(`${SESSION_PAGE}?op=describe`);
+  });
+
   it('strips trailing slashes from the legacy origin', async () => {
     await client({ legacyOrigin: `${double.url}//` }).describe(COOKIES, CALL);
 
@@ -398,7 +420,7 @@ describe('createBridgeClient', () => {
   });
 
   it.each(OP_CASES)('session.$op fails closed when the legacy origin refuses connections', async (c) => {
-    const failure = await failureOf(c.invoke(client({ legacyOrigin: UNREACHABLE_URL })));
+    const failure = await failureOf(c.invoke(client({ fetch: refusingFetch() })));
 
     expect(failure.cause).toBeInstanceOf(TypeError);
     expect(double.requests).toHaveLength(0);
@@ -533,10 +555,16 @@ function wireDate(text: string): Date {
 }
 
 describe('createBridgeClient against the legacy origin double', () => {
-  let legacy: LegacyOrigin;
+  let legacy: InProcessLegacyOrigin;
 
   const bridge = (overrides: Partial<BridgeClientOptions> = {}): BridgeClient =>
-    createBridgeClient({ legacyOrigin: legacy.url, hmacKey: TEST_BRIDGE_KEY, clock: TEST_CLOCK, ...overrides });
+    createBridgeClient({
+      legacyOrigin: legacy.url,
+      hmacKey: TEST_BRIDGE_KEY,
+      clock: TEST_CLOCK,
+      fetch: legacy.fetch,
+      ...overrides,
+    });
 
   // A logged-in tenant-a session as Masa's login left it, with a two-entry CSRF ledger.
   const tenantSession = (): CreatedSession =>
@@ -562,8 +590,8 @@ describe('createBridgeClient against the legacy origin double', () => {
     return session;
   };
 
-  beforeAll(async () => {
-    legacy = await startLegacyOrigin();
+  beforeAll(() => {
+    legacy = createInProcessLegacyOrigin();
   });
 
   beforeEach(() => {
@@ -680,7 +708,13 @@ describe('createBridgeClient against the legacy origin double', () => {
 
 describe('createSiteListClient', () => {
   const sites = (overrides: Partial<BridgeClientOptions> = {}) =>
-    createSiteListClient({ legacyOrigin: double.url, hmacKey: VECTOR_KEY, clock: fixedClock(NOW), ...overrides });
+    createSiteListClient({
+      legacyOrigin: double.url,
+      hmacKey: VECTOR_KEY,
+      clock: fixedClock(NOW),
+      fetch: double.fetch,
+      ...overrides,
+    });
 
   it('sends a signed GET to site.cfm?op=list without cookies, as the bridge bot', async () => {
     double.setHandler((_req, res) => {

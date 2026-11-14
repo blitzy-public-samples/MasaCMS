@@ -42,7 +42,10 @@ function actionOf(slug: string): Opt2ActionDefinition {
   return def;
 }
 
-/** A post by the tenant-a holder of `role` carrying `fields` and the posted CSRF pair, over the fixture answers. */
+/**
+ * A post by the tenant-a holder of `role`, token user the fixture signer, carrying `fields` and the posted CSRF pair,
+ * over the fixture answers.
+ */
 function postBy(
   role: Role,
   fields: Fields,
@@ -50,7 +53,7 @@ function postBy(
 ): ScreenContext & { gateway: FakeGatewayClient } {
   const rc = { ...fields, [CSRF_FIELD_TOKEN]: POSTED_CSRF.token, [CSRF_FIELD_EXPIRES]: POSTED_CSRF.expires };
   return makeScreenContext({
-    req: opt2RoleRequest(role, { mode: 'opt2', rc }),
+    req: opt2RoleRequest(role, { mode: 'opt2', rc, user: { sub: ESIGNATURE_IDS.signer } }),
     gateway: fakeGatewayClient({ ...eSignatureAnswers, ...routes }),
   });
 }

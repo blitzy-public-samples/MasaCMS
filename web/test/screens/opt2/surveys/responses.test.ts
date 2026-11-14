@@ -1,10 +1,11 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 // The surveys responses screen: DOM snapshot of single- and multi-site responses, the empty list, whole answers,
-// paging, safe markup, denials and unavailability.
+// paging, safe markup, denials, unavailability and unread surveys.
+import { load } from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
-import { SURVEY_IDS, surveyResponses } from '../../../fixtures/opt2/surveys';
-import type { DomModel } from '../../../helpers/dom-model';
+import { SURVEY_IDS, multiSiteSurvey, scheduleInvalid, surveyResponses } from '../../../fixtures/opt2/surveys';
+import { fragmentModel, type DomControl, type DomModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
 import { routeKey } from '../../../helpers/fake-gateway';
 import { renderScreenPage } from '../../../helpers/screen-context';
@@ -28,12 +29,36 @@ vi.mock('@/screens/registry', () => ({ shellHooks: Object.freeze({ secondaryMenu
 const MULTI = SURVEY_IDS.multiSiteSurvey;
 const SINGLE = SURVEY_IDS.singleSiteSurvey;
 const RESPONSES_ROUTE = routeKey('GET', 'surveys', `/v1/surveys/${MULTI}/responses`);
+const MARKUP = '{"q1":"<script>alert(1)</script>"}';
 
 const headerLinks = (surveyId: string) => [
   { href: `/opt2/admin/surveys/surveys?siteid=${SITE}`, text: 'Surveys' },
   { href: `/opt2/admin/surveys/schedule?siteid=${SITE}&surveyid=${surveyId}`, text: 'Schedule' },
   { href: `/opt2/admin/surveys/targets?siteid=${SITE}&surveyid=${surveyId}`, text: 'Targets' },
 ];
+
+/** The read-only answers textarea of a response, its value left to each case. */
+const ANSWERS_CONTROL: Omit<DomControl, 'value'> = {
+  tag: 'textarea',
+  name: 'answers',
+  type: 'textarea',
+  checked: false,
+  selected: [],
+  options: [],
+};
+
+/** Each response block's label and value pairs in order, a textarea's value as its raw content. */
+function responseEntries(html: string): string[][][] {
+  const $ = load(html);
+  return $('.block-content .block-content')
+    .toArray()
+    .map((content) =>
+      $(content)
+        .children('.mura-control-group')
+        .toArray()
+        .map((group) => [$(group).children('label').text(), $(group).children('div, textarea').text()]),
+    );
+}
 
 let restoreEnv: () => void;
 beforeEach(() => {
@@ -47,43 +72,44 @@ describe('surveys responses screen', () => {
       label: 'a multi-site survey answered from tenant-b',
       surveyId: MULTI,
       title: 'Cross-program timesheet experience',
-      rows: [
-        [
-          'tenant-b',
-          SURVEY_IDS.tenantBRespondent,
-          '{"q1":"5","q2":"Approvals arrive within a day."}',
-          '2026-06-30 09:30:00',
-        ],
-      ],
+      site: 'tenant-b',
+      respondent: SURVEY_IDS.tenantBRespondent,
+      answers: '{"q1":"5","q2":"Approvals arrive within a day."}',
+      submitted: '2026-06-30 09:30:00',
     },
     {
       label: 'a single-site survey answered from its own site',
       surveyId: SINGLE,
       title: 'Program 1 onboarding check-in',
-      rows: [
-        [
-          'tenant-a',
-          SURVEY_IDS.tenantARespondent,
-          '{"q1":"4","q2":"The welcome pack was clear."}',
-          '2026-06-30 08:45:00',
-        ],
-      ],
+      site: 'tenant-a',
+      respondent: SURVEY_IDS.tenantARespondent,
+      answers: '{"q1":"4","q2":"The welcome pack was clear."}',
+      submitted: '2026-06-30 08:45:00',
     },
-  ])('lists the responses of $label with the respondent site (DOM snapshot)', async ({ surveyId, title, rows }) => {
+  ])('lists the responses of $label with the respondent site (DOM snapshot)', async (row) => {
+    const { surveyId, title, answers } = row;
     const gateway = surveysGateway();
 
-    const model = await bodyModel('responses', managerRequest({ surveyid: surveyId }), gateway);
+    const html = await bodyHtml('responses', managerRequest({ surveyid: surveyId }), gateway);
 
-    expect(model).toEqual<DomModel>({
+    expect(fragmentModel(html)).toEqual<DomModel>({
       title: '',
       headings: [`Responses: ${title}`],
-      labels: [],
-      controls: [],
+      labels: ['Respondent Site', 'Respondent', 'Answers', 'Submitted'],
+      controls: [{ ...ANSWERS_CONTROL, value: answers }],
       buttons: [],
       links: headerLinks(surveyId),
-      tables: [{ headers: ['Respondent Site', 'Respondent', 'Answers', 'Submitted'], rows }],
+      tables: [],
       alerts: [],
     });
+    expect(responseEntries(html)).toEqual([
+      [
+        ['Respondent Site', row.site],
+        ['Respondent', row.respondent],
+        ['Answers', answers],
+        ['Submitted', row.submitted],
+      ],
+    ]);
     expect(surveysCalls(gateway).map(({ method, path, query }) => ({ method, path, query }))).toEqual([
       { method: 'GET', path: `/v1/surveys/${surveyId}`, query: { siteid: SITE } },
       {
@@ -105,17 +131,27 @@ describe('surveys responses screen', () => {
     expect(html).not.toContain('Previous');
   });
 
-  it('shows answers longer than 80 characters whole and unparsed', async () => {
+  it('shows long answers whole and unparsed in a labelled read-only control of each response', async () => {
     const answers = `{"q1":"3","q2":"${'Approvals & reminders arrive late on "Fridays". '.repeat(4)}"}`;
     const [response] = surveyResponses.multiSite;
+    const [other] = surveyResponses.singleSite;
     const gateway = surveysGateway({
-      [RESPONSES_ROUTE]: { status: 200, body: { data: [{ ...response, answers }], total: 1 } },
+      [RESPONSES_ROUTE]: { status: 200, body: { data: [{ ...response, answers }, other], total: 2 } },
     });
 
-    const model = await bodyModel('responses', managerRequest({ surveyid: MULTI }), gateway);
+    const $ = load(await bodyHtml('responses', managerRequest({ surveyid: MULTI }), gateway));
 
-    expect(answers.length).toBeGreaterThan(80);
-    expect(model.tables[0]?.rows[0]?.[2]).toBe(answers);
+    expect(answers.length).toBeGreaterThan(200);
+    const controls = $('textarea').toArray().map((el) => $(el));
+    expect(controls.map((control) => control.attr('id'))).toEqual([
+      `answers-${response?.responseId}`,
+      `answers-${other?.responseId}`,
+    ]);
+    const [long] = controls;
+    expect(long?.text()).toBe(answers);
+    expect(long?.is('[readonly]')).toBe(true);
+    expect($(`label[for="answers-${response?.responseId}"]`).text()).toBe('Answers');
+    expect($('table, .var-width')).toHaveLength(0);
   });
 
   it.each([
@@ -129,12 +165,19 @@ describe('surveys responses screen', () => {
     await expect(load).rejects.toBeInstanceOf(GatewayUnavailableError);
   });
 
-  it('encodes stored answers as text', async () => {
-    const answers = '{"q1":"<script>alert(1)</script>"}';
-    const [response] = surveyResponses.multiSite;
-    const gateway = surveysGateway({
-      [RESPONSES_ROUTE]: { status: 200, body: { data: [{ ...response, answers }], total: 1 } },
-    });
+  it.each([
+    {
+      field: 'stored answers',
+      route: RESPONSES_ROUTE,
+      reply: { status: 200, body: { data: [{ ...surveyResponses.multiSite[0], answers: MARKUP }], total: 1 } },
+    },
+    {
+      field: 'the survey title after the bundle label of the header',
+      route: routeKey('GET', 'surveys', `/v1/surveys/${MULTI}`),
+      reply: { status: 200, body: { data: { ...multiSiteSurvey, title: MARKUP } } },
+    },
+  ])('encodes $field as text', async ({ route, reply }) => {
+    const gateway = surveysGateway({ [route]: reply });
 
     const html = await bodyHtml('responses', managerRequest({ surveyid: MULTI }), gateway);
 
@@ -172,13 +215,40 @@ describe('surveys responses screen', () => {
     expect(page).toEqual({ kind: 'redirect', location });
   });
 
-  it.each<{ label: string; rc: Record<string, string>; status: number }>([
-    { label: 'holds no such survey', rc: { surveyid: SURVEY_IDS.tenantARespondent }, status: 404 },
-    { label: 'refuses an absent survey id', rc: {}, status: 400 },
-  ])('fails the render when the service $label', async ({ rc, status }) => {
-    const gateway = surveysGateway({ [routeKey('GET', 'surveys', '/v1/surveys/')]: { status: 400 } });
-    const ctx = contextFor(managerRequest(rc), gateway);
+  it.each<{ label: string; rc: Record<string, string>; alert: DomModel['alerts'][number]; reads: number }>([
+    {
+      label: 'names no survey',
+      rc: {},
+      alert: { text: 'No survey selected.', className: 'alert alert-info' },
+      reads: 0,
+    },
+    {
+      label: 'names a malformed survey id (400)',
+      rc: { surveyid: 'bad' },
+      alert: { text: 'Invalid parameters', className: 'alert alert-error' },
+      reads: 2,
+    },
+    {
+      label: 'names a survey the site does not hold (404)',
+      rc: { surveyid: SURVEY_IDS.tenantARespondent },
+      alert: { text: 'Not Found', className: 'alert alert-error' },
+      reads: 2,
+    },
+  ])('shows the bare header and the alert when the request $label', async ({ rc, alert, reads }) => {
+    const gateway = surveysGateway({ [routeKey('GET', 'surveys', '/v1/surveys/bad')]: scheduleInvalid });
 
-    await expect(surveysScreen('responses').load(ctx)).rejects.toThrow(`getSurvey answered HTTP ${status}`);
+    const model = await bodyModel('responses', managerRequest(rc), gateway);
+
+    expect(model).toEqual<DomModel>({
+      title: '',
+      headings: ['Responses'],
+      labels: [],
+      controls: [],
+      buttons: [],
+      links: [{ href: `/opt2/admin/surveys/surveys?siteid=${SITE}`, text: 'Surveys' }],
+      tables: [],
+      alerts: [alert],
+    });
+    expect(surveysCalls(gateway)).toHaveLength(reads);
   });
 });

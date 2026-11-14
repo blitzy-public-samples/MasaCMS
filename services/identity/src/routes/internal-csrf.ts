@@ -25,6 +25,7 @@ const CONSUME_CALLERS = [
   'identity',
   'gateway',
   'communications',
+  'e-signature',
   'finance',
   'reporting',
   'surveys',

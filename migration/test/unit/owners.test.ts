@@ -379,6 +379,18 @@ describe('createOwnersClient', () => {
     ]);
   });
 
+  it.each<[string, Partial<ServiceResponse>, Map<string, string>]>([
+    ['a deleted object with its write position', { headers: { 'X-Opt2-Write-Position': 'strategies-content=78' }, body: { deleted: true } }, new Map([['strategies-content', '78']])],
+    ['a key the owner no longer records without one', { body: { deleted: false } }, new Map()],
+  ])('deleteObject deletes one object of strategies-content by key and answers %s', async (_label, answer, writePositions) => {
+    const key = `${TENANT}/${FILE_ID}_small.jpg`;
+    const body = { key, ...(answer.body as { deleted: boolean }) };
+    const { owners, calls } = routedClient({ 'strategies-content DELETE /internal/v1/migration/objects': [{ ...answer, body }] });
+
+    await expect(owners.deleteObject(key)).resolves.toEqual({ ...body, writePositions });
+    expect(calls).toEqual([{ service: 'strategies-content', method: 'DELETE', path: '/internal/v1/migration/objects', query: { key }, userToken: null }]);
+  });
+
   it('getAttachmentObject streams one finance attachment by tenant and attachment id as its undecoded bytes', async () => {
     const bytes = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
     const served = Readable.from([bytes]);
@@ -457,6 +469,15 @@ describe('createOwnersClient', () => {
       status: 404,
       body: { error: 'notFound' },
       call: (owners) => owners.getObject(`${TENANT}/${FILE_ID}.pdf`),
+    },
+    {
+      name: 'deleteObject answering 500',
+      owner: 'strategies-content',
+      method: 'DELETE',
+      path: '/internal/v1/migration/objects',
+      status: 500,
+      body: { apiversion: 'v1', method: 'invalid', error: { message: 'Internal error', code: 'internal' } },
+      call: (owners) => owners.deleteObject(`${TENANT}/${FILE_ID}.pdf`),
     },
     {
       name: 'getAttachmentObject answering 404',

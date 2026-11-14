@@ -1,4 +1,4 @@
-// Unit tests for the unit catalog's site-column lookup over the committed ownership file.
+// Unit tests for the unit catalog's site-column and object-column lookups over the committed ownership file.
 import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
@@ -46,5 +46,26 @@ describe('UnitCatalog.siteColumnOf', () => {
 
   it('rejects a table the ownership file does not list', () => {
     expect(() => catalog.siteColumnOf('tnosuchtable')).toThrow(UnknownLegacyTableError);
+  });
+});
+
+describe('LegacyTableTarget.objectColumns', () => {
+  const targets = tables.flatMap((table) => catalog.unitsForLegacyTable(table));
+
+  it('maps the object columns of exactly the finance attachment and export job targets to their buckets', () => {
+    const backed = Object.fromEntries(targets.flatMap((target) => (Object.keys(target.objectColumns).length === 0 ? [] : [[target.unit, target.objectColumns]])));
+
+    expect(backed).toEqual({ 'finance.attachment': { content: 'finance-attachments' }, 'reporting.export_job': { output: 'reporting-exports' } });
+  });
+
+  it.each([
+    ['a folded program table', 'Program_2.finance_attachment', 'finance.attachment'],
+    ['a synthetic table', 'synthetic.export_job', 'reporting.export_job'],
+    ['a table without object columns', 'tcontent', 'content.content'],
+  ])('freezes the object columns of %s', (_label, table, unit) => {
+    const target = catalog.unitsForLegacyTable(table).find((candidate) => candidate.unit === unit);
+
+    expect(target).toBeDefined();
+    expect(Object.isFrozen(target?.objectColumns)).toBe(true);
   });
 });

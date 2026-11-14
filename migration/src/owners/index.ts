@@ -18,6 +18,8 @@ export type {
   PutObjectResult,
   PutObjectParams,
   FileObject,
+  DeleteObjectResult,
+  DeletedFileObject,
   ExportParams,
   ChangesParams,
   PositionParams,

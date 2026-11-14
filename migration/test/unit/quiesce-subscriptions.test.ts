@@ -7,33 +7,44 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createPubSub,
+  createWitnessSubscription,
   isPushConfig,
   listOpt2Subscriptions,
+  listSubscriptionIds,
+  listTopicIds,
+  openMessageLease,
   peekBacklog,
   peekDeadLetterEventIds,
   readPushConfig,
   redactEndpoint,
+  removeSubscription,
   setPushConfig,
   subscriptionId,
+  witnessName,
+  witnessPrefix,
 } from '../../src/quiesce/subscriptions.js';
-import type { PubSubLike, SavedPushConfig, SubscriptionLike } from '../../src/quiesce/subscriptions.js';
+import type { MessageLease, PubSubLike, SavedPushConfig, SubscriptionLike } from '../../src/quiesce/subscriptions.js';
 
 type PullRequest = { subscription: string; maxMessages: number; returnImmediately: boolean };
 interface PulledMessage {
-  messageId?: string;
-  attributes?: Record<string, string>;
-  data?: Buffer;
+  messageId?: string | null;
+  attributes?: Record<string, string> | null;
+  data?: Buffer | string | null;
+  publishTime?: { seconds?: number | string | null; nanos?: number | null } | null;
+  orderingKey?: string | null;
 }
 interface PullResponse {
-  receivedMessages?: { ackId?: string | null; message?: PulledMessage }[] | null;
+  receivedMessages?: { ackId?: string | null; message?: PulledMessage | null; deliveryAttempt?: number | null }[] | null;
 }
 type ModifyAckDeadlineRequest = { subscription: string; ackIds: string[]; ackDeadlineSeconds: number };
+type AcknowledgeRequest = { subscription: string; ackIds: string[] };
 type SubscriptionMetadata = Awaited<ReturnType<SubscriptionLike['getMetadata']>>[0];
 
 const subscriber = vi.hoisted(() => ({
   created: [] as unknown[],
   pull: vi.fn<(request: PullRequest) => Promise<[PullResponse]>>(),
   modifyAckDeadline: vi.fn<(request: ModifyAckDeadlineRequest) => Promise<unknown[]>>(() => Promise.resolve([{}])),
+  acknowledge: vi.fn<(request: AcknowledgeRequest) => Promise<unknown[]>>(() => Promise.resolve([{}])),
   close: vi.fn<() => Promise<void>>(() => Promise.resolve()),
 }));
 
@@ -49,6 +60,9 @@ vi.mock('@google-cloud/pubsub', async (importOriginal) => {
     }
     modifyAckDeadline(request: ModifyAckDeadlineRequest): Promise<unknown[]> {
       return subscriber.modifyAckDeadline(request);
+    }
+    acknowledge(request: AcknowledgeRequest): Promise<unknown[]> {
+      return subscriber.acknowledge(request);
     }
     close(): Promise<void> {
       return subscriber.close();
@@ -101,11 +115,13 @@ function fakeSubscription(name: string, metadata: SubscriptionMetadata = {}) {
   } satisfies SubscriptionLike;
 }
 
-/** In-memory client listing `subscriptions`; `pullOnce` and `peekEventIds` are present only when given. */
+/** In-memory client listing `subscriptions`; `pullOnce`, `peekEventIds` and `leaseMessages` are present only when given, like `extra`'s members. */
 function fakePubSub(
   subscriptions: SubscriptionLike[],
   pullOnce?: (fullName: string) => Promise<number>,
   peekEventIds?: (fullName: string) => Promise<string[]>,
+  leaseMessages?: (fullName: string) => Promise<MessageLease>,
+  extra: Pick<PubSubLike, 'topicIds' | 'createWitness' | 'deleteSubscription'> = {},
 ): PubSubLike {
   return {
     projectId: PROJECT,
@@ -114,6 +130,8 @@ function fakePubSub(
     close: () => Promise.resolve(),
     ...(pullOnce === undefined ? {} : { pullOnce }),
     ...(peekEventIds === undefined ? {} : { peekEventIds }),
+    ...(leaseMessages === undefined ? {} : { leaseMessages }),
+    ...extra,
   };
 }
 
@@ -141,6 +159,7 @@ describe('listOpt2Subscriptions', () => {
       'Timesheets.people.person.archived.v1',
       'timesheets.people.person.archived',
       'timesheets.people.person.archived.v0',
+      witnessName('pubsub-redelivery', '0badc0de', GROUP_CHANGED),
     ].map((name) => fakeSubscription(fullName(name), { enableMessageOrdering: true }));
     const excluded = [replay, ...foreign];
 
@@ -272,6 +291,80 @@ describe('peekDeadLetterEventIds with an injected client', () => {
   });
 });
 
+describe('witness names', () => {
+  it('names a witness witness_<fault>_<runId>.<topic> under the fault prefix, which no OPT-2 or DLQ replay name matches', () => {
+    const name = witnessName('pubsub-redelivery', '0badc0de', GROUP_CHANGED);
+
+    expect(name).toBe(`witness_pubsub-redelivery_0badc0de.${GROUP_CHANGED}`);
+    expect(name.startsWith(witnessPrefix('pubsub-redelivery'))).toBe(true);
+    expect(name.startsWith(witnessPrefix('pubsub'))).toBe(false);
+    expect(() => consumerOfSubscription(name)).toThrow();
+    expect(name.endsWith('.dlq.replay')).toBe(false);
+  });
+});
+
+describe('listSubscriptionIds', () => {
+  it('returns the short ids that start with the prefix, sorted, without reading metadata', async () => {
+    const names = [
+      witnessName('pubsub-redelivery', 'bbbbbbbb', GROUP_CHANGED),
+      PEOPLE_GROUP,
+      witnessName('pubsub-redelivery', 'aaaaaaaa', ARCHIVED),
+      witnessName('duplicate-batch', 'aaaaaaaa', ARCHIVED),
+    ];
+    const subscriptions = names.map((name) => fakeSubscription(fullName(name)));
+
+    expect(await listSubscriptionIds(fakePubSub(subscriptions), witnessPrefix('pubsub-redelivery'))).toStrictEqual([
+      witnessName('pubsub-redelivery', 'aaaaaaaa', ARCHIVED),
+      witnessName('pubsub-redelivery', 'bbbbbbbb', GROUP_CHANGED),
+    ]);
+    for (const subscription of subscriptions) expect(subscription.getMetadata).not.toHaveBeenCalled();
+  });
+});
+
+describe('witness helpers with an injected client', () => {
+  const WITNESS = witnessName('pubsub-redelivery', '0badc0de', GROUP_CHANGED);
+
+  it('lists the topics topicIds returns', async () => {
+    const topicIds = vi.fn<() => Promise<string[]>>(() => Promise.resolve([ARCHIVED, GROUP_CHANGED]));
+
+    expect(await listTopicIds(fakePubSub([], undefined, undefined, undefined, { topicIds }))).toStrictEqual([ARCHIVED, GROUP_CHANGED]);
+  });
+
+  it('creates the witness with createWitness on the topic and deletes it with deleteSubscription, both by short id', async () => {
+    const createWitness = vi.fn<(topic: string, name: string) => Promise<void>>(() => Promise.resolve());
+    const deleteSubscription = vi.fn<(name: string) => Promise<void>>(() => Promise.resolve());
+    const pubsub = fakePubSub([], undefined, undefined, undefined, { createWitness, deleteSubscription });
+
+    await createWitnessSubscription(pubsub, GROUP_CHANGED, WITNESS);
+    await removeSubscription(pubsub, WITNESS);
+
+    expect(createWitness).toHaveBeenCalledExactlyOnceWith(GROUP_CHANGED, WITNESS);
+    expect(deleteSubscription).toHaveBeenCalledExactlyOnceWith(WITNESS);
+  });
+
+  it.each([
+    ['listTopicIds', (pubsub: PubSubLike) => listTopicIds(pubsub)],
+    ['createWitnessSubscription', (pubsub: PubSubLike) => createWitnessSubscription(pubsub, GROUP_CHANGED, WITNESS)],
+    ['removeSubscription', (pubsub: PubSubLike) => removeSubscription(pubsub, WITNESS)],
+  ])('%s rejects with a TypeError when the client lacks its member', async (_name, call) => {
+    await expect(call(fakePubSub([]))).rejects.toThrow(TypeError);
+  });
+});
+
+describe('openMessageLease with an injected client', () => {
+  it('resolves to the lease leaseMessages opens on the fully qualified subscription', async () => {
+    const lease: MessageLease = { pull: vi.fn(), acknowledge: vi.fn(), release: vi.fn(), close: vi.fn() };
+    const leaseMessages = vi.fn<(fullName: string) => Promise<MessageLease>>(() => Promise.resolve(lease));
+
+    expect(await openMessageLease(fakePubSub([], undefined, undefined, leaseMessages), TIMESHEETS_ARCHIVED)).toBe(lease);
+    expect(leaseMessages).toHaveBeenCalledExactlyOnceWith(fullName(TIMESHEETS_ARCHIVED));
+  });
+
+  it('rejects with a TypeError when the client has no leaseMessages', async () => {
+    await expect(openMessageLease(fakePubSub([]), TIMESHEETS_ARCHIVED)).rejects.toThrow(TypeError);
+  });
+});
+
 describe('createPubSub', () => {
   const clients: PubSubLike[] = [];
 
@@ -287,10 +380,11 @@ describe('createPubSub', () => {
     subscriber.created.length = 0;
     subscriber.pull.mockReset();
     subscriber.modifyAckDeadline.mockClear();
+    subscriber.acknowledge.mockClear();
     subscriber.close.mockClear();
   });
 
-  it('returns a client for GOOGLE_CLOUD_PROJECT exposing getSubscriptions, subscription, close, pullOnce and peekEventIds', () => {
+  it('returns a client for GOOGLE_CLOUD_PROJECT exposing every PubSubLike member', () => {
     const client: PubSubLike = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
 
     expect(client.projectId).toBe(PROJECT);
@@ -298,7 +392,51 @@ describe('createPubSub', () => {
     expect(typeof client.close).toBe('function');
     expect(typeof client.pullOnce).toBe('function');
     expect(typeof client.peekEventIds).toBe('function');
+    expect(typeof client.leaseMessages).toBe('function');
+    expect(typeof client.topicIds).toBe('function');
+    expect(typeof client.createWitness).toBe('function');
+    expect(typeof client.deleteSubscription).toBe('function');
     expect(client.subscription(TIMESHEETS_ARCHIVED).name).toBe(fullName(TIMESHEETS_ARCHIVED));
+  });
+
+  it('topicIds lists the project topics as short ids, sorted', async () => {
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    const topics = [ARCHIVED, GROUP_CHANGED].map((topic) => ({ name: `projects/${PROJECT}/topics/${topic}` }));
+    const getTopics = vi.spyOn(client, 'getTopics').mockResolvedValue([topics] as unknown as Awaited<ReturnType<PubSub['getTopics']>>);
+
+    expect(await listTopicIds(client)).toStrictEqual([GROUP_CHANGED, ARCHIVED]);
+    expect(getTopics).toHaveBeenCalledTimes(1);
+  });
+
+  it('createWitness creates a plain pull subscription on the topic', async () => {
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    const name = witnessName('pubsub-redelivery', '0badc0de', GROUP_CHANGED);
+    const createSubscription = vi
+      .spyOn(client, 'createSubscription')
+      .mockResolvedValue([{}, {}] as unknown as Awaited<ReturnType<PubSub['createSubscription']>>);
+
+    await createWitnessSubscription(client, GROUP_CHANGED, name);
+
+    expect(createSubscription).toHaveBeenCalledExactlyOnceWith(GROUP_CHANGED, name);
+  });
+
+  it.each([
+    ['resolves after deleting the subscription', undefined, undefined],
+    ['resolves when the subscription does not exist', Object.assign(new Error('5 NOT_FOUND: Subscription does not exist'), { code: 5 }), undefined],
+    ['propagates any other failure', Object.assign(new Error('7 PERMISSION_DENIED'), { code: 7 }), '7 PERMISSION_DENIED'],
+  ])('deleteSubscription %s', async (_title, failure: Error | undefined, rejection: string | undefined) => {
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    const name = witnessName('pubsub-redelivery', '0badc0de', GROUP_CHANGED);
+    const subscription = client.subscription(name);
+    const remove = vi.spyOn(subscription, 'delete').mockImplementation(() => (failure === undefined ? Promise.resolve([{}]) : Promise.reject(failure)));
+    vi.spyOn(client, 'subscription').mockReturnValue(subscription);
+
+    const deleted = removeSubscription(client, name);
+
+    if (rejection === undefined) await expect(deleted).resolves.toBeUndefined();
+    else await expect(deleted).rejects.toThrow(rejection);
+    expect(client.subscription).toHaveBeenCalledWith(name);
+    expect(remove).toHaveBeenCalledTimes(1);
   });
 
   it('targets the emulator with apiEndpoint and emulatorMode when PUBSUB_EMULATOR_HOST is set', () => {
@@ -396,6 +534,76 @@ describe('createPubSub', () => {
     expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED)).toStrictEqual([]);
     expect(subscriber.modifyAckDeadline).not.toHaveBeenCalled();
     expect(subscriber.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaseMessages pulls leased messages with their push fields and acknowledges, releases and closes on the same subscription', async () => {
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    const envelope = JSON.stringify({ eventId: EVENT_A, tenantId: 'tenant' });
+    subscriber.pull.mockResolvedValueOnce([
+      {
+        receivedMessages: [
+          {
+            ackId: 'ack-1',
+            message: {
+              messageId: 'm-1',
+              data: Buffer.from(envelope, 'utf8'),
+              attributes: { eventId: EVENT_B },
+              publishTime: { seconds: '1782820800', nanos: 123_456_789 },
+              orderingKey: 'person-1',
+            },
+            deliveryAttempt: 3,
+          },
+          { ackId: 'ack-2', message: { messageId: 'm-2', data: Buffer.from(envelope, 'utf8').toString('base64'), orderingKey: '' }, deliveryAttempt: 0 },
+          { ackId: 'ack-3', message: { messageId: 'm-3', data: null, attributes: null, publishTime: null } },
+          { ackId: null, message: { messageId: 'm-4' } },
+          { ackId: 'ack-5', message: null },
+        ],
+      },
+    ]);
+
+    const lease = await openMessageLease(client, TIMESHEETS_ARCHIVED);
+    const messages = await lease.pull(10);
+    await lease.acknowledge(['ack-1']);
+    await lease.release(['ack-2', 'ack-3']);
+    await lease.close();
+
+    expect(messages).toStrictEqual([
+      {
+        ackId: 'ack-1',
+        messageId: 'm-1',
+        data: Buffer.from(envelope, 'utf8'),
+        attributes: { eventId: EVENT_B },
+        publishTime: '2026-06-30T12:00:00.123Z',
+        orderingKey: 'person-1',
+        deliveryAttempt: 3,
+        eventId: EVENT_B,
+      },
+      { ackId: 'ack-2', messageId: 'm-2', data: Buffer.from(envelope, 'utf8'), attributes: {}, eventId: EVENT_A },
+      { ackId: 'ack-3', messageId: 'm-3', data: Buffer.alloc(0), attributes: {} },
+    ]);
+    expect(subscriber.created).toStrictEqual([client.options]);
+    expect(subscriber.pull).toHaveBeenCalledExactlyOnceWith({ subscription: fullName(TIMESHEETS_ARCHIVED), maxMessages: 10, returnImmediately: true });
+    expect(subscriber.acknowledge).toHaveBeenCalledExactlyOnceWith({ subscription: fullName(TIMESHEETS_ARCHIVED), ackIds: ['ack-1'] });
+    expect(subscriber.modifyAckDeadline).toHaveBeenCalledExactlyOnceWith({
+      subscription: fullName(TIMESHEETS_ARCHIVED),
+      ackIds: ['ack-2', 'ack-3'],
+      ackDeadlineSeconds: 0,
+    });
+    expect(subscriber.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaseMessages resolves an empty pull to no messages and sends no settlement for empty ack lists', async () => {
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    subscriber.pull.mockResolvedValueOnce([{ receivedMessages: null }]);
+
+    const lease = await openMessageLease(client, TIMESHEETS_ARCHIVED);
+    expect(await lease.pull(10)).toStrictEqual([]);
+    await lease.acknowledge([]);
+    await lease.release([]);
+    await lease.close();
+
+    expect(subscriber.acknowledge).not.toHaveBeenCalled();
+    expect(subscriber.modifyAckDeadline).not.toHaveBeenCalled();
   });
 
   it('peekEventIds propagates another pull failure after releasing the leases it holds and closing the client', async () => {

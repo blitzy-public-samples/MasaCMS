@@ -18,6 +18,7 @@ import type { MigrationContext } from '../../src/context.js';
 import {
   TransitionAbortedError,
   TransitionPreconditionError,
+  createTransitionStartupGuard,
   initialTransitionProgress,
   type StepDeps,
   type TransitionPlan,
@@ -25,11 +26,16 @@ import {
   type TransitionRecord,
   type TransitionStepNumber,
 } from '../../src/transition/steps.js';
+import type { FrozenRoutes } from '../../src/windows/reload.js';
 
 const m = vi.hoisted(() => ({
   planTransition: vi.fn(),
   runTransitionStep: vi.fn(),
   abortTransition: vi.fn(),
+  countStartupRows: vi.fn(),
+  freezeLegacyBound: vi.fn(),
+  sendReloadRequest: vi.fn(),
+  unfreezeLegacyBound: vi.fn(),
 }));
 vi.mock('../../src/transition/steps.js', async (orig) => ({
   ...(await orig<typeof import('../../src/transition/steps.js')>()),
@@ -37,12 +43,24 @@ vi.mock('../../src/transition/steps.js', async (orig) => ({
   runTransitionStep: m.runTransitionStep,
   abortTransition: m.abortTransition,
 }));
+vi.mock('../../src/legacy/index.js', async (orig) => ({
+  ...(await orig<typeof import('../../src/legacy/index.js')>()),
+  countStartupRows: m.countStartupRows,
+}));
+vi.mock('../../src/windows/reload.js', async (orig) => ({
+  ...(await orig<typeof import('../../src/windows/reload.js')>()),
+  freezeLegacyBound: m.freezeLegacyBound,
+  sendReloadRequest: m.sendReloadRequest,
+  unfreezeLegacyBound: m.unfreezeLegacyBound,
+}));
 
-const { createTransitionService, toTransitionView, TransitionInProgressError, TransitionNotFoundError } = await import(
+const { createTransitionService, toTransitionView, TransitionClaimLostError, TransitionInProgressError, TransitionNotFoundError } = await import(
   '../../src/transition/service.js'
 );
 
 const CONFIG = loadConfig();
+/** Claims renewed every 500 ms and a claim pass every 50 ms. */
+const SHORT = { ...CONFIG, windows: { ...CONFIG.windows, openBudgetMs: 1500, importRetryMs: 50 } };
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 const pg = await pgAvailable();
@@ -76,6 +94,12 @@ const PLAN: TransitionPlan = {
 interface LogCall {
   level: string;
   args: unknown[];
+  by: string;
+}
+
+/** Name of the service instance whose drive runs a step. */
+function instanceOf(deps: StepDeps): string {
+  return (deps.ctx as unknown as { instance: string }).instance;
 }
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -92,7 +116,11 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
   let reportsDir: string;
   let active: string;
   let logs: LogCall[];
-  let calls: { step: number; lastStep: number }[];
+  let calls: { step: number; lastStep: number; by: string; at: number }[];
+  let gatewayCalls: string[];
+  let services: { stop(): Promise<void> }[];
+  /** Freezes the start-up guard's mocked gateway freeze issued, each after its `beforeFreeze` resolved. */
+  let freezes: FrozenRoutes[];
   let behaviour: Map<number, (deps: StepDeps, record: TransitionRecord) => Promise<{ plan?: TransitionPlan; progress: TransitionProgress }>>;
 
   beforeAll(async () => {
@@ -109,12 +137,14 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     active = 'v0001';
     logs = [];
     calls = [];
+    gatewayCalls = [];
+    services = [];
     behaviour = new Map();
     m.planTransition.mockReset();
     m.planTransition.mockImplementation(async (_ctx: unknown, to: string) => ({ ...PLAN, to }));
     m.runTransitionStep.mockReset();
     m.runTransitionStep.mockImplementation(async (deps: StepDeps, record: TransitionRecord, step: TransitionStepNumber) => {
-      calls.push({ step, lastStep: record.lastStep });
+      calls.push({ step, lastStep: record.lastStep, by: instanceOf(deps), at: Date.now() });
       const custom = behaviour.get(step);
       if (custom !== undefined) return custom(deps, record);
       if (step === 7) active = record.to;
@@ -122,25 +152,62 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     });
     m.abortTransition.mockReset();
     m.abortTransition.mockImplementation(async (_deps: StepDeps, record: TransitionRecord) => ({ ...record.progress, closedGates: [], extraLeasedUnits: [] }));
+    m.countStartupRows.mockReset();
+    m.countStartupRows.mockResolvedValue(0);
+    freezes = [];
+    m.freezeLegacyBound.mockReset();
+    m.freezeLegacyBound.mockImplementation(async (_ctx: unknown, opts?: { beforeFreeze?: (planned: FrozenRoutes) => Promise<void> }) => {
+      const planned = { routes: ['legacy:r'], epoch: 1 };
+      await opts?.beforeFreeze?.(planned);
+      freezes.push(planned);
+      return planned;
+    });
+    m.sendReloadRequest.mockReset();
+    m.sendReloadRequest.mockResolvedValue({ status: 200 });
+    m.unfreezeLegacyBound.mockReset();
+    m.unfreezeLegacyBound.mockResolvedValue(undefined);
     await db.withMetadata((tx) => tx.query(`DELETE FROM ${tx.schema}.transition`));
   });
 
-  function service() {
-    const log = (level: string) => (...args: unknown[]) => logs.push({ level, args });
+  /** A service instance named `name`; `skewMs` runs its clock ahead of the host's, and `clock` replaces it. */
+  function service(name = 'A', { config = CONFIG, skewMs = 0, clock }: { config?: typeof CONFIG; skewMs?: number; clock?: { now(): Date } } = {}) {
+    const log = (level: string) => (...args: unknown[]) => logs.push({ level, args, by: name });
     const ctx = {
+      instance: name,
       env: { OPT2_REPORTS_DIR: reportsDir },
-      config: CONFIG,
-      clock: systemClock,
+      config,
+      legacy: { live: async () => ({}) },
+      clock: clock ?? (skewMs === 0 ? systemClock : { now: () => new Date(Date.now() + skewMs) }),
       logger: { info: log('info'), warn: log('warn'), error: log('error'), debug: log('debug') },
       db,
-      gateway: { status: async () => ({ tableVersion: active, epoch: 1 }) },
+      gateway: {
+        status: async () => {
+          gatewayCalls.push(name);
+          return { tableVersion: active, epoch: 1 };
+        },
+      },
     } as unknown as MigrationContext;
-    return createTransitionService(ctx, {
+    const svc = createTransitionService(ctx, {
       projector: { awaitProjection: async () => ({ positions: new Map(), waitedMs: 0 }) },
       windows: { get: async () => Promise.reject(new Error('none')) },
       scheduler: {} as never,
-      startupGuard: { ensureEmpty: async () => ({ initialCount: 0, reloaded: false, finalCount: 0 }) },
+      startupGuard: {
+        ensureEmpty: async () => ({ initialCount: 0, reloaded: false, finalCount: 0 }),
+        recover: async () => ({ initialCount: 0, reloaded: true, finalCount: 0 }),
+      },
     });
+    services.push(svc);
+    return svc;
+  }
+
+  /** Steps the instance `name` ran, in order. */
+  function stepsBy(name: string): number[] {
+    return calls.filter((c) => c.by === name).map((c) => c.step);
+  }
+
+  async function waitFor(condition: () => boolean, what: string): Promise<void> {
+    for (let i = 0; i < 400 && !condition(); i += 1) await delay(10);
+    if (!condition()) throw new Error(`timed out waiting for ${what}`);
   }
 
   async function settle(svc: ReturnType<typeof service>, id: string, states = ['completed', 'aborted']) {
@@ -397,7 +464,7 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     const line = lineOf(transitionId);
     for (let i = 0; i < 400 && !logs.some((l) => l.args.at(-1) === line); i += 1) await delay(10);
     await svc.stop();
-    expect(logs.find((l) => l.args.at(-1) === line)).toEqual({ level, args: [{ error: expect.objectContaining({ type, message }) }, line] });
+    expect(logs.find((l) => l.args.at(-1) === line)).toEqual({ level, by: 'A', args: [{ error: expect.objectContaining({ type, message }) }, line] });
     expect(JSON.stringify(logs)).not.toContain(FREE_TEXT);
   });
 
@@ -507,7 +574,303 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     expect(view).toEqual({ transitionId: view.transitionId, fromVersion: 'v0002', toVersion: 'v0003', state: 'running', step: 1, units: [], frozenRoutes: [], startedAt: '2026-06-30T12:00:00.000Z' });
   });
 
-  afterEach(() => {
+  it('keeps the pre-activation verdict in the row and transitions.json, while the view shows only the written report', async () => {
+    const differing: NonNullable<TransitionProgress['preActivationReconciliation']> = {
+      result: 'difference',
+      differences: 2,
+      unitsWithDifferences: 1,
+      tableVersion: 'v0001',
+      snapshotSeq: 4,
+      differingEntries: [{ unit: 'people.person', legacyTable: 'tusers', tenantId: 'default', differenceCount: 2 }],
+    };
+    behaviour.set(6, async (deps, record) => {
+      await deps.persist({ ...record.progress, snapshotSeq: 4, preActivationReconciliation: differing });
+      throw new TransitionAbortedError(6, 'Reconciliation before activation found 2 differences in 1 units: people.person', differing);
+    });
+    const first = service();
+    const aborted = await settle(first, (await first.start({ to: 'v0002' })).transitionId);
+    await first.stop();
+    contract(aborted);
+    expect(aborted).toMatchObject({ state: 'aborted', step: 6 });
+    expect(aborted.reconciliation).toBeUndefined();
+    expect(((await row(aborted.transitionId)).paused as TransitionProgress).preActivationReconciliation).toEqual(differing);
+    expect(logEntry(aborted.transitionId).entry?.reconciliation).toEqual({ preActivation: differing });
+
+    const passed = { ...differing, result: 'zero-difference' as const, differences: 0, unitsWithDifferences: 0, differingEntries: [] };
+    behaviour.set(6, async (_d, record) => ({ plan: record.plan, progress: { ...record.progress, snapshotSeq: 4, preActivationReconciliation: passed } }));
+    behaviour.set(8, async (_d, record) => ({
+      plan: record.plan,
+      progress: { ...record.progress, reconciliation: { point: 'post-cutover', result: 'zero-difference', differences: 0, reportPath: path.join(reportsDir, 'reconciliation', 'post-cutover.json') } },
+    }));
+    const second = service();
+    const completed = await settle(second, (await second.start({ to: 'v0002' })).transitionId);
+    await second.stop();
+    contract(completed);
+    expect(completed.reconciliation).toEqual({ report: 'opt2/reports/reconciliation/post-cutover.json', differences: 0, point: 'post-cutover', result: 'zero-difference' });
+    expect(logEntry(completed.transitionId).entry?.reconciliation).toEqual({
+      point: 'post-cutover',
+      result: 'zero-difference',
+      differences: 0,
+      path: 'opt2/reports/reconciliation/post-cutover.json',
+      preActivation: passed,
+    });
+  });
+
+  it.each([
+    {
+      holder: 'stops at a step boundary',
+      next: 4,
+      async hold() {
+        const entered = deferred();
+        const release = deferred();
+        behaviour.set(3, async (deps, record) => {
+          if (instanceOf(deps) === 'A') {
+            entered.resolve();
+            await release.promise;
+          }
+          return { plan: record.plan, progress: record.progress };
+        });
+        const a = service('A', { config: SHORT });
+        const { transitionId } = await a.start({ to: 'v0002' });
+        await entered.promise;
+        return {
+          id: transitionId,
+          async free() {
+            const from = Date.now();
+            const stopped = a.stop();
+            release.resolve();
+            await stopped;
+            return from;
+          },
+        };
+      },
+    },
+    {
+      holder: 'died and its claim lapses',
+      next: 3,
+      async hold() {
+        const id = await seedRow(2, 'awaiting-inflight', [{ step: 3, name: 'awaitInflight', startedAt: '2026-06-30T12:00:00.000Z' }]);
+        const lapse = Date.now() + 1500;
+        await db.withMetadata((tx) =>
+          tx.query(`UPDATE ${tx.schema}.transition SET claimed_by = 'dead-instance', claim_expires_at = $2 WHERE transition_id = $1`, [id, new Date(lapse)]),
+        );
+        return {
+          id,
+          async free() {
+            await delay(Math.max(0, lapse - Date.now()));
+            return lapse;
+          },
+        };
+      },
+    },
+  ])('keeps a second instance off a claimed row until its holder $holder, then its pass continues from the persisted step', async ({ next, hold }) => {
+    const { id, free } = await hold();
+    const b = service('B', { config: SHORT });
+    expect(await b.resume()).toMatchObject({ transitionId: id, step: 3 });
+    await delay(200);
+    expect(stepsBy('B')).toEqual([]);
+    const from = await free();
+    const view = await settle(b, id);
+    expect(view.state).toBe('completed');
+    expect(stepsBy('B')).toEqual([3, 4, 5, 6, 7, 8].filter((s) => s >= next));
+    const first = calls.find((c) => c.by === 'B');
+    expect(first).toMatchObject({ step: next, lastStep: next - 1 });
+    expect(first?.at).toBeGreaterThanOrEqual(from);
+    await b.stop();
+    expect(await row(id)).toMatchObject({ state: 'completed', claimed_by: null, claim_expires_at: null });
+  });
+
+  it.each([
+    ['its next port call, once a renewal found the claim taken,', 'port'],
+    ['its next persist', 'persist'],
+  ])('a holder whose claim another instance took over at its expiry has %s refused and issues nothing further', async (_label, effect) => {
+    const enteredA = deferred();
+    const releaseA = deferred();
+    const enteredB = deferred();
+    const releaseB = deferred();
+    let refused: unknown;
+    behaviour.set(3, async (deps, record) => {
+      if (instanceOf(deps) === 'A') {
+        enteredA.resolve();
+        await releaseA.promise;
+        if (effect === 'port') {
+          await deps.ctx.gateway.status().catch((error: unknown) => {
+            refused = error;
+            throw error;
+          });
+        }
+      }
+      return { plan: record.plan, progress: record.progress };
+    });
+    behaviour.set(4, async (deps, record) => {
+      if (instanceOf(deps) === 'B') {
+        enteredB.resolve();
+        await releaseB.promise;
+      }
+      return { plan: record.plan, progress: record.progress };
+    });
+    const a = service('A', { config: SHORT });
+    const { transitionId: id } = await a.start({ to: 'v0002' });
+    await enteredA.promise;
+    // B's clock runs past the expiry of A's claim, so B takes the row over while A is inside step 3.
+    const b = service('B', { config: SHORT, skewMs: 10 * 60_000 });
+    await b.resume();
+    await enteredB.promise;
+    if (effect === 'port') await waitFor(() => logs.some((l) => l.by === 'A' && String(l.args.at(-1)).includes('its next effect is refused')), "A's renewal");
+    releaseA.resolve();
+    await waitFor(() => logs.some((l) => l.by === 'A' && l.level === 'warn' && String(l.args.at(-1)).includes('stops driving it')), 'A to stop');
+    await a.stop();
+    expect(refused).toEqual(effect === 'port' ? expect.any(TransitionClaimLostError) : undefined);
+    expect(stepsBy('A')).toEqual([1, 2, 3]);
+    expect(gatewayCalls.filter((name) => name === 'A')).toEqual([]);
+    expect(m.abortTransition).not.toHaveBeenCalled();
+    expect(logs.filter((l) => l.by === 'A' && l.level === 'error')).toEqual([]);
+    const held = await row(id);
+    expect(held).toMatchObject({ state: 'draining', step: 4, error: null });
+    expect(held.claimed_by).toEqual(expect.any(String));
+    expect((held.entries as { steps: { step: number; result?: string }[] }).steps.filter((s) => s.step === 3).map((s) => s.result)).toEqual(['error', 'ok']);
+    releaseB.resolve();
+    expect((await settle(b, id)).state).toBe('completed');
+    expect(stepsBy('B')).toEqual([3, 4, 5, 6, 7, 8]);
+    expect(stepsBy('A')).toEqual([1, 2, 3]);
+  });
+
+  it('a holder whose committed start-up guard freeze record is answered after another instance took its claim over freezes and reloads nothing', async () => {
+    const enteredA = deferred();
+    const releaseA = deferred();
+    const enteredB = deferred();
+    const releaseB = deferred();
+    let refused: unknown;
+    m.countStartupRows.mockResolvedValueOnce(4);
+    behaviour.set(3, async (deps, record) => {
+      if (instanceOf(deps) === 'A') {
+        await createTransitionStartupGuard(deps.ctx).ensureEmpty({
+          holderId: record.transitionId,
+          exceptRoutes: [],
+          onFrozen: (frozen) =>
+            deps.persist({ ...record.progress, startupGuardFreeze: frozen }).catch((error: unknown) => {
+              refused = error;
+              throw error;
+            }),
+        });
+      }
+      return { plan: record.plan, progress: record.progress };
+    });
+    behaviour.set(4, async (deps, record) => {
+      if (instanceOf(deps) === 'B') {
+        enteredB.resolve();
+        await releaseB.promise;
+      }
+      return { plan: record.plan, progress: record.progress };
+    });
+    // A's freeze record commits, and its answer reaches A only after B took the claim over and A's renewal found it taken.
+    const realDb = db;
+    db = {
+      ...realDb,
+      withMetadata: async (fn: (tx: unknown) => Promise<unknown>) => {
+        let freezeRecord = false;
+        const result = await realDb.withMetadata(async (tx) =>
+          fn({
+            ...tx,
+            query: async (sql: string, values?: unknown[]) => {
+              if (sql.includes('SET state') && JSON.stringify(values ?? []).includes('startupGuardFreeze')) freezeRecord = true;
+              return tx.query(sql, values);
+            },
+          }),
+        );
+        if (freezeRecord) {
+          enteredA.resolve();
+          await releaseA.promise;
+        }
+        return result;
+      },
+    } as unknown as TenantDb;
+    const a = service('A', { config: SHORT });
+    db = realDb;
+    const { transitionId: id } = await a.start({ to: 'v0002' });
+    await enteredA.promise;
+    const b = service('B', { config: SHORT, skewMs: 10 * 60_000 });
+    await b.resume();
+    await enteredB.promise;
+    await waitFor(() => logs.some((l) => l.by === 'A' && String(l.args.at(-1)).includes('its next effect is refused')), "A's renewal");
+    releaseA.resolve();
+    await waitFor(() => logs.some((l) => l.by === 'A' && l.level === 'warn' && String(l.args.at(-1)).includes('stops driving it')), 'A to stop');
+    await a.stop();
+    const held = await row(id);
+    releaseB.resolve();
+    expect((await settle(b, id)).state).toBe('completed');
+    expect(held).toMatchObject({ state: 'draining', step: 4, error: null });
+    expect(refused).toBeInstanceOf(TransitionClaimLostError);
+    expect(freezes).toEqual([]);
+    expect(m.sendReloadRequest).not.toHaveBeenCalled();
+    expect(m.unfreezeLegacyBound).not.toHaveBeenCalled();
+    expect(m.abortTransition).not.toHaveBeenCalled();
+    expect(logs.filter((l) => l.by === 'A' && l.level === 'error')).toEqual([]);
+    expect(stepsBy('A')).toEqual([1, 2, 3]);
+  });
+
+  it('a guard reload refused for a claim about to expire stops the drive without aborting, and the next claim pass runs the step again', async () => {
+    let skewMs = 0;
+    let refused: unknown;
+    behaviour.set(3, async (deps, record) => {
+      if (refused === undefined) {
+        // A clock one renewal budget ahead leaves the claim outlasting no further call, although no instance took it.
+        skewMs = SHORT.windows.openBudgetMs + 1;
+        refused = await createTransitionStartupGuard(deps.ctx)
+          .recover({ holderId: record.transitionId, frozen: { routes: ['legacy:r'], epoch: 1 } })
+          .catch((error: unknown) => error);
+        throw refused;
+      }
+      return { plan: record.plan, progress: record.progress };
+    });
+    const a = service('A', { config: SHORT, clock: { now: () => new Date(Date.now() + skewMs) } });
+    const { transitionId: id } = await a.start({ to: 'v0002' });
+    expect((await settle(a, id)).state).toBe('completed');
+    await a.stop();
+    expect(refused).toMatchObject({ name: 'StartupGuardFrozenError', cause: expect.any(TransitionClaimLostError) });
+    expect(m.sendReloadRequest).not.toHaveBeenCalled();
+    expect(m.abortTransition).not.toHaveBeenCalled();
+    expect(stepsBy('A')).toEqual([1, 2, 3, 3, 4, 5, 6, 7, 8]);
+    expect(logs.some((l) => l.level === 'warn' && String(l.args.at(-1)).includes('stops driving it'))).toBe(true);
+  });
+
+  it.each([
+    {
+      row: 'an aborting row whose undo failed',
+      settled: 'aborted',
+      arrange() {
+        behaviour.set(5, async () => {
+          throw new TransitionAbortedError(5, 'gates held by another holder');
+        });
+        m.abortTransition.mockRejectedValueOnce(new Error('owner unreachable'));
+      },
+      attempts: () => m.abortTransition.mock.calls.length,
+    },
+    {
+      row: 'a running row whose step 7 failed',
+      settled: 'completed',
+      arrange() {
+        let fails = 1;
+        behaviour.set(7, async (_d, record) => {
+          if (fails-- > 0) throw new Error('gateway timeout');
+          return { plan: record.plan, progress: record.progress };
+        });
+      },
+      attempts: () => calls.filter((c) => c.step === 7).length,
+    },
+  ])('retries $row on the claim pass without a resume', async ({ settled, arrange, attempts }) => {
+    arrange();
+    const a = service('A', { config: SHORT });
+    const { transitionId } = await a.start({ to: 'v0002' });
+    expect((await settle(a, transitionId, [settled])).state).toBe(settled);
+    expect(attempts()).toBe(2);
+    expect(logs.some((l) => l.level === 'error' && /undo failed|runs again on resume/.test(String(l.args.at(-1))))).toBe(true);
+    await a.stop();
+    expect(await row(transitionId)).toMatchObject({ claimed_by: null });
+  });
+
+  afterEach(async () => {
+    await Promise.all(services.map((svc) => svc.stop()));
     rmSync(reportsDir, { recursive: true, force: true });
   });
 });

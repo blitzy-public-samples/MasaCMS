@@ -1,16 +1,7 @@
-/** Site list order, settingsBean setter guards and the CSRF skip of the Sites screen order save and the Edit Site save. */
+/** Site list order, settingsBean setter guards, the CSRF skip of the Sites screen order save and the refused Edit Site save. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TENANT_A, TENANT_B, type TenantFixture } from '@opt2/platform/testing';
-import {
-  SITE_COLUMNS,
-  applySet,
-  getSiteValue,
-  listOrderSql,
-  newSiteBean,
-  sortSites,
-  updateColumnValues,
-  type SiteData,
-} from '../../src/legacy/site-fields.js';
+import { SITE_COLUMNS, applySet, getSiteValue, listOrderSql, newSiteBean, sortSites, type SiteData } from '../../src/legacy/site-fields.js';
 import { buildTestApp, headersFor, type RecordingDb, type TestApp } from '../helpers/app.js';
 
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
@@ -19,15 +10,16 @@ const CSRF_CONSUME = '/internal/v1/csrf/consume';
 const WRITTEN_TABLES = ['programs_sites.site', 'programs_sites.changelog', 'programs_sites.outbox'];
 const ORDER_SQL = /^ORDER BY (?:orderno|lower\((?:domain|site)\)) (?:ASC NULLS FIRST|DESC NULLS LAST)$/;
 
-/** A `programs_sites.site` row of `fixture` as legacy's update stores a new site's defaults, its pools its own. */
+/** A stored `programs_sites.site` row of `fixture`, its other columns NULL, so its pools read as its own. */
 function siteRow(fixture: TenantFixture, site: string, orderno: number): Record<string, unknown> {
   const own = fixture.siteId;
-  const bean = applySet(newSiteBean(`${own}-base`), { siteID: own, site, domain: `${own}.example.test` });
   return {
     ...Object.fromEntries(SITE_COLUMNS.map(({ targetName }) => [targetName, null])),
-    ...updateColumnValues(bean),
     tenant_id: fixture.tenantId,
     siteid: own,
+    site,
+    domain: `${own}.example.test`,
+    baseid: `${own}-base`,
     orderno,
     deploy: 1,
     lastdeployment: null,
@@ -168,41 +160,7 @@ describe('applySet setter guards', () => {
   });
 });
 
-interface SiteRequest {
-  readonly label: string;
-  readonly subject: string;
-  readonly site: string;
-  readonly url: string;
-  readonly payload: string;
-  readonly context: string;
-  readonly unwritten: Record<string, unknown>;
-}
-
-const ORDER_SAVE: SiteRequest = {
-  label: 'the Sites screen order save',
-  subject: 's2',
-  site: 'default',
-  url: '/v1/sites/order',
-  payload: `orderID=${TENANT_A.siteId}&orderID=${TENANT_B.siteId}&orderno=2&orderno=1&deploy=0&deploy=1&${TOKEN_FIELDS}`,
-  context: 'updatesites',
-  unwritten: {
-    written: false,
-    sites: [
-      { siteid: TENANT_B.siteId, orderno: 2, deploy: 1 },
-      { siteid: TENANT_A.siteId, orderno: 1, deploy: 1 },
-    ],
-  },
-};
-
-const SITE_UPDATE: SiteRequest = {
-  label: 'the Edit Site save',
-  subject: 'site-admin',
-  site: TENANT_A.siteId,
-  url: `/v1/sites/${TENANT_A.siteId}/update`,
-  payload: `siteid=${TENANT_A.siteId}&action=Update&site=Renamed&${TOKEN_FIELDS}`,
-  context: TENANT_A.siteId,
-  unwritten: { written: false, errors: {}, site: { SiteID: TENANT_A.siteId, Site: 'Zeta Site' } },
-};
+const ORDER_PAYLOAD = `orderID=${TENANT_A.siteId}&orderID=${TENANT_B.siteId}&orderno=2&orderno=1&deploy=0&deploy=1&${TOKEN_FIELDS}`;
 
 describe('CSRF validation of the site saves', () => {
   let t: TestApp;
@@ -216,31 +174,48 @@ describe('CSRF validation of the site saves', () => {
     await t.app.close();
   });
 
-  async function send(request: SiteRequest) {
-    const headers = { ...(await headersFor(request.subject, { site: request.site })), ...FORM };
-    return t.app.inject({ method: 'POST', url: request.url, headers, payload: request.payload });
+  async function send(url: string, subject: string, site: string, payload: string) {
+    const headers = { ...(await headersFor(subject, { site })), ...FORM };
+    return t.app.inject({ method: 'POST', url, headers, payload });
   }
 
   function consumedContexts(): unknown[] {
     return t.client.requestsTo('identity', CSRF_CONSUME).map((call) => (call.json as { context?: unknown }).context);
   }
 
-  it.each([ORDER_SAVE, SITE_UPDATE])('writes nothing on $label when identity rejects the token', async (request) => {
+  it('writes nothing on the Sites screen order save when identity rejects the token', async () => {
     t.client.csrfValid(false);
-    const res = await send(request);
+    const res = await send('/v1/sites/order', 's2', 'default', ORDER_PAYLOAD);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject(request.unwritten);
+    expect(res.json()).toMatchObject({
+      written: false,
+      sites: [
+        { siteid: TENANT_B.siteId, orderno: 2, deploy: 1 },
+        { siteid: TENANT_A.siteId, orderno: 1, deploy: 1 },
+      ],
+    });
     expect(t.db.writes()).toEqual([]);
-    expect(consumedContexts()).toEqual([request.context]);
+    expect(consumedContexts()).toEqual(['updatesites']);
   });
 
-  it.each([ORDER_SAVE, SITE_UPDATE])('writes site, changelog and outbox rows on $label for a valid token', async (request) => {
+  it('writes site, changelog and outbox rows on the Sites screen order save for a valid token', async () => {
     t.client.csrfValid(true);
-    const res = await send(request);
+    const res = await send('/v1/sites/order', 's2', 'default', ORDER_PAYLOAD);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ written: true });
     for (const table of WRITTEN_TABLES) expect(t.db.writesTo(table).length).toBeGreaterThan(0);
-    expect(consumedContexts()).toEqual([request.context]);
+    expect(consumedContexts()).toEqual(['updatesites']);
+  });
+
+  it.each(['site-admin', 's2'])('refuses the withheld Edit Site save of a %s with a valid token with the legacy 503, consuming, reading and writing nothing', async (subject) => {
+    t.client.csrfValid(true);
+    const payload = `siteid=${TENANT_A.siteId}&action=Update&site=Renamed&${TOKEN_FIELDS}`;
+    const res = await send(`/v1/sites/${TENANT_A.siteId}/update`, subject, TENANT_A.siteId, payload);
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error' } });
+    expect(t.client.requestsTo('identity')).toEqual([]);
+    expect(t.db.statements()).toEqual([]);
+    expect(t.publisher.published).toEqual([]);
   });
 });
 

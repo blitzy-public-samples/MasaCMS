@@ -1,5 +1,6 @@
 /** carch admin routes: Site Manager page data, content writes and raw responses. */
 import { existsSync, readFileSync } from 'node:fs';
+import type { Readable } from 'node:stream';
 import { AuthDenial } from '@opt2/platform/auth';
 import {
   LEGACY_ADMIN_SENTINEL_ID,
@@ -35,7 +36,7 @@ import { poolTenantFor, registryEntries, registryEntryForTenant, type TenantTx }
 import { loadRequest, requiresApproval } from '../../domain/approval-requests.js';
 import { approvalAction } from '../../domain/approvals.js';
 import { readChangeset } from '../../domain/changesets.js';
-import { countCategories, listCategories, restrictGroups } from '../../domain/categories.js';
+import { countCategories, listCategories } from '../../domain/categories.js';
 import {
   carchUpdate,
   getActiveContent,
@@ -48,7 +49,6 @@ import {
   getDraftPromptData,
   getHasDrafts,
   getHistory,
-  getItemCount,
   getKidsCount,
   getMyApprovalsCount,
   getMyDraftsCount,
@@ -56,7 +56,6 @@ import {
   getMyLockedContentCount,
   getMySubmissionsCount,
   getNest,
-  getPageCount,
   getSubmissionsQuery,
   lockFile,
   parseDateArg,
@@ -689,6 +688,9 @@ async function validateCsrf(request: FastifyRequest, context: string, reply: Fas
 /** A raw entry's answer: the renderer's result with the response headers legacy sends besides the content type. */
 export type CarchRawResult = AdminRenderResult & { headers?: Record<string, string> };
 
+/** carch.downloaddata's answer: the CSV streamed as `body`, with legacy's download headers. */
+type CarchDownloadResult = Omit<CarchRawResult, 'body'> & { body: Readable };
+
 /** A raw answer with the session-effects header when `effects` names any value. */
 function withEffects(result: AdminRenderResult, effects: SessionEffects | undefined, headers: Record<string, string> = {}): CarchRawResult {
   const all = { ...headers };
@@ -1057,18 +1059,25 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
     return siteManagerTree(request, ctx, actor, request.params.siteid);
   });
 
-  /** carch.search (carch.cfc:488-492): the private search and its pager. */
+  /** carch.search (carch.cfc:488-492): one 30-row `page` of the private search; a page with rows is halted, since its rows print site settings only programs-sites holds. */
   app.get<Site>('/v1/sites/:siteid/content', { config }, async (request) => {
     const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
     const { rc } = await carchContext(pageParams(request, { siteid: request.params.siteid }), actor, () => storedSession(request));
     if (!rcHas(rc, 'keywords')) throw new UndefinedLegacyElementError('Element KEYWORDS is undefined in RC.');
-    const startRow = rcRow(rc, 'startrow');
+    const startRow = (rcRow(rc, 'page') - 1) * PRIVATE_SEARCH_RECORDS_PER_PAGE + 1;
     const result = await privateSearch(ctx.domain, actor, { siteId: rcText(rc, 'siteid'), keywords: rcText(rc, 'keywords'), startRow });
     await saveSession(request, { keywords: result.sessionEffect.keywords });
+    if (result.rows.slice(startRow - 1, startRow - 1 + PRIVATE_SEARCH_RECORDS_PER_PAGE).length > 0) {
+      throw new CarchHaltedError(
+        'search',
+        "each printed row reads the site's locking and URL settings, programs-sites tsettings values no event or operation open to this service carries",
+        'auto',
+      );
+    }
     const state = sessionStateOf(await storedSession(request));
     return viewModel({
       ...rc,
-      rslist: result.rows,
+      rslist: [],
       nextn: getNextN(result.rows.length, PRIVATE_SEARCH_RECORDS_PER_PAGE, startRow),
       copyContentID: state.copyContentId,
       copySiteID: state.copySiteId,
@@ -1120,22 +1129,15 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
     },
   );
 
-  /** carch.multiFileUpload (carch.cfc:536-541): the upload screen for new children of `parentid`. */
+  /** carch.multiFileUpload (carch.cfc:536-541): halted after before(), ahead of any read. */
   app.get<Item>('/v1/sites/:siteid/content/:contentid/multi-file-upload', { config }, async (request) => {
     const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
-    const { rc } = await carchContext(pageParams(request, { siteid: request.params.siteid, parentid: request.params.contentid }), actor, () =>
-      storedSession(request),
+    await carchContext(pageParams(request, { siteid: request.params.siteid, parentid: request.params.contentid }), actor, () => storedSession(request));
+    throw new CarchHaltedError(
+      'multifileupload',
+      "the view prints the site's page limit, a programs-sites tsettings value no event or operation open to this service carries",
+      'auto',
     );
-    const siteId = rcText(rc, 'siteid');
-    const crumbdata = await getCrumbList(ctx.domain, actor, { contentId: rcText(rc, 'parentid'), siteId });
-    return viewModel({
-      ...rc,
-      crumbdata,
-      perm: await getNodePerm(ctx.domain, actor, crumbdata),
-      rsCount: await getItemCount(ctx.domain, actor, { contentId: rcText(rc, 'contentid'), siteId }),
-      rsPageCount: [{ counter: await getPageCount(ctx.domain, actor, siteId) }],
-      rsRestrictGroups: await restrictGroups(ctx.domain, actor),
-    });
   });
 
   /** carch.lockcheck and carch.relatedcontent: a version and its node stats; an unknown version reads as a new node. */
@@ -1230,28 +1232,15 @@ function registerCarchMediaRoutes(app: FastifyInstance, ctx: ContentRouteContext
     return viewModel({ ...rc, rsImages });
   });
 
-  /** carch.imagedetails: the files' metadata and rendition URLs. */
+  /** carch.imagedetails: halted after before(), ahead of any read or `touchSourceImage` copy. */
   app.get<Site>('/v1/sites/:siteid/files/image-details', { config }, async (request) => {
     const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
-    const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
-    const siteId = rcText(rc, 'siteid');
-    rcParam(rc, 'fileid', '');
-    rcParam(rc, 'imagesize', '');
-    const site = await siteOf(ctx, actor);
-    if (rcText(rc, 'contenthistid') !== '' && rcText(rc, 'fileid') === '') {
-      const version = await getContentVersion(ctx.domain, actor, { contentHistId: rcText(rc, 'contenthistid'), siteId });
-      rcSet(rc, 'contentBean', beanValues(version));
-      rcSet(rc, 'fileid', bareBean(version).fileId);
-    }
-    const fileIds = cfListToArray(rcText(rc, 'fileid'));
-    const files = await inTenant(ctx, actor, (tx) => ctx.domain.repository.content.fileJoinColumns(tx, fileIds));
-    const images = fileIds.map((fileId) => {
-      const file = files.find((row) => cfEq(row.fileid, fileId));
-      const ext = file?.fileext ?? '';
-      const url = (size: string): string => imageUrl(site.urls, { fileId, fileExt: ext, size });
-      return { fileid: fileId, rsMeta: file ?? null, sourceImage: url('source'), small: url('small'), medium: url('medium'), large: url('large') };
-    });
-    return viewModel({ ...rc, images });
+    await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
+    throw new CarchHaltedError(
+      'imagedetails',
+      "the view prints the site's rendition sizes and custom image sizes, programs-sites tsettings and timagesizes values no event or operation open to this service carries",
+      'auto',
+    );
   });
 
   /** carch.selectfields (selectfields.cfm:97-98): the url-built collection's getDisplayList() and getAvailableDisplayList() (feedBean.cfc:706-764). */
@@ -1443,7 +1432,7 @@ async function runGetImageSizeUrl(request: FastifyRequest, ctx: ContentRouteCont
 }
 
 /** carch.downloaddata (downloaddata.cfm): a form's responses as the CSV download legacy sends. */
-async function runDownloadData(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<CarchRawResult> {
+async function runDownloadData(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor): Promise<CarchDownloadResult> {
   const rc = await rawRc(request, actor);
   const state = await storedSession(request);
   const site = await siteOf(ctx, actor);

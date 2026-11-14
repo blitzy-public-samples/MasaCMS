@@ -163,6 +163,16 @@ function defaultFirebaseApp(projectId: string): App {
   return getApps().find((app) => app.name === '[DEFAULT]') ?? initializeApp({ projectId, credential: applicationDefault() });
 }
 
+/** Settles as `work` does; outlasting `deadline` rejects with Identity Platform's `ServiceUnavailableError`. */
+async function withinDeadline<T>(work: Promise<T>, deadline: AbortSignal): Promise<T> {
+  try {
+    return await untilAborted(work, deadline);
+  } catch (err) {
+    if (deadline.aborted) throw new ServiceUnavailableError(IDENTITY_PLATFORM_SERVICE, err);
+    throw err;
+  }
+}
+
 /** The JSON object of an exchange's body; an empty object for a non-JSON answer such as a proxy's error page. */
 function signInBody(text: string): SignInWithCustomTokenBody {
   try {
@@ -188,14 +198,7 @@ export function createFirebaseIdentityPlatformAdapter(opts: FirebaseIdentityPlat
       const tenantId = poolSiteId === null ? undefined : opts.tenantIdForPool(poolSiteId);
       // Signing (IAM signBlob under ADC), credential acquisition, the exchange and its body share one budget.
       const deadline = AbortSignal.timeout(timeoutMs);
-      const bounded = async <T>(work: Promise<T>): Promise<T> => {
-        try {
-          return await untilAborted(work, deadline);
-        } catch (err) {
-          if (deadline.aborted) throw new ServiceUnavailableError(IDENTITY_PLATFORM_SERVICE, err);
-          throw err;
-        }
-      };
+      const bounded = <T>(work: Promise<T>): Promise<T> => withinDeadline(work, deadline);
       const auth = tenantId === undefined ? getAuth(app) : getAuth(app).tenantManager().authForTenant(tenantId);
       const customToken = await bounded(auth.createCustomToken(uid, customClaims));
       const credential = app.options.credential;
@@ -225,6 +228,39 @@ export function createFirebaseIdentityPlatformAdapter(opts: FirebaseIdentityPlat
       return { idToken: body.idToken, expiresIn };
     },
   };
+}
+
+/** Tenant ids of the app's project by display name, every page listed within one budget; tenants without a display name are skipped. */
+async function tenantIdsByDisplayName(app: App, timeoutMs: number): Promise<Map<string, string>> {
+  const tenantManager = getAuth(app).tenantManager();
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const tenantIds = new Map<string, string>();
+  let pageToken: string | undefined;
+  do {
+    const page = await withinDeadline(tenantManager.listTenants(undefined, pageToken), deadline);
+    for (const { tenantId, displayName } of page.tenants) {
+      if (displayName === undefined) continue;
+      const named = tenantIds.get(displayName);
+      if (named !== undefined) throw new Error(`Identity Platform tenants ${named} and ${tenantId} share the display name ${displayName}`);
+      tenantIds.set(displayName, tenantId);
+    }
+    pageToken = page.pageToken;
+  } while (pageToken !== undefined);
+  return tenantIds;
+}
+
+/** Cloud adapter: the Firebase adapter mapping each user-pool site to the project's tenant of that display name, listed once at construction. */
+export async function createCloudIdentityPlatformAdapter(
+  opts: Omit<FirebaseIdentityPlatformOptions, 'tenantIdForPool'>,
+): Promise<IdentityPlatformAdapter> {
+  const app = opts.app ?? defaultFirebaseApp(opts.projectId);
+  const tenantIds = await tenantIdsByDisplayName(app, opts.timeoutMs ?? SERVICE_CALL_TIMEOUT_MS);
+  const tenantIdForPool = (poolSiteId: string): string => {
+    const tenantId = tenantIds.get(poolSiteId);
+    if (tenantId === undefined) throw new Error(`No Identity Platform tenant has the display name of user-pool site ${poolSiteId}`);
+    return tenantId;
+  };
+  return createFirebaseIdentityPlatformAdapter({ ...opts, app, tenantIdForPool });
 }
 
 /** CFML list items of a comma list, empty items skipped. */

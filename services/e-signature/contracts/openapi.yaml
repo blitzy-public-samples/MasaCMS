@@ -11,6 +11,7 @@ servers:
   - url: http://127.0.0.1:8120
     description: local
 x-opt2-calls:
+  - identity
   - people
 security:
   - userToken: []
@@ -27,28 +28,41 @@ tags:
 paths:
   /legacy-fixtures/cfml/api.cfm/esignature/requests:
     parameters:
-      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/FixtureSiteId'
       - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
     get:
       operationId: fixtureListRequests
       summary: Lists the site's signature requests in creation order, without document bytes.
+      description: 'Public on the platform; the handler checks the site, then the effective method, login and the `esignature.signer` role group, as the fixture does. An `X-HTTP-Method-Override` of `POST` answers as `fixtureCreateRequest`, CSRF check included; any other override answers 404 `notFound`.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - esignature.signer
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
       parameters:
         - $ref: '#/components/parameters/PageIndex'
         - $ref: '#/components/parameters/ItemsPerPage'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureDocumentName'
+        - $ref: '#/components/parameters/FixtureDocumentBase64'
+        - $ref: '#/components/parameters/FixtureSignerUserId'
       responses:
         '200':
-          $ref: '#/components/responses/FixtureRequestList'
+          $ref: '#/components/responses/FixtureRequestsResult'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
         '500':
           $ref: '#/components/responses/FixtureServerError'
         '503':
@@ -56,46 +70,282 @@ paths:
     post:
       operationId: fixtureCreateRequest
       summary: Creates a PENDING request for one signer and appends its `created` audit entry.
+      description: 'Public on the platform; the handler checks the site, then the effective method, login, the `esignature.signer` role group and the CSRF token, as the fixture does. An `X-HTTP-Method-Override` of `GET` answers as `fixtureListRequests`, without a CSRF check; any other override answers 404 `notFound`.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - esignature.signer
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
       parameters:
         - $ref: '#/components/parameters/CsrfTokenHeader'
         - $ref: '#/components/parameters/CsrfExpiresHeader'
         - $ref: '#/components/parameters/FixtureDocumentName'
         - $ref: '#/components/parameters/FixtureDocumentBase64'
         - $ref: '#/components/parameters/FixtureSignerUserId'
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
       requestBody:
         $ref: '#/components/requestBodies/CreateRequestForm'
       responses:
         '200':
-          $ref: '#/components/responses/FixtureRequestCreated'
+          $ref: '#/components/responses/FixtureRequestsResult'
         '400':
           $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
         '500':
           $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
-  /legacy-fixtures/cfml/api.cfm/esignature/requests/{id}/sign:
-    parameters:
-      - $ref: '#/components/parameters/FixtureRequestId'
-      - $ref: '#/components/parameters/SiteId'
-      - $ref: '#/components/parameters/UseDataNamespace'
-    post:
-      operationId: fixtureSignRequest
-      summary: Signs a PENDING request with the signer's typed name and appends its `signed` audit entry.
-      description: Only the request's designated signer may sign; the typed name is stored as sent.
+    put:
+      operationId: fixtureRequestsByPut
+      summary: 'Answers as `fixtureListRequests` when `X-HTTP-Method-Override` is `GET`, and as `fixtureCreateRequest`, CSRF check included, when it is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. A JSON body merges as for a POST; a form body adds no params, as ColdFusion fills the form scope only for a POST.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - esignature.signer
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureDocumentName'
+        - $ref: '#/components/parameters/FixtureDocumentBase64'
+        - $ref: '#/components/parameters/FixtureSignerUserId'
+      requestBody:
+        $ref: '#/components/requestBodies/CreateRequestJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRequestsResult'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    patch:
+      operationId: fixtureRequestsByPatch
+      summary: 'Answers as `fixtureListRequests` when `X-HTTP-Method-Override` is `GET`, and as `fixtureCreateRequest`, CSRF check included, when it is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. A JSON body merges as for a POST; a form body adds no params, as ColdFusion fills the form scope only for a POST.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureDocumentName'
+        - $ref: '#/components/parameters/FixtureDocumentBase64'
+        - $ref: '#/components/parameters/FixtureSignerUserId'
+      requestBody:
+        $ref: '#/components/requestBodies/CreateRequestJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRequestsResult'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    delete:
+      operationId: fixtureRequestsByDelete
+      summary: 'Answers as `fixtureListRequests` when `X-HTTP-Method-Override` is `GET`, and as `fixtureCreateRequest`, CSRF check included, when it is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. A JSON body merges as for a POST; a form body adds no params, as ColdFusion fills the form scope only for a POST.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureDocumentName'
+        - $ref: '#/components/parameters/FixtureDocumentBase64'
+        - $ref: '#/components/parameters/FixtureSignerUserId'
+      requestBody:
+        $ref: '#/components/requestBodies/CreateRequestJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRequestsResult'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    options:
+      operationId: fixtureRequestsByOptions
+      summary: 'Answers as `fixtureListRequests` when `X-HTTP-Method-Override` is `GET`, and as `fixtureCreateRequest`, CSRF check included, when it is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. A JSON body merges as for a POST; a form body adds no params, as ColdFusion fills the form scope only for a POST.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureDocumentName'
+        - $ref: '#/components/parameters/FixtureDocumentBase64'
+        - $ref: '#/components/parameters/FixtureSignerUserId'
+      requestBody:
+        $ref: '#/components/requestBodies/CreateRequestJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRequestsResult'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    head:
+      operationId: fixtureRequestsByHead
+      summary: 'Answers as `fixtureListRequests` when `X-HTTP-Method-Override` is `GET`, and as `fixtureCreateRequest`, CSRF check included, when it is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. The answer carries the status and headers of that operation, without its body.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureDocumentName'
+        - $ref: '#/components/parameters/FixtureDocumentBase64'
+        - $ref: '#/components/parameters/FixtureSignerUserId'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '400':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '401':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '403':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '404':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '500':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '503':
+          $ref: '#/components/responses/FixtureHeadResult'
+  /legacy-fixtures/cfml/api.cfm/esignature/requests/{id}/sign:
+    parameters:
+      - $ref: '#/components/parameters/FixtureRequestId'
+      - $ref: '#/components/parameters/FixtureSiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+    get:
+      operationId: fixtureSignRequestByGet
+      summary: Answers as `fixtureSignRequest` when `X-HTTP-Method-Override` is `POST`, CSRF check included.
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureTypedName'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRequestSigned'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    post:
+      operationId: fixtureSignRequest
+      summary: Signs a PENDING request with the signer's typed name and appends its `signed` audit entry.
+      description: 'Only the request''s designated signer may sign; the typed name is stored as sent. Public on the platform; the handler checks the site, then the effective method, login, the `esignature.signer` role group and the CSRF token, as the fixture does. An `X-HTTP-Method-Override` other than `POST` answers 404 `notFound`.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
       parameters:
         - $ref: '#/components/parameters/CsrfTokenHeader'
         - $ref: '#/components/parameters/CsrfExpiresHeader'
@@ -119,21 +369,203 @@ paths:
           $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
-  /legacy-fixtures/cfml/api.cfm/esignature/requests/{id}/audit:
-    parameters:
-      - $ref: '#/components/parameters/FixtureRequestId'
-      - $ref: '#/components/parameters/SiteId'
-      - $ref: '#/components/parameters/UseDataNamespace'
-    get:
-      operationId: fixtureGetAudit
-      summary: Lists one page of the request's audit entries in `seq` order.
-      description: An auditor reads any request of the site, a signer only requests addressed to them; items POST back to verify unchanged.
+    put:
+      operationId: fixtureSignRequestByPut
+      summary: 'Answers as `fixtureSignRequest`, CSRF check included, when `X-HTTP-Method-Override` is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. A JSON body merges as for a POST; a form body adds no params, as ColdFusion fills the form scope only for a POST.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - esignature.signer
-        - esignature.auditor
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureTypedName'
+      requestBody:
+        $ref: '#/components/requestBodies/SignJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRequestSigned'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    patch:
+      operationId: fixtureSignRequestByPatch
+      summary: 'Answers as `fixtureSignRequest`, CSRF check included, when `X-HTTP-Method-Override` is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. A JSON body merges as for a POST; a form body adds no params, as ColdFusion fills the form scope only for a POST.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureTypedName'
+      requestBody:
+        $ref: '#/components/requestBodies/SignJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRequestSigned'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    delete:
+      operationId: fixtureSignRequestByDelete
+      summary: 'Answers as `fixtureSignRequest`, CSRF check included, when `X-HTTP-Method-Override` is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. A JSON body merges as for a POST; a form body adds no params, as ColdFusion fills the form scope only for a POST.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureTypedName'
+      requestBody:
+        $ref: '#/components/requestBodies/SignJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRequestSigned'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    options:
+      operationId: fixtureSignRequestByOptions
+      summary: 'Answers as `fixtureSignRequest`, CSRF check included, when `X-HTTP-Method-Override` is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. A JSON body merges as for a POST; a form body adds no params, as ColdFusion fills the form scope only for a POST.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureTypedName'
+      requestBody:
+        $ref: '#/components/requestBodies/SignJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRequestSigned'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    head:
+      operationId: fixtureSignRequestByHead
+      summary: 'Answers as `fixtureSignRequest`, CSRF check included, when `X-HTTP-Method-Override` is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. The answer carries the status and headers of that operation, without its body.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureTypedName'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '400':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '401':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '403':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '404':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '409':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '500':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '503':
+          $ref: '#/components/responses/FixtureHeadResult'
+  /legacy-fixtures/cfml/api.cfm/esignature/requests/{id}/audit:
+    parameters:
+      - $ref: '#/components/parameters/FixtureRequestId'
+      - $ref: '#/components/parameters/FixtureSiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+    get:
+      operationId: fixtureGetAudit
+      summary: Lists one page of the request's audit entries in `seq` order.
+      description: 'An auditor reads any request of the site, a signer only requests addressed to them; items POST back to verify unchanged. Public on the platform; the handler checks the site, then the effective method, login and the `esignature.signer` or `esignature.auditor` role group, as the fixture does. An `X-HTTP-Method-Override` other than `GET` answers 404 `notFound`.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
       parameters:
         - $ref: '#/components/parameters/PageIndex'
         - $ref: '#/components/parameters/ItemsPerPage'
@@ -152,26 +584,220 @@ paths:
           $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
-  /legacy-fixtures/cfml/api.cfm/esignature/requests/{id}/verify:
-    parameters:
-      - $ref: '#/components/parameters/FixtureRequestId'
-      - $ref: '#/components/parameters/SiteId'
-      - $ref: '#/components/parameters/UseDataNamespace'
-    get:
-      operationId: fixtureVerifyStored
-      summary: Recomputes the request's stored audit chain and reports whether it is intact.
-      description: An auditor verifies any request of the site, a signer only requests addressed to them.
+    post:
+      operationId: fixtureGetAuditByPost
+      summary: Answers as `fixtureGetAudit` when `X-HTTP-Method-Override` is `GET`, without a CSRF check.
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - esignature.signer
-        - esignature.auditor
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureAuditChain'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    put:
+      operationId: fixtureGetAuditByPut
+      summary: 'Answers as `fixtureGetAudit`, without a CSRF check, when `X-HTTP-Method-Override` is `GET`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureAuditChain'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    patch:
+      operationId: fixtureGetAuditByPatch
+      summary: 'Answers as `fixtureGetAudit`, without a CSRF check, when `X-HTTP-Method-Override` is `GET`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureAuditChain'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    delete:
+      operationId: fixtureGetAuditByDelete
+      summary: 'Answers as `fixtureGetAudit`, without a CSRF check, when `X-HTTP-Method-Override` is `GET`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureAuditChain'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    options:
+      operationId: fixtureGetAuditByOptions
+      summary: 'Answers as `fixtureGetAudit`, without a CSRF check, when `X-HTTP-Method-Override` is `GET`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureAuditChain'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    head:
+      operationId: fixtureGetAuditByHead
+      summary: 'Answers as `fixtureGetAudit`, without a CSRF check, when `X-HTTP-Method-Override` is `GET`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. The answer carries the status and headers of that operation, without its body.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '400':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '401':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '403':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '404':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '500':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '503':
+          $ref: '#/components/responses/FixtureHeadResult'
+  /legacy-fixtures/cfml/api.cfm/esignature/requests/{id}/verify:
+    parameters:
+      - $ref: '#/components/parameters/FixtureRequestId'
+      - $ref: '#/components/parameters/FixtureSiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+    get:
+      operationId: fixtureVerifyStored
+      summary: Recomputes the request's stored audit chain and reports whether it is intact.
+      description: 'An auditor verifies any request of the site, a signer only requests addressed to them. Public on the platform; the handler checks the site, then the effective method, login and the `esignature.signer` or `esignature.auditor` role group, as the fixture does. An `X-HTTP-Method-Override` of `POST` answers as `fixtureVerifySupplied`, CSRF check included; any other override answers 404 `notFound`.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureEntries'
       responses:
         '200':
           $ref: '#/components/responses/FixtureVerifyResult'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -185,13 +811,16 @@ paths:
     post:
       operationId: fixtureVerifySupplied
       summary: Recomputes a supplied copy of the request's audit chain and reports whether it is intact.
-      description: The copy is hashed in array order against the stored request id, so a tampered copy reports the `seq` of its first broken entry; nothing is stored.
+      description: 'The copy is hashed in array order against the stored request id, so a tampered copy reports the `seq` of its first broken entry; nothing is stored. Public on the platform; the handler checks the site, then the effective method, login, the `esignature.signer` or `esignature.auditor` role group and the CSRF token, as the fixture does. An `X-HTTP-Method-Override` of `GET` answers as `fixtureVerifyStored`, without a CSRF check; any other override answers 404 `notFound`.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - esignature.signer
-        - esignature.auditor
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
       parameters:
         - $ref: '#/components/parameters/CsrfTokenHeader'
         - $ref: '#/components/parameters/CsrfExpiresHeader'
@@ -213,6 +842,174 @@ paths:
           $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
+    put:
+      operationId: fixtureVerifyByPut
+      summary: 'Answers as `fixtureVerifyStored` when `X-HTTP-Method-Override` is `GET`, and as `fixtureVerifySupplied`, CSRF check included, when it is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. A JSON body merges as for a POST; a form body adds no params, as ColdFusion fills the form scope only for a POST.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureEntries'
+      requestBody:
+        $ref: '#/components/requestBodies/VerifySuppliedJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureVerifyResult'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    patch:
+      operationId: fixtureVerifyByPatch
+      summary: 'Answers as `fixtureVerifyStored` when `X-HTTP-Method-Override` is `GET`, and as `fixtureVerifySupplied`, CSRF check included, when it is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. A JSON body merges as for a POST; a form body adds no params, as ColdFusion fills the form scope only for a POST.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureEntries'
+      requestBody:
+        $ref: '#/components/requestBodies/VerifySuppliedJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureVerifyResult'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    delete:
+      operationId: fixtureVerifyByDelete
+      summary: 'Answers as `fixtureVerifyStored` when `X-HTTP-Method-Override` is `GET`, and as `fixtureVerifySupplied`, CSRF check included, when it is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. A JSON body merges as for a POST; a form body adds no params, as ColdFusion fills the form scope only for a POST.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureEntries'
+      requestBody:
+        $ref: '#/components/requestBodies/VerifySuppliedJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureVerifyResult'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    options:
+      operationId: fixtureVerifyByOptions
+      summary: 'Answers as `fixtureVerifyStored` when `X-HTTP-Method-Override` is `GET`, and as `fixtureVerifySupplied`, CSRF check included, when it is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. A JSON body merges as for a POST; a form body adds no params, as ColdFusion fills the form scope only for a POST.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureEntries'
+      requestBody:
+        $ref: '#/components/requestBodies/VerifySuppliedJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureVerifyResult'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    head:
+      operationId: fixtureVerifyByHead
+      summary: 'Answers as `fixtureVerifyStored` when `X-HTTP-Method-Override` is `GET`, and as `fixtureVerifySupplied`, CSRF check included, when it is `POST`; 404 `notFound` otherwise.'
+      description: 'Public on the platform; after the site check any other effective method answers 404 `notFound` before login, and changes nothing. The answer carries the status and headers of that operation, without its body.'
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - $ref: '#/components/parameters/FixtureEntries'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '400':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '401':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '403':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '404':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '500':
+          $ref: '#/components/responses/FixtureHeadResult'
+        '503':
+          $ref: '#/components/responses/FixtureHeadResult'
   /v1/esignature/requests:
     parameters:
       - $ref: '#/components/parameters/SiteId'
@@ -878,6 +1675,26 @@ components:
         maxLength: 25
         examples:
           - tenant-a
+    FixtureSiteId:
+      name: siteid
+      in: query
+      required: false
+      description: Legacy site id, also accepted as a form or JSON body field, checked before login; the token's site, else `default`, when omitted. An unknown or non-string site answers 400, and a registered site other than a logged-in user's token site 403.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 25
+        examples:
+          - tenant-a
+    MethodOverride:
+      name: X-HTTP-Method-Override
+      in: header
+      required: false
+      description: HTTP method the fixture dispatches on instead of the request method, when non-empty; a method the path does not dispatch on answers 404 `notFound`.
+      schema:
+        type: string
+        examples:
+          - GET
     UseDataNamespace:
       name: useDataNamespace
       in: query
@@ -1038,28 +1855,30 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/FixtureVerifySuppliedInput'
-  responses:
-    FixtureRequestList:
-      description: One page of the site's requests.
-      headers:
-        Generator:
-          $ref: '#/components/headers/Generator'
-        Strict-Transport-Security:
-          $ref: '#/components/headers/StrictTransportSecurity'
-        ETag:
-          $ref: '#/components/headers/ETag'
+    CreateRequestJson:
+      required: false
+      description: Merged with the query string as legacy merges url and a JSON body; a form body adds no params, as ColdFusion fills the form scope only for a POST.
       content:
-        application/json;charset=utf-8:
+        application/json:
           schema:
-            allOf:
-              - $ref: '#/components/schemas/FixtureEnvelope'
-              - properties:
-                  method:
-                    const: esignature.requests
-                  data:
-                    $ref: '#/components/schemas/SignatureRequestList'
-    FixtureRequestCreated:
-      description: The created request, PENDING.
+            $ref: '#/components/schemas/FixtureCreateRequestInput'
+    SignJson:
+      required: false
+      description: Merged with the query string as legacy merges url and a JSON body; a form body adds no params, as ColdFusion fills the form scope only for a POST.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FixtureSignInput'
+    VerifySuppliedJson:
+      required: false
+      description: Merged with the query string as legacy merges url and a JSON body; a form body adds no params, as ColdFusion fills the form scope only for a POST.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FixtureVerifySuppliedInput'
+  responses:
+    FixtureRequestsResult:
+      description: The effective method's answer, as `X-HTTP-Method-Override` selects it; one page of the site's requests for `GET`, the created PENDING request for `POST`.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -1078,7 +1897,9 @@ components:
                   method:
                     const: esignature.requests
                   data:
-                    $ref: '#/components/schemas/SignatureRequest'
+                    oneOf:
+                      - $ref: '#/components/schemas/SignatureRequestList'
+                      - $ref: '#/components/schemas/SignatureRequest'
     FixtureRequestSigned:
       description: The request, now SIGNED.
       headers:
@@ -1138,6 +1959,17 @@ components:
                     const: esignature.requests.verify
                   data:
                     $ref: '#/components/schemas/VerifyResult'
+    FixtureHeadResult:
+      description: The status and headers of the selected operation's answer, or of any other effective method's 404 `notFound`, without a body.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
     FixtureBadRequest:
       description: '`invalidParameters` (`Invalid parameters`): an unknown site, invalid paging, document, signer, typed name, supplied chain or migration input; or `badRequest` (`Bad Request`) for a rejected migration batch.'
       headers:
@@ -1193,7 +2025,7 @@ components:
           schema:
             $ref: '#/components/schemas/FixtureErrorEnvelope'
     FixtureNotFound:
-      description: '`notFound` (`Not Found`): no such request in the caller''s site.'
+      description: '`notFound` (`Not Found`): no such request in the caller''s site, or, on a fixture path, an effective method (after `X-HTTP-Method-Override`) the path does not dispatch on.'
       headers:
         Generator:
           $ref: '#/components/headers/Generator'

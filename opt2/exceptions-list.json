@@ -236,6 +236,51 @@
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     },
     {
+      "id": "EX-CARCH-SEARCH-SITE",
+      "scenario": "GS-CO-06",
+      "routeKey": "admin:carch.search",
+      "appliesTo": [],
+      "difference": "Legacy `carch.search` runs the private search, stores `session.keywords` and pages the rows by 30 (admin/core/controllers/carch.cfc:488-492). Each row search.cfm prints reads site settings: `getLocking()` for the add-content menu and the delete link, and `getWebPath(complete=1)`, or `getScheme()` and `getDomain()`, for the preview link (admin/core/views/carch/search.cfm:105-170). Every printed row also fails with HTTP 500 `Element RSLIST.moduleid is undefined in RC.`, because `getPrivateSearch` selects no `moduleid` (core/mura/content/contentGatewayAdobe.cfc:1697-1716; search.cfm:131). strategies-content stores `session.keywords` as legacy does and serves a page without rows, but answers a page that holds rows with the legacy-shaped 503.",
+      "decision": "preserve",
+      "reason": "Equivalence is impossible for a page with rows. Its rows need the site's locking and URL settings, and strategies-content has no verified source of them: the tenant registry holds only site and tenant ids, pools and domains (platform/src/tenancy/registry.ts), `programs-sites.site.changed.v1` carries none of these settings, and programs-sites `getSite` answers only `s2` and `site-admin` callers, while the topology lets strategies-content call identity alone (infra/terraform/envs/plan/topology.auto.tfvars.json). Legacy's own answer, the runtime-error 500 page, is one the target never prints (EX-ADMIN-DEBUGPAGE). strategies-content therefore fails closed with the legacy-shaped 503 naming the halt reason `carch-search-halted`, and `admin:carch.search` stays `legacy` in every cut-over version. The entry closes when strategies-content reads these settings through a programs-sites contract or projection.",
+      "status": "halted",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-06.json",
+        "replay": "opt2/reports/parity.json#GS-CO-06"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-CARCH-UPLOAD-PAGELIMIT",
+      "scenario": "GS-CO-07",
+      "routeKey": "admin:carch.multifileupload",
+      "appliesTo": [],
+      "difference": "Legacy `carch.multiFileUpload` reads the parent's crumbs, the item and page counts and the restrict groups (admin/core/controllers/carch.cfc:536-541). Its view renders the upload form while a `contentid` is given or the site's page count is below `getSite(siteid).getPageLimit()`, the site's `tsettings.PageLimit` (settingsBean default 1000, core/mura/settings/settingsBean.cfc:83,182), and the site-full notice `form/dsp_full.cfm` otherwise; the form prints the site's `getScheme()` in its gallery script URL (admin/core/views/carch/multifileupload.cfm:110,340,494-498). strategies-content answers every request with the legacy-shaped 503 after `before()`, ahead of any read.",
+      "decision": "preserve",
+      "reason": "Equivalence is impossible: every request needs the site's page limit or scheme, and strategies-content has no verified source of either. The tenant registry holds only site and tenant ids, pools and domains (platform/src/tenancy/registry.ts), `programs-sites.site.changed.v1` carries neither setting, and programs-sites `getSite` answers only `s2` and `site-admin` callers, while the topology lets strategies-content call identity alone (infra/terraform/envs/plan/topology.auto.tfvars.json). strategies-content therefore fails closed with the legacy-shaped 503 naming the halt reason `carch-multifileupload-halted`, and `admin:carch.multifileupload` stays `legacy` in every cut-over version. The entry closes when strategies-content reads these settings through a programs-sites contract or projection.",
+      "status": "halted",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-07.json",
+        "replay": "opt2/reports/parity.json#GS-CO-07"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-CARCH-IMAGE-SIZES",
+      "scenario": "GS-CO-17",
+      "routeKey": "admin:carch.imagedetails",
+      "appliesTo": [],
+      "difference": "Legacy `carch.imagedetails`, a view without a controller method, copies each listed file's missing `_source` rendition with `fileManager.touchSourceImage` (admin/core/views/carch/imagedetails.cfm:82-83) and prints per file the small, medium and large rendition widths, heights and ratios, read from `tsettings` through `$.siteConfig` (imagedetails.cfm:22-38,122-131,163-172), and the site's custom image sizes from `getSite(siteid).getCustomImageSizeIterator()`, which reads `timagesizes` (imagedetails.cfm:135,176; core/mura/settings/settingsBean.cfc:1276-1288). strategies-content answers every request with the legacy-shaped 503 after `before()`, ahead of any read or `_source` copy.",
+      "decision": "preserve",
+      "reason": "Equivalence is impossible: each file the view prints needs the site's rendition sizes and custom image sizes, and strategies-content has no verified source of them. The tenant registry holds only site and tenant ids, pools and domains (platform/src/tenancy/registry.ts), `programs-sites.site.changed.v1` carries none of these settings, and programs-sites `getSite` and `listImageSizes` answer only `s2` and `site-admin` callers, while the topology lets strategies-content call identity alone (infra/terraform/envs/plan/topology.auto.tfvars.json). strategies-content therefore fails closed with the legacy-shaped 503 naming the halt reason `carch-imagedetails-halted`, and `admin:carch.imagedetails` stays `legacy` in every cut-over version. The entry closes when strategies-content reads these settings through a programs-sites contract or projection.",
+      "status": "halted",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-17.json",
+        "replay": "opt2/reports/parity.json#GS-CO-17"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
       "id": "EX-CCHAIN-PENDING-PREVIEW",
       "scenario": "GS-CO-09",
       "routeKey": "admin:cchain.pending",

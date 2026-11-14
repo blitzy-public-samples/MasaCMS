@@ -81,7 +81,7 @@ const SWEEP_INTERVAL_S = 60;
 const GATE_HOLDER = 'site-changed-events-suite';
 const SEED_BATCH_ID = 'site-changed-events-seed-tenant-a';
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
-// The Edit Site save writes bean values into typed columns, so seeded rows hold what settingsDAO.create stores for a new site.
+// Seeded rows hold the bean init defaults settingsDAO.create stores for a new site.
 const BEAN_DEFAULTS: ReadonlyMap<string, unknown> = new Map(
   Object.entries(SITE_DEFAULTS).map(([name, value]) => [name.toLowerCase(), value]),
 );
@@ -211,12 +211,12 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
     return app.inject({ method: 'POST', url: `/internal/v1/migration/${route}`, headers: await headersFor('service:migration'), payload: body });
   }
 
-  /** POSTs the Edit Site form of `tenant-a` as an S2 admin with a CSRF token the identity recorder accepts. */
-  async function updateTenantA(fields: Readonly<Record<string, string>>) {
-    const form = new URLSearchParams({ siteid: 'tenant-a', action: 'Update', ...fields, csrf_token: 'T', csrf_token_expires: 'E' });
+  /** POSTs the Sites screen order save of `tenant-a` at `orderno` as an S2 admin with a CSRF token the identity recorder accepts. */
+  async function orderTenantA(orderno: number) {
+    const form = new URLSearchParams({ orderID: 'tenant-a', orderno: String(orderno), csrf_token: 'T', csrf_token_expires: 'E' });
     return app.inject({
       method: 'POST',
-      url: '/v1/sites/tenant-a/update',
+      url: '/v1/sites/order',
       headers: { ...(await headersFor('s2', { site: TENANT_A.siteId })), ...FORM },
       payload: form.toString(),
     });
@@ -303,10 +303,10 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
     const before = await outboxRows(TENANT_A);
     const targetLogs = (await siteChangelog(TENANT_A)).filter((log) => log.origin === 'target');
 
-    const res = await updateTenantA({ site: 'Tenant A Events', domain: 'a.events.test' });
+    const res = await orderTenantA(2);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ written: true, errors: {} });
+    expect(res.json()).toMatchObject({ written: true });
     const added = (await outboxRows(TENANT_A)).slice(before.length);
     expect(added).toHaveLength(1);
     const [row] = added as [OutboxRow];
@@ -327,7 +327,7 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
       filePoolId: 'umbrella',
       displayPoolId: 'umbrella',
       contentPoolIds: ['tenant-a'],
-      domains: ['a.events.test'],
+      domains: [fixturePayload(TENANT_A.siteId).domains?.[0]],
     });
     expect(row.published_at).toBeInstanceOf(Date);
     expect(publisher.published.filter((event) => event.envelope.eventId === row.event_id)).toEqual([
@@ -342,10 +342,10 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
     const logsBefore = await siteChangelog(TENANT_A);
     publisher.failNext();
 
-    const res = await updateTenantA({ site: 'Tenant A Unflushed', domain: 'a2.events.test' });
+    const res = await orderTenantA(3);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ written: true, errors: {} });
+    expect(res.json()).toMatchObject({ written: true });
     const added = (await outboxRows(TENANT_A)).slice(before.length);
     expect(added).toHaveLength(1);
     const [row] = added as [OutboxRow];
@@ -517,9 +517,9 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
   it('publishes unflushed outbox rows from the sweep task and secures the next slot of the sweep chain', async () => {
     const before = await outboxRows(TENANT_A);
     publisher.failNext();
-    const update = await updateTenantA({ site: 'Tenant A Swept', domain: 'a3.events.test' });
-    expect(update.statusCode).toBe(200);
-    expect(update.json()).toMatchObject({ written: true, errors: {} });
+    const order = await orderTenantA(4);
+    expect(order.statusCode).toBe(200);
+    expect(order.json()).toMatchObject({ written: true });
     const site = await storedSite(TENANT_A);
     publisher.failNext();
     const envelope = await schema.app.withTenant(TENANT_A.tenantId, (tx) =>

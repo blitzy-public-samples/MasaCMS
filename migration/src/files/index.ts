@@ -1,4 +1,4 @@
-/** Legacy file store: stored-object names, per-snapshot manifests, transfer to content-files and the feed's manifest diff. */
+/** Legacy file store: stored-object names, per-snapshot manifests, transfer to and removal from content-files, and the feed's manifest diff. */
 export {
   buildFileManifest,
   readManifest,
@@ -13,8 +13,8 @@ export {
 } from './manifest.js';
 export type { FilesContext, ManifestKey, ManifestEntry, ManifestBuildResult } from './manifest.js';
 
-export { transferFiles, planObjects, FileHashMismatchError } from './transfer.js';
-export type { PlannedObject, PlanOptions, TransferResult } from './transfer.js';
+export { transferFiles, planObjects, removeDroppedObjects, FileHashMismatchError } from './transfer.js';
+export type { PlannedObject, PlanOptions, TransferResult, RemovalResult } from './transfer.js';
 
 export { diffSnapshotManifests, streamManifestDiff, compareManifestKeys } from './feed.js';
 export type { ManifestDiff, ManifestDifference, DiffManifestOptions } from './feed.js';

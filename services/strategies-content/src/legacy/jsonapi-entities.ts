@@ -1,7 +1,8 @@
 /**
  * JSON API entities owned by strategies-content, as jsonApiUtility registers them
  * (core/mura/client/api/json/v1/jsonApiUtility.cfc:32-42, 69-105, 124-130, 225-273), with the primary key,
- * display name, property hints and relations each bean's getProperties yields (core/mura/bean/bean.cfc:620-1063).
+ * display name, declared properties, property hints and relations each bean's getProperties yields
+ * (core/mura/bean/bean.cfc:620-1063).
  */
 import {
   type ApiKeyHint,
@@ -56,11 +57,21 @@ export interface ContentEntityConfig {
   readonly hints: Readonly<Record<string, EntityPropertyHint>>;
   readonly hasMany: readonly RelationProp[];
   readonly hasOne: readonly RelationProp[];
+  /** Lower-cased names of every property the bean's component chain declares (the keys of getProperties). */
+  readonly declaredProperties: ReadonlySet<string>;
+  /** Lower-cased declared properties findProperties skips: persistent=false without a cfc. */
+  readonly nonPersistentProperties: ReadonlySet<string>;
 }
 
 /** What getEntityConfig answers for a name no entity is registered under. */
 export interface UnregisteredEntityConfig {
   readonly public: false;
+}
+
+/** Property names one component declares, comma-separated; `nonPersistent` are persistent=false without a cfc. */
+interface ComponentProperties {
+  readonly persistent: string;
+  readonly nonPersistent?: string;
 }
 
 interface EntityDefinition {
@@ -74,6 +85,8 @@ interface EntityDefinition {
   readonly datatypes: Readonly<Record<string, string>>;
   readonly hasMany: readonly RelationProp[];
   readonly hasOne: readonly RelationProp[];
+  /** Property declarations along the bean's extends chain, its own component first. */
+  readonly properties: readonly ComponentProperties[];
 }
 
 const MODULE_CONTENT = '00000000000000000000000000000000000';
@@ -93,6 +106,45 @@ const rel = (name: string, cfc: string, loadkey: string, column: string): Relati
 
 const NUMERIC = 'numeric';
 const DATETIME = 'datetime';
+
+// bean.cfc:79-82.
+const BEAN_PROPERTIES: readonly ComponentProperties[] = [
+  { persistent: '', nonPersistent: 'errors,isNew,fromMuraCache,instanceID' },
+];
+// beanORM.cfc:79.
+const BEAN_ORM_PROPERTIES: readonly ComponentProperties[] = [
+  { persistent: '', nonPersistent: 'saveErrors' },
+  ...BEAN_PROPERTIES,
+];
+// beanExtendable.cfc:80-86.
+const BEAN_EXTENDABLE_PROPERTIES: readonly ComponentProperties[] = [
+  { persistent: 'type,subType,siteID', nonPersistent: 'extendData,extendSetID,extendDataTable,extendAutoComplete' },
+  ...BEAN_PROPERTIES,
+];
+// beanORMVersioned.cfc:78-80.
+const BEAN_ORM_VERSIONED_PROPERTIES: readonly ComponentProperties[] = [
+  { persistent: 'activeContent,content,site' },
+  ...BEAN_ORM_PROPERTIES,
+];
+// beanFeed.cfc:78-90.
+const BEAN_FEED_PROPERTIES: readonly ComponentProperties[] = [
+  {
+    persistent:
+      'entityName,table,keyField,nextN,maxItems,siteID,contentpoolid,sortBy,sortDirection,orderby,additionalColumns,sortTable,pageIndex',
+  },
+  ...BEAN_PROPERTIES,
+];
+
+// contentBean.cfc:80-168.
+const CONTENT_PROPERTIES: readonly ComponentProperties[] = [
+  {
+    persistent:
+      'contentHistID,contentID,kids,parent,site,categoryAssignments,changeset,comments,stats,active,approved,orderno,metaDesc,metaKeyWords,displayStart,displayStop,body,title,menuTitle,URLTitle,HTMLTitle,filename,oldfilename,lastUpdate,display,type,newfile,lastUpdateBy,lastUpdateByID,summary,moduleID,isNav,restricted,target,restrictGroups,template,childTemplate,responseMessage,responseChart,responseSendTo,responseDisplayFields,moduleAssign,notes,inheritObjects,isFeature,releaseDate,nextN,sortBy,sortDirection,featureStart,featureStop,fileID,forceSSL,remoteURL,remoteID,remotePubDate,remoteSource,remoteSourceURL,credits,audience,searchExclude,displayTitle,path,tags,created,mobileExclude,changesetID,imageSize,imageHeight,imageWidth,expires,displayInterval,requestID',
+    nonPersistent:
+      'preserveID,isNew,isLocked,fileSize,fileExt,contentType,contentSubType,keyPoints,doCache,majorVersion,minorVersion,assocFilename,approvalStatus,approvalGroupID,approvalChainOverride,relatedContentSetData',
+  },
+  ...BEAN_EXTENDABLE_PROPERTIES,
+];
 
 // core/mura/content/contentBean.cfc:80-168 with beanExtendable and bean.
 const CONTENT_DATATYPES: Readonly<Record<string, string>> = {
@@ -151,6 +203,7 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
     datatypes: CONTENT_DATATYPES,
     hasMany: CONTENT_HAS_MANY,
     hasOne: CONTENT_HAS_ONE,
+    properties: CONTENT_PROPERTIES,
   },
   content: {
     public: true,
@@ -161,6 +214,7 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
     datatypes: CONTENT_DATATYPES,
     hasMany: CONTENT_HAS_MANY,
     hasOne: CONTENT_HAS_ONE,
+    properties: CONTENT_PROPERTIES,
   },
   // core/mura/content/contentCommentBean.cfc:77-97.
   comment: {
@@ -184,6 +238,14 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
       rel('parent', 'comment', 'parentid', 'parentid'),
       rel('site', 'site', 'siteID', 'siteID'),
     ],
+    properties: [
+      {
+        persistent:
+          'commentID,content,kids,parent,site,comments,url,name,email,entered,subscribe,isApproved,userID,path,remoteID,isSpam,isDeleted,flagCount',
+        nonPersistent: 'isNew',
+      },
+      ...BEAN_PROPERTIES,
+    ],
   },
   // core/mura/content/changeset/changesetBean.cfc:5-23.
   changeset: {
@@ -205,6 +267,14 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
       rel('contentAssignments', 'content', 'primaryKey', 'primaryKey'),
     ],
     hasOne: [],
+    properties: [
+      {
+        persistent:
+          'changesetID,siteID,name,created,description,publishDate,published,remoteID,remoteSourceURL,remotePubDate,lastUpdate,lastUpdateBy,closeDate,categoryID,tags,categoryAssignments,contentAssignments',
+        nonPersistent: 'isNew',
+      },
+      ...BEAN_PROPERTIES,
+    ],
   },
   // core/mura/content/feed/feedBean.cfc:80-133 with beanFeed (pageIndex) and bean.
   feed: {
@@ -239,6 +309,14 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
     },
     hasMany: [],
     hasOne: [rel('site', 'site', 'siteID', 'siteID')],
+    properties: [
+      {
+        persistent:
+          'feedID,site,dateCreated,lastUpdate,lastUpdateBy,name,altName,lang,isActive,showNavOnly,showExcludeSearch,isPublic,isDefault,description,contentID,categoryID,maxItems,allowHTML,isFeaturesOnly,featureType,restricted,restrictGroups,version,channelLink,authtype,type,sortBy,sortDirection,parentID,nextN,displayName,displayRatings,displayComments,displayKids,remoteID,remoteSourceURL,remotePubDAte,imageSize,imageHeight,imageWidth,displayList,liveOnly,entityName,viewalllabel,viewalllink,autoimport,isLocked,cssClass,useCategoryIntersect,altTable,contentpoolid,includeHomePage',
+        nonPersistent: 'isNew,params',
+      },
+      ...BEAN_FEED_PROPERTIES,
+    ],
   },
   // core/mura/category/categoryBean.cfc:80-104.
   category: {
@@ -261,6 +339,14 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
       rel('contentAssignments', 'contentCategoryAssign', 'primaryKey', 'primaryKey'),
     ],
     hasOne: [rel('parent', 'category', 'categoryid', 'parentid'), rel('site', 'site', 'siteid', 'siteid')],
+    properties: [
+      {
+        persistent:
+          'categoryID,kids,parent,contentAssignments,site,dateCreated,lastUpdate,lastUpdateBy,name,isInterestGroup,isActive,isOpen,note,sortBy,sortDirection,restrictGroups,path,remoteID,remoteSourceURL,remotePubDate,URLtitle,filename,isFeatureable',
+        nonPersistent: 'isNew',
+      },
+      ...BEAN_PROPERTIES,
+    ],
   },
   // core/mura/content/contentCategoryAssignBean.cfc:79-91; `featureSop` is the bean's spelling.
   contentCategoryAssign: {
@@ -277,6 +363,14 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
       rel('parent', 'category', 'parentid', 'parentid'),
       rel('site', 'site', 'siteid', 'siteid'),
     ],
+    // `parent` is persistent=false but related, so findProperties still lists it.
+    properties: [
+      {
+        persistent: 'content,activeContent,category,parent,kids,site,isfeature,featureStart,featureSop',
+        nonPersistent: 'categoryName,parentName,filename,path',
+      },
+      ...BEAN_ORM_PROPERTIES,
+    ],
   },
   // core/mura/content/file/fileBean.cfc:3-33.
   file: {
@@ -288,6 +382,15 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
     // Appended by fileMetaData's many-to-one `file` property (bean.cfc:995).
     hasMany: [rel('fileMetaData', 'fileMetaData', 'fileid', 'fileid')],
     hasOne: [rel('content', 'content', 'contentid', 'contentid'), rel('site', 'site', 'siteid', 'siteid')],
+    // The gps* declarations of fileBean.cfc:23-32 are commented out.
+    properties: [
+      {
+        persistent:
+          'fileid,content,site,filename,contentType,contentSubType,fileSize,fileExt,moduleid,created,deleted,caption,credits,alttext,remoteID,remoteURL,remotePubDate,remoteSource,remoteSourceURL,exif',
+        nonPersistent: 'fileField',
+      },
+      ...BEAN_ORM_PROPERTIES,
+    ],
   },
   // core/mura/content/contentFileMetaDataBean.cfc:84-111 with beanORMVersioned:78-80.
   fileMetaData: {
@@ -303,6 +406,14 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
       rel('content', 'content', 'contenthistid', 'contenthistid'),
       rel('site', 'site', 'siteID', 'siteID'),
     ],
+    // The gps* declarations of contentFileMetaDataBean.cfc:101-110 are commented out.
+    properties: [
+      {
+        persistent: 'metaID,file,altText,caption,credits,remoteID,remoteURL,remotePubDate,remoteSource,remoteSourceURL,exif',
+        nonPersistent: 'filename,filesize,contentType,contentSubType,fileExt,created,directImages',
+      },
+      ...BEAN_ORM_VERSIONED_PROPERTIES,
+    ],
   },
   // core/mura/content/changeset/changesetCategoryAssignmentBean.cfc:4-7.
   changesetCategoryAssignment: {
@@ -317,6 +428,7 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
       rel('site', 'site', 'siteid', 'siteid'),
       rel('category', 'category', 'categoryid', 'categoryid'),
     ],
+    properties: [{ persistent: 'assignmentid,changeset,site,category' }, ...BEAN_ORM_PROPERTIES],
   },
   // core/mura/content/contentStatsBean.cfc:77-93.
   stats: {
@@ -338,6 +450,14 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
     },
     hasMany: [],
     hasOne: [rel('content', 'content', 'contentid', 'contentid'), rel('site', 'site', 'siteid', 'siteid')],
+    // No `contentid` property: the primary key is the `content` relation's column.
+    properties: [
+      {
+        persistent:
+          'content,site,views,rating,totalvotes,upvotes,downvotes,comments,disablecomments,majorversion,minorversion,lockid,locktype',
+      },
+      ...BEAN_PROPERTIES,
+    ],
   },
   // core/mura/content/contentVariationTargetingBean.cfc:82-86.
   variationTargeting: {
@@ -348,6 +468,7 @@ const DEFINITIONS: Readonly<Record<ContentEntityName, EntityDefinition>> = {
     datatypes: { isNew: NUMERIC },
     hasMany: [],
     hasOne: [rel('content', 'content', 'contentid', 'contentid'), rel('site', 'site', 'siteid', 'siteid')],
+    properties: [{ persistent: 'targetingid,content,site,initjs,targetingjs' }, ...BEAN_ORM_PROPERTIES],
   },
 };
 
@@ -358,6 +479,29 @@ function hintsOf(datatypes: Readonly<Record<string, string>>): Readonly<Record<s
     if (hint === 'integer' || hint === 'float' || hint === 'date') hints[property] = hint;
   }
   return Object.freeze(hints);
+}
+
+/** getProperties' names along a component chain, lower-cased, and the non-persistent ones; a name's first declaration wins. */
+function declaredOf(
+  chain: readonly ComponentProperties[],
+): Pick<ContentEntityConfig, 'declaredProperties' | 'nonPersistentProperties'> {
+  const declared = new Set<string>();
+  const nonPersistent = new Set<string>();
+  for (const component of chain) {
+    const lists: [string, boolean][] = [
+      [component.persistent, true],
+      [component.nonPersistent ?? '', false],
+    ];
+    for (const [list, persistent] of lists) {
+      for (const name of list.split(',').filter((item) => item !== '')) {
+        const lower = name.toLowerCase();
+        if (declared.has(lower)) continue;
+        declared.add(lower);
+        if (!persistent) nonPersistent.add(lower);
+      }
+    }
+  }
+  return { declaredProperties: declared, nonPersistentProperties: nonPersistent };
 }
 
 function configOf(name: ContentEntityName, def: EntityDefinition): ContentEntityConfig {
@@ -372,6 +516,7 @@ function configOf(name: ContentEntityName, def: EntityDefinition): ContentEntity
     hints: hintsOf(def.datatypes),
     hasMany: Object.freeze([...def.hasMany]),
     hasOne: Object.freeze([...def.hasOne]),
+    ...declaredOf(def.properties),
   });
 }
 

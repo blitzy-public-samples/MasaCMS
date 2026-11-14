@@ -8,7 +8,7 @@ import type { AdminRequest } from '@/lib/request-context';
 import { CWEBSERVICE_RC_DEFAULTS, cwebserviceScreens } from '@/screens/cwebservice';
 import { authModeLabel, effectiveGrantType, type WebServiceClient } from '@/screens/cwebservice/list';
 import type { PageScreen, ScreenDefinition } from '@/screens/registry';
-import { OAUTH_CLIENT_IDS, emptyOAuthClients, oauthClients } from '../../fixtures/identity/oauth-clients';
+import { OAUTH_CLIENT_IDS, emptyOAuthClients, oauthClientRows } from '../../fixtures/identity/oauth-clients';
 import {
   adminS2Request,
   anonymousRequest,
@@ -188,7 +188,7 @@ describe('grant types', () => {
 
 describe('cwebservice.list page', () => {
   it('renders the header, the add link and one grid table', async () => {
-    const { html, $ } = await renderList(listRequest(), listRoutes(oauthClients));
+    const { html, $ } = await renderList(listRequest(), listRoutes(oauthClientRows));
 
     expect(domModel(html).headings).toContain('Web Services');
     const add = $('.mura-header .nav-module-specific a.btn');
@@ -206,10 +206,10 @@ describe('cwebservice.list page', () => {
   it("renders a row per client in identity's order", async () => {
     const req = listRequest();
 
-    const { html } = await renderList(req, listRoutes(oauthClients));
+    const { html } = await renderList(req, listRoutes(oauthClientRows));
     const { tables } = domModel(html);
 
-    expect(oauthClients.map(({ clientid }) => clientid)).toEqual([
+    expect(oauthClientRows.map(({ clientid }) => clientid)).toEqual([
       OAUTH_CLIENT_IDS.clientCredentials,
       OAUTH_CLIENT_IDS.basic,
       OAUTH_CLIENT_IDS.authorizationCode,
@@ -217,7 +217,7 @@ describe('cwebservice.list page', () => {
     expect(tables).toEqual([
       {
         headers: ['', 'Name', 'Auth Mode', 'Last Update'],
-        rows: oauthClients.map((client) => [
+        rows: oauthClientRows.map((client) => [
           'Edit Delete',
           client.name,
           authModeLabel(effectiveGrantType(client.granttype)),
@@ -233,12 +233,12 @@ describe('cwebservice.list page', () => {
   });
 
   it('links each row to edit and to a CSRF-guarded delete', async () => {
-    const { $ } = await renderList(listRequest(), listRoutes(oauthClients));
+    const { $ } = await renderList(listRequest(), listRoutes(oauthClientRows));
     const rows = $('table.mura-table-grid tbody tr').toArray();
 
-    expect(rows).toHaveLength(oauthClients.length);
+    expect(rows).toHaveLength(oauthClientRows.length);
     rows.forEach((tr, index) => {
-      const { clientid, name } = oauthClients[index] as WebServiceClient;
+      const { clientid, name } = oauthClientRows[index] as WebServiceClient;
       const nameLink = $(tr).find('td.var-width a');
       const editLink = $(tr).find('li.edit a');
       const deleteLink = $(tr).find('li.delete a');
@@ -265,19 +265,19 @@ describe('cwebservice.list page', () => {
   });
 
   it('issues CSRF tokens once per client', async () => {
-    const { gateway } = await renderList(listRequest(), listRoutes(oauthClients));
+    const { gateway } = await renderList(listRequest(), listRoutes(oauthClientRows));
 
     const contexts = gateway.calls
       .filter(({ service, method, path }) => service === 'identity' && method === 'POST' && path === CSRF_PATH)
       .flatMap(({ json }) => (json as { readonly contexts: readonly string[] }).contexts);
 
-    for (const { clientid } of oauthClients) {
+    for (const { clientid } of oauthClientRows) {
       expect(contexts.filter((context) => context === clientid)).toHaveLength(1);
     }
   });
 
   it("lists the session site's clients through identity", async () => {
-    const { gateway } = await renderList(listRequest(), listRoutes(oauthClients));
+    const { gateway } = await renderList(listRequest(), listRoutes(oauthClientRows));
 
     expect(gateway.calls.filter(({ path }) => path === LIST_PATH)).toEqual([
       { service: 'identity', method: 'GET', path: LIST_PATH, query: { siteid: SITE, offset: '0', limit: '1000' } },
@@ -288,7 +288,7 @@ describe('cwebservice.list page', () => {
     { site: 'a site without SSL', req: () => listRequest(), shown: true },
     { site: 'a site set to use SSL', req: () => listRequest({ site: { record: { useSSL: 1 } } }), shown: false },
   ])('shows the SSL alert as legacy does on $site', async ({ req, shown }) => {
-    const { html } = await renderList(req(), listRoutes(oauthClients));
+    const { html } = await renderList(req(), listRoutes(oauthClientRows));
 
     const { alerts } = domModel(html);
 
@@ -317,14 +317,14 @@ describe('cwebservice.list page', () => {
     { who: 'an anonymous user', req: () => anonymousRequest({ circuit: 'cwebservice', item: 'list' }) },
   ])('secures $who before identity is listed', async ({ req }) => {
     const request = req();
-    const ctx = makeScreenContext({ req: request, gateway: fakeGatewayClient(listRoutes(oauthClients)) });
+    const ctx = makeScreenContext({ req: request, gateway: fakeGatewayClient(listRoutes(oauthClientRows)) });
 
     await expect(renderScreenPage(listPage(), ctx)).resolves.toEqual(secure(request));
     expect(ctx.gateway.calls.filter(({ path }) => path === LIST_PATH)).toEqual([]);
   });
 
   it('propagates an unavailable gateway', async () => {
-    const ctx = makeScreenContext({ req: listRequest(), gateway: fakeGatewayClient(listRoutes(oauthClients)) });
+    const ctx = makeScreenContext({ req: listRequest(), gateway: fakeGatewayClient(listRoutes(oauthClientRows)) });
     ctx.gateway.failWith();
 
     await expect(renderScreenPage(listPage(), ctx)).rejects.toBeInstanceOf(GatewayUnavailableError);

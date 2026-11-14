@@ -8,18 +8,20 @@ import {
   actionButton,
   block,
   controlGroup,
-  gridTable,
   opt2ActionUrl,
   opt2Gate,
+  opt2Label,
   opt2ScreenUrl,
   opt2View,
   pageHeader,
   postForm,
   select,
   textInput,
-  type GridCell,
+  valueRows,
+  type Label,
   type Opt2Back,
   type SelectOption,
+  type ValueRow,
 } from '../shared';
 
 /** An export job as reporting lists it. */
@@ -74,7 +76,7 @@ function actionUrl(ctx: ScreenContext, action: string): string {
   return opt2ActionUrl('reporting', action, siteParams(ctx));
 }
 
-const HEADERS: readonly string[] = ['Job', 'Format', 'State', 'Created', 'Started', 'Finished', 'Error', 'Download'];
+const EMPTY_MESSAGE = 'There are no export jobs.';
 
 const FORMAT_OPTIONS: readonly SelectOption[] = [
   { value: 'xlsx', label: 'XLSX' },
@@ -103,25 +105,47 @@ export async function loadExports(ctx: ScreenContext): Promise<ExportsData> {
   return { jobs: data, total, page };
 }
 
-function jobRow(job: ExportJob, downloadUrl: string): GridCell[] {
+/** The labelled values of `job`, without the start, finish and error a job does not have yet. */
+function jobValues(ctx: ScreenContext, job: ExportJob): ValueRow[] {
+  const values: ValueRow[] = [
+    ['Job', job.job_id],
+    [opt2Label(ctx, 'Format'), job.format],
+    [opt2Label(ctx, 'State'), job.state],
+    [opt2Label(ctx, 'Created'), job.created],
+    ['Started', job.started_at],
+    ['Finished', job.finished_at],
+    ['Error', job.error],
+  ];
+  return values.filter(([, value]) => value !== '');
+}
+
+/** `job` as read-only rows in a block of its own, then its Download form when done; a grid row would overflow. */
+function jobBlock(ctx: ScreenContext, job: ExportJob, downloadUrl: string): SafeHtml {
   // Not an inline signed link: signed URLs expire after 900 s, so each click has the download action fetch a fresh one.
-  const download = job.state === 'done' ? actionButton('Download', downloadUrl, { jobId: job.job_id }) : null;
-  return [job.job_id, job.format, job.state, job.created, job.started_at, job.finished_at, job.error, download];
+  const download =
+    job.state === 'done' ? actionButton(opt2Label(ctx, 'Download'), downloadUrl, { jobId: job.job_id }) : null;
+  return block(html`${valueRows(jobValues(ctx, job))}${download}`);
+}
+
+/** Every job in the order reporting lists them, or the empty-list message. */
+function jobBlocks(ctx: ScreenContext, jobs: readonly ExportJob[], downloadUrl: string): SafeHtml {
+  if (jobs.length === 0) return html`<div class="help-block-empty">${EMPTY_MESSAGE}</div>`;
+  return html`${jobs.map((job) => jobBlock(ctx, job, downloadUrl))}`;
 }
 
 /** Previous and Next links around `data.page`; nothing when every job fits on it. */
 function pagination(ctx: ScreenContext, { page, total }: ExportsData): SafeHtml | null {
-  const link = (label: string, to: number): SafeHtml =>
+  const link = (label: Label, to: number): SafeHtml =>
     html`<li><a${attr('href', opt2ScreenUrl('reporting', EXPORTS_SCREEN, { ...siteParams(ctx), page: to }))}>${label}</a></li>`;
   const previous = page > 1 ? link('Previous', page - 1) : null;
-  const next = page * PAGE_SIZE < total ? link('Next', page + 1) : null;
+  const next = page * PAGE_SIZE < total ? link(opt2Label(ctx, 'Next'), page + 1) : null;
   return previous === null && next === null ? null : html`<ul class="pagination">${previous}${next}</ul>`;
 }
 
 /** The queue form: definition, format and optional business date, posted with the CSRF pair. */
 function queueForm(ctx: ScreenContext, posted: QueuePosted): SafeHtml {
   const definition = controlGroup('Definition ID', textInput('definitionId', posted.definitionId, { maxlength: 35 }));
-  const format = controlGroup('Format', select('format', FORMAT_OPTIONS, posted.format));
+  const format = controlGroup(opt2Label(ctx, 'Format'), select('format', FORMAT_OPTIONS, posted.format));
   const asOf = controlGroup('As Of', textInput('asOf', posted.asOf, { type: 'date' }));
   return postForm(actionUrl(ctx, 'queue'), html`${definition}${format}${asOf}`, 'Queue Export', {
     hidden: ctx.csrf.render(QUEUE_CSRF_CONTEXT, 'form'),
@@ -131,7 +155,7 @@ function queueForm(ctx: ScreenContext, posted: QueuePosted): SafeHtml {
 /** The export job list body: header, any alert, the queue form, then the jobs with their state and downloads. */
 export function exportsBody(ctx: ScreenContext, data: ExportsData, opts: ExportsBodyOptions = {}): SafeHtml {
   const downloadUrl = actionUrl(ctx, 'download');
-  const jobs = gridTable(HEADERS, data.jobs.map((job) => jobRow(job, downloadUrl)), 'There are no export jobs.');
+  const jobs = jobBlocks(ctx, data.jobs, downloadUrl);
   return html`${pageHeader('Export Jobs')}${opts.alert}${block(
     html`${queueForm(ctx, opts.posted ?? EMPTY_POSTED)}${jobs}${pagination(ctx, data)}`,
   )}`;

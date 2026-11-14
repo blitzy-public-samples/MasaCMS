@@ -455,6 +455,22 @@ describe.skipIf(!available)('operations against PostgreSQL', () => {
     expect(wrongPool.statusCode).toBe(400);
   });
 
+  it.each([
+    ["the account's own user", 200, true],
+    ['another user', 400, false],
+  ] as const)('answers the prepare of an update of an umbrella private-pool account under a tenant-a token of %s with %s', async (_label, status, own) => {
+    const userId = nextId('A');
+    const username = `routes-abroad-${String(own)}`;
+    await withGatedTenant(db(), tenantIdForSite(UMBRELLA), (tx) =>
+      repo.insertAccount(tx, { userid: userId, username, type: 2, s2: 0, perm: 0, inactive: 0, ispublic: 0, siteid: UMBRELLA, remoteid: '', tablist: '' }),
+    );
+    const headers = own ? await selfHeaders(userId, `S-${nextId('D')}`) : await headersFor('people');
+
+    const res = await send('POST', opUrl(userId, nextId('C'), 'prepare'), headers, { ...prepareBody('update', username), siteId: UMBRELLA });
+
+    expect(res.statusCode).toBe(status);
+  });
+
   it('answers the prepare of an update whose pool switch would move the account to another tenant with the legacy 503, recording nothing', async () => {
     const userId = nextId('A');
     const people = await headersFor('people');

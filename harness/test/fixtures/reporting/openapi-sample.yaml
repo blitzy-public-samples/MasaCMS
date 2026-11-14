@@ -3,7 +3,6 @@ info:
   title: sample
   version: 1.0.0
   x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
-# servers and the empty security list exist only so redocly's recommended ruleset reports no error.
 servers:
   - url: http://127.0.0.1:8199
 paths:

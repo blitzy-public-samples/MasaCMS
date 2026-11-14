@@ -88,7 +88,7 @@ function nextMessageId(): string {
   return `D1000000-0000-4000-${messageIds.toString(16).toUpperCase().padStart(16, '0')}`;
 }
 
-// An unset PG_HOST means no PostgreSQL is configured; pgAvailable would reject on the missing settings.
+// An unset PG_HOST means no PostgreSQL is configured; the suite then skips without probing the server.
 const pgReason = process.env.PG_HOST ? 'requires PostgreSQL: server unreachable' : 'requires PostgreSQL: PG_HOST not set';
 const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 

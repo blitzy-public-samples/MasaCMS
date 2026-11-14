@@ -1,10 +1,11 @@
-/** `/internal/v1/migration/objects`: the migration service's transfer of legacy file-store objects into `content-files`, and its read of them back. */
+/** `/internal/v1/migration/objects`: the migration service's transfer of legacy file-store objects into `content-files`, its read of them back, and their removal. */
 import { Roles, type Opt2RouteConfig } from '@opt2/platform/auth';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import { z, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
 import type { StoragePort } from '@opt2/platform/storage';
 import type { components, operations } from '../generated/openapi.js';
 import {
+  deleteMigrationObject,
   openMigrationObject,
   storeMigrationObject,
   type FileVariant,
@@ -16,7 +17,9 @@ import { recoverAllStagedObjects } from '../migration/staged-objects.js';
 
 type PutObjectQuery = operations['migrationPutObject']['parameters']['query'];
 type GetObjectQuery = operations['migrationGetObject']['parameters']['query'];
+type DeleteObjectQuery = operations['migrationDeleteObject']['parameters']['query'];
 type FileObject = components['schemas']['FileObject'];
+type DeletedFileObject = components['schemas']['DeletedFileObject'];
 
 /** The route context these routes read: a structural subset of `ContentRouteContext`, so this module needs nothing from the `routes/index.ts` that registers it. */
 export interface MigrationObjectRouteContext {
@@ -49,13 +52,14 @@ const putQuerySchema = z.strictObject({
 }) satisfies z.ZodType<PutObjectQuery>;
 
 const getQuerySchema = z.strictObject({ key: z.string().regex(OBJECT_KEY) }) satisfies z.ZodType<GetObjectQuery>;
+const deleteQuerySchema = getQuerySchema satisfies z.ZodType<DeleteObjectQuery>;
 
 /** The contract's `FileObject` of a stored object; the other result fields are the service's own. */
 function fileObjectOf(stored: StoredObjectResult): FileObject {
   return { key: stored.key, size: stored.size, sha256: stored.sha256, created: stored.created };
 }
 
-/** Registers the `platform.migration` object upload and read of `content-files`. */
+/** Registers the `platform.migration` object upload, read and deletion of `content-files`. */
 export function registerMigrationObjectRoutes(app: FastifyInstance, ctx: MigrationObjectRouteContext): void {
   const deps: StoreObjectDeps = { db: ctx.domain.db, repository: ctx.domain.repository, storage: ctx.storage, clock: ctx.clock };
   app.addHook('onReady', () => recoverAllStagedObjects(deps));
@@ -79,5 +83,12 @@ export function registerMigrationObjectRoutes(app: FastifyInstance, ctx: Migrati
       return reply;
     }
     return reply.code(200).headers({ 'Content-Type': OCTET_STREAM, 'Content-Length': String(opened.head.size) }).send(opened.body);
+  });
+
+  /** Deletes the object under `key` with its manifest row; a repeat, or a key never stored, answers `deleted: false`. */
+  app.delete(OBJECTS_PATH, { config: ROUTE }, async (request): Promise<DeletedFileObject> => {
+    const query = deleteQuerySchema.safeParse(request.query);
+    if (!query.success) throw new LegacyApiError('invalidParameters');
+    return deleteMigrationObject(deps, query.data.key);
   });
 }

@@ -1,7 +1,7 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Finance fixture responses, shaped as legacy-fixtures/cfml/api.cfm and lib/envelope.cfc answer `/legacy-fixtures/cfml/api.cfm/finance/**`. */
 import type { Readable } from 'node:stream';
-import { AuthDenial } from '@opt2/platform/auth';
+import { AuthDenial, type Opt2AuthContext } from '@opt2/platform/auth';
 import {
   LEGACY_ERROR_MAP,
   LegacyApiError,
@@ -17,6 +17,7 @@ import {
   type LegacyErrorSpec,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import { isUnstorableTextError, legacyParamsOf, type FastifyRequest } from '@opt2/platform/service-kit';
 import { TransitionRejectedError } from '@opt2/platform/state-machine';
 import { fixtureFileHeaders, type FixtureFileMeta } from '../domain/attachments.js';
@@ -170,12 +171,12 @@ export function fixtureFile(meta: FixtureFileMeta): Omit<FixtureResponse, 'body'
 }
 
 /**
- * Fixture error response for a thrown value, as api.cfm answers it; a value PostgreSQL cannot store is invalidParameters, and anything but
- * a fixture, domain, transition or legacy API error is a 500 `server_error`, which the caller logs. Rethrows
- * `LegacyServiceUnavailableError` for service-kit's legacy 503.
+ * Fixture error response for a thrown value, as api.cfm answers it; a fail-closed condition is the `server_error` envelope at 503, a value
+ * PostgreSQL cannot store is invalidParameters, and anything but a fixture, domain, transition or legacy API error is a 500 `server_error`,
+ * which the caller logs.
  */
 export function toFixtureError(err: unknown, ctx: FixtureContext): SerializedLegacyResponse {
-  if (err instanceof LegacyServiceUnavailableError) throw err;
+  if (err instanceof LegacyServiceUnavailableError) return { ...fixtureError('server_error', ctx), status: 503 };
   if (isUnstorableTextError(err)) return fixtureError('invalidParameters', ctx);
   if (err instanceof FinanceDomainError) return fixtureError(err.type, ctx, err.message);
   if (err instanceof TransitionRejectedError) {
@@ -200,4 +201,10 @@ export function fixtureOutcomeReason(err: unknown): string {
   if (err instanceof FinanceDomainError || err instanceof LegacyApiError) return err.type;
   if (err instanceof TransitionRejectedError) return err.decision.outcome === 'illegal' ? 'conflict' : 'forbidden';
   return 'server_error';
+}
+
+/** Logs a fail-closed 503 as the service-kit handler logs its legacy 503: a WARNING with the verified tenant and user. */
+export function logUnavailable(request: FastifyRequest, err: LegacyServiceUnavailableError): void {
+  const userId = (request.opt2Auth as Opt2AuthContext | null)?.user?.sub;
+  request.log.warn({ tenantId: request.opt2.tenantId, userId, error: serializeError(err) }, 'service unavailable');
 }

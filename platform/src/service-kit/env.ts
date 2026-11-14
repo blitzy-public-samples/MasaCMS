@@ -174,8 +174,8 @@ export type LoadedEnv<S extends EnvSchema = typeof baseEnvSchema> = Omit<z.outpu
 /** Parsed base variables as `loadEnv` returns them. */
 export type BaseEnv = LoadedEnv<typeof baseEnvSchema>;
 
-/** Cross-variable rules of a parsed environment, as messages naming variables only. */
-export function envModeIssues(env: BaseEnv): string[] {
+/** Cross-variable rules of a parsed, possibly partial, environment, as messages naming variables only; mode rules need OPT2_ENV. */
+export function envModeIssues(env: Partial<BaseEnv>): string[] {
   const issues: string[] = [];
   const need = (when: string, keys: readonly (keyof BaseEnv)[]) => {
     for (const key of keys) if (env[key] === undefined) issues.push(`${key}: is required when ${when}`);
@@ -184,7 +184,7 @@ export function envModeIssues(env: BaseEnv): string[] {
     if (env[key] !== undefined) issues.push(`${key}: must be unset when ${when}`);
   };
   const runIn = (when: string, mode: Mode) => {
-    if (env.OPT2_ENV !== mode) issues.push(`OPT2_ENV: must be ${mode} when ${when}`);
+    if (env.OPT2_ENV !== undefined && env.OPT2_ENV !== mode) issues.push(`OPT2_ENV: must be ${mode} when ${when}`);
   };
 
   if (env.OPT2_DB_AUTH === 'password') {
@@ -198,13 +198,25 @@ export function envModeIssues(env: BaseEnv): string[] {
   if (env.OPT2_ENV === 'cloud') {
     need('OPT2_ENV=cloud', ['GOOGLE_CLOUD_PROJECT']);
     forbid('OPT2_ENV=cloud', 'PUBSUB_EMULATOR_HOST');
-  } else {
+  } else if (env.OPT2_ENV === 'local') {
     need('OPT2_ENV=local', ['OPT2_JWKS_URL']);
   }
   for (const key of ADAPTER_KEYS) {
-    if (env[key] !== env.OPT2_ENV) issues.push(`${key}: must equal OPT2_ENV`);
+    if (env.OPT2_ENV !== undefined && env[key] !== env.OPT2_ENV) issues.push(`${key}: must equal OPT2_ENV`);
   }
   return issues;
+}
+
+/** Safe name of `issue`: `VAR.name` for a missing required map entry, else the variable name; '' when it names none. */
+function issueName(issue: string): string {
+  const at = issue.indexOf(':');
+  const issuePath = (at < 0 ? issue : issue.slice(0, at)).trim();
+  const dot = issuePath.indexOf('.');
+  const variable = dot < 0 ? issuePath : issuePath.slice(0, dot);
+  if (!ENV_NAME.test(variable)) return '';
+  // A required entry's name comes from the schema, never from the value.
+  const requiredEntry = dot >= 0 && issue.slice(at) === ': is required' && SERVICE_NAME.test(issuePath.slice(dot + 1));
+  return requiredEntry ? issuePath : variable;
 }
 
 /** Start-up failure listing every invalid or missing variable. */
@@ -216,11 +228,11 @@ export class EnvValidationError extends Error {
   constructor(issues: string[], service?: string) {
     super([`${service === undefined ? '' : `${service}: `}invalid environment`, ...issues.map((i) => `  ${i}`)].join('\n'));
     this.issues = issues;
-    const names = [...new Set(issues.map((issue) => (issue.split(/[:.]/, 1)[0] ?? '').trim()).filter((name) => ENV_NAME.test(name)))];
+    const names = [...new Set(issues.map(issueName).filter((name) => name !== ''))];
     this.#safeText = `${service === undefined ? '' : `${service}: `}invalid environment${names.length > 0 ? ` (${names.join(', ')})` : ''}`;
   }
 
-  /** The service and the names of the invalid variables, never their values or issue texts. */
+  /** The service and the names of the invalid variables and missing required entries, never their values or issue texts. */
   get [SAFE_ERROR_TEXT](): string {
     return this.#safeText;
   }
@@ -243,6 +255,21 @@ const serviceNameOf = (source: NodeJS.ProcessEnv): string | undefined => {
   return name !== undefined && SERVICE_NAME.test(name) ? name : undefined;
 };
 
+/** Base variables of `source` that parse on their own under `schema`, adapters defaulting to OPT2_ENV. */
+function parsedBaseVariables(schema: EnvSchema, source: NodeJS.ProcessEnv): Partial<BaseEnv> {
+  const parsed: Partial<Record<keyof BaseEnv, unknown>> = {};
+  for (const key of Object.keys(baseEnvSchema.shape) as (keyof EnvSchema['shape'])[]) {
+    const result = schema.shape[key].safeParse(source[key]);
+    if (result.success) parsed[key] = result.data;
+  }
+  const base = parsed as Partial<z.output<typeof baseEnvSchema>>;
+  return {
+    ...base,
+    OPT2_TASKS_ADAPTER: base.OPT2_TASKS_ADAPTER ?? base.OPT2_ENV,
+    OPT2_STORAGE_ADAPTER: base.OPT2_STORAGE_ADAPTER ?? base.OPT2_ENV,
+  };
+}
+
 /** Parses and checks `source` against `schema`; throws `EnvValidationError` on any issue. */
 export function loadEnv<S extends EnvSchema = typeof baseEnvSchema>(
   schema: S = baseEnvSchema as S,
@@ -253,7 +280,12 @@ export function loadEnv<S extends EnvSchema = typeof baseEnvSchema>(
   });
   if (!result.success) {
     const issues = result.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`);
-    throw new EnvValidationError(issues, serviceNameOf(source));
+    // A variable with an issue of its own keeps only that one.
+    const named = new Set(result.error.issues.map((issue) => String(issue.path[0])));
+    const crossIssues = envModeIssues(parsedBaseVariables(schema, source)).filter(
+      (issue) => !named.has(issue.slice(0, issue.indexOf(':'))),
+    );
+    throw new EnvValidationError([...issues, ...crossIssues], serviceNameOf(source));
   }
 
   const base = result.data as z.output<typeof baseEnvSchema>;

@@ -17,6 +17,7 @@ import {
   getPermPublic,
   loadMemberships,
   setRestriction,
+  setRestrictions,
   sitePools,
   type CrumbNode,
   type PermissionDeps,
@@ -239,6 +240,42 @@ describe.skipIf(!(await pgAvailable()))('domain/permissions', () => {
     expect(await setRestriction(deps, actor(U.user), [crumb(id('R', 4), { restricted: 1, restrictgroups: 'Nope,Editors' })], true)).toMatchObject({ allow: true, perm: 'read' });
     expect(await setRestriction(deps, actor(U.nobody, { roles: ['site-admin'] }), [crumb(id('R', 5))])).toMatchObject({ allow: true, perm: 'editor', hasModuleAccess: true });
     await grant(G.editors, []);
+  });
+
+  it.each([
+    ['a member', actor(U.user), undefined],
+    ['a member with Site Manager access', actor(U.user, { roles: ['m:000'] }), undefined],
+    ['a member given module access', actor(U.user), true],
+    ['a public-pool member', actor(U.member, { roles: ['m:000'] }), undefined],
+    ['a comma-named Admin member', actor(U.commaUser, { roles: ['m:000'] }), undefined],
+    ['a user without memberships', actor(U.nobody, { roles: ['m:000'] }), undefined],
+    ['a site admin', actor(U.nobody, { roles: ['site-admin'] }), undefined],
+    ['an S2 user', actor(U.nobody, { s2: true }), undefined],
+    ['anonymous', anon, undefined],
+  ] as Array<[string, Actor, boolean | undefined]>)('setRestrictions answers each crumb list for %s as setRestriction does', async (_label, who, access) => {
+    const [granted, denied, plain] = [id('B', 1), id('B', 2), id('B', 3)];
+    await grant(G.editors, [[granted, 'author'], [denied, 'deny']]);
+    await grant(G.members, [[plain, 'read']]);
+    const restricted = (groups: string | null, node = plain) => crumb(node, { restricted: 1, restrictgroups: groups });
+    const lists: CrumbNode[][] = [
+      [],
+      [crumb(id('B', 4))],
+      [restricted('Nope')],
+      [restricted('Nope,Editors')],
+      [restricted('Members')],
+      [restricted(G.editors)],
+      [restricted('editors')],
+      [restricted(null)],
+      [crumb(granted), restricted('Nope', id('B', 5))],
+      [crumb(denied), crumb(granted)],
+      [restricted('Nope', id('B', 6)), crumb(plain)],
+      [crumb(id('B', 7), { siteid: TENANT_B.siteId, restricted: 1, restrictgroups: 'Other' })],
+    ];
+    const single = [];
+    for (const crumbs of lists) single.push(await setRestriction(deps, who, crumbs, access));
+    expect(await setRestrictions(deps, who, lists, access)).toEqual(single);
+    await grant(G.editors, []);
+    await grant(G.members, []);
   });
 
   it('getCategoryPerm allows an empty list, S2, site Admin or a held group; sitePools reads the registry [permission.cfc:447-476]', async () => {

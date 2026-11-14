@@ -101,6 +101,7 @@ const userEdit = (user: PersonRecord, isNew: boolean): UserEditData => ({
   tempIsPublic: isNew ? 1 : 0,
   lockedSuper: false,
   blockedUntil: null,
+  passwordExpired: false,
   addresses: [],
   privateGroups: [ADMIN_GROUP, EDITOR_GROUP],
   publicGroups: [],

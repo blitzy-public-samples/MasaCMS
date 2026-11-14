@@ -1,7 +1,7 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Fixture routes `finance/…` of legacy-fixtures/cfml/api.cfm, answered as legacy-fixtures/cfml/modules/finance.cfc answers them. */
 import { AuthDenial, Roles, type DenialRenderer, type Opt2AuthContext, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
-import { LegacyApiError } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import {
@@ -41,6 +41,7 @@ import {
   fixtureList,
   fixtureOutcomeReason,
   fixtureSuccess,
+  logUnavailable,
   toFixtureError,
   type FixtureContext,
 } from '../legacy/envelope.js';
@@ -214,7 +215,8 @@ export const financeFixturePlugin: FastifyPluginAsync<FixtureRouteDeps> = async 
 
   app.setErrorHandler((error, request, reply) => {
     const response = toFixtureError(error, contextOf(request));
-    if (response.status === 500 && !(error instanceof LegacyApiError)) request.log.error({ error: serializeError(error) }, 'unhandled fixture exception');
+    if (error instanceof LegacyServiceUnavailableError) logUnavailable(request, error);
+    else if (response.status === 500 && !(error instanceof LegacyApiError)) request.log.error({ error: serializeError(error) }, 'unhandled fixture exception');
     else recordOutcomeReason(request, fixtureOutcomeReason(error));
     return sendLegacyResponse(reply, response);
   });
@@ -294,8 +296,8 @@ export const financeFixturePlugin: FastifyPluginAsync<FixtureRouteDeps> = async 
       await requireProgram(tx, site.tenantId);
       const recordId = storedId(request.params.id);
       await getRecord(tx, recordId);
-      const { filename, mimetype, size, sha256, stream } = uploadedFile(request);
-      return uploadAttachment(tx, deps, { recordId, fileName: filename, contentType: mimetype, size, sha256, body: stream }, actor);
+      const { filename, contentType, size, sha256, stream } = uploadedFile(request);
+      return uploadAttachment(tx, deps, { recordId, fileName: filename, contentType, size, sha256, body: stream }, actor);
     });
     return sendLegacyResponse(reply, fixtureSuccess(ctx, attachmentRow(attachment)));
   });
