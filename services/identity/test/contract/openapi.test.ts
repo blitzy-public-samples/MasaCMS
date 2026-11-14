@@ -1,25 +1,45 @@
-/** Provider contract of identity: every registered route against contracts/openapi.yaml, the operations no route serves yet, and actual responses per operation. */
+/** Provider contract of identity: the composition root's routes, the JSON API route keys and every operation's responses, legacy error shapes included, against contracts/openapi.yaml. */
 import { readFileSync } from 'node:fs';
 import { jwtVerify, createLocalJWKSet, type JSONWebKeySet } from 'jose';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix, transportForPath, type RouteMatrixEntry } from '@opt2/platform/auth';
-import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, CSRF_HEADER_EXPIRES, CSRF_HEADER_TOKEN } from '@opt2/platform/legacy-compat';
-import { SYSTEM_TENANT_ID } from '@opt2/platform/tenancy';
+import { subscriptionName } from '@opt2/platform/events';
+import {
+  CSRF_FIELD_EXPIRES,
+  CSRF_FIELD_TOKEN,
+  CSRF_HEADER_EXPIRES,
+  CSRF_HEADER_TOKEN,
+  WWW_AUTHENTICATE,
+  normaliseRouteKey,
+  routeKeyForRequest,
+} from '@opt2/platform/legacy-compat';
+import { SITE_CHANGED_TOPIC, SYSTEM_TENANT_ID } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
-  TEST_PUSH_KEY,
   assertRequestMatchesOpenApi,
   assertResponseMatchesOpenApi,
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
+  pushTo,
+  registryPayloads,
+  testEnvelope,
+  withoutTenant,
+  type CapturingPublisher,
   type InjectResponse,
+  type TenantlessEnvelope,
 } from '@opt2/platform/testing';
+import { USER_CLOSED_WAIT_MS } from '../../src/domain/account-operations.js';
+import { PERSON_CHANGED_TOPIC, PERSON_CONTACT_SUBSCRIPTION, type PersonChangedPayload } from '../../src/events/person-contact.js';
 import { USER_ACCOUNT } from '../../src/repo/tables.js';
+import { SWEEP_QUEUE, buildTestApp, type TestApp } from '../helpers/app.js';
+import type { RecordingDb } from '../helpers/memory-repo.js';
 import { ADMIN_S2, ALL_ACTORS, EDITOR, MEMBER_B, SITE_ADMIN_A, sessionRow } from '../helpers/rows.js';
 import {
   NOW,
+  REGISTRY_ROWS,
+  SERVICE,
   SITE_A,
   SUBJECT_SESSIONS,
   buildIdentityApp,
@@ -27,13 +47,15 @@ import {
   credentialsFor,
   csrfFor,
   defaultSeed,
+  registryAnswer,
   relayedCredentials,
   subjectNamed,
   type IdentityTestApp,
   type SubjectSession,
 } from '../helpers/service.js';
 
-type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS';
+type App = TestApp['app'];
 type Operation = Record<string, unknown> & { operationId?: string };
 type Headers = Record<string, string>;
 
@@ -50,7 +72,20 @@ interface ContractOperation {
   op: Operation;
 }
 
-/** One request against an operation and the status it must answer; `as` names the subject presenting credentials. */
+/** An app under test with its recording database and, on the composition root, its capturing publisher. */
+interface Harness {
+  app: App;
+  db: RecordingDb;
+  publisher?: CapturingPublisher;
+  close(): Promise<void>;
+}
+
+/** The composition root built by `buildApp`. */
+interface RootHarness extends Harness {
+  publisher: CapturingPublisher;
+}
+
+/** One request against an operation and the status it must answer; `as` names the subject presenting credentials, `push` delivers through `pushTo`. */
 interface Case {
   name: string;
   method: HttpMethod;
@@ -58,33 +93,34 @@ interface Case {
   as?: string;
   headers?: () => Promise<Headers>;
   payload?: string | Record<string, unknown>;
+  push?: { subscription: string; envelope: () => TenantlessEnvelope };
+  /** Prepares the harness's database before the request, for answers PostgreSQL computes that the recording database cannot. */
+  setup?: (db: RecordingDb) => void;
   status: number;
-  verify?: (body: unknown, res: InjectResponse) => void | Promise<void>;
+  verify?: (body: unknown, res: InjectResponse, harness: Harness) => void | Promise<void>;
+}
+
+/** A legacy error case, sent to an app of its own. */
+interface ErrorCase extends Case {
+  /** Runs on the composition root over an empty recording database rather than on the composed routes over the memory repository. */
+  root?: true;
+  /** Wall-clock bound of the request in ms. */
+  withinMs?: number;
 }
 
 const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
 const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
 
-const METHODS = ['get', 'post', 'put', 'delete'] as const;
+const METHODS = ['get', 'head', 'post', 'put', 'patch', 'delete', 'options'] as const;
+const TRANSPORTS: readonly string[] = ['service', 'pubsub-push', 'cloud-tasks'];
 const JSON_MEDIA_TYPE = /^application\/(?:[\w.+-]+\+)?json\b/i;
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' } as const;
-
-/** Operations the contract declares that no route function serves yet: migration-kit, managed push, outbox sweep and task-queue control. */
-const PLANNED: readonly string[] = [
-  'migrationApply',
-  'migrationExport',
-  'migrationChanges',
-  'migrationPosition',
-  'migrationWatermarkGet',
-  'migrationWatermarkPost',
-  'migrationGate',
-  'pushSiteChanged',
-  'pushPersonChanged',
-  'outboxSweep',
-  'pauseTaskQueue',
-  'resumeTaskQueue',
-  'ensureTaskQueue',
-];
+const QUIET_ENV = { LOG_LEVEL: 'error' } as const;
+const REGISTRY_SQL = /FROM identity\.tenant_registry\b/;
+const OPEN_OPERATION_SQL = /"identity"\."account_operation" WHERE tenant_id = \$1 AND state = ANY/;
+const SITE_SUBSCRIPTION = subscriptionName(SERVICE, SITE_CHANGED_TOPIC);
+const TPERMISSIONS_COLUMNS = ['ContentID', 'GroupID', 'SiteID', 'Type'].map((name) => ({ name, type: 's' }));
+const SWEEP_TASK = { queue: SWEEP_QUEUE, name: `${SWEEP_QUEUE}-1782820800`, tenantId: null };
 
 const ADMIN_GROUP = SITE_ADMIN_A.groups[0]?.userid ?? '';
 const EDITOR_GROUP = EDITOR.groups[0]?.userid ?? '';
@@ -168,10 +204,6 @@ function multipartPost(fields: Readonly<Record<string, string>>): { contentType:
   return { contentType: `multipart/form-data; boundary=${boundary}`, payload: `${parts.join('')}--${boundary}--\r\n` };
 }
 
-function as(subject: string): () => Promise<Headers> {
-  return () => credentialsFor(subjectNamed(subject));
-}
-
 /** `caller` relaying the user token of subject `subject`'s session. */
 function relay(caller: string, subject: string, roles: readonly string[] = subjectNamed(subject).roles): () => Promise<Headers> {
   return () => relayedCredentials(caller, session(subject), roles);
@@ -193,18 +225,44 @@ function contractOperations(doc: OpenApiDoc): ContractOperation[] {
 }
 
 const OPERATIONS = contractOperations(DOC);
-const IMPLEMENTED = OPERATIONS.filter((operation) => !PLANNED.includes(operation.operationId));
 
-/** The Fastify patterns an operation is served under: its declared `x-opt2-fastify-path`, one or a list, else the template with `:name` params. */
-function fastifyPathsOf(operation: ContractOperation): string[] {
-  const declaredPath = operation.op['x-opt2-fastify-path'] as string | string[] | undefined;
-  if (declaredPath === undefined) return [operation.path.replace(/\{(\w+)\}/g, ':$1')];
-  return typeof declaredPath === 'string' ? [declaredPath] : [...declaredPath];
+/** A Fastify route pattern in contract path form: `::` is a literal colon, `:name` and its `(regex)` become `{name}`, and a trailing wildcard stays, as `x-opt2-fastify-path` names wildcard routes. */
+function toOpenApiPath(fastifyUrl: string): string {
+  const literalColon = '\u0000';
+  return fastifyUrl
+    .replaceAll('::', literalColon)
+    .replace(/:([A-Za-z_]\w*)(?:\([^)]*\))?/g, '{$1}')
+    .replaceAll(literalColon, ':');
 }
 
-/** `METHOD pattern` of every route an operation is served under. */
-function routeKeysOf(operation: ContractOperation): string[] {
-  return fastifyPathsOf(operation).map((path) => `${operation.method} ${path}`);
+/** `METHOD path` keys an operation is served under: its `x-opt2-fastify-path` patterns, one or a list, in contract form, else its template. */
+function operationRouteKeys({ method, path, op }: ContractOperation): string[] {
+  const fastifyPath = op['x-opt2-fastify-path'] as string | string[] | undefined;
+  const paths = fastifyPath === undefined ? [path] : [fastifyPath].flat().map(toOpenApiPath);
+  return paths.map((served) => `${method} ${served}`);
+}
+
+/** `METHOD path` key of a registered route, in contract form. */
+function routeKey(route: Pick<RouteMatrixEntry, 'method' | 'url'>): string {
+  return `${route.method} ${toOpenApiPath(route.url)}`;
+}
+
+/** Registered routes the contract describes: Fastify's automatic HEAD twins of GET routes drop unless the contract declares a `head` operation. */
+function servedRoutes(app: App): RouteMatrixEntry[] {
+  const declaresHead = OPERATIONS.some(({ method }) => method === 'HEAD');
+  return collectRouteMatrix(app).routes.filter((route) => route.method !== 'HEAD' || declaresHead);
+}
+
+/** Registered routes the contract does not declare, and operations with a route nothing registers, each sorted. */
+function diffRouteSets(routes: readonly RouteMatrixEntry[], operations: readonly ContractOperation[]): { undeclared: string[]; unregistered: string[] } {
+  const registered = new Set(routes.map(routeKey));
+  const declaredKeys = new Set(operations.flatMap(operationRouteKeys));
+  return {
+    undeclared: [...registered].filter((key) => !declaredKeys.has(key)).sort(),
+    unregistered: operations
+      .flatMap((operation) => operationRouteKeys(operation).filter((key) => !registered.has(key)).map((key) => `${operation.operationId} (${key})`))
+      .sort(),
+  };
 }
 
 /** A declaration in comparable form. */
@@ -218,10 +276,6 @@ function declared(entry: { transport: unknown; requires?: unknown; public?: unkn
 
 function contractDeclaration(operation: ContractOperation): Record<string, unknown> {
   return declared({ transport: operation.op['x-opt2-transport'], requires: operation.op['x-opt2-requires'], public: operation.op['x-opt2-public'] });
-}
-
-function routeKey(route: Pick<RouteMatrixEntry, 'method' | 'url'>): string {
-  return `${route.method} ${route.url}`;
 }
 
 /** JSON API request shapes, one per path form, each naming a method identity serves. */
@@ -717,6 +771,17 @@ const CASES: Record<string, Case[]> = {
       status: 200,
       verify: (body) => expect(body).toEqual({ valid: true }),
     },
+    ...(['programs-sites', 'strategies-content'] as const).map(
+      (caller): Case => ({
+        name: `consumes a valid token for CSRF consumer ${caller}`,
+        method: 'POST',
+        url: '/internal/v1/csrf/consume',
+        headers: relay(caller, 'editor'),
+        payload: { sessionId: 'S-editor', ...csrfFor(session('editor'), `contract.consume.${caller}`), context: `contract.consume.${caller}` },
+        status: 200,
+        verify: (body) => expect(body).toEqual({ valid: true }),
+      }),
+    ),
     {
       name: 'refuses a session other than the relayed one',
       method: 'POST',
@@ -1034,28 +1099,468 @@ const CASES: Record<string, Case[]> = {
   ],
 };
 
+/** The tenant-a `programs-sites.site.changed.v1` delivery of the platform fixture registry. */
+function siteChangedEnvelope() {
+  const payload = registryPayloads().find(({ siteId }) => siteId === SITE_A);
+  if (payload === undefined) throw new TypeError(`registryPayloads has no ${SITE_A} entry`);
+  return testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId: TENANT_A.tenantId, aggregateId: SITE_A, aggregateVersion: 1, payload });
+}
+
+/** The editor's `people.person.changed.v1` state, every field the contact consumer stores set. */
+function personChangedEnvelope() {
+  const { account, contact } = EDITOR;
+  const payload: PersonChangedPayload = {
+    userId: account.userid,
+    siteId: SITE_A,
+    deleted: false,
+    groupName: null,
+    fname: contact.fname ?? null,
+    lname: contact.lname ?? null,
+    email: contact.email ?? null,
+    company: contact.company ?? null,
+    jobTitle: 'Editor',
+    mobilePhone: null,
+    website: null,
+    subType: 'Default',
+    ext: null,
+    contactForm: null,
+    subscribe: 0,
+    notes: null,
+    description: null,
+    interests: null,
+    keepPrivate: 0,
+    photoFileId: null,
+    imName: null,
+    imService: null,
+    tags: null,
+    created: '2026-06-30 11:59:00.000',
+    lastUpdate: '2026-06-30 12:00:00.000',
+    lastUpdateBy: 'Admin User',
+    lastUpdateById: ADMIN_S2.account.userid,
+  };
+  return testEnvelope({ topic: PERSON_CHANGED_TOPIC, tenantId: TENANT_A.tenantId, aggregateId: account.userid, aggregateVersion: 1, payload });
+}
+
+/** Committed writes of the harness's database to `table`. */
+function writesTo(harness: Harness, table: string): number {
+  return harness.db.writes().filter((write) => write.table === table).length;
+}
+
+const tasksInvoker = async (): Promise<Headers> => ({ authorization: `Bearer ${await mintTasksInvokerToken({ audience: SERVICE })}` });
+const queueUrl = (queue: string, action: 'pause' | 'resume' | 'ensure'): string => `/internal/v1/task-queues/${queue}/${action}`;
+
+/** Cases of the operations only the composition root registers, through the platform's migration, push, sweep and queue registrars. */
+const ROOT_CASES: Record<string, Case[]> = {
+  migrationApply: [
+    {
+      name: 'applies a zero-row tpermissions batch for the migration service',
+      method: 'POST',
+      url: '/internal/v1/migration/apply',
+      as: 'service:migration',
+      payload: { batchId: 'contract-1', origin: 'backfill', legacyTable: 'tpermissions', siteId: SITE_A, columns: TPERMISSIONS_COLUMNS, rows: [] },
+      status: 200,
+      verify: (body) => expect(body).toEqual({ batchId: 'contract-1', duplicate: false, applied: 0, skipped: 0 }),
+    },
+    {
+      name: 'rejects a batch whose columns omit an owned column',
+      method: 'POST',
+      url: '/internal/v1/migration/apply',
+      as: 'service:migration',
+      payload: { batchId: 'contract-2', origin: 'backfill', legacyTable: 'tpermissions', siteId: SITE_A, columns: TPERMISSIONS_COLUMNS.slice(0, 1), rows: [] },
+      status: 400,
+    },
+    {
+      name: 'refuses a user token without platform.migration',
+      method: 'POST',
+      url: '/internal/v1/migration/apply',
+      as: 's2',
+      payload: { batchId: 'contract-3', origin: 'backfill', legacyTable: 'tpermissions', siteId: SITE_A, columns: TPERMISSIONS_COLUMNS, rows: [] },
+      status: 403,
+    },
+  ],
+  migrationExport: [
+    {
+      name: 'exports the tenant-a permissions in canonical legacy form',
+      method: 'GET',
+      url: `/internal/v1/migration/export?unit=identity.permission&siteId=${SITE_A}`,
+      as: 'service:migration',
+      status: 200,
+      verify: (body) => expect(record(body)).toMatchObject({ unit: 'identity.permission', tenantId: TENANT_A.tenantId }),
+    },
+  ],
+  migrationChanges: [
+    {
+      name: 'reads an empty changelog page of tenant-a',
+      method: 'GET',
+      url: `/internal/v1/migration/changes?siteId=${SITE_A}`,
+      as: 'service:migration',
+      status: 200,
+      verify: (body) => expect(record(body)).toMatchObject({ rows: [], complete: true }),
+    },
+  ],
+  migrationPosition: [
+    {
+      name: 'reports the write position and drain counts',
+      method: 'GET',
+      url: '/internal/v1/migration/position',
+      as: 'service:migration',
+      status: 200,
+      verify: (body) => expect(record(body).owner).toBe(SERVICE),
+    },
+  ],
+  migrationWatermarkGet: [
+    {
+      name: 'lists the tpermissions watermarks',
+      method: 'GET',
+      url: '/internal/v1/migration/watermark?legacyTable=tpermissions&direction=forward',
+      as: 'service:migration',
+      status: 200,
+      verify: (body) => expect(body).toEqual([]),
+    },
+  ],
+  migrationWatermarkPost: [
+    {
+      name: 'records a forward tpermissions watermark',
+      method: 'POST',
+      url: '/internal/v1/migration/watermark',
+      as: 'service:migration',
+      payload: { legacyTable: 'tpermissions', direction: 'forward', snapshotSeq: 1, backupLsn: '42', finishedAt: '2026-06-30 12:00:00' },
+      // RETURNING formats finished_at with to_char, as PostgreSQL would for the posted time.
+      setup: (db) =>
+        db.respond(/^INSERT INTO "identity"\."migration_watermark"/, (_sql, values) => [
+          { legacy_table: values[0], direction: values[1], snapshot_seq: String(values[2]), backup_lsn: values[3], finished_at: '2026-06-30T12:00:00.000' },
+        ]),
+      status: 200,
+      verify: (body) =>
+        expect(body).toEqual({ legacyTable: 'tpermissions', direction: 'forward', snapshotSeq: 1, backupLsn: '42', finishedAt: '2026-06-30T12:00:00.000' }),
+    },
+  ],
+  migrationGate: [
+    {
+      name: 'reads the gate of identity.permission',
+      method: 'POST',
+      url: '/internal/v1/migration/gate',
+      as: 'service:migration',
+      payload: { op: 'status', units: ['identity.permission'] },
+      status: 200,
+      verify: (body) => expect(record(body).units).toEqual([{ unit: 'identity.permission', state: 'open', holderId: null, phase: 'quiet' }]),
+    },
+  ],
+  pushSiteChanged: [
+    {
+      name: 'applies a site.changed delivery to the tenant registry and acks it',
+      method: 'POST',
+      url: `/internal/v1/events/${SITE_SUBSCRIPTION}`,
+      push: { subscription: SITE_SUBSCRIPTION, envelope: siteChangedEnvelope },
+      status: 204,
+      verify: (_body, _res, harness) => {
+        expect(writesTo(harness, 'identity.tenant_registry')).toBeGreaterThan(0);
+        expect(harness.publisher?.deadLetters(SITE_SUBSCRIPTION)).toEqual([]);
+      },
+    },
+    {
+      name: 'dead-letters and acks a delivery without a tenant',
+      method: 'POST',
+      url: `/internal/v1/events/${SITE_SUBSCRIPTION}`,
+      push: { subscription: SITE_SUBSCRIPTION, envelope: () => withoutTenant(siteChangedEnvelope()) },
+      status: 204,
+      verify: (_body, _res, harness) => {
+        expect(harness.publisher?.deadLetters(SITE_SUBSCRIPTION)).toHaveLength(1);
+        expect(writesTo(harness, 'identity.tenant_registry')).toBe(0);
+      },
+    },
+  ],
+  pushPersonChanged: [
+    {
+      name: "stores the editor's contact from a person.changed delivery and acks it",
+      method: 'POST',
+      url: `/internal/v1/events/${PERSON_CONTACT_SUBSCRIPTION}`,
+      push: { subscription: PERSON_CONTACT_SUBSCRIPTION, envelope: personChangedEnvelope },
+      status: 204,
+      verify: (_body, _res, harness) => {
+        expect(writesTo(harness, 'identity.person_contact')).toBeGreaterThan(0);
+        expect(harness.publisher?.deadLetters(PERSON_CONTACT_SUBSCRIPTION)).toEqual([]);
+      },
+    },
+  ],
+  outboxSweep: [
+    {
+      name: 'creates the next sweep task, then sweeps every registered tenant',
+      method: 'POST',
+      url: '/internal/v1/outbox/sweep',
+      headers: tasksInvoker,
+      payload: SWEEP_TASK,
+      status: 200,
+      verify: (body) => expect(record(body)).toMatchObject({ failed: 0, tenants: REGISTRY_ROWS.length }),
+    },
+    { name: 'refuses a user token on the cloud-tasks route', method: 'POST', url: '/internal/v1/outbox/sweep', as: 's2', payload: SWEEP_TASK, status: 401 },
+  ],
+  pauseTaskQueue: [
+    {
+      name: 'pauses the outbox-sweep queue for the operator',
+      method: 'POST',
+      url: queueUrl(SWEEP_QUEUE, 'pause'),
+      as: 'service:operator',
+      status: 200,
+      verify: (body) => expect(body).toEqual({ queue: SWEEP_QUEUE, service: SERVICE, paused: true, running: 0 }),
+    },
+  ],
+  resumeTaskQueue: [
+    {
+      name: 'resumes the outbox-sweep queue for the migration service',
+      method: 'POST',
+      url: queueUrl(SWEEP_QUEUE, 'resume'),
+      as: 'service:migration',
+      status: 200,
+      verify: (body) => expect(body).toEqual({ queue: SWEEP_QUEUE, service: SERVICE, paused: false }),
+    },
+  ],
+  ensureTaskQueue: [
+    {
+      name: 'finds the live outbox-sweep chain task',
+      method: 'POST',
+      url: queueUrl(SWEEP_QUEUE, 'ensure'),
+      as: 'service:operator',
+      status: 200,
+      verify: (body) => expect(record(body)).toMatchObject({ queue: SWEEP_QUEUE, ensured: { created: false, reason: 'live' } }),
+    },
+    { name: 'rejects a queue identity runs no chain on', method: 'POST', url: queueUrl('surveys-launch', 'ensure'), as: 'service:operator', status: 400 },
+  ],
+};
+
+/** A JSON API request as `routeKeyForRequest` reads it. */
+interface KeyedRequest {
+  method: 'GET' | 'POST';
+  path: string;
+  query: Record<string, string>;
+  payload?: string;
+}
+
+const keyedGet = (path: string, query: Record<string, string> = {}): KeyedRequest => ({ method: 'GET', path, query });
+
+/** The request under JSON API path `base` that legacy keys to `body`: the entity route of a group operation, the REST credential path, else the `method` parameter. */
+function keyedRequest(base: string, body: string): KeyedRequest {
+  const group = `${base}/group`;
+  const forms: Readonly<Record<string, KeyedRequest>> = {
+    'group.findall': keyedGet(group),
+    'group.findmany': keyedGet(group, { id: `${ADMIN_GROUP},${EDITOR_GROUP}` }),
+    'group.findnew': keyedGet(`${group}/new`),
+    'group.findone': keyedGet(`${group}/${ADMIN_GROUP}`),
+    'group.findpermissions': keyedGet(`${group}/${ADMIN_GROUP}/permissions`),
+    'group.findproperties': keyedGet(`${group}/properties`),
+    'group.findquery': keyedGet(group, { groupname: 'Admin' }),
+    'group.save': { method: 'POST', path: group, query: {} },
+    'group.validate': keyedGet(`${base}/validate`, { entityname: 'group', data: '{}' }),
+    oauth: keyedGet(`${base}/oauth`),
+    oauth2: keyedGet(`${base}/oauth2`),
+    tokeninfo: keyedGet(`${base}/tokeninfo`, { access_token: 'unknown', client_id: 'unknown' }),
+  };
+  const form = forms[body];
+  if (form !== undefined) return form;
+  if (body.includes('.')) throw new TypeError(`No request form keys the entity operation ${body}`);
+  return keyedGet(base, { method: body });
+}
+
+function keyedUrl({ path, query }: KeyedRequest): string {
+  const search = new URLSearchParams(query).toString();
+  return search === '' ? path : `${path}?${search}`;
+}
+
+/** Whether `res` is legacy-api's answer to a route key identity does not serve: the `mura404` invalidMethodCall envelope. */
+function isUnservedAnswer(res: InjectResponse): boolean {
+  if (res.statusCode !== 404) return false;
+  const body = JSON.parse(res.body) as { error?: { code?: string; message?: string } };
+  return body.error?.code === 'invalid_request' && body.error.message === 'Invalid method call';
+}
+
+/** JSON API operations: those under `/_api/`. */
+const WIRE_OPERATIONS = OPERATIONS.filter(({ path }) => path.startsWith('/_api/'));
+
+const routeKeysOf = ({ op }: ContractOperation): string[] => (op['x-opt2-route-keys'] as string[] | undefined) ?? [];
+
+/** Each declared route key with the base path of every family whose operations declare it. */
+const SERVED_KEY_ROWS = [
+  ...new Map(
+    WIRE_OPERATIONS.flatMap((operation) => {
+      const family = operation.path.split('/')[2] ?? '';
+      const base = `/_api/${family}/v1/${SITE_A}`;
+      return routeKeysOf(operation).map((key): [string, { key: string; base: string }] => [`${key} ${base}`, { key, base }]);
+    }),
+  ).values(),
+];
+
+/** Keys identity does not serve, each with a request keyed to it; the photo variant of a served key included. */
+const UNSERVED_REQUESTS: ReadonlyArray<{ key: string; baseKey: string; request: KeyedRequest }> = [
+  { key: 'api:user.save', baseKey: 'api:user.save', request: { method: 'POST', path: `/_api/json/v1/${SITE_A}/user`, query: {} } },
+  { key: 'api:content.findone', baseKey: 'api:content.findone', request: keyedGet(`/_api/json/v1/${SITE_A}/content/${HOME}`) },
+  {
+    key: 'api:group.save{photo}',
+    baseKey: 'api:group.save',
+    request: { method: 'POST', path: `/_api/json/v1/${SITE_A}/group`, query: {}, payload: 'groupname=Gates&type=1&newFile=photo.png' },
+  },
+];
+
+/** Headers of the s2 subject posting a form with the CSRF token of `context`. */
+const csrfForm = (context: string) => (): Promise<Headers> => withCsrfHeaders('s2', context).then((headers) => ({ ...headers, ...FORM }));
+
+/** Legacy error shapes, each on an app of its own. */
+const ERROR_CASES: ErrorCase[] = [
+  {
+    name: '400 invalidTokens for a browser-mode group save without CSRF tokens',
+    method: 'POST',
+    url: `/_api/json/v1/${SITE_A}/group`,
+    as: 's2',
+    headers: async () => FORM,
+    payload: 'groupname=Gates&type=1&ispublic=0',
+    status: 400,
+    verify: (body) => expect(body).toMatchObject({ apiversion: 'v1', method: 'save', error: { code: 'invalid_request', message: 'Invalid CSRF tokens' } }),
+  },
+  {
+    name: '401 invalid_token with its WWW-Authenticate challenge for a REST request with an unknown bearer token',
+    method: 'GET',
+    url: '/_api/rest/v1/default/group/properties',
+    headers: async () => ({
+      authorization: 'Bearer not-a-user-token',
+      [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SERVICE })}`,
+    }),
+    status: 401,
+    verify: (body, res) => {
+      expect(body).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_token', message: 'Invalid Access Token' } });
+      expect(Object.values(WWW_AUTHENTICATE)).toContain(res.headers['www-authenticate']);
+    },
+  },
+  {
+    name: '403 deny by default of a /v1 admin route for an editor, as the legacy envelope',
+    method: 'GET',
+    url: '/v1/groups',
+    as: 'editor',
+    status: 403,
+    verify: (body) => expect(body).toEqual({ apiversion: 'v1', method: 'invalid', error: { message: 'Insufficient Account Permissions', code: 'invalid_request' } }),
+  },
+  {
+    name: '403 with the validation errors in data for a group save marked as spam',
+    method: 'POST',
+    url: `/_api/json/v1/${SITE_A}/group`,
+    headers: csrfForm('new'),
+    payload: 'groupname=Spam&type=1&ispublic=0&passedProtect=false',
+    status: 403,
+    verify: (body) => expect(record(record(body).data).errors).toHaveProperty('spam'),
+  },
+  {
+    name: '404 envelope for a JSON API key identity does not serve',
+    method: 'GET',
+    url: `/_api/json/v1/${SITE_A}/content/${HOME}`,
+    as: 's2',
+    status: 404,
+    verify: (body) => expect(body).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Invalid method call' } }),
+  },
+  {
+    name: '200 ended, the answer the contract declares instead of a 404, for the state of an unknown session',
+    method: 'GET',
+    url: '/internal/v1/sessions/S-unknown/state',
+    as: 'service:gateway',
+    status: 200,
+    verify: (body) => expect(record(body)).toMatchObject({ state: 'ended', epoch: 0 }),
+  },
+  {
+    name: '200 from the composition root for a group read the database answers',
+    root: true,
+    method: 'GET',
+    url: `/_api/json/v1/${SITE_A}/group/${ADMIN_GROUP}`,
+    as: 's2',
+    status: 200,
+  },
+  {
+    name: '500 server_error for the same group read failing with an unexpected database error',
+    root: true,
+    setup: (db) =>
+      db.respond(/"identity"\."group_account"/, () => {
+        throw new Error('forced read failure');
+      }),
+    method: 'GET',
+    url: `/_api/json/v1/${SITE_A}/group/${ADMIN_GROUP}`,
+    as: 's2',
+    status: 500,
+    verify: (body) => expect(body).toEqual(serverError('findOne')),
+  },
+  {
+    name: '503 legacy envelope for a JSON API group save while identity.group_account is legacy-authoritative',
+    setup: (db) => db.setGate('identity.group_account', 'legacy'),
+    method: 'POST',
+    url: `/_api/json/v1/${SITE_A}/group`,
+    headers: csrfForm('new'),
+    payload: 'groupname=Gates&type=1&ispublic=0',
+    status: 503,
+    verify: (body) => expect(body).toMatchObject({ apiversion: 'v1', error: { message: 'Unhandled Exception', code: 'server_error' } }),
+  },
+  {
+    name: '503 legacy envelope for an admin group create while identity.group_account is legacy-authoritative',
+    setup: (db) => db.setGate('identity.group_account', 'legacy'),
+    method: 'POST',
+    url: '/v1/groups',
+    as: 'site-admin',
+    headers: async () => FORM,
+    payload: `userid=${NEW_GROUP}&groupname=Gates&ispublic=0&siteid=${SITE_A}&${csrfFields(session('site-admin').csrfSecret, NEW_GROUP)}`,
+    status: 503,
+    verify: (body) => expect(body).toMatchObject({ apiversion: 'v1', error: { message: 'Unhandled Exception', code: 'server_error' } }),
+  },
+  {
+    name: '503 legacy envelope once the closed-user budget runs out, for an add to group of a user an open account operation holds',
+    setup: (db) =>
+      db.respond(OPEN_OPERATION_SQL, [
+        { tenant_id: SITE_ADMIN_A.tenant.tenantId, operation_id: cfId('F', 990), user_id: SITE_ADMIN_A.account.userid, kind: 'update', state: 'prepared' },
+      ]),
+    method: 'POST',
+    url: `/v1/groups/${EDITOR_GROUP}/members/${SITE_ADMIN_A.account.userid}`,
+    headers: () => withCsrfHeaders('s2', `${SITE_ADMIN_A.account.userid}${EDITOR_GROUP}addtogroup`),
+    status: 503,
+    // The composed routes wait on an injected sleep, so the budget elapses without wall-clock time.
+    withinMs: USER_CLOSED_WAIT_MS,
+    verify: (body, _res, harness) => {
+      expect(body).toMatchObject({ apiversion: 'v1', error: { message: 'Unhandled Exception', code: 'server_error' } });
+      expect(harness.db.statements().filter(({ sql }) => OPEN_OPERATION_SQL.test(sql)).length).toBeGreaterThan(1);
+    },
+  },
+];
+
+/** The composition root over the test fakes, its tenant registry answered from REGISTRY_ROWS, ready. */
+async function rootHarness(): Promise<RootHarness> {
+  const built = await buildTestApp({ env: QUIET_ENV });
+  built.db.respond(REGISTRY_SQL, registryAnswer);
+  await built.app.ready();
+  return { app: built.app, db: built.db, publisher: built.publisher, close: () => built.app.close() };
+}
+
 let t: IdentityTestApp;
+let root: RootHarness;
 let jwks: JSONWebKeySet;
 
 beforeAll(async () => {
   t = await buildIdentityApp(defaultSeed({ sessions: EXTRA_SESSIONS, strikes: [BLOCKED_STRIKE], personContacts: CONTACTS }));
   t.content.files.set(EDITOR_PHOTO, 'jpg');
   jwks = (await t.app.inject({ method: 'GET', url: '/.well-known/jwks.json' })).json<JSONWebKeySet>();
+  root = await rootHarness();
 });
 
 afterAll(async () => {
   await t?.close();
+  await root?.close();
 });
 
-/** Sends `c`, asserts its status, validates the response against the operation it addresses and returns the parsed body. */
-async function sendCase(c: Case): Promise<void> {
+/** Prepares `harness` for `c`, sends it, asserts its status, validates the response against the operation it addresses, then runs its checks. */
+async function sendCase(harness: Harness, c: Case): Promise<void> {
+  c.setup?.(harness.db);
   const headers = { ...(c.as === undefined ? {} : await credentialsFor(subjectNamed(c.as))), ...(c.headers === undefined ? {} : await c.headers()) };
-  const res = await t.app.inject({ method: c.method, url: c.url, headers, ...(c.payload === undefined ? {} : { payload: c.payload }) });
+  const res =
+    c.push === undefined
+      ? await harness.app.inject({ method: c.method, url: c.url, headers, ...(c.payload === undefined ? {} : { payload: c.payload }) })
+      : await pushTo(harness.app, c.push.subscription, c.push.envelope());
   const contentType = res.headers['content-type'];
-  const body: unknown = typeof contentType === 'string' && JSON_MEDIA_TYPE.test(contentType) && res.body !== '' ? JSON.parse(res.body) : res.body;
+  const json = typeof contentType === 'string' && JSON_MEDIA_TYPE.test(contentType) && res.body !== '';
+  const body: unknown = json ? JSON.parse(res.body) : res.body === '' ? undefined : res.body;
   expect(res.statusCode, res.body.slice(0, 400)).toBe(c.status);
   assertResponseMatchesOpenApi(DOC, { method: c.method, path: c.url.split('?')[0] ?? c.url, status: res.statusCode, contentType, body });
-  await c.verify?.(body, res);
+  await c.verify?.(body, res, harness);
 }
 
 describe('contract document', () => {
@@ -1063,11 +1568,18 @@ describe('contract document', () => {
     expect([DOC.openapi, DOC.info.version, DOC.info['x-source-sha']]).toEqual(['3.1.0', '1.0.0', PIN.sha]);
   });
 
+  it('gives every operation a unique operationId', () => {
+    const ids = OPERATIONS.map(({ operationId }) => operationId);
+    expect(ids.filter((id) => id === '')).toEqual([]);
+    expect(ids.filter((id, index) => ids.indexOf(id) !== index)).toEqual([]);
+  });
+
   it('declares on every operation the transport its path takes and exactly one of x-opt2-requires and x-opt2-public', () => {
     const problems = OPERATIONS.flatMap(({ method, path, op }) => {
       const requires = op['x-opt2-requires'];
       const isPublic = op['x-opt2-public'] === true;
       const found: string[] = [];
+      if (!TRANSPORTS.includes(String(op['x-opt2-transport']))) found.push(`${method} ${path}: unknown transport ${String(op['x-opt2-transport'])}`);
       if (op['x-opt2-transport'] !== transportForPath(path)) found.push(`${method} ${path}: transport ${String(op['x-opt2-transport'])}`);
       if ((requires === undefined) === !isPublic) found.push(`${method} ${path}: requires and public`);
       if (requires !== undefined && !(Array.isArray(requires) && requires.length > 0)) found.push(`${method} ${path}: empty requires`);
@@ -1077,66 +1589,159 @@ describe('contract document', () => {
   });
 });
 
-describe('registered routes', () => {
-  it('serve every implemented operation at its Fastify path with the declaration the contract states', () => {
-    const routes = collectRouteMatrix(t.app).routes;
-    const byKey = new Map(routes.map((route) => [routeKey(route), declared(route)]));
-    const mismatches = IMPLEMENTED.flatMap((operation) =>
-      routeKeysOf(operation).flatMap((key) => {
-        const actual = byKey.get(key);
-        if (actual === undefined) return [`${operation.operationId}: no route ${key}`];
-        return JSON.stringify(actual) === JSON.stringify(contractDeclaration(operation)) ? [] : [`${operation.operationId} ${key}: ${JSON.stringify(actual)}`];
-      }),
+describe('toOpenApiPath', () => {
+  it.each([
+    ['/internal/v1/sessions::adopt', '/internal/v1/sessions:adopt'],
+    ['/internal/v1/sessions/:sid(.+)::end', '/internal/v1/sessions/{sid}:end'],
+    ['/internal/v1/csrf/claims::settle', '/internal/v1/csrf/claims:settle'],
+    ...['prepare', 'commit', 'abort', 'finish', 'revert'].map((step) => [
+      `/internal/v1/accounts/:userId/operations/:operationId(.+)::${step}`,
+      `/internal/v1/accounts/{userId}/operations/{operationId}:${step}`,
+    ]),
+    ['/v1/groups/:groupId/members/:userId', '/v1/groups/{groupId}/members/{userId}'],
+    ['/_api/json/v1*', '/_api/json/v1*'],
+  ])('maps %s to %s', (fastifyUrl, openApiPath) => {
+    expect(toOpenApiPath(fastifyUrl)).toBe(openApiPath);
+  });
+});
+
+describe('registered routes of the composition root', () => {
+  it('are exactly the contract operations', () => {
+    expect(diffRouteSets(servedRoutes(root.app), OPERATIONS)).toEqual({ undeclared: [], unregistered: [] });
+  });
+
+  it('each declare the transport, roles and public flag of every operation they serve', () => {
+    const mismatches = servedRoutes(root.app).flatMap((route) =>
+      OPERATIONS.filter((operation) => operationRouteKeys(operation).includes(routeKey(route)))
+        .filter((operation) => JSON.stringify(contractDeclaration(operation)) !== JSON.stringify(declared(route)))
+        .map((operation) => `${operation.operationId} ${routeKey(route)}: ${JSON.stringify(declared(route))}`),
     );
     expect(mismatches).toEqual([]);
   });
 
-  it('are each a contract operation', () => {
-    const served = new Set(IMPLEMENTED.flatMap(routeKeysOf));
-    expect(collectRouteMatrix(t.app).routes.map(routeKey).filter((key) => !served.has(key))).toEqual([]);
+  it('take the transport their path implies, push routes for the Pub/Sub invoker and the sweep for the tasks invoker', () => {
+    const routes = servedRoutes(root.app);
+    expect(routes.filter((route) => route.transport !== transportForPath(route.url)).map(routeKey)).toEqual([]);
+    const managed = routes.filter(({ url }) => url.startsWith('/internal/v1/events/') || url === '/internal/v1/outbox/sweep');
+    expect(managed.map(({ url, transport, requires }) => ({ url, transport, requires }))).toEqual(
+      managed.map(({ url }) =>
+        url === '/internal/v1/outbox/sweep'
+          ? { url, transport: 'cloud-tasks', requires: ['service:tasks-invoker'] }
+          : { url, transport: 'pubsub-push', requires: ['service:pubsub-invoker'] },
+      ),
+    );
+    expect(managed.map(({ url }) => url).sort()).toEqual(
+      [`/internal/v1/events/${PERSON_CONTACT_SUBSCRIPTION}`, `/internal/v1/events/${SITE_SUBSCRIPTION}`, '/internal/v1/outbox/sweep'].sort(),
+    );
   });
 
-  it('leave exactly the planned operations unserved', () => {
-    const registered = new Set(collectRouteMatrix(t.app).routes.map(routeKey));
-    const unserved = OPERATIONS.filter((operation) => !routeKeysOf(operation).every((key) => registered.has(key))).map((operation) => operation.operationId);
-    expect(unserved.sort()).toEqual([...PLANNED].sort());
+  it('report a removed operation, a missing route and an extra route by name', () => {
+    const routes = servedRoutes(root.app);
+    const trimmed = structuredClone(DOC);
+    delete trimmed.paths['/healthz']?.get;
+    expect(diffRouteSets(routes, contractOperations(trimmed))).toEqual({ undeclared: ['GET /healthz'], unregistered: [] });
+
+    const withoutHealth = routes.filter(({ url }) => url !== '/healthz');
+    expect(diffRouteSets(withoutHealth, OPERATIONS)).toEqual({ undeclared: [], unregistered: ['healthz (GET /healthz)'] });
+
+    const extra: RouteMatrixEntry = { method: 'GET', url: '/v1/groups/:groupId/extra', transport: 'service', requires: [Roles.s2], siteCheck: true };
+    expect(diffRouteSets([...routes, extra], OPERATIONS)).toEqual({ undeclared: ['GET /v1/groups/{groupId}/extra'], unregistered: [] });
+  });
+});
+
+describe('JSON API route keys', () => {
+  let keyed: IdentityTestApp;
+
+  beforeAll(async () => {
+    keyed = await buildIdentityApp(defaultSeed());
   });
 
-  it('answer every planned operation with the fail-closed 404 and no effect, whatever credential its path takes', async () => {
-    const outcomes: string[] = [];
-    for (const operation of OPERATIONS.filter((candidate) => PLANNED.includes(candidate.operationId))) {
-      const url = operation.path.replace('{queue}', 'identity-outbox-sweep');
-      const transport = operation.op['x-opt2-transport'];
-      const headers: Headers =
-        transport === 'cloud-tasks'
-          ? { authorization: `Bearer ${await mintTasksInvokerToken({ audience: 'identity' })}` }
-          : transport === 'pubsub-push'
-            ? {}
-            : await credentialsFor(subjectNamed('service:migration'));
-      t.resetEffects();
-      const res = await t.app.inject({
-        method: operation.method,
-        url: transport === 'pubsub-push' ? `${url}?key=${TEST_PUSH_KEY}` : url,
-        headers,
-        ...(operation.method === 'POST' ? { payload: {} } : {}),
-      });
-      outcomes.push(`${operation.operationId} ${res.statusCode} ${JSON.stringify(t.effects())}`);
-    }
-    const quiet = JSON.stringify({ statements: 0, writes: 0, repoWrites: 0, events: 0, relayed: 0, calls: 0, fetches: 0 });
-    expect(outcomes.sort()).toEqual(PLANNED.map((id) => `${id} 404 ${quiet}`).sort());
+  afterAll(async () => {
+    await keyed?.close();
+  });
+
+  it('are declared on every /_api/ operation and on no other', () => {
+    expect(WIRE_OPERATIONS.filter((operation) => routeKeysOf(operation).length === 0).map(({ operationId }) => operationId)).toEqual([]);
+    expect(OPERATIONS.filter((operation) => !WIRE_OPERATIONS.includes(operation) && operation.op['x-opt2-route-keys'] !== undefined).map(({ operationId }) => operationId)).toEqual(
+      [],
+    );
+  });
+
+  it('are canonical, carry no photo variant and address only the group entity', () => {
+    const keys = [...new Set(WIRE_OPERATIONS.flatMap(routeKeysOf))];
+    const malformed = keys.filter((key) => key !== normaliseRouteKey(key) || !/^(?:api|rest):[a-z0-9_.!-]+(?:\{[a-z0-9_=,]+\})?$/.test(key));
+    const photo = keys.filter((key) => key.includes('{photo}'));
+    const foreign = keys.filter((key) => {
+      const body = key.slice(key.indexOf(':') + 1);
+      return body.includes('.') && !body.startsWith('group.');
+    });
+    expect({ malformed, photo, foreign }).toEqual({ malformed: [], photo: [], foreign: [] });
+  });
+
+  it.each(SERVED_KEY_ROWS)('serves $key under $base', async ({ key, base }) => {
+    const request = keyedRequest(base, key.slice(key.indexOf(':') + 1));
+    expect(routeKeyForRequest({ method: request.method, path: request.path, query: request.query, headers: {} }).key).toBe(key);
+    const res = await keyed.app.inject({ method: request.method, url: keyedUrl(request), headers: await credentialsFor(subjectNamed('s2')) });
+    expect(isUnservedAnswer(res), `${String(res.statusCode)} ${res.body.slice(0, 300)}`).toBe(false);
+  });
+
+  it.each(UNSERVED_REQUESTS)('answers $key with the legacy 404 envelope', async ({ key, baseKey, request }) => {
+    expect(WIRE_OPERATIONS.flatMap(routeKeysOf)).not.toContain(key);
+    expect(routeKeyForRequest({ method: request.method, path: request.path, query: request.query, headers: {} }).key).toBe(baseKey);
+    const res = await keyed.app.inject({
+      method: request.method,
+      url: keyedUrl(request),
+      headers: { ...(await credentialsFor(subjectNamed('s2'))), ...(request.payload === undefined ? {} : FORM) },
+      ...(request.payload === undefined ? {} : { payload: request.payload }),
+    });
+    expect(isUnservedAnswer(res), `${String(res.statusCode)} ${res.body.slice(0, 300)}`).toBe(true);
   });
 });
 
 describe('responses', () => {
-  it('cover every implemented operation', () => {
-    expect(Object.keys(CASES).sort()).toEqual(IMPLEMENTED.map((operation) => operation.operationId).sort());
+  it('cover every contract operation exactly once', () => {
+    const covered = [...Object.keys(CASES), ...Object.keys(ROOT_CASES)].sort();
+    expect(covered).toEqual(OPERATIONS.map(({ operationId }) => operationId).sort());
   });
 
-  for (const operation of IMPLEMENTED) {
+  for (const operation of OPERATIONS) {
     for (const c of CASES[operation.operationId] ?? []) {
       it(`${operation.operationId}: ${c.name}`, async () => {
-        await sendCase(c);
+        await sendCase(t, c);
       });
     }
   }
+});
+
+describe('responses of the composition root', () => {
+  beforeEach(() => {
+    // clear() also drops responders, so the registry answer is installed again.
+    root.db.clear();
+    root.db.respond(REGISTRY_SQL, registryAnswer);
+    root.publisher.clear();
+  });
+
+  for (const operation of OPERATIONS) {
+    for (const c of ROOT_CASES[operation.operationId] ?? []) {
+      it(`${operation.operationId}: ${c.name}`, async () => {
+        await sendCase(root, c);
+      });
+    }
+  }
+});
+
+describe('legacy error shapes', () => {
+  let harness: Harness | undefined;
+
+  afterEach(async () => {
+    await harness?.close();
+    harness = undefined;
+  });
+
+  it.each(ERROR_CASES.map((c) => ({ title: c.name, c })))('$title', async ({ c }) => {
+    harness = c.root === true ? await rootHarness() : await buildIdentityApp(defaultSeed());
+    const started = performance.now();
+    await sendCase(harness, c);
+    if (c.withinMs !== undefined) expect(performance.now() - started).toBeLessThan(c.withinMs);
+  });
 });
