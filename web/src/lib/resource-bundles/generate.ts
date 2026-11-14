@@ -19,6 +19,7 @@ export type GenerateOptions = { readonly repoRoot: string; readonly outDir: stri
 
 export type BundleFileError = { readonly dir: string; readonly file: string; readonly message: string };
 
+/** Outcome of one run; file and entry counts are kept per layer so the CLI can report each directory. */
 export type GenerateResult = {
   readonly outDir: string;
   readonly dirs: { readonly admin: string; readonly coreAssets: string | null; readonly global: string | null };
@@ -193,11 +194,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const outDir = resolve(here, '../../generated/resource-bundles');
   try {
     const result = await generateResourceBundles({ repoRoot, outDir });
-    for (const [layer] of LAYERS) {
+    for (const [layer, subdir] of LAYERS) {
       const files = result.files[layer];
       const entries = result.entries[layer];
       const label = result.dirs[layer] ?? 'absent';
-      console.log(`${layer} ${label}: ${files} file${files === 1 ? '' : 's'}, ${entries} ${entries === 1 ? 'entry' : 'entries'}`);
+      console.log(`${subdir}: ${label} (${files} file${files === 1 ? '' : 's'}, ${entries} ${entries === 1 ? 'entry' : 'entries'})`);
     }
   } catch (error) {
     if (!(error instanceof MissingAdminBundlesError)) throw error;
