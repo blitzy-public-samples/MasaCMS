@@ -1,8 +1,8 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** In-process authorisation matrix of every reporting route: admitted subjects, denial envelopes and effects, transport, site, tenant and CSRF boundaries, deny by default. */
+/** In-process authorisation matrix of every reporting route: admitted subjects, denial envelopes and effects, transport, site, tenant, CSRF and signed-URL boundaries, deny by default. */
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   INVOCATION_HEADER,
   PUBSUB_INVOKER_ROLE,
@@ -143,11 +143,13 @@ interface Effects {
   tasks: number;
   calls: number;
   published: number;
+  /** Storage puts and deletes. */
+  stored: number;
 }
 
 type Mark = Omit<Effects, 'writes'>;
 
-const NO_EFFECTS: Effects = { transactions: 0, writes: [], tasks: 0, calls: 0, published: 0 };
+const NO_EFFECTS: Effects = { transactions: 0, writes: [], tasks: 0, calls: 0, published: 0, stored: 0 };
 
 interface ErrorBody {
   code: string;
@@ -175,6 +177,7 @@ let definitionB: ExportDefinitionRow;
 let doneA: ExportJobRow;
 let doneB: ExportJobRow;
 let signedA: string;
+let storedCount: () => number;
 
 function subject(name: string): RoleSubject {
   const found = ROLE_SET.find((candidate) => candidate.name === name);
@@ -198,6 +201,7 @@ function mark(): Mark {
     tasks: t.tasks.calls.length,
     calls: t.client.requests.length,
     published: t.publisher.published.length + t.publisher.raw.length,
+    stored: storedCount(),
   };
 }
 
@@ -209,6 +213,7 @@ function effectsSince(from: Mark): Effects {
     tasks: t.tasks.calls.length - from.tasks,
     calls: t.client.requests.length - from.calls,
     published: t.publisher.published.length + t.publisher.raw.length - from.published,
+    stored: storedCount() - from.stored,
   };
 }
 
@@ -407,6 +412,9 @@ function comparable(declared: Declared | RouteMatrixEntry): Record<string, unkno
 
 beforeAll(async () => {
   t = await buildTestApp();
+  const puts = vi.spyOn(t.storage, 'put');
+  const deletes = vi.spyOn(t.storage, 'delete');
+  storedCount = () => puts.mock.calls.length + deletes.mock.calls.length;
   matrix = collectRouteMatrix(t.app);
   definitionA = seedDefinition(t.db, SITE_A);
   definitionB = seedDefinition(t.db, SITE_B);
@@ -514,6 +522,27 @@ describe('transport separation', () => {
     }
   });
 
+  it('refuses an exporter user token presented without an invocation credential on /v1 and fixture routes', async () => {
+    const credentials = await headersFor(subject(EXPORTER), SITE_A);
+    const userOnly = Object.fromEntries(Object.entries(credentials).filter(([name]) => name !== INVOCATION_HEADER));
+    const probes: ProbeRequest[] = [
+      { method: 'GET', url: `${V1_EXPORTS}?${ON_SITE_A}` },
+      { method: 'POST', url: `${V1_EXPORTS}?${ON_SITE_A}`, headers: csrfFor(subject(EXPORTER)), payload: createBody() },
+      { method: 'GET', url: `${V1_EXPORTS}/${doneA.job_id}/download-url?${ON_SITE_A}` },
+      { method: 'GET', url: `${FIXTURE_EXPORTS}/${doneA.job_id}/download?${ON_SITE_A}` },
+      { method: 'POST', url: `${FIXTURE_EXPORTS}?${ON_SITE_A}`, headers: csrfFor(subject(EXPORTER)), payload: createBody() },
+    ];
+    for (const request of probes) {
+      const at = `${request.method} ${request.url}`;
+      expect({ at, ...(await outcomeOf(request, userOnly)) }).toEqual({
+        at,
+        status: 401,
+        error: errorBody(LEGACY_ERROR_MAP.authorization),
+        effects: NO_EFFECTS,
+      });
+    }
+  });
+
   it('refuses the push key on user, migration and task routes', async () => {
     const gatewayToken = `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SERVICE })}`;
     const probes: [ProbeRequest, Record<string, string>][] = [
@@ -610,6 +639,50 @@ describe('tenant isolation', () => {
     const forged = signedA.replace(TENANT_A.tenantId, TENANT_B.tenantId).replace(doneA.job_id, doneB.job_id);
     const res = await inject({ method: 'GET', url: forged }, {});
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('signed export URLs', () => {
+  /** Subjects whose credentials the file route verifies; a tasks-invoker token is refused first as a user token. */
+  const verified = (): RoleSubject[] => everyoneBut('service:tasks-invoker').map(subject);
+
+  /** `signedA` with its query edited by `edit`. */
+  const edited = (edit: (params: URLSearchParams) => void): string => {
+    const url = new URL(signedA, 'http://reporting.local');
+    edit(url.searchParams);
+    return `${url.pathname}${url.search}`;
+  };
+
+  const flip = (hex: string): string => `${hex.startsWith('0') ? '1' : '0'}${hex.slice(1)}`;
+
+  it('serves the stored export bytes to a valid signature whoever presents it', async () => {
+    const bytes = await t.storage.get(EXPORT_BUCKET, doneA.object_key ?? '');
+    const mismatches: string[] = [];
+    for (const who of verified()) {
+      const res = await inject({ method: 'GET', url: signedA }, await headersFor(who, SITE_A));
+      if (res.statusCode !== 200 || !res.rawPayload.equals(bytes)) mismatches.push(`${who.name}: ${res.statusCode} ${res.body.slice(0, 200)}`);
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it.each<[string, () => string | Promise<string>]>([
+    ['a flipped sig character', () => edited((params) => params.set('sig', flip(params.get('sig') ?? '')))],
+    ['no sig', () => edited((params) => params.delete('sig'))],
+    ['no expires', () => edited((params) => params.delete('expires'))],
+    [
+      'a signature for another bucket',
+      async () => (await t.storage.signedUrl('finance-attachments', doneA.object_key ?? '')).replace('/finance-attachments/', `/${EXPORT_BUCKET}/`),
+    ],
+    ['an expired signature', () => t.storage.signedUrl(EXPORT_BUCKET, doneA.object_key ?? '', { expiresS: -1 })],
+  ])('answers 403 to a URL with %s for every verified subject, serving and storing nothing', async (_label, urlFor) => {
+    const url = await urlFor();
+    const refused = { status: 403, error: errorBody(LEGACY_ERROR_MAP.authorization), effects: NO_EFFECTS };
+    const mismatches: string[] = [];
+    for (const who of verified()) {
+      const outcome = await outcomeOf({ method: 'GET', url }, await headersFor(who, SITE_A));
+      if (!isDeepStrictEqual(outcome, refused)) mismatches.push(`${who.name}: ${JSON.stringify(outcome)}`);
+    }
+    expect(mismatches).toEqual([]);
   });
 });
 

@@ -7,11 +7,11 @@ import type { PassThrough, Readable } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { parse } from 'csv-parse/sync';
-import { stringify } from 'csv-stringify/sync';
 import ExcelJS from 'exceljs';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { describe, expect, it } from 'vitest';
-import type { ExportTableStream } from '../../src/domain/sources.js';
+import { TENANT_A } from '@opt2/platform/testing';
+import { parseDefinitionColumns, type ExportTableStream } from '../../src/domain/sources.js';
 import {
   extensionFor,
   renderCsv,
@@ -21,7 +21,8 @@ import {
   type ExportRendering,
   type ExportWriterInput,
 } from '../../src/domain/writers/index.js';
-import type { ExportDefinitionRow, ExportFormat, ExportJobRow } from '../../src/repo/tables.js';
+import { EXPORT_FORMATS, type ExportDefinitionRow, type ExportFormat, type ExportJobRow, type ExportSource } from '../../src/repo/tables.js';
+import { SAMPLE_FINANCE_RECORDS, SAMPLE_SHEET_STATUS, definitionFor, jobFor } from '../helpers/fixtures.js';
 
 const JOB_ID = '0A1B2C3D-4E5F-6071-8293A4B5C6D7E8F9';
 const RECORD_ID = 'F1D51F56-09DF-B1D1-6E2AD3839353D5E2';
@@ -127,6 +128,42 @@ const ROWS = [
 ];
 const SAMPLE = tableOf('Finance records', LABELS, ROWS);
 
+const SAMPLE_SOURCES = ['timesheets.sheets', 'finance.records'] as const satisfies readonly ExportSource[];
+type SampleSource = (typeof SAMPLE_SOURCES)[number];
+
+/** Each sample producer row's cells in the fixture runner's string forms, keyed by source column name. */
+const SAMPLE_CELLS: Readonly<Record<SampleSource, readonly Readonly<Record<string, string>>[]>> = {
+  'timesheets.sheets': SAMPLE_SHEET_STATUS.map((row) => ({
+    timesheet_id: row.timesheetId,
+    person_id: row.personId,
+    period_start: row.periodStart,
+    status: row.status,
+    overdue: row.overdue ? '1' : '0',
+  })),
+  'finance.records': SAMPLE_FINANCE_RECORDS.map((row) => ({
+    record_id: row.record_id,
+    title: row.title,
+    amount: row.amount,
+    period: row.period,
+    state: row.state,
+  })),
+};
+
+/** The tenant-a definition of `source` with a running `format` job, and its sample rows projected onto the definition's columns. */
+function sample(source: SampleSource, format: ExportFormat): ExportWriterInput & { labels: string[]; rows: string[][] } {
+  const definition = definitionFor(TENANT_A, source);
+  const columns = parseDefinitionColumns(definition.columns);
+  const labels = columns.map(({ label }) => label);
+  const rows = SAMPLE_CELLS[source].map((cells) =>
+    columns.map(({ field }) => {
+      const cell = cells[field];
+      if (cell === undefined) throw new Error(`no ${source} sample cell for column ${field}`);
+      return cell;
+    }),
+  );
+  return { definition, table: tableOf(definition.name, labels, rows), job: jobFor(definition, { format, state: 'running' }), labels, rows };
+}
+
 const STANDARD_FONT_DATA_URL = join(dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json')), 'standard_fonts/');
 
 /** PDF text per page as the golden normaliser extracts it: text items joined with spaces, whitespace collapsed and trimmed. */
@@ -169,6 +206,28 @@ async function xlsxSheets(bytes: Buffer): Promise<{ name: string; rows: [ExcelJS
     }
     return { name: sheet.name, rows };
   });
+}
+
+const WRITERS: Readonly<Record<ExportFormat, (given: ExportWriterInput) => ExportRendering | Promise<ExportRendering>>> = {
+  xlsx: renderXlsx,
+  csv: renderCsv,
+  pdf: renderPdf,
+};
+
+const DECODERS: Readonly<Record<ExportFormat, (bytes: Buffer) => unknown>> = {
+  xlsx: xlsxSheets,
+  csv: (bytes) => parse(bytes.toString('utf8')),
+  pdf: pdfPages,
+};
+
+/** A rendering read as the golden comparison reads its format: XLSX cells per sheet, CSV cells or PDF text per page. */
+async function contentOf(format: ExportFormat, rendering: ExportRendering | Promise<ExportRendering>): Promise<unknown> {
+  return DECODERS[format](await bytesOf(rendering));
+}
+
+/** The fixture's `csvBytes` text: a field matching `[",\r\n]` quoted with its quotes doubled, fields comma-joined, every line ending CRLF. */
+function fixtureCsv(table: readonly (readonly string[])[]): string {
+  return table.map((row) => `${row.map((value) => (/[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value)).join(',')}\r\n`).join('');
 }
 
 /** Deterministic pseudo-random integers below `bound`, from a 32-bit LCG seeded with `seed`. */
@@ -217,12 +276,15 @@ describe('renderCsv', () => {
     expect((await bytesOf(renderCsv(input(tableOf('t', labels, rows))))).toString('utf8')).toBe(text);
   });
 
-  it('streams the same UTF-8 bytes the synchronous serializer writes for generated tables of quotes, commas, CR, LF and empty cells', async () => {
-    const options = { record_delimiter: '\r\n', quoted_match: /[\r\n]/, eof: true };
+  it("writes the fixture's text for generated tables of quotes, commas, CR, LF and empty cells", async () => {
     for (const { labels, rows } of generatedTables(300)) {
-      const expected = Buffer.from(stringify([labels, ...rows], options), 'utf8');
-      expect(await bytesOf(renderCsv(input(tableOf('t', labels, rows))))).toEqual(expected);
+      expect((await bytesOf(renderCsv(input(tableOf('t', labels, rows))))).toString('utf8')).toBe(fixtureCsv([labels, ...rows]));
     }
+  });
+
+  it.each([...SAMPLE_SOURCES])('writes the %s sample as the definition labels, then each row, in CSV cells', async (source) => {
+    const given = sample(source, 'csv');
+    expect(parse((await bytesOf(renderCsv(given))).toString('utf8'))).toEqual([given.labels, ...given.rows]);
   });
 });
 
@@ -231,6 +293,13 @@ describe('renderXlsx', () => {
     const sheets = await xlsxSheets(await bytesOf(renderXlsx(input(SAMPLE))));
     expect(sheets.map((sheet) => sheet.name)).toEqual(['export']);
     expect(sheets[0]?.rows).toEqual([LABELS, ...ROWS].map((row) => row.map((value) => [value, ExcelJS.ValueType.String])));
+  });
+
+  it.each([...SAMPLE_SOURCES])('stores the %s sample in the export sheet as the definition labels, then each row, each cell a string', async (source) => {
+    const given = sample(source, 'xlsx');
+    expect(await xlsxSheets(await bytesOf(renderXlsx(given)))).toEqual([
+      { name: 'export', rows: [given.labels, ...given.rows].map((row) => row.map((value) => [value, ExcelJS.ValueType.String])) },
+    ]);
   });
 
   it.each([
@@ -292,6 +361,18 @@ describe('renderXlsx', () => {
 
 const rowsText = (rows: readonly (readonly string[])[]): string => rows.map((row) => row.join(' ')).join(' ');
 const repeated = (word: string, count: number): string => Array.from({ length: count }, () => word).join(' ');
+const squeezed = (text: string): string => text.replace(/\s+/g, '');
+
+/** Whether `parts` occur in `text` in order, each after the end of the one before. */
+function inOrder(text: string, parts: readonly string[]): boolean {
+  let at = 0;
+  for (const part of parts) {
+    const found = text.indexOf(part, at);
+    if (found < 0) return false;
+    at = found + part.length;
+  }
+  return true;
+}
 const LONG_ROWS = numberedRows(120);
 const SPLIT_LABELS = Array.from({ length: 12 }, (_, i) => `c${String(i + 1)}`);
 const SPLIT_TAIL = '09DF-B1D1-6E2AD3839353D5E2';
@@ -369,6 +450,18 @@ describe('renderPdf', () => {
     expect(await pdfPages(await bytesOf(renderPdf(input(table))))).toEqual(pages);
   });
 
+  // Character spacing splits stretched lines into letters, and the sample's random ids can widen a table into column parts,
+  // so the text is read without whitespace and each column is checked in order on its own.
+  it.each([...SAMPLE_SOURCES])("draws the %s sample as its definition name, then each column's label and its rows' values in order", async (source) => {
+    const given = sample(source, 'pdf');
+    const pages = (await pdfPages(await bytesOf(renderPdf(given)))).map(squeezed);
+    const text = pages.join('');
+    expect(pages[0]?.startsWith(squeezed(`${given.definition.name}${given.labels[0] ?? ''}`))).toBe(true);
+    given.labels.forEach((label, c) => {
+      expect(inOrder(text, [given.definition.name, label, ...given.rows.map((row) => row[c] ?? '')].map(squeezed))).toBe(true);
+    });
+  });
+
   it.each([
     { name: 'start', changes: {}, date: 'D:20260630090001Z' },
     { name: 'creation, before it starts', changes: { started_at: null }, date: 'D:20260630090000Z' },
@@ -400,6 +493,19 @@ describe('renderExport', () => {
     expect({ fileName: rendering.fileName, contentType: rendering.contentType }).toEqual({ fileName: `export-${JOB_ID}.${format}`, contentType });
     expect((await bytesOf(rendering)).length).toBeGreaterThan(0);
   });
+
+  it.each(SAMPLE_SOURCES.flatMap((source) => EXPORT_FORMATS.map((format) => ({ source, format }))))(
+    'renders the $source sample as $format with its writer content, alike on a second render, named as the fixture names it',
+    async ({ source, format }) => {
+      const given = sample(source, format);
+      const rendering = await renderExport(format, given);
+      const done = jobFor(given.definition, { format, state: 'done', jobId: given.job.job_id });
+      expect({ fileName: rendering.fileName, contentType: rendering.contentType }).toEqual({ fileName: done.file_name, contentType: done.content_type });
+      const content = await contentOf(format, rendering);
+      expect(await contentOf(format, WRITERS[format](given))).toEqual(content);
+      expect(await contentOf(format, renderExport(format, given))).toEqual(content);
+    },
+  );
 
   it.each<ExportFormat>(['csv', 'xlsx', 'pdf'])('fails %s with the very error a row read raises, after the rows before it', async (format) => {
     const error = new Error('page 2 unreadable');

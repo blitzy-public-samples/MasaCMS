@@ -30,13 +30,24 @@ import {
   createThrowawaySchema,
   pgAvailable,
   testVerifier,
+  type RoleSubject,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { exportDefinitionMapping } from '../../src/migration/mappings/export-definition.js';
 import { sessionTrackingMapping } from '../../src/migration/mappings/tsessiontracking.js';
 import { createExportObjects } from '../../src/migration/objects.js';
 import { createReportingRepository, type ReportingRepository } from '../../src/repo/repository.js';
-import { EXPORT_BUCKET, EXPORT_DEFINITION, EXPORT_JOB, OWNER, TSESSIONTRACKING, UNITS, exportObjectKey } from '../../src/repo/tables.js';
+import {
+  EXPORT_BUCKET,
+  EXPORT_DEFINITION,
+  EXPORT_JOB,
+  OWNER,
+  TSESSIONTRACKING,
+  UNITS,
+  exportObjectKey,
+  type ExportFormat,
+  type ExportState,
+} from '../../src/repo/tables.js';
 
 type ManifestScope = Parameters<NonNullable<MigrationHandlerOptions['exportObjects']>>[1];
 
@@ -46,9 +57,14 @@ const EXPORT_PATH = `${MIGRATION_PATH_PREFIX}/export`;
 /** A CF-format id whose first group is `<prefix><n>`; ids sort by prefix, then `n`. */
 const cfId = (prefix: string, n: number): string => `${prefix}${String(n).padStart(7, '0')}-AAAA-BBBB-CCCCDDDDEEEEFFFF`;
 
-/** A seeded job: `output` makes it `done` with an object key; `absent` leaves its object unstored; `rowSha` replaces its stored SHA-256 column. */
+/**
+ * A seeded job of `format` (csv by default): `output` makes it `done` with an object key; without one it stays in `state`
+ * (queued by default) with none; `absent` leaves its object unstored; `rowSha` replaces its stored SHA-256 column.
+ */
 interface SeedJob {
   id: string;
+  format?: ExportFormat;
+  state?: Exclude<ExportState, 'done'>;
   output?: Buffer;
   contentType?: string | null;
   absent?: boolean;
@@ -57,16 +73,23 @@ interface SeedJob {
 
 const A_JOBS: SeedJob[] = [
   { id: cfId('A', 1), output: Buffer.from('id,name\r\n1,"Ada, \u00e9"\r\n'), contentType: 'text/csv' },
-  { id: cfId('A', 2), output: Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff]), contentType: null },
+  { id: cfId('A', 2), format: 'pdf', output: Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff]), contentType: null },
   { id: cfId('A', 3), output: Buffer.from('never stored'), contentType: 'text/csv', absent: true },
-  { id: cfId('A', 4) },
-  { id: cfId('A', 5), output: Buffer.from('PK\u0003\u0004 workbook'), contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+  { id: cfId('A', 4), state: 'queued' },
+  {
+    id: cfId('A', 5),
+    format: 'xlsx',
+    output: Buffer.from('PK\u0003\u0004 workbook'),
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  },
   { id: cfId('A', 6), output: Buffer.from('bytes as stored'), contentType: 'text/csv', rowSha: 'f'.repeat(64) },
+  { id: cfId('A', 7), format: 'pdf', state: 'running' },
+  { id: cfId('A', 8), format: 'xlsx', state: 'failed' },
 ];
-const B_JOBS: SeedJob[] = [{ id: cfId('B', 1), output: Buffer.from('tenant b'), contentType: 'application/pdf' }];
+const B_JOBS: SeedJob[] = [{ id: cfId('B', 1), format: 'pdf', output: Buffer.from('tenant b'), contentType: 'application/pdf' }];
 
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
-const keyOf = (tenantId: string, job: SeedJob): string => exportObjectKey(tenantId, job.id, 'csv');
+const keyOf = (tenantId: string, job: SeedJob): string => exportObjectKey(tenantId, job.id, job.format ?? 'csv');
 
 /** The manifest entry of a seeded job's stored object. */
 function entryOf(tenantId: string, job: SeedJob): ObjectManifestEntry {
@@ -98,13 +121,14 @@ async function seed(tx: TenantTx, siteId: string, jobs: readonly SeedJob[]): Pro
     await tx.query(
       `INSERT INTO ${handle.schema}.export_job
          (tenant_id, job_id, siteid, definition_id, format, state, requested_by_id, created, content_type, object_key, output_sha256)
-       VALUES ($1, $2, $3, $4, 'csv', $5, $6, '2026-06-30 10:00:00.000', $7, $8, $9)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, '2026-06-30 10:00:00.000', $8, $9, $10)`,
       [
         tx.tenantId,
         job.id,
         siteId,
         cfId('D', 1),
-        key === null ? 'queued' : 'done',
+        job.format ?? 'csv',
+        key === null ? (job.state ?? 'queued') : 'done',
         cfId('E', 1),
         job.contentType ?? null,
         key,
@@ -130,13 +154,23 @@ function manifestFor(scope: ManifestScope, port: StoragePort = storage): Promise
   return handle.app.withTenant(scope.tenantId, (tx) => createExportObjects({ storage: port, repository })(tx, scope));
 }
 
+/** The ROLE_SET subject called `name`. */
+function roleSubject(name: string): RoleSubject {
+  const subject = ROLE_SET.find((candidate) => candidate.name === name);
+  if (subject === undefined) throw new Error(`no role subject ${name}`);
+  return subject;
+}
+
 /** `result` as a manifest page; fails when it is a whole-manifest array. */
 function pageOf(result: ObjectManifestEntry[] | ObjectManifestPage): ObjectManifestPage {
   expect(Array.isArray(result)).toBe(false);
   return result as ObjectManifestPage;
 }
 
-describe.skipIf(!(await pgAvailable()))('reporting export-job object manifest', () => {
+// pgAvailable rejects when PG_HOST is unset; no configured PostgreSQL skips the suite instead.
+const pgReady = Boolean(process.env.PG_HOST) && (await pgAvailable());
+
+describe.skipIf(!pgReady)('reporting export-job object manifest', () => {
   let app: FastifyInstance;
   let headers: Record<string, string>;
 
@@ -174,9 +208,7 @@ describe.skipIf(!(await pgAvailable()))('reporting export-job object manifest', 
       exportObjects: createExportObjects({ storage, repository }),
     });
     await app.ready();
-    const migration = ROLE_SET.find((candidate) => candidate.name === 'service:migration');
-    if (migration === undefined) throw new Error('no role subject service:migration');
-    headers = await authHeadersFor(migration, { audience: OWNER });
+    headers = await authHeadersFor(roleSubject('service:migration'), { audience: OWNER });
   });
 
   afterAll(async () => {
@@ -202,6 +234,18 @@ describe.skipIf(!(await pgAvailable()))('reporting export-job object manifest', 
     expect(page.objects.map((entry) => entry.key)).not.toContain(keyOf(TENANT_A.tenantId, A_JOBS[2] as SeedJob));
   });
 
+  it('lists no queued, running or failed job, none of which stores an output', async () => {
+    const unfinished = await handle.app.withTenant(TENANT_A.tenantId, (tx) =>
+      tx.query<{ job_id: string; state: string }>(
+        `SELECT job_id, state FROM ${handle.schema}.export_job WHERE object_key IS NULL ORDER BY job_id COLLATE "C"`,
+      ),
+    );
+    expect(unfinished.rows.map((row) => row.state)).toEqual(['queued', 'running', 'failed']);
+    const page = pageOf(await manifestFor({ unit: EXPORT_JOB.unit, tenantId: TENANT_A.tenantId }));
+    const listed = page.objects.map((entry) => entry.legacyPath);
+    for (const row of unfinished.rows) expect(listed).not.toContain(`synthetic.export_job/${row.job_id}`);
+  });
+
   it.each([
     { limit: 2, pages: [[0, 1], [2], [3]], nexts: [cfId('A', 2), cfId('A', 5), null], heads: [[1, 2], [3, 5], [6]] },
     { limit: 3, pages: [[0, 1], [2, 3]], nexts: [cfId('A', 3), null], heads: [[1, 2, 3], [5, 6]] },
@@ -219,7 +263,7 @@ describe.skipIf(!(await pgAvailable()))('reporting export-job object manifest', 
     expect(got.map((page) => page.objects)).toEqual(pages.map((indexes) => indexes.map((index) => A_MANIFEST[index])));
     expect(got.map((page) => page.next)).toEqual(nexts);
     expect(got.flatMap((page) => page.objects)).toEqual(A_MANIFEST);
-    expect(seen).toEqual(heads.map((ns) => ns.map((n) => exportObjectKey(TENANT_A.tenantId, cfId('A', n), 'csv'))));
+    expect(seen).toEqual(heads.map((ns) => ns.map((n) => keyOf(TENANT_A.tenantId, A_JOBS[n - 1] as SeedJob))));
   });
 
   it.each([EXPORT_DEFINITION.unit, TSESSIONTRACKING.unit])('returns no objects for %s without reading storage', async (unit) => {
@@ -260,5 +304,20 @@ describe.skipIf(!(await pgAvailable()))('reporting export-job object manifest', 
   it('rejects a manifest cursor for a unit without a paged manifest as invalidParameters', async () => {
     const after = Buffer.from(JSON.stringify({ objects: cfId('A', 2) }), 'utf8').toString('base64url');
     await exportPage({ unit: EXPORT_DEFINITION.unit, tenantId: TENANT_A.tenantId, after }, 400);
+  });
+
+  it.each([
+    { who: 'anonymous', status: 401 },
+    { who: 'service:gateway', status: 403 },
+    { who: 's2', status: 403 },
+  ])('refuses the manifest to $who, which holds no platform.migration, with $status', async ({ who, status }) => {
+    const res = await app.inject({
+      method: 'GET',
+      url: EXPORT_PATH,
+      headers: await authHeadersFor(roleSubject(who), { audience: OWNER }),
+      query: { unit: EXPORT_JOB.unit, tenantId: TENANT_A.tenantId },
+    });
+    expect(res.statusCode, res.body).toBe(status);
+    for (const entry of A_MANIFEST) expect(res.body).not.toContain(entry.key);
   });
 });
