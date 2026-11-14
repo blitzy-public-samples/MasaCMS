@@ -3413,6 +3413,16 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       );
       return rows[0] ?? null;
     },
+
+    /** The tenant's targeting rows in primary-key order, as contentVariationTargetingBean's beanFeed selects them. */
+    targetingsOfTenant(tx: TenantTx): Promise<VariationTargetingRow[]> {
+      return select<VariationTargetingRow>(
+        tx,
+        [VARIATION_TARGETING],
+        `SELECT * FROM ${name(VARIATION_TARGETING)} WHERE tenant_id = $1 ORDER BY targetingid`,
+        [tx.tenantId],
+      );
+    },
   };
 
   // ---- keyless approval queues ----

@@ -106,6 +106,33 @@ export function readVariationTargeting(
   return withTenant(deps.db, actor.tenantId, (tx) => loadForContent(tx, deps.repository, input.contentId, input.siteId));
 }
 
+/** A stored targeting row's columns as the entity's beanFeed query returns them; NULL columns stay null. */
+export type VariationTargetingColumns = Omit<VariationTargetingRow, 'tenant_id'>;
+
+/**
+ * contentVariationTargetingBean.loadBy(targetingid) in the request site, as the JSON API loads the entity: the stored
+ * targeting, or a new bean holding `targetingId` and `siteId` with empty scripts.
+ */
+export function findVariationTargeting(
+  deps: Pick<DomainDeps, 'db' | 'repository'>,
+  actor: Actor,
+  input: { targetingId: string; siteId: string },
+): Promise<VariationTargeting> {
+  return withTenant(deps.db, actor.tenantId, async (tx) => {
+    const row = await findById(tx, deps.repository, input.targetingId);
+    return row === null ? newTargeting({ targetingid: input.targetingId, contentid: '', siteid: input.siteId }) : fromRow(row);
+  });
+}
+
+/** The rows the entity's beanFeed selects for the actor's tenant, in primary-key order. */
+export async function listVariationTargetings(
+  deps: Pick<DomainDeps, 'db' | 'repository'>,
+  actor: Actor,
+): Promise<VariationTargetingColumns[]> {
+  const rows = await withTenant(deps.db, actor.tenantId, (tx) => deps.repository.variation.targetingsOfTenant(tx));
+  return rows.map(({ tenant_id: _tenant, ...columns }) => columns);
+}
+
 /**
  * contentVariationTargetingBean `set(values).save()` in the caller's gated transaction: loads by `targetingid`, else by
  * `contentid` and `siteid`, applies `input` and inserts or updates the row. It runs whatever the `variations` setting,
