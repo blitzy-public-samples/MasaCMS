@@ -45,6 +45,7 @@ const SERVED_OPERATIONS = [
   'healthz',
   'getHeaderPrompts',
   'lookupFileExtensions',
+  'lookupContentLinks',
   'commentsProxyGet',
   'commentsProxyPost',
   'migrationApply',
@@ -295,6 +296,60 @@ describe('lookupFileExtensions', () => {
     ['a browser user', () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.s2] }), 403],
   ])('refuses %s with the contract %i', async (_label, headers, status) => {
     const res = await call({ method: 'POST', url, headers: { ...(await headers()), ...JSON_TYPE }, payload: { fileIds: [FILE_A] } });
+    expect(res.statusCode).toBe(status);
+  });
+});
+
+describe('lookupContentLinks', () => {
+  const url = '/internal/v1/content:links';
+  const HOME = '00000000000000000000000000000000001';
+  const ACTIVE_VERSIONS = /^SELECT .* FROM "content"\."content" tcontent LEFT JOIN .* WHERE tcontent\.contentid = ANY/;
+  const links = (payload: Json | string, headers: () => Promise<Record<string, string>> = () => serviceHeaders('people')) =>
+    async (): Promise<InjectResponse> => call({ method: 'POST', url, headers: { ...(await headers()), ...JSON_TYPE }, payload });
+
+  it('answers people each listed id’s createHref link in listed order under the settings template’s URL flags: a stored page by its filename behind the index file, the home page and an unknown id at the root', async () => {
+    t.db.respond(ACTIVE_VERSIONS, [
+      { contentid: contentId(1), filename: 'about-us/team' },
+      { contentid: HOME, filename: null },
+    ]);
+    const res = await links({ siteId: SITE_A.toUpperCase(), contentIds: [contentId(1).toLowerCase(), HOME, 'NO-SUCH-CONTENT'] })();
+    expect({ status: res.statusCode, body: res.json<unknown>() }).toEqual({
+      status: 200,
+      body: {
+        items: [
+          { contentId: contentId(1).toLowerCase(), href: '/index.cfm/about-us/team/' },
+          { contentId: HOME, href: '/' },
+          { contentId: 'NO-SUCH-CONTENT', href: '/' },
+        ],
+      },
+    });
+    expect(paramsOf(ACTIVE_VERSIONS).map(flat)).toEqual([expect.arrayContaining([contentId(1), HOME, SITE_A])]);
+  });
+
+  it.each<[string, Json | string]>([
+    ['no ids', { siteId: SITE_A, contentIds: [] }],
+    ['a repeated id', { siteId: SITE_A, contentIds: [HOME, HOME] }],
+    ['an id longer than a favorite location', { siteId: SITE_A, contentIds: ['x'.repeat(1001)] }],
+    ['no site', { contentIds: [HOME] }],
+    ['an unknown field', { siteId: SITE_A, contentIds: [HOME], userId: USER_ID }],
+    ['a body that is not JSON', 'siteId=x'],
+  ])('answers the contract 400 for %s', async (_label, payload) => {
+    const res = await links(payload)();
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('answers the contract 503 for a site the registry does not hold, reading no content', async () => {
+    const res = await links({ siteId: 'unregistered-site', contentIds: [HOME] })();
+    expect(res.statusCode).toBe(503);
+    expect(paramsOf(ACTIVE_VERSIONS)).toEqual([]);
+  });
+
+  it.each<[string, () => Promise<Record<string, string>>, number]>([
+    ['no credential', () => Promise.resolve({}), 401],
+    ['another service', () => serviceHeaders('identity'), 403],
+    ['a browser user', () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.s2] }), 403],
+  ])('refuses %s with the contract %i', async (_label, headers, status) => {
+    const res = await links({ siteId: SITE_A, contentIds: [HOME] }, headers)();
     expect(res.statusCode).toBe(status);
   });
 });

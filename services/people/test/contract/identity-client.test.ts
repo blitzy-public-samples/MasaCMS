@@ -64,6 +64,9 @@ const OPERATION_STATES: readonly string[] = IDENTITY_DOC.components.schemas.Acco
 
 const SESSION_ID = 'identity-client-contract-session';
 const BLOCKED_UNTIL = '2026-06-30T09:30:00.000';
+/** The id of a group's favorite, which identity holds. */
+const GROUP_FAVORITE_ID = 'AB5C0E11-0B6A-4D2C-9F0E1D2C3B4A5968';
+
 
 const ADMIN_GROUP: DoubleGroup = { UserID: cfUuid(), GroupName: 'Admin', SiteID: TENANT_A.siteId, isPublic: 0, Perm: 0 };
 const MEMBERS_GROUP: DoubleGroup = { UserID: cfUuid(), GroupName: 'Members', SiteID: TENANT_UMBRELLA.siteId, isPublic: 1, Perm: 0 };
@@ -359,6 +362,15 @@ const CASES = {
     },
     act: ({ identity, userId }) => identity.loginBlock(userId, false),
     expected: () => BLOCKED_UNTIL,
+  },
+  groupFavoriteIds: {
+    operations: ['lookupGroupFavorites'],
+    arrange: ({ double }) => {
+      double.seedGroupFavorites(GROUP_FAVORITE_ID);
+      return Promise.resolve();
+    },
+    act: ({ identity, userId }) => identity.groupFavoriteIds([GROUP_FAVORITE_ID.toLowerCase(), userId]),
+    expected: () => [GROUP_FAVORITE_ID.toLowerCase()],
   },
 } satisfies Record<keyof IdentityClient, ClientCase>;
 

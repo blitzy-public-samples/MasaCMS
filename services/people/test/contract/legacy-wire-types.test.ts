@@ -28,6 +28,10 @@ const SITELESS_REST_UNAUTHORIZED = '{"apiversion":"v1","method":"invalid","error
 // Favorites templates: a Page and an RSS save, a delete and an RSS delete.
 const FAVORITE_SAVED_PAGE = '{"lid":"FDB7586BDF4AD87B4B1C071AFB7A9FD9","favoriteid":"FDB7586B-DF4A-D87B-4B1C071AFB7A9FD9","link":"<a href=\\"\\" onClick=\\"return deleteFavorite(\\\'FDB7586B-DF4A-D87B-4B1C071AFB7A9FD9\\\', \\\'favoriteFDB7586BDF4AD87B4B1C071AFB7A9FD9\\\');\\" title=\\"remove from favorites\\" class=\\"remove\\"></a> <a href=\\\'/\\\'>Home</a>"}';
 const FAVORITE_SAVED_RSS = '{"lid":"FDC77431EE51212C4D4BAA43E0E0E521","favoriteid":"FDC77431-EE51-212C-4D4BAA43E0E0E521","link":"<a href=\\"\\" onClick=\\"return deleteFavorite(\\\'FDC77431-EE51-212C-4D4BAA43E0E0E521\\\', \\\'favoriteFDC77431EE51212C4D4BAA43E0E0E521\\\');\\" title=\\"remove from favorites\\" class=\\"remove\\"></a> <a href=\\\'/\\\'>Feed \\"One\\"</a>"}';
+// json.cfc emits a numeric lid unquoted; ACF reads digits, `E` and digits as a number, as the oracle's encode of such an id showed.
+const FAVORITE_SAVED_NUMERIC_LID = FAVORITE_SAVED_PAGE.replaceAll('FDB7586BDF4AD87B4B1C071AFB7A9FD9', '1234567890123456789012345678E123')
+  .replaceAll('FDB7586B-DF4A-D87B-4B1C071AFB7A9FD9', '12345678-9012-3456-789012345678E123')
+  .replace('"lid":"1234567890123456789012345678E123"', '"lid":1234567890123456789012345678E123');
 const FAVORITE_REMOVED = 'Your favorite has been removed.';
 const RSS_FAVORITES_DELETED = '';
 
@@ -148,6 +152,7 @@ describe('favorites template bodies', () => {
   const bodies = [
     [`${FAVORITES}/saveFavorite.cfm`, FAVORITE_SAVED_PAGE],
     [`${FAVORITES}/saveFavorite.cfm`, FAVORITE_SAVED_RSS],
+    [`${FAVORITES}/saveFavorite.cfm`, FAVORITE_SAVED_NUMERIC_LID],
     [`${FAVORITES}/deleteFavorite.cfm`, FAVORITE_REMOVED],
     [`${FAVORITES}/deleteRSSFavorite.cfm`, RSS_FAVORITES_DELETED],
   ] as const;
@@ -162,6 +167,9 @@ describe('favorites template bodies', () => {
   it.each([
     ['saveFavorite.cfm', 'upper-case keys', FAVORITE_SAVED_PAGE.replace('"lid"', '"LID"').replace('"favoriteid"', '"FAVORITEID"')],
     ['saveFavorite.cfm', 'keys out of the legacy order', FAVORITE_SAVED_PAGE.replace(/^\{("lid":"[0-9A-F]{32}"),("favoriteid":"[^"]+")/, '{$2,$1')],
+    ['saveFavorite.cfm', 'a quoted lid of other characters', FAVORITE_SAVED_PAGE.replace('"lid":"FDB7586BDF4AD87B4B1C071AFB7A9FD9"', '"lid":"FDB7586BDF4AD87B4B1C071AFB7A9FD9X"')],
+    ['saveFavorite.cfm', 'an unquoted lid of other characters', FAVORITE_SAVED_PAGE.replace('"lid":"FDB7586BDF4AD87B4B1C071AFB7A9FD9"', '"lid":FDB7586BDF4AD87B4B1C071AFB7A9FD9')],
+    ['saveFavorite.cfm', 'an unquoted lid of 31 characters', FAVORITE_SAVED_NUMERIC_LID.replace('"lid":1234567890123456789012345678E123', '"lid":123456789012345678901234567E123')],
     ['deleteFavorite.cfm', 'other text', 'Your favorite was removed.'],
     ['deleteRSSFavorite.cfm', 'a non-empty body', FAVORITE_REMOVED],
   ])('%s rejects %s', (template, _case, body) => {

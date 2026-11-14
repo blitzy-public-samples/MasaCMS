@@ -107,6 +107,7 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
     siteGroups: () => Promise.reject(new Error('unexpected siteGroups')),
     userGroups: () => Promise.reject(new Error('unexpected userGroups')),
     loginBlock: () => Promise.reject(new Error('unexpected loginBlock')),
+    groupFavoriteIds: () => Promise.reject(new Error('unexpected groupFavoriteIds')),
     async actingUser() {
       identityCalls.push('actingUser');
       return undefined;

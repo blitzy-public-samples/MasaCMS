@@ -561,6 +561,24 @@
         "replay": "opt2/reports/parity.json#GS-PE-06"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-FAVORITES",
+      "scenario": "GS-PE-07",
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm",
+      "appliesTo": [
+        "cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm",
+        "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm"
+      ],
+      "difference": "Legacy's favourites templates and people answer differently in seven cases. (a) A `userID` naming a group, whose favourites are identity's `identity.user_favorite`, or naming no `tusers` row: legacy saves the row or deletes the RSS rows of any `userID` (core/modules/v1/favorites/ajax/saveFavorite.cfm:77-93, deleteRSSFavorite.cfm:77; core/mura/content/favorite/favoriteManager.cfc:199-255), where people answers the legacy-shaped 503 (the ColdFusion error page) naming this entry and writes nothing. (b) A `siteID` the registry does not hold: legacy's `saveFavorite` stores the row under that `siteID`, and its `deleteRSSFavorite` deletes that site's `RSS` rows of the user and answers an empty body (core/mura/content/favorite/favoriteManager.cfc:243-255), where people answers the 503 and writes nothing. (c) `deleteFavorite` of a group's favourite id: legacy deletes identity's row (core/mura/content/favorite/favoriteBean.cfc:198-203), where people answers the 503 after identity's `lookupGroupFavorites` finds the id, deleting nothing. (d) A template or folder path in another letter case: legacy on a case-sensitive file system answers Masa's site 404 page with the reason `Content Not Found` (core/appcfc/onMissingTemplate_include.cfm:109-152; core/mura/content/contentServer.cfc:505-510), while the gateway's lower-cased `cfm:` key sends the request to people, which answers the ColdFusion error page at 404. (e) A template failure with `debuggingEnabled=true`, as this deployment sets it: legacy's 500 body is the `onError` debug page with the exception and stack trace (core/appcfc/onError_include.cfm:138-180), where people answers `core/templates/error.html`. (f) The content link in `saveFavorite`'s answer: strategies-content's `lookupContentLinks` follows configBean's `MURA_SITEIDINURLS`, `MURA_INDEXFILEINURLS`, `MURA_HASHURLS` and `MURA_CONTEXT`, while legacy's renderer also forces both URL flags off for a remote site and honours a theme renderer's own `siteIDInURLS`, `indexFileInURLS` and `hashURLs` (core/mura/content/contentRenderer.cfc:652-653,684-694), which strategies-content cannot read. (g) The scriptProtect scan's JSON read-back of url values (core/mura/Portcullis.cfc:345-458): ACF on Java 17 prints some doubles with digits Node does not (`2e23` as `1.9999999999999998E23`) and orders the members of a struct whose names are not alphanumeric as its hash map does, while people's scan writes Node's digits and insertion order.",
+      "decision": "preserve",
+      "reason": "People holds only the favourites of `Type=2` users in registered tenants, so it refuses cases (a) to (c) before any write; cases (d) to (g) turn on the file system, the deployment's debugging and renderer settings, and ColdFusion's printing of numbers and structs, which people cannot read. The entry is `open`, not `halted`, so the keys' cut-over disposition is unchanged: gateway/src/cutover/build-groups.ts:157-165 holds back only halted entries and open `fix` proposals, and the three keys are already `legacy` in v0001–v0003 because their write group `grp:people.user_favorite` is legacy-authoritative. GS-PE-07 replays the refused cases through the gateway, which serves them from legacy, and declares those steps halted under this entry; the entry closes once people matches legacy on every case.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-PE-07.json",
+        "replay": "opt2/reports/parity.json#GS-PE-07"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }
   ]
 }

@@ -641,6 +641,8 @@ export interface IdentityRepository extends Repository {
   listGroupRelationRows(tx: TenantTx, relation: GroupRelation, groupIds: readonly string[]): Promise<RepositoryRow[]>;
   /** Deletes the group's tags, then inserts each trimmed, non-empty item of the comma list `tags` [legacy: core/mura/user/userDAO.cfc:895-922]. */
   replaceGroupTags(tx: TenantTx, input: { groupId: string; siteId: string; tags: string | null }, ctx?: WriteContext): Promise<GroupTagRow[]>;
+  /** The ids among `favoriteIds`, as given and in their order, that name a favorite of this tenant, compared as the `char(35)` key compares. */
+  matchGroupFavoriteIds(tx: TenantTx, favoriteIds: readonly string[]): Promise<string[]>;
   /** Per attribute, deletes the group's stored values, then inserts the new ones; returns the inserted rows. */
   replaceGroupExtendData(
     tx: TenantTx,
@@ -985,6 +987,10 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
   // The clustered (userID, categoryID) key orders legacy's unordered read.
   const orderedInterestIdsSql = `${interestIdsSql} ORDER BY categoryid`;
   const lockTagsSql = `SELECT tagid FROM ${tag} WHERE tenant_id = $1 AND userid = $2 ORDER BY tagid FOR UPDATE`;
+  // Each given id compares under the key's legacy_char_ci bpchar equality and is answered in its own spelling.
+  const matchFavoriteIdsSql =
+    'SELECT given.id FROM unnest($2::text[]) WITH ORDINALITY AS given(id, n)' +
+    ` WHERE EXISTS (SELECT 1 FROM ${favorite} f WHERE f.tenant_id = $1 AND f.favoriteid = given.id::bpchar) ORDER BY given.n`;
   const lockExtendByAttributeSql =
     `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND baseid = $2 AND attributeid = $3 ORDER BY dataid FOR UPDATE`;
   const nextIdSql = 'SELECT nextval(pg_get_serial_sequence($1, $2)::regclass)::text AS id';
@@ -1611,6 +1617,13 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
       created.push(await base.insert<GroupTagRow>(tx, GROUP_TAG.table, row, ctx));
     }
     return created;
+  }
+
+  async function matchGroupFavoriteIds(tx: TenantTx, favoriteIds: readonly string[]): Promise<string[]> {
+    // PostgreSQL text cannot hold NUL, so an id carrying one names no stored favorite.
+    const storable = favoriteIds.filter((id) => !id.includes('\0'));
+    const rows = await readUnits<{ id: string }>(tx, GROUP_FAVORITE.unit, matchFavoriteIdsSql, [tx.tenantId, storable]);
+    return rows.map((row) => row.id);
   }
 
   async function replaceGroupExtendData(
@@ -2284,6 +2297,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     hasGroupExtendData,
     listGroupRelationRows,
     replaceGroupTags,
+    matchGroupFavoriteIds,
     replaceGroupExtendData,
     membershipsOf,
     membershipGroupIds,

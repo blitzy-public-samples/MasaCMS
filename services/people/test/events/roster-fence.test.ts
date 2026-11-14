@@ -122,6 +122,7 @@ function failingCommitIdentity(accounts: ReadonlyMap<string, AccountView>): { cl
     saveAdminSessionState: unused('saveAdminSessionState'),
     sessionSites: unused('sessionSites'),
     loginBlock: unused('loginBlock'),
+    groupFavoriteIds: unused('groupFavoriteIds'),
   };
   return { client, calls };
 }

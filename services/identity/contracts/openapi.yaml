@@ -3382,6 +3382,38 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
           description: A legacy write window executed or imported on `identity.group_account` for 30 s.
+  /internal/v1/group-favorites:lookup:
+    post:
+      operationId: lookupGroupFavorites
+      summary: Finds which favorite ids name a `tusersfavorites` row of a group, which identity holds, for people's favorites templates.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:people
+      x-opt2-fastify-path: /internal/v1/group-favorites::lookup
+      security: [{invocationCredential: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupFavoriteLookupRequest'
+      responses:
+        '200':
+          description: The listed ids, in request order and spelling, that name an `identity.user_favorite` row of any registered tenant, compared ignoring case and trailing spaces; the others are left out.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupFavoriteList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A legacy write window executed or imported on `identity.user_favorite` for 30 s.
   /internal/v1/migration/apply:
     post:
       operationId: migrationApply
@@ -6724,6 +6756,41 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/MembershipListItem'
+    GroupFavoriteLookupRequest:
+      type: object
+      required:
+        - favoriteIds
+      additionalProperties: false
+      properties:
+        favoriteIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items:
+            type: string
+            description: A `tusersfavorites.favoriteID` (`char(35)`) as people received it.
+            minLength: 1
+            maxLength: 35
+    GroupFavoriteListItem:
+      type: object
+      required:
+        - favoriteId
+      additionalProperties: false
+      properties:
+        favoriteId:
+          type: string
+          description: The requested id as sent.
+    GroupFavoriteList:
+      type: object
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroupFavoriteListItem'
     AccountMemberships:
       type: object
       description: '`readMembershipIDs` of one user: the stored groups it belongs to, by group name.'

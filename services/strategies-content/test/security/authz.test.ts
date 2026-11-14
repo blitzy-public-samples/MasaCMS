@@ -112,6 +112,7 @@ const EXPECTED: readonly ExpectedRoute[] = [
     actsForUser: true,
     admitted: 200,
   },
+  { method: 'POST', url: '/internal/v1/content::links', transport: 'service', requires: [serviceRole('people')], admitted: 200 },
   {
     method: 'GET',
     url: '/v1/sites/:siteid/files/:fileid/download-url',
@@ -321,6 +322,12 @@ const PROBES: Readonly<Record<string, () => ProbeRequest>> = {
     url: '/internal/v1/files:lookup',
     headers: JSON_HEADERS,
     payload: { fileIds: [FILE_ID] },
+  }),
+  'POST /internal/v1/content::links': () => ({
+    method: 'POST',
+    url: '/internal/v1/content:links',
+    headers: JSON_HEADERS,
+    payload: { siteId: SITE_A, contentIds: [CONTENT_ID] },
   }),
   [`GET ${COMMENTS_PROXY_URL}`]: () => ({
     method: 'GET',
@@ -660,6 +667,7 @@ describe('transport separation', () => {
         ['GET', '/v1/sites/:siteid/header-prompts'],
         ['GET', '/v1/sites/:siteid/files/:fileid/download-url'],
         ['POST', '/internal/v1/files::lookup'],
+        ['POST', '/internal/v1/content::links'],
         ['POST', '/internal/v1/migration/objects'],
         ['POST', '/internal/v1/migration/apply'],
         ['POST', '/internal/v1/task-queues/:queue/pause'],
@@ -728,6 +736,12 @@ describe('tenant boundaries', () => {
     const headers = await serviceHeaders('people', { ...PEOPLE_USER, site: fixture.siteId });
     const read = await tenantsOf(() => inject(probeRequest(LOOKUP), headers));
     expect(read).toEqual({ status: 200, tenants: photoFileTenants(fixture.tenantId) });
+  });
+
+  it.each([TENANT_A, TENANT_B])('the content link lookup for $siteId runs only in that site’s tenant', async (fixture) => {
+    const request = { ...probeRequest(routeOf('POST', '/internal/v1/content::links')), payload: { siteId: fixture.siteId, contentIds: [CONTENT_ID] } };
+    const read = await tenantsOf(async () => inject(request, await serviceHeaders('people')));
+    expect(read).toEqual({ status: 200, tenants: [fixture.tenantId.toLowerCase()] });
   });
 
   it.each([TENANT_A, TENANT_B])('a comments proxy call of a $siteId visitor runs only in that tenant', async (fixture) => {

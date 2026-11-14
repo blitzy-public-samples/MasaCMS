@@ -79,6 +79,8 @@ export const LEGACY_TEXT_ORDER_COLLATION = 'legacy_text_order';
 export const LEGACY_WORD_TEXT_FUNCTION = 'legacy_word_text';
 /** The specials' rank-by-position tie-break key (0012_person_word_order.sql), sorted by `COLLATE "C"`. */
 export const LEGACY_WORD_SPECIAL_FUNCTION = 'legacy_word_special';
+/** The `type` of the favorites `deleteRSSFavoriteByUserID` deletes. */
+const RSS_FAVORITE_TYPE = 'RSS';
 /** Rows per page when a caller gives no limit. */
 const DEFAULT_PAGE_SIZE = 500;
 /** The most rows one page returns. */
@@ -200,6 +202,7 @@ const LEGACY_LIMITS = {
     isprimary: 'tinyint', addressurl: 200, longitude: 'float', latitude: 'float', addressemail: 100,
   },
   user_tag: { siteid: 25, tag: 100 },
+  user_favorite: { userid: 35, favoritename: 255, favorite: 1000, type: 30, siteid: 25, datecreated: 'datetime' },
   extend_data_user_activity: { siteid: 25, remoteid: 35, datetimevalue: 'datetime', numericvalue: 'float', stringvalue: 255 },
   trash: { siteid: 25, objectlabel: 255, objectclass: 50, objecttype: 50, objectsubtype: 50, deleteddate: 'datetime', deletedby: 50 },
   person_archive: { siteid: 50, effective_from: 'datetime', archived_at: 'datetime', archived_by: 50 },
@@ -369,6 +372,9 @@ export interface RosterOperationCursor {
 
 /** An address to insert as `createAddress` does; a missing `addressid` gets a new CF UUID, other missing values the `addressBean` defaults ('' and 0). */
 export type AddressInput = Partial<Omit<AddressRow, 'tenant_id' | 'addressid' | 'userid'>> & { userid: string; addressid?: string };
+
+/** A favorite to insert with every `tusersfavorites` column `favoriteBean.save` writes. */
+export type FavoriteInput = Omit<FavoriteRow, 'tenant_id'>;
 
 /** The columns `userDAO.updateAddress` sets; missing values take the `addressBean` defaults [legacy: core/mura/user/userDAO.cfc:749-774]. */
 export type AddressUpdate = Partial<Omit<AddressRow, 'tenant_id' | 'addressid' | 'isprimary'>>;
@@ -582,6 +588,14 @@ export interface PeopleRepository extends Repository {
   replaceTags(tx: TenantTx, input: TagReplacement, ctx?: WriteContext): Promise<TagRow[]>;
   /** The person's favorites by creation time. */
   listFavorites(tx: TenantTx, userId: string): Promise<FavoriteRow[]>;
+  /** The favorites with id `favoriteId`, row-locked until `tx` ends, by stored id. */
+  lockFavorites(tx: TenantTx, favoriteId: string): Promise<FavoriteRow[]>;
+  /** The `RSS` favorites of `userId` on site `siteId`, row-locked until `tx` ends, by stored id [legacy: core/mura/content/favorite/favoriteManager.cfc:243-255]. */
+  lockRssFavorites(tx: TenantTx, userId: string, siteId: string): Promise<FavoriteRow[]>;
+  /** Inserts a favorite as `favoriteBean.save` does [legacy: core/mura/content/favorite/favoriteBean.cfc:224-238]. */
+  insertFavorite(tx: TenantTx, input: FavoriteInput, ctx?: WriteContext): Promise<FavoriteRow>;
+  /** Deletes the favorites with the stored ids of `favorites`; returns how many existed. */
+  deleteFavorites(tx: TenantTx, favorites: readonly Pick<FavoriteRow, 'favoriteid'>[], ctx?: WriteContext): Promise<number>;
 
   /** Stored extended values of `baseIds` (persons or addresses), by base, attribute and data id. */
   listExtendData(tx: TenantTx, baseIds: readonly string[]): Promise<ExtendDataRow[]>;
@@ -865,6 +879,10 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   const interestsSql = `SELECT * FROM ${interest} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY categoryid`;
   const tagsSql = `SELECT * FROM ${tag} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY tagid`;
   const favoritesSql = `SELECT * FROM ${favorite} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY datecreated, favoriteid`;
+  const lockFavoritesSql = `SELECT * FROM ${favorite} WHERE tenant_id = $1 AND ${idEquals('favoriteid', '$2')} ORDER BY favoriteid FOR UPDATE`;
+  const lockRssFavoritesSql =
+    `SELECT * FROM ${favorite} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} AND ${siteEquals('siteid', '$3')}` +
+    ` AND ${siteEquals('type', '$4')} ORDER BY favoriteid FOR UPDATE`;
   const extendDataSql = `SELECT * FROM ${extendData} WHERE tenant_id = $1 AND ${idIn('baseid', '$2')} ORDER BY baseid, attributeid, dataid`;
   // The materialized match is planned as the single-id reads' index scan; only its rows are paired with the request positions.
   /** The rows of `table` whose `column` equals each requested id in `$2`, under the id's 1-based request position, each id's rows by `order`. */
@@ -1306,6 +1324,22 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return readUnits<FavoriteRow>(tx, FAVORITE.unit, favoritesSql, [tx.tenantId, userId]);
   }
 
+  function lockFavorites(tx: TenantTx, favoriteId: string): Promise<FavoriteRow[]> {
+    return readUnits<FavoriteRow>(tx, FAVORITE.unit, lockFavoritesSql, [tx.tenantId, favoriteId]);
+  }
+
+  function lockRssFavorites(tx: TenantTx, userId: string, siteId: string): Promise<FavoriteRow[]> {
+    return readUnits<FavoriteRow>(tx, FAVORITE.unit, lockRssFavoritesSql, [tx.tenantId, userId, siteId, RSS_FAVORITE_TYPE]);
+  }
+
+  function insertFavorite(tx: TenantTx, input: FavoriteInput, ctx: WriteContext = {}): Promise<FavoriteRow> {
+    return base.insert<FavoriteRow>(tx, FAVORITE.table, legacyStorable(FAVORITE.table, input), ctx);
+  }
+
+  function deleteFavorites(tx: TenantTx, favorites: readonly Pick<FavoriteRow, 'favoriteid'>[], ctx: WriteContext = {}): Promise<number> {
+    return deleteKeys(tx, FAVORITE.table, favorites.map(({ favoriteid }) => ({ favoriteid })), ctx);
+  }
+
   async function listExtendData(tx: TenantTx, baseIds: readonly string[]): Promise<ExtendDataRow[]> {
     if (baseIds.length === 0) return [];
     return readUnits<ExtendDataRow>(tx, EXTEND_DATA.unit, extendDataSql, [tx.tenantId, [...baseIds]]);
@@ -1631,6 +1665,10 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     replaceInterests,
     replaceTags,
     listFavorites,
+    lockFavorites,
+    lockRssFavorites,
+    insertFavorite,
+    deleteFavorites,
     listExtendData,
     listExtendDataOf,
     replaceExtendData,

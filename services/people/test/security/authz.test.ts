@@ -68,7 +68,7 @@ import {
 } from '../helpers/fixtures.js';
 
 type Headers = Record<string, string>;
-type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'OPTIONS';
 
 const SITE_A = TENANT_A.siteId;
 const SITE_B = TENANT_B.siteId;
@@ -86,6 +86,9 @@ const PROFILE = [Roles.systemUser, Roles.member, Roles.s2, Roles.siteAdmin];
 const MIGRATION = [Roles.platformMigration];
 const QUEUE_CONTROL = [Roles.platformMigration, Roles.platformOperator];
 const HALTED_ROSTER_READ = [Roles.platformMigration, Roles.platformOperator];
+const FAVORITES = '/core/modules/v1/favorites/ajax';
+const FAVORITE_TEMPLATES = ['saveFavorite.cfm', 'deleteFavorite.cfm', 'deleteRSSFavorite.cfm'] as const;
+const FAVORITE_METHODS = ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'] as const;
 
 /** Every route people registers, as collectRouteMatrix reports it. */
 const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
@@ -109,6 +112,9 @@ const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
   { method: 'GET', url: '/_api/rest/v1', transport: 'service', public: true, siteCheck: false },
   { method: 'POST', url: '/_api/rest/v1', transport: 'service', public: true, siteCheck: false },
   { method: 'PUT', url: '/_api/rest/v1', transport: 'service', public: true, siteCheck: false },
+  ...FAVORITE_TEMPLATES.flatMap((template) =>
+    FAVORITE_METHODS.map((method): RouteMatrixEntry => ({ method, url: `${FAVORITES}/${template}`, transport: 'service', public: true, siteCheck: false })),
+  ),
   { method: 'DELETE', url: '/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
   { method: 'GET', url: '/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
   { method: 'POST', url: '/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
@@ -425,6 +431,8 @@ function writeFree(result: ProbeResult): boolean {
 function isHookDenial(result: ProbeResult): boolean {
   const { statusCode } = result.res;
   if (statusCode !== 401 && statusCode !== 403) return false;
+  // A HEAD denial keeps the envelope's headers and sends no body; no handler of a HEAD route answers 401 or 403.
+  if (result.res.raw.req.method === 'HEAD') return result.res.body === '' && effectFree(result);
   const body = errorEnvelope(result.res);
   const matchesRow = AUTH_DENIAL_ROWS.some((row) => body?.error?.code === row.code && body.error.message === row.message);
   return body?.apiversion === 'v1' && matchesRow && effectFree(result);
@@ -513,9 +521,19 @@ function jsonApiProbes(): Record<string, () => Probe> {
   return probes;
 }
 
+/** Requests each favorites template without its url fields, which legacy answers with the error page before any effect. */
+function favoriteProbes(): Record<string, () => Probe> {
+  return Object.fromEntries(
+    FAVORITE_TEMPLATES.flatMap((template) =>
+      FAVORITE_METHODS.map((method): [string, () => Probe] => [`${method} ${FAVORITES}/${template}`, () => ({ method, url: `${FAVORITES}/${template}?probe=1` })]),
+    ),
+  );
+}
+
 /** One deterministic request per registered route; a fixture route names an unregistered site, which api.cfm refuses first. */
 const PROBES: Readonly<Record<string, () => Probe | Promise<Probe>>> = {
   ...jsonApiProbes(),
+  ...favoriteProbes(),
   'GET /healthz': () => get('/healthz', false),
   'POST /internal/v1/events/people.identity.group.changed.v1': () => pushProbe(GROUP_NAME_SUBSCRIPTION, groupChangedEnvelope()),
   'POST /internal/v1/events/people.programs-sites.site.changed.v1': () => pushProbe(SITE_CHANGED_SUBSCRIPTION, siteChangedEnvelope()),
@@ -799,6 +817,35 @@ describe('cEditProfile gate: any logged-in user, acting only on themselves', () 
     expect(result.identityCalls.filter((call) => call.includes(STRANGER_ID))).toEqual([]);
     const operation = t.db.writes().find((statement) => statement.text.startsWith('INSERT INTO "people"."roster_operation"'));
     expect(operation?.values[ROSTER_OPERATION_COLUMNS.indexOf('user_id')]).toBe(SYSTEM_USER_A.sub);
+  });
+});
+
+describe('favorites templates: public, acting for the url userID as legacy does, never for a user people does not own', () => {
+  it.each([
+    ['an anonymous caller', () => Promise.resolve(NO_CREDENTIAL)],
+    ['a signed-in system user', () => actorCredential(SYSTEM_USER_A)],
+  ])('refuses %s a save for a userID naming no person with the legacy 503 before any write', async (_label, credential) => {
+    const url = `${FAVORITES}/saveFavorite.cfm?userID=${STRANGER_ID}&${ON_SITE_A}&favoriteName=Probe&favoriteLocation=${STRANGER_ID}&favoriteType=Page`;
+    const result = await probe(get(url, false), await credential());
+    expect(result.res.statusCode, describeResult(result)).toBe(503);
+    expect(writeFree(result), describeResult(result)).toBe(true);
+  });
+
+  // The only identity call is lookupGroupFavorites, a read under people's own credential.
+  const GROUP_LOOKUP = ['POST /internal/v1/group-favorites:lookup'];
+
+  it('answers an anonymous delete of an id no favorite holds with the removal notice, writing nothing', async () => {
+    const result = await probe(get(`${FAVORITES}/deleteFavorite.cfm?favoriteID=${STRANGER_ID}`, false));
+    expect([result.res.statusCode, result.res.body]).toEqual([200, 'Your favorite has been removed.']);
+    expect([result.writes, result.identityCalls, result.published, result.tasks], describeResult(result)).toEqual([0, GROUP_LOOKUP, 0, 0]);
+  });
+
+  it("refuses an anonymous delete of a group's favorite, which identity holds, with the legacy 503, writing nothing", async () => {
+    const groupFavorite = cfUuid();
+    identity.seedGroupFavorites(groupFavorite);
+    const result = await probe(get(`${FAVORITES}/deleteFavorite.cfm?favoriteID=${groupFavorite}`, false));
+    expect(result.res.statusCode, describeResult(result)).toBe(503);
+    expect([result.writes, result.identityCalls, result.published, result.tasks], describeResult(result)).toEqual([0, GROUP_LOOKUP, 0, 0]);
   });
 });
 

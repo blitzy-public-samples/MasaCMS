@@ -259,6 +259,7 @@ const identity: IdentityClient = {
     if (removeBlock) loginBlocks.delete(userId);
     return loginBlocks.get(userId) ?? null;
   },
+  groupFavoriteIds: unused('groupFavoriteIds'),
 };
 
 /** The tenants and users the roster closure was awaited on, and the error it answers for a closed user. */

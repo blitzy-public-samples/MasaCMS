@@ -166,6 +166,24 @@ const BLOCKED_UNTIL = '2026-06-30T12:08:00.123';
 const EDITOR_PHOTO = cfId('9', 1);
 const CONTACTS = ALL_ACTORS.map(({ contact }) => (contact === EDITOR.contact ? { ...contact, photofileid: EDITOR_PHOTO } : contact));
 
+/** A favorite of tenant-a's Editors group, stored in identity under the group split. */
+const GROUP_FAVORITE_ID = cfId('F', 950);
+const GROUP_FAVORITES = [
+  {
+    tenant_id: EDITOR.tenant.tenantId,
+    favoriteid: GROUP_FAVORITE_ID,
+    userid: EDITOR_GROUP,
+    favoritename: 'Home',
+    favorite: HOME,
+    type: 'Page',
+    siteid: SITE_A,
+    datecreated: NOW,
+    columnnumber: null,
+    rownumber: null,
+    maxrssitems: null,
+  },
+];
+
 /** Active Type=2 accounts `harness` stores in `tenantId` under pool site `siteId`: the pool a count reads. */
 function activePoolAccounts(harness: Harness, tenantId: string, siteId: string): number {
   if (harness.repo === undefined) throw new TypeError('Pool counts read the memory repository of the composed routes');
@@ -1085,6 +1103,21 @@ const CASES: Record<string, Case[]> = {
     },
     { name: 'refuses an empty id list', method: 'POST', url: '/internal/v1/accounts:memberships', headers: relay('people', 'editor'), payload: { userIds: [] }, status: 400 },
   ],
+  lookupGroupFavorites: [
+    {
+      name: "finds the Editors group's favorite under a lower-cased id, for people's invocation credential alone",
+      method: 'POST',
+      url: '/internal/v1/group-favorites:lookup',
+      as: 'service:people',
+      payload: { favoriteIds: [UNKNOWN_ID, GROUP_FAVORITE_ID.toLowerCase()] },
+      status: 200,
+      verify: (body) => {
+        expect(body).toEqual({ items: [{ favoriteId: GROUP_FAVORITE_ID.toLowerCase() }] });
+      },
+    },
+    { name: 'refuses an id longer than char(35)', method: 'POST', url: '/internal/v1/group-favorites:lookup', as: 'service:people', payload: { favoriteIds: [`${GROUP_FAVORITE_ID} `] }, status: 400 },
+    { name: 'refuses a caller other than people', method: 'POST', url: '/internal/v1/group-favorites:lookup', as: 'service:gateway', payload: { favoriteIds: [GROUP_FAVORITE_ID] }, status: 403 },
+  ],
   loadLoginBlock: [
     {
       name: "reads the editor's user name as unblocked",
@@ -1577,7 +1610,7 @@ async function rootHarness(): Promise<RootHarness> {
 
 /** The composed routes over the cases' seed, the editor's photo stored with strategies-content. */
 async function composedHarness(): Promise<IdentityTestApp> {
-  const built = await buildIdentityApp(defaultSeed({ sessions: EXTRA_SESSIONS, strikes: [BLOCKED_STRIKE], personContacts: CONTACTS }));
+  const built = await buildIdentityApp(defaultSeed({ sessions: EXTRA_SESSIONS, strikes: [BLOCKED_STRIKE], personContacts: CONTACTS, groupFavorites: GROUP_FAVORITES }));
   built.content.files.set(EDITOR_PHOTO, 'jpg');
   return built;
 }

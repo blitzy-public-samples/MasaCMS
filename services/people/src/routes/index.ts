@@ -5,6 +5,7 @@ import type { TenantDb } from '@opt2/platform/tenancy';
 import type { AddressDeps } from '../domain/addresses.js';
 import type { ArchiveDeps } from '../domain/archive.js';
 import type { FaultHooks } from '../domain/faults.js';
+import type { FavoriteDeps } from '../domain/favorites.js';
 import { personFence, type RosterDeps } from '../domain/roster-protocol.js';
 import type { SearchDeps } from '../domain/search.js';
 import type { PeopleEvents } from '../events/publish.js';
@@ -15,6 +16,7 @@ import { registerAdminDownloadRoutes, type SearchCriteriaReader } from './admin-
 import { registerAdminProfileRoutes } from './admin-profile.js';
 import { registerAdminRosterRoutes } from './admin-roster.js';
 import { registerAdminUserRoutes, storedCriteria } from './admin-users.js';
+import { registerFavoriteRoutes } from './favorites.js';
 import { registerFixtureArchiveRoutes } from './fixture-archive.js';
 import { registerLegacyApiRoutes } from './legacy-api.js';
 import { registerRosterOperationRoutes } from './roster-operations.js';
@@ -39,13 +41,15 @@ export type RouteDeps = {
 /** Builds people's domain dependencies once and registers every people route module on `app`. */
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
   const { repository: repo, events, db, clock, identity, faults } = deps;
-  // userDAO.read joins the photo's tfiles row; strategies-content owns tfiles, so the lookup is its API.
-  const { photoFileExts } = createContentClient(deps.client);
+  // userDAO.read joins the photo's tfiles row and saveFavorite.cfm reads a content link; strategies-content owns both, so the lookups are its API.
+  const content = createContentClient(deps.client);
+  const photoFileExts = content.photoFileExts.bind(content);
 
   const search: SearchDeps = { db, repo, identity, clock, photoFileExts };
   const roster: RosterDeps = { db, repo, identity, events, clock, faults, photoFileExts };
   const addresses: AddressDeps = { db, repo, clock, fence: personFence };
   const archive: ArchiveDeps = { db, repo, events, clock, fence: personFence };
+  const favorites: FavoriteDeps = { db, repo, clock, fence: personFence, content, identity };
   // getAdvancedSearch(session, …) reads the criteria the cUsers advanced search stored in the forwarded token's session.
   const searchCriteria: SearchCriteriaReader = { read: async () => storedCriteria(await identity.adminSessionState()) };
 
@@ -55,5 +59,6 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await registerAdminProfileRoutes(app, { roster });
   await registerLegacyApiRoutes(app, { db, repository: repo, identity, clock, roster, search, addresses });
   await registerFixtureArchiveRoutes(app, { archive, identity });
+  registerFavoriteRoutes(app, favorites);
   await registerRosterOperationRoutes(app, { db, repo });
 }

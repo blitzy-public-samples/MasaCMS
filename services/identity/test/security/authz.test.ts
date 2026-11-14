@@ -407,6 +407,8 @@ const EXPECTED: Readonly<Record<string, Row>> = {
   'POST /internal/v1/accounts::username-candidates': service(PEOPLE_ONLY, { method: 'POST', url: '/internal/v1/accounts:username-candidates', payload: {} }),
   'POST /internal/v1/accounts::memberships': service(PEOPLE_ONLY, { method: 'POST', url: '/internal/v1/accounts:memberships', payload: {} }),
   'GET /internal/v1/groups': service(PEOPLE_ONLY, { method: 'GET', url: '/internal/v1/groups?ispublic=2' }),
+  // people's invocation credential alone is admitted: the favorites templates run for anonymous visitors.
+  'POST /internal/v1/group-favorites::lookup': service(PEOPLE_ONLY, { method: 'POST', url: '/internal/v1/group-favorites:lookup', payload: {} }),
   'GET /internal/v1/accounts/:userId/operations/:operationId': service(PEOPLE_ONLY, { method: 'GET', url: operationUrl() }),
   'POST /internal/v1/accounts/:userId/operations/:operationId(.+)::prepare': service(
     PEOPLE_ONLY,

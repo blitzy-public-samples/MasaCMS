@@ -148,3 +148,57 @@ describe('photo file extensions', () => {
     await expect(content.photoFileExt(PHOTO_ID)).resolves.toBe('');
   });
 });
+
+describe('content links', () => {
+  const LINKS_PATH = '/internal/v1/content:links';
+  const HOME_ID = '00000000000000000000000000000000001';
+  const PAGE_ID = 'D1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+
+  it('reads the listed content links of a site in one lookupContentLinks call without a user token, each id once', async () => {
+    const reply = {
+      status: 200,
+      body: {
+        items: [
+          { contentId: HOME_ID, href: '/' },
+          { contentId: PAGE_ID, href: '/about/' },
+        ],
+      },
+    };
+    const { content, requests } = contentWith(reply);
+    const links = await content.contentLinks('tenant-a', [HOME_ID, PAGE_ID, HOME_ID]);
+    expect([...links]).toEqual([
+      [HOME_ID, '/'],
+      [PAGE_ID, '/about/'],
+    ]);
+    expect(requests).toEqual([
+      {
+        service: 'strategies-content',
+        method: 'POST',
+        path: LINKS_PATH,
+        json: { siteId: 'tenant-a', contentIds: [HOME_ID, PAGE_ID] },
+        userToken: null,
+      },
+    ]);
+    assertContentRequestBody(requests[0]);
+    assertContentReply(requests[0], reply);
+  });
+
+  it.each([400, 403, 503])('fails closed when strategies-content answers %i', async (status) => {
+    const reply = { status, body: ERROR_BODIES[status] };
+    const { content, requests } = contentWith(reply);
+    const failure = content.contentLinks('tenant-a', [HOME_ID]);
+    await expect(failure).rejects.toBeInstanceOf(ServiceUnavailableError);
+    await expect(failure).rejects.toMatchObject({
+      service: 'strategies-content',
+      cause: { code: `HTTP_${String(status)}`, message: `strategies-content lookupContentLinks answered HTTP ${String(status)}` },
+    });
+    assertContentReply(requests[0], reply);
+  });
+
+  it('records the write positions of the answer in the request context', async () => {
+    const { content } = contentWith({ status: 200, body: { items: [{ contentId: HOME_ID, href: '/' }] }, headers: { 'x-opt2-write-position': 'strategies-content=7' } });
+    const store = newRequestContext();
+    await runWithRequestContext(store, () => content.contentLinks('tenant-a', [HOME_ID]));
+    expect(store.writePositions.get('strategies-content')).toBe('7');
+  });
+});

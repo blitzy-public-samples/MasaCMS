@@ -2111,6 +2111,12 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     return created;
   }
 
+  async function matchGroupFavoriteIds(tx: TenantTx, favoriteIds: readonly string[]): Promise<string[]> {
+    const tenantId = await gated(tx, [GROUP_FAVORITE.unit]);
+    const stored = new Set(scan(GROUP_FAVORITE.table, tenantId).map((row) => charKey(row.favoriteid)));
+    return favoriteIds.filter((id) => stored.has(charKey(id)));
+  }
+
   async function replaceGroupExtendData(
     tx: TenantTx,
     input: { groupId: string; rows: readonly GroupExtendDataReplacement[] },
@@ -2896,6 +2902,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     hasGroupExtendData,
     listGroupRelationRows,
     replaceGroupTags,
+    matchGroupFavoriteIds,
     replaceGroupExtendData,
     membershipsOf,
     membershipGroupIds,

@@ -124,6 +124,7 @@ function identityDouble(accounts: Map<string, AccountView>, behaviour: DoubleBeh
     saveAdminSessionState: unused('saveAdminSessionState'),
     sessionSites: unused('sessionSites'),
     loginBlock: unused('loginBlock'),
+    groupFavoriteIds: unused('groupFavoriteIds'),
   };
   return { client, calls, reached, release };
 }

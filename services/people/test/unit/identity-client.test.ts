@@ -731,6 +731,7 @@ describe('account and site-group reads', () => {
       ((identity) => identity.usernameCandidates({ publicPool: true, pattern: '%a%', limit: 1 })) as Read,
       { items: [], complete: true },
     ],
+    ['groupFavoriteIds', 'lookupGroupFavorites', ((identity) => identity.groupFavoriteIds([USER_ID])) as Read, { items: [{ favoriteId: USER_ID }] }],
   ] as const;
 
   it.each(reads.flatMap(([method, operationId, call]) => [403, 503].map((status) => [method, status, operationId, call] as const)))(
@@ -801,5 +802,61 @@ describe('admin session reads and writes', () => {
     const failure = call(identity);
     await expect(failure).rejects.toBeInstanceOf(ServiceUnavailableError);
     await expect(failure).rejects.toMatchObject(unavailableFrom(operationId, 401));
+  });
+});
+
+describe('group favorite lookup', () => {
+  const LOOKUP_PATH = '/internal/v1/group-favorites:lookup';
+  const GROUP_FAVORITE = 'F1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+  const favoriteId = (n: number): string => `6F000000-0000-0000-${String(n).padStart(16, '0')}`;
+
+  it('looks up the listed ids on lookupGroupFavorites without a user token, each id once, and returns the ids identity holds as it answers them', async () => {
+    const reply = { status: 200, body: { items: [{ favoriteId: GROUP_FAVORITE.toLowerCase() }] } };
+    const { identity, requests } = identityWith(reply);
+    await expect(identity.groupFavoriteIds([GROUP_FAVORITE.toLowerCase(), USER_ID, GROUP_FAVORITE.toLowerCase()])).resolves.toEqual([GROUP_FAVORITE.toLowerCase()]);
+    expect(requests).toEqual([
+      { service: 'identity', method: 'POST', path: LOOKUP_PATH, json: { favoriteIds: [GROUP_FAVORITE.toLowerCase(), USER_ID] }, userToken: null },
+    ]);
+    assertIdentityRequestBody(requests[0]);
+    assertIdentityReply(requests[0], reply);
+  });
+
+  it('splits 101 distinct ids into lookups of the contract maximum of 100 and the rest, in order', async () => {
+    const ids = Array.from({ length: 101 }, (_, n) => favoriteId(n));
+    const replies = [
+      { status: 200, body: { items: [{ favoriteId: favoriteId(7) }] } },
+      { status: 200, body: { items: [{ favoriteId: favoriteId(100) }] } },
+    ];
+    const { identity, requests } = identityWith(...replies);
+    await expect(identity.groupFavoriteIds(ids)).resolves.toEqual([favoriteId(7), favoriteId(100)]);
+    expect(requests.map((req) => (req.json as { favoriteIds: string[] }).favoriteIds)).toEqual([ids.slice(0, 100), ids.slice(100)]);
+    requests.forEach((req, n) => {
+      assertIdentityRequestBody(req);
+      assertIdentityReply(req, replies[n] as Reply);
+    });
+  });
+
+  it('makes no call for an empty list', async () => {
+    const { identity, requests } = identityWith();
+    await expect(identity.groupFavoriteIds([])).resolves.toEqual([]);
+    expect(requests).toEqual([]);
+  });
+
+  it.each([
+    [400, 'Bad Request', 'invalid_request'],
+    [401, 'Unauthorized', 'invalid_request'],
+  ])('fails closed on HTTP %i', async (status, message, code) => {
+    const reply = { status, body: { apiversion: 'v1', method: 'invalid', error: { message, code } } };
+    const { identity, requests } = identityWith(reply);
+    const failure = identity.groupFavoriteIds([GROUP_FAVORITE]);
+    await expect(failure).rejects.toBeInstanceOf(ServiceUnavailableError);
+    await expect(failure).rejects.toMatchObject(unavailableFrom('lookupGroupFavorites', status));
+    assertIdentityReply(requests[0], reply);
+  });
+
+  it('propagates an unreachable or timed-out identity as ServiceUnavailableError', async () => {
+    const timeout = new ServiceUnavailableError('identity', Object.assign(new Error('aborted'), { name: 'TimeoutError' }));
+    const { client } = stubClient([], timeout);
+    await expect(createIdentityClient(client).groupFavoriteIds([GROUP_FAVORITE])).rejects.toBe(timeout);
   });
 });

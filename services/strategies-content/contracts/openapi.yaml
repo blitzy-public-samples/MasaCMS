@@ -6953,6 +6953,39 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /internal/v1/content:links:
+    post:
+      operationId: lookupContentLinks
+      summary: Builds the link legacy `createHref` gives each listed content id of a site, for the favorites people serves.
+      description: Reads each id's active version in the site, as `contentBean.loadBy(contentID, siteID)` does, matching ids ignoring case and trailing spaces, and builds `createHref(type, filename, siteid, contentid)` from it as a relative link under configBean's URL settings, read as Masa reads them from `MURA_SITEIDINURLS`, `MURA_INDEXFILEINURLS`, `MURA_HASHURLS` and `MURA_CONTEXT`, with `MURA_LEGACYINDEXFILELOCATION` and `MURA_SITEDIR` for the stem of a link carrying both the site id and the index file (the settings template's values when unset); an id that names no content takes an empty filename, as legacy's unloaded bean does. The tenant is the registry's tenant of `siteId`; a site the registry does not hold answers 503.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires: ['service:people']
+      x-opt2-fastify-path: /internal/v1/content::links
+      security: [{invocationCredential: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContentLinkRequest'
+      responses:
+        '200':
+          description: One link per listed id, in listed order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContentLinkList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /internal/v1/migration/apply:
     post:
       operationId: migrationApply
@@ -9402,6 +9435,45 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/FileExtension'
+    ContentLinkRequest:
+      type: object
+      required: [siteId, contentIds]
+      additionalProperties: false
+      properties:
+        siteId:
+          type: string
+          description: Legacy site id of the links, in any case.
+          minLength: 1
+          maxLength: 25
+        contentIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            description: A content id as a favorite stores it, up to the 1000 characters of `tusersfavorites.favorite`; one longer than a content id names no content.
+            minLength: 1
+            maxLength: 1000
+    ContentLink:
+      type: object
+      required: [contentId, href]
+      additionalProperties: false
+      properties:
+        contentId:
+          type: string
+          description: The id as the request lists it.
+        href:
+          type: string
+          description: The HTML-edit-formatted link `createHref` returns, for example `/` for the home page or an id that names no content.
+    ContentLinkList:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContentLink'
     TaskWireBody:
       type: object
       description: JSON body both task adapters post; `tenantId` is null on system tasks.

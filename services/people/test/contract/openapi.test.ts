@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, collectRouteMatrix, type RouteMatrixEntry } from '@opt2/platform/auth';
-import { normaliseRouteKey, routeKeyForRequest, type RouteKeyRequest } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_PAGE_HTML, normaliseRouteKey, routeKeyForRequest, type RouteKeyRequest } from '@opt2/platform/legacy-compat';
 import {
   TENANT_A,
   TENANT_UMBRELLA,
@@ -17,6 +17,7 @@ import {
   type InjectResponse,
   type TenantlessEnvelope,
 } from '@opt2/platform/testing';
+import type { ServiceRequest, ServiceResponse } from '@opt2/platform/service-kit';
 import { GROUP_NAME_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { FAVORITE } from '../../src/repo/tables.js';
 import { TEST_CLOCK, buildTestApp, userHeaders, type RecordingDb, type TestApp, type UserHeadersInput } from '../helpers/app.js';
@@ -93,10 +94,8 @@ const UPPERCASE_HEX = /^[0-9A-F]+$/;
 const SWEEP_QUEUE = 'people-outbox-sweep';
 const LEGACY_FAMILIES = ['json', 'ajax', 'rest'] as const;
 const JSON_API_VERBS = ['GET', 'POST', 'PUT', 'DELETE'] as const;
-
-// Favorites operations document legacy wire shapes only (checked by legacy-wire-types.test.ts); people registers no route,
-// as their link needs a content href no strategies-content operation offers, so they must be exactly the unregistered ones.
-const UNSERVED_TAG = 'favorites';
+const FAVORITES = '/core/modules/v1/favorites/ajax';
+const FAVORITE_VERBS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'] as const;
 
 const SITE_A = TENANT_A.siteId;
 const TENANT_A_SEED = DEFAULT_PEOPLE_SEED[TENANT_A.tenantId] as TenantPeopleSeed;
@@ -304,8 +303,6 @@ function contractOperations(doc: OpenApiDoc): ContractOperation[] {
 }
 
 const OPERATIONS = contractOperations(DOC);
-const isUnserved = ({ op }: ContractOperation): boolean => Array.isArray(op.tags) && op.tags.includes(UNSERVED_TAG);
-const SERVED_OPERATIONS = OPERATIONS.filter((operation) => !isUnserved(operation));
 
 /** A Fastify url as an OpenAPI template: `::` to `:`, `:name` to `{name}`, a trailing `*` to `{path}`. */
 function toTemplate(url: string): string {
@@ -326,11 +323,6 @@ function operationKeys({ method, path, op }: ContractOperation): string[] {
   const fastifyPath = op['x-opt2-fastify-path'] as string | string[] | undefined;
   const paths = fastifyPath === undefined ? [path] : [fastifyPath].flat().map(toTemplate);
   return paths.map((served) => `${method} ${served}`);
-}
-
-function servedRoutes(routes: readonly RouteMatrixEntry[]): RouteMatrixEntry[] {
-  const gets = new Set(routes.filter((route) => route.method === 'GET').map((route) => route.url));
-  return routes.filter((route) => route.method !== 'HEAD' || !gets.has(route.url));
 }
 
 function diffRouteSets(routes: readonly RouteMatrixEntry[], operations: readonly ContractOperation[]): { missingInContract: string[]; missingInApp: string[] } {
@@ -417,6 +409,173 @@ const POOL_STRANGER = 'A0000000-0000-0000-00000000000000FF';
 const CURRENT_USER_QUERY = `siteid=${SITE_A}&endpoint=${encodeURIComponent(`http://localhost/index.cfm/_api/json/v1/${SITE_A}`)}&adminpath=${encodeURIComponent('http://localhost/admin')}`;
 const FAVORITE_COLUMNS = FAVORITE.columns.filter(({ name }) => name !== 'tenant_id').map(({ name, type }) => ({ name, type }));
 const UMBRELLA_MEMBERS = (DEFAULT_PEOPLE_SEED[TENANT_UMBRELLA.tenantId]?.groupNames ?? [])[0];
+const HOME_CONTENT = '00000000000000000000000000000000001';
+const SEEDED_FAVORITE = String((TENANT_A_SEED.favorites ?? [])[0]?.favoriteid);
+/** The id of a group's favorite, which identity holds. */
+const GROUP_FAVORITE = 'AB5C0E11-0B6A-4D2C-9F0E1D2C3B4A5968';
+const FAVORITE_SAVE = `userID=${SYSTEM_USER}&siteid=${SITE_A}&favoriteName=Home&favoriteLocation=${HOME_CONTENT}&favoriteType=Page`;
+const FAVORITE_RSS_DELETE = `userID=${SYSTEM_USER}&siteID=${SITE_A}`;
+const FAVORITE_SAVED = /^\{"lid":"([0-9A-F]{32})","favoriteid":"([0-9A-F-]{35})","link":"<a href=\\"\\" onClick=\\"return deleteFavorite\(\\'\2\\', \\'favorite\1\\'\);\\" title=\\"remove from favorites\\" class=\\"remove\\"><\/a> <a href=\\'\/\\'>Home<\/a>"\}$/;
+const INVALID_CREDENTIAL = (): Promise<Headers> => Promise.resolve({ authorization: 'Bearer not-a-token' });
+
+/** Answers strategies-content's content-link lookup with `href` for each listed id, or with HTTP `status` and no body. */
+function contentLinks(answer: { href: string } | { status: number }): (ctx: TestApp) => void {
+  return (ctx) => {
+    const client = ctx.app.opt2.client;
+    const prior = client.request.bind(client);
+    Object.assign(client, {
+      request: <T>(req: ServiceRequest): Promise<ServiceResponse<T>> => {
+        if (req.service !== 'strategies-content') return prior<T>(req);
+        if ('status' in answer) return Promise.resolve({ status: answer.status, headers: {}, body: undefined as T });
+        const { contentIds } = req.json as { contentIds: string[] };
+        return Promise.resolve({ status: 200, headers: {}, body: { items: contentIds.map((contentId) => ({ contentId, href: answer.href })) } as T });
+      },
+    });
+  };
+}
+
+/** The verb part of a favorites operation id, as the contract spells it. */
+function verbName(verb: (typeof FAVORITE_VERBS)[number]): string {
+  return `${verb.charAt(0)}${verb.slice(1).toLowerCase()}`;
+}
+
+/** One success per method of each favorites template, plus the GET operations' error page, 503 and bad-credential cases. */
+function favoriteCases(): Record<string, Case[]> {
+  const cases: Record<string, Case[]> = {};
+  const errorPage = ({ body }: Answer): void => {
+    expect(String(body)).toContain("We're sorry, an error has occurred.");
+  };
+  const unavailablePage = ({ res }: Answer, ctx: TestApp): void => {
+    expect([res.statusMessage, res.headers['content-type'], res.body]).toEqual(['An Error Occurred', 'text/html;charset=UTF-8', LEGACY_ERROR_PAGE_HTML]);
+    expect(writesTo(ctx, FAVORITE.table)).toBe(0);
+  };
+  for (const verb of FAVORITE_VERBS) {
+    // HEAD runs the template as GET does and answers GET's headers with no body or length.
+    const head = verb === 'HEAD';
+    const answers = (text: string): string => (head ? "GET's headers with no body" : text);
+    const answered = ({ res, body }: Answer, check: () => void): void => {
+      if (head) expect([body, res.headers['content-length']]).toEqual([undefined, undefined]);
+      else check();
+      expect(res.headers['content-type']).toBe('text/html;charset=UTF-8');
+    };
+    cases[`favoritesSave${verbName(verb)}`] = [
+      {
+        name: `${verb} saves the person's favorite in the site tenant and answers ${answers('its id and link')}`,
+        inject: send(verb, `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE}`),
+        setup: contentLinks({ href: '/' }),
+        status: 200,
+        verify: (answer, ctx) => {
+          answered(answer, () => {
+            expect(String(answer.body)).toMatch(FAVORITE_SAVED);
+          });
+          expect(writesTo(ctx, FAVORITE.table)).toBeGreaterThan(0);
+        },
+      },
+    ];
+    cases[`favoritesDelete${verbName(verb)}`] = [
+      {
+        name: `${verb} deletes the stored favorite and answers ${answers('the removal notice')}`,
+        inject: send(verb, `${FAVORITES}/deleteFavorite.cfm?favoriteID=${SEEDED_FAVORITE.toLowerCase()}`),
+        status: 200,
+        verify: (answer, ctx) => {
+          answered(answer, () => {
+            expect(answer.body).toBe('Your favorite has been removed.');
+          });
+          expect(writesTo(ctx, FAVORITE.table)).toBeGreaterThan(0);
+        },
+      },
+    ];
+    cases[`favoritesDeleteRss${verbName(verb)}`] = [
+      {
+        name: `${verb} deletes the person's RSS favorites of the site and answers ${answers('no text')}`,
+        inject: send(verb, `${FAVORITES}/deleteRSSFavorite.cfm?${FAVORITE_RSS_DELETE}`),
+        status: 200,
+        verify: (answer) => {
+          answered(answer, () => {
+            expect(answer.body).toBeUndefined();
+          });
+        },
+      },
+    ];
+  }
+  cases.favoritesSaveGet?.push(
+    {
+      name: 'answers the error page for a missing favoriteType, saving nothing',
+      inject: send('GET', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE.replace('&favoriteType=Page', '')}`),
+      status: 500,
+      verify: (answer, ctx) => {
+        errorPage(answer);
+        expect(writesTo(ctx, FAVORITE.table)).toBe(0);
+      },
+    },
+    {
+      name: 'answers the legacy 503 when strategies-content gives no content link, saving nothing',
+      inject: send('GET', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE}`),
+      setup: contentLinks({ status: 503 }),
+      status: 503,
+      verify: unavailablePage,
+    },
+    {
+      name: "answers the legacy 503 for a group's userID, whose favorites are identity's, saving nothing",
+      inject: send('GET', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE.replace(SYSTEM_USER, String(UMBRELLA_MEMBERS?.group_id))}`),
+      setup: contentLinks({ href: '/' }),
+      status: 503,
+      verify: unavailablePage,
+    },
+    { name: 'refuses an invalid presented credential with the legacy 401', inject: send('GET', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE}`, INVALID_CREDENTIAL), status: 401 },
+  );
+  cases.favoritesSaveHead?.push({
+    name: "answers the error page's status and headers with no body for a missing favoriteType, saving nothing",
+    inject: send('HEAD', `${FAVORITES}/saveFavorite.cfm?${FAVORITE_SAVE.replace('&favoriteType=Page', '')}`),
+    status: 500,
+    verify: ({ res, body }, ctx) => {
+      expect([res.statusMessage, res.headers['content-type'], body]).toEqual(['An Error Occurred', 'text/html;charset=UTF-8', undefined]);
+      expect(writesTo(ctx, FAVORITE.table)).toBe(0);
+    },
+  });
+  cases.favoritesDeleteGet?.push(
+    { name: 'answers the error page without a favoriteID url field', inject: send('GET', `${FAVORITES}/deleteFavorite.cfm`), status: 500, verify: errorPage },
+    {
+      name: 'answers the removal notice for an id no favorite holds, deleting nothing',
+      inject: send('GET', `${FAVORITES}/deleteFavorite.cfm?favoriteID=${HOME_CONTENT}`),
+      status: 200,
+      verify: ({ body }, ctx) => {
+        expect(body).toBe('Your favorite has been removed.');
+        expect(writesTo(ctx, FAVORITE.table)).toBe(0);
+      },
+    },
+    {
+      name: "answers the legacy 503 for the id of a group's favorite, which identity's lookupGroupFavorites finds, deleting nothing",
+      inject: send('GET', `${FAVORITES}/deleteFavorite.cfm?favoriteID=${GROUP_FAVORITE}`),
+      setup: (ctx) => {
+        ctx.identity.seedGroupFavorites(GROUP_FAVORITE);
+      },
+      status: 503,
+      verify: unavailablePage,
+    },
+    { name: 'refuses an invalid presented credential with the legacy 401', inject: send('GET', `${FAVORITES}/deleteFavorite.cfm?favoriteID=${SEEDED_FAVORITE}`, INVALID_CREDENTIAL), status: 401 },
+    {
+      name: "answers a malformed query escape with the servlet container's empty 400, deleting nothing",
+      inject: send('GET', `${FAVORITES}/deleteFavorite.cfm?favoriteID=${SEEDED_FAVORITE}&x=%ZZ`),
+      status: 400,
+      verify: ({ res, body }, ctx) => {
+        expect([body, res.headers.connection, res.headers.generator]).toEqual([undefined, 'close', undefined]);
+        expect(writesTo(ctx, FAVORITE.table)).toBe(0);
+      },
+    },
+  );
+  cases.favoritesDeleteRssGet?.push(
+    { name: 'answers the error page without a siteID url field', inject: send('GET', `${FAVORITES}/deleteRSSFavorite.cfm?userID=${SYSTEM_USER}`), status: 500, verify: errorPage },
+    {
+      name: 'answers the legacy 503 for a site the registry does not hold, deleting nothing',
+      inject: send('GET', `${FAVORITES}/deleteRSSFavorite.cfm?userID=${SYSTEM_USER}&siteID=nosuchsite`),
+      status: 503,
+      verify: unavailablePage,
+    },
+    { name: 'refuses an invalid presented credential with the legacy 401', inject: send('GET', `${FAVORITES}/deleteRSSFavorite.cfm?${FAVORITE_RSS_DELETE}`, INVALID_CREDENTIAL), status: 401 },
+  );
+  return cases;
+}
 
 const HALTED_OPERATION = rosterOperationRow({ user_id: MODULE_USER, state: 'halted', identity_unreachable_since: TEST_CLOCK.now(), halted_at: TEST_CLOCK.now() });
 
@@ -463,6 +622,7 @@ function jsonApiOperation(operationId: string, ...extra: Case[]): Case[] {
 
 const CASES: Record<string, Case[]> = {
   ...JSON_API_CASES,
+  ...favoriteCases(),
   jsonItemGet: jsonApiOperation(
     'jsonItemGet',
     {
@@ -941,7 +1101,8 @@ async function sendCase(ctx: TestApp, c: Case): Promise<Answer> {
   const json = typeof contentType === 'string' && JSON_MEDIA_TYPE.test(contentType) && res.body !== '';
   const body: unknown = json ? JSON.parse(res.body) : res.body === '' ? undefined : res.body;
   expect(res.statusCode, res.body.slice(0, 400)).toBe(c.status);
-  assertResponseMatchesOpenApi(DOC, { method, path, status: res.statusCode, contentType, body });
+  // A text body is validated as sent, so an empty one meets a schema of the empty string.
+  assertResponseMatchesOpenApi(DOC, { method, path, status: res.statusCode, contentType, body: json ? body : res.body });
   return { res, body };
 }
 
@@ -1048,26 +1209,19 @@ describe('registered routes', () => {
     shared = await buildTestApp();
     await shared.app.ready();
     seedApp(shared);
-    routes = servedRoutes(collectRouteMatrix(shared.app).routes);
+    routes = collectRouteMatrix(shared.app).routes;
   });
 
   afterAll(async () => {
     await shared?.close();
   });
 
-  it('are exactly the contract operations, the unregistered favorites templates aside', () => {
-    const { missingInContract, missingInApp } = diffRouteSets(routes, OPERATIONS);
-    expect({ missingInContract, missingInApp }).toEqual({
-      missingInContract: [],
-      missingInApp: OPERATIONS.filter(isUnserved)
-        .flatMap((operation) => operationKeys(operation).map((key) => `${operation.operationId} (${key})`))
-        .sort(),
-    });
-    expect(OPERATIONS.filter(isUnserved)).toHaveLength(18);
+  it('are exactly the contract operations', () => {
+    expect(diffRouteSets(routes, OPERATIONS)).toEqual({ missingInContract: [], missingInApp: [] });
   });
 
   it('each declare the roles, public flag and transport of every operation they serve', () => {
-    expect(declarationMismatches(routes, SERVED_OPERATIONS)).toEqual([]);
+    expect(declarationMismatches(routes, OPERATIONS)).toEqual([]);
   });
 
   it('take the managed transport and roles on the push, sweep, task and migration paths', () => {
@@ -1088,15 +1242,15 @@ describe('registered routes', () => {
 
   it('report an extra route, a removed operation and a changed role', () => {
     const extra: RouteMatrixEntry = { method: 'GET', url: '/v1/users/:userId/extra', transport: 'service', requires: ['s2'], siteCheck: true };
-    expect(diffRouteSets([...routes, extra], SERVED_OPERATIONS).missingInContract).toEqual(['GET /v1/users/{userId}/extra']);
+    expect(diffRouteSets([...routes, extra], OPERATIONS).missingInContract).toEqual(['GET /v1/users/{userId}/extra']);
 
     const trimmed = structuredClone(DOC);
     delete trimmed.paths['/healthz']?.get;
     expect(diffRouteSets(routes, contractOperations(trimmed)).missingInContract).toEqual(['GET /healthz']);
-    expect(diffRouteSets(routes.filter(({ url }) => url !== '/healthz'), SERVED_OPERATIONS).missingInApp).toEqual(['healthz (GET /healthz)']);
+    expect(diffRouteSets(routes.filter(({ url }) => url !== '/healthz'), OPERATIONS).missingInApp).toEqual(['healthz (GET /healthz)']);
 
     const widened = routes.map((route) => (routeKey(route) === 'GET /v1/users' ? { ...route, requires: [...(route.requires ?? []), 'system-user'] } : route));
-    expect(declarationMismatches(widened, SERVED_OPERATIONS)).toEqual(['listUsers GET /v1/users']);
+    expect(declarationMismatches(widened, OPERATIONS)).toEqual(['listUsers GET /v1/users']);
   });
 
   it('include every expected operation family', () => {
@@ -1127,12 +1281,15 @@ describe('JSON API route keys', () => {
     await keyed?.close();
   });
 
-  it('are declared on every /_api/ operation, canonical, and on no other operation but the favorites and fixture ones', () => {
+  it("are declared on every /_api/ operation, canonical, and elsewhere only on the fixture operations and as each favorites template's own cfm key", () => {
     expect(WIRE_OPERATIONS.filter((operation) => routeKeysOf(operation).length === 0).map(({ operationId }) => operationId)).toEqual([]);
     const keys = WIRE_OPERATIONS.flatMap(routeKeysOf);
     expect(keys.filter((key) => key !== normaliseRouteKey(key))).toEqual([]);
     const elsewhere = OPERATIONS.filter((operation) => !WIRE_OPERATIONS.includes(operation) && routeKeysOf(operation).length > 0);
-    expect(elsewhere.filter((operation) => !isUnserved(operation) && !operation.path.startsWith('/legacy-fixtures/')).map(({ operationId }) => operationId)).toEqual([]);
+    const favorites = elsewhere.filter(({ path }) => path.startsWith(`${FAVORITES}/`));
+    expect(favorites.filter((operation) => JSON.stringify(routeKeysOf(operation)) !== JSON.stringify([`cfm:${operation.path.toLowerCase()}`]))).toEqual([]);
+    expect(favorites).toHaveLength(21);
+    expect(elsewhere.filter((operation) => !favorites.includes(operation) && !operation.path.startsWith('/legacy-fixtures/')).map(({ operationId }) => operationId)).toEqual([]);
   });
 
   it('take the family the shared route key gives each JSON API path', () => {
@@ -1248,7 +1405,7 @@ describe('responses', () => {
   const rows = Object.entries(CASES).flatMap(([operationId, cases]) => cases.map((c) => ({ operationId, title: c.name, c })));
 
   it('cover every served contract operation and no other', () => {
-    expect(Object.keys(CASES).sort()).toEqual(SERVED_OPERATIONS.map(({ operationId }) => operationId).sort());
+    expect(Object.keys(CASES).sort()).toEqual(OPERATIONS.map(({ operationId }) => operationId).sort());
   });
 
   it('give every operation a success but the REST family, whose registered sites answer server_error', () => {

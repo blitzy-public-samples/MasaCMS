@@ -206,6 +206,7 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
     adminSessionState: unused('adminSessionState'),
     saveAdminSessionState: unused('saveAdminSessionState'),
     sessionSites: () => Promise.resolve([]),
+    groupFavoriteIds: unused('groupFavoriteIds'),
   };
 
   /** The identity a roster save runs against: its commit applies the prepared user name to `accounts`. */
@@ -243,6 +244,7 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
       adminSessionState: unused('adminSessionState'),
       saveAdminSessionState: unused('saveAdminSessionState'),
       sessionSites: unused('sessionSites'),
+      groupFavoriteIds: unused('groupFavoriteIds'),
     };
   }
 

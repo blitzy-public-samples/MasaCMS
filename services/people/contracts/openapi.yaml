@@ -2340,14 +2340,42 @@ paths:
             text/html;charset=UTF-8:
               schema:
                 $ref: '#/components/schemas/FavoriteSaved'
+        '400':
+          $ref: '#/components/responses/MalformedQuery'
         '401':
           $ref: '#/components/responses/Unauthorized'
           description: A presented credential is invalid.
         '500':
           $ref: '#/components/responses/ErrorPage'
-          description: A missing `userID`, `siteid`, `favoriteName`, `favoriteLocation` or `favoriteType` field.
+          description: >-
+            A missing `userID`, `siteid`, `favoriteName`, `favoriteLocation` or `favoriteType` field; a value `tusersfavorites`
+            cannot store (an empty `userID`, `favoriteLocation` or `favoriteType`, text beyond its column, a number beyond `int`);
+            or a blank `siteid`, answered after the favorite is stored.
         '503':
-          $ref: '#/components/responses/Unavailable'
+          $ref: '#/components/responses/ErrorPageUnavailable'
+          description: >-
+            A `userID` naming no stored person (a group's favorites are identity's share), a `siteid` the registry does not hold,
+            strategies-content unable to give the content link, or a wait timeout; nothing is stored.
+    head:
+      operationId: favoritesSaveHead
+      summary: Saves a favorite for the user as GET does and answers GET's status and headers with no body.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *saveFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: &favoritesHeadResponses
+        '200':
+          $ref: '#/components/responses/FavoritesHeadersOnly'
+        '400':
+          $ref: '#/components/responses/MalformedQuery'
+        '401':
+          $ref: '#/components/responses/FavoritesHeadersOnly'
+        '500':
+          $ref: '#/components/responses/FavoritesHeadersOnly'
+        '503':
+          $ref: '#/components/responses/FavoritesHeadersOnly'
     post:
       operationId: favoritesSavePost
       summary: Saves a favorite for the user and answers its id and list link as JSON text.
@@ -2424,6 +2452,8 @@ paths:
             text/html;charset=UTF-8:
               schema:
                 $ref: '#/components/schemas/FavoriteRemoved'
+        '400':
+          $ref: '#/components/responses/MalformedQuery'
         '401':
           $ref: '#/components/responses/Unauthorized'
           description: A presented credential is invalid.
@@ -2431,7 +2461,17 @@ paths:
           $ref: '#/components/responses/ErrorPage'
           description: A missing `favoriteID` field.
         '503':
-          $ref: '#/components/responses/Unavailable'
+          $ref: '#/components/responses/ErrorPageUnavailable'
+    head:
+      operationId: favoritesDeleteHead
+      summary: Deletes a favorite as GET does and answers GET's status and headers with no body.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *deleteFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *favoritesHeadResponses
     post:
       operationId: favoritesDeletePost
       summary: Deletes a favorite and answers a removal notice.
@@ -2509,6 +2549,8 @@ paths:
             text/html;charset=UTF-8:
               schema:
                 $ref: '#/components/schemas/EmptyBody'
+        '400':
+          $ref: '#/components/responses/MalformedQuery'
         '401':
           $ref: '#/components/responses/Unauthorized'
           description: A presented credential is invalid.
@@ -2516,7 +2558,18 @@ paths:
           $ref: '#/components/responses/ErrorPage'
           description: A missing `userID` or `siteID` field.
         '503':
-          $ref: '#/components/responses/Unavailable'
+          $ref: '#/components/responses/ErrorPageUnavailable'
+          description: A `userID` naming no stored person, a `siteID` the registry does not hold, or a wait timeout; nothing is deleted.
+    head:
+      operationId: favoritesDeleteRssHead
+      summary: Deletes the user's RSS favorites in the site as GET does and answers GET's status and headers with no body.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *deleteRssFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *favoritesHeadResponses
     post:
       operationId: favoritesDeleteRssPost
       summary: Deletes the user's RSS favorites in the site and answers an empty body.
@@ -3960,6 +4013,11 @@ components:
           - 'Bearer error="invalid_authorization_code"'
           - 'Bearer error="invalid_client_refresh_token"'
           - 'Bearer error="invalid_grant_type'
+    ConnectionClose:
+      description: The connection closes after the answer.
+      schema:
+        type: string
+        const: close
     XOpt2WritePosition:
       description: Committed write positions `<owner>=<xid>[,<owner>=<xid>…]`; the gateway strips it from client responses.
       schema:
@@ -4515,6 +4573,38 @@ components:
         text/html;charset=UTF-8:
           schema:
             $ref: '#/components/schemas/LegacyHtml'
+    ErrorPageUnavailable:
+      description: 'Legacy-shaped 503: the ColdFusion error page, as for every template route.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+      content:
+        text/html;charset=UTF-8:
+          schema:
+            $ref: '#/components/schemas/LegacyHtml'
+    FavoritesHeadersOnly:
+      description: A HEAD answer of a favorites template, the status and headers of its GET answer, with no body and no Content-Length.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+    MalformedQuery:
+      description: >-
+        The servlet container's answer, before the template runs, to a request target it refuses: a query string with a `%`
+        not followed by two hex digits, or a raw character outside printable ASCII or one of `` "#<>\^`{|} `` anywhere in the target.
+        No body, no Generator, HSTS or Date header, and the connection closes.
+      headers:
+        Connection:
+          $ref: '#/components/headers/ConnectionClose'
     BadRequest:
       description: 'Legacy 400: `invalidParameters`, `badRequest` or `invalidTokens`.'
       headers:
@@ -6146,8 +6236,8 @@ components:
       description: Markup exactly as legacy renders it.
     FavoriteSaved:
       type: string
-      description: 'Legacy `jsonencode` text of the favorite: lower-cased keys, `lid` the id without hyphens, `link` the remove and content anchors, and JavaScript string escapes such as `\''`.'
-      pattern: '^\{"lid":("[0-9A-F]{32}"|[0-9]{32}),"favoriteid":"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}","link":"(?:[^"\\]|\\.)*"\}$'
+      description: 'Legacy `jsonencode` text of the favorite: lower-cased keys, `lid` the id without hyphens (unquoted when ColdFusion reads it as a number: all digits, or digits, `E` and digits), `link` the remove and content anchors, and JavaScript string escapes such as `\''`.'
+      pattern: '^\{"lid":("[0-9A-F]{32}"|(?=[0-9E]{32},)[0-9]+(?:E[0-9]+)?),"favoriteid":"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}","link":"(?:[^"\\]|\\.)*"\}$'
     FavoriteRemoved:
       type: string
       const: Your favorite has been removed.

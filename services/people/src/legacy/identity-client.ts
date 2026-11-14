@@ -1,4 +1,4 @@
-// People's only route to identity data: the roster write protocol's account operations and the identity reads people shows.
+// People's only route to identity data: the roster write protocol's account operations, the identity reads people shows and the group-favorite lookup.
 import { recordWritePositionsFrom, WRITE_POSITION_HEADER_LC } from '@opt2/platform/migration-kit';
 import {
   currentRequestContext,
@@ -143,6 +143,11 @@ export interface IdentityClient {
   sessionSites(): Promise<SessionSite[]>;
   /** `loadLoginBlock`: loads the user's login block, clearing strikes first when requested. */
   loginBlock(userId: string, removeBlock: boolean): Promise<string | null>;
+  /**
+   * `lookupGroupFavorites`: the ids among `favoriteIds` (each 1–35 characters) that name a group's favorite, as sent, without a
+   * user token; one call per 100 distinct ids, none for an empty list.
+   */
+  groupFavoriteIds(favoriteIds: readonly string[]): Promise<string[]>;
 }
 
 /** Contract operation id, method and path template of one identity call. */
@@ -176,6 +181,7 @@ const OPS = {
   saveAdminState: { operationId: 'saveAdminSessionState', method: 'POST', path: '/v1/sessions/current/admin-state' },
   sessionSites: { operationId: 'listCurrentSessionSites', method: 'GET', path: '/v1/sessions/current/sites' },
   loginBlock: { operationId: 'loadLoginBlock', method: 'POST', path: '/internal/v1/accounts/{userId}/login-block' },
+  groupFavoriteIds: { operationId: 'lookupGroupFavorites', method: 'POST', path: '/internal/v1/group-favorites:lookup' },
 } as const satisfies Record<string, IdentityOperation>;
 
 const HTTP_OK = 200;
@@ -187,11 +193,14 @@ const HTTP_SERVER_ERROR = 500;
 /** `maxItems` of identity's `MembershipLookupRequest` user ids; account lookups take the same chunks to keep request bodies bounded. */
 const LOOKUP_MAX_IDS = 1000;
 
-/** The distinct ids of `userIds` in first-seen order, split into lookup bodies of at most `LOOKUP_MAX_IDS`. */
-function lookupChunks(userIds: readonly string[]): string[][] {
+/** `maxItems` of identity's `GroupFavoriteLookupRequest` favorite ids. */
+const GROUP_FAVORITE_LOOKUP_MAX_IDS = 100;
+
+/** The distinct ids of `userIds` in first-seen order, split into lookup bodies of at most `size`. */
+function lookupChunks(userIds: readonly string[], size = LOOKUP_MAX_IDS): string[][] {
   const distinct = [...new Set(userIds)];
   const chunks: string[][] = [];
-  for (let start = 0; start < distinct.length; start += LOOKUP_MAX_IDS) chunks.push(distinct.slice(start, start + LOOKUP_MAX_IDS));
+  for (let start = 0; start < distinct.length; start += size) chunks.push(distinct.slice(start, start + size));
   return chunks;
 }
 
@@ -283,7 +292,7 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
   async function send<T>(
     op: IdentityOperation,
     path: string,
-    extra: { json?: unknown; query?: Record<string, string | undefined>; timeoutMs?: number } = {},
+    extra: { json?: unknown; query?: Record<string, string | undefined>; timeoutMs?: number; userToken?: null } = {},
   ): Promise<ServiceResponse<T>> {
     const response = await client.request<T>({ service: IDENTITY_SERVICE, method: op.method, path, ...extra });
     // The CLI runs outside a request; there is then no response to carry the positions.
@@ -443,6 +452,18 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
       const response = await send<Schemas['LoginBlock']>(op, fillPath(op.path, userId), { json: body });
       if (response.status === HTTP_NOT_FOUND) return null;
       return okBody(op, response).blockedUntil;
+    },
+
+    async groupFavoriteIds(favoriteIds) {
+      const op = OPS.groupFavoriteIds;
+      const held: string[] = [];
+      for (const chunk of lookupChunks(favoriteIds, GROUP_FAVORITE_LOOKUP_MAX_IDS)) {
+        const lookup: Schemas['GroupFavoriteLookupRequest'] = { favoriteIds: chunk };
+        // The favorites templates act for no user, so a user token the gateway attached is not forwarded.
+        const { items } = okBody(op, await send<Schemas['GroupFavoriteList']>(op, op.path, { json: lookup, userToken: null }));
+        for (const { favoriteId } of items) held.push(favoriteId);
+      }
+      return held;
     },
   };
 }

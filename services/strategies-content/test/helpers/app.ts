@@ -36,6 +36,7 @@ import { OWNER, SCHEMA, createContentRepository } from '../../src/repo/repositor
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 import { registerCommentsProxyRoutes } from '../../src/routes/comments-proxy.js';
 import { registerFileRoutes } from '../../src/routes/files.js';
+import { registerContentLinksRoutes } from '../../src/routes/internal-content-links.js';
 import { registerFileLookupRoutes } from '../../src/routes/internal-file-lookup.js';
 import { registerMigrationObjectRoutes } from '../../src/routes/migration-objects.js';
 import { registerHeaderPromptRoutes } from '../../src/routes/v1/header-prompts.js';
@@ -462,7 +463,7 @@ export function testEnv(stateDir: string): Record<string, string> {
 }
 
 /**
- * Builds strategies-content with every route its source registers: the header prompts, the people file lookup, the migration
+ * Builds strategies-content with every route its source registers: the header prompts, the people file and content-link lookups, the migration
  * object transfer, the signed file downloads, the comments proxy, the platform migration handlers over the content mappings,
  * the four push consumers, the site-monitor job routes and queue control.
  */
@@ -489,6 +490,7 @@ export async function buildContentApp(options: ContentTestAppOptions = {}): Prom
     registerWritePositionHeader(app);
     await registerHeaderPromptRoutes(app, { domain: { db, repository, clock: TEST_CLOCK } });
     await registerFileLookupRoutes(app, { db });
+    registerContentLinksRoutes(app, { db, env: testEnv(stateDir) });
     registerMigrationObjectRoutes(app, { domain: { db, repository }, storage, clock: TEST_CLOCK });
     registerFileRoutes(app, { domain: { db, repository }, storage, clock: TEST_CLOCK });
     registerCommentsProxyRoutes(app, { domain: { db, repository, clock: TEST_CLOCK, config: CONTENT_CONFIG_DEFAULTS } });

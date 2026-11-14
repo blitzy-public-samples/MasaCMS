@@ -5,6 +5,7 @@ import type { TenantDb } from '@opt2/platform/tenancy';
 import type { AccountOperationDeps } from '../domain/account-operations.js';
 import { createAccountReads } from '../domain/account-reads.js';
 import type { CsrfDeps } from '../domain/csrf.js';
+import { createGroupFavoriteReads } from '../domain/group-favorites.js';
 import type { GroupDeps } from '../domain/groups.js';
 import { DEFAULT_LOGIN_SETTINGS, type LoginDeps } from '../domain/login.js';
 import {
@@ -32,6 +33,7 @@ import { registerAdminSessionRoutes } from './admin-sessions.js';
 import { registerAccountReadRoutes } from './internal-account-reads.js';
 import { registerAccountRoutes } from './internal-accounts.js';
 import { registerCsrfRoutes } from './internal-csrf.js';
+import { registerGroupFavoriteRoutes } from './internal-group-favorites.js';
 import { registerSessionRoutes } from './internal-sessions.js';
 import { registerTokenRoutes } from './internal-tokens.js';
 import { legacyApiSettings, registerLegacyApiRoutes, type LegacyApiSettings } from './legacy-api.js';
@@ -142,6 +144,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await registerAccountRoutes(app, { accounts });
   // people's account reads are identity contract operations too.
   await registerAccountReadRoutes(app, { db, repo, accountReads: createAccountReads({ repo, clock }) });
+  registerGroupFavoriteRoutes(app, { db, groupFavorites: createGroupFavoriteReads({ repo }) });
   await registerAdminSessionRoutes(app, { login, sessions, csrf, loginMail, permissions, db });
   await registerAdminGroupRoutes(app, { groups, content: createContentClient(client), sessions, csrf });
   await registerAdminPermissionRoutes(app, { permissions, reverseLookup, csrf });

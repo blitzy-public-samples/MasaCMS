@@ -32,6 +32,7 @@ import {
 } from '@opt2/platform/testing';
 import { createAccountReads } from '../../src/domain/account-reads.js';
 import { issueTokens } from '../../src/domain/csrf.js';
+import { createGroupFavoriteReads } from '../../src/domain/group-favorites.js';
 import { DEFAULT_LOGIN_SETTINGS, type LoginDeps } from '../../src/domain/login.js';
 import { DEFAULT_LOGIN_MAIL_GLOBAL_SETTINGS, type LoginMailDeps, type LoginMailSiteSettings } from '../../src/domain/login-mail.js';
 import { createTokenService } from '../../src/domain/tokens.js';
@@ -45,6 +46,7 @@ import { registerAdminSessionRoutes } from '../../src/routes/admin-sessions.js';
 import { registerAccountReadRoutes } from '../../src/routes/internal-account-reads.js';
 import { registerAccountRoutes } from '../../src/routes/internal-accounts.js';
 import { registerCsrfRoutes } from '../../src/routes/internal-csrf.js';
+import { registerGroupFavoriteRoutes } from '../../src/routes/internal-group-favorites.js';
 import { registerSessionRoutes } from '../../src/routes/internal-sessions.js';
 import { registerTokenRoutes } from '../../src/routes/internal-tokens.js';
 import { registerLegacyApiRoutes, type LegacyApiSettings } from '../../src/routes/legacy-api.js';
@@ -402,6 +404,7 @@ export async function buildIdentityApp(seed: IdentitySeed = defaultSeed(), opts:
   await registerCsrfRoutes(app, { csrf });
   await registerAccountRoutes(app, { accounts: { db, repo, events, clock: CLOCK, sleep: noSleep } });
   await registerAccountReadRoutes(app, { db, repo, accountReads: createAccountReads({ repo, clock: CLOCK, closedUserWaitMs: 0, gateWaitMs: 0 }), sleep: noSleep });
+  registerGroupFavoriteRoutes(app, { db, groupFavorites: createGroupFavoriteReads({ repo, gateWaitMs: 0 }) });
   await registerLegacyApiRoutes(app, { groups, login, sessions, csrf, rest, client: people, db, fetch: outbound.fetch, legacy: LEGACY_SETTINGS });
   if (opts.ready !== false) await app.ready();
 

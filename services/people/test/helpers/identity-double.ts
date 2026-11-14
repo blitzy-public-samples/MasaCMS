@@ -225,6 +225,8 @@ export interface IdentityDouble {
   seedSessionSites(sites: readonly SessionSite[]): void;
   /** The `blockedUntil` `loadLoginBlock` answers for the user; null clears it. */
   setLoginBlock(userId: string, blockedUntil: string | null): void;
+  /** Ids of group favorites `lookupGroupFavorites` finds, compared as char(35) ids. */
+  seedGroupFavorites(...favoriteIds: string[]): void;
   /** Validation errors prepare answers for the user, unchanged; undefined clears them. */
   setPrepareErrors(userId: string, errors: LegacyErrors | undefined): void;
   /** The `kind` fault for the next `times` calls at `step` (1 by default; `Infinity` allowed). */
@@ -537,6 +539,7 @@ export function createIdentityDouble(options: IdentityDoubleOptions = {}): Ident
   const sessions = new Map<string, DoubleSession>();
   const adminStates = new Map<string, AdminSessionState>();
   const loginBlocks = new Map<string, string>();
+  const groupFavorites = new Set<string>();
   let sessionSites: SessionSite[] = [];
   const requests: RecordedIdentityRequest[] = [];
   const faults: Array<{ step: IdentityStep; kind: FaultKind; remaining: number }> = [];
@@ -949,6 +952,11 @@ export function createIdentityDouble(options: IdentityDoubleOptions = {}): Ident
       return json({ blockedUntil: loginBlocks.get(key) ?? null });
     },
 
+    lookupGroupFavorites(call) {
+      const { favoriteIds } = call.body as { favoriteIds: string[] };
+      return json({ items: favoriteIds.filter((favoriteId) => groupFavorites.has(charKey(favoriteId))).map((favoriteId) => ({ favoriteId })) });
+    },
+
     consumeCsrfToken(call) {
       const request = call.body as CsrfConsumeRequest;
       const claim = JSON.stringify([request.sessionId, request.token]);
@@ -1046,7 +1054,7 @@ export function createIdentityDouble(options: IdentityDoubleOptions = {}): Ident
   }
 
   function clear(): void {
-    for (const store of [accounts, groups, memberships, operations, prepareErrors, sessions, adminStates, loginBlocks]) store.clear();
+    for (const store of [accounts, groups, memberships, operations, prepareErrors, sessions, adminStates, loginBlocks, groupFavorites]) store.clear();
     sessionSites = [];
     requests.length = 0;
     clearFaults();
@@ -1097,6 +1105,9 @@ export function createIdentityDouble(options: IdentityDoubleOptions = {}): Ident
     setLoginBlock(userId, blockedUntil) {
       if (blockedUntil === null) loginBlocks.delete(charKey(userId));
       else loginBlocks.set(charKey(userId), blockedUntil);
+    },
+    seedGroupFavorites(...favoriteIds) {
+      for (const favoriteId of favoriteIds) groupFavorites.add(charKey(favoriteId));
     },
     setPrepareErrors(userId, errors) {
       if (errors === undefined) prepareErrors.delete(charKey(userId));

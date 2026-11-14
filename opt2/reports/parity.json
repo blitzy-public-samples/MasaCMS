@@ -416,6 +416,15 @@
         ]
       },
       {
+        "scenario": "GS-PE-07",
+        "exceptionId": "EX-FAVORITES",
+        "routeKeys": [
+          "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm",
+          "cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm",
+          "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm"
+        ]
+      },
+      {
         "scenario": "GS-CO-17",
         "exceptionId": "EX-FILE-RENDITION",
         "routeKeys": [

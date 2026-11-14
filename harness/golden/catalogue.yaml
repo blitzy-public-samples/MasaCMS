@@ -6267,6 +6267,103 @@ scenarios:
       - rest:user.delete
       - api:generatecsrftokens
       - admin:cusers.update
+  - id: GS-PE-07
+    title: 'Front-end favourites: save, delete and RSS delete through the templates'
+    service: people
+    role: anonymous; the templates act for the url userID
+    purpose: coverage
+    sessions:
+      anon: {login: none, via: public}
+    seedRefs:
+      - {as: person, source: dataset, path: masa.users, where: {siteID: tenant-a, isPublic: 0}, index: -2}
+      - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 0}
+      - {as: group, source: dataset, path: masa.groups, where: {siteID: tenant-a}, index: -1}
+    steps:
+      - name: save
+        method: GET
+        route: /core/modules/v1/favorites/ajax/saveFavorite.cfm?userID=${seed.person.userID}&siteid=tenant-a&favoriteName=GS-PE-07&favoriteLocation=${seed.page.contentID}&favoriteType=internal_content
+        as: anon
+        auth: anonymous
+      # A fixed id: saveFavorite answers text/html, from which no body path may bind the saved one.
+      - name: delete
+        method: GET
+        route: /core/modules/v1/favorites/ajax/deleteFavorite.cfm?favoriteID=00000000-0000-0000-0000000000000000
+        as: anon
+        auth: anonymous
+      - name: save-rss
+        method: GET
+        route: /core/modules/v1/favorites/ajax/saveFavorite.cfm?userID=${seed.person.userID}&siteid=tenant-a&favoriteName=GS-PE-07-RSS&favoriteLocation=${seed.page.contentID}&favoriteType=RSS&columnNumber=1&rowNumber=1&maxRssItems=5
+        as: anon
+        auth: anonymous
+      - name: delete-rss
+        method: GET
+        route: /core/modules/v1/favorites/ajax/deleteRSSFavorite.cfm?userID=${seed.person.userID}&siteID=tenant-a
+        as: anon
+        auth: anonymous
+      - name: save-without-fields
+        method: GET
+        route: /core/modules/v1/favorites/ajax/saveFavorite.cfm
+        as: anon
+        auth: anonymous
+      # People refuses the cases below (EX-FAVORITES); v0002 serves them from legacy, and each RSS delete removes the row legacy stores.
+      - name: save-group-user
+        method: GET
+        route: /core/modules/v1/favorites/ajax/saveFavorite.cfm?userID=${seed.group.groupID}&siteid=tenant-a&favoriteName=GS-PE-07-group&favoriteLocation=${seed.page.contentID}&favoriteType=RSS
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-FAVORITES
+      - name: delete-rss-group-user
+        method: GET
+        route: /core/modules/v1/favorites/ajax/deleteRSSFavorite.cfm?userID=${seed.group.groupID}&siteID=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-FAVORITES
+      - name: save-unknown-user
+        method: GET
+        route: /core/modules/v1/favorites/ajax/saveFavorite.cfm?userID=00000000-0000-0000-0000000000000000&siteid=tenant-a&favoriteName=GS-PE-07-unknown&favoriteLocation=${seed.page.contentID}&favoriteType=RSS
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-FAVORITES
+      - name: delete-rss-unknown-user
+        method: GET
+        route: /core/modules/v1/favorites/ajax/deleteRSSFavorite.cfm?userID=00000000-0000-0000-0000000000000000&siteID=tenant-a
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-FAVORITES
+      - name: save-unregistered-site
+        method: GET
+        route: /core/modules/v1/favorites/ajax/saveFavorite.cfm?userID=${seed.person.userID}&siteid=gs-pe-07-no-site&favoriteName=GS-PE-07-no-site&favoriteLocation=${seed.page.contentID}&favoriteType=RSS
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-FAVORITES
+      - name: delete-rss-unregistered-site
+        method: GET
+        route: /core/modules/v1/favorites/ajax/deleteRSSFavorite.cfm?userID=${seed.person.userID}&siteID=gs-pe-07-no-site
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-FAVORITES
+      - name: save-case-variant
+        method: GET
+        route: /core/modules/v1/favorites/ajax/savefavorite.cfm?userID=${seed.person.userID}&siteid=tenant-a&favoriteName=GS-PE-07-case&favoriteLocation=${seed.page.contentID}&favoriteType=internal_content
+        as: anon
+        auth: anonymous
+        expected: halted
+        exceptionId: EX-FAVORITES
+    compare: [status, headers, auth, dom, rows]
+    rows:
+      - {table: tusersfavorites, where: {userid: '${seed.person.userID}'}}
+      - {table: tusersfavorites, where: {userid: '${seed.group.groupID}'}}
+    normalisationOverrides: {}
+    covers:
+      - cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm
+      - cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm
+      - cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm
   - id: GS-PS-07
     title: Site monitor run
     service: programs-sites

@@ -214,6 +214,8 @@ export function createIdentityDouble(registry: TenantDb): IdentityDouble {
       called('loginBlock');
       return null;
     },
+    // Only the favorites templates, which this app does not register, look up group favorites.
+    groupFavoriteIds: unexpected('groupFavoriteIds'),
   };
 }
 
