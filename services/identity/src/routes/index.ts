@@ -36,6 +36,9 @@ import { registerTokenRoutes } from './internal-tokens.js';
 import { legacyApiSettings, registerLegacyApiRoutes, type LegacyApiSettings } from './legacy-api.js';
 import type { OAuthRouteDeps } from './oauth.js';
 
+// `app.ts` routes the JSON API families in any letter case, behind `/index.cfm` and the configBean context.
+export { legacyApiPrefixes, legacyApiSettings } from './legacy-api.js';
+
 // No logger or service env: no route module or domain operation reads them.
 /** Runtime dependencies `app.ts` passes to the route registry. */
 export type RouteDeps = {
