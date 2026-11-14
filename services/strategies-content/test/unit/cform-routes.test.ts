@@ -282,6 +282,14 @@ describe('routes/v1/cform', () => {
     expect((await raw('getdialog', { query: { dialog: 'field-nested', formid: FORM_ID } })).statusCode).toBe(500);
   });
 
+  // Own oracle (probe.py form): `form-id` adds `FORMID` beside itself and `formidamp;` becomes `FORMID`.
+  it.each(['form-id', 'formidamp;'])('reads form.formid under the posted name %s, as the start-up scan leaves the form scope', async (name) => {
+    db.respond(/lower\(rtrim\(type\)\) = 'form'/, []);
+    expect((await raw('getfieldtemplate', { form: { fieldType: 'field-nested', [name]: FORM_ID } })).statusCode).toBe(200);
+    const query = db.statements.find((s) => /lower\(rtrim\(type\)\) = 'form'/.test(s.sql));
+    expect(query?.params).toEqual([SITE, FORM_ID]);
+  });
+
   it.each([
     ['getdialog', {}],
     ['getfieldtemplate', {}],
@@ -415,6 +423,7 @@ describe('routes/v1/cform', () => {
 
     it.each([
       ['an empty title', upload(exported, ''), 'Title is required'],
+      ['a title of blanks, which the start-up scan trims', upload(exported, '   '), 'Title is required'],
       ['a form.json that is no JSON', upload(storedZip([['form.json', '{not json']])), 'Upload did not contain an exported Masa CMS Form'],
     ] as const)('re-renders with the error message for %s', async (_name, parts, errormessage) => {
       const response = await post(parts);

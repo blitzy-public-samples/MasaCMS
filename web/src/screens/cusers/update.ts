@@ -3,7 +3,7 @@ import { cfEq } from '@opt2/platform/legacy-compat';
 import type { components as IdentityComponents } from '@/generated/clients/identity';
 import type { components as PeopleComponents } from '@/generated/clients/people';
 import { multipartRelay, okBody, type GatewayRequest, type ServicePath } from '@/lib/gateway-client';
-import { setSessionMuraValue } from '@/lib/request-context';
+import { relayContext, setSessionMuraValue } from '@/lib/request-context';
 import type { Rc, RedirectScreen, ScreenContext, ScreenVariant, SubmitResult } from '../registry';
 import { cusersGate, normaliseCusersRc, type CusersRc } from './gate';
 import { cusersRoute } from './route';
@@ -104,17 +104,15 @@ function groupWrite(rc: CusersRc): OwnerWrite {
 }
 
 /** The posted fields as received: a multipart body with the action URL's fields, else every rc field URL-encoded. */
-function relayedRequest(
-  { req: { rc }, body }: ScreenContext,
-  { method, path, actionUrlFields }: OwnerWrite,
-): GatewayRequest {
+function relayedRequest({ req, body }: ScreenContext, { method, path, actionUrlFields }: OwnerWrite): GatewayRequest {
+  const relayed = relayContext(req);
   if (body?.form instanceof FormData) {
     const relay = multipartRelay(body);
-    const query = Object.fromEntries(actionUrlFields.map((name) => [name, rc[name]]));
+    const query = Object.fromEntries(actionUrlFields.map((name) => [name, relayed[name]]));
     return { method, path, query, body: relay.body, headers: relay.headers };
   }
   // A URL-encoded post or a GET: rc holds the URL and form fields, the CSRF pair included.
-  return { method, path, form: Object.entries(rc) };
+  return { method, path, form: Object.entries(relayed) };
 }
 
 /**

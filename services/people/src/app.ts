@@ -26,7 +26,7 @@ import { createIdentityClient, type IdentityClient } from './legacy/identity-cli
 import { PEOPLE_MAPPINGS } from './migration/mappings/index.js';
 import { SCHEMA, createPeopleRepository } from './repo/repository.js';
 import { PEOPLE_UNITS } from './repo/tables.js';
-import { favoritesSurfaceOf } from './routes/favorites.js';
+import { favoritesSurfaceOf, favoritesTargetRefused, favoritesTemplateMissing } from './routes/favorites.js';
 import { legacyApiPrefixes, legacyApiSettings, registerRoutes } from './routes/index.js';
 import { createPeopleTaskPort, ensureStartupChains, registerQueueControlRoutes, registerSweep } from './tasks/port.js';
 
@@ -88,6 +88,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     verifierOverride: options.verifierOverride,
     noCasePathPrefixes,
     surfaceOf: favoritesSurfaceOf,
+    containerRefusesTarget: favoritesTargetRefused,
+    skipsStartupScan: favoritesTemplateMissing,
     // api.cfm lower-cases the module, resource and action segments before dispatching, so the archive route matches any case.
     legacyFixturePaths: true,
     // createService takes an injected pool or the schema whose pool it opens, never both.

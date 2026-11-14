@@ -166,7 +166,9 @@ export async function registerAdminOAuthClientRoutes(app: FastifyInstance, deps:
     { schema: { params: CLIENT_PARAMS, querystring: SITE_QUERY }, config: { opt2: ROUTE_AUTH } },
     async (request) => {
       const user = userOf(request.opt2Auth);
-      const form: OAuthClientForm = { siteid: request.query.siteid ?? user.site, clientid: request.params.clientId };
+      // rc.siteid as the admin start-up scan leaves it; set-up fills an absent or empty one from session.siteid [legacy: admin/Application.cfc:401-412].
+      const { siteid } = rcOf(request, request.params.clientId);
+      const form: OAuthClientForm = { siteid: siteid === undefined || siteid === '' ? user.site : siteid, clientid: request.params.clientId };
       // Only the defaulted fields are laid over: a new bean as init leaves it, while a stored client is read as stored.
       const { client, located } = await validateClient(oauth, form, await actorOf(sessions, user));
       return located === null ? { client: clientView(client), exists: false } : { client: clientView(located), exists: true };

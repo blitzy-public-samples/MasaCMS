@@ -1,7 +1,13 @@
 // The ccomments circuit's controller gate, site default and strategies-content relay (server-only).
 import type { ScreenGate } from '@/lib/access-gate';
 import { assertNotDenied, type GatewayResponse } from '@/lib/gateway-client';
-import { administersRequestedSite, servesRequestedSite, type AdminRequest } from '@/lib/request-context';
+import {
+  administersRequestedSite,
+  relayContext,
+  relayFields,
+  servesRequestedSite,
+  type AdminRequest,
+} from '@/lib/request-context';
 import type { RawBody, ScreenContext, ScreenOwner } from '../registry';
 
 /** Comments module id. */
@@ -35,10 +41,10 @@ export const ccommentsGate: ScreenGate = (req, { secure }) =>
     ? { kind: 'allow' }
     : secure();
 
-// AdminRequest carries the FW/1 context rather than the raw scopes; it is what the legacy controller reads.
+// The relay of the FW/1 context the legacy controller reads, so the owner's scan is the request's only one.
 /** The request's parameters under their legacy names, except `siteid`, which travels as the contract's own field. */
 function actionParams(req: AdminRequest): Record<string, string> {
-  return Object.fromEntries(Object.entries(req.rc).filter(([name]) => name.toLowerCase() !== 'siteid'));
+  return Object.fromEntries(Object.entries(relayContext(req)).filter(([name]) => name.toLowerCase() !== 'siteid'));
 }
 
 // The views set only their content type; every other service header is web's own legacy base set or transport framing.
@@ -72,7 +78,7 @@ async function relayEdit(ctx: ScreenContext, action: 'bulkedit' | 'singleedit', 
     });
     assertNotDenied(written, CCOMMENTS_OWNER, 'POST /v1/sites/{siteid}/comments/{commentid}');
   }
-  const view = await facade.raw('get', '/v1/raw/ccomments/ajax', { query: { siteid } });
+  const view = await facade.raw('get', '/v1/raw/ccomments/ajax', { query: relayFields(ctx.req, { siteid }) });
   return rawBodyOf(view, 'GET /v1/raw/ccomments/ajax');
 }
 
@@ -86,10 +92,11 @@ export async function relayCommentsRaw(ctx: ScreenContext, action: CommentsRawAc
   if (action === 'bulkedit' || action === 'singleedit') return relayEdit(ctx, action, siteid);
   const path = RAW_VIEW_PATHS[action];
   const params = actionParams(ctx.req);
+  const query = relayFields(ctx.req, { siteid });
   const facade = ctx.gateway.strategiesContent;
   // AdminRequest has no method; only a POST carries a body here, and a Content-Type announces it.
   if (ctx.req.headers.has('content-type')) {
-    return rawBodyOf(await facade.raw('post', path, { query: { siteid }, form: params }), `POST ${path}`);
+    return rawBodyOf(await facade.raw('post', path, { query, form: params }), `POST ${path}`);
   }
-  return rawBodyOf(await facade.raw('get', path, { query: { siteid, params } }), `GET ${path}`);
+  return rawBodyOf(await facade.raw('get', path, { query: { ...query, params } }), `GET ${path}`);
 }

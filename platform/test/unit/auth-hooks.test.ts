@@ -17,6 +17,7 @@ import {
   serializeRouteMatrix,
   serviceRole,
   stripInboundAuthHeaders,
+  suppliedSiteIdsOf,
   validateRouteConfig,
   type DenialResponse,
   type HeaderMap,
@@ -541,6 +542,19 @@ describe('request authentication and role checks', () => {
         url: `/v1/staff?siteid=${SITE_A}`,
         payload: { siteid: SITE_B },
       },
+      { label: 'a query site-id, which the scan copies to siteid', url: `/v1/staff?site-id=${SITE_B}` },
+      { label: 'a query site.id, which the scan copies to siteid', url: `/v1/staff?site.id=%20${SITE_B}` },
+      { label: 'a query amp;siteid, which the scan renames to siteid', url: `/v1/staff?amp%3Bsiteid=${SITE_B}` },
+      { label: 'a site-id after the token siteid', url: `/v1/staff?siteid=${SITE_A}&site-id=${SITE_B}` },
+      { label: 'a raw siteid the url scope joins with a SITEID beside it', url: `/v1/staff?siteid=${SITE_B}&SITEID=${SITE_A}` },
+      { label: 'a raw SITEID the url scope joins after a token siteid', url: `/v1/staff?siteid=${SITE_A}&SITEID=${SITE_B}` },
+      { label: 'case-variant query siteids, which the url scope joins', url: `/v1/staff?siteid=${SITE_A}&SiteID=${SITE_A}` },
+      { label: 'a raw siteid the scan replaces with a later amp;siteid', url: `/v1/staff?siteid=${SITE_B}&amp%3Bsiteid=${SITE_A}` },
+      { label: 'a query siteid whose url scan fails', url: `/v1/staff?x=null&siteid=${SITE_B}` },
+      { label: 'a padded route siteid, compared as sent', url: `/v1/sites/%20${SITE_A}%20/staff` },
+      { label: 'a route siteid with a NUL, compared as sent', url: `/v1/sites/${SITE_A.slice(0, 1)}%00${SITE_A.slice(1)}/staff` },
+      { label: 'a padded JSON body siteid, which is not scanned', method: 'POST' as const, url: '/v1/staff', payload: { siteid: ` ${SITE_A} ` } },
+      { label: 'a JSON body siteid list naming two sites', method: 'POST' as const, url: '/v1/staff', payload: { siteid: [SITE_A, SITE_B] } },
     ])('answers 403 to $label', async ({ method = 'GET', url, payload }) => {
       const res = await app.inject({ method, url, payload, headers: await userHeaders([Roles.siteAdmin]) });
 
@@ -558,11 +572,26 @@ describe('request authentication and role checks', () => {
       { label: 'the token site in the body', method: 'POST' as const, url: '/v1/staff', payload: { siteid: SITE_A } },
       { label: 'another site on a siteCheck: false route', url: `/v1/unchecked?siteid=${SITE_B}` },
       { label: 'another site inside a JSON array body', method: 'POST' as const, url: '/v1/staff', payload: [{ siteid: SITE_B }] },
+      { label: 'the token site padded with spaces, which the scan trims', url: `/v1/staff?siteid=%20${SITE_A}%20` },
+      { label: 'the token site with a NUL, which the scan drops', url: `/v1/staff?siteid=${SITE_A.slice(0, 1)}%00${SITE_A.slice(1)}` },
+      { label: 'the token site as a padded site-id', url: `/v1/staff?site-id=%20${SITE_A}%20&SITEID=${SITE_A}` },
+      { label: 'another site under a JSON site-id, which no scan renames', method: 'POST' as const, url: '/v1/staff', payload: { 'site-id': SITE_B } },
+      { label: 'a JSON body siteid list naming the token site', method: 'POST' as const, url: '/v1/staff', payload: { siteid: [SITE_A] } },
+      { label: 'another site under a site-id the failed url scan leaves uncopied', url: `/v1/staff?x=null&site-id=${SITE_B}` },
     ])('admits $label', async ({ method = 'GET', url, payload }) => {
       const res = await app.inject({ method, url, payload, headers: await userHeaders([Roles.siteAdmin]) });
 
       expect(res.statusCode).toBe(200);
       expect(handled).toHaveBeenCalledOnce();
+    });
+
+    it.each<[string, Record<string, unknown>, Record<string, unknown> | undefined, string[]]>([
+      ['a url scope', { siteid: 'a', SITEID: ' b ' }, undefined, ['a, b', 'a', 'b']],
+      ['a form scope', {}, { siteid: ' a ', SiteID: 'b' }, ['a ,b', 'a', 'b']],
+    ])('reads the joined siteid of %s and each sent siteid scanned alone', (_label, query, body, siteIds) => {
+      const headers = body === undefined ? {} : { 'content-type': 'application/x-www-form-urlencoded' };
+      const request = { params: {}, query, body, headers, url: '/v1/staff' } as unknown as FastifyRequest;
+      expect(suppliedSiteIdsOf(request)).toStrictEqual(siteIds);
     });
 
     it('skips the check for an anonymous request to a public route', async () => {

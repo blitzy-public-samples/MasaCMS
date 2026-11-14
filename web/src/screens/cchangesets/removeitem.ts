@@ -1,6 +1,7 @@
 // The `cChangesets.removeItem` action: detaches a content version from a change set, then returns to its assignments (server-only).
 import { esapiUrlEncode } from '@opt2/platform/legacy-compat';
 import { okBody } from '@/lib/gateway-client';
+import { relayContext } from '@/lib/request-context';
 import type { ScreenContext, ScreenDefinition, SubmitResult } from '../registry';
 
 /** The controller's redirect, taken whether or not the token validated. */
@@ -18,7 +19,8 @@ export const changesetRemoveItemScreen: Omit<Extract<ScreenDefinition, { mode: '
   mode: 'redirect',
   owner: 'strategies-content',
   /** Forwards every rc field to the owner's write; the owner validates the token and skips the write on rejection. */
-  async submit({ req: { rc }, gateway }: ScreenContext): Promise<SubmitResult> {
+  async submit({ req, gateway }: ScreenContext): Promise<SubmitResult> {
+    const { rc } = req;
     const changesetid = rc.changesetid;
     // Legacy reads `rc.changesetid` for the CSRF context unguarded, so a request without it errors before any write.
     if (changesetid === undefined) throw new TypeError('Element RC.changesetid is undefined in ARGUMENTS.');
@@ -27,7 +29,7 @@ export const changesetRemoveItemScreen: Omit<Extract<ScreenDefinition, { mode: '
       '/v1/sites/{siteid}/changesets/{changesetid}/items/{contenthistid}/remove',
       {
         params: { siteid: rc.siteid ?? '', changesetid, contenthistid: rc.contentHistID ?? '' },
-        form: Object.entries(rc),
+        form: Object.entries(relayContext(req)),
       },
     );
     if (response.location !== undefined) return { kind: 'location', location: response.location };

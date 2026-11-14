@@ -11,16 +11,21 @@ import {
   cfToBoolean,
   corsHeaders,
   isCfUuid,
-  routeKeyForRequest,
+  isJsonContentType,
+  legacyScopeParams,
+  portcullisScan,
+  scannedRouteKey,
   serializeResponse,
   type ApiNameContext,
   type LegacyApiErrorType,
+  type RouteKeyOptions,
   type RouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
 import {
   EnvValidationError,
   csrfPreHandler,
   legacyParamsOf,
+  legacyScopesOf,
   multipartFilesOf,
   sendLegacyResponse,
   z,
@@ -215,7 +220,7 @@ function scopeText(item: unknown): string {
   return String(item);
 }
 
-/** A parsed query or form body as a route-key scope; anything else is an empty scope. */
+/** A parsed query or form body as sent, as a route-key scope; anything else is an empty scope. */
 function scopeOf(source: unknown): Record<string, string | string[]> {
   const scope = Object.create(null) as Record<string, string | string[]>;
   if (!isRecord(source)) return scope;
@@ -225,19 +230,27 @@ function scopeOf(source: unknown): Record<string, string | string[]> {
   return scope;
 }
 
-function isJsonRequest(request: FastifyRequest): boolean {
-  const contentType = request.headers['content-type'];
-  return typeof contentType === 'string' && contentType.slice(0, 16).toLowerCase() === 'application/json';
+/** The url scope processRequest reads: the scanned url without the reload key it deletes (jsonApiUtility.cfc:403). */
+function apiUrlScopeOf(scanned: Readonly<Record<string, string>>, appReloadKey: string): Record<string, string> {
+  const url = Object.create(null) as Record<string, string>;
+  for (const [name, value] of Object.entries(scanned)) {
+    if (name.toLowerCase() !== appReloadKey.toLowerCase()) url[name] = value;
+  }
+  return url;
 }
 
-/** The request facts the shared route key is derived from, url, form and JSON body kept apart as legacy reads them. */
-function routeKeyRequestOf(request: FastifyRequest): RouteKeyRequest {
-  const json = isJsonRequest(request);
+/** The request facts the shared route key is derived from: the given url and form scopes, and the JSON body as sent. */
+function routeKeyRequestOf(
+  request: FastifyRequest,
+  query: Record<string, string | string[]>,
+  form: Record<string, string | string[]>,
+): RouteKeyRequest {
+  const json = isJsonContentType(request.headers['content-type']);
   return {
     method: request.method,
     path: request.url.split('?', 1)[0] ?? '',
-    query: scopeOf(request.query),
-    form: json ? {} : scopeOf(request.body),
+    query,
+    form: json ? {} : form,
     jsonBody: json ? request.body : undefined,
     headers: request.headers,
     multipartFileNames: multipartFilesOf(request).map(({ field, filename }) => ({ field, filename })),
@@ -336,7 +349,7 @@ interface SiteCall {
   reported: string;
   baseUrl: string;
   methodCtx: ApiNameContext;
-  /** The url scope as the request sent it. */
+  /** The url scope as processRequest reads it. */
   url: UrlScope;
   /** The JSON API instance's site, as registered. */
   apiSite: RegisteredSite;
@@ -345,15 +358,6 @@ interface SiteCall {
 }
 
 type StoredSite = Awaited<ReturnType<ProgramsSitesRepository['readSite']>>;
-
-/** The url scope of a request: names as sent, a repeated name's values joined with `,` as CFML joins them. */
-function urlScopeOf(request: FastifyRequest): Record<string, string> {
-  const url: Record<string, string> = {};
-  for (const [name, value] of Object.entries(scopeOf(request.query))) {
-    Object.defineProperty(url, name, { value: Array.isArray(value) ? value.join(',') : value, writable: true, enumerable: true, configurable: true });
-  }
-  return url;
-}
 
 /** The raw query string `cgi.QUERY_STRING` holds. */
 function queryStringOf(request: FastifyRequest): string {
@@ -369,7 +373,7 @@ function setAfterFormCopy(call: SiteCall, key: string): boolean {
 
 /** ColdFusion's `form.fieldnames`: each posted field name once, ignoring case, upper-cased in posting order; none without a form body. */
 function postedFieldNames(request: FastifyRequest): string[] {
-  if (isJsonRequest(request)) return [];
+  if (isJsonContentType(request.headers['content-type'])) return [];
   const names: string[] = [];
   for (const name of Object.keys(scopeOf(request.body))) {
     const upper = name.toUpperCase();
@@ -383,9 +387,9 @@ function formScopeOf(call: SiteCall): Record<string, string> {
   const form = Object.fromEntries(Object.entries(call.params).filter(([key]) => !setAfterFormCopy(call, key)));
   const names = postedFieldNames(call.request);
   if (names.length > 0) {
-    // The servlet's own list replaces a posted `fieldnames` field.
+    // The servlet's own list replaces a posted `fieldnames` field, and the start-up scan filters it as any other field.
     const key = Object.keys(form).find((name) => name.toLowerCase() === 'fieldnames') ?? 'fieldnames';
-    form[key] = names.join(',');
+    form[key] = legacyScopeParams(portcullisScan([['fieldnames', names.join(',')]])).fieldnames ?? '';
   }
   return form;
 }
@@ -669,12 +673,16 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
   async function handle(request: FastifyRequest, reply: FastifyReply): Promise<FastifyReply> {
     const registry = new Map((await registryOf(request)).map((entry) => [entry.siteId.toLowerCase(), entry]));
     const lookup = (siteId: string): RegisteredSite | undefined => registry.get(siteId.toLowerCase());
-    const keyed = routeKeyRequestOf(request);
-    const key = routeKeyForRequest(keyed, {
+    const options: RouteKeyOptions = {
       siteExists: (siteId) => lookup(siteId) !== undefined,
       context: settings.context,
       appReloadKey: settings.appReloadKey,
-    });
+    };
+    // The gateway's key: reload on the url as sent, the route on the scanned scopes (onRequestStart_include.cfm:114-138).
+    const sent = { ...routeKeyRequestOf(request, scopeOf(request.query), scopeOf(request.body)), url: request.url };
+    const { result: key, urlScope } = scannedRouteKey(sent, options);
+    const url = apiUrlScopeOf(urlScope, settings.appReloadKey);
+    const keyed = routeKeyRequestOf(request, url, legacyScopeParams(legacyScopesOf(request).form));
     if (key.family !== 'api' && key.family !== 'rest') {
       throw unavailable(`Route ${key.key} is not served by programs-sites`, 'not-carried');
     }
@@ -725,7 +733,7 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
       reported,
       baseUrl: jsonApiBaseUrl({ ...endpointOf(request, settings), mode, siteId: apiSite.siteId }),
       methodCtx,
-      url: urlScopeOf(request),
+      url,
       apiSite,
       lookup,
     };

@@ -605,6 +605,50 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     expect(res.json()).toMatchObject({ written: true, errors: {}, group: { UserID: groupId, isPublic, SiteID: site } });
   });
 
+  type Encoding = 'urlencoded' | 'multipart' | 'json';
+
+  /** `fields` posted to `url` as a URL-encoded form, a multipart form of text parts or a JSON body, its answer checked against the contract. */
+  async function sendEncoded(method: Method, url: string, headers: Record<string, string>, encoding: Encoding, fields: Record<string, string>) {
+    const boundary = '----opt2GroupBoundary';
+    const parts = Object.entries(fields).map(([name, value]) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`);
+    const [contentType, payload] =
+      encoding === 'json'
+        ? ['application/json', JSON.stringify(fields)]
+        : encoding === 'urlencoded'
+          ? [FORM_BODY['content-type'], new URLSearchParams(fields).toString()]
+          : [`multipart/form-data; boundary=${boundary}`, `${parts.join('')}--${boundary}--\r\n`];
+    const res = await app.inject({ method, url, headers: { ...headers, 'content-type': contentType }, payload });
+    assertResponseMatchesOpenApi(OPENAPI, { method, path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+    return res;
+  }
+
+  // Oracle (own ACF, admin form post): the Portcullis scan's tag and word filters and trim leave each value as stored in
+  // tusers; a JSON body is no url or form scope, so only the bean's setValue trim applies to it.
+  const SCRIPT_PROTECTED: ReadonlyArray<readonly [sent: string, scanned: string, json: string]> = [
+    ["<script>alert('xss')</script>' OR 1=1--", "[INVALID]' OR 1=1--", "<script>alert('xss')</script>' OR 1=1--"],
+    ['  Padded Name  ', 'Padded Name', 'Padded Name'],
+    ['<img src=x onerror=alert(1)>', '<img src=x [INVALID]=alert(1)>', '<img src=x onerror=alert(1)>'],
+    ['javascript:alert(1)', '[INVALID]alert(1)', 'javascript:alert(1)'],
+  ];
+  it.each(
+    (['urlencoded', 'multipart', 'json'] as const).flatMap((encoding) =>
+      SCRIPT_PROTECTED.map(([sent, scanned, json]): [Encoding, string, string] => [encoding, sent, encoding === 'json' ? json : scanned]),
+    ),
+  )('creates then updates a group posted as %s with %j, storing and answering %j', async (encoding, sent, stored) => {
+    const groupId = nextId('B');
+    const stage = 'Stage';
+    const created = await sendEncoded('POST', '/v1/groups', await admin(), encoding, { userid: groupId, groupname: stage, notes: sent, isPublic: '0', ...csrfFields(groupId) });
+    const afterCreate = await gated(SITE, (tx) => repo.findGroupsByIds(tx, [groupId]));
+    const updated = await sendEncoded('PUT', `/v1/groups/${groupId}`, await admin(), encoding, { groupname: sent, notes: sent, isPublic: '0', ...csrfFields(groupId) });
+    const afterUpdate = await gated(SITE, (tx) => repo.findGroupsByIds(tx, [groupId]));
+
+    expect(created.json()).toMatchObject({ written: true, errors: {}, group: { UserID: groupId, GroupName: stage, notes: stored } });
+    expect(afterCreate).toEqual([expect.objectContaining({ groupname: stage, notes: stored })]);
+    expect(updated.json()).toMatchObject({ written: true, errors: {}, group: { UserID: groupId, GroupName: stored, notes: stored } });
+    expect(afterUpdate).toEqual([expect.objectContaining({ groupname: stored, notes: stored })]);
+  });
+
+
   describe('member columns', () => {
     const MEMBER_KEYS = [
       'groupID', 'userID', 'GroupName', 'Fname', 'Lname', 'UserName', 'PasswordCreated', 'Email', 'Company', 'JobTitle', 'MobilePhone',

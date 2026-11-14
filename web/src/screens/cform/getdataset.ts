@@ -1,5 +1,6 @@
 // `cform.getDataset`: the form-builder dataset JSON, built by strategies-content and relayed unchanged (server-only).
 import { assertNotDenied } from '@/lib/gateway-client';
+import { relayField } from '@/lib/request-context';
 import type { RawBody, ScreenContext } from '../registry';
 
 const OPERATION = 'POST /v1/raw/cform/getdataset';
@@ -9,13 +10,10 @@ const FORWARDED_FIELDS = ['datasetID', 'fieldID'] as const;
 
 /** The service's status, content type and JSON bytes for `cform.getdataset`, unparsed so legacy's key case survives. */
 export async function getDataset(ctx: ScreenContext): Promise<RawBody> {
-  const { rc } = ctx.req;
-  const form = FORWARDED_FIELDS.flatMap((name): Array<[string, string]> => {
-    const value = rc[name];
-    return value === undefined ? [] : [[name, value]];
-  });
+  const { req } = ctx;
+  const form = FORWARDED_FIELDS.flatMap((name) => Object.entries(relayField(req, name)));
   const response = await ctx.gateway.strategiesContent.raw('post', '/v1/raw/cform/getdataset', {
-    query: { siteid: rc.siteid },
+    query: relayField(req, 'siteid'),
     form,
   });
   assertNotDenied(response, 'strategies-content', OPERATION);

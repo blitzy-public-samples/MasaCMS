@@ -1,5 +1,5 @@
 // Tests the committed cut-over versions against the generator's rules; build mechanics and the CLI are tested in ../cutover/.
-import { normaliseRouteKey } from '@opt2/platform/legacy-compat';
+import { ROUTE_FAMILIES, matchRouteKey, normaliseRouteKey, type RouteFamily, type RouteKeyResult } from '@opt2/platform/legacy-compat';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ROLLBACK_REPORT, buildVersions, rosterGroupSet } from '../../src/cutover/build-versions.js';
 import { loadGroups } from '../../src/cutover/loader.js';
@@ -14,6 +14,8 @@ const UPDATE = 'admin:cusers.update{type=2,action=update}';
 const ARCHIVE = 'fixture:people/persons/{id}/archive@post';
 const IMAGE_UPLOADS = ['admin:carch.update{upload=image}', 'admin:carch.multifileupload{upload=image}', 'api:file.save{upload=image}'];
 const SYNTHETIC_V1 = /^\w+:\/v1\//;
+const FAMILY_VARIANT = /^(\w+):\*\{([^{}]+)\}$/;
+const VARIANT_SUFFIX = /\{[^{}]*\}$/;
 
 const byRoute = (table: CutoverTable): Map<string, CutoverEntry> => new Map(table.entries.map((entry) => [entry.route, entry]));
 
@@ -77,7 +79,20 @@ describe('committed versions', () => {
     ];
     expect(held).toEqual(expect.arrayContaining(IMAGE_UPLOADS));
     const entries = byRoute(versions.v0002);
+    const routes = versions.v0002.entries.map((entry) => entry.route);
     for (const key of held) {
+      const familyVariant = FAMILY_VARIANT.exec(key);
+      if (familyVariant !== null) {
+        // A request variant over a whole family has no entry, so no v0002 key of the family matches under it and legacy serves it.
+        const [, family = '', variant = ''] = familyVariant;
+        expect(ROUTE_FAMILIES, key).toContain(family);
+        const familyKeys = [`${family}:sample`, ...routes.filter((route) => route.startsWith(`${family}:`)).map((route) => route.replace(VARIANT_SUFFIX, ''))];
+        for (const baseKey of familyKeys) {
+          const halted: RouteKeyResult = { key: `${baseKey}{${variant}}`, baseKey, family: family as RouteFamily, variant, httpMethod: 'GET', params: {} };
+          expect(matchRouteKey(halted, routes), halted.key).toBeUndefined();
+        }
+        continue;
+      }
       // A held key with no recorded write, such as the multi-file upload page, stays a read.
       const writes = (ctx.inventoryKeys.get(key)?.writeSet.length ?? 0) > 0;
       expect(entries.get(key), key).toMatchObject({ kind: writes ? 'legacy-write' : 'read', state: 'legacy' });

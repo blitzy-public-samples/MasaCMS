@@ -161,7 +161,7 @@ describe.skipIf(!live)('a target write declared in gateway.session_barrier again
       const destination: TargetDestination | LegacyDestination = write
         ? { kind: 'target' as const, service: 'people', serviceUrl: svc.url, path: url, isWeb: false }
         : { kind: 'legacy' as const };
-      return { result, entry, destination, failContext: failContextFor(result, url) };
+      return { result, entry, destination, failContext: failContextFor(result, url), urlScope: {}, scanFailed: false };
     };
     const barrier = createSessionBarrier({ db, client: migration });
     const deps: DispatcherDeps = {

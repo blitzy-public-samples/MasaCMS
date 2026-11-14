@@ -336,7 +336,7 @@ paths:
     post:
       operationId: fixtureSignRequest
       summary: Signs a PENDING request with the signer's typed name and appends its `signed` audit entry.
-      description: 'Only the request''s designated signer may sign; the typed name is stored as sent. Public on the platform; the handler checks the site, then the effective method, login, the `esignature.signer` role group and the CSRF token, as the fixture does. An `X-HTTP-Method-Override` other than `POST` answers 404 `notFound`.'
+      description: 'Only the request''s designated signer may sign; the typed name is stored as a JSON body sends it, or as Masa''s script protection leaves a url or form value. Public on the platform; the handler checks the site, then the effective method, login, the `esignature.signer` role group and the CSRF token, as the fixture does. An `X-HTTP-Method-Override` other than `POST` answers 404 `notFound`.'
       tags:
         - fixture
       x-opt2-transport: service

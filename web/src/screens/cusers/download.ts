@@ -1,6 +1,7 @@
 // The `cUsers.download` action: the users CSV of `cusers/inc/dsp_download.cfm`, built by its owning service (server-only).
 import { cfToBoolean } from '@opt2/platform/legacy-compat';
 import { assertNotDenied, type GatewayClient, type GatewayResponse, type WebServiceName } from '@/lib/gateway-client';
+import { relayFields } from '@/lib/request-context';
 import type { DownloadScreen, RawBody, ScreenContext } from '../registry';
 import { cusersGate, normaliseCusersRc, type CusersRc } from './gate';
 import { relayUsersCsv, type UsersCsvSource } from './inc/dsp_download';
@@ -24,9 +25,10 @@ function sourceOf(records: string): UsersCsvSource {
 }
 
 /** The call legacy's list comes from: the preserved source's, else the site's users, or its unassigned users. */
-function usersCsvCall(rc: CusersRc): UsersCsvCall {
+function usersCsvCall(req: ScreenContext['req'], rc: CusersRc): UsersCsvCall {
   if (rc.records === undefined) {
-    const query = { siteid: rc.siteid, ispublic: rc.ispublic, unassigned: cfToBoolean(rc.unassigned) ? '1' : '0' };
+    const unassigned = cfToBoolean(rc.unassigned) ? '1' : '0';
+    const query = relayFields(req, { siteid: rc.siteid, ispublic: rc.ispublic, unassigned });
     return {
       service: 'people',
       operation: 'downloadUsersCsv',
@@ -57,7 +59,7 @@ function usersCsvCall(rc: CusersRc): UsersCsvCall {
  * @throws GatewayUnavailableError When the service is unavailable.
  */
 async function loadUsersCsv({ req, gateway }: ScreenContext): Promise<GatewayResponse<Buffer>> {
-  const call = usersCsvCall(normaliseCusersRc(req));
+  const call = usersCsvCall(req, normaliseCusersRc(req));
   const response = await call.send(gateway);
   // Legacy answers a denied caller with its access gate's redirect, never a service error body, so only a denial
   // is not relayed.

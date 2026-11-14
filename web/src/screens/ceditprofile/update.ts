@@ -1,6 +1,6 @@
 // `cEditProfile.update`: people saves the session user, then the home redirect or `update.cfm`'s edit view (server-only).
 import { okBody } from '@/lib/gateway-client';
-import { setSessionMuraValue } from '@/lib/request-context';
+import { relayContext, setSessionMuraValue } from '@/lib/request-context';
 import type { PageControllerRedirect, PageRedirect, PageScreen, ScreenContext } from '../registry';
 import {
   buildEditProfileView,
@@ -38,7 +38,8 @@ const FAILED_SAVES = new WeakMap<ScreenContext, RetainedProfileBean>();
  * @throws GatewayDenialError When people answers 401 or 403; any other non-2xx answer throws `Error`.
  */
 async function updateProfileStep(ctx: ScreenContext): Promise<PageControllerRedirect | undefined> {
-  const response = await ctx.gateway.people.call('post', '/v1/profile:update', { form: Object.entries(ctx.req.rc) });
+  const form = Object.entries(relayContext(ctx.req));
+  const response = await ctx.gateway.people.call('post', '/v1/profile:update', { form });
   const { redirect, errors, userBean } = okBody(response, SERVICE, 'updateProfile');
   if (redirect !== undefined) {
     setSessionMuraValue(ctx.req, EDIT_BEAN_SESSION_KEY, undefined);

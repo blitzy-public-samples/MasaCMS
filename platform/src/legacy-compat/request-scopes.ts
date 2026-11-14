@@ -1,0 +1,154 @@
+// A parsed request's url and form scopes as Masa's start-up script protection leaves them (core/appcfc/scriptProtect_include.cfm:4-20).
+import { portcullisScan, type PortcullisInput, type PortcullisScope } from './portcullis.js';
+
+/** Parsed parts of a request that ColdFusion builds its url and form scopes from; a Fastify request is one. */
+export interface ScopeSource {
+  /** Parsed query string: each name's value, or its repeated values. */
+  readonly query: unknown;
+  /** Parsed body: form fields, multipart parts as `@fastify/multipart` attaches them, a JSON value or raw bytes. */
+  readonly body: unknown;
+  /** Request headers under lower-cased names; only `content-type` is read. */
+  readonly headers: { readonly [name: string]: unknown };
+  /** Request target as sent; its query string orders the url values of names differing only in case. */
+  readonly url?: string;
+}
+
+/** A request's url and form scopes as start-up leaves them, entries in scope order, and its JSON body as sent. */
+export interface LegacyScopes {
+  /** The scanned url scope; `failed` when legacy's scan throws on it. */
+  url: PortcullisScope;
+  /** The scanned form scope: empty beside a JSON body, and as posted after a failed url scan. */
+  form: PortcullisScope;
+  /** Whether the body is JSON, which ColdFusion neither scans nor reads into the form scope. */
+  json: boolean;
+  /** A JSON request's parsed body as sent; undefined for any other request. */
+  jsonBody: unknown;
+}
+
+/** A multipart part as `@fastify/multipart` attaches it to the body. */
+interface MultipartPart {
+  type: 'file' | 'field';
+  fieldname: string;
+  filename?: unknown;
+  value?: unknown;
+}
+
+/** A key-value object, including fast-querystring's null-rooted dictionaries; never arrays, buffers or streams. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) return false;
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null || Object.getPrototypeOf(proto) === null;
+}
+
+function isMultipartPart(value: unknown): value is MultipartPart {
+  return isPlainObject(value) && (value.type === 'file' || value.type === 'field') && typeof value.fieldname === 'string';
+}
+
+/** Whether a `content-type` reads as JSON: legacy takes any type starting with `application/json`. */
+export function isJsonContentType(contentType: unknown): boolean {
+  return typeof contentType === 'string' && contentType.slice(0, 16).toLowerCase() === 'application/json';
+}
+
+/** One parsed value or multipart part as a CFML scope holds it: a file part by name, a field part by its text. */
+function partValue(item: unknown): unknown {
+  if (!isMultipartPart(item)) return item;
+  return item.type === 'file' ? item.filename : scopeText(item.value);
+}
+
+/** A scope value as text: a string as it is, any other value, such as a field a JSON-parsing multipart parser attached, as its JSON. */
+function scopeText(value: unknown): string {
+  return typeof value === 'string' ? value : (JSON.stringify(value) ?? '');
+}
+
+/** One parsed url, form or multipart value as a CFML scope holds it: repeated keys joined with `,`, file parts by name. */
+export function legacyScopeValue(value: unknown): unknown {
+  return Array.isArray(value) ? value.map(partValue).join(',') : partValue(value);
+}
+
+/** `items` grouped by lower-cased name, groups in first-seen order, each group's items in order. */
+function byLowerName<T>(items: Iterable<T>, nameOf: (item: T) => string): Map<string, [T, ...T[]]> {
+  const groups = new Map<string, [T, ...T[]]>();
+  for (const item of items) {
+    const group = groups.get(nameOf(item).toLowerCase());
+    if (group === undefined) groups.set(nameOf(item).toLowerCase(), [item]);
+    else group.push(item);
+  }
+  return groups;
+}
+
+/** Names of the query string of `target` in sent order, `+` and escapes decoded as Fastify's parser decodes them. */
+function sentQueryNames(target: string): string[] {
+  const at = target.indexOf('?');
+  if (at === -1) return [];
+  return target
+    .slice(at + 1)
+    .split('&')
+    .flatMap((pair) => {
+      if (pair === '') return [];
+      const eq = pair.indexOf('=');
+      const name = (eq === -1 ? pair : pair.slice(0, eq)).replaceAll('+', ' ');
+      try {
+        return [decodeURIComponent(name)];
+      } catch {
+        // The parser keeps a name it cannot decode as sent.
+        return [name];
+      }
+    });
+}
+
+/** The parts of one name's spellings interleaved as `sent` orders them; undefined unless `sent` accounts for every part. */
+function inSentOrder(spellings: ReadonlyArray<readonly [key: string, parts: readonly unknown[]]>, sent: readonly string[]): unknown[] | undefined {
+  const queues = new Map(spellings.map(([key, parts]) => [key, [...parts]]));
+  const ordered: unknown[] = [];
+  for (const name of sent) {
+    const queue = queues.get(name);
+    if (queue === undefined || queue.length === 0) return undefined;
+    ordered.push(queue.shift());
+  }
+  return [...queues.values()].every((queue) => queue.length === 0) ? ordered : undefined;
+}
+
+/**
+ * Parsed url or form fields as ColdFusion builds the scope, as scan inputs: names differing only in case joined under the
+ * first spelling, values `,`-joined in field order, or in the order `target`'s query string sent them; a name holding a
+ * file part passes unscanned. None unless `fields` is a plain object.
+ */
+export function portcullisInputsOf(fields: unknown, target?: string): PortcullisInput[] {
+  if (!isPlainObject(fields)) return [];
+  let sent: Map<string, string[]> | undefined;
+  return [...byLowerName(Object.entries(fields), ([key]) => key)].map(([lower, spellings]): PortcullisInput => {
+    const parts = spellings.map(([key, value]): [string, unknown[]] => [key, Array.isArray(value) ? value : [value]]);
+    const opaque = parts.some(([, items]) => items.some((part) => isMultipartPart(part) && part.type === 'file'));
+    const [[key, value], ...others] = spellings;
+    if (others.length === 0) return [key, legacyScopeValue(value), opaque];
+    sent ??= byLowerName(target === undefined ? [] : sentQueryNames(target), (name) => name);
+    const ordered = inSentOrder(parts, sent.get(lower) ?? []) ?? parts.flatMap(([, items]) => items);
+    return [key, ordered.map(partValue).filter((item) => item !== undefined).map(scopeText).join(','), opaque];
+  });
+}
+
+/** The url and form scopes of `source` after the start-up scan, and its JSON body as sent. */
+export function legacyScopesFrom(source: ScopeSource): LegacyScopes {
+  const url = portcullisScan(portcullisInputsOf(source.query, source.url));
+  if (isJsonContentType(source.headers['content-type'])) {
+    return { url, form: { entries: [], failed: false }, json: true, jsonBody: source.body };
+  }
+  // Admin start-up scans the form inside the url scan's guard, so a failed url scan leaves the form as posted.
+  const form = url.failed
+    ? { entries: portcullisInputsOf(source.body).map(([key, value]): [string, unknown] => [key, value]), failed: false }
+    : portcullisScan(portcullisInputsOf(source.body));
+  return { url, form, json: false, jsonBody: undefined };
+}
+
+/** A scope's entries as name to text, as a route-key request takes them: a later name replaces an earlier one ignoring case, under its own spelling. */
+export function legacyScopeParams(scope: PortcullisScope): Record<string, string> {
+  const params = Object.create(null) as Record<string, string>;
+  const spelling = new Map<string, string>();
+  for (const [key, value] of scope.entries) {
+    const previous = spelling.get(key.toLowerCase());
+    if (previous !== undefined) delete params[previous];
+    spelling.set(key.toLowerCase(), key);
+    params[key] = scopeText(value);
+  }
+  return params;
+}

@@ -24,6 +24,7 @@ export interface LegacyQuery {
 type SimpleValue = string | number | boolean | Date;
 
 const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+const VAL_PREFIX = /^[+-]?(?:\d+\.?\d*|\.\d+)/;
 const BOOLEAN_WORD = /^(?:true|false|yes|no)$/i;
 // POSIX [[:cntrl:]] as ACF's reReplace matches it: ASCII C0 and DEL only, not U+0080-U+009F.
 const CONTROL_CHAR = /[\u0000-\u001F\u007F]/;
@@ -94,6 +95,19 @@ export function cfToNumber(v: unknown): number {
   return typeof v === 'number' ? v : Number(javaTrim(v as string));
 }
 
+/** CFML `Val`: the signed decimal (never an exponent) the Java-trimmed simple-value text starts with; else 0, overflow included. */
+export function cfVal(value: unknown): number {
+  const number = Number(VAL_PREFIX.exec(javaTrim(simpleText(value)))?.[0] ?? '');
+  return Number.isFinite(number) ? number : 0;
+}
+
+/** A simple value as CFML text: strings as is, numbers and booleans as ACF prints them; '' for anything else. */
+function simpleText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return cfNumberString(value);
+  return typeof value === 'boolean' ? String(value) : '';
+}
+
 /** CFML isDate for serializer input: valid Date instances only; date-typed values must arrive as Date objects. */
 export function cfIsDate(v: unknown): v is Date {
   return v instanceof Date && !Number.isNaN(v.getTime());
@@ -118,7 +132,7 @@ function trimFraction(s: string): string {
 }
 
 /** ACF serializeJSON string literal: '/' and non-ASCII stay raw; other C0 chars and DEL use lowercase \u00xx. */
-function jsonString(s: string): string {
+export function jsonString(s: string): string {
   const escaped = s.replace(
     NEEDS_ESCAPE,
     (c) => SHORT_ESCAPES[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,

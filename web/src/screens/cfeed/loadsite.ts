@@ -1,5 +1,6 @@
 // cFeed.loadSite: the collection content-filter search fragment strategies-content renders, relayed (server-only).
 import { assertNotDenied } from '@/lib/gateway-client';
+import { relayContext } from '@/lib/request-context';
 import type { FragmentScreen, RawBody, ScreenContext } from '../registry';
 import { cfeedGate } from './before';
 
@@ -17,7 +18,7 @@ export const cfeedLoadSiteScreen: FragmentScreen = Object.freeze({
     // Every rc field (siteid, keywords, isNew, contentPoolID, compactDisplay, cacheid among them) travels as a url
     // field under its legacy name; the service applies the view's own defaults.
     const response = await ctx.gateway.strategiesContent.raw('get', LOADSITE_PATH, {
-      query: { params: { ...ctx.req.rc } },
+      query: { params: { ...relayContext(ctx.req) } },
     });
     assertNotDenied(response, 'strategies-content', OPERATION);
     const contentType = [response.headers['content-type'] ?? []].flat()[0];

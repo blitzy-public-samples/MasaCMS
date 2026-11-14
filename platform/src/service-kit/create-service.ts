@@ -31,9 +31,12 @@ import {
   LegacyServiceUnavailableError,
   cfNumberString,
   isCfUuid,
+  isJsonContentType,
   legacyErrorResponse,
   legacyHeaders,
+  legacyScopesFrom,
   unavailableResponseFor,
+  type LegacyScopes,
   type UnavailableSurface,
 } from '../legacy-compat/index.js';
 import { createLogger, fastifyLoggerOptions, serializeError, type LogFields, type Logger } from '../logging/index.js';
@@ -77,10 +80,16 @@ export interface CreateServiceOptions<E extends BaseEnv = BaseEnv> {
   logger?: Logger;
   /** Defaults to {@link defaultSurfaceOf}. */
   surfaceOf?: (request: FastifyRequest) => LegacySurface;
-  /** Path prefixes routed in any letter case, as legacy compares them; a matching path is routed under the spelling given here. */
+  /** Root-served path prefixes routed in any letter case, as legacy compares them; a matching path is routed under the spelling given here. */
   noCasePathPrefixes?: readonly string[];
   /** Routes `/legacy-fixtures/cfml/api.cfm/` paths with the module, resource, action and tail segments lower-cased, as api.cfm reads them. */
   legacyFixturePaths?: boolean;
+  /** Answers legacy's start-up scan failure with its error page on root-served paths; defaults to true. */
+  legacyStartupScan?: boolean;
+  /** Whether the legacy servlet container refuses the request target; a refused one gets the container's empty 400 ahead of every other check. */
+  containerRefusesTarget?: (request: FastifyRequest) => boolean;
+  /** Whether a request skips the start-up scan, as a path naming no template does, whose 404 a scan fault leaves standing on legacy. */
+  skipsStartupScan?: (request: FastifyRequest) => boolean;
 }
 
 /** Process runtime of one service, decorated as `app.opt2`. */
@@ -267,19 +276,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null || Object.getPrototypeOf(proto) === null;
 }
 
-function isMultipartPart(value: unknown): value is MultipartFile | MultipartValue {
-  return isPlainObject(value) && (value.type === 'file' || value.type === 'field') && typeof value.fieldname === 'string';
-}
-
-/** One url, form or multipart value as a CFML scope holds it: repeated keys joined with `,`, file parts by name. */
-function scopeValue(value: unknown): unknown {
-  const single = (item: unknown): unknown => {
-    if (!isMultipartPart(item)) return item;
-    return item.type === 'file' ? item.filename : item.value;
-  };
-  return Array.isArray(value) ? value.map(single).join(',') : single(value);
-}
-
 /** One deserialized JSON value: simple values as text in the `scalars` form, null as '', objects and arrays as they are. */
 function jsonValue(value: unknown, scalars: LegacyParamsOptions['jsonScalars']): unknown {
   if (value === null) return '';
@@ -292,8 +288,7 @@ function jsonValue(value: unknown, scalars: LegacyParamsOptions['jsonScalars']):
 }
 
 function isJsonRequest(request: FastifyRequest): boolean {
-  const contentType = request.headers['content-type'];
-  return typeof contentType === 'string' && contentType.slice(0, 16).toLowerCase() === 'application/json';
+  return isJsonContentType(request.headers['content-type']);
 }
 
 /** The value under `key` ignoring case, when it is a string. */
@@ -309,13 +304,38 @@ export function defaultSurfaceOf(request: FastifyRequest): LegacySurface {
   return path === '/admin' || ADMIN_PREFIXES.some((prefix) => path.startsWith(prefix)) ? 'admin' : 'api';
 }
 
+/** Leads of the paths legacy serves through Masa's own start-up (root and module ajax Application.cfc), whose scan runs unguarded. */
+const ROOT_SERVED_LEADS: readonly string[] = ['/_api', '/index.cfm', '/tasks', '/core', '/legacy-fixtures'];
+
+/** Whether `path` is a root-served lead, lies under one, or starts with one of the service's no-case API prefixes. */
+function isRootServed(path: string, noCasePrefixes: readonly string[]): boolean {
+  return (
+    ROOT_SERVED_LEADS.some((lead) => path === lead || path.startsWith(`${lead}/`)) ||
+    noCasePrefixes.some((prefix) => path.startsWith(prefix))
+  );
+}
+
+/** Whether a request on a root-served path, as sent or as routed, fails legacy's start-up scan; before body parsing only the url scope counts. */
+function failsRootScan(request: FastifyRequest, noCasePrefixes: readonly string[]): boolean {
+  // The router decodes escapes such as `%5F` that the path as sent keeps.
+  const paths = [pathOf(request), request.routeOptions.url];
+  if (!paths.some((path) => path !== undefined && isRootServed(path, noCasePrefixes))) return false;
+  const { url, form } = legacyScopesOf(request);
+  return url.failed || form.failed;
+}
+
+/** The url and form scopes as Masa's start-up script protection leaves them, failure flags included, and a JSON body as sent. */
+export function legacyScopesOf(request: FastifyRequest): LegacyScopes {
+  return legacyScopesFrom(request);
+}
+
 /** Options of {@link legacyParamsOf}. */
 export interface LegacyParamsOptions {
   /** 'string' (default): JSON body booleans and numbers as `String(value)`; 'cfml': as CFML toString renders them (YES/NO, ACF numbers). */
   jsonScalars?: 'string' | 'cfml';
 }
 
-/** Query then body params as legacy merges url, form and a JSON body: later keys win ignoring case, keeping their spelling. */
+/** Legacy's script-protected url then form scope, or JSON body: later keys win ignoring case, keeping their spelling. */
 export function legacyParamsOf(request: FastifyRequest, options: LegacyParamsOptions = {}): Record<string, unknown> {
   const params: Record<string, unknown> = {};
   const spelling = new Map<string, string>();
@@ -326,13 +346,9 @@ export function legacyParamsOf(request: FastifyRequest, options: LegacyParamsOpt
     // Defined, not assigned, so a `__proto__` key stays a data key.
     Object.defineProperty(params, key, { value, writable: true, enumerable: true, configurable: true });
   };
-  if (isPlainObject(request.query)) {
-    for (const [key, value] of Object.entries(request.query)) put(key, scopeValue(value));
-  }
-  if (isPlainObject(request.body)) {
-    const json = isJsonRequest(request);
-    for (const [key, value] of Object.entries(request.body)) put(key, json ? jsonValue(value, options.jsonScalars) : scopeValue(value));
-  }
+  const { url, form, jsonBody } = legacyScopesOf(request);
+  const body = isPlainObject(jsonBody) ? Object.entries(jsonBody).map(([key, item]) => [key, jsonValue(item, options.jsonScalars)] as const) : form.entries;
+  for (const [key, value] of [...url.entries, ...body]) put(key, value);
   return params;
 }
 
@@ -347,6 +363,23 @@ export function multipartFilesOf(request: FastifyRequest): MultipartFileData[] {
     sha256,
     stream: () => createReadStream(filepath),
   }));
+}
+
+/** Replaces `part` in its body with the field part the multipart plugin attaches for a text part holding `value`. */
+function attachAsField(part: MultipartFile, value: string): void {
+  const field: MultipartValue<string> = {
+    type: 'field',
+    fieldname: part.fieldname,
+    mimetype: part.mimetype,
+    encoding: part.encoding,
+    value,
+    fieldnameTruncated: false,
+    valueTruncated: false,
+    fields: part.fields,
+  };
+  const held = part.fields[part.fieldname];
+  if (Array.isArray(held)) held[held.indexOf(part)] = field;
+  else part.fields[part.fieldname] = field;
 }
 
 /** Deletes the request's spooled uploads once, skipping missing files; never rejects, logging each failed delete. */
@@ -453,6 +486,18 @@ function sendPostSizeExceeded(request: FastifyRequest, reply: FastifyReply): Fas
   stateOf(request)[CONTAINER] = true;
   recordOutcomeReason(request, BODY_TOO_LARGE);
   return sendLegacyResponse(reply, POST_SIZE_EXCEEDED);
+}
+
+/** Rejection reason of a request target the legacy container refuses. */
+const TARGET_REFUSED = 'container-refused-target';
+
+/** Answers the container's refusal of a request target: an empty 400 that closes the connection, hijacked so it carries no Date, Generator or HSTS header. */
+function sendTargetRefused(request: FastifyRequest, reply: FastifyReply): void {
+  recordOutcomeReason(request, TARGET_REFUSED);
+  reply.hijack();
+  reply.raw.sendDate = false;
+  reply.raw.writeHead(400, { 'Content-Length': '0', Connection: 'close' });
+  reply.raw.end();
 }
 
 /**
@@ -631,9 +676,25 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   await app.register(formbody);
   await app.register(multipart, {
     attachFieldsToBody: true,
+    // ColdFusion holds every part without a file name as form text, whatever its type. The plugin would parse a
+    // JSON-typed one, so it is streamed to onFile, which attaches its text as a field.
+    isPartAFile: (_field, contentType, filename) => filename !== undefined || isJsonContentType(contentType),
     limits: { fileSize: LEGACY_POST_LIMIT_BYTES, fieldSize: LEGACY_POST_LIMIT_BYTES },
     async onFile(part) {
       const state = stateOf(this);
+      // Typed as always present, but a JSON-typed field part has none.
+      const sentName: string | undefined = part.filename;
+      if (sentName === undefined) {
+        let text: string;
+        try {
+          // UTF-8, JSON's one encoding: the plugin passes no part charset for a streamed part.
+          text = (await part.toBuffer()).toString('utf8');
+        } catch (err) {
+          throw state[BODY_LIMIT] ?? err;
+        }
+        attachAsField(part, text);
+        return;
+      }
       // Parts arrive in body order, each after the scanner has read its headers.
       const contentType = state[PART_HEADERS]?.take(part.fieldname, part.mimetype) ?? part.mimetype;
       const filepath = path.join(tmpdir(), `opt2-upload-${randomUUID()}`);
@@ -753,6 +814,14 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     else requestContext.run(store, () => done());
   });
 
+  // The container refuses a request target before its POST size check, the start-up scan or auth run.
+  const { containerRefusesTarget, skipsStartupScan } = options;
+  if (containerRefusesTarget !== undefined) {
+    app.addHook('onRequest', (request, reply, done) => {
+      if (containerRefusesTarget(request)) sendTargetRefused(request, reply);
+      else done();
+    });
+  }
   // The container refuses an oversized POST before any auth or Masa code runs.
   app.addHook('onRequest', (request, reply, done) => {
     if (exceedsLegacyPostSize(request.raw)) sendPostSizeExceeded(request, reply);
@@ -763,6 +832,23 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     if (!exceedsLegacyPostSize(req)) res.writeContinue();
     app.server.emit('request', req, res);
   });
+  // Legacy scans url and form before any route or login check: the url scope here, ahead of auth, the form once parsed.
+  const answerScanFailure = (request: FastifyRequest, reply: FastifyReply, done: () => void): void => {
+    if (!failsRootScan(request, noCasePathPrefixes) || skipsStartupScan?.(request) === true) {
+      done();
+      return;
+    }
+    request.log.error(scopeFields(request), 'script protection scan failed');
+    sendLegacyResponse(reply, adminErrorPage(500, LEGACY_ERROR_STATUS_TEXT));
+  };
+  if (options.legacyStartupScan !== false) {
+    app.addHook('onRequest', (request, reply, done) => {
+      answerScanFailure(request, reply, done);
+    });
+    app.addHook('preValidation', (request, reply, done) => {
+      answerScanFailure(request, reply, done);
+    });
+  }
 
   registerAuth(app, {
     transports: auth.transports,

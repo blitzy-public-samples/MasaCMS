@@ -1,5 +1,6 @@
 // cUsers.update (cusers.cfc 290-353) for its carried variants against identity's group and people's person contracts.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { legacyScopeParams, portcullisScan } from '@opt2/platform/legacy-compat';
 import { createCsrfRenderer } from '@/lib/csrf';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { receiveRequestBody, type ReceivedBody, type RequestBody } from '@/lib/request-body';
@@ -15,7 +16,7 @@ import {
   updateUserAction,
 } from '@/screens/cusers/update';
 import type { RedirectScreen, ScreenContext, SubmitResult } from '@/screens/registry';
-import { adminS2Request } from '../../helpers/admin-request';
+import { adminS2Request, buildTestAdminRequest } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from '../../helpers/fake-gateway';
 
@@ -167,6 +168,27 @@ async function multipart(fields: Fields): Promise<{ body: ReceivedBody; bytes: B
 /** The calls a submit made to the owners' write routes. */
 const ownerCalls = (gateway: FakeGatewayClient) => gateway.calls.filter((call) => call.path !== '/v1/users/route');
 
+/** Each write posting a smart-quoted text field, a punctuated name and an empty siteid, its URL `userid` padded. */
+const SCANNED_WRITES = WRITES.map((write) => {
+  const text = write.service === 'identity' ? 'groupname' : 'fname';
+  return {
+    ...write,
+    text,
+    url: { ...write.actionUrl, userid: ` ${write.actionUrl.userid ?? ''} ` },
+    posted: { ...write.fields, [text]: '\u201C Alice \u201D', 'x-y': '<script>z</script>', siteid: '', ...CSRF },
+    /** What the own ACF oracle's one scan leaves of those fields. */
+    ownerScan: { [text]: '" Alice "', 'x-y': '<script>z</script>', xy: '<script>z</script>', siteid: 'default' },
+  };
+});
+
+/** The S2 admin's `cusers.update` as the real request set-up builds it from the action URL and the posted body. */
+const scannedRequest = (url: Fields, form: Fields | ReceivedBody['form']): Promise<AdminRequest> =>
+  buildTestAdminRequest({ circuit: 'cusers', action: 'update', query: url, form, user: 'admin' });
+
+/** The owner's start-up scan of the relayed fields, as name to text. */
+const ownerScan = (fields: Readonly<Record<string, string | string[]>>): Record<string, string> =>
+  legacyScopeParams(portcullisScan(Object.entries(fields)));
+
 describe('cUsers.update definitions', () => {
   it.each<{ screen: RedirectScreen; key: string; owner: string }>([
     { screen: updateGroupAction, key: 'admin:cusers.update{type=1}', owner: 'identity' },
@@ -242,6 +264,30 @@ describe('cUsers.update relay', () => {
       { service: write.service, method: write.method, path: write.path, form: Object.fromEntries(Object.entries(req.rc)) },
     ]);
     expect(ownerCalls(gateway)[0]?.form).toMatchObject({ ...write.actionUrl, ...write.fields, ...CSRF });
+  });
+
+  it.each(SCANNED_WRITES)("posts $name URL-encoded as received, so the owner's one scan is legacy's", async (write) => {
+    const gateway = fakeGatewayClient({ [write.route]: write.saved, [ROUTE_USER]: ROUTED_LISTUSERS });
+    const req = await scannedRequest(write.url, write.posted);
+
+    await expect(write.screen.submit(contextFor(req, gateway))).resolves.toEqual(LISTUSERS);
+    const form = ownerCalls(gateway)[0]?.form ?? {};
+    expect(req.rc).toMatchObject({ [write.text]: '" Alice "', xy: '<script>z</script>', siteid: 'default' });
+    expect(form).toMatchObject({ ...write.url, ...write.posted, siteid: 'default' });
+    expect(form).not.toHaveProperty('xy');
+    expect(ownerScan(form)).toMatchObject({ ...write.ownerScan, userid: write.actionUrl.userid });
+  });
+
+  it.each(SCANNED_WRITES)('sends the action URL fields of $name as received beside its multipart body', async (write) => {
+    const upload = await multipart(write.posted);
+    const gateway = fakeGatewayClient({ [write.route]: write.saved, [ROUTE_USER]: ROUTED_LISTUSERS });
+    const req = await scannedRequest(write.url, upload.body.form);
+
+    await expect(write.screen.submit(contextFor(req, gateway, upload.body.body))).resolves.toEqual(LISTUSERS);
+    const { query = {} } = ownerCalls(gateway)[0] ?? {};
+    expect(req.rc).toMatchObject({ userid: write.actionUrl.userid });
+    expect(query).toEqual(write.url);
+    expect(ownerScan(query)).toEqual(write.actionUrl);
   });
 
   it.each(['Delete', 'invalid', ''])('writes nothing and fails for a group action %j', async (action) => {

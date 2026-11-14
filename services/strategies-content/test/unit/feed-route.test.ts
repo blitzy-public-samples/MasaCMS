@@ -273,6 +273,8 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
   it.each([
     ['no url feedid', '/_api/feed/v1/tenant-a/'],
     ['the legacy endpoint with only a siteid', '/tasks/feed?siteid=tenant-a'],
+    // Own oracle: `/_api/feed/v1?1feedid=x` answers the empty page, as the start-up scan drops a name starting with a digit.
+    ['a feedid name the start-up scan drops', `/_api/feed/v1/tenant-a/?1feedid=${UNKNOWN_FEED}`],
   ])('answers the unmatched empty page for %s', async (_label, url) => {
     const res = await get(url, {}, false);
     expect({ status: res.statusCode, type: res.headers['content-type'], body: res.body }).toEqual({ status: 200, type: HTML, body: '' });
@@ -306,8 +308,20 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
     ['a token of another site is refused on the root endpoint', `/_api/feed/v1?feedid=${UNKNOWN_FEED}&siteid=tenant-a`, 'tenant-b', 403],
     ['a token of another site is refused on the legacy root endpoint', `/tasks/feed?feedid=${UNKNOWN_FEED}&siteid=tenant-a`, 'tenant-b', 403],
     ['a token of another site is refused on the legacy path endpoint', `/tasks/feed/x/tenant-a/?feedid=${UNKNOWN_FEED}`, 'tenant-b', 403],
+    // Own oracle: `/_api/feed/v1?feed-id=x` takes the feed branch (404), as the start-up scan adds `feedid`.
+    ['the root endpoint reads a padded url siteid trimmed', `/_api/feed/v1?feedid=${UNKNOWN_FEED}&siteid=%20tenant-a%20`, SITE_ID, 404],
+    ['a feedid under a dashed name, added under its stripped name', `/_api/feed/v1/tenant-a/?feed-id=${UNKNOWN_FEED}`, SITE_ID, 404],
   ])('site: %s', async (_label, url, site, status) => {
     expect((await get(url, await as(site))).statusCode).toBe(status);
+  });
+
+  it('serves a stored feed for a padded or NUL-suffixed feedid, as the start-up scan trims and drops them', async () => {
+    const expected = await get(`/_api/feed/v1/tenant-a/?feedid=${ids.rss20 ?? ''}`, await as(SITE_ID));
+    expect(expected.statusCode).toBe(200);
+    for (const feedId of [`%20${ids.rss20 ?? ''}%20`, `${ids.rss20 ?? ''}%00`]) {
+      const res = await get(`/_api/feed/v1/tenant-a/?feedid=${feedId}`, await as(SITE_ID));
+      expect({ status: res.statusCode, body: res.body }).toEqual({ status: 200, body: expected.body });
+    }
   });
 
   it('reads a stored feed only for a verified token', async () => {

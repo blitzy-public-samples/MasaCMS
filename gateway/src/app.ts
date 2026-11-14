@@ -143,6 +143,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     // Public ingress admits allUsers, so Cloud Run vouches for no caller: the gateway verifies invocation credentials itself.
     verifierOverride: { invocationTrust: 'verify', ...options.verifierOverride },
     surfaceOf,
+    // Legacy answers its own start-up scan failures; the gateway relays the request.
+    legacyStartupScan: false,
     // createService takes an injected pool or the schema whose pool it opens, never both; `shutdown()` ends either.
     ...(options.db === undefined ? { schema: SCHEMA } : { pool: options.db }),
   });

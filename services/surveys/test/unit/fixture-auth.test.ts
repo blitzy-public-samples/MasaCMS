@@ -407,10 +407,15 @@ describe('site membership and task tokens', () => {
   it.each<[string, Record<string, unknown> | undefined, string]>([
     ['absent', {}, ''],
     ['without a query', undefined, ''],
-    ['read ignoring case, the last spelling winning', { opt2TaskToken: 'first', OPT2TASKTOKEN: 'last' }, 'last'],
+    ['spelled two ways, comma-joined under the first spelling as the url scope joins it', { opt2TaskToken: 'first', OPT2TASKTOKEN: 'last' }, 'first,last'],
     ['repeated, comma-joined as the url scope joins it', { opt2TaskToken: ['a', 'b'] }, 'a,b'],
+    // Masa's start-up scan of the same query on the legacy oracle: NULs dropped and the joined value trimmed.
+    ['padded and holding a NUL', { opt2TaskToken: ' tok\u0000en\t' }, 'token'],
+    ['repeated with padding, joined before the trim', { opt2TaskToken: [' a', 'b '] }, 'a,b'],
+    // A JSON null fails the scan, which then leaves only its NUL fix.
+    ['beside a value that fails the url scan', { opt2TaskToken: ' to\u0000ken ', x: 'null' }, ' token '],
   ])('taskTokenOf a query %s', (_case, query, expected) => {
-    expect(taskTokenOf({ query } as unknown as FastifyRequest)).toBe(expected);
+    expect(taskTokenOf({ query, headers: {} } as unknown as FastifyRequest)).toBe(expected);
   });
 
   it.each<[string, string, string, boolean]>([

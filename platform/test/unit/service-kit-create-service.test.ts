@@ -51,6 +51,7 @@ import {
   isBodyTooLargeError,
   isUnstorableTextError,
   legacyParamsOf,
+  legacyScopesOf,
   multipartFilesOf,
   recordOutcomeReason,
   sendLegacyResponse,
@@ -168,10 +169,10 @@ function sha256Hex(bytes: string | Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-/** A lazily generated multipart body of `count` file or field parts of `mib` MiB each, with its length and the bytes pulled from it so far. */
+/** A lazily generated multipart body of `count` file, field or JSON-typed field parts of `mib` MiB each, with its length and the bytes pulled from it so far. */
 function lazyMultipartBody(
   boundary: string,
-  kind: 'file' | 'field',
+  kind: 'file' | 'field' | 'json',
   count: number,
   mib: number,
 ): { body: Readable; length: number; pulled: () => number } {
@@ -181,7 +182,8 @@ function lazyMultipartBody(
   const heads = Array.from({ length: count }, (_, i) => {
     const name = `part${String(i)}`;
     const filename = kind === 'file' ? `; filename="${name}.bin"` : '';
-    return Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"${filename}\r\n\r\n`);
+    const type = kind === 'json' ? '\r\nContent-Type: application/json' : '';
+    return Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"${filename}${type}\r\n\r\n`);
   });
   let pulled = 0;
   const take = (piece: Buffer): Buffer => {
@@ -937,6 +939,38 @@ describe('body parsing and legacy params', () => {
     });
   });
 
+  it('attaches a JSON-typed multipart part without a file name as a field holding its text, in body order', async () => {
+    const { app } = await build();
+    const view = (part: unknown): unknown => {
+      const { type, fieldname, mimetype, value } = part as Record<string, unknown>;
+      return { type, fieldname, mimetype, value };
+    };
+    app.post('/raw', { config: { opt2: { public: true } } }, async (request) =>
+      Object.fromEntries(Object.entries(request.body as Record<string, unknown>).map(([name, held]) => [name, Array.isArray(held) ? held.map(view) : view(held)])),
+    );
+    const boundary = 'opt2boundary';
+    const res = await app.inject({
+      method: 'POST',
+      url: '/raw',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: multipartBody(boundary, [
+        { name: 'tag', value: '[1.50]', type: 'application/json' },
+        { name: 'tag', value: 'two' },
+        { name: 'one', value: '{not json', type: 'application/json-patch+json' },
+        { name: 'tag', value: '{"a":1}', type: 'application/json' },
+      ]),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toStrictEqual({
+      tag: [
+        { type: 'field', fieldname: 'tag', mimetype: 'application/json', value: '[1.50]' },
+        { type: 'field', fieldname: 'tag', mimetype: 'text/plain', value: 'two' },
+        { type: 'field', fieldname: 'tag', mimetype: 'application/json', value: '{"a":1}' },
+      ],
+      one: { type: 'field', fieldname: 'one', mimetype: 'application/json-patch+json', value: '{not json' },
+    });
+  });
+
   it.each([
     ['in one chunk', (bytes: Buffer): Buffer | Readable => bytes],
     ['a byte at a time', (bytes: Buffer): Buffer | Readable => Readable.from(Array.from(bytes, (byte) => Buffer.from([byte])))],
@@ -961,10 +995,11 @@ describe('body parsing and legacy params', () => {
       ),
     });
     expect(res.statusCode).toBe(200);
-    const files = res.json<{ files: Array<Record<string, unknown>> }>().files;
+    const { params, files } = res.json<{ params: Record<string, unknown>; files: Array<Record<string, unknown>> }>();
+    // ColdFusion holds the octet stream without a file name as form text, so the files after it keep their own types.
+    expect(params).toMatchObject({ title: 'Hello', blob: 'two' });
     expect(files.map(({ field, mimetype, contentType, data }) => ({ field, mimetype, contentType, data }))).toEqual([
       { field: 'file', mimetype: 'text/plain', contentType: 'text/plain; charset=utf-8', data: 'one' },
-      { field: 'blob', mimetype: 'application/octet-stream', contentType: 'application/octet-stream; x=1', data: 'two' },
       { field: 'file', mimetype: 'text/plain', contentType: 'text/plain', data: 'three' },
       { field: 'file', mimetype: 'text/html', contentType: ' text/html ; q=1', data: 'four' },
     ]);
@@ -974,6 +1009,7 @@ describe('body parsing and legacy params', () => {
     { sent: 'by PUT with its Content-Length', method: 'PUT', kind: 'file', count: 4, mib: 75, declared: true, pulled: [0, 0] },
     { sent: 'chunked, as files', method: 'POST', kind: 'file', count: 4, mib: 75, declared: false, pulled: [LEGACY_POST_LIMIT_BYTES, LEGACY_POST_LIMIT_BYTES + 4 * MIB] },
     { sent: 'chunked, as fields', method: 'POST', kind: 'field', count: 300, mib: 1, declared: false, pulled: [LEGACY_POST_LIMIT_BYTES, LEGACY_POST_LIMIT_BYTES + 4 * MIB] },
+    { sent: 'chunked, as JSON-typed fields', method: 'POST', kind: 'json', count: 2, mib: 75, declared: false, pulled: [LEGACY_POST_LIMIT_BYTES, LEGACY_POST_LIMIT_BYTES + 4 * MIB] },
   ] as const)(
     'answers a multipart body over the body bound sent $sent with the Post Size page, reading no further than the bound',
     async ({ method, kind, count, mib, declared, pulled: [least, most] }) => {
@@ -1217,6 +1253,455 @@ describe('body parsing and legacy params', () => {
   });
 });
 
+describe('legacy script protection of params', () => {
+  async function echo(
+    path = '/echo',
+    overrides: Partial<CreateServiceOptions> = {},
+  ): Promise<{ app: FastifyInstance; lines: LogLine[]; handled: () => number }> {
+    const { app, lines } = await build(overrides);
+    let calls = 0;
+    app.route({
+      method: ['GET', 'POST'],
+      url: path,
+      config: { opt2: { public: true } },
+      handler: async (request) => {
+        calls += 1;
+        return { params: legacyParamsOf(request), files: multipartFilesOf(request).map(({ field, filename }) => ({ field, filename })) };
+      },
+    });
+    return { app, lines, handled: () => calls };
+  }
+
+  it('scans the query and a form body as Masa start-up does', async () => {
+    const { app } = await echo();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/echo?title=%3Cscript%3Ex%3C%2Fscript%3E&x-y=%20onload%20&a%20b=dropped&search=%20padded%20&startrow=%2B3',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams([
+        ['fname', '<script>alert(1)</script>Aaliyah'],
+        ['lname', 'Frami<img src=x onerror=alert(1)>'],
+        ['company', 'javascript:alert(1)'],
+        ['groupname', "<script>alert('xss')</script>' OR 1=1--"],
+        ['body', ' <script>kept '],
+        ['amp;notes', ' a\u0000b '],
+      ]).toString(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().params).toStrictEqual({
+      title: '[INVALID]',
+      'x-y': 'onload',
+      xy: '[INVALID]',
+      search: 'padded',
+      startrow: '+3',
+      fname: '[INVALID]Aaliyah',
+      lname: 'Frami<img src=x [INVALID]=alert(1)>',
+      company: '[INVALID]alert(1)',
+      groupname: "[INVALID]' OR 1=1--",
+      body: ' <script>kept ',
+      notes: 'ab',
+    });
+  });
+
+  it('scans the query beside a JSON body, which it leaves as deserialized', async () => {
+    const { app } = await echo();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/echo?q=%20%3Cscript%3E%20',
+      headers: { 'content-type': 'application/json' },
+      payload: '{"fname":"<script>x</script>","pad":" y ","a b":"kept"}',
+    });
+    expect(res.json().params).toStrictEqual({ q: '[INVALID]', fname: '<script>x</script>', pad: ' y ', 'a b': 'kept' });
+  });
+
+  it('scans multipart fields and keeps file part names as sent, under the names the scan keeps', async () => {
+    const { app } = await echo();
+    const boundary = 'opt2boundary';
+    const res = await app.inject({
+      method: 'POST',
+      url: '/echo',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: multipartBody(boundary, [
+        { name: 'title', value: '<script>x</script>' },
+        { name: 'tag', value: ' padded ' },
+        { name: 'up-load', value: 'png-bytes', filename: ' <script>a.png', type: 'image/png' },
+        { name: 'a b', value: 'gif-bytes', filename: 'b.gif', type: 'image/gif' },
+      ]),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toStrictEqual({
+      params: { title: '[INVALID]', tag: 'padded', 'up-load': ' <script>a.png', upload: ' <script>a.png' },
+      files: [
+        { field: 'up-load', filename: ' <script>a.png' },
+        { field: 'a b', filename: 'b.gif' },
+      ],
+    });
+  });
+
+  // Own-oracle probes: ColdFusion's form scope holds every part without a file name as its text, whatever its type.
+  it.each<[string, Array<{ name: string; value: string; type?: string }>, Record<string, string>]>([
+    ['a JSON array', [{ name: 'groupname', value: '["<script>x</script>"]', type: 'application/json' }], { groupname: '["[INVALID]"]' }],
+    ['a JSON string', [{ name: 'groupname', value: '"<script>x</script>"', type: 'application/json' }], { groupname: '"[INVALID]"' }],
+    ['a JSON object', [{ name: 'groupname', value: '{"b":1,"a":"<script>x</script>"}', type: 'application/json' }], { groupname: '{"a":"[INVALID]","b":1}' }],
+    ['a JSON number', [{ name: 'groupname', value: '1.50', type: 'application/json' }], { groupname: '1.50' }],
+    ['a padded JSON string', [{ name: 'groupname', value: '  "  padded  "  ', type: 'application/json' }], { groupname: '"padded"' }],
+    ['a JSON boolean', [{ name: 'groupname', value: 'true', type: 'application/json' }], { groupname: 'true' }],
+    ['JSON doubles and a long', [{ name: 'groupname', value: '[1e2, 1.0, 9007199254740993]', type: 'application/json' }], { groupname: '[100.0,1.0,9007199254740993]' }],
+    ['text that is no JSON', [{ name: 'groupname', value: 'not json <script>x</script>', type: 'application/json' }], { groupname: 'not json [INVALID]' }],
+    ['an empty value', [{ name: 'groupname', value: '', type: 'application/json' }], { groupname: '' }],
+    ['a __proto__ key', [{ name: 'groupname', value: '{"__proto__":{"x":1}}', type: 'application/json' }], { groupname: '{"__proto__":{"x":1}}' }],
+    ['a typed charset', [{ name: 'groupname', value: '"<b>ok</b> onload"', type: 'APPLICATION/JSON; charset=utf-8' }], { groupname: '"<b>ok</b> [INVALID]"' }],
+    ['an octet stream', [{ name: 'groupname', value: '<script>x</script>', type: 'application/octet-stream' }], { groupname: '[INVALID]' }],
+    [
+      'repeated parts',
+      [
+        { name: 'g', value: '[1,2]', type: 'application/json' },
+        { name: 'g', value: '<script>y</script>' },
+        { name: 'G', value: '{"a":true}', type: 'application/json' },
+      ],
+      { g: '[1,2],[INVALID],{"a":true}' },
+    ],
+  ])('scans a multipart field part without a file name holding %s as the text it was sent as', async (_label, parts, params) => {
+    const { app } = await echo();
+    const boundary = 'opt2boundary';
+    const res = await app.inject({
+      method: 'POST',
+      url: '/echo',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: multipartBody(boundary, parts),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toStrictEqual({ params, files: [] });
+  });
+
+  it('keeps a JSON-typed part with a file name a file, its name passing unscanned', async () => {
+    const { app } = await echo();
+    const boundary = 'opt2boundary';
+    const res = await app.inject({
+      method: 'POST',
+      url: '/echo',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: multipartBody(boundary, [{ name: 'up', value: '["<script>x</script>"]', filename: '<script>a.json', type: 'application/json' }]),
+    });
+    expect(res.json()).toStrictEqual({ params: { up: '<script>a.json' }, files: [{ field: 'up', filename: '<script>a.json' }] });
+  });
+
+  it('answers the legacy error page for a JSON-typed multipart null on a root-served path', async () => {
+    const { app, handled } = await echo('/tasks/echo');
+    const boundary = 'opt2boundary';
+    const res = await app.inject({
+      method: 'POST',
+      url: '/tasks/echo',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: multipartBody(boundary, [{ name: 'groupname', value: 'null', type: 'application/json' }]),
+    });
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toBe(LEGACY_ERROR_PAGE_HTML);
+    expect(handled()).toBe(0);
+  });
+
+  it.each([
+    ['GET', '/_api/json/v1/default/echo?q=null', undefined],
+    ['GET', '/legacy-fixtures/cfml/api.cfm/finance/records?amp;-=1', undefined],
+    ['POST', '/tasks/echo', 'comment=%5B1%2C%5Bnull%5D%5D'],
+  ])('answers %s %s with the legacy error page when the scan fails on a root-served path', async (method, url, payload) => {
+    const { app, lines, handled } = await echo(url.split('?')[0]);
+    const res = await app.inject({
+      method: method as 'GET' | 'POST',
+      url,
+      ...(payload === undefined ? {} : { headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload }),
+    });
+    expect(res.statusCode).toBe(500);
+    expect(res.statusMessage).toBe(LEGACY_ERROR_STATUS_TEXT);
+    expect(res.headers['content-type']).toBe(LEGACY_HTML_CONTENT_TYPE);
+    expect(res.headers.generator).toBe('Masa CMS 7.6.1');
+    expect(res.body).toBe(LEGACY_ERROR_PAGE_HTML);
+    expect(handled()).toBe(0);
+    expect(lines.find((line) => line.message === 'script protection scan failed')).toMatchObject({ severity: 'ERROR' });
+  });
+
+  it.each([
+    ['GET', '/legacy-fixtures/cfml/api.cfm/finance/records?q=null', undefined, { q: 'null' }],
+    ['POST', '/tasks/echo', 'comment=%5B1%2C%5Bnull%5D%5D', { comment: '[1,[null]]' }],
+  ])('passes %s %s to the route with legacyStartupScan false', async (method, url, payload, params) => {
+    const { app, lines, handled } = await echo(url.split('?')[0], { legacyStartupScan: false });
+    const res = await app.inject({
+      method: method as 'GET' | 'POST',
+      url,
+      ...(payload === undefined ? {} : { headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload }),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().params).toStrictEqual(params);
+    expect(handled()).toBe(1);
+    expect(lines.some((line) => line.message === 'script protection scan failed')).toBe(false);
+  });
+
+  it('answers a failed url scan on a root-served path before authenticating', async () => {
+    const { app } = await build();
+    app.get('/_api/json/v1/:siteid/secured', { config: { opt2: { requires: ['s2'] } } }, async () => 'never');
+    const unscanned = await app.inject({ method: 'GET', url: '/_api/json/v1/default/secured?q=1' });
+    expect(unscanned.statusCode).toBe(401);
+    const res = await app.inject({ method: 'GET', url: '/_api/json/v1/default/secured?q=%5Bnull%5D' });
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toBe(LEGACY_ERROR_PAGE_HTML);
+  });
+
+  describe('containerRefusesTarget', () => {
+    /** An app refusing a target whose query holds a malformed escape, with an s2-only root-served route that counts its runs. */
+    async function refusing(): Promise<{ app: FastifyInstance; lines: LogLine[]; handled: () => number }> {
+      const { app, lines } = await build({ containerRefusesTarget: (request) => /%(?![0-9A-Fa-f]{2})/.test(request.url) });
+      let calls = 0;
+      app.get('/core/secured', { config: { opt2: { requires: ['s2'] } } }, () => {
+        calls += 1;
+        return 'never';
+      });
+      return { app, lines, handled: () => calls };
+    }
+
+    it.each([
+      ['a refused target failing the scan', '/core/secured?x=null&y=%', 400],
+      ['a refused target', '/core/secured?y=%ZZ', 400],
+      ['a refused unmatched target failing the scan', '/core/nothing?x=null&y=%', 400],
+      ['an accepted target failing the scan', '/core/secured?x=null&y=%41', 500],
+      ['an accepted target', '/core/secured?y=%41', 401],
+    ])('answers %s, %s, with %i: the refusal ahead of the start-up scan, the scan ahead of auth', async (_case, url, status) => {
+      const { app, handled } = await refusing();
+      const res = await app.inject({ method: 'GET', url });
+      expect(res.statusCode).toBe(status);
+      expect(handled()).toBe(0);
+    });
+
+    it("answers a refused target with the container's empty 400 that closes the connection, without Date, Generator or HSTS", async () => {
+      const { app, lines } = await refusing();
+      const res = await app.inject({ method: 'GET', url: '/core/secured?x=null&y=%', headers: AUTHENTICATED });
+      expect([res.statusCode, res.statusMessage, res.body]).toStrictEqual([400, 'Bad Request', '']);
+      expect(res.headers).toStrictEqual({ 'content-length': '0', connection: 'close' });
+      expect(lines.map((line) => [line.severity, line.message, line.statusCode])).toStrictEqual([
+        ['WARNING', 'request rejected: container-refused-target', 400],
+        ['INFO', 'request completed', 400],
+      ]);
+    });
+  });
+
+  describe('skipsStartupScan', () => {
+    /** An app skipping the scan under `/core/skipped/` and refusing a target whose query holds a malformed escape, with an echo route there. */
+    function skipping(): Promise<{ app: FastifyInstance; lines: LogLine[]; handled: () => number }> {
+      return echo('/core/skipped/echo', {
+        containerRefusesTarget: (request) => /%(?![0-9A-Fa-f]{2})/.test(request.url),
+        skipsStartupScan: (request) => request.url.startsWith('/core/skipped/'),
+      });
+    }
+
+    it.each<[string, 'GET' | 'POST', string, number, string | undefined, number]>([
+      ['a skipped target failing the url scan', 'GET', '/core/skipped/echo?x=null', 200, undefined, 1],
+      ['a skipped target failing the form scan', 'POST', '/core/skipped/echo', 200, 'x=null', 1],
+      ['a skipped unmatched target failing the scan', 'GET', '/core/skipped/missing.cfm?x=null', 404, undefined, 0],
+      ['an unskipped unmatched target failing the url scan', 'GET', '/core/missing.cfm?x=null', 500, undefined, 0],
+      ['an unskipped unmatched target failing the form scan', 'POST', '/core/missing.cfm', 500, 'x=null', 0],
+      ['a refused skipped target failing the scan', 'GET', '/core/skipped/echo?x=null&y=%', 400, undefined, 0],
+    ])('answers %s, %s %s, with %i: the refusal first, then the scan unless skipped', async (_case, method, url, status, payload, runs) => {
+      const { app, handled } = await skipping();
+      const res = await app.inject({
+        method,
+        url,
+        ...(payload === undefined ? {} : { headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload }),
+      });
+      expect(res.statusCode).toBe(status);
+      expect(handled()).toBe(runs);
+    });
+
+    it('answers skipped targets failing the scan as the route and the not-found handler do, logging no scan failure', async () => {
+      const { app, lines } = await skipping();
+      const routed = await app.inject({ method: 'GET', url: '/core/skipped/echo?x=null&q=%3Cscript%3E' });
+      expect(routed.json<{ params: unknown }>().params).toStrictEqual({ x: 'null', q: '<script>' });
+      const unmatched = await app.inject({ method: 'GET', url: '/core/skipped/missing.cfm?x=null' });
+      expect(unmatched.body).toBe(legacyErrorResponse('invalidMethodCall', { method: undefined, params: { x: 'null' }, mura404: true }).body);
+      expect(lines.some((line) => line.message === 'script protection scan failed')).toBe(false);
+    });
+  });
+
+  it('keeps the name and NUL fixes of a failed url scan elsewhere, and the form as posted after it', async () => {
+    const { app } = await echo('/admin-actions/cusers/update');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/admin-actions/cusers/update?q=null&r=%20%3Cscript%3E%00&amp;s=1',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: 'a%20b=1&fname=%3Cscript%3E',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().params).toStrictEqual({ q: 'null', r: ' <script>', s: '1', 'a b': '1', fname: '<script>' });
+    const formFails = await app.inject({
+      method: 'POST',
+      url: '/admin-actions/cusers/update?title=%3Cscript%3E',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: 'q=%5Bnull%5D&fname=%20%3Cscript%3E%20',
+    });
+    expect(formFails.json().params).toStrictEqual({ title: '[INVALID]', q: '[null]', fname: ' <script> ' });
+  });
+
+  it.each([
+    ['GET', '/index.cfm/_api/json/v1/default/echo', '/index.cfm/_api/json/v1/default/echo?x=null'],
+    ['GET', '/index.cfm/_api/sitemonitor', '/index.cfm/_api/sitemonitor?x=null'],
+    ['GET', '/index.cfm/tasks/feed', '/index.cfm/tasks/feed?x=null'],
+    ['GET', '/index.cfm', '/index.cfm?x=null'],
+    ['GET', '/_api', '/_api?x=null'],
+    ['GET', '/tasks', '/tasks?x=null'],
+    ['GET', '/core/modules/v1/comments/ajax/commentsProxy.cfc', '/core/modules/v1/comments/ajax/commentsProxy.cfc?commentID=null'],
+    ['POST', '/core/modules/v1/favorites/ajax/saveFavorite.cfm', '/core/modules/v1/favorites/ajax/saveFavorite.cfm?x=null'],
+    ['GET', '/_api/feed/v1*', '/%5Fapi/feed/v1/x?x=null'],
+  ])('answers the legacy error page for a failed scan on root-served route %s %s', async (method, route, url) => {
+    const { app, handled } = await echo(route);
+    const res = await app.inject({ method: method as 'GET' | 'POST', url });
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toBe(LEGACY_ERROR_PAGE_HTML);
+    expect(handled()).toBe(0);
+  });
+
+  it.each([
+    ['/index.cfm/_api/json/v1/default/nothing?x=null', 500],
+    ['/core/modules/v1/rater/ajax/missing.cfm?x=null', 500],
+    ['/v1/nothing?x=null', 404],
+    ['/coreish?x=null', 404],
+  ])('answers an unmatched %s with status %i', async (url, status) => {
+    const { app } = await build();
+    expect((await app.inject({ method: 'GET', url })).statusCode).toBe(status);
+  });
+
+  it('answers a failed scan under a no-case prefix, such as a configured context, in any letter case', async () => {
+    const { app, handled } = await echo('/ctx/_api/json/v1*', { noCasePathPrefixes: ['/ctx/_api/json/v1'] });
+    const res = await app.inject({ method: 'GET', url: '/CTX/_API/json/v1/default?x=null' });
+    expect(res.statusCode).toBe(500);
+    expect(handled()).toBe(0);
+  });
+
+  it.each(['/v1/groups', '/v2/finance/rollups', '/internal/v1/lookup', '/opt2/files/b/t/o', '/.well-known/jwks.json', '/admin/x', '/_apix', '/index.cfmx', '/tasksx/y', '/legacy-fixturesx'])(
+    'passes a failed scan on the target-native or unlisted path %s to the route',
+    async (route) => {
+      const { app, handled } = await echo(route);
+      const res = await app.inject({ method: 'GET', url: `${route}?x=null&siteid=%20tenant-a%20` });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().params).toStrictEqual({ x: 'null', siteid: ' tenant-a ' });
+      expect(handled()).toBe(1);
+    },
+  );
+
+  it('answers /healthz with a failed scan', async () => {
+    const { app } = await build();
+    const res = await app.inject({ method: 'GET', url: '/healthz?x=null' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toStrictEqual({ status: 'ok' });
+  });
+
+  it('answers an unmatched route with the scanned params, a failed scan included', async () => {
+    const { app } = await build();
+    const failed = await app.inject({ method: 'GET', url: '/nothing?method=find&q=%3Cscript%3E&r=%5Bnull%5D' });
+    expect(failed.statusCode).toBe(404);
+    expect(failed.body).toBe(
+      legacyErrorResponse('invalidMethodCall', { method: 'find', params: { method: 'find', q: '<script>', r: '[null]' }, mura404: true }).body,
+    );
+    const scanned = await app.inject({ method: 'GET', url: '/nothing?method=find&q=%3Cscript%3E' });
+    expect(scanned.body).toBe(
+      legacyErrorResponse('invalidMethodCall', { method: 'find', params: { method: 'find', q: '[INVALID]' }, mura404: true }).body,
+    );
+  });
+});
+
+describe('siteid check on the scanned scopes', () => {
+  async function staff(): Promise<{ app: FastifyInstance; handled: () => number }> {
+    const { app } = await build();
+    let calls = 0;
+    app.post('/v1/staff', { config: { opt2: { requires: ['s2'] } } }, async (request) => {
+      calls += 1;
+      return { params: legacyParamsOf(request) };
+    });
+    return { app, handled: () => calls };
+  }
+
+  const form = (pairs: Array<[string, string]>) => ({
+    headers: { ...AUTHENTICATED, 'content-type': 'application/x-www-form-urlencoded' },
+    payload: new URLSearchParams(pairs).toString(),
+  });
+  const parts = (list: Array<{ name: string; value: string; filename?: string }>) => ({
+    headers: { ...AUTHENTICATED, 'content-type': 'multipart/form-data; boundary=opt2siteid' },
+    payload: multipartBody('opt2siteid', list),
+  });
+  const json = (body: unknown) => ({ headers: { ...AUTHENTICATED, 'content-type': 'application/json' }, payload: JSON.stringify(body) });
+
+  it.each([
+    ['a form site-id', form([['site-id', 'tenant-b']])],
+    ['a form siteid the scan replaces with a later SITEID', form([['siteid', 'tenant-b'], ['SITEID', 'tenant-a']])],
+    ['a multipart site-id field', parts([{ name: 'site-id', value: ' tenant-b ' }])],
+    ['a multipart siteid file part, read by its file name', parts([{ name: 'siteid', value: 'x', filename: 'tenant-b' }])],
+    ['a form siteid posted after a failed url scan, which leaves it untrimmed', { ...form([['siteid', ' tenant-a ']]), url: '/v1/staff?x=null' }],
+  ])('answers 403 to %s without running the handler', async (_label, request) => {
+    const { app, handled } = await staff();
+    const res = await app.inject({ method: 'POST', url: '/v1/staff', ...request });
+    expect(res.statusCode).toBe(403);
+    expect(handled()).toBe(0);
+  });
+
+  it.each([
+    ['a padded form siteid', form([['siteid', ' tenant-a ']]), 'tenant-a'],
+    ['a padded form site-id', form([['site-id', ' tenant-a ']]), 'tenant-a'],
+    ['a form siteid with a NUL', form([['siteid', 'tenant\u0000-a']]), 'tenant-a'],
+    ['a padded multipart site-id', parts([{ name: 'site-id', value: ' tenant-a ' }]), 'tenant-a'],
+    ['a padded url siteid', { ...form([]), url: '/v1/staff?siteid=%20tenant-a%20' }, 'tenant-a'],
+    ['another site under a JSON site-id', json({ 'site-id': 'tenant-b' }), undefined],
+    ['the token site under a JSON siteid', json({ siteid: 'tenant-a' }), 'tenant-a'],
+  ])('admits %s, the handler reading siteid %j', async (_label, request, siteid) => {
+    const { app, handled } = await staff();
+    const res = await app.inject({ method: 'POST', url: '/v1/staff', ...request });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().params.siteid).toBe(siteid);
+    expect(handled()).toBe(1);
+  });
+
+  it('keeps a JSON site-id under its own name in the params', async () => {
+    const { app } = await staff();
+    const res = await app.inject({ method: 'POST', url: '/v1/staff', ...json({ 'site-id': 'tenant-b' }) });
+    expect(res.json().params).toStrictEqual({ 'site-id': 'tenant-b' });
+  });
+});
+
+describe('legacyScopesOf', () => {
+  async function scopes(): Promise<FastifyInstance> {
+    const { app } = await build();
+    app.post('/scopes', { config: { opt2: { public: true } } }, async (request) => {
+      const { url, form, json, jsonBody } = legacyScopesOf(request);
+      return { url, form, json, jsonBodyIsBody: jsonBody === request.body, jsonBody };
+    });
+    return app;
+  }
+
+  it('returns the scanned url and form scopes apart, CF-joined and in scope order, with their failure flags', async () => {
+    const app = await scopes();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/scopes?q=%20x%20&w-z=onClick&w-z=2',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: 'k=%3Cscript%3E&q=%5Bnull%5D',
+    });
+    expect(res.json()).toStrictEqual({
+      url: { entries: [['q', 'x'], ['w-z', 'onClick,2'], ['wz', '[INVALID],2']], failed: false },
+      form: { entries: [['k', '<script>'], ['q', '[null]']], failed: true },
+      json: false,
+      jsonBodyIsBody: false,
+    });
+  });
+
+  it('leaves the form scope empty and hands on a JSON body as sent', async () => {
+    const app = await scopes();
+    const res = await app.inject({ method: 'POST', url: '/scopes?q=null', headers: { 'content-type': 'application/json' }, payload: '{"siteid":" a ","n":null}' });
+    expect(res.json()).toStrictEqual({
+      url: { entries: [['q', 'null']], failed: true },
+      form: { entries: [], failed: false },
+      json: true,
+      jsonBodyIsBody: true,
+      jsonBody: { siteid: ' a ', n: null },
+    });
+  });
+});
+
 describe('legacy container POST size limit', () => {
   /** An app whose s2-only `/sized`, `/internal/v1/sized` and 8-byte `/small` routes answer the byte length of the body they read. */
   async function sized(): Promise<{ app: FastifyInstance; lines: LogLine[] }> {
@@ -1250,13 +1735,18 @@ describe('legacy container POST size limit', () => {
     return lines.map((line) => [line.severity, line.message, line.statusCode]);
   }
 
-  it.each([LEGACY_MAX_POST_CONTENT_LENGTH + 1, 100 * MIB + 4096])(
-    'answers a POST declaring %i bytes with the Post Size page before auth, logging one WARNING and one INFO line',
-    async (length) => {
+  it.each([
+    { length: LEGACY_MAX_POST_CONTENT_LENGTH + 1, url: '/sized?siteid=tenant-a' },
+    { length: 100 * MIB + 4096, url: '/sized?siteid=tenant-a' },
+    // The container answers before Masa's start-up scan, which this query fails on a root-served path.
+    { length: LEGACY_MAX_POST_CONTENT_LENGTH + 1, url: '/_api/json/v1/tenant-a/content?q=null' },
+  ])(
+    'answers a POST declaring $length bytes to $url with the Post Size page before auth, logging one WARNING and one INFO line',
+    async ({ length, url }) => {
       const { app, lines } = await sized();
       const res = await app.inject({
         method: 'POST',
-        url: '/sized?siteid=tenant-a',
+        url,
         headers: { 'content-type': 'application/json', 'content-length': String(length) },
         payload: '{}',
       });

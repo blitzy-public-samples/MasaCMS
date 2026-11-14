@@ -20,6 +20,7 @@ import {
 import {
   CSRF,
   FAMILIES,
+  RELOAD_KEY,
   TOKEN,
   TOKEN_EXPIRES,
   actorHeaders,
@@ -184,6 +185,7 @@ describe('JSON API wire format, ownership and denials over the recording databas
     it.each([
       ['a content findOne', 'GET', `/content/${target}`],
       ['a site findOne', 'GET', `/site/${TENANT_A.siteId}`],
+      ['a reload, the url as sent carrying its key', 'GET', `/user/new?${RELOAD_KEY}`],
     ] as const)('answers %s, a key people does not own, with the legacy 404 envelope', async (_name, method, rest) => {
       legacyError(await send(testApp.app, method, apiPath(family, rest), await actorHeaders(SITE_ADMIN_A)), 'invalidMethodCall', 404);
       expectUntouched();

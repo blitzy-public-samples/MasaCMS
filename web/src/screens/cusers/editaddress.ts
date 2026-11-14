@@ -4,6 +4,7 @@ import type { components } from '@/generated/clients/people';
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeHtmlAttr, encodeUrl, html, join, raw, type SafeHtml } from '@/lib/html';
+import { relayFields } from '@/lib/request-context';
 import type { PageScreen, ScreenContext } from '../registry';
 import { cusersGate, normaliseCusersRc, type CusersRc } from './gate';
 import {
@@ -111,10 +112,10 @@ export async function loadEditAddress(
 ): Promise<EditAddressData> {
   const rc = normaliseCusersRc(ctx.req);
   const addressId = addressIdOf(rc);
-  const person = { siteid: rc.siteid, userid: rc.userid };
+  const person = relayFields(ctx.req, { siteid: rc.siteid, userid: rc.userid });
   const [editResponse, userResponse] = await Promise.all([
     ctx.gateway.people.call('get', '/v1/users/address', {
-      query: { ...person, addressid: addressId, routeid: rc.routeid },
+      query: { ...person, ...relayFields(ctx.req, { addressid: addressId, routeid: rc.routeid }) },
     }),
     // `getAddresses()` of the user bean: people's address read carries no count, its Edit User read lists them.
     ctx.gateway.people.call('get', '/v1/users/edit', { query: person }),

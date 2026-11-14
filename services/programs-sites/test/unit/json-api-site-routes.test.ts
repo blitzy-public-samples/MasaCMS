@@ -8,7 +8,7 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { parse } from 'yaml';
 import { collectRouteMatrix } from '@opt2/platform/auth';
-import { LEGACY_JSON_CONTENT_TYPE, etag } from '@opt2/platform/legacy-compat';
+import { LEGACY_JSON_CONTENT_TYPE, etag, scannedRouteKey } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { EnvValidationError, createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import {
@@ -573,6 +573,9 @@ describe('site checks', () => {
   it.each([
     ['GET', '/_api/json/v1/tenant-b/site', {}],
     ['GET', '/_api/json/v1/tenant-a/site?siteid=tenant-b', {}],
+    ['GET', '/_api/json/v1/tenant-a/site?siteid=%20tenant-b%20', {}],
+    ['GET', '/_api/json/v1/tenant-a/site?amp%3Bsiteid=tenant-b', {}],
+    ['POST', '/_api/json/v1/tenant-a/site', { headers: FORM, payload: `site-id=tenant-b&${TOKEN_FIELDS}` }],
     ['GET', '/_api/json/v1/unknown/site', {}],
     ['POST', '/_api/json/v1/tenant-a/site', { headers: FORM, payload: `siteid=tenant-b&${TOKEN_FIELDS}` }],
     ['POST', '/_api/json/v1/tenant-a/site', { headers: JSON_BODY, payload: { siteid: 'tenant-b' } }],
@@ -940,6 +943,82 @@ describe('findAll, findMany and findQuery', () => {
     const res = await send('GET', `/_api/json/v1/tenant-a${query}`);
     expect(res.statusCode).toBe(status);
     expect(res.json()).toEqual(body);
+  });
+});
+
+describe('start-up script protection', () => {
+  /** The name-value pairs of a self link, sorted: the oracle orders `method` and `expanddepth` differently from run to run. */
+  function selfPairs(res: { statusCode: number; json: () => unknown }): string[] {
+    const { self } = dataOf(res, 'findAll').links as { self: string };
+    expect(self.startsWith(`${TENANT_A_BASE}/?&`)).toBe(true);
+    return self.slice(TENANT_A_BASE.length + 3).split('&').sort();
+  }
+
+  const sorted = (query: string): string[] => query.split('&').sort();
+
+  // Oracle: GET /_api/json/v1/default?method=%20findAll%20&entityname=%20site%20&siteid=%20default%20 answers findAll of default.
+  it('resolves padded method, entity and site params as the scan trims them', async () => {
+    const res = await send('GET', '/_api/json/v1/tenant-a?method=%20findAll%20&entityname=%20site%20&siteid=%20tenant-b%20');
+    expect(selfPairs(res)).toEqual(sorted('expanddepth=1&method=findAll&siteid=tenant-b&entityname=site&pageIndex=1'));
+    expect(reads()).toEqual([[TENANT_B.tenantId, 'tenant-b']]);
+  });
+
+  // The gateway's matcher keys the forwarded request through the same scannedRouteKey call (gateway/src/dispatcher/match.ts).
+  it.each([
+    ['a padded method and entity', '?method=%20findAll%20&entityname=%20site%20'],
+    ['a method name the scan strips of amp;', '?amp%3Bmethod=findAll&entityname=site'],
+    ['a method the scan strips of NUL', '?method=find%00All&entityname=site'],
+  ])('serves %s under the key the gateway derives', async (_label, query) => {
+    const target = `/_api/json/v1/tenant-a${query}`;
+    const siteIds = new Set(REGISTRY.map(({ site_id }) => site_id.toLowerCase()));
+    const { result } = scannedRouteKey(
+      { method: 'GET', path: '/_api/json/v1/tenant-a', url: target, query: Object.fromEntries(new URLSearchParams(query)), form: {}, headers: {} },
+      { siteExists: (siteId) => siteIds.has(siteId.toLowerCase()), context: '', appReloadKey: SETTINGS.appReloadKey },
+    );
+    expect(result.key).toBe('api:site.findall');
+    dataOf(await send('GET', target), result.params.method ?? '');
+  });
+
+  // Oracle self link of the same query on default: ?&ab=[INVALID]&nul=ab&a-b=onClick&foo=z&method=findAll&expanddepth=1&title=[INVALID]y&entityname=site&pageIndex=1
+  it('links the url scope as the scan leaves it: values filtered and trimmed, names dropped, renamed and stripped', async () => {
+    const query = 'title=%20%3Cscript%3Ex%3C/script%3Ey%20&1bad=2&amp%3Bfoo=z&a-b=%20onClick%20&nul=a%00b';
+    const res = await send('GET', `/_api/json/v1/tenant-a?method=findAll&entityname=site&${query}`);
+    expect(selfPairs(res)).toEqual(
+      sorted('ab=[INVALID]&nul=ab&a-b=onClick&foo=z&method=findAll&expanddepth=1&title=[INVALID]y&entityname=site&pageIndex=1'),
+    );
+  });
+
+  // Oracle: POST form onclick=1&B=%20x%20&1bad=2&a-b=%3Cscript%3Ey links fieldnames=[INVALID],B,1BAD,A-B, b= x and ab=<script>y.
+  it('filters the posted fieldnames list and keeps the exception field B as posted', async () => {
+    const payload = 'onclick=1&B=%20x%20&1bad=2&a-b=%3Cscript%3Ey';
+    const res = await send('POST', '/_api/json/v1/tenant-a?method=findAll&entityname=site', { headers: FORM, payload });
+    expect(selfPairs(res)).toEqual(
+      sorted('ab=<script>y&b= x &onclick=1&a-b=<script>y&fieldnames=[INVALID],B,1BAD,A-B&expanddepth=1&method=findAll&entityname=site&pageIndex=1'),
+    );
+  });
+
+  // Oracle: probe.py form with these pairs leaves DOMAIN saved.example.test, SITE [INVALID]Acme, CONTACT ab, TAGLINE z, EX-TRA onClick, EXTRA [INVALID].
+  // The scan reads only the url and form scopes; a direct call's structAppend copies the params into the form the link reads.
+  it.each<[string, Record<string, string>, string | Record<string, unknown>, string]>([
+    [
+      'the form values the scan leaves',
+      FORM,
+      ['site=%20%3Cscript%3Ex%3C%2Fscript%3EAcme%20', 'domain=%20saved.example.test%20', 'contact=a%00b', '1bad=x', 'amp%3Btagline=z', 'ex-tra=%20onClick%20'].join('&'),
+      'site=[INVALID]Acme&domain=saved.example.test&contact=ab&tagline=z&ex-tra=onClick&extra=[INVALID]&fieldnames=SITE,DOMAIN,CONTACT,1BAD,AMP;TAGLINE,EX-TRA',
+    ],
+    ['a JSON body as sent', JSON_BODY, { site: ' <script>x</script>Acme ' }, 'site= <script>x</script>Acme '],
+  ])('links %s', async (_label, headers, payload, pairs) => {
+    const res = await send('POST', '/_api/json/v1/tenant-a?method=findAll&entityname=site', { headers, payload });
+    expect(selfPairs(res)).toEqual(sorted(`${pairs}&method=findAll&expanddepth=1&entityname=site&pageIndex=1`));
+  });
+
+  it.each([
+    ['a reload key the scan renames, which processRequest deletes', '?amp%3Bappreload=1', 200],
+    ['the reload key as sent', '?appreload=1', 503],
+  ])('serves %s as legacy decides the reload before the scan', async (_label, query, status) => {
+    const res = await send('GET', `/_api/json/v1/tenant-a/site${query}`);
+    expect(res.statusCode).toBe(status);
+    if (status === 200) expect(res.json()).toEqual(TENANT_A_FIND_ONE);
   });
 });
 

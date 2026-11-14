@@ -19,7 +19,7 @@ import {
 import { acfStruct, type StructOp } from './acf-struct.js';
 import { SITE_COLUMNS, targetNameFor, type SiteRow } from './site-fields.js';
 
-/** A url scope as CFML holds it: names as sent, a repeated name's values joined with `,`. */
+/** A url scope as CFML holds it after Masa's start-up script protection scan, a repeated name's values joined with `,`. */
 export type UrlScope = Readonly<Record<string, string>>;
 
 /** transformParamType of a `tsettings` column (dbUtility.cfc:1509-1541). */

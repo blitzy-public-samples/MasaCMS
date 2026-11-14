@@ -5,6 +5,8 @@ import {
   LEGACY_ERROR_PAGE_HTML,
   LEGACY_HTML_CONTENT_TYPE,
   cfUuid,
+  legacyScopeParams,
+  portcullisScan,
 } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CORE_VERSION } from '@/lib/env';
@@ -18,6 +20,7 @@ import { submitCchainSave } from '@/screens/cchain/save';
 import type { PageScreen, RedirectScreen, ScreenContext } from '@/screens/registry';
 import {
   anonymousRequest,
+  buildTestAdminRequest,
   editorRequest,
   siteAdminRequest,
   type AdminRequestPartial,
@@ -550,5 +553,36 @@ describe('cchain.delete', () => {
     await expect(submitCchainDelete(deleteContext({ status: 503, body: {} }))).rejects.toBeInstanceOf(
       GatewayUnavailableError,
     );
+  });
+});
+
+describe('cchain relays over the real request set-up', () => {
+  const POSTED = {
+    chainID: CHAIN,
+    name: '\u201C Legal \u201D',
+    'x-y': '<script>z</script>',
+    siteid: SITE,
+    [CSRF_FIELD_TOKEN]: 'T',
+  };
+
+  it.each<[string, ServicePath]>([
+    ['save', SAVE_PATH],
+    ['delete', DELETE_PATH],
+  ])("posts cchain.%s as received, so the owner's one scan is legacy's", async (item, path) => {
+    const req = await buildTestAdminRequest({ circuit: 'cchain', action: item, form: POSTED, user: 'siteAdmin' });
+    const reply = written({ circuit: 'cchain', action: 'list', params: [['siteid', SITE]] });
+    const gateway = fakeGatewayClient({ [routeKey('POST', 'strategies-content', path)]: reply });
+    const ctx = makeScreenContext({ req, gateway });
+
+    await screenOf<RedirectScreen>(item).submit(ctx);
+    const form = ctx.gateway.calls.find((call) => call.path === path)?.form ?? {};
+    expect(req.rc).toMatchObject({ name: '" Legal "', xy: '<script>z</script>' });
+    expect(form).toMatchObject({ ...POSTED, userid: '' });
+    expect(form).not.toHaveProperty('xy');
+    expect(legacyScopeParams(portcullisScan(Object.entries(form)))).toMatchObject({
+      name: '" Legal "',
+      'x-y': '<script>z</script>',
+      xy: '<script>z</script>',
+    });
   });
 });

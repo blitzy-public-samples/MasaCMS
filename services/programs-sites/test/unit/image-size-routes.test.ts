@@ -237,6 +237,14 @@ describe('PUT /v1/sites/:siteId/image-sizes/:sizeId', () => {
       'name=Hero&height=tall&width=AUTO',
       { name: 'Hero', height: 'tall', width: 'AUTO' },
     ],
+    // Oracle: probe.py form leaves NAME [INVALID], WIDTH 12, HEIGHT [INVALID]y, NOTE z (from amp;note), SITE ab, AB [INVALID].
+    [
+      'url and form values as the admin start-up scan leaves them',
+      `${SIZE_URL}?height=%20%3Cscript%3Ex%3C%2Fscript%3Ey%20&1bad=x`,
+      FORM,
+      'name=onClick&width=%2012%20&amp%3Bnote=z&site=a%00b&a-b=%20onClick%20',
+      { height: '[INVALID]y', name: '[INVALID]', width: '12', note: 'z', site: 'ab', 'a-b': 'onClick', ab: '[INVALID]' },
+    ],
   ])('saves the merged request values of %s under the path ids, then lists the site', async (_label, url, headers, payload, posted) => {
     const res = await send('PUT', url, { ...(await headersAs('s2')), ...headers }, payload);
     expect(res.statusCode).toBe(200);

@@ -72,7 +72,7 @@ export const API = `/_api/json/v1/${SITE}`;
 export const ADMIN_GROUP = '3BE10D43-C960-A7E5-0FB807B791D31787';
 export const EDITOR_GROUP = '3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D';
 export const USERS_MODULE = 'm:008';
-const FORM_BODY = { 'content-type': 'application/x-www-form-urlencoded' };
+export const FORM_BODY = { 'content-type': 'application/x-www-form-urlencoded' };
 export const LEGACY_JSON_TYPE = 'application/json;charset=utf-8';
 export const SETTINGS: LegacyApiSettings = Object.freeze({ adminSSL: false, context: '', appReloadKey: 'appreload', adminDomain: '' });
 const FAST_LOGIN: LoginDeps['settings'] = { password: { ...DEFAULT_LOGIN_SETTINGS.password, bcryptLogRounds: 4 }, strikes: DEFAULT_LOGIN_SETTINGS.strikes };

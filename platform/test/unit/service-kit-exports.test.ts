@@ -76,6 +76,7 @@ const VALUE_EXPORTS = {
       'isBodyTooLargeError',
       'isUnstorableTextError',
       'legacyParamsOf',
+      'legacyScopesOf',
       'multipartFilesOf',
       'recordOutcomeReason',
       'sendLegacyResponse',

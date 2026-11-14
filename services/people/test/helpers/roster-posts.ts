@@ -7,7 +7,7 @@ import { TEST_CLOCK, userHeaders, type TestApp } from './app.js';
 import { createIdentityDouble, type IdentityDouble } from './identity-double.js';
 import { DEFAULT_PEOPLE_SEED, SYSTEM_USER_A_PERSON, accountFor, accountsForSeed, personRow, type TestActor } from './fixtures.js';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as { paths: Record<string, Record<string, unknown>> };
+export const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as { paths: Record<string, Record<string, unknown>> };
 
 /** The contract path declaring `operationId`, which `app.inject` addresses. */
 function pathOf(operationId: string): string {
@@ -58,6 +58,8 @@ export interface Post {
   fields: Record<string, string>;
   query?: Record<string, string>;
   files?: readonly FilePart[];
+  /** Sends the fields as a JSON object body. */
+  json?: boolean;
   /** Leaves out the CSRF pair the form renders. */
   withoutToken?: boolean;
 }
@@ -78,7 +80,8 @@ export async function send<B>(app: TestApp['app'], path: string, actor: TestActo
   const fields = post.withoutToken === true ? post.fields : { ...post.fields, [CSRF_FIELD_TOKEN]: TOKEN, [CSRF_FIELD_EXPIRES]: EXPIRES };
   const search = new URLSearchParams(post.query ?? {}).toString();
   const url = search === '' ? path : `${path}?${search}`;
-  const body = post.files === undefined ? { payload: new URLSearchParams(fields).toString(), contentType: 'application/x-www-form-urlencoded' } : multipart(fields, post.files);
+  const form = post.files === undefined ? { payload: new URLSearchParams(fields).toString(), contentType: 'application/x-www-form-urlencoded' } : multipart(fields, post.files);
+  const body = post.json === true ? { payload: JSON.stringify(fields), contentType: 'application/json' } : form;
   const res = await app.inject({ method: 'POST', url, headers: { ...(await userHeaders(actor)), 'content-type': body.contentType }, payload: body.payload });
   const validated = assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
   return { status: res.statusCode, body: validated as B };

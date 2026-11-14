@@ -65,6 +65,18 @@ describe('renderRequestOf', () => {
     expect(key.family === 'render' ? key.key : 'not render').toBe(parsed.matched ? `render:${parsed.kind}` : 'not render');
   });
 
+  // Legacy reads the url scope after its start-up scan; each expectation is the own oracle's scanned url scope for the query.
+  it.each<[string, RenderQuery, ParsedRenderRequest]>([
+    ['a padded fileid and size, trimmed', { fileid: ` ${FILE_ID} `, size: ' Small ' }, sized('small', 'Small')],
+    ['a fileid with a NUL, dropped', { fileid: `${FILE_ID}\0` }, file('file')],
+    ['a script method, neutralised', { fileid: FILE_ID, method: '<script>x</script>attachment' }, file('file', '[INVALID]attachment')],
+    ['fileid under a name with a dash, added under its stripped name', { 'file-id': FILE_ID }, file('file')],
+    ['fileid with `amp;`, renamed', { 'fileidamp;': FILE_ID }, file('file')],
+    ['fileid under a name starting with a digit, dropped', { '1fileid': FILE_ID }, { matched: false }],
+  ])('reads %s, as the start-up scan leaves the url scope', (_name, query, expected) => {
+    expect(renderRequestOf('/_api/render/file/', query)).toEqual(expected);
+  });
+
   it('throws without a third segment, where the route key reads server_error', () => {
     expect(() => renderRequestOf('/_api/render/', { fileid: FILE_ID, size: 'small' })).toThrow(RangeError);
     expect(routeKeyForRequest({ method: 'GET', path: '/_api/render/', query: { fileid: FILE_ID }, headers: {} }).key).toBe('render:!server_error');
@@ -233,6 +245,22 @@ describe.skipIf(!(await pgAvailable()))('render routes', () => {
 
   it('answers a request without fileid with legacy empty page', async () => {
     const res = await call('/_api/render/file/');
+    expect([res.statusCode, res.headers['content-type'], res.body]).toEqual([200, HTML, '']);
+  });
+
+  // Own oracle: `?fileid=%20<id>%20` and `?file-id=<id>` take the render branch (404 for its unknown id); `?1fileid=<id>` answers the empty page.
+  it.each<[string, string]>([
+    ['a padded fileid', `/_api/render/file/?fileid=%20${PDF}%20`],
+    ['a fileid named with a dash', `/_api/render/file/?file-id=${PDF}`],
+    ['a fileid ending in NUL', `/_api/render/file/?fileid=${PDF}%00`],
+  ])('serves the file for %s, as the start-up scan leaves the url scope', async (_name, url) => {
+    const res = await call(url, await tenantA());
+    expect(res.statusCode).toBe(200);
+    expect(res.rawPayload).toEqual(bytesOf(`${PDF}.pdf`));
+  });
+
+  it('answers the empty page for a fileid name the start-up scan drops', async () => {
+    const res = await call(`/_api/render/file/?1fileid=${PDF}`, await tenantA());
     expect([res.statusCode, res.headers['content-type'], res.body]).toEqual([200, HTML, '']);
   });
 

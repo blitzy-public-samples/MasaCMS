@@ -8,13 +8,7 @@ import {
   cfNumberString,
   cfToBoolean,
 } from '@opt2/platform/legacy-compat';
-import {
-  legacyParamsOf,
-  sendLegacyResponse,
-  type FastifyInstance,
-  type FastifyReply,
-  type FastifyRequest,
-} from '@opt2/platform/service-kit';
+import { legacyScopesOf, sendLegacyResponse, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import { flagComment, getCommentValues, getContentStatsValues } from '../domain/comments.js';
 import { actorFromClaims, type DomainDeps } from '../domain/context.js';
 import { muraJsonEncode } from '../legacy/cfjson.js';
@@ -102,25 +96,15 @@ function collectionArguments(text: string): Map<string, string> {
   return bound;
 }
 
-/** Whether the body is JSON, which ColdFusion never reads into the form scope. */
-function hasJsonBody(request: FastifyRequest): boolean {
-  const contentType = request.headers['content-type'];
-  return typeof contentType === 'string' && contentType.slice(0, 16).toLowerCase() === 'application/json';
-}
-
 /**
- * The request fields of a remote call by lower-cased name, as ColdFusion binds them: url values over form values over
- * the `argumentCollection` members, which never name the method. Repeated url keys join with `,`.
+ * The request fields of a remote call by lower-cased name, as ColdFusion binds them from the scanned scopes: url values
+ * over form values over the `argumentCollection` members, which never name the method. Repeated url keys join with `,`.
+ * A scan failure never reaches here: the service kit answers it with the error page on this root-served path.
  */
 function remoteFields(request: FastifyRequest): Map<string, string> {
+  const { url, form } = legacyScopesOf(request);
   const fields = new Map<string, string>();
-  const put = (name: string, value: unknown): void => {
-    fields.set(name.toLowerCase(), Array.isArray(value) ? value.join(',') : String(value));
-  };
-  if (!hasJsonBody(request)) {
-    for (const [name, value] of Object.entries(legacyParamsOf(request))) put(name, value);
-  }
-  for (const [name, value] of Object.entries((request.query ?? {}) as Record<string, unknown>)) put(name, value);
+  for (const [name, value] of [...form.entries, ...url.entries]) fields.set(name.toLowerCase(), String(value));
   const collection = fields.get('argumentcollection');
   if (collection !== undefined) {
     for (const [name, value] of collectionArguments(collection)) {

@@ -3,7 +3,7 @@ import { cfEq, cfListToArray, cfUuid } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/identity';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtmlAttr, encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
-import type { RequestContext } from '@/lib/request-context';
+import { relayFields, type RequestContext } from '@/lib/request-context';
 import type { PageScreen, ScreenContext } from '../registry';
 import {
   CONTENT_MODULE_ID,
@@ -160,7 +160,8 @@ async function loadAdminGroupId(ctx: ScreenContext, siteid: string): Promise<str
   // Legacy resolves the bean's empty site id to `default`'s private pool; identity lists only the token site's pool,
   // which is the same pool on `default`. The id fills a disabled checkbox only.
   for (let offset: number | null = 0; offset !== null; ) {
-    const response = await ctx.gateway.identity.call('get', '/v1/groups', { query: { siteid, ispublic: '0', offset } });
+    const query = { ...relayFields(ctx.req, { siteid }), ispublic: '0', offset };
+    const response = await ctx.gateway.identity.call('get', '/v1/groups', { query });
     const page: components['schemas']['GroupList'] = okBody(response, 'identity', 'listGroups');
     const admin = page.items.find((group) => isAdminGroupName(group.GroupName));
     if (admin !== undefined) return admin.UserID;
@@ -182,7 +183,7 @@ export async function loadCpermMain(ctx: ScreenContext): Promise<CpermMainModel>
   const [permissions, crumbData, chains] = await Promise.all([
     ctx.gateway.identity.call('get', '/v1/permissions/content/{contentId}', {
       params: { contentId: contentid },
-      query: { siteid },
+      query: relayFields(ctx.req, { siteid }),
     }),
     loadCrumbData(ctx, siteid, contentid),
     loadChains(ctx, siteid),

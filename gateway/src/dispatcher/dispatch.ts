@@ -220,33 +220,20 @@ function pathOf(url: string): string {
   return queryAt === -1 ? url : url.slice(0, queryAt);
 }
 
-/** URL scope of a request target; a repeated name holds its values comma-joined, as a CFML scope does. */
-function urlScope(url: string): Record<string, string> {
-  const queryAt = url.indexOf('?');
-  const scope = new Map<string, string>();
-  if (queryAt !== -1) {
-    for (const [name, value] of new URLSearchParams(url.slice(queryAt + 1))) {
-      const previous = scope.get(name);
-      scope.set(name, previous === undefined ? value : `${previous},${value}`);
-    }
-  }
-  // fromEntries defines own properties, so a `__proto__` parameter stays data.
-  return Object.fromEntries(scope);
-}
-
 function userAgentOf(request: FastifyRequest): string | undefined {
   const value = request.headers['user-agent'];
   return Array.isArray(value) ? value[0] : value;
 }
 
-/** The session input of a keyed request: its original headers, URL scope and the route key's merged params. */
+/** The session input of a keyed request: its original headers, scanned URL scope, scan outcome and the route key's merged params. */
 function sessionInputOf(request: FastifyRequest, outcome: RoutedOutcome): SessionRequestInput {
   return {
     path: pathOf(request.url),
     httpMethod: request.method,
     headers: request.headers,
-    query: urlScope(request.url),
+    query: outcome.urlScope,
     params: outcome.result.params,
+    scanFailed: outcome.scanFailed,
   };
 }
 

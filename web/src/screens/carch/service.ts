@@ -12,7 +12,13 @@ import {
   type MultipartBody,
   type MultipartRelay,
 } from '@/lib/gateway-client';
-import { setSessionMuraValue, type AdminRequest, type AdminSessionWrites } from '@/lib/request-context';
+import {
+  relayContext,
+  relayFields,
+  setSessionMuraValue,
+  type AdminRequest,
+  type AdminSessionWrites,
+} from '@/lib/request-context';
 import { REDIRECT_HEADERS } from '@/lib/responses';
 import { boundAdminUrl } from '@/lib/urls';
 import type { RawBody, Rc, ScreenContext, SubmitResult } from '../registry';
@@ -67,9 +73,13 @@ interface PostInput {
   readonly headers: Readonly<Record<string, string>>;
 }
 
+/** Named rc values as a relay sends them. */
+type NamedRelay = (values: Readonly<Record<string, string | undefined>>) => Rc;
+
 interface PageEntry {
   readonly operation: string;
-  readonly call: (sc: Facade, rc: Rc) => Promise<Answer<CarchPageModel>>;
+  /** `rc` names the path segments; `fields` is the relay of `rc` that whole-rc url fields are sent from. */
+  readonly call: (sc: Facade, rc: Rc, fields: Rc, named: NamedRelay) => Promise<Answer<CarchPageModel>>;
 }
 
 interface WriteEntry {
@@ -126,10 +136,10 @@ const TREE_QUERY = ['topid', 'moduleid', 'sortBy', 'sortDirection', 'page'] as c
 
 const contentEditModel: PageEntry = {
   operation: 'getContentEditModel',
-  call: (sc, rc) =>
+  call: (sc, rc, _fields, named) =>
     sc.call('get', '/v1/sites/{siteid}/content/{contentid}', {
       params: { ...siteOf(rc), contentid: segment(rc, 'contentid') },
-      query: declared(rc, 'contenthistid', 'parentid', 'type', 'subtype', 'moduleid', 'title', 'compactDisplay'),
+      query: named(declared(rc, 'contenthistid', 'parentid', 'type', 'subtype', 'moduleid', 'title', 'compactDisplay')),
     }),
 };
 
@@ -145,19 +155,19 @@ const contentVersionModel: PageEntry = {
 const PAGE_CALLS = {
   list: {
     operation: 'getSiteManagerTree',
-    call: (sc, rc) =>
+    call: (sc, rc, fields) =>
       // The service runs the view's sort write and flat-view state over the whole rc, so the rest travels in params.
       sc.call('get', '/v1/sites/{siteid}/content/tree', {
         params: siteOf(rc),
-        query: { ...declared(rc, ...TREE_QUERY), params: rcFields(rc, ...TREE_QUERY) },
+        query: { ...declared(fields, ...TREE_QUERY), params: rcFields(fields, ...TREE_QUERY) },
       }),
   },
   search: {
     operation: 'listContent',
-    call: (sc, rc) =>
+    call: (sc, rc, _fields, named) =>
       sc.call('get', '/v1/sites/{siteid}/content', {
         params: siteOf(rc),
-        query: declared(rc, 'keywords', 'type', 'moduleid', 'page'),
+        query: named(declared(rc, 'keywords', 'type', 'moduleid', 'page')),
       }),
   },
   draft: {
@@ -166,17 +176,20 @@ const PAGE_CALLS = {
   },
   selectmedia: {
     operation: 'getSelectMediaModel',
-    call: (sc, rc) =>
-      sc.call('get', '/v1/sites/{siteid}/content/images', { params: siteOf(rc), query: declared(rc, 'contentid') }),
+    call: (sc, rc, _fields, named) =>
+      sc.call('get', '/v1/sites/{siteid}/content/images', {
+        params: siteOf(rc),
+        query: named(declared(rc, 'contentid')),
+      }),
   },
   edit: contentEditModel,
   editlive: contentEditModel,
   hist: {
     operation: 'getContentHistory',
-    call: (sc, rc) =>
+    call: (sc, rc, _fields, named) =>
       sc.call('get', '/v1/sites/{siteid}/content/{contentid}/history', {
         params: { ...siteOf(rc), contentid: segment(rc, 'contentid') },
-        query: declared(rc, 'startrow'),
+        query: named(declared(rc, 'startrow')),
       }),
   },
   audit: {
@@ -199,31 +212,35 @@ const PAGE_CALLS = {
   datamanager: {
     operation: 'listFormResponses',
     // The view's branch, edit row and filter read rc fields beyond the declared ones, so every field is sent.
-    call: (sc, rc) =>
+    call: (sc, rc, fields) =>
       sc.call('get', '/v1/sites/{siteid}/forms/{contentid}/responses', {
         params: { ...siteOf(rc), contentid: segment(rc, 'contentid') },
-        query: { params: rcFields(rc) },
+        query: { params: rcFields(fields) },
       }),
   },
   imagedetails: {
     operation: 'getImageDetailsModel',
-    call: (sc, rc) =>
+    call: (sc, rc, _fields, named) =>
       sc.call('get', '/v1/sites/{siteid}/files/image-details', {
         params: siteOf(rc),
-        query: declared(rc, 'fileid', 'contenthistid', 'userid', 'imagesize', 'compactDisplay'),
+        query: named(declared(rc, 'fileid', 'contenthistid', 'userid', 'imagesize', 'compactDisplay')),
       }),
   },
   selectfields: {
     operation: 'getSelectFieldsModel',
-    call: (sc, rc) =>
-      sc.call('get', '/v1/sites/{siteid}/feeds/display-fields', { params: siteOf(rc), query: { params: rcFields(rc) } }),
+    call: (sc, rc, fields) =>
+      sc.call('get', '/v1/sites/{siteid}/feeds/display-fields', { params: siteOf(rc), query: { params: rcFields(fields) } }),
   },
   variationtargeting: {
     operation: 'getVariationTargetingModel',
-    call: (sc, rc) =>
+    call: (sc, rc, fields) =>
       sc.call('get', '/v1/sites/{siteid}/variation-targeting', {
         params: siteOf(rc),
-        query: { remoteid: required(rc, 'remoteid'), params: rcFields(rc, 'remoteid') },
+        // A `remoteid` the scan made from another posted name has no relay entry; that name travels in params.
+        query: {
+          remoteid: rcValue(fields, 'remoteid') ?? required(rc, 'remoteid'),
+          params: rcFields(fields, 'remoteid'),
+        },
       }),
   },
 } satisfies Record<string, PageEntry>;
@@ -275,10 +292,10 @@ function csrfHeaders(req: AdminRequest): Record<string, string> {
   return headers;
 }
 
-/** A POST of the rc fields URL-encoded, or of the multipart body as received. */
+/** A POST of the rc fields' relay URL-encoded, or of the multipart body as received. */
 function postInput(req: AdminRequest, rc: Rc, multipart: MultipartBody | undefined): PostInput {
   const headers = csrfHeaders(req);
-  if (multipart === undefined) return { form: Object.entries(rc), headers };
+  if (multipart === undefined) return { form: Object.entries(relayContext(req, rc)), headers };
   const relay = multipartRelay(multipart);
   return { body: relay.body, headers: { ...headers, ...relay.headers } };
 }
@@ -357,6 +374,7 @@ function applyRelayedSessionEffects(req: AdminRequest, header: string | undefine
 
 /**
  * The screen model of a carch page action, for `rc` (default `ctx.req.rc`) under its declared parameter names.
+ * @param fields The relay of `rc`'s whole-rc fields; `relayContext` of `rc` when omitted.
  * @throws TypeError When a path parameter (`siteid`, `contentid`, `contenthistid`; `parentid` for multifileupload) is empty.
  * @throws GatewayUnavailableError When strategies-content is unavailable.
  */
@@ -364,9 +382,11 @@ export async function carchPageData(
   ctx: CarchCallContext,
   action: CarchPageAction,
   rc: Rc = ctx.req.rc,
+  fields: Rc = relayContext(ctx.req, rc),
 ): Promise<CarchOutcome<CarchPageModel>> {
   const { operation, call } = PAGE_CALLS[action];
-  return settle(ctx.req, operation, await call(ctx.gateway.strategiesContent, rc));
+  const named: NamedRelay = (values) => relayFields(ctx.req, values);
+  return settle(ctx.req, operation, await call(ctx.gateway.strategiesContent, rc, fields, named));
 }
 
 /**
@@ -415,13 +435,13 @@ export async function relayCarchRaw(
 ): Promise<RawBody> {
   const sc = ctx.gateway.strategiesContent;
   const path = `/v1/raw/carch/${action}` as const;
-  // The effective rc, not the inbound query, is sent: the service renders from what legacy's controller sees, and the
-  // screen context carries no raw query or body.
+  // The effective rc's relay, not the inbound query, is sent: the service renders from what legacy's controller sees.
+  const fields = relayContext(ctx.req, rc);
   const res =
     method === 'GET'
-      ? await sc.raw('get', path, { query: { params: rcFields(rc) }, headers: csrfHeaders(ctx.req) })
+      ? await sc.raw('get', path, { query: { params: rcFields(fields) }, headers: csrfHeaders(ctx.req) })
       : await sc.raw('post', path, {
-          query: declared(rc, 'siteid'),
+          query: declared(fields, 'siteid'),
           ...postInput(ctx.req, rc, multipart),
         });
   if (res.status === 401 || res.status === 403) return carchRawRedirect(secureRedirect(ctx.req).location);

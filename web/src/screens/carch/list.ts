@@ -4,7 +4,9 @@ import { cfEq, cfIsNumeric, cfLsDateFormat, cfLsTimeFormat, cfToBoolean } from '
 import { parseLegacyDate } from '@/lib/dates';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw, type SafeHtml } from '@/lib/html';
 import {
-  ORIGINAL_URL_HEADER,
+  forwardedPostedUrlScope,
+  forwardedUrlScope,
+  relayContext,
   sessionSiteModulePerm,
   setSessionMuraValue,
   type AdminRequest,
@@ -205,18 +207,12 @@ function listCaseOf(moduleId: string): ListCase {
 
 // ---- Request scopes and session writes ----
 
-/** URL-scope values by lower-cased name: the forwarded request target's query, else the names of `rc.currentURL`. */
+/** URL-scope values by lower-cased name: the forwarded request target's scanned URL scope, else `rc.currentURL`'s. */
 function urlScope(req: AdminRequest): ReadonlyMap<string, string> {
   const scope = new Map<string, string>();
-  const target = req.headers.get(ORIGINAL_URL_HEADER);
-  if (target !== null) {
-    const query = target.includes('?') ? target.slice(target.indexOf('?') + 1) : '';
-    for (const [name, value] of new URLSearchParams(query)) {
-      if (name === '') continue;
-      const key = name.toLowerCase();
-      const previous = scope.get(key);
-      scope.set(key, previous === undefined ? value : `${previous},${value}`);
-    }
+  const url = forwardedUrlScope(req.headers);
+  if (url !== undefined) {
+    for (const [name, value] of Object.entries(url)) scope.set(name.toLowerCase(), value);
     return scope;
   }
   // `rc.currentURL` lists each URL-scope entry once with its decoded value, which may itself hold `&`; rc holds the
@@ -232,11 +228,24 @@ function urlScope(req: AdminRequest): ReadonlyMap<string, string> {
   return scope;
 }
 
+/** `rc` without its `keywords`. */
+const withoutKeywords = (rc: Rc): Rc =>
+  Object.fromEntries(Object.entries(rc).filter(([name]) => name.toLowerCase() !== 'keywords'));
+
 // strategies-content keeps `flatViewArgs` and reads `url.keywords` only, so `keywords` travels only from the URL scope.
 /** The rc the service runs the controller and view over: `keywords` as the URL scope holds it, or absent. */
 function serviceRc(rc: Rc, url: ReadonlyMap<string, string>): Rc {
-  const fields = Object.fromEntries(Object.entries(rc).filter(([name]) => name.toLowerCase() !== 'keywords'));
+  const fields = withoutKeywords(rc);
   const keywords = url.get('keywords');
+  return keywords === undefined ? fields : { ...fields, keywords };
+}
+
+/** The relay of the service rc, `keywords` as the forwarded target posted it; undefined without that target. */
+function serviceRelay(req: AdminRequest, rc: Rc): Rc | undefined {
+  const posted = forwardedPostedUrlScope(req.headers);
+  if (posted === undefined) return undefined;
+  const fields = relayContext(req, withoutKeywords(rc));
+  const keywords = posted['keywords'];
   return keywords === undefined ? fields : { ...fields, keywords };
 }
 
@@ -280,7 +289,8 @@ async function runList(ctx: ScreenContext): Promise<ListOutcome> {
   const { req } = ctx;
   const url = urlScope(req);
   const listCase = listCaseOf(rcText(req.rc, 'moduleid'));
-  const outcome = await carchPageData(ctx, 'list', serviceRc(req.rc, url));
+  const rc = serviceRc(req.rc, url);
+  const outcome = await carchPageData(ctx, 'list', rc, serviceRelay(req, rc));
   if (outcome.kind === 'redirect') return { kind: 'location', location: outcome.location };
   if (outcome.kind === 'rejected') {
     throw new Error(`strategies-content rejected the carch.list read with HTTP ${outcome.status}`);

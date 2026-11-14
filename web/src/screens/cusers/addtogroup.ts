@@ -1,5 +1,6 @@
 // The `cUsers.addToGroup` action: identity adds the membership under its CSRF check, then `route()` (server-only).
 import { okBody } from '@/lib/gateway-client';
+import { relayFields } from '@/lib/request-context';
 import type { RedirectScreen, ScreenContext, SubmitResult } from '../registry';
 import { cusersGate, normaliseCusersRc } from './gate';
 import { cusersRoute } from './route';
@@ -19,14 +20,10 @@ async function submitAddToGroup(ctx: ScreenContext): Promise<SubmitResult> {
   const { userid, groupid, siteid } = rc;
   // An empty id, `before()`'s default, addresses no membership identity can hold and no path segment.
   if (userid !== '' && groupid !== '') {
-    const form: Array<readonly [string, string]> = [['siteid', siteid]];
-    for (const name of CSRF_FIELDS) {
-      const value = ctx.req.rc[name];
-      if (value !== undefined) form.push([name, value]);
-    }
+    const fields = { siteid, ...Object.fromEntries(CSRF_FIELDS.map((name) => [name, ctx.req.rc[name]])) };
     const response = await ctx.gateway.identity.raw('post', '/v1/groups/{groupId}/members/{userId}', {
       params: { groupId: groupid, userId: userid },
-      form,
+      form: relayFields(ctx.req, fields),
     });
     if (!takesRedirect(response.status)) okBody(response, SERVICE, OPERATION);
   }

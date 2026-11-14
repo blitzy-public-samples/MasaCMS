@@ -1,6 +1,12 @@
 // Route auth declarations, deny-by-default Fastify hooks and legacy-shaped denial responses of @opt2/platform/auth.
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteOptions } from 'fastify';
-import { legacyErrorResponse, type SerializedLegacyResponse } from '../legacy-compat/index.js';
+import {
+  legacyErrorResponse,
+  legacyScopesFrom,
+  portcullisInputsOf,
+  portcullisScan,
+  type SerializedLegacyResponse,
+} from '../legacy-compat/index.js';
 import { AuthDenial, TRANSPORTS, type Opt2AuthContext, type Transport } from './claims.js';
 import { hasAnyRole, isServiceRole } from './roles.js';
 import { transportForPath, type AuthRequest, type TransportSet } from './transports.js';
@@ -173,7 +179,7 @@ export function registerAuth(app: FastifyInstance, opts: RegisterAuthOptions): v
       return;
     }
     try {
-      for (const siteid of suppliedSiteIds(request)) {
+      for (const siteid of suppliedSiteIdsOf(request)) {
         assertSiteMatches(siteid, user);
       }
     } catch (err) {
@@ -237,24 +243,36 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null || Object.getPrototypeOf(proto) === null;
 }
 
-/** Every `siteid` the request supplies, in legacy merge order: route params, query, then a parsed plain-object body. */
-function suppliedSiteIds(request: FastifyRequest): string[] {
-  const body = isPlainObject(request.body) ? request.body : undefined;
-  return [request.params, request.query, body].flatMap((source) => valuesNoCase(source, 'siteid'));
+/** Every `siteid` a handler can read: route params as sent, the scanned url and form scopes with each sent `siteid` also scanned alone, or a JSON body as sent. */
+export function suppliedSiteIdsOf(request: FastifyRequest): string[] {
+  const { url, form, json, jsonBody } = legacyScopesFrom(request);
+  // A raw read still sees a `siteid` the scope joined or the scan replaced, as with a `SITEID` beside it or an `amp;siteid`.
+  const sentAlone = (fields: unknown): Array<[string, unknown]> =>
+    isPlainObject(fields)
+      ? Object.entries(fields)
+          .filter(([name]) => name.toLowerCase() === 'siteid')
+          .flatMap(([name, value]) => portcullisScan(portcullisInputsOf({ [name]: value })).entries)
+      : [];
+  const body = json ? (isPlainObject(jsonBody) ? Object.entries(jsonBody) : []) : [...form.entries, ...sentAlone(request.body)];
+  return [
+    ...valuesNoCase(request.params, 'siteid'),
+    ...namedValues([...url.entries, ...sentAlone(request.query), ...body], 'siteid'),
+  ];
 }
 
 /** Values stored under `key` ignoring case, as a CFML scope reads them. */
 function valuesNoCase(source: unknown, key: string): string[] {
-  if (!isRecord(source)) {
-    return [];
-  }
-  return Object.entries(source).flatMap(([name, value]) =>
+  return isRecord(source) ? namedValues(Object.entries(source), key) : [];
+}
+
+/** Values of the entries named `key` ignoring case; null and undefined ones are left out. */
+function namedValues(entries: ReadonlyArray<readonly [string, unknown]>, key: string): string[] {
+  return entries.flatMap(([name, value]) =>
     name.toLowerCase() === key && value !== undefined && value !== null ? [scopeValue(value)] : [],
   );
 }
 
-/** One parameter as a CFML scope holds it: repeated keys joined with `,`, multipart fields by their value. */
+/** One parameter as a CFML scope holds it: repeated keys joined with `,`. */
 function scopeValue(value: unknown): string {
-  const fieldValue = (item: unknown): unknown => (isPlainObject(item) && item.type === 'field' ? item.value : item);
-  return Array.isArray(value) ? value.map(fieldValue).join(',') : String(fieldValue(value));
+  return Array.isArray(value) ? value.join(',') : String(value);
 }

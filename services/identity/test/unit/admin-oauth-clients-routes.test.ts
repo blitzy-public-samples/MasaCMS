@@ -403,6 +403,17 @@ describe.skipIf(!available)('cwebservice screens against PostgreSQL', () => {
     });
   });
 
+  // The admin start-up scan trims rc.siteid and drops NUL; set-up fills an emptied one from session.siteid.
+  it.each(['siteid=%20tenant-a%20', 'siteid=%09tenant-a%0A', 'siteid=tenant-a%00', 'SiteID=%20tenant-a', 'siteid=%20'])(
+    'answer edit of an unknown id under the token site for %s',
+    async (query) => {
+      const res = await send('GET', clientUrl(NEW_CLIENT, `?${query}`), await headersFor([Roles.s2], await newSession()));
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ exists: false, client: { clientid: NEW_CLIENT, siteid: SITE } });
+    },
+  );
+
   it('save a new client once under a valid token, generating its secret and stamping the session user, and skip the write on a reused token', async () => {
     const clientId = cfUuid();
     const sessionId = await newSession();

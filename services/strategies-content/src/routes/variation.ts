@@ -1,6 +1,6 @@
 /** `/_api/resource/variation`: handleAPIRequest's variation branch (contentServer.cfc:649-650), which runs variation.js.cfm. */
 import { AuthDenial, assertSiteMatches, type Opt2RouteConfig } from '@opt2/platform/auth';
-import { LEGACY_HTML_CONTENT_TYPE, LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
+import { LEGACY_HTML_CONTENT_TYPE, LegacyServiceUnavailableError, portcullisInputsOf, portcullisScan } from '@opt2/platform/legacy-compat';
 import { sendLegacyResponse, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import type { DomainDeps } from '../domain/context.js';
 import { variationsEnabled } from '../domain/variations.js';
@@ -25,11 +25,12 @@ const ROUTE: { opt2: Opt2RouteConfig } = Object.freeze({ opt2: Object.freeze({ p
 /** handleAPIRequest falling through every endpoint: an empty page. */
 const UNMATCHED = Object.freeze({ status: 200, headers: { 'Content-Type': LEGACY_HTML_CONTENT_TYPE }, body: '' });
 
-/** `url.siteid` as the CFML url scope holds it: the key matched without case, a repeated key's values joined with `,`. */
+/** `url.siteid` as the CFML url scope holds it after the start-up scan: the key matched without case, a repeated key's values joined with `,`, an undefined value absent. */
 export function urlSiteId(query: VariationQuery): string | undefined {
   let siteId: string | undefined;
-  for (const [key, value] of Object.entries(query)) {
-    if (value !== undefined && key.toLowerCase() === 'siteid') siteId = typeof value === 'string' ? value : value.join(',');
+  const inputs = portcullisInputsOf(query).filter(([, value]) => value !== undefined);
+  for (const [key, value] of portcullisScan(inputs).entries) {
+    if (key.toLowerCase() === 'siteid') siteId = String(value);
   }
   return siteId;
 }

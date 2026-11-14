@@ -518,6 +518,64 @@ describe('site-scoped user tokens', () => {
     });
   });
 
+  it('authenticates a REST request on its url and form scopes as start-up script protection leaves them, forwarding it as sent', async () => {
+    const url = `/_api/rest/v1/${SITE_A}/variationtargeting?siteid=%20${SITE_A}%20&amp;note=n%00`;
+    const payload = 'title=+%3Cscript%3Ex%3C%2Fscript%3Eok+';
+    const res = await h.app.inject({ method: 'POST', url, headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload });
+    expect(res.statusCode).toBe(200);
+    const authenticated = h.identity.authentications.at(-1);
+    const received = h.target('strategies-content').requests.at(-1);
+    expect({ query: authenticated?.query, form: authenticated?.form, url: received?.url, body: received?.body.toString('utf8') }).toEqual({
+      query: { siteid: SITE_A, note: 'n' },
+      form: expect.objectContaining({ siteid: SITE_A, note: 'n', title: '[INVALID]ok' }),
+      url,
+      body: payload,
+    });
+  });
+
+  // Legacy answers a scan fault from onRequestStart, before its JSON API reads any credential.
+  it.each<[string, string, string, string]>([
+    ['url', `/_api/rest/v1/${SITE_A}/variationtargeting?x=null`, 'application/json', '{"variationid":"V1"}'],
+    ['form', `/_api/rest/v1/${SITE_A}/variationtargeting`, 'application/x-www-form-urlencoded', 'variationid=V1&x=%5Bnull%5D'],
+  ])("forwards a REST request whose %s scope legacy's scan fails on to its service unauthenticated, never asking identity", async (_scope, url, type, payload) => {
+    const denial = { status: 401, headers: { 'Content-Type': 'application/json; charset=utf-8' }, body: '{"error":"denied"}' };
+    const authorization = `Basic ${Buffer.from(`intruder:${randomUUID()}`).toString('base64')}`;
+    const service = h.target('strategies-content');
+    h.identity.onAuthenticate(() => ({ outcome: 'denied', sessionId: null, legacyResponse: denial }));
+    service.setResponse({ status: 500, headers: { 'Content-Type': 'text/html;charset=UTF-8' }, body: 'error page' });
+    try {
+      const asked = h.identity.authentications.length;
+      const faulted = await h.app.inject({ method: 'POST', url, headers: { authorization, 'content-type': type }, payload });
+      const received = service.requests.at(-1);
+      const clean = await h.app.inject({
+        method: 'POST',
+        url: `/_api/rest/v1/${SITE_A}/variationtargeting`,
+        headers: { authorization, 'content-type': type },
+        payload: type === 'application/json' ? payload : 'variationid=V1',
+      });
+      expect({
+        faulted: [faulted.statusCode, faulted.body],
+        forwarded: { url: received?.url, authorization: received?.headers.authorization },
+        clean: [clean.statusCode, clean.body],
+        asked: h.identity.authentications.length - asked,
+      }).toEqual({
+        faulted: [500, 'error page'],
+        forwarded: { url, authorization: undefined },
+        clean: [401, denial.body],
+        asked: 1,
+      });
+    } finally {
+      h.identity.onAuthenticate(undefined);
+      service.setResponse();
+    }
+  });
+
+  it('forwards an admin request whose url scope the scan fails on to legacy as sent, which admin start-up answers itself', async () => {
+    const url = '/admin/?muraAction=cUsers.list&x=null';
+    const res = await h.app.inject({ method: 'GET', url });
+    expect({ status: res.statusCode, received: h.legacy.pages().at(-1)?.url }).toEqual({ status: 200, received: url });
+  });
+
   it('forwards an unauthenticated REST write without any Authorization', async () => {
     const res = await h.app.inject({
       method: 'POST',

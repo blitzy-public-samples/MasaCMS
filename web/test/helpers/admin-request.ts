@@ -407,15 +407,18 @@ export function makeAdminRequest(
   // FW/1 replaces rc.muraAction with the qualified action before the admin set-up runs (admin/framework.cfc 626-630).
   const rcBase: Record<string, string> =
     action === EDIT_SITE_ACTION ? { muraAction: action } : { muraAction: action, siteid: session.siteid };
+  const rc = applyDefaults(mergeFw1Context([], rcBase, definedPairs(rcOverrides)));
   const base: AdminRequest = {
     mode: 'page',
     route: { circuit: requestedCircuit, action: requestedItem },
     action,
     circuit,
     item,
-    rc: applyDefaults(mergeFw1Context([], rcBase, definedPairs(rcOverrides))),
+    rc,
     // The `rc` overrides are merged as the form scope, so they are posted fields unless `formScope` says otherwise.
     formScope: mergeFw1Context([], {}, definedPairs(formOverrides ?? rcOverrides)),
+    // rc as though posted and left unchanged by the scan, so a relay sends it as it stands.
+    relayScopes: { posted: rc, scanned: rc },
     ses: false,
     currentUrl: `./?&muraAction=${muraAction}`,
     session,
@@ -486,8 +489,8 @@ export interface TestAdminRequestInput {
   readonly action: string;
   /** Further URL-scope fields; a `muraAction` here replaces the default one. */
   readonly query?: Readonly<Record<string, string>>;
-  /** Body fields, sent as a redirect-mode request unless `mode` is given. */
-  readonly form?: Readonly<Record<string, string>>;
+  /** Body fields, or a parsed body, sent as a redirect-mode request unless `mode` is given. */
+  readonly form?: Readonly<Record<string, string>> | NonNullable<AdminRequestInput['form']>;
   /** Defaults to `anonymous`. */
   readonly user?: WebTestSubjectKey;
   /** Gateway to seed; routes it already holds are kept. */
@@ -517,7 +520,8 @@ export async function buildTestAdminRequest(input: TestAdminRequestInput): Promi
   const gateway = input.gateway ?? fakeGatewayClient({}, { userToken });
   const searchParams = new URLSearchParams({ muraAction: `${input.circuit}.${input.action}` });
   for (const [name, value] of Object.entries(input.query ?? {})) searchParams.set(name, value);
-  const form = input.form === undefined ? undefined : new URLSearchParams(input.form);
+  const parsed = input.form instanceof FormData || input.form instanceof URLSearchParams;
+  const form = input.form === undefined || parsed ? input.form : new URLSearchParams(input.form);
   const auth: WebAuth = { caller: { name: GATEWAY_CALLER, roles: rolesForService(GATEWAY_CALLER) }, user, userToken };
   const request: AdminRequestInput = {
     params: { circuit: input.circuit, action: input.action },

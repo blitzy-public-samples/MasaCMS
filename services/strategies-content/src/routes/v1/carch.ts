@@ -26,6 +26,7 @@ import {
   IDENTITY_SERVICE,
   ServiceUnavailableError,
   legacyParamsOf,
+  legacyScopesOf,
   multipartFilesOf,
   type FastifyInstance,
   type FastifyReply,
@@ -2792,8 +2793,8 @@ async function runUpdate(request: FastifyRequest, ctx: ContentRouteContext, acto
   const { rc } = await carchContext(paramsOf(request), actor, () => storedSession(request));
   const state = await storedSession(request);
   const site = await siteOf(ctx, actor);
-  const query = (request.query ?? {}) as Record<string, unknown>;
-  const qqfile = Object.keys(query).some((key) => key.toLowerCase() === 'qqfile');
+  // update.cfm's isDefined("url.qqfile") reads the url scope the start-up scan left.
+  const qqfile = legacyScopesOf(request).url.entries.some(([key]) => key.toLowerCase() === 'qqfile');
   const multiFileUpload = muraValue(state, 'multifileupload');
   // `session[<moduleID>]` (no `m`), which the Site Manager reset writes; `session['m<moduleID>']` is before()'s.
   const topIdsByModule = Object.fromEntries(Object.entries(state.moduleTopIds ?? {}).filter(([key]) => !/^m/i.test(key)));

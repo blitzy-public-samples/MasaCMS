@@ -472,6 +472,46 @@ describe.skipIf(!available)('surveys fixture routes', () => {
     ]);
   });
 
+  /** A tenant-a POST of `fields` as a urlencoded form body, as a manager unless `roles` says otherwise. */
+  async function formPost(url: string, fields: Record<string, string>, roles = [Roles.surveysManager, Roles.systemUser]) {
+    const sub = roles.includes(Roles.surveysManager) ? MANAGER_ID : RESPONDENT_ID;
+    const headers = {
+      authorization: `Bearer ${await mintUserToken({ site: 'tenant-a', roles, sub })}`,
+      ...(await gatewayInvocation()),
+      ...CSRF_HEADERS,
+      'content-type': 'application/x-www-form-urlencoded',
+    };
+    return app.inject({ method: 'POST', url, headers, payload: new URLSearchParams(fields).toString() });
+  }
+
+  // Expected values are Masa's start-up scan of the same form values on the legacy oracle: markup to [INVALID], text trimmed,
+  // JSON text re-serialized as ACF writes it (struct keys reordered, 1.50 as 1.5, struct strings untrimmed).
+  it('stores form-encoded params as the script-protected legacy fixture does', async () => {
+    const created = await formPost(`${FIXTURE_BASE}${SITE_A}`, { title: '  <script>x</script>Staff survey  ' });
+    expect(created.statusCode).toBe(200);
+    const { survey_id: id, title } = created.json<{ data: { survey_id: string; title: string } }>().data;
+    expect(title).toBe('[INVALID]Staff survey');
+    expect(await tenantA('SELECT title FROM $schema.survey WHERE survey_id = $1', [id])).toMatchObject({ rows: [{ title: '[INVALID]Staff survey' }] });
+
+    const scheduled = await formPost(`${FIXTURE_BASE}/${id}/schedule${SITE_A}`, { launchAt: ' 2026-07-01T09:00:00 ', reminders: '[{"offsetMinutes":60}]' });
+    expect(scheduled.statusCode).toBe(200);
+    expect(scheduled.json()).toMatchObject({
+      data: { schedule: { launch_at: '2026-07-01T09:00:00' }, reminders: [{ offset_minutes: 60, remind_at: '2026-07-01T10:00:00' }] },
+    });
+
+    const targeted = await formPost(`${FIXTURE_BASE}/${id}/targets/bulk${SITE_A}`, { targets: '[{"siteID":"tenant-b","groupName":"<script>x</script>Staff"}]' });
+    expect([targeted.statusCode, targeted.json()]).toMatchObject([200, { data: { inserted: 1, total: 1 } }]);
+    expect(await tenantA('SELECT siteid, group_name FROM $schema.survey_target WHERE survey_id = $1', [id])).toMatchObject({
+      rows: [{ siteid: 'tenant-b', group_name: '[INVALID]Staff' }],
+    });
+
+    const answered = await formPost(`${FIXTURE_BASE}/${id}/responses${SITE_A}`, { answers: '{"q2":" <b>no</b> ","q1":"yes","Q0":1.50}' }, [Roles.systemUser]);
+    expect([answered.statusCode, answered.json()]).toMatchObject([200, { data: { answers: '{"q1":"yes","q2":" <b>no</b> ","Q0":1.5}' } }]);
+    expect(await tenantA('SELECT answers FROM $schema.survey_response WHERE survey_id = $1', [id])).toMatchObject({
+      rows: [{ answers: '{"q1":"yes","q2":" <b>no</b> ","Q0":1.5}' }],
+    });
+  });
+
   describe('launch task callback', () => {
     async function scheduled(): Promise<string> {
       const id = await createSurvey('Launch');
@@ -484,6 +524,7 @@ describe.skipIf(!available)('surveys fixture routes', () => {
     it.each<[string, string, Record<string, string>]>([
       ['no task token', '', {}],
       ['another task token', '&opt2TaskToken=wrong', {}],
+      ['the task token under two spellings, which the url scope joins', `&opt2TaskToken=${TOKEN}&OPT2TASKTOKEN=${TOKEN}`, {}],
       ['a token outside the query', '', { 'x-opt2tasktoken': TOKEN }],
     ])('answers forbidden with %s and leaves the survey scheduled', async (_case, query, headers) => {
       const id = await scheduled();
@@ -506,6 +547,15 @@ describe.skipIf(!available)('surveys fixture routes', () => {
       const repeat = await inject({ method: 'POST', url: `${FIXTURE_BASE}/${id}/launch${SITE_A}&opt2TaskToken=${TOKEN}`, body: {} });
       expect(repeat.statusCode).toBe(200);
       expect((repeat.json() as { data: unknown }).data).toEqual((first.json() as { data: unknown }).data);
+    });
+
+    it.each<[string, string]>([
+      ['padded', `%20${TOKEN}%09`],
+      ['holding a NUL', `${TOKEN}%00`],
+    ])('launches with a task token %s, as the script-protected url scope holds it', async (_case, token) => {
+      const id = await scheduled();
+      const res = await inject({ method: 'GET', url: `${FIXTURE_BASE}/${id}/launch${SITE_A}&opt2TaskToken=${token}` });
+      expect([res.statusCode, res.json()]).toMatchObject([200, { method: 'surveys.surveys.launch', data: { survey_id: id, status: 'LAUNCHED' } }]);
     });
 
     it.each<[string, string, Record<string, string>, number, object]>([

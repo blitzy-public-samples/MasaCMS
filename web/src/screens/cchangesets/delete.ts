@@ -1,5 +1,6 @@
 // The `cChangesets.delete` post action: the strategies-content delete, then FW/1's redirect to the list (server-only).
 import { okBody } from '@/lib/gateway-client';
+import { relayContext } from '@/lib/request-context';
 import type { ScreenContext, ScreenDefinition, SubmitResult } from '../registry';
 
 type RedirectDefinition = Extract<ScreenDefinition, { mode: 'redirect' }>;
@@ -26,7 +27,7 @@ export const changesetDeleteScreen: Omit<RedirectDefinition, 'gate'> = {
     // Every rc field travels unchanged, the CSRF pair included; the service consumes the token, web never does.
     const response = await service.call('post', '/v1/sites/{siteid}/changesets/{changesetid}/delete', {
       params: { siteid, changesetid },
-      form: Object.entries(req.rc),
+      form: Object.entries(relayContext(req)),
     });
     if (response.location !== undefined) return { kind: 'location', location: response.location };
     okBody(response, service.service, 'deleteChangeset');

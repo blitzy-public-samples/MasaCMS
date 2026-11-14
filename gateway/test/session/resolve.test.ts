@@ -278,6 +278,22 @@ describe('sessionless REST', () => {
     expect(s.calls).toEqual(['authenticate']);
   });
 
+  it("continues a request legacy's start-up scan fails on anonymously, never asking identity", async () => {
+    const answer = { status: 401, headers: {}, body: '{"error":{}}' };
+    const s = setup({ authenticate: () => ({ outcome: 'denied', sessionId: null, legacyResponse: answer }) });
+    const resolution = await s.resolver.resolveSession(request(undefined, { path: '/_api/rest/v1/default/content', scanFailed: true }), {
+      family: 'rest',
+      mode: 'target-primary',
+    });
+    expect({ resolution, calls: s.calls }).toEqual({ resolution: { kind: 'none', setCookies: [] }, calls: [] });
+  });
+
+  it('resolves the session of a non-REST request whatever its scan outcome', async () => {
+    const s = setup();
+    const resolution = await s.resolver.resolveSession(request(undefined, { scanFailed: true }), { family: 'admin', mode: 'legacy-primary' });
+    expect({ kind: resolution.kind, calls: s.calls.slice(0, 2) }).toEqual({ kind: 'session', calls: ['describe', 'jar.find'] });
+  });
+
   it.each(['session', 'authenticated'] as const)('a %s outcome acts in that session at its epoch', async (outcome) => {
     const s = setup({
       authenticate: () => ({ outcome, sessionId: 'R1' }),

@@ -31,9 +31,12 @@ export interface SessionRequestInput {
   path: string;
   httpMethod: string;
   headers: Record<string, string | string[] | undefined>;
+  /** The url scope as start-up's script protection leaves it. */
   query: Record<string, string>;
-  /** The route key's merged params: query, then form, then a JSON body, as legacy merges them. */
+  /** The route key's merged params: the scanned query, then the scanned form, then a JSON body as sent, as legacy merges them. */
   params: Record<string, unknown>;
+  /** Whether legacy's start-up scan fails on the url or form scope, which answers before any credential is read. */
+  scanFailed?: boolean;
 }
 
 /** The session a request acts in, legacy's own answer, or no session; `setCookies` are added to the client response. */
@@ -490,7 +493,9 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
   return {
     async resolveSession(request, { family, mode, siteId }) {
       // Legacy disables session management for /_api/rest/ (applicationSettings.cfm:179), so cookies are never read.
-      if (family === 'rest') return restSession(request, mode, siteId);
+      // Every REST path is root-served, whose scan fault answers the error page ahead of the credential code
+      // (onRequestStart_scriptProtect_method.cfm:80), so the owning service's start-up hook answers it.
+      if (family === 'rest') return request.scanFailed === true ? none() : restSession(request, mode, siteId);
       return mode === 'target-primary' ? targetPrimarySession(request, siteId) : legacyPrimarySession(request, siteId);
     },
 

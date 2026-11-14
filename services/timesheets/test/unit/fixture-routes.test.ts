@@ -442,6 +442,67 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
     expect((await storedDay(dayId)).actions.map(({ comment }) => comment)).toEqual([null]);
   });
 
+  /** A tenant-b day action with a valid CSRF token whose comment is sent in the form body, the query string or a JSON body. */
+  async function actWithComment(dayId: string, action: string, roles: readonly string[], via: 'form' | 'url' | 'json', comment: string): Promise<Injected> {
+    const headers = { ...(await headersFor(roles, TENANT_B.siteId)), ...CSRF };
+    const url = `${P}/days/${dayId}/${action}`;
+    const encoded = new URLSearchParams({ comment }).toString();
+    if (via === 'url') return app.inject({ method: 'POST', url: `${url}?${encoded}`, headers });
+    if (via === 'json') return app.inject({ method: 'POST', url, headers, payload: { comment } });
+    return app.inject({ method: 'POST', url, headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' }, payload: encoded });
+  }
+
+  // Stored values are Masa's Portcullis scan of the same url or form value on the legacy oracle; a JSON body is not scanned.
+  it.each<['form' | 'url' | 'json', string, string | null, string, readonly string[], string, string]>([
+    ['form', '<script>alert(1)</script>note', '[INVALID]note', 'submit', EMPLOYEE, 'DRAFT', 'SUBMITTED'],
+    ['form', '  padded  ', 'padded', 'primary-approve', PRIMARY, 'SUBMITTED', 'PRIMARY_APPROVED'],
+    ['form', '<img src=x onerror=alert(1)>', '<img src=x [INVALID]=alert(1)>', 'secondary-approve', SECONDARY, 'PRIMARY_APPROVED', 'APPROVED'],
+    ['form', 'javascript:alert(1)', '[INVALID]alert(1)', 'return', PRIMARY, 'RESUBMITTED', 'RETURNED'],
+    ['url', ' <iframe src=x></iframe>ok ', '[INVALID]ok', 'resubmit', EMPLOYEE, 'RETURNED', 'RESUBMITTED'],
+    ['form', '   ', null, 'submit', EMPLOYEE, 'DRAFT', 'SUBMITTED'],
+    ['form', '[1," a "]', '[1,"a"]', 'submit', EMPLOYEE, 'DRAFT', 'SUBMITTED'],
+    ['json', '<script>alert(1)</script>note', '<script>alert(1)</script>note', 'submit', EMPLOYEE, 'DRAFT', 'SUBMITTED'],
+    ['json', '  padded  ', '  padded  ', 'submit', EMPLOYEE, 'DRAFT', 'SUBMITTED'],
+  ])('stores a %s comment %j as %j, as the script-protected legacy fixture does', async (via, comment, expected, action, roles, from, to) => {
+    const dayId = await seedTenantBDay(from);
+    const res = await actWithComment(dayId, action, roles, via, comment);
+    const body = res.json<{ method: string; data: { state: string } }>();
+    expect([res.statusCode, body.method, body.data.state]).toEqual([200, `timesheets.days.${action}`, to]);
+    const stored = await storedDay(dayId);
+    expect([stored.state, stored.actions.map((row) => [row.action, row.from_state, row.to_state, row.comment])]).toEqual([to, [[action, from, to, expected]]]);
+  });
+
+  it('answers a form comment the legacy scan faults on, a JSON null, with the legacy error page before any check, writing nothing', async () => {
+    const dayId = await seedTenantBDay('DRAFT');
+    const res = await actWithComment(dayId, 'submit', EMPLOYEE, 'form', 'null');
+    expect([res.statusCode, res.headers['content-type']]).toEqual([500, expect.stringMatching(/^text\/html/)]);
+    expect(consumed).toEqual([]);
+    expect(await storedDay(dayId)).toEqual({ state: 'DRAFT', actions: [] });
+  });
+
+  it.each<[string, string, string]>([
+    ['a padded asOf', '/sheets?asOf=%202026-06-10%20', '/sheets?asOf=2026-06-10'],
+    ['padded paging, a plus read as a space', '/sheets?pageIndex=%202%20&itemsPerPage=+1', '/sheets?pageIndex=2&itemsPerPage=1'],
+    ['a NUL-padded page index', '/sheets?pageIndex=1%00&itemsPerPage=1', '/sheets?pageIndex=1&itemsPerPage=1'],
+    ['a NUL-padded asOf on a status read', `/sheets/${sheets.june1}/status?asOf=2026-06-10%00`, `/sheets/${sheets.june1}/status?asOf=2026-06-10`],
+    ['a padded siteid', '/sheets?siteid=%20tenant-a%09', '/sheets?siteid=tenant-a'],
+  ])('reads %s as the scanned legacy url scope holds it, answering as the unpadded request', async (_case, padded, plain) => {
+    const [res, expected] = [await get(padded), await get(plain)];
+    expect(expected.statusCode).toBe(200);
+    expect([res.statusCode, res.body, res.headers.etag]).toEqual([expected.statusCode, expected.body, expected.headers.etag]);
+  });
+
+  it.each<[string, string, string | undefined]>([
+    ['a padded form siteid', '', new URLSearchParams({ siteid: ' tenant-b\t', comment: 'ok' }).toString()],
+    ['a NUL-padded url siteid', '?siteid=tenant-b%00&comment=ok', undefined],
+  ])('submits a day with %s as the scanned legacy scope holds it', async (_case, query, form) => {
+    const dayId = await seedTenantBDay('DRAFT');
+    const headers = { ...(await headersFor(EMPLOYEE, TENANT_B.siteId)), ...CSRF, ...(form === undefined ? {} : { 'content-type': 'application/x-www-form-urlencoded' }) };
+    const res = await app.inject({ method: 'POST', url: `${P}/days/${dayId}/submit${query}`, headers, ...(form === undefined ? {} : { payload: form }) });
+    expect([res.statusCode, res.json<{ data: { state: string } }>().data.state]).toEqual([200, 'SUBMITTED']);
+    expect((await storedDay(dayId)).actions.map(({ action, comment }) => [action, comment])).toEqual([['submit', 'ok']]);
+  });
+
   it.each<[unknown, string]>([
     [true, 'YES'],
     [false, 'NO'],

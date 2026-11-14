@@ -26,6 +26,7 @@ import {
   DATA_ANSWERS,
   EDITOR_GROUP,
   ERRORS,
+  FORM_BODY,
   HOST,
   LEGACY_JSON_TYPE,
   MEMBER,
@@ -298,6 +299,18 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
     expectOracleAnswer(res, expected, unordered ? withSortedSelf(body) : body, INSTALL_FIELDS.get(name));
   });
 
+  // Oracle (own ACF, admin): GET /_api/json/v1/default/group/<Admin>?fields= with the list as sent, space- or tab-padded.
+  it.each(['groupname,ispublic', ' groupname,ispublic ', '\tgroupname,ispublic\n'])('reads url fields %j as the scan trims them', async (fields) => {
+    const res = await send(app, 'GET', `${API}/group/${ADMIN_GROUP}?${new URLSearchParams({ fields }).toString()}`, await headersFor(S2));
+
+    expect(res.statusCode).toBe(200);
+    expect(json(res)).toEqual({
+      apiversion: 'v1',
+      data: { groupname: 'Admin', ispublic: 0, userid: ADMIN_GROUP, id: ADMIN_GROUP, siteid: 'default', isnew: 0, type: 'group', entityname: 'group' },
+      method: 'findOne',
+    });
+  });
+
   it.each([
     ['findAll', `${API}/group`],
     ['findNew', `${API}/group/new`],
@@ -457,6 +470,17 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
     expect((dataOf(listed).links as Record<string, string>).self).toBe(
       `http://${HOST}/index.cfm/_api/json/v1/${SITE_B}/?&ids=${listedIds}&expanddepth=1&method=findmany&entityname=group&pageIndex=1`,
     );
+  });
+
+  // Oracle (shared ACF, content findAll naming the reload key with a hyphen): the links echo the name as sent, never the
+  // stripped reload key the scan adds, which processRequest deletes from the url scope (jsonApiUtility.cfc:403).
+  it('leaves the reload key the scan strips from app-reload out of a findMany self link', async () => {
+    const res = await send(app, 'GET', `/_api/json/v1/${SITE_B}/findMany?entityname=group&ids=${ids.visible}&app-reload=1`, await headersFor({ ...S2, site: SITE_B }));
+
+    expect(namesOf(res)).toEqual(['Visible']);
+    const { self } = dataOf(res).links as Record<string, string>;
+    expect(self).toContain('&app-reload=1');
+    expect(self).not.toMatch(/[?&]appreload=/i);
   });
 
   describe('bounded group feeds', () => {
@@ -1021,6 +1045,22 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
       expect(res.statusCode).toBe(500);
       expect(json(res)).toEqual(legacyError('findOne', ERRORS.serverError));
     });
+
+    // The credential block reads url.access_token as start-up's scan trims it (jsonApiUtility.cfc:484-533).
+    it('answers tokeninfo of a space-padded URL token as of the token itself', async () => {
+      const token = nextId('T');
+      const data = readFileSync(new URL('../fixtures/legacy/oauth-token-data.json', import.meta.url), 'utf8');
+      const expires = new Date(NOW.getTime() + 3_600_000);
+      await gated(SITE_C, (tx) => repo.insertToken(tx, { token, granttype: 'password', clientid: nextId('C'), userid: S2.sub, accesscode: null, data, expires }));
+      const url = (sent: string): string => `/_api/rest/v1/${SITE_C}/oauth2/tokeninfo?${new URLSearchParams({ access_token: sent, client_id: 'x' }).toString()}`;
+
+      const plain = await send(app, 'GET', url(token), await headersFor());
+      const padded = await send(app, 'GET', url(` ${token} `), await headersFor());
+
+      expect(plain.statusCode).toBe(200);
+      expect(json(plain)).toMatchObject({ access_token: token, token_type: 'Bearer' });
+      expect([padded.statusCode, padded.body]).toEqual([plain.statusCode, plain.body]);
+    });
   });
 
   describe('group save', () => {
@@ -1061,6 +1101,29 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
         errors: {},
       });
       expect(await groupOf(String(data.userid))).toMatchObject({ groupname: 'Reviewers', ispublic: 0, isnew: 0 });
+    });
+
+    // Oracle (own ACF form post): start-up's Portcullis scan filters the form scope params merge; a JSON body is no form scope.
+    it.each<[string, string, string]>([
+      ['a form', "<script>alert('xss')</script>' OR 1=1--", "[INVALID]' OR 1=1--"],
+      ['a form', '<img src=x onerror=alert(1)>', '<img src=x [INVALID]=alert(1)>'],
+      ['a JSON body', "<script>alert('xss')</script>' OR 1=1--", "<script>alert('xss')</script>' OR 1=1--"],
+      ['a JSON body', '<img src=x onerror=alert(1)>', '<img src=x onerror=alert(1)>'],
+    ])('creates a group whose groupname is posted in %s as %j under the name %j', async (encoding, sent, stored) => {
+      const caller = await inSession(S2, SITE_C, 'S2');
+      const fields = { groupname: sent, isPublic: '0', ...csrfFields('new') };
+      const asJson = encoding === 'a JSON body';
+
+      const res = await app.inject({
+        method: 'POST',
+        url: GROUP_C,
+        headers: { host: HOST, ...(await headersFor(caller)), ...(asJson ? { 'content-type': 'application/json' } : FORM_BODY) },
+        payload: asJson ? JSON.stringify(fields) : new URLSearchParams(fields).toString(),
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(dataOf(res)).toMatchObject({ groupname: stored, isnew: 0, errors: {} });
+      expect(await groupOf(String(dataOf(res).userid))).toMatchObject({ groupname: stored, ispublic: 0 });
     });
 
     it('saves a direct call posting type group as a group', async () => {

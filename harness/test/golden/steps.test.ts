@@ -620,6 +620,20 @@ describe('runStep route keys', () => {
     expect(record.routeKey).toBe(routeKeyForRequest(input, { appReloadKey: 'appreload' }).key);
   });
 
+  it.each<{ label: string; step: { name: string; method: string; route: string; form?: Record<string, string> }; key: string }>([
+    { label: 'a padded query action', step: { name: 'list', method: 'GET', route: '/admin/?muraAction=%20cUsers.list' }, key: 'admin:cusers.list' },
+    {
+      label: 'an amp;-prefixed form method',
+      step: { name: 'tokens', method: 'POST', route: '/_api/json/v1/default/', form: { 'amp;method': 'generateCSRFTokens' } },
+      key: 'api:generatecsrftokens',
+    },
+    { label: 'case-variant query actions joined in the order sent', step: { name: 'list', method: 'GET', route: '/admin/?muraAction=cUsers&MURAACTION=x&muraAction=list' }, key: 'admin:cusers,x,list.default' },
+  ])('keys a request with $label on the scopes start-up script protection leaves, as the gateway does', async ({ step, key }) => {
+    const fake = fakeOrigin({ [`${step.method} ${step.route}`]: json({}) });
+    const { record } = await runSingle(step, fake);
+    expect(record.routeKey).toBe(key);
+  });
+
   it.each([
     { label: 'the configured reload key', routeKeyOptions: undefined, key: 'reload:application' },
     { label: 'routeKeyOptions over the env', routeKeyOptions: { appReloadKey: 'FIXTURE-other' }, key: 'page:render' },

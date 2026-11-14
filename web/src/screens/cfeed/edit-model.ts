@@ -12,7 +12,7 @@ import {
 import type { components } from '@/generated/clients/strategies-content';
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
-import type { AdminRequest } from '@/lib/request-context';
+import { relayFields, type AdminRequest } from '@/lib/request-context';
 import type { Rc, ScreenContext } from '../registry';
 import { applyCfeedDefaults } from './before';
 import { feedCategoryTree, type FeedCategoryNode, type FeedCategoryRow } from './categories-nest';
@@ -638,7 +638,7 @@ export async function loadFeedEditModel(req: AdminRequest, ctx: ScreenContext): 
     // The path needs an id: a fresh one matches no collection, so the service reads a new bean as legacy's
     // `feedManager.read(feedID='')` does.
     params: { siteid, feedid: feedid === '' ? cfUuid() : feedid },
-    query: feedQuery(defaulted.rc),
+    query: relayFields(defaulted, feedQuery(defaulted.rc)),
   });
   return feedEditModelFrom(okBody(response, 'strategies-content', 'getFeed'), defaulted);
 }

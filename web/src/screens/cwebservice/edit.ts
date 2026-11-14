@@ -5,7 +5,7 @@ import type { components as PeopleComponents } from '@/generated/clients/people'
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import { attr, encodeHtml, encodeUrl, html, join, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest } from '@/lib/request-context';
+import { relayFields, type AdminRequest } from '@/lib/request-context';
 // site-paths holds the settingsBean path getters the shell's `Mura.init` uses; the endpoint must match that root path.
 import { siteBeanOf, sitePaths } from '@/lib/site-paths';
 import { relativeAdminUrl } from '@/lib/urls';
@@ -110,7 +110,7 @@ export async function loadEditState(ctx: ScreenContext): Promise<WebServiceEditS
   const response = await ctx.gateway.identity.call('get', '/v1/oauth-clients/{clientId}', {
     params: { clientId: clientid },
     // An empty siteid names no site; omitted, identity takes the token's site.
-    query: { siteid: siteid || undefined },
+    query: relayFields(ctx.req, { siteid: siteid || undefined }),
   });
   // The contract rejects a client id that is not a CF UUID, which therefore names no stored client.
   if (!response.ok && (response.status === 400 || response.status === 404)) return newClientState(clientid, siteid);
@@ -128,7 +128,12 @@ async function loadAccounts(ctx: ScreenContext): Promise<readonly ConnectedAccou
   // people answers one page per call, and its `startrow` names the page, as the cusers user iterator reads it.
   for (let page = 1, pages = 1; page <= pages; page += 1) {
     const response = await ctx.gateway.people.call('get', '/v2/users', {
-      query: { siteid: siteid || undefined, ispublic: '0', startrow: String(page), recordsperpage: String(ACCOUNTS_PER_PAGE) },
+      query: {
+        ...relayFields(ctx.req, { siteid: siteid || undefined }),
+        ispublic: '0',
+        startrow: String(page),
+        recordsperpage: String(ACCOUNTS_PER_PAGE),
+      },
     });
     const { items, nextn } = okBody(response, 'people', 'listUsersV2');
     accounts.push(...items);

@@ -1,5 +1,6 @@
 // cFeed.siteParents: the collection parent-search fragment strategies-content renders, relayed unchanged (server-only).
 import { assertNotDenied } from '@/lib/gateway-client';
+import { relayField } from '@/lib/request-context';
 import type { FragmentScreen, RawBody, ScreenContext } from '../registry';
 import { applyCfeedDefaults, cfeedGate } from './before';
 
@@ -20,12 +21,10 @@ export const cfeedSiteParentsScreen: FragmentScreen = Object.freeze({
     // The rc after cfeed `before()`, read case-insensitively; only present fields go, so the service applies the view's
     // own `cfparam` defaults exactly as legacy does.
     const rc = applyCfeedDefaults(ctx.req.rc);
-    const params: Record<string, string> = {};
-    for (const name of FORWARDED_FIELDS) {
-      const value = rc[name];
-      if (value !== undefined) params[name] = value;
-    }
-    const response = await ctx.gateway.strategiesContent.raw('get', PATH, { query: { siteid: rc.siteid, params } });
+    const fields = FORWARDED_FIELDS.flatMap((name) => Object.entries(relayField(ctx.req, name, rc)));
+    const params = Object.fromEntries(fields);
+    const query = { ...relayField(ctx.req, 'siteid', rc), params };
+    const response = await ctx.gateway.strategiesContent.raw('get', PATH, { query });
     assertNotDenied(response, 'strategies-content', OPERATION);
     const contentType = [response.headers['content-type'] ?? []].flat()[0];
     if (contentType === undefined) {

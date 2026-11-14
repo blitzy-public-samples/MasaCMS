@@ -5,6 +5,7 @@ import { TENANT_A } from '@opt2/platform/testing';
 import { userHeaders, type TestApp } from './app.js';
 import type { TestActor } from './fixtures.js';
 import type { IdentityDouble, RecordedIdentityRequest } from './identity-double.js';
+import { legacyApiSettings } from '../../src/routes/legacy-api.js';
 
 export type Family = 'json' | 'ajax' | 'rest';
 export type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
@@ -32,6 +33,8 @@ const FORM = Object.freeze({ 'content-type': 'application/x-www-form-urlencoded'
 export const TOKEN = 'TEST-CSRF-TOKEN';
 export const TOKEN_EXPIRES = '260630130000000';
 export const CSRF = csrfHeaders(TOKEN);
+/** The reload key the app reads from its environment, as legacy reads `application.appreloadkey`. */
+export const RELOAD_KEY = legacyApiSettings(process.env).appReloadKey;
 
 /** CSRF headers carrying `token`; identity consumes each token once per session. */
 export function csrfHeaders(token: string): Readonly<Record<string, string>> {

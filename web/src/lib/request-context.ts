@@ -9,7 +9,16 @@ import {
   moduleRole,
   type UserClaims,
 } from '@opt2/platform/auth';
-import { cfEq, cfListToArray, fallbackSiteId, parseCookieHeader, setCookieLegacy } from '@opt2/platform/legacy-compat';
+import {
+  cfEq,
+  cfListToArray,
+  fallbackSiteId,
+  parseCookieHeader,
+  portcullisScan,
+  setCookieLegacy,
+  type PortcullisInput,
+  type PortcullisScope,
+} from '@opt2/platform/legacy-compat';
 import type { components as IdentityComponents } from '@/generated/clients/identity';
 import type { components as ProgramsSitesComponents } from '@/generated/clients/programs-sites';
 import type { WebAuth } from './auth';
@@ -155,6 +164,14 @@ export interface SessionSiteChange {
   readonly openSectionList: string;
 }
 
+/** The path segments, url and form merged as rc merges them, as posted and as the start-up scan left them. */
+export interface RelayScopes {
+  /** As posted, each scope's `fuseaction` copied to its `muraAction`. */
+  readonly posted: RequestContext;
+  /** After the start-up scan, before the admin set-up changes rc. */
+  readonly scanned: RequestContext;
+}
+
 /** Everything a shell, gate or screen reads about the current admin request. */
 export interface AdminRequest {
   readonly mode: AdminMode;
@@ -165,8 +182,13 @@ export interface AdminRequest {
   readonly circuit: string;
   readonly item: string;
   readonly rc: RequestContext;
-  /** CFML form scope: the posted fields, or in page mode those the gateway appended to the query. */
+  /**
+   * CFML form scope as posted, before the start-up scan: the posted fields, or in page mode those the gateway appended
+   * to the query.
+   */
   readonly formScope: RequestContext;
+  /** The scopes {@link relayContext} rebuilds an owner relay from. */
+  readonly relayScopes: RelayScopes;
   /** `request.generateSES`: the request carried FW/1 path segments. */
   readonly ses: boolean;
   /** `rc.currentURL`: `./` plus the URL scope as `?&name=value…`. */
@@ -270,6 +292,41 @@ function withFuseaction(scope: CfStruct): CfStruct {
   const fuseaction = scope.get('fuseaction');
   if (fuseaction !== undefined) scope.set('muraAction', fuseaction);
   return scope;
+}
+
+/** A scanned scope's entries as a struct. */
+const structOf = ({ entries }: PortcullisScope): CfStruct =>
+  new CfStruct(entries.map(([name, value]) => [name, String(value)] as const));
+
+/**
+ * Admin start-up's Portcullis scan of the URL scope, then the form scope under the same guard, so a URL fault leaves
+ * the form as posted (admin/Application.cfc:219-296). Values of the lower-cased `files` names pass unscanned.
+ */
+function startupScan(url: CfStruct, form: CfStruct, files: ReadonlySet<string>): { url: CfStruct; form: CfStruct } {
+  const scannedUrl = portcullisScan(url.entries());
+  if (scannedUrl.failed) return { url: structOf(scannedUrl), form };
+  const inputs = form.entries().map(([name, value]): PortcullisInput => [name, value, files.has(name.toLowerCase())]);
+  return { url: structOf(scannedUrl), form: structOf(portcullisScan(inputs)) };
+}
+
+/** The URL scope of the gateway-forwarded request target as posted, its `fuseaction` copied to `muraAction`. */
+function forwardedUrl(headers: Headers): CfStruct | undefined {
+  const target = headers.get(ORIGINAL_URL_HEADER);
+  if (target === null) return undefined;
+  const queryAt = target.indexOf('?');
+  return withFuseaction(cfScope(new URLSearchParams(queryAt < 0 ? '' : target.slice(queryAt + 1))));
+}
+
+/** The URL scope of the gateway-forwarded request target as admin start-up's scan leaves it; undefined without one. */
+export function forwardedUrlScope(headers: Headers): RequestContext | undefined {
+  const url = forwardedUrl(headers);
+  return url === undefined ? undefined : contextView(structOf(portcullisScan(url.entries())));
+}
+
+/** The URL scope of the gateway-forwarded request target as posted; undefined without one. */
+export function forwardedPostedUrlScope(headers: Headers): RequestContext | undefined {
+  const url = forwardedUrl(headers);
+  return url === undefined ? undefined : contextView(url);
 }
 
 /** A context value by case-insensitive name, for views and plain records alike. */
@@ -398,6 +455,66 @@ export function assignContext(rc: RequestContext, values: Readonly<Record<string
   return contextView(new CfStruct([...Object.entries(rc), ...Object.entries(values)]));
 }
 
+/**
+ * `rc` as a relay to an owner sends it, so the owner's own start-up scan is the request's only one: an entry the scan
+ * left as `rc` holds it goes as posted, one the set-up or a screen added or changed as `rc` holds it, and a posted
+ * name the scan dropped or renamed as posted; a stripped-name copy the scan made is left for the owner's scan.
+ * @param rc The screen's effective rc; `req.rc` when omitted.
+ */
+export function relayContext(
+  req: Pick<AdminRequest, 'rc' | 'relayScopes'>,
+  rc: Readonly<Record<string, string>> = req.rc,
+): RequestContext {
+  const { posted, scanned } = req.relayScopes;
+  const relay = new CfStruct();
+  for (const [name, value] of Object.entries(rc)) {
+    const sent = contextValue(posted, name);
+    if (contextValue(scanned, name) !== value) relay.set(name, value);
+    else if (sent !== undefined) relay.set(name, sent);
+  }
+  for (const [name, value] of Object.entries(posted)) {
+    if (contextValue(scanned, name) === undefined && contextValue(rc, name) === undefined) relay.set(name, value);
+  }
+  return contextView(relay);
+}
+
+/** Whether the scan of a posted `source` adds an entry `name` beside it: its `amp;`-free rename or stripped copy. */
+function scanAdds(source: string, name: string): boolean {
+  const lower = name.toLowerCase();
+  return portcullisScan([[source, '']]).entries.some(([key]) => key !== source && key.toLowerCase() === lower);
+}
+
+/**
+ * `rc[name]` as a named-field relay sends it, by {@link relayContext}'s rules: under `name` as posted where the scan
+ * left it as `rc` holds it, else as `rc` holds it; a name only the scan made goes as the posted names it was made from.
+ * @param rc The screen's effective rc; `req.rc` when omitted.
+ * @returns The entries to send; none when `rc` lacks `name`.
+ */
+export function relayField(
+  req: Pick<AdminRequest, 'rc' | 'relayScopes'>,
+  name: string,
+  rc: Readonly<Record<string, string>> = req.rc,
+): RequestContext {
+  const value = contextValue(rc, name);
+  if (value === undefined) return {};
+  const { posted, scanned } = req.relayScopes;
+  if (contextValue(scanned, name) !== value) return Object.fromEntries([[name, value]]);
+  const sent = contextValue(posted, name);
+  if (sent !== undefined) return Object.fromEntries([[name, sent]]);
+  const sources = Object.entries(posted).filter(([source]) => scanAdds(source, name));
+  return Object.fromEntries(sources.length === 0 ? [[name, value]] : sources);
+}
+
+/** `values`, named as the rc fields they hold, each relayed by {@link relayField}; undefined ones are left out. */
+export function relayFields(
+  req: Pick<AdminRequest, 'rc' | 'relayScopes'>,
+  values: Readonly<Record<string, string | undefined>>,
+): RequestContext {
+  const defined = Object.entries(values).filter((entry): entry is [string, string] => entry[1] !== undefined);
+  const rc = Object.fromEntries(defined);
+  return Object.fromEntries(Object.keys(rc).flatMap((name) => Object.entries(relayField(req, name, rc))));
+}
+
 /** `session.dashboardSpan`: 30 days when session history is off or at least 180 days, else the history length. */
 export function dashboardSpanFor(sessionHistory: number): number {
   return sessionHistory === 0 || sessionHistory >= 180 ? 30 : sessionHistory;
@@ -483,6 +600,12 @@ function postedFields(received: Pairs, original: Pairs): Pairs {
     if (left > 0) pending.set(name, left - 1);
     return left === 0;
   });
+}
+
+/** Lower-cased names of the body's file parts. */
+function fileFieldsOf(form: AdminRequestInput['form']): Set<string> {
+  if (!(form instanceof FormData)) return new Set();
+  return new Set([...form].flatMap(([name, value]) => (typeof value === 'string' ? [] : [name.toLowerCase()])));
 }
 
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -865,9 +988,14 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
 
   const identityLoad = loadIdentitySession(gateway, auth, isLoggedIn, roles);
   const scopes = requestScopes(input);
-  const url = withFuseaction(cfScope(scopes.url));
-  const form = withFuseaction(cfScope(scopes.form));
+  const postedUrl = withFuseaction(cfScope(scopes.url));
+  const posted = withFuseaction(cfScope(scopes.form));
+  const { url, form } = startupScan(postedUrl, posted, fileFieldsOf(input.form));
   const rc = mergeScopes(scopes.pathInfo, url, form);
+  const relayScopes: RelayScopes = {
+    posted: contextView(mergeScopes(scopes.pathInfo, postedUrl, posted)),
+    scanned: contextView(new CfStruct(rc.entries())),
+  };
   const action = resolveAction(contextView(rc));
   const circuit = listLast(listFirst(action, '.'), ':');
   const identity = await identityLoad;
@@ -946,7 +1074,8 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
     circuit,
     item: listLast(action, '.'),
     rc: contextView(rc),
-    formScope: contextView(form),
+    formScope: contextView(posted),
+    relayScopes,
     ses: scopes.pathInfo.length > 0,
     currentUrl: currentUrlOf(url),
     session: { ...session, dateKey },

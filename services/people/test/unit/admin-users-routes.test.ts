@@ -630,6 +630,18 @@ describe('lists and searches', () => {
     expect(identityReads.filter(({ op }) => op === 'lookupMemberships')).toEqual([{ op: 'lookupMemberships', userIds: items }]);
   });
 
+  // Oracle: cUsers.listusers and cUsers.search over two people read Val('1e2') and Val('1e1') as 1 and Val('2e-1') as 2.
+  it.each<[string, string[], { recordsperpage: number; startrow: number }]>([
+    ['/v2/users?startrow=1e2&recordsperpage=10', [ROOT, JANE], { recordsperpage: 10, startrow: 1 }],
+    ['/v2/users?startrow=100&recordsperpage=1e1', [ROOT], { recordsperpage: 1, startrow: 1 }],
+    ['/v2/users?startrow=2e-1&recordsperpage=1', [JANE], { recordsperpage: 1, startrow: 2 }],
+    ['/v2/users/search?search=o&startrow=2e-1&recordsperpage=1e1', [JANE], { recordsperpage: 1, startrow: 2 }],
+  ])('%s pages by startrow and recordsperpage as CFML Val reads them, without an exponent', async (url, items, paging) => {
+    const { body } = await call('GET', `${url}&siteid=${SITE}&ispublic=0`, await headersFor(S2));
+    expect(body?.items).toMatchObject(items.map((UserID) => ({ UserID })));
+    expect(body?.nextn).toMatchObject({ totalrecords: 2, ...paging });
+  });
+
   it('/v2 marks every person of an unassigned-only page without another membership lookup', async () => {
     const { body } = await call('GET', '/v2/users?ispublic=0&unassigned=1&recordsperpage=1', await headersFor(S2));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([JANE]);
@@ -670,6 +682,12 @@ describe('lists and searches', () => {
     expect(body?.nextn).toMatchObject({ totalrecords: 2, recordsperpage: 1, startrow: 2 });
     expect(body?.listUnassignedUsers).toEqual([]);
     expect(identityReads.filter(({ op }) => op === 'lookupMemberships')).toEqual([]);
+  });
+
+  // Oracle: admin start-up's Portcullis scan trims `search=%20an%20` to `an` before cUsers.search reads it.
+  it.each(VERSIONS)('%s searches the term trimmed by the admin start-up scan', async (version) => {
+    const { body } = await call('GET', `${version}/users/search?ispublic=0&search=%20doe%20`, await headersFor(S2));
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([JANE]);
   });
 
   it.each(VERSIONS)('%s searches the pool with full user rows in bootstrap casing', async (version) => {
@@ -1054,6 +1072,12 @@ describe('route()', () => {
     expect(saves).toEqual([{ mura: { errors: '' } }]);
     const allowed = await call('GET', `/v1/users/route?returnurl=${encodeURIComponent('https://ALIAS.example.test/q')}`, await headersFor(SITE_ADMIN));
     expect(allowed.body).toEqual({ redirect: { url: 'https://ALIAS.example.test/q' } });
+  });
+
+  // Oracle: the admin start-up scan's word filter turns `returnurl=javascript%3Aalert(1)` into `[INVALID]alert(1)`.
+  it('redirects to the return URL the admin start-up scan leaves', async () => {
+    const { body } = await call('GET', `/v1/users/route?returnurl=${encodeURIComponent('javascript:alert(1)')}`, await headersFor(SITE_ADMIN));
+    expect(body).toEqual({ redirect: { url: '[INVALID]alert(1)' } });
   });
 
   it('redirects to the users list or the group without touching a session holding no edit bean', async () => {

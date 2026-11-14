@@ -5,11 +5,12 @@ import {
   esapiUrlEncode,
   matchRouteKey,
   normaliseRouteKey,
-  routeKeyForRequest,
+  scannedRouteKey,
   type RouteFamily,
   type RouteKeyOptions,
   type RouteKeyRequest,
   type RouteKeyResult,
+  type ScannedRouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
 import { z } from '@opt2/platform/service-kit';
 import { CATALOGUE_PATH, isRehearsalScenario, loadCatalogue, type Scenario, type Step } from './catalogue.js';
@@ -201,14 +202,14 @@ function queryOf(search: string): Record<string, string | string[]> {
   return Object.fromEntries(query);
 }
 
-/** Raw query `search` with each pair's placeholders filled, values by their parameter name, then parsed. */
-function fillQuery(search: string, reloadKey: string): Record<string, string | string[]> {
+/** Raw query `search` with each pair's placeholders filled, values by their parameter name. */
+function fillSearch(search: string, reloadKey: string): string {
   const pairs = search.split('&').map((pair) => {
     const at = pair.indexOf('=');
     const name = fill(at === -1 ? pair : pair.slice(0, at), false, reloadKey);
     return at === -1 ? name : `${name}=${fill(pair.slice(at + 1), ID_NAME.test(name), reloadKey)}`;
   });
-  return queryOf(pairs.join('&'));
+  return pairs.join('&');
 }
 
 /** `Authorization` header a step's `basic:` or `bearer:` auth mode sends. */
@@ -230,7 +231,7 @@ function keyRequest(shape: StepRequest, reloadKey: string): RouteKeyRequest {
   const req: RouteKeyRequest = {
     method: shape.method,
     path: fill(at === -1 ? shape.route : shape.route.slice(0, at), true, reloadKey),
-    query: fillQuery(at === -1 ? '' : shape.route.slice(at + 1), reloadKey),
+    query: queryOf(fillSearch(at === -1 ? '' : shape.route.slice(at + 1), reloadKey)),
     headers: authorization(shape.auth === undefined ? undefined : fill(shape.auth, false, reloadKey)),
   };
   if (shape.form !== undefined || shape.multipart !== undefined) {
@@ -249,6 +250,13 @@ function keyRequest(shape: StepRequest, reloadKey: string): RouteKeyRequest {
   }
   Object.assign(req.headers, fillFields(shape.headers ?? {}, reloadKey));
   return req;
+}
+
+/** {@link keyRequest} with its filled target, whose query string orders url values of names differing only in case. */
+function scannedKeyRequest(shape: StepRequest, reloadKey: string): ScannedRouteKeyRequest {
+  const req = keyRequest(shape, reloadKey);
+  const at = shape.route.indexOf('?');
+  return at === -1 ? req : { ...req, url: `${req.path}?${fillSearch(shape.route.slice(at + 1), reloadKey)}` };
 }
 
 /** Copy of `value` with `fn` applied to every string, object keys included. */
@@ -321,7 +329,8 @@ export function fromRouteKeyRequest(req: RouteKeyRequest): Step {
 
 /** Route key of `step`'s request (its first matrix combination). */
 export function coverageRouteKey(step: StepRequest, opts: RouteKeyOptions = defaultRouteKeyOptions()): string {
-  return routeKeyForRequest(toRouteKeyRequest(step, opts), opts).key;
+  const [first = {}] = matrixCombinations(step.matrix);
+  return scannedRouteKey(scannedKeyRequest(withMatrix(step, first), opts.appReloadKey ?? DEFAULT_RELOAD_KEY), opts).result.key;
 }
 
 // Capture sends each candidate until legacy answers as expected, so candidates exercise their routes as the step does.
@@ -333,7 +342,7 @@ export function coverageRouteResults(
   const reloadKey = opts.appReloadKey ?? DEFAULT_RELOAD_KEY;
   const shapes: StepRequest[] = [step, ...(step.candidates ?? []).map((c) => ({ ...c, auth: step.auth }))];
   return matrixCombinations(step.matrix).flatMap((combo) =>
-    shapes.map((shape) => routeKeyForRequest(keyRequest(withMatrix(shape, combo), reloadKey), opts)),
+    shapes.map((shape) => scannedRouteKey(scannedKeyRequest(withMatrix(shape, combo), reloadKey), opts).result),
   );
 }
 

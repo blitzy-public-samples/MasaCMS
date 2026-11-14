@@ -35,6 +35,11 @@ describe('urlSiteId', () => {
     ['an empty siteid, which isDefined still finds', { siteid: '' }, ''],
     ['the key without case', { SiteID: SITE_A }, SITE_A],
     ['a repeated key joined', { siteid: [SITE_A, 'b'] }, `${SITE_A},b`],
+    // The own oracle's url scope after the start-up scan for the same queries.
+    ['a padded siteid trimmed', { siteid: ` ${SITE_A} ` }, SITE_A],
+    ['a script siteid neutralised', { siteid: '<script>x</script>' }, '[INVALID]'],
+    ['siteid under a name with a dash, added under its stripped name', { 'site-id': SITE_A }, SITE_A],
+    ['siteid under a scope-prefixed name, dropped', { 'url.siteid': SITE_A }, undefined],
   ])('reads %s', (_label, query, expected) => {
     expect(urlSiteId(query)).toBe(expected);
   });
@@ -116,6 +121,9 @@ describe('variation routes', () => {
     ['the token site, whose script only the CFML runtime generates', 503, `${VARIATION_PATH}?siteid=${SITE_A.toUpperCase()}`, visitorOf(SITE_A)],
     ['the token site on a longer path', 503, `${VARIATION_PATH}/js?SiteID=${SITE_A}&contenttype=Page`, visitorOf(SITE_A)],
     ['an empty siteid', 503, `${VARIATION_PATH}?siteid=`, visitorOf(SITE_A)],
+    ['the token site padded, as the start-up scan trims it', 503, `${VARIATION_PATH}?siteid=%20${SITE_A}%20`, visitorOf(SITE_A)],
+    ['the token site under a dashed name, as the start-up scan adds siteid', 503, `${VARIATION_PATH}?site-id=${SITE_A}`, visitorOf(SITE_A)],
+    ['a script siteid, neutralised to another site', 403, `${VARIATION_PATH}?siteid=%3Cscript%3Ex%3C/script%3E`, visitorOf(SITE_A)],
   ])('answers the taken branch with %s by %d', async (_label, status, url, headers) => {
     const res = await call('on', url, headers);
     expect(res.statusCode).toBe(status);

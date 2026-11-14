@@ -1,5 +1,6 @@
 // The `cChangesets.rollback` post-action: rolls back a published change set, then redirects to its edit screen.
 import { okBody } from '@/lib/gateway-client';
+import { relayContext } from '@/lib/request-context';
 import type { ScreenContext, ScreenDefinition, SubmitResult } from '../registry';
 
 type RedirectDefinition = Extract<ScreenDefinition, { mode: 'redirect' }>;
@@ -32,7 +33,7 @@ export const changesetRollbackScreen: Omit<RedirectDefinition, 'gate'> = Object.
     if (changesetid === undefined) throw new TypeError('Element CHANGESETID is undefined in RC.');
     const response = await gateway.strategiesContent.call('post', ROLLBACK_PATH, {
       params: { siteid: rc.siteid ?? '', changesetid },
-      form: Object.entries(rc),
+      form: Object.entries(relayContext(req)),
     });
     if (!takesRedirect(response.status)) okBody(response, SERVICE, OPERATION);
     return response.location === undefined ? EDIT_REDIRECT : { kind: 'location', location: response.location };

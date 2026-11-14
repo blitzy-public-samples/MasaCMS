@@ -10,6 +10,7 @@ import {
   LEGACY_POST_LIMIT_BYTES,
   ServiceUnavailableError,
   legacyParamsOf,
+  legacyScopesOf,
   multipartFilesOf,
   type FastifyInstance,
   type FastifyReply,
@@ -54,7 +55,10 @@ function rcText(params: Params, key: string): string {
 
 const FORM_MEDIA_TYPES: readonly string[] = ['application/x-www-form-urlencoded', 'multipart/form-data'];
 
-/** The field names of ColdFusion's `form` scope: url-encoded and multipart bodies only. */
+/**
+ * The posted field names of ColdFusion's `form` scope: url-encoded and multipart bodies only. As posted, since the
+ * `FIELDNAMES` ColdFusion adds keeps the scope non-empty whatever names the start-up scan drops.
+ */
 function formScopeKeys(request: FastifyRequest): string[] {
   const mediaType = (request.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
   const body = request.body;
@@ -62,9 +66,9 @@ function formScopeKeys(request: FastifyRequest): string[] {
   return Object.keys(body);
 }
 
-/** Whether the `form` scope holds `key`, ignoring case. */
+/** Whether the `form` scope the start-up scan left holds `key`, ignoring case. */
 function formScopeHas(request: FastifyRequest, key: string): boolean {
-  return formScopeKeys(request).some((name) => name.toLowerCase() === key.toLowerCase());
+  return legacyScopesOf(request).form.entries.some(([name]) => name.toLowerCase() === key.toLowerCase());
 }
 
 /** `form.<key>` as text (the merged value, in which the body wins); a missing field fails as ACF fails reading it. */

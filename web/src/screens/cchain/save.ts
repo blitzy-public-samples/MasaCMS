@@ -1,5 +1,6 @@
 import { LEGACY_ERROR_PAGE_HTML, LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
 import { okBody } from '@/lib/gateway-client';
+import { relayContext } from '@/lib/request-context';
 import type { ScreenContext, SubmitResult } from '../registry';
 
 const OPERATION = 'saveApprovalChain';
@@ -21,12 +22,12 @@ const MISSING_VIEW_ERROR: SubmitResult = Object.freeze({
 });
 
 /** Relays the approval-chain save with every rc field unchanged; answers legacy's list redirect or its 500 page. */
-export async function submitCchainSave({ req: { rc }, gateway }: ScreenContext): Promise<SubmitResult> {
+export async function submitCchainSave({ req, gateway }: ScreenContext): Promise<SubmitResult> {
   const service = gateway.strategiesContent;
   // `set(rc)` reads the whole context: the CSRF pair goes to the owner, and an empty groupID removes every membership.
   const response = await service.call('post', '/v1/sites/{siteid}/approval-chains', {
-    params: { siteid: rc.siteid ?? '' },
-    form: Object.entries(rc),
+    params: { siteid: req.rc.siteid ?? '' },
+    form: Object.entries(relayContext(req)),
   });
   if (response.location !== undefined) return { kind: 'location', location: response.location };
   // A rejected token skips the write but still names the redirect, so only bean errors leave it null.

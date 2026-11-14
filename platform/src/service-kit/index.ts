@@ -47,6 +47,7 @@ export {
   isBodyTooLargeError,
   isUnstorableTextError,
   legacyParamsOf,
+  legacyScopesOf,
   multipartFilesOf,
   recordOutcomeReason,
   sendLegacyResponse,
@@ -68,6 +69,7 @@ export {
   type CsrfConsumeResponse,
   type CsrfPreHandlerOptions,
 } from './csrf-hook.js';
+export type { LegacyScopes } from '../legacy-compat/index.js';
 export type {
   FastifyInstance,
   FastifyRequest,

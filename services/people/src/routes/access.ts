@@ -8,7 +8,7 @@ import {
   renderAuthDenial,
   type UserClaims,
 } from '@opt2/platform/auth';
-import { cfEq, cfIsBoolean, cfIsNumeric, cfNumberString, cfToBoolean, javaTrim } from '@opt2/platform/legacy-compat';
+import { cfEq, cfIsBoolean, cfIsNumeric, cfNumberString, cfToBoolean, cfVal, javaTrim } from '@opt2/platform/legacy-compat';
 import { legacyParamsOf, sendLegacyResponse, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import { viewerScope, type ViewerScope } from '../domain/search.js';
 import type { components } from '../generated/openapi.js';
@@ -83,12 +83,6 @@ function scannedBoolean(value: string): string | undefined {
   const trimmed = javaTrim(text);
   if (cfIsBoolean(text) || cfIsNumeric(text)) return trimmed;
   return !JSON_BOOLEAN.test(trimmed) && cfIsBoolean(trimmed) ? trimmed : undefined;
-}
-
-/** CFML `Val`: the number the text starts with, else 0. */
-function cfmlVal(value: unknown): number {
-  const number = Number.parseFloat(simpleText(value));
-  return Number.isFinite(number) ? number : 0;
 }
 
 /** A CFML struct over request params: names match ignoring case and keep the spelling they first arrived with. */
@@ -263,10 +257,10 @@ export function normaliseCusersParams(
   rc.set('unassigned', scannedBoolean(rc.text('unassigned')) ?? '0');
   const unassignedlink = cfToBoolean(rc.get('unassigned')) ? 0 : 1;
   rc.set('unassignedlink', unassignedlink);
-  const startrowVal = cfmlVal(rc.get('startrow'));
+  const startrowVal = cfVal(rc.get('startrow'));
   const startrow = startrowVal < 1 ? 1 : startrowVal;
   rc.set('startRow', startrow);
-  const recordsperpageVal = cfmlVal(rc.get('recordsperpage'));
+  const recordsperpageVal = cfVal(rc.get('recordsperpage'));
   const recordsperpage = recordsperpageVal < 1 ? 25 : recordsperpageVal;
   rc.set('recordsperpage', recordsperpage);
 

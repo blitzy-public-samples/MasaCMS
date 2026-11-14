@@ -263,6 +263,9 @@ describe('active and open states', () => {
     const addSite = 'a.active cSettings.editSite&siteid=&addsite';
     expect(marks(render(shell(forwarded('/admin/?muraAction=cSettings.editSite&siteid=&addsite'))))).toContain(addSite);
     expect(marks(render(shell(forwarded('/admin/?muraAction=cSettings.editSite&q=a%26addsite'))))).not.toContain(addSite);
+    // The start-up scan renames `amp;addsite` to `addsite`.
+    const renamed = forwarded('/admin/?muraAction=cSettings.editSite&siteid=&amp%3Baddsite');
+    expect(marks(render(shell(renamed)))).toContain(addSite);
     expect(marks(render(shell(forwarded('/admin/index.cfm'))))).toEqual([
       'li#admin-nav-site-config.open',
       'a.nav-submenu.active /admin/',

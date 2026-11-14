@@ -348,6 +348,8 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     ['missing format', (def) => ({ definitionId: def }), 400, 'Invalid parameters'],
     ['bad asOf', (def) => ({ definitionId: def, format: 'csv', asOf: '2026-02-30' }), 400, 'Invalid parameters'],
     ['empty asOf', (def) => ({ definitionId: def, format: 'csv', asOf: '' }), 400, 'Invalid parameters'],
+    ['a JSON format ending in a line feed, which no scan trims', (def) => ({ definitionId: def, format: 'csv\n' }), 400, 'Invalid parameters'],
+    ['a JSON format holding a NUL, which no scan drops', (def) => ({ definitionId: def, format: 'cs\u0000v' }), 400, 'Invalid parameters'],
   ])('rejects create with %s', async (_name, build, status, message) => {
     const res = await create(build(defs[TENANT_A.siteId] as string));
     expect(res.statusCode).toBe(status);
@@ -392,7 +394,9 @@ describe.skipIf(!available)('reporting fixture routes', () => {
   it.each<[string, () => Promise<Awaited<ReturnType<FastifyInstance['inject']>>>, number, string | null]>([
     ['a definition id PostgreSQL cannot look up', () => create({ definitionId: 'nul-probe\u0000', format: 'csv' }), 400, 'request rejected: 22021'],
     ['a NUL job id PostgreSQL cannot look up', async () => app.inject({ url: `${P}/nul-probe%00`, headers: await headers() }), 400, 'request rejected: 22021'],
-    ['a NUL siteid PostgreSQL cannot look up', async () => app.inject({ url: `${P}?siteid=nul-probe%00`, headers: await headers() }), 400, 'request rejected: 22021'],
+    // Legacy's scan drops a url or form NUL, not a JSON one (probe.py url 'siteid=nul-probe%00' -> nul-probe).
+    ['a JSON-body NUL siteid PostgreSQL cannot look up', () => create({ siteid: 'nul-probe\u0000', definitionId: defs[TENANT_A.siteId], format: 'csv' }), 400, 'request rejected: 22021'],
+    ['a url siteid naming no site once its NUL is dropped', async () => app.inject({ url: `${P}?siteid=nul-probe%00`, headers: await headers() }), 400, 'request rejected: invalidParameters'],
     ['an anonymous caller', () => app.inject({ url: P }), 401, 'request denied: missing-credential'],
     [
       'an anonymous create naming a NUL definition id',
@@ -436,13 +440,62 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     expect(data.totalitems).toBeGreaterThanOrEqual(1);
     const defaults = await app.inject({ url: `${P}?pageIndex=&itemsPerPage=`, headers: await headers() });
     expect(defaults.json().data.itemsperpage).toBe(50);
-    for (const query of ['pageIndex=abc', 'pageIndex=0', 'itemsPerPage=1001', 'pageIndex=1.5', 'pageIndex=%20%201']) {
+    for (const query of ['pageIndex=abc', 'pageIndex=0', 'itemsPerPage=1001', 'pageIndex=1.5']) {
       const bad = await app.inject({ url: `${P}?${query}`, headers: await headers() });
       expect(bad.statusCode, query).toBe(400);
       expect(bad.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Invalid parameters'));
     }
     const far = await app.inject({ url: `${P}?pageIndex=999`, headers: await headers() });
     expect(far.json().data.items).toEqual([]);
+  });
+
+  // Each padded value is what legacy's url scan trims or NUL-strips to the plain one (probe.py url '<query>').
+  it.each<[string, string]>([
+    ['siteid=tenant-a&itemsPerPage=%201', 'siteid=tenant-a&itemsPerPage=1'],
+    ['siteid=tenant-a&itemsPerPage=1%20', 'siteid=tenant-a&itemsPerPage=1'],
+    ['siteid=tenant-a&itemsPerPage=%201%20', 'siteid=tenant-a&itemsPerPage=1'],
+    ['siteid=tenant-a&itemsPerPage=%091', 'siteid=tenant-a&itemsPerPage=1'],
+    ['siteid=tenant-a&itemsPerPage=%0A1', 'siteid=tenant-a&itemsPerPage=1'],
+    ['siteid=tenant-a&pageIndex=%202', 'siteid=tenant-a&pageIndex=2'],
+    ['siteid=tenant-a&pageIndex=2%20', 'siteid=tenant-a&pageIndex=2'],
+    ['siteid=tenant-a&pageIndex=%20%201', 'siteid=tenant-a&pageIndex=1'],
+    ['siteid=tenant-a%20', 'siteid=tenant-a'],
+    ['siteid=%20tenant-a', 'siteid=tenant-a'],
+    ['siteid=tenant%00-a', 'siteid=tenant-a'],
+    ['siteid=tenant-a%09', 'siteid=tenant-a'],
+    ['siteid=tenant-a%00', 'siteid=tenant-a'],
+  ])('lists ?%s as the scanned ?%s', async (padded, plain) => {
+    await storeDone();
+    const list = async (query: string) => app.inject({ url: `${P}?${query}`, headers: await headers() });
+    const scanned = await list(padded);
+    const expected = await list(plain);
+    expect([scanned.statusCode, expected.statusCode]).toStrictEqual([200, 200]);
+    expect(scanned.body).toBe(expected.body);
+    expect(scanned.json<{ data: { items: Array<{ siteid: string }> } }>().data.items.every((job) => job.siteid === TENANT_A.siteId)).toBe(true);
+  });
+
+  // Form and url values as legacy's scan leaves them (probe.py form '[["format"," csv"],...]'); asOf absent is the clock's day.
+  it.each<[string, (def: string) => { query?: string; form?: Record<string, string> }, number, string | null, string | null]>([
+    ['a form format led by a space', (def) => ({ form: { definitionId: def, format: ' csv' } }), 200, 'csv', '2026-06-30'],
+    ['a form definitionId padded on both sides', (def) => ({ form: { definitionId: ` ${def} `, format: 'csv' } }), 200, 'csv', '2026-06-30'],
+    ['a form asOf ending in a line feed', (def) => ({ form: { definitionId: def, format: 'csv', asOf: '2026-06-29\n' } }), 200, 'csv', '2026-06-29'],
+    ['a form format holding a NUL', (def) => ({ form: { definitionId: def, format: 'cs\u0000v' } }), 200, 'csv', '2026-06-30'],
+    ['url fields with a tab-led format', (def) => ({ query: `?definitionId=${def}&format=%09pdf` }), 200, 'pdf', '2026-06-30'],
+    ['a padded form siteid with an unknown definition', () => ({ form: { siteid: 'tenant-a ', definitionId: 'unknown', format: 'csv' } }), 404, null, null],
+  ])('answers a create from %s as legacy does after its scan', async (_case, build, status, format, asOf) => {
+    const def = defs[TENANT_A.siteId] as string;
+    const { query = '', form } = build(def);
+    const formBody = form === undefined ? {} : { payload: new URLSearchParams(form).toString() };
+    const formType = form === undefined ? {} : { 'content-type': 'application/x-www-form-urlencoded' };
+    const res = await app.inject({ method: 'POST', url: `${P}${query}`, ...formBody, headers: { ...(await headers()), ...CSRF, ...formType } });
+    expect(res.statusCode).toBe(status);
+    if (format === null) {
+      expect(res.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Not Found'));
+      expect(enqueued).toHaveLength(0);
+      return;
+    }
+    expect(res.json<{ data: Record<string, unknown> }>().data).toMatchObject({ siteid: TENANT_A.siteId, definition_id: def, format, state: 'queued' });
+    expect(enqueued.map(({ payload }) => payload.asOf)).toStrictEqual([asOf]);
   });
 
   it.each([

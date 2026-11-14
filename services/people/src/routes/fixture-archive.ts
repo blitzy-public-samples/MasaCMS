@@ -13,7 +13,6 @@ import {
   LegacyApiError,
   LegacyServiceUnavailableError,
   buildEnvelope,
-  javaTrim,
   serializeResponse,
   type LegacyApiErrorType,
   type LegacyErrorSpec,
@@ -81,24 +80,9 @@ const FIXTURE_SHARED_TYPES: readonly LegacyApiErrorType[] = Object.freeze([
   'server_error',
 ]);
 
-/** Keys of a JSON object body; Masa's request-start scan leaves their values as sent. */
-function jsonBodyKeys(request: FastifyRequest): ReadonlySet<string> {
-  const contentType = request.headers['content-type'];
-  const body: unknown = request.body;
-  const json = typeof contentType === 'string' && contentType.slice(0, 16).toLowerCase() === 'application/json';
-  if (!json || typeof body !== 'object' || body === null || Array.isArray(body)) return new Set();
-  return new Set(Object.keys(body).map((key) => key.toLowerCase()));
-}
-
-/** api.cfm's merged url, form and JSON params; url and form strings trimmed as the Portcullis scan in Masa's onRequestStart trims them. */
+/** api.cfm's merged url, form and JSON params, url and form as the Portcullis scan in Masa's onRequestStart leaves them. */
 function fixtureParams(request: FastifyRequest): FixtureParams {
-  const fromJson = jsonBodyKeys(request);
-  return new Map(
-    Object.entries(legacyParamsOf(request)).map(([name, value]): [string, unknown] => {
-      const key = name.toLowerCase();
-      return [key, typeof value === 'string' && !fromJson.has(key) ? javaTrim(value) : value];
-    }),
-  );
+  return new Map(Object.entries(legacyParamsOf(request)).map(([name, value]): [string, unknown] => [name.toLowerCase(), value]));
 }
 
 /** The method api.cfm dispatches on: a non-empty X-HTTP-Method-Override, else the request method, upper-cased. */

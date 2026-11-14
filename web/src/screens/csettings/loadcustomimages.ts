@@ -3,6 +3,7 @@ import { javaTrim, LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat
 import type { components } from '@/generated/clients/programs-sites';
 import { okBody } from '@/lib/gateway-client';
 import { encodeJs, html, raw, type SafeHtml } from '@/lib/html';
+import { relayField } from '@/lib/request-context';
 import type { FragmentScreen, Rc, ScreenContext } from '../registry';
 
 type ImageSize = components['schemas']['ImageSize'];
@@ -39,10 +40,7 @@ async function applyImageAction({ req, gateway }: ScreenContext): Promise<void> 
     okBody(await gateway.programsSites.call('delete', path, { params }), 'programs-sites', 'deleteImageSize');
     return;
   }
-  const form = SAVED_FIELDS.flatMap((name): Array<readonly [string, string]> => {
-    const value = req.rc[name];
-    return value === undefined ? [] : [[name, value]];
-  });
+  const form = SAVED_FIELDS.flatMap((name) => Object.entries(relayField(req, name)));
   okBody(await gateway.programsSites.call('put', path, { params, form }), 'programs-sites', 'saveImageSize');
 }
 

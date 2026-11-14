@@ -1,5 +1,6 @@
 // `cCategory.update`: the strategies-content save, then FW/1's list redirect or the form re-rendered (server-only).
 import { okBody } from '@/lib/gateway-client';
+import { relayContext } from '@/lib/request-context';
 import { structValue } from '../carch/model';
 import type { PageControllerRedirect, PageRedirect, ScreenContext } from '../registry';
 import { isStruct } from './dsp-nest';
@@ -31,7 +32,7 @@ export async function updateCategory(ctx: ScreenContext): Promise<PageController
   if (rc.action === undefined) throw new TypeError('Element RC.action is undefined in ARGUMENTS.');
   const response = await ctx.gateway.strategiesContent.call('post', '/v1/sites/{siteid}/categories', {
     params: { siteid: rc.siteid ?? '' },
-    form: Object.entries(rc),
+    form: Object.entries(relayContext(ctx.req)),
   });
   const { errors, redirect, data } = okBody(response, SERVICE, OPERATION);
   if (redirect !== null) return LIST_REDIRECT;

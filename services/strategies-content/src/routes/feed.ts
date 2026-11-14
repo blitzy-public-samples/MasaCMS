@@ -9,9 +9,10 @@ import {
   cfToBoolean,
   cfToNumber,
   fallbackSiteId,
+  type PortcullisScope,
 } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
-import { sendLegacyResponse, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
+import { legacyScopesOf, sendLegacyResponse, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import { poolTenantFor, tenantForRegisteredSite, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { actorFromClaims, type Actor, type DomainDeps } from '../domain/context.js';
 import { FeedContentUnsupportedError, allowFeed, feedContent, readFeed, type FeedBean, type FeedMemberLookup } from '../domain/feeds.js';
@@ -122,14 +123,9 @@ const findMember: FeedMemberLookup = async ({ username }) => {
   throw new LegacyServiceUnavailableError('Restricted-feed credentials are identity data this service cannot check', 'auto', 'feed-member-lookup');
 };
 
-/** A CFML url or form scope of parsed fields: each value as text, a repeated key's values joined with `,`. */
-function cfScope(fields: unknown): Record<string, string> {
-  if (typeof fields !== 'object' || fields === null || Buffer.isBuffer(fields)) return {};
-  return Object.fromEntries(
-    Object.entries(fields)
-      .filter(([, value]) => value !== undefined)
-      .map(([key, value]) => [key, Array.isArray(value) ? value.join(',') : String(value)]),
-  );
+/** A CFML url or form scope as the start-up scan leaves it, each value as text. */
+function cfScope(scope: PortcullisScope): Record<string, string> {
+  return Object.fromEntries(scope.entries.map(([key, value]) => [key, String(value)]));
 }
 
 /** `scope[name]` as CFML reads it: the key matched without case, a later spelling winning. */
@@ -405,11 +401,12 @@ async function processFeedRequest(ctx: FeedRouteContext, request: FastifyRequest
 
 /** Answers one feed request: the unmatched page without a url `feedid`, else processRequest's answer for the resolved site. */
 async function serveFeed(ctx: FeedRouteContext, prefix: string, request: FastifyRequest<FeedRoute>, reply: FastifyReply): Promise<FastifyReply> {
-  const url = cfScope(request.query);
+  const scopes = legacyScopesOf(request);
+  const url = cfScope(scopes.url);
   if (scopeValue(url, 'feedid') === undefined) return sendLegacyResponse(reply, UNMATCHED);
   const wildcard = request.params['*'];
   const pathInfo = wildcard === undefined ? prefix : `${prefix}/${wildcard}`;
-  const form = cfScope(request.body);
+  const form = cfScope(scopes.form);
   const siteId = await apiSiteId(ctx.domain.db, pathInfo, url, form);
   const claims = request.opt2Auth.user;
   if (claims !== undefined) assertSiteMatches(siteId, claims);

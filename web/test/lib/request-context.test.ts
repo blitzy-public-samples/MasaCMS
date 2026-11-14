@@ -1,6 +1,7 @@
 // Tests of the legacy admin request set-up: FW/1 context, admin session, site data, cookies and request flags.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthDenial, INVOCATION_HEADER, Roles, assertSiteMatches, moduleRole } from '@opt2/platform/auth';
+import { legacyScopeParams, portcullisScan } from '@opt2/platform/legacy-compat';
 import type { MintUserTokenInput } from '@opt2/platform/testing';
 import { secure } from '@/lib/access-gate';
 import { authenticateRequest, type WebAuth } from '@/lib/auth';
@@ -12,8 +13,13 @@ import {
   assignContext,
   buildAdminRequest,
   dashboardSpanFor,
+  forwardedPostedUrlScope,
+  forwardedUrlScope,
   mergeFw1Context,
   nextSessionSite,
+  relayContext,
+  relayField,
+  relayFields,
   resolveAction,
   restoreFlashContext,
   saveSessionWrites,
@@ -440,6 +446,33 @@ describe('sessionSiteModulePerm', () => {
 });
 
 
+describe('forwardedUrlScope', () => {
+  it('is undefined without the gateway header', () => {
+    expect(forwardedUrlScope(new Headers())).toBeUndefined();
+  });
+
+  it.each<[string, string, Record<string, string>]>([
+    [
+      'scans, renames and adds stripped names',
+      '/admin/?formType=%20editor%20&amp%3Bsiteid=x&group-name=%20q%20&title=%3Cscript%3Ex%3C%2Fscript%3E',
+      { formType: 'editor', siteid: 'x', 'group-name': 'q', groupname: 'q', title: '[INVALID]' },
+    ],
+    [
+      'keeps only the name and NUL fixes after a scan fault',
+      '/admin/?muraAction=cUsers.search&siteid=default&search=%20a%00n%20&zz=null',
+      { muraAction: 'cUsers.search', siteid: 'default', search: ' an ', zz: 'null' },
+    ],
+    [
+      'joins repeated names and applies fuseaction',
+      '/admin/?FormType=a&formtype=b&fuseaction=cUsers.list',
+      { FormType: 'a,b', fuseaction: 'cUsers.list', muraAction: 'cUsers.list' },
+    ],
+    ['holds nothing for a target without a query', '/admin/', {}],
+  ])('%s', (_label, target, expected) => {
+    expect({ ...forwardedUrlScope(new Headers({ [ORIGINAL_URL_HEADER]: target })) }).toEqual(expected);
+  });
+});
+
 describe('buildAdminRequest', () => {
   describe('request context', () => {
     it('resolves a page request from the original URL', async () => {
@@ -586,6 +619,229 @@ describe('buildAdminRequest', () => {
 
       expect(request.rc.siteid).toBe(siteid);
       expect(request.session.siteid).toBe('default');
+    });
+  });
+
+  // Expected values are what the ACF 2023 oracle's start-up scan left in the url and form scopes for the same input.
+  describe('admin start-up scan', () => {
+    const SCANNED: ReadonlyArray<readonly [string, string, string]> = [
+      ['search', ' padded ', 'padded'],
+      ['fname', '<script>alert(1)</script>x', '[INVALID]x'],
+      ['lname', 'Frami<img src=x onerror=alert(1)>', 'Frami<img src=x [INVALID]=alert(1)>'],
+      ['company', 'javascript:alert(1)', '[INVALID]alert(1)'],
+      ['notes', 'x\0y', 'xy'],
+      ['flag', ' true ', '"YES"'],
+      ['zz', '\u201Cq\u201D', '"q"'],
+      ['k', ' <script>k</script> ', '[INVALID]'],
+      ['body', ' <script>x</script> ', ' <script>x</script> '],
+      ['content', ' c ', ' c '],
+      ['a', ' padded ', ' padded '],
+    ];
+
+    /** A `cUsers.search` request carrying `pairs` as its URL scope, or as the urlencoded body of a redirect request. */
+    const carrying = (scope: 'url' | 'form', pairs: Array<[string, string]>): Call =>
+      scope === 'url'
+        ? { target: `/admin/?${new URLSearchParams([['muraAction', 'cUsers.search'], ...pairs]).toString()}` }
+        : { mode: 'redirect', received: { muraAction: 'cUsers.search' }, form: new URLSearchParams(pairs) };
+
+    const SCOPED_CASES = SCANNED.flatMap(([name, value, scanned]) =>
+      (['url', 'form'] as const).map((scope) => [scope, name, value, scanned] as const),
+    );
+
+    it.each(SCOPED_CASES)('leaves %s %s %j in rc as %j', async (scope, name, value, scanned) => {
+      const { request } = await build(carrying(scope, [[name, value]]));
+
+      expect(request.rc[name]).toBe(scanned);
+    });
+
+    it.each(['url', 'form'] as const)('drops invalid %s names, renames amp; and adds stripped ones', async (scope) => {
+      const dropped = ['1bad', 'url.x', 'has space', 'amp;ren'];
+      const pairs: Array<[string, string]> = [
+        ['1bad', 'v'],
+        ['url.x', '1'],
+        ['has space', '1'],
+        ['amp;ren', ' r '],
+        ['group-name', ' q '],
+      ];
+
+      const { request } = await build(carrying(scope, pairs));
+
+      expect(request.rc).toMatchObject({ ren: 'r', 'group-name': 'q', groupname: 'q' });
+      expect(Object.keys(request.rc).filter((name) => dropped.includes(name))).toEqual([]);
+    });
+
+    it('keeps only the name and NUL fixes of a URL scope whose scan fails, and the form as posted', async () => {
+      const { request } = await build({
+        mode: 'redirect',
+        target: '/admin/?muraAction=cUsers.search&siteid=default&search=%20a%00n%20&zz=null',
+        form: new URLSearchParams([['fname', ' <script>x</script>A\0nn ']]),
+      });
+
+      expect(request.rc).toMatchObject({ search: ' an ', zz: 'null', fname: ' <script>x</script>A\0nn ' });
+      expect(request.currentUrl).toBe('./?&muraAction=cUsers.search&siteid=default&search= an &zz=null');
+    });
+
+    it('builds rc and currentURL from the scanned scopes, keeping the form scope as posted', async () => {
+      const { request } = await build({
+        target: '/admin/?muraAction=cUsers.search&search=%20an%20',
+        received: new URLSearchParams([
+          ['muraAction', 'cUsers.search'],
+          ['search', ' an '],
+          ['fname', ' <script>x</script>Ann '],
+        ]),
+      });
+
+      expect(request.rc).toMatchObject({ search: 'an', fname: '[INVALID]Ann' });
+      expect(request.currentUrl).toBe('./?&muraAction=cUsers.search&search=an');
+      expect({ ...request.formScope }).toEqual({ fname: ' <script>x</script>Ann ' });
+    });
+
+    it("passes a file part's name unscanned", async () => {
+      const form = new FormData();
+      form.append('fname', ' Ann ');
+      form.append('photo', new File(['x'], ' <script>x</script>.png ', { type: 'image/png' }));
+
+      const { request } = await build({ mode: 'redirect', received: { muraAction: 'cusers.update' }, form });
+
+      expect(request.rc).toMatchObject({ fname: 'Ann', photo: ' <script>x</script>.png ' });
+    });
+
+    it.each(['url', 'form'] as const)('relays %s values the scan changed as posted', async (scope) => {
+      const { request } = await build(
+        carrying(scope, [
+          ['groupname', '\u201C Alice \u201D'],
+          ['search', ' an '],
+          ['fname', '<script>x</script>Ann'],
+        ]),
+      );
+
+      expect(request.rc).toMatchObject({ groupname: '" Alice "', search: 'an', fname: '[INVALID]Ann' });
+      expect({ ...relayContext(request) }).toMatchObject({
+        groupname: '\u201C Alice \u201D',
+        search: ' an ',
+        fname: '<script>x</script>Ann',
+      });
+    });
+
+    it.each(['url', 'form'] as const)('relays %s names the scan dropped or renamed as posted, not its copies', async (scope) => {
+      const pairs: Array<[string, string]> = [
+        ['x-y', '<script>z</script>'],
+        ['1bad', 'v'],
+        ['has space', '1'],
+        ['amp;ren', ' r '],
+      ];
+
+      const { request } = await build(carrying(scope, pairs));
+      const relay = { ...relayContext(request) };
+
+      expect(request.rc).toMatchObject({ 'x-y': '<script>z</script>', xy: '<script>z</script>', ren: 'r' });
+      expect(relay).toMatchObject(Object.fromEntries(pairs));
+      expect(Object.keys(relay).filter((name) => ['xy', 'ren'].includes(name))).toEqual([]);
+    });
+
+    it.each<[string, Array<[string, string]>]>([
+      ['posted empty', [['siteid', '']]],
+      ['not posted', []],
+    ])('relays the set-up values as rc holds them, siteid %s', async (_case, pairs) => {
+      const { request } = await build(carrying('form', pairs));
+
+      expect({ ...relayContext(request) }).toMatchObject({
+        siteid: 'default',
+        muraAction: 'core:cusers.search',
+        activetab: '0',
+      });
+    });
+
+    it("relays a screen's rc: its changes as it holds them, without the names it removed", async () => {
+      const { request } = await build(carrying('form', [['groupname', ' Ann '], ['fname', ' Bo ']]));
+      const changed = assignContext(request.rc, { groupname: 'Cy' });
+      const kept = Object.fromEntries(Object.entries(changed).filter(([name]) => name !== 'fname'));
+
+      const relay = { ...relayContext(request, kept) };
+
+      expect(relay).toMatchObject({ groupname: 'Cy', siteid: 'default' });
+      expect(relay).not.toHaveProperty('fname');
+    });
+
+    it("leaves the owner's one scan of the relay where the start-up scan left rc", async () => {
+      const pairs: Array<[string, string]> = [
+        ['groupname', '\u201C Alice \u201D'],
+        ['x-y', '<script>z</script>'],
+        ['amp;ren', ' r '],
+        ['notes', ' <b>b</b> <script>s</script> '],
+      ];
+      const { request } = await build(carrying('form', pairs));
+
+      const owner = legacyScopeParams(portcullisScan(Object.entries(relayContext(request))));
+
+      expect(owner).toMatchObject({
+        groupname: '" Alice "',
+        'x-y': '<script>z</script>',
+        xy: '<script>z</script>',
+        ren: 'r',
+        notes: '<b>b</b> [INVALID]',
+      });
+      const scanned = ['groupname', 'x-y', 'xy', 'ren', 'notes'].map((name) => [name, request.rc[name]]);
+      expect(owner).toMatchObject(Object.fromEntries(scanned));
+    });
+
+    const FIELD_PAIRS: Array<[string, string]> = [
+      ['groupname', '\u201C Alice \u201D'],
+      ['x-y', '<script>z</script>'],
+      ['amp;ren', ' r '],
+      ['siteid', ''],
+    ];
+
+    const FIELD_RELAYS: ReadonlyArray<readonly [string, Readonly<Record<string, string>>]> = [
+      ['groupname', { groupname: '\u201C Alice \u201D' }],
+      ['GroupName', { GroupName: '\u201C Alice \u201D' }],
+      ['x-y', { 'x-y': '<script>z</script>' }],
+      ['xy', { 'x-y': '<script>z</script>' }],
+      ['ren', { 'amp;ren': ' r ' }],
+      ['siteid', { siteid: 'default' }],
+      ['missing', {}],
+    ];
+
+    it.each(
+      (['url', 'form'] as const).flatMap((scope) => FIELD_RELAYS.map(([name, sent]) => [scope, name, sent] as const)),
+    )('relays %s field %s by name as %j', async (scope, name, sent) => {
+      const { request } = await build(carrying(scope, FIELD_PAIRS));
+
+      expect(relayField(request, name)).toEqual(sent);
+    });
+
+    it("relays a screen's changed value, and a scan-made name no posted name makes, as rc holds them", async () => {
+      const { request } = await build(carrying('form', FIELD_PAIRS));
+      const unsourced = { ...request, relayScopes: { posted: {}, scanned: { xy: '<script>z</script>' } } };
+      const changed = assignContext(request.rc, { groupname: 'Cy' });
+
+      expect(relayField(request, 'groupname', changed)).toEqual({ groupname: 'Cy' });
+      expect(relayField(unsourced, 'xy', { xy: '<script>z</script>' })).toEqual({ xy: '<script>z</script>' });
+    });
+
+    it("leaves the owner's one scan of named relays where the start-up scan left rc", async () => {
+      const { request } = await build(carrying('form', FIELD_PAIRS));
+
+      const relay = relayFields(request, { groupname: request.rc.groupname, xy: request.rc.xy, none: undefined });
+
+      expect(relay).toEqual({ groupname: '\u201C Alice \u201D', 'x-y': '<script>z</script>' });
+      expect(legacyScopeParams(portcullisScan(Object.entries(relay)))).toMatchObject({
+        groupname: request.rc.groupname,
+        xy: request.rc.xy,
+      });
+    });
+
+    it('reads the forwarded target as posted beside its scanned URL scope', () => {
+      const target = '/admin/?fuseaction=cArch.list&keywords=%E2%80%9C+x+%E2%80%9D';
+      const headers = new Headers({ [ORIGINAL_URL_HEADER]: target });
+
+      expect({ ...forwardedPostedUrlScope(headers) }).toEqual({
+        fuseaction: 'cArch.list',
+        muraAction: 'cArch.list',
+        keywords: '\u201C x \u201D',
+      });
+      expect(forwardedUrlScope(headers)?.keywords).toBe('" x "');
+      expect(forwardedPostedUrlScope(new Headers())).toBeUndefined();
     });
   });
 

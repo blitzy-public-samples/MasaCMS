@@ -9,6 +9,7 @@ import {
   type SuccessBodyOf,
 } from '@/lib/gateway-client';
 import { encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
+import { relayFields } from '@/lib/request-context';
 import { buildUrl } from '@/lib/urls';
 import type { PageScreen, ScreenContext } from '../registry';
 import { cusersGate, normaliseCusersRc, type CusersRc } from './gate';
@@ -96,13 +97,13 @@ function usersListRow(row: SearchUserRow): UsersListRow {
  */
 export async function loadSearch(ctx: ScreenContext): Promise<SearchData> {
   const rc = normaliseCusersRc(ctx.req);
-  const query: SearchUsersQuery = {
+  const query: SearchUsersQuery = relayFields(ctx.req, {
     siteid: rc.siteid,
     ispublic: rc.ispublic,
     search: rc.search,
     startrow: String(rc.startRow),
     recordsperpage: String(rc.recordsperpage),
-  };
+  });
   const page = okBody(await ctx.gateway.people.call('get', '/v2/users/search', { query }), 'people', 'searchUsersV2');
   const nextn = nextNOf(page.nextn);
   const { pageIndex, rows } = iteratorPage(page.items, nextn);

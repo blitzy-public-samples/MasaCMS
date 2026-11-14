@@ -2,7 +2,8 @@
 import { cfListToArray } from '@opt2/platform/legacy-compat';
 import type { components, operations } from '@/generated/clients/people';
 import { okBody } from '@/lib/gateway-client';
-import type { Rc, RedirectScreen, ScreenContext, SubmitResult } from '../registry';
+import { relayField, relayFields } from '@/lib/request-context';
+import type { RedirectScreen, ScreenContext, SubmitResult } from '../registry';
 import { cusersGate, normaliseCusersRc } from './gate';
 import type { UsersCsvSource } from './inc/dsp_download';
 
@@ -18,16 +19,13 @@ const CRITERIA_FIELDS = ['muraAction', 'param', 'inActive', 'categoryID', 'group
 /** Row field prefixes, each suffixed with a row number of the `param` list. */
 const ROW_FIELDS = ['paramField', 'paramRelationship', 'paramCriteria', 'paramCondition'];
 
-/** The rc fields the Application.cfc capture reads, each once; undefined for an empty `param`, which captures none. */
-function criteriaForm(rc: Rc): Array<readonly [string, string]> | undefined {
-  const param = rc.param ?? '';
+/** The relay of the rc fields the Application.cfc capture reads, each once; undefined for an empty `param`. */
+function criteriaForm(req: ScreenContext['req']): Array<readonly [string, string]> | undefined {
+  const param = req.rc.param ?? '';
   if (param === '') return undefined;
   const rows = cfListToArray(param, ',').flatMap((row) => ROW_FIELDS.map((prefix) => `${prefix}${row}`));
   // A skipped row (no field or no criteria) may lack its other fields, as legacy never reads them.
-  return [...new Set([...CRITERIA_FIELDS, ...rows])].flatMap((name) => {
-    const value = rc[name];
-    return value === undefined ? [] : [[name, value] as const];
-  });
+  return [...new Set([...CRITERIA_FIELDS, ...rows])].flatMap((name) => Object.entries(relayField(req, name)));
 }
 
 /**
@@ -41,9 +39,12 @@ export async function storeAdvancedSearchCriteria(
   query: AdvancedSearchQuery,
 ): Promise<AdvancedSearchPage | undefined> {
   // The request context keeps its capture in web's session state, which people never reads; people searches its own.
-  const form = criteriaForm(req.rc);
+  const form = criteriaForm(req);
   if (form === undefined) return undefined;
-  const response = await gateway.people.call('post', '/v2/users/advanced-search', { query, form });
+  const response = await gateway.people.call('post', '/v2/users/advanced-search', {
+    query: relayFields(req, query),
+    form,
+  });
   return okBody(response, 'people', 'setAdvancedSearchV2');
 }
 

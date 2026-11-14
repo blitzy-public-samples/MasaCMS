@@ -2,7 +2,7 @@
 import { cfToBoolean } from '@opt2/platform/legacy-compat';
 import { cfEq, scanCompactDisplay } from '@/lib/cfml';
 import { raw, type SafeHtml } from '@/lib/html';
-import { ORIGINAL_URL_HEADER, type RequestContext } from '@/lib/request-context';
+import { forwardedUrlScope, type RequestContext } from '@/lib/request-context';
 import { cfListHas, tabAllowed, type EditFormInput, type EditPageData, type PanelResult } from './form/custom-tags';
 import { renderPanelAssocFile } from './form/panel-assocfile';
 import { renderPanelBasic } from './form/panel-basic';
@@ -247,18 +247,14 @@ function extendSetCount(model: CarchStruct): number {
 }
 
 /**
- * `url.formType`: the forwarded request target's `formType` (repeated names comma-joined, as the URL scope joins
- * them); without the gateway's header, the request's value unless it was posted, since legacy's edit form posts to a
- * bare `index.cfm`. Undefined when the URL scope holds none.
+ * `url.formType`: the forwarded request target's scanned URL scope value; without the gateway's header, the request's
+ * value unless it was posted, since legacy's edit form posts to a bare `index.cfm`. Undefined when the URL scope holds
+ * none.
  */
 export function urlFormType(req: Pick<EditFormInput['req'], 'headers' | 'formScope' | 'rc'>): string | undefined {
-  const target = req.headers.get(ORIGINAL_URL_HEADER);
-  if (target === null) return req.formScope.formType === undefined ? req.rc.formType : undefined;
-  const query = target.includes('?') ? target.slice(target.indexOf('?') + 1) : '';
-  const values = [...new URLSearchParams(query)]
-    .filter(([name]) => name.toLowerCase() === 'formtype')
-    .map(([, value]) => value);
-  return values.length === 0 ? undefined : values.join(',');
+  const url = forwardedUrlScope(req.headers);
+  if (url === undefined) return req.formScope.formType === undefined ? req.rc.formType : undefined;
+  return url.formType;
 }
 
 /**

@@ -19,6 +19,7 @@ import {
 import {
   CSRF,
   FAMILIES,
+  RELOAD_KEY,
   TOKEN,
   TOKEN_EXPIRES,
   actorHeaders,
@@ -310,6 +311,39 @@ describe.skipIf(!PG_AVAILABLE)('JSON API reads and saves over PostgreSQL', () =>
       const page = dataOf(await send(ctx.app, 'GET', url, await headers())) as unknown as Collection;
       expect(userIdsOf(page)).toEqual([pooled.userid]);
       for (const pair of extra) expect(page.links.self).toContain(`&${pair}`);
+    });
+
+    // Root start-up's Portcullis scan trims and filters url and form before processRequest reads them [legacy: core/appcfc/scriptProtect_include.cfm:4-20].
+    it.each([
+      ['the url', 'GET', true],
+      ['a form', 'POST', false],
+    ] as const)('reads padded and script-bearing findMany params %s carries as the start-up scan leaves them', async (_name, method, inUrl) => {
+      const sent = { ids: ` ${pooled.userid} `, note: '  <script>alert(1)</script>kept  ' };
+      const query = `?method=findMany&entityname=user${inUrl ? `&${new URLSearchParams(sent).toString()}` : ''}`;
+      const page = dataOf(await send(ctx.app, method, apiPath('json', query), await headers(), inUrl ? undefined : sent)) as unknown as Collection;
+      expect(userIdsOf(page)).toEqual([pooled.userid]);
+      expect(page.links.self).toContain(`&ids=${pooled.userid}&`);
+      expect(page.links.self).toContain('&note=[INVALID]kept&');
+    });
+
+    // Start-up decides a reload on the url as sent; its scan then copies the name onto the reload key, which processRequest deletes
+    // [legacy: core/appcfc/onRequestStart_include.cfm:114-138, core/mura/client/api/json/v1/jsonApiUtility.cfc:403].
+    it.each([
+      ['a name the scan strips to it', `${RELOAD_KEY.slice(0, 1)}-${RELOAD_KEY.slice(1)}`],
+      ['a name the scan renames to it', `amp;${RELOAD_KEY}`],
+    ])('serves findMany, never a reload, for the reload key %s', async (_name, sent) => {
+      const url = apiPath('json', `?${encodeURIComponent(sent)}=1&method=findMany&entityname=user&ids=${pooled.userid}`);
+      const page = dataOf(await send(ctx.app, 'GET', url, await headers())) as unknown as Collection;
+      expect(userIdsOf(page)).toEqual([pooled.userid]);
+      expect(page.links.self?.toLowerCase()).not.toContain(`&${RELOAD_KEY.toLowerCase()}=`);
+    });
+
+    // Oracle: ColdFusion joins url names differing only in case, in sent order (`q=1&Q=2` reads `q` as `1,2`).
+    it('finds many by ids spelled in several cases, joined in sent order', async () => {
+      const [first, second, third] = umbrellaPersons.map((person) => person.userid);
+      const url = apiPath('json', `?method=findMany&entityname=user&ids=${first ?? ''}&IDS=${second ?? ''}&ids=${third ?? ''}`);
+      const page = dataOf(await send(ctx.app, 'GET', url, await headers())) as unknown as Collection;
+      expect(userIdsOf(page)).toEqual([first, second, third]);
     });
 
     it('answers findMany without ids with server_error', async () => {

@@ -209,7 +209,7 @@ export function fileUploadContentType(lines: readonly string[]): string {
   return slash === -1 ? `${value}/${value}` : `${value.slice(0, slash)}/${value.slice(value.lastIndexOf('/') + 1)}`;
 }
 
-/** The file part a header block describes, as busboy classifies it; undefined for a part busboy skips or reads as a field. */
+/** The file part a header block describes, one with a file name as service-kit's `isPartAFile` classifies it; undefined for a part busboy skips or reads as a field. */
 function filePartOf(block: Buffer): ScannedFilePart | undefined {
   const headers = busboyHeaders(block.toString('latin1'));
   const disposition = headers.get('content-disposition')?.[0];
@@ -236,7 +236,8 @@ function filePartOf(block: Buffer): ScannedFilePart | undefined {
     if (typeof media === 'string' && media !== '') mimetype = media.toLowerCase();
   }
   mimetype ??= 'text/plain';
-  if (mimetype !== 'application/octet-stream' && filename === undefined) return undefined;
+  // A part without a file name is form text, whatever its type, so it is never spooled.
+  if (filename === undefined) return undefined;
   return { name, mimetype, contentType: fileUploadContentType(block.toString('utf8').split('\r\n').slice(1)) };
 }
 

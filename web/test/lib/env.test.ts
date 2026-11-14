@@ -283,6 +283,8 @@ describe('legacySettings', () => {
     [{ MURA_ADMINSSL: 'False' }, 'adminSSL', false],
     [{ MURA_ADMINSSL: '2' }, 'adminSSL', true],
     [{ MURA_SESSIONTIMEOUT: '30' }, 'sessionTimeout', 30],
+    [{ MURA_SESSIONTIMEOUT: '1e3' }, 'sessionTimeout', 1000],
+    [{ MURA_SESSIONTIMEOUT: '12abc' }, 'sessionTimeout', 12],
     [{ MURA_SESSIONHISTORY: '7' }, 'sessionHistory', 7],
     [{ MURA_SESSIONHISTORY: 'week' }, 'sessionHistory', 1],
     [{ MURA_LOCALE: 'en_US' }, 'defaultLocale', 'en_US'],

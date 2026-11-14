@@ -2,10 +2,10 @@
 import { stripInboundAuthHeaders } from '@opt2/platform/auth';
 import {
   matchRouteKey,
-  routeKeyForRequest,
+  scannedRouteKey,
   type RouteKeyOptions,
-  type RouteKeyRequest,
   type RouteKeyResult,
+  type ScannedRouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
 import type { BaseEnv, Clock } from '@opt2/platform/service-kit';
 import { LOCAL_SIGNED_URL_PREFIX, loadStorageHmacKey, verifySignedUrl, type BucketName } from '@opt2/platform/storage';
@@ -93,10 +93,15 @@ export interface RelayOutcome {
 
 /** A keyed request with the entry it matched, if any. */
 export interface RoutedOutcome {
+  /** The request's route key; for a request halted to legacy, the key it would have had, which its legacy semantics read. */
   readonly result: RouteKeyResult;
   readonly entry: CutoverEntry | undefined;
   readonly destination: Exclude<Destination, RelayDestination>;
   readonly failContext: FailContext;
+  /** The url scope the key read, as start-up's script protection leaves it. */
+  readonly urlScope: Record<string, string>;
+  /** Whether legacy's start-up scan fails on the request's url or form scope. */
+  readonly scanFailed: boolean;
 }
 
 /** Outcome of matching one request. */
@@ -125,6 +130,11 @@ const FORBIDDEN: BareDestination = Object.freeze({ kind: 'bare', status: 403 });
 
 function unavailable(reason: UnavailableReason): UnavailableDestination {
   return Object.freeze({ kind: 'unavailable', reason });
+}
+
+/** A halted request's entry: its unhalted key's entry on legacy, a writer as `legacy-write` so its write window still opens. */
+function haltedEntry(entry: CutoverEntry): CutoverEntry {
+  return Object.freeze({ ...entry, state: 'legacy', kind: entry.kind === 'write' ? 'legacy-write' : entry.kind });
 }
 
 /** Path and `?query` (or '') of a request target. */
@@ -228,9 +238,10 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         };
       }
 
-      const keyRequest: RouteKeyRequest = {
+      const keyRequest: ScannedRouteKeyRequest = {
         method: request.method,
         path,
+        url: request.url,
         query: queryOf(search),
         form: body.form,
         jsonBody: body.json,
@@ -238,17 +249,22 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         headers: stripInboundAuthHeaders(request.headers, { afterExchange: false }),
         multipartFileNames: body.files,
       };
-      const result = routeKeyForRequest(keyRequest, options);
+      const { result: keyed, urlScope, scanFailed, unhalted } = scannedRouteKey(keyRequest, options);
+      // A key the halt variant replaced has no entry, so legacy serves the request as its unhalted key's legacy entry would.
+      const result = unhalted ?? keyed;
       const routed = (entry: CutoverEntry | undefined, destination: RoutedOutcome['destination']): RoutedOutcome => ({
         result,
         entry,
         destination,
         failContext: failContextFor(result, request.url),
+        urlScope,
+        scanFailed,
       });
 
       if (index === undefined) return routed(undefined, unavailable('no-active-version'));
       const route = matchRouteKey(result, index.matchKeys);
-      const entry = route === undefined ? undefined : index.entryFor(route);
+      const matched = route === undefined ? undefined : index.entryFor(route);
+      const entry = matched !== undefined && unhalted !== undefined ? haltedEntry(matched) : matched;
       if (entry === undefined) return routed(undefined, LEGACY);
       // The legacy bridge is reachable only from the gateway and migration, never through the edge.
       if (entry.owningService === 'gateway') return routed(entry, NOT_FOUND);

@@ -87,6 +87,16 @@ function jarRow(cookies: JarCookies): JarRow {
 
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 25));
 
+/** The url scope the fake matcher reports for a request target: repeated names comma-joined. */
+function urlScopeOf(url: string): Record<string, string> {
+  const scope = new Map<string, string>();
+  for (const [name, value] of new URLSearchParams(url.split('?')[1] ?? '')) {
+    const previous = scope.get(name);
+    scope.set(name, previous === undefined ? value : `${previous},${value}`);
+  }
+  return Object.fromEntries(scope);
+}
+
 /** `active: null` starts the gateway with no active version. */
 async function harness(opts: { active?: RoutingIndex | null; facts?: Record<string, RouteFacts> } = {}): Promise<Harness> {
   const facts = opts.facts ?? {};
@@ -142,7 +152,7 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
         : ({ owningService: 'people', tableVersion: 'v0001', state: 'legacy', units: [], disposition: 'carry', ...s.entry } as CutoverEntry);
     const destination: Exclude<Destination, { kind: 'relay' }> =
       index === undefined ? { kind: 'unavailable', reason: 'no-active-version' } : destinations[s.destination];
-    return { result, entry, destination, failContext: failContextFor(result, url) };
+    return { result, entry, destination, failContext: failContextFor(result, url), urlScope: urlScopeOf(url), scanFailed: false };
   };
 
   const deps: DispatcherDeps = {

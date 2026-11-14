@@ -53,6 +53,8 @@ let handle: ThrowawaySchema;
 let stateDir: string;
 let app: FastifyInstance;
 let deps: DomainDeps;
+/** The `message` of every log line the service writes. */
+const logMessages: string[] = [];
 
 /** A tenant-a anonymous visitor's token, as identity mints one for the gateway, with the gateway's invocation credential. */
 async function visitorHeaders(site = SITE): Promise<Record<string, string>> {
@@ -137,7 +139,12 @@ describe.skipIf(!(await pgAvailable()))('commentsProxy routes', () => {
       clock,
       verifierOverride: testVerifier(SERVICE),
       pool: db,
-      logger: createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+      logger: createLogger({
+        service: SERVICE,
+        version: '1.0.0',
+        env: 'local',
+        destination: { write: (line: string) => void logMessages.push(String((JSON.parse(line) as { message?: unknown }).message)) },
+      }),
     });
     registerCommentsProxyRoutes(app, { domain: deps });
     await app.ready();
@@ -177,6 +184,10 @@ describe.skipIf(!(await pgAvailable()))('commentsProxy routes', () => {
     ['an argumentCollection member below the url', `?method=get&commentID=${COMMENT}&argumentCollection=${encodeURIComponent(JSON.stringify({ commentID: FLAGGED }))}`, undefined, COMMENT],
     ['an argumentCollection member alone', `?method=get&argumentCollection=${encodeURIComponent(JSON.stringify({ COMMENTID: 'x', commentid: FLAGGED }))}`, undefined, FLAGGED],
     ['invocation fields and `_` names ColdFusion leaves unbound', `?method=get&commentID=${COMMENT}&returnFormat=json&queryformat=row&_=1&_cf_nodebug=true`, undefined, COMMENT],
+    // Own oracle: `?method=get&commentID=%20abc%20` binds `abc`, and `&1bad=v` binds nothing where `&zz=v` fails the call.
+    ['a padded url commentID, trimmed by the start-up scan', `?method=get&commentID=%20${COMMENT}%20`, undefined, COMMENT],
+    ['a padded form commentID, trimmed by the start-up scan', '', `method=get&commentID=%20${COMMENT}%20`, COMMENT],
+    ['a url name the start-up scan drops', `?method=get&commentID=${COMMENT}&1bad=v`, undefined, COMMENT],
   ])('binds %s as ColdFusion does', async (_label, query, form, commentId) => {
     const res = await call(form === undefined ? 'GET' : 'POST', query, form === undefined ? {} : { payload: form });
     expect(res.statusCode).toBe(200);
@@ -188,6 +199,16 @@ describe.skipIf(!(await pgAvailable()))('commentsProxy routes', () => {
     const res = await call('GET', `?method=get&argumentCollection=${encodeURIComponent('{"commentID":true}')}`);
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain('"commentid":"YES"');
+  });
+
+  // Own oracle: `commentID=<script>x</script>abc` and argumentCollection `{"commentID":"<script>x</script>a"}` bind `[INVALID]abc` and `[INVALID]a`.
+  it.each<[string, string, string]>([
+    ['a url value', `?method=get&commentID=${encodeURIComponent('<script>x</script>ABC')}`, '[INVALID]ABC'],
+    ['an argumentCollection member', `?method=get&argumentCollection=${encodeURIComponent('{"commentID":"<script>x</script>a"}')}`, '[INVALID]a'],
+  ])('binds %s with its script neutralised by the start-up scan', async (_label, query, commentId) => {
+    const res = await call('GET', query);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(`"commentid":"${commentId}"`);
   });
 
   it('answers get of an unknown comment with a new bean holding the id', async () => {
@@ -255,6 +276,23 @@ describe.skipIf(!(await pgAvailable()))('commentsProxy routes', () => {
     expect(res.statusMessage).toBe('An Error Occurred');
     expect(res.headers['content-type']).toBe('text/html;charset=UTF-8');
     expect(res.body).toBe(LEGACY_ERROR_PAGE_HTML);
+    expect(await flagCount(COMMENT)).toBe(before);
+  });
+
+  // Own oracle: `?method=get&commentID=null` fails the unguarded start-up scan with the error page. The service kit's
+  // scan hook answers it on this root-served path, logging the failure, before the route runs.
+  it.each<[string, 'GET' | 'POST', string, string | undefined]>([
+    ['a url value', 'GET', '?method=flag&commentID=null', undefined],
+    ['a form value', 'POST', '', `method=flag&commentID=${COMMENT}&siteid=null`],
+  ])('answers %s the start-up scan fails on with the service kit’s error page and no write', async (_label, method, query, form) => {
+    const before = await flagCount(COMMENT);
+    logMessages.length = 0;
+    const res = await call(method, query, form === undefined ? {} : { payload: form });
+    expect(res.statusCode).toBe(500);
+    expect(res.statusMessage).toBe('An Error Occurred');
+    expect(res.headers['content-type']).toBe('text/html;charset=UTF-8');
+    expect(res.body).toBe(LEGACY_ERROR_PAGE_HTML);
+    expect(logMessages).toContain('script protection scan failed');
     expect(await flagCount(COMMENT)).toBe(before);
   });
 

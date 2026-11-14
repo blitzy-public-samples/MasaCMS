@@ -1,6 +1,7 @@
 // The `cchain.delete` post action: the strategies-content chain delete, then FW/1's redirect to the list (server-only).
 import { esapiUrlEncode } from '@opt2/platform/legacy-compat';
 import { okBody } from '@/lib/gateway-client';
+import { relayContext } from '@/lib/request-context';
 import type { ScreenContext, SubmitResult } from '../registry';
 
 const SERVICE = 'strategies-content';
@@ -20,11 +21,12 @@ const LIST_REDIRECT = Object.freeze({
 const takesRedirect = (status: number): boolean => status !== 401 && status !== 403 && status < 500;
 
 /** Relays `rc` to the owner's chain delete, which deletes only on a valid token, then redirects to `cchain.list`. */
-export async function submitCchainDelete({ req: { rc }, gateway }: ScreenContext): Promise<SubmitResult> {
+export async function submitCchainDelete({ req, gateway }: ScreenContext): Promise<SubmitResult> {
+  const { rc } = req;
   // Every rc field travels as received (siteid untrimmed, the CSRF pair included); the service consumes the token.
   const response = await gateway.strategiesContent.call('post', DELETE_PATH, {
     params: { siteid: rc.siteid ?? '', chainid: rc.chainid ?? '' },
-    form: Object.entries(rc),
+    form: Object.entries(relayContext(req)),
   });
   if (!takesRedirect(response.status)) okBody(response, SERVICE, OPERATION);
   if (response.location !== undefined) return { kind: 'location', location: response.location };

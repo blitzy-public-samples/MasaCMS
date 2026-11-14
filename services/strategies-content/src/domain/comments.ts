@@ -16,6 +16,7 @@ import {
   cfToBoolean,
   cfToNumber,
   cfUuid,
+  cfVal,
   javaTrim,
 } from '@opt2/platform/legacy-compat';
 import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
@@ -558,12 +559,6 @@ class CfScope {
   text(key: string): string {
     return simpleText(this.get(key)) ?? '';
   }
-}
-
-/** CFML `Val`: the number the text starts with, else 0. */
-function cfVal(value: unknown): number {
-  const number = Number.parseFloat(simpleText(value) ?? '');
-  return Number.isFinite(number) ? number : 0;
 }
 
 /** CFML `ListFindNoCase(options, value)` as a filter: `value` when it equals an option ignoring case, else `fallback`. */

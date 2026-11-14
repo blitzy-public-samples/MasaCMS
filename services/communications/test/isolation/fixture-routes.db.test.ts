@@ -115,15 +115,35 @@ describe.skipIf(!available)(title, () => {
   it.each<[string, number, Call, { code: string; message: string }, string]>([
     ['a template name PostgreSQL cannot store', 400, { method: 'POST', url: TEMPLATES, body: NUL_TEMPLATE, headers: CSRF_HEADERS }, INVALID_PARAMETERS, 'request rejected: 22021'],
     ['an anonymous caller sending that name', 401, { method: 'POST', url: TEMPLATES, body: NUL_TEMPLATE, roles: null }, DENIED, 'request denied: authorization'],
-    // A NUL inside the value: the Portcullis trim of a url siteid removes a trailing one.
+    // A JSON body is not script-protected, so its NUL reaches the site lookup; the Portcullis scan drops a url one.
     [
       'an anonymous caller naming a site PostgreSQL cannot look up',
       400,
-      { method: 'GET', url: `${TEMPLATES}?siteid=nul-probe%00site`, roles: null },
+      { method: 'POST', url: TEMPLATES, body: { siteid: 'nul-probe\u0000site' }, roles: null },
       INVALID_PARAMETERS,
       'request rejected: 22021',
     ],
-    ['a sender naming a site PostgreSQL cannot look up', 400, { method: 'GET', url: `${TEMPLATES}?siteid=nul-probe%00site` }, INVALID_PARAMETERS, 'request rejected: 22021'],
+    [
+      'a sender naming a site PostgreSQL cannot look up',
+      400,
+      { method: 'POST', url: TEMPLATES, body: { siteid: 'nul-probe\u0000site' }, headers: CSRF_HEADERS },
+      INVALID_PARAMETERS,
+      'request rejected: 22021',
+    ],
+    [
+      'an anonymous caller naming a url site whose NUL the scan drops, leaving an unknown site',
+      400,
+      { method: 'GET', url: `${TEMPLATES}?siteid=nul-probe%00site`, roles: null },
+      INVALID_PARAMETERS,
+      'request rejected: invalidParameters',
+    ],
+    [
+      'a sender naming a url site whose NUL the scan drops, leaving an unknown site',
+      400,
+      { method: 'GET', url: `${TEMPLATES}?siteid=nul-probe%00site` },
+      INVALID_PARAMETERS,
+      'request rejected: invalidParameters',
+    ],
     [
       'a sender naming a site with a trailing NUL, trimmed to an unknown site',
       400,

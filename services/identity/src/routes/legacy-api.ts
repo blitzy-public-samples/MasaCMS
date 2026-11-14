@@ -19,18 +19,21 @@ import {
   deleteCookieLegacy,
   esapiUrlEncode,
   isCfUuid,
+  isJsonContentType,
   isValidVariableName,
   javaTrim,
   legacyErrorResponse,
+  legacyScopeParams,
   paramsWithoutMethod,
-  routeKeyForRequest,
+  scannedRouteKey,
   serializeResponse,
   serializeSaveResult,
   type ApiKeyHint,
   type ApiNameContext,
   type LegacyApiErrorType,
   type LegacyJsonSerializer,
-  type RouteKeyRequest,
+  type LegacyScopes,
+  type ScannedRouteKeyRequest,
   type SerializedLegacyResponse,
   type VariantDeclaration,
 } from '@opt2/platform/legacy-compat';
@@ -40,6 +43,7 @@ import {
   EnvValidationError,
   SERVICE_CALL_TIMEOUT_MS,
   legacyParamsOf,
+  legacyScopesOf,
   multipartFilesOf,
   sendLegacyResponse,
   z,
@@ -290,37 +294,12 @@ function scopeText(item: unknown): string {
   return String(item);
 }
 
-/** Scope names Portcullis refuses before a dot (Portcullis.cfc:604). */
-const CF_SCOPE_NAMES: readonly string[] = Object.freeze(['session', 'form', 'url', 'server', 'cgi', 'cookie', 'application', 'local']);
-
-/** Portcullis `isValidCFVariableName` (Portcullis.cfc:597-612). */
-function isValidCfVariableName(name: string): boolean {
-  if (name === '' || name.includes(' ')) return false;
-  if (name.includes('.') && CF_SCOPE_NAMES.includes(cfListFirst(name, '.').toLowerCase())) return false;
-  return /^[A-Za-z]/.test(name);
-}
-
-/** A parsed query or form body as a route-key scope, else an empty one; `scanned` leaves it as the default `scriptProtect` Portcullis scan does (Portcullis.cfc:113-127). */
-function scopeOf(source: unknown, scanned = false): Record<string, string | string[]> {
+/** A parsed query or body as sent, before start-up's scan, as a route-key scope, else an empty one. */
+function scopeOf(source: unknown): Record<string, string | string[]> {
   const scope = Object.create(null) as Record<string, string | string[]>;
   if (!isRecord(source)) return scope;
-  for (const [key, value] of Object.entries(source)) {
-    const text = Array.isArray(value) ? value.map(scopeText) : scopeText(value);
-    if (!scanned) {
-      scope[key] = text;
-      continue;
-    }
-    // A name CFML cannot hold is dropped; the rest lose `&amp;` and `amp;`, their values any NUL character.
-    if (!isValidCfVariableName(key)) continue;
-    const stripNul = (item: string): string => item.replace(/\0/g, '');
-    scope[key.replace(/&amp;/gi, '').replace(/amp;/gi, '')] = Array.isArray(text) ? text.map(stripNul) : stripNul(text);
-  }
+  for (const [key, value] of Object.entries(source)) scope[key] = Array.isArray(value) ? value.map(scopeText) : scopeText(value);
   return scope;
-}
-
-function isJsonRequest(request: FastifyRequest): boolean {
-  const contentType = request.headers['content-type'];
-  return typeof contentType === 'string' && contentType.slice(0, 16).toLowerCase() === 'application/json';
 }
 
 /** The first value of header `name`. */
@@ -338,14 +317,27 @@ function clientHeadersOf(request: FastifyRequest): FastifyRequest['headers'] {
   return headers;
 }
 
-/** The request facts the shared route key is derived from, url, form and JSON body kept apart as legacy reads them. */
-function routeKeyRequestOf(request: FastifyRequest, headers: FastifyRequest['headers']): RouteKeyRequest {
-  const json = isJsonRequest(request);
+/** Posted fields as sent, less their file parts, which the key reads as `multipartFileNames` as the gateway's body read leaves them. */
+function sentFormOf(body: unknown): Record<string, string | string[]> {
+  const fields = Object.create(null) as Record<string, unknown[]>;
+  if (isRecord(body)) {
+    for (const [key, value] of Object.entries(body)) {
+      const parts = (Array.isArray(value) ? value : [value]).filter((part) => !isRecord(part) || part.type !== 'file');
+      if (parts.length > 0) fields[key] = parts;
+    }
+  }
+  return scopeOf(fields);
+}
+
+/** The request as sent, which the shared scanned route key reads: its target, url and form scopes before the scan, JSON body and file names. */
+function sentKeyRequestOf(request: FastifyRequest, headers: FastifyRequest['headers']): ScannedRouteKeyRequest {
+  const json = isJsonContentType(request.headers['content-type']);
   return {
     method: request.method,
     path: pathOf(request),
-    query: scopeOf(request.query, true),
-    form: json ? {} : scopeOf(request.body, true),
+    url: request.url,
+    query: scopeOf(request.query),
+    form: json ? {} : sentFormOf(request.body),
     jsonBody: json ? request.body : undefined,
     headers,
     multipartFileNames: multipartFilesOf(request).map(({ field, filename }) => ({ field, filename })),
@@ -362,11 +354,11 @@ function queryStringOf(request: FastifyRequest): string {
   return at < 0 ? '' : request.url.slice(at + 1);
 }
 
-/** Every `siteid` the request supplies, as the CFML scopes hold them: url, form, then a JSON body. */
-function suppliedSiteIds(keyed: RouteKeyRequest): string[] {
-  const json = isRecord(keyed.jsonBody) ? scopeOf(keyed.jsonBody) : {};
+/** Every `siteid` the request supplies, as the scanned CFML scopes hold them: url, form, then a JSON body. */
+function suppliedSiteIds(scopes: LegacyScopes): string[] {
+  const json = isRecord(scopes.jsonBody) ? scopeOf(scopes.jsonBody) : {};
   const sources: string[] = [];
-  for (const scope of [keyed.query, keyed.form ?? {}, json]) {
+  for (const scope of [legacyScopeParams(scopes.url), legacyScopeParams(scopes.form), json]) {
     for (const [name, value] of Object.entries(scope)) {
       if (name.toLowerCase() === 'siteid') sources.push(Array.isArray(value) ? value.join(',') : value);
     }
@@ -507,7 +499,7 @@ interface ApiCall {
   deps: LegacyApiRouteDeps;
   /** The merged, resolved request params, lower-cased names, simple values. */
   params: Record<string, string>;
-  /** The url scope as the request sent it. */
+  /** The url scope as start-up's scan leaves it, less the reload key processRequest deletes. */
   url: Struct;
   caller: Caller;
   /** REST mode is sessionless: `request.muraSessionManagement` is false (applicationSettings.cfm:179). */
@@ -2245,11 +2237,11 @@ function eventSiteOf(call: ApiCall, siteValue: CfValue): string {
   return own === null || own === undefined ? call.siteId : simpleArgument(own);
 }
 
-/** fileManager `isPostedFile(name)`: a posted form field whose value's last `.` item is tmp or upload, as a file field's is, or such a name (fileManager.cfc:651-654). */
+/** fileManager `isPostedFile(name)`: a field of the scanned form with params appended (jsonApiUtility.cfc:845) whose value's last `.` item is tmp or upload, or such a name (fileManager.cfc:651-654). */
 function isPostedFile(call: ApiCall, name: string): boolean {
   const upload = (text: string): boolean => listHasNoCase(['tmp', 'upload'], cfListLast(text, '.'));
   if (upload(name) || multipartFilesOf(call.request).some(({ field }) => cfEq(field, name))) return true;
-  const posted = valueOf(scopeOf(call.request.body), name);
+  const posted = requestParam(call.request, name);
   return posted !== undefined && upload(Array.isArray(posted) ? posted.join(',') : String(posted));
 }
 
@@ -2557,12 +2549,13 @@ async function validateEmailMethod(call: ApiCall): Promise<SerializedLegacyRespo
   return { status: 200, headers: { 'Content-Type': LEGACY_JSON_CONTENT_TYPE }, body };
 }
 
-/** The REST credential block's own answer for `oauth`, `oauth2` and `tokeninfo` (jsonApiUtility.cfc:422-835). */
-async function oauthAnswer(call: ApiCall, headers: FastifyRequest['headers']): Promise<SerializedLegacyResponse> {
+/**
+ * The REST credential block's own answer for `oauth`, `oauth2` and `tokeninfo` (jsonApiUtility.cfc:422-835).
+ * @param query The url scope as the route key read it, less the reload key.
+ */
+async function oauthAnswer(call: ApiCall, headers: FastifyRequest['headers'], query: Record<string, string>): Promise<SerializedLegacyResponse> {
   const flat: Record<string, string | undefined> = {};
   for (const name of Object.keys(headers)) flat[name] = headerValue(headers, name);
-  const query: Record<string, string> = {};
-  for (const [name, value] of Object.entries(scopeOf(call.request.query, true))) query[name] = Array.isArray(value) ? value.join(',') : value;
   const input: RestAuthInput = {
     path: pathOf(call.request).replace(/^\/index\.cfm(?=\/|$)/i, ''),
     httpMethod: call.request.method,
@@ -2706,13 +2699,14 @@ export async function registerLegacyApiRoutes(app: FastifyInstance, deps: Legacy
     const registry = new Map((await registryOf(request)).map((entry) => [entry.siteId.toLowerCase(), entry]));
     const lookup = (siteId: string): RegisteredSite | undefined => registry.get(siteId.toLowerCase());
     const headers = clientHeadersOf(request);
-    const keyed = routeKeyRequestOf(request, headers);
-    const key = routeKeyForRequest(keyed, {
+    const { result: key, urlScope } = scannedRouteKey(sentKeyRequestOf(request, headers), {
       siteExists: (siteId) => lookup(siteId) !== undefined,
       variants: GROUP_SAVE_VARIANTS,
       context: settings.context,
       appReloadKey: settings.appReloadKey,
     });
+    // processRequest deletes the reload key, which the scan can add as a stripped name, from the url scope (jsonApiUtility.cfc:403).
+    deleteIn(urlScope, settings.appReloadKey);
     const { params } = key;
     const restMode = key.family === 'rest';
     const methodCtx: ApiNameContext = {
@@ -2730,7 +2724,7 @@ export async function registerLegacyApiRoutes(app: FastifyInstance, deps: Legacy
     if (user !== undefined) {
       assertSiteMatches(apiSiteId, user);
       // An unregistered siteid only selects the `default` fallback; a registered one must be the token's site.
-      for (const supplied of suppliedSiteIds(keyed)) {
+      for (const supplied of suppliedSiteIds(legacyScopesOf(request))) {
         if (lookup(supplied) !== undefined) assertSiteMatches(supplied, user);
       }
     }
@@ -2745,7 +2739,7 @@ export async function registerLegacyApiRoutes(app: FastifyInstance, deps: Legacy
       reply,
       deps,
       params,
-      url: Object.fromEntries(Object.entries(scopeOf(request.query, true)).map(([name, value]) => [name, Array.isArray(value) ? value.join(',') : value])),
+      url: urlScope,
       caller: callerOf(user),
       restMode,
       apiSite,
@@ -2760,7 +2754,7 @@ export async function registerLegacyApiRoutes(app: FastifyInstance, deps: Legacy
     try {
       const failure = RESOLUTION_ERRORS.get(body);
       if (failure !== undefined) throw new LegacyApiError(failure, { method: params.method, methodCtx });
-      if (restMode && OAUTH_KEYS.has(body)) return sendLegacyResponse(reply, await oauthAnswer(call, headers));
+      if (restMode && OAUTH_KEYS.has(body)) return sendLegacyResponse(reply, await oauthAnswer(call, headers, urlScope));
       if (key.variant !== undefined) return notFound();
       // A REST request reaches a method only after its credentials were exchanged for a session token.
       if (restMode && user === undefined) {

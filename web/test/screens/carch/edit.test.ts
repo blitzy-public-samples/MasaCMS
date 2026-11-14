@@ -1029,6 +1029,8 @@ describe('url.formType', () => {
     ['joins repeated names as the URL scope does', '/admin/?formType=builder&FormType=editor', {}, 'builder,editor'],
     ['is undefined for a target without a query', '/admin/', { formType: 'editor' }, undefined],
     ['keeps an empty value', '/admin/?muraAction=cArch.edit&formtype=', {}, ''],
+    ['trims a padded value as the start-up scan does', '/admin/?formType=%20editor%20', {}, 'editor'],
+    ['filters markup as the start-up scan does', '/admin/?formType=%3Cscript%3Ex%3C%2Fscript%3E', {}, '[INVALID]'],
     ['is the request value without the header, unless posted', null, {}, 'editor'],
     ['is undefined without the header for a posted value', null, { formType: 'editor' }, undefined],
   ])('%s', (_label, target, formScope, expected) => {

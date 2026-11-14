@@ -1,6 +1,7 @@
 // cperm.updatemodule: replaces a module's group grants through identity, then redirects by module (server-only).
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, cfEq } from '@opt2/platform/legacy-compat';
 import { okBody } from '@/lib/gateway-client';
+import { relayField } from '@/lib/request-context';
 import type { Rc, RedirectScreen, ScreenContext, SubmitResult } from '../registry';
 import { CONTENT_MODULE_ID, TOP_NODE_ID, cpermDefaults, cpermGate } from './partials';
 
@@ -61,10 +62,7 @@ export function moduleRedirect(rc: Rc): ModuleRedirect {
 async function submitUpdateModule({ req, gateway }: ScreenContext): Promise<SubmitResult> {
   const rc = cpermDefaults(req.rc);
   // Values as received: the checked `groupid`s arrive comma-joined, and an empty list clears the module's grants.
-  const form = FORM_FIELDS.flatMap((name): Array<[string, string]> => {
-    const value = rc[name];
-    return value === undefined ? [] : [[name, value]];
-  });
+  const form = FORM_FIELDS.flatMap((name) => Object.entries(relayField(req, name, rc)));
   const response = await gateway.identity.call('put', '/v1/permissions/modules/{moduleId}', {
     params: { moduleId: rc.contentid ?? '' },
     form,

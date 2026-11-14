@@ -1,4 +1,5 @@
 import { assertNotDenied, type GatewayResponse } from '@/lib/gateway-client';
+import { relayContext } from '@/lib/request-context';
 import type { FragmentScreen, RawBody, ScreenContext } from '@/screens/registry';
 
 const TAG_ARRAY_PATH = '/v1/raw/cchangesets/loadtagarray';
@@ -21,7 +22,7 @@ export const changesetLoadTagArrayScreen: Omit<FragmentScreen, 'gate'> = Object.
   async render(ctx: ScreenContext): Promise<RawBody> {
     // Every rc field, `siteid` included, travels as a url field as the contract's form-exploded params declare.
     const response = await ctx.gateway.strategiesContent.raw('get', TAG_ARRAY_PATH, {
-      query: { params: { ...ctx.req.rc } },
+      query: { params: { ...relayContext(ctx.req) } },
     });
     assertNotDenied(response, 'strategies-content', `GET ${TAG_ARRAY_PATH}`);
     return { status: response.status, contentType: contentTypeOf(response), body: response.body };

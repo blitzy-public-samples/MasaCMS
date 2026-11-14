@@ -121,7 +121,7 @@ export function fixtureMethod(resource: string, action?: string, tail?: string):
   return parts.join('.').toLowerCase();
 }
 
-/** Request params merged as api.cfm merges url, form and a JSON object body: later sources win, keys ignoring case. */
+/** Request params merged as api.cfm merges Masa's script-protected url and form scopes and an unscanned JSON object body: later sources win, keys ignoring case. */
 export function fixtureParams(request: FastifyRequest): Record<string, unknown> {
   // The platform's one merge; unlike ACF deserializeJSON it hands JSON numbers and booleans over as strings,
   // so a check that depends on a JSON value's type reads the raw body.

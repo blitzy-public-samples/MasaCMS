@@ -3,6 +3,7 @@ import { LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
 import { decodeServiceBody } from '@opt2/platform/service-kit';
 import type { components } from '@/generated/clients/strategies-content';
 import { assertNotDenied, type GatewayResponse } from '@/lib/gateway-client';
+import { relayContext } from '@/lib/request-context';
 import { NO_CACHE_HEADERS, REDIRECT_HEADERS } from '@/lib/responses';
 import { loadShellData, renderAdminDocument, serializeAdminDocument } from '@/shell/document';
 import type { FragmentScreen, RawBody, ScreenContext } from '../registry';
@@ -26,13 +27,13 @@ const mediaTypeOf = (contentType: string): string => (contentType.split(';')[0] 
 
 /** The service's answer for the rc as cfeed `before()` leaves it: url fields on a GET, the form on a POST. */
 function relay(ctx: ScreenContext): Promise<GatewayResponse<Buffer>> {
-  const { rc } = ctx.req;
+  const fields = relayContext(ctx.req);
   const service = ctx.gateway.strategiesContent;
   // AdminRequest carries no method; only a POST carries a body. The CSRF pair travels with the rc fields it came in.
-  if (ctx.body === undefined) return service.raw('get', PATH, { query: { params: { ...rc } } });
+  if (ctx.body === undefined) return service.raw('get', PATH, { query: { params: { ...fields } } });
   return service.raw('post', PATH, {
-    query: rc.siteid === undefined ? {} : { siteid: rc.siteid },
-    form: Object.entries(rc),
+    query: fields.siteid === undefined ? {} : { siteid: fields.siteid },
+    form: Object.entries(fields),
   });
 }
 

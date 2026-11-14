@@ -228,6 +228,7 @@ describe('renderHtmlHead', () => {
     ['30', 'var sessionTimeout=1800;'],
     ['1.5', 'var sessionTimeout=90;'],
     ['0.25', 'var sessionTimeout=15;'],
+    ['1e3', 'var sessionTimeout=60000;'],
   ])('prints sessionTimeout %s minutes as seconds', (minutes, line) => {
     useSettings({ MURA_SESSIONTIMEOUT: minutes });
     expect(globals(portHead(anonymousRequest()))).toContain(line);

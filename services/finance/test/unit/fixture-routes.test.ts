@@ -393,6 +393,56 @@ describe.skipIf(!available)('finance fixture routes', () => {
     expect(consumed.every(({ sessionId }) => sessionId.length > 0)).toBe(true);
   });
 
+  describe.each([
+    ['create', 1],
+    ['edit', 2],
+  ] as const)('Masa Portcullis scan on the %s route', (mode, version) => {
+    const FIELDS = { title: 'P', amount: '1', period: '2027-03' };
+    const UNTITLED = { amount: '1', period: '2027-03' };
+
+    /** A preparer's `mode` write with `query` as its query string and `fields` as a form or JSON body. */
+    async function write(body: 'form' | 'json', query: Record<string, string>, fields: Record<string, string>): Promise<Injected> {
+      const route = mode === 'create' ? '/records' : `/records/${(await createRecord()).record_id}/edit`;
+      const search = Object.entries(query).map(([key, value]) => `${key}=${encodeURIComponent(value)}`);
+      const headers = { ...(await headersFor(PREPARER)), ...CSRF, 'content-type': body === 'form' ? 'application/x-www-form-urlencoded' : 'application/json' };
+      const payload = body === 'form' ? new URLSearchParams(fields).toString() : JSON.stringify(fields);
+      return app.inject({ method: 'POST', url: `${P}${route}${search.length === 0 ? '' : `?${search.join('&')}`}`, headers, payload });
+    }
+
+    /** The stored record row of `id` and its version row at `version`. */
+    async function storedRows(id: string): Promise<Record<string, unknown>[]> {
+      return handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
+        const record = await tx.query(`SELECT title, amount::text, period FROM ${handle.schema}.record WHERE record_id = $1`, [id]);
+        const versions = await tx.query(
+          `SELECT title, amount::text, period, action FROM ${handle.schema}.record_version WHERE record_id = $1 AND version = $2`,
+          [id, version],
+        );
+        return [...record.rows, ...versions.rows];
+      });
+    }
+
+    it.each<[string, 'form' | 'json', Record<string, string>, Record<string, string>, string]>([
+      ['a space-padded form title', 'form', {}, { ...FIELDS, title: '  Padded title  ' }, 'Padded title'],
+      ['a tab- and newline-padded form title', 'form', {}, { ...FIELDS, title: '\tTabbed\n' }, 'Tabbed'],
+      ['a space-padded form period', 'form', {}, { ...FIELDS, period: ' 2027-03 ' }, 'P'],
+      ['a padded query-string title', 'form', { title: '  Query title  ' }, UNTITLED, 'Query title'],
+      ['a query-string script title and padded period', 'form', { title: '<script>alert(1)</script>', period: ' 2027-03 ' }, { amount: '1' }, '[INVALID]'],
+      ['a form script tag', 'form', {}, { ...FIELDS, title: '<script>alert(1)</script>' }, '[INVALID]'],
+      ['a form iframe tag', 'form', {}, { ...FIELDS, title: '<iframe src=x></iframe>' }, '[INVALID]'],
+      ['a form onerror attribute', 'form', {}, { ...FIELDS, title: '<img src=x onerror=alert(1)>' }, '<img src=x [INVALID]=alert(1)>'],
+      ['a form javascript: scheme', 'form', {}, { ...FIELDS, title: 'javascript:alert(1)' }, '[INVALID]alert(1)'],
+      ['a form object tag', 'form', {}, { ...FIELDS, title: '<object data=x>' }, '[INVALID]'],
+      ['a padded, script-bearing JSON title', 'json', {}, { ...FIELDS, title: '  <script>x</script>  ' }, '  <script>x</script>  '],
+      ['a padded query-string title beside a JSON body', 'json', { title: '  Query title  ' }, UNTITLED, 'Query title'],
+    ])('answers and stores %s as legacy leaves it', async (_case, body, query, fields, title) => {
+      const stored = { title, amount: '1.0000', period: FIELDS.period };
+      const res = await write(body, query, fields);
+      const { data } = res.json<{ data: { record_id: string } }>();
+      expect([res.statusCode, data]).toMatchObject([200, { ...stored, version }]);
+      expect(await storedRows(data.record_id)).toStrictEqual([stored, { ...stored, action: mode }]);
+    });
+  });
+
   it('stores the multipart file part, lists its metadata and downloads its bytes exactly', async () => {
     const { record_id: id } = await createRecord();
     const stored = await upload(id, multipart('FILE', 'scan é.pdf'));

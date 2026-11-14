@@ -1,6 +1,7 @@
 // The ccomments moderation actions: a strategies-content write, then FW/1's redirect to the manager (server-only).
 import { esapiUrlEncode } from '@opt2/platform/legacy-compat';
 import { okBody } from '@/lib/gateway-client';
+import { relayContext } from '@/lib/request-context';
 import type { RedirectScreen, ScreenContext, SubmitResult } from '../registry';
 import { CCOMMENTS_OWNER, ccommentsGate, commentsSiteId } from './shared';
 
@@ -53,7 +54,7 @@ async function submitWrite({ req, gateway }: ScreenContext, operation: CommentOp
   const commentid = req.rc['commentid'];
   const service = gateway.strategiesContent;
   // Nothing here consumes a CSRF token: the controller validates none, so any token travels as an ordinary field.
-  const form = Object.entries(req.rc);
+  const form = Object.entries(relayContext(req));
   let response;
   if (operation === PURGE_OPERATION) {
     response = await service.call('post', PURGE_PATH, { params: { siteid }, form });

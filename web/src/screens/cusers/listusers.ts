@@ -4,6 +4,7 @@ import type { components } from '@/generated/clients/people';
 import { cfEq } from '@/lib/cfml';
 import { okBody } from '@/lib/gateway-client';
 import { encodeUrl, html, join, raw, type SafeHtml } from '@/lib/html';
+import { relayFields } from '@/lib/request-context';
 import { buildUrl } from '@/lib/urls';
 import type { PageScreen, ScreenContext } from '../registry';
 import { cusersGate, normaliseCusersRc, type CusersRc } from './gate';
@@ -87,13 +88,13 @@ export async function loadListUsers(ctx: ScreenContext): Promise<ListUsersData> 
   const rc = normaliseCusersRc(ctx.req);
   // `siteid=all` is sent as is: people's contract takes `all` for the controller's empty site id (every site) and
   // rejects an empty one, so only the view's `rc.siteid` is blanked below.
-  const query = {
+  const query = relayFields(ctx.req, {
     siteid: rc.siteid,
     ispublic: rc.ispublic,
     unassigned: rc.unassigned,
     startrow: String(rc.startRow),
     recordsperpage: String(rc.recordsperpage),
-  };
+  });
   const page = okBody(await ctx.gateway.people.call('get', '/v2/users', { query }), 'people', 'listUsersV2');
   const nextn = nextNOf(page.nextn);
   const pageIndex = legacyPageIndex(nextn.startRow, nextn.recordsPerPage, nextn.totalRecords);

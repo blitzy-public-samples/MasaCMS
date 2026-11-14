@@ -2,9 +2,9 @@
 /** Port of legacy-fixtures/cfml/lib/auth.cfc over the verified user token: site resolution, login, role-group, CSRF and task-token checks. */
 import { timingSafeEqual } from 'node:crypto';
 import { hasAnyRole, Roles, SYNTHETIC_ROLES, type UserClaims } from '@opt2/platform/auth';
-import { javaTrim, LegacyApiError } from '@opt2/platform/legacy-compat';
+import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import { sha256Hex } from '@opt2/platform/migration-kit';
-import { csrfPreHandler, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
+import { csrfPreHandler, legacyScopesOf, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import { FixtureApiError, type FixtureParams } from './fixture-envelope.js';
 
 /** The fixture role group names, in auth.cfc and role-map.json order. */
@@ -27,18 +27,6 @@ function siteParam(params: FixtureParams): unknown {
   return key === undefined ? undefined : params[key];
 }
 
-/** The `siteid` param: a JSON-body value as sent, a url or form value trimmed as Masa's Portcullis scan trims it. */
-function suppliedSite(request: FastifyRequest, params: FixtureParams): unknown {
-  const supplied = siteParam(params);
-  const body: unknown = request.body;
-  const fromJson =
-    request.headers['content-type']?.slice(0, 16).toLowerCase() === 'application/json' &&
-    typeof body === 'object' &&
-    body !== null &&
-    siteParam(body as FixtureParams) !== undefined;
-  return typeof supplied === 'string' && !fromJson ? javaTrim(supplied) : supplied;
-}
-
 /**
  * Returns the registered id of `siteid`, else of the token's site, else of `default`; throws invalidParameters for a
  * non-string or unknown site, then forbidden when the verified user's token is for another site.
@@ -50,7 +38,8 @@ export async function resolveSite(
   lookup: FixtureSiteLookup,
 ): Promise<string> {
   const user = verifiedUser(request);
-  const supplied = suppliedSite(request, params) ?? '';
+  // legacyParamsOf already holds a url or form siteid as Masa's start-up scan leaves it, trimmed; a JSON-body siteid as sent.
+  const supplied = siteParam(params) ?? '';
   // auth.cfc falls back to the session's site, then to default; the token's site stands for the session's.
   const siteid = supplied === '' ? user?.site || 'default' : supplied;
   const registered = typeof siteid === 'string' ? await lookup.registeredSite(siteid) : undefined;
@@ -131,14 +120,12 @@ export function isSiteMember(request: FastifyRequest): boolean {
   return user !== undefined && (user.s2 || hasAnyRole(user.roles, [Roles.s2, Roles.systemUser, Roles.member]));
 }
 
-/** `url.opt2TaskToken` as ACF's url scope holds it: the query only, any case, the last spelling winning, repeats comma-joined; '' when absent. */
+/**
+ * `url.opt2TaskToken` as ACF's url scope holds it after Masa's start-up scan: the query only, repeats and spellings
+ * differing in case comma-joined in sent order, then script-protected (trimmed, NULs dropped); '' when absent.
+ */
 export function taskTokenOf(request: FastifyRequest): string {
-  const query = (request.query ?? {}) as Record<string, unknown>;
-  const key = Object.keys(query).findLast((name) => name.toLowerCase() === 'opt2tasktoken');
-  const value = key === undefined ? undefined : query[key];
-  if (Array.isArray(value)) {
-    return value.map(String).join(',');
-  }
+  const value = legacyScopesOf(request).url.entries.findLast(([name]) => name.toLowerCase() === 'opt2tasktoken')?.[1];
   return typeof value === 'string' ? value : '';
 }
 

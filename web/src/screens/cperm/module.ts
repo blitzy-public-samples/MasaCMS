@@ -3,7 +3,7 @@ import type { components as IdentitySchemas } from '@/generated/clients/identity
 import type { components as ContentSchemas } from '@/generated/clients/strategies-content';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtmlAttr, encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
-import type { RequestContext } from '@/lib/request-context';
+import { relayFields, type RequestContext } from '@/lib/request-context';
 import type { PageScreen, ScreenContext } from '../registry';
 import { cpermDefaults, cpermGate, renderBackNav, renderNoGroups } from './partials';
 
@@ -66,7 +66,7 @@ async function activeTitle(ctx: ScreenContext, siteid: string, contentid: string
 async function moduleGrants(ctx: ScreenContext, siteid: string, contentid: string): Promise<ModulePermissions> {
   const response = await ctx.gateway.identity.call('get', '/v1/permissions/modules/{moduleId}', {
     params: { moduleId: contentid },
-    query: { siteid },
+    query: relayFields(ctx.req, { siteid }),
   });
   return okBody(response, 'identity', 'getModulePermissions');
 }

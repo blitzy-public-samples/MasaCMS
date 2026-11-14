@@ -299,6 +299,8 @@ describe('normaliseCusersRc', () => {
     ['abc', 1],
     ['0', 1],
     ['-3', 1],
+    ['1e2', 1],
+    ['5E+1', 5],
   ])('reads startRow %s with Val as %d', (value, expected) => {
     expect(normaliseCusersRc(editorRequest({ rc: { startrow: value } })).startRow).toBe(expected);
   });
@@ -307,6 +309,7 @@ describe('normaliseCusersRc', () => {
     ['50', 50],
     ['0', 25],
     ['abc', 25],
+    ['1e1', 1],
   ])('reads recordsperpage %s with Val as %d', (value, expected) => {
     expect(normaliseCusersRc(editorRequest({ rc: { recordsperpage: value } })).recordsperpage).toBe(expected);
   });

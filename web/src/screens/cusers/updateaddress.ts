@@ -1,6 +1,7 @@
 // The `cUsers.updateAddress` action: relays the address write to people, then redirects as FW/1 does (server-only).
 import { cfEq } from '@opt2/platform/legacy-compat';
 import { okBody, type GatewayResponse } from '@/lib/gateway-client';
+import { relayContext } from '@/lib/request-context';
 import type { RedirectScreen, ScreenContext, SubmitResult } from '../registry';
 import { cusersGate } from './gate';
 
@@ -22,13 +23,14 @@ const EDIT_USER_REDIRECT: SubmitResult = Object.freeze({
 });
 
 /** Posts to people a multipart body as received with the action URL's fields, else every rc field URL-encoded. */
-function relayToPeople({ req: { rc }, gateway, body }: ScreenContext): Promise<GatewayResponse> {
+function relayToPeople({ req, gateway, body }: ScreenContext): Promise<GatewayResponse> {
+  const relayed = relayContext(req);
   if (body?.form instanceof FormData) {
-    const query = Object.fromEntries(ACTION_URL_FIELDS.map((name) => [name, rc[name]]));
+    const query = Object.fromEntries(ACTION_URL_FIELDS.map((name) => [name, relayed[name]]));
     return gateway.postMultipart('people', UPDATE_ADDRESS_PATH, body, { query });
   }
   // A GET (the Edit User delete link) or a URL-encoded post: rc holds the URL fields, the CSRF pair included.
-  return gateway.postForm('people', UPDATE_ADDRESS_PATH, Object.entries(rc));
+  return gateway.postForm('people', UPDATE_ADDRESS_PATH, Object.entries(relayed));
 }
 
 /** `cUsers.updateAddress`, posted by the Edit Address form or followed as a link. */

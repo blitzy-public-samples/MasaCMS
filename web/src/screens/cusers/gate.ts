@@ -1,5 +1,5 @@
 // The cUsers controller `before()`: the access gate and the request-context defaults every cUsers action reads (server-only).
-import { cfEq, cfIsBoolean, cfIsNumeric, cfListToArray, cfToBoolean, javaTrim } from '@opt2/platform/legacy-compat';
+import { cfEq, cfIsBoolean, cfIsNumeric, cfListToArray, cfToBoolean, cfVal, javaTrim } from '@opt2/platform/legacy-compat';
 import type { GateDecision, ScreenGate } from '@/lib/access-gate';
 import { administersRequestedSite, servesRequestedSite, type AdminRequest } from '@/lib/request-context';
 
@@ -126,12 +126,6 @@ function rcView(entries: RcEntries): CusersRc {
   }) as unknown as CusersRc;
 }
 
-/** CFML `Val`: the leading numeric prefix of `text`, else 0. */
-function cfmlVal(text: string): number {
-  const value = Number.parseFloat(text);
-  return Number.isFinite(value) ? value : 0;
-}
-
 /** A JSON boolean literal; the scan re-serializes a padded one as `"YES"` or `"NO"`, which is no boolean. */
 const JSON_BOOLEAN = /^(?:true|false)$/;
 
@@ -175,9 +169,9 @@ export function normaliseCusersRc(
   setEntry(rc, 'ispublic', (isAdmin ? scannedBoolean(entryText(rc, 'ispublic')) : undefined) ?? '1');
   setEntry(rc, 'unassigned', scannedBoolean(entryText(rc, 'unassigned')) ?? '0');
   setEntry(rc, 'unassignedlink', cfToBoolean(entryText(rc, 'unassigned')) ? 0 : 1);
-  const startRow = cfmlVal(entryText(rc, 'startRow'));
+  const startRow = cfVal(entryText(rc, 'startRow'));
   setEntry(rc, 'startRow', startRow < 1 ? 1 : startRow);
-  const recordsPerPage = cfmlVal(entryText(rc, 'recordsperpage'));
+  const recordsPerPage = cfVal(entryText(rc, 'recordsperpage'));
   setEntry(rc, 'recordsperpage', recordsPerPage < 1 ? 25 : recordsPerPage);
   return rcView(rc);
 }

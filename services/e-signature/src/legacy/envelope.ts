@@ -98,7 +98,7 @@ export function fixtureMethod(resource: string, action?: string): string {
   return parts.join('.').toLowerCase();
 }
 
-/** Request params merged as api.cfm merges url, form and a JSON object body: later sources win, keys ignoring case. */
+/** Request params merged as api.cfm merges url, form and a JSON object body, url and form as Masa's script protection leaves them: later sources win, keys ignoring case. */
 export function fixtureParams(request: FastifyRequest): Record<string, unknown> {
   return legacyParamsOf(request);
 }

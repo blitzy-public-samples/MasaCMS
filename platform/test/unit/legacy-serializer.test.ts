@@ -11,6 +11,7 @@ import {
   cfNumberString,
   cfToBoolean,
   cfToNumber,
+  cfVal,
   createApiSerializer,
   entityPropertyHint,
   legacyQuery,
@@ -202,6 +203,26 @@ describe('CFML predicates', () => {
 
   it.each(['abc', '\u00a05', '1.8e308', '1e309', '-1e400'])('cfToNumber rejects %j, which CFML cannot convert', (value) => {
     expect(() => cfToNumber(value)).toThrow(TypeError);
+  });
+
+  // Oracle: ACF 2023 `toString(Val(text))`, which prints 12 significant digits. A leading U+000B, which Val skips, kept the
+  // probe's text from reading as a JSON number to the URL scan. Non-text values read as their CFML text.
+  it.each<[unknown, string]>([
+    ['1e2', '1'], ['1E2', '1'], ['1e+2', '1'], ['1e', '1'], ['3e-2', '3'], ['2e-1', '2'], ['\u000b12.5e3', '12.5'],
+    ['12e3abc', '12'], ['1d2', '1'], ['1f', '1'], ['12abc', '12'], ['-12abc', '-12'], ['\u000b1.5abc', '1.5'], ['5%', '5'],
+    ['3-', '3'], ['1/2', '1'], [' 12', '12'], [' \t12', '12'], ['\r\n12', '12'], ['12 ', '12'], ['\u000112', '12'],
+    ['\u000012', '12'], ['12\u0000', '12'], ['\u00a012', '0'], ['\u200012', '0'], ['\u300012', '0'], ['\u008512', '0'],
+    ['12 34', '12'], ['12\t34', '12'], ['1 .5', '1'], ['+3', '3'], ['-3', '-3'], [' -3', '-3'], ['- 3', '0'], [' + 3', '0'],
+    ['+-3', '0'], ['--3', '0'], ['-+3', '0'], ['-0', '0'], ['.5', '0.5'], ['-.5', '-0.5'], ['+.5', '0.5'], ['1.', '1'],
+    ['-5.', '-5'], ['.', '0'], ['-.', '0'], ['+', '0'], ['-', '0'], ['..5', '0'], ['.5.5', '0.5'], ['1.5.3', '1.5'],
+    ['\u000b1.50', '1.5'], ['\u000b1.25', '1.25'], ['\u000b00.50', '0.5'], ['\u000b3.14159265358979', '3.14159265359'],
+    ['1,000', '1'], ['1_000', '1'], ['00012', '12'], ['08', '8'], ['0x10', '0'], ['0b11', '0'], ['Infinity', '0'],
+    ['NaN', '0'], ['', '0'], ['abc', '0'], ['$5', '0'], ['true', '0'], ['yes', '0'], ['\u0663', '0'], ['\u0967\u0968', '0'],
+    ['\uff11\uff12', '0'], ['99999999999999999999', '1E+020'], ['1234567890123456789', '1.23456789012E+018'],
+    [`\u000b1${'0'.repeat(308)}`, '1E+308'], [`\u000b1${'0'.repeat(309)}`, '0'],
+    [12, '12'], [-1.5, '-1.5'], [true, '0'], [null, '0'], [undefined, '0'], [{ a: 1 }, '0'], [['1'], '0'], [LOCAL, '0'],
+  ])('cfVal(%j) reads as ACF Val prints %s', (value, printed) => {
+    expect(Number(cfVal(value).toPrecision(12))).toBe(Number(printed));
   });
 
   it.each<[unknown, boolean]>([[LOCAL, true], [new Date(NaN), false], ['2026-01-02', false]])('cfIsDate(%j) is %s', (value, expected) => {

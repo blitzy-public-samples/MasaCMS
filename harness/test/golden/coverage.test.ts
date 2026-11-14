@@ -673,6 +673,29 @@ describe('coverageRouteKey', () => {
     expect(coverageRouteKey(request)).toBe(key);
   });
 
+  it.each<[string, Step, string]>([
+    ['a padded url method', step({ name: 's', route: '/_api/json/v1/tenant-a/?method=%20generateCSRFTokens%20' }), 'api:generatecsrftokens'],
+    ['a url method holding a NUL', step({ name: 's', route: '/_api/json/v1/tenant-a/?method=generate%00CSRFTokens' }), 'api:generatecsrftokens'],
+    ['an amp;-prefixed url method', step({ name: 's', route: '/_api/json/v1/tenant-a/?amp;method=generateCSRFTokens' }), 'api:generatecsrftokens'],
+    ['a script-bearing admin action', step({ name: 's', route: '/admin/?muraAction=cUsers.list%3Cscript%3Ex%3C/script%3E' }), 'admin:cusers.list[invalid]'],
+    ['a padded posted admin action', step({ name: 's', method: 'POST', route: '/admin/index.cfm', form: { muraAction: ' cUsers.list ' } }), 'admin:cusers.list'],
+    [
+      'a JSON body, as sent',
+      step({ name: 's', method: 'POST', route: '/_api/json/v1/tenant-a/', body: { method: ' generateCSRFTokens ' } }),
+      'api:entity.save',
+    ],
+    ['a url scan fault, untrimmed', step({ name: 's', route: '/_api/json/v1/tenant-a/?method=%20generateCSRFTokens&x=null' }), 'api:entity.findquery'],
+    ['a reload key the scan renames, without a reload', step({ name: 's', route: '/admin/?muraAction=cUsers.list&amp;appreload' }), 'admin:cusers.list'],
+    ['a reload, then its scanned action', step({ name: 's', route: '/admin/?appreload&muraAction=%20cUsers.list' }), 'reload:application'],
+    ['an amp;-prefixed fuseaction, which sets no action', step({ name: 's', route: '/admin/?amp;fuseaction=cUsers.list' }), 'admin:home.redirect'],
+    ['a fuseaction an amp;-prefixed action replaces', step({ name: 's', route: '/admin/?fuseaction=cUsers.list&amp;muraAction=cArch.list' }), 'admin:carch.list'],
+    ['case-variant fuseactions, joined before the copy', step({ name: 's', route: '/admin/?fuseaction=%20cUsers&FUSEACTION=list%20' }), 'admin:cusers,list.default'],
+    ['case-variant url actions, joined in the order sent', step({ name: 's', route: '/admin/?muraAction=cUsers&MURAACTION=x&muraAction=list' }), 'admin:cusers,x,list.default'],
+  ])('keys %s on the scopes start-up script protection leaves, as the gateway does', (_title, request, key) => {
+    expect(coverageRouteKey(request, OPTIONS)).toBe(key);
+    expect(coverageRouteKeys(request, OPTIONS)).toEqual([key]);
+  });
+
   it('keys only the first matrix combination', () => {
     const matrixStep = step({
       name: 'm',

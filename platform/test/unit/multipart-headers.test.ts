@@ -68,7 +68,8 @@ describe('MultipartHeaderScanner', () => {
     { headers: [disposition('attach', 'a.txt'), 'Content-Type: Text/Plain; Charset=UTF-8'] },
     { headers: [disposition('tag'), 'Content-Type: text/plain'], content: 'one' },
     { headers: [disposition('attach', 'b.bin')] },
-    { headers: [disposition('blob'), 'Content-Type: application/octet-stream; x=1'] },
+    { headers: [disposition('blob', 'd.bin'), 'Content-Type: application/octet-stream; x=1'] },
+    { headers: [disposition('raw'), 'Content-Type: application/octet-stream'], content: 'text' },
     { headers: [`Content-Disposition: form-data; name="doc"; filename*=utf-8''r%C3%A9.pdf`, 'Content-Type: application/pdf;', ' name="R é"'] },
     { headers: [disposition('attach', 'c.png'), 'Content-Type: image/png', 'Content-Type: image/gif'] },
     { headers: [disposition('tag')], content: `two\r\n--${BOUNDARY.slice(0, -1)}\r\n\r\n` },
@@ -89,14 +90,11 @@ describe('MultipartHeaderScanner', () => {
     expect(scanner.take('attach', 'text/plain')).toBeUndefined();
   });
 
-  it('answers no part for a field, or a name or media type busboy did not report', () => {
+  it('answers no part for a field, an octet stream without a file name included, or a name or media type busboy did not report', () => {
     const scanner = scan(MIXED, MIXED.length);
-    expect(takeAll(scanner, [['title', 'text/plain'], ['tag', 'text/plain'], ['attach', 'image/gif'], ['ATTACH', 'text/plain']])).toEqual([
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-    ]);
+    expect(
+      takeAll(scanner, [['title', 'text/plain'], ['tag', 'text/plain'], ['raw', 'application/octet-stream'], ['attach', 'image/gif'], ['ATTACH', 'text/plain']]),
+    ).toEqual([undefined, undefined, undefined, undefined, undefined]);
     expect(takeAll(scanner, MIXED_FILES)).toEqual(MIXED_TYPES);
   });
 

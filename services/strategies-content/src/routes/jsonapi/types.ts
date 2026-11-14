@@ -65,7 +65,7 @@ type Struct = Record<string, unknown>;
 /** API family mode; `rest` runs without session management (applicationSettings.cfm:179). */
 export type JsonApiMode = 'json' | 'ajax' | 'rest';
 
-/** Ordered, case-insensitive view of the merged legacy params (query, then form, then JSON body; jsonApiUtility.cfc:405-412). */
+/** Ordered, case-insensitive view of the merged legacy params (scanned query, then scanned form, then JSON body; jsonApiUtility.cfc:405-412). */
 export interface JsonApiParams {
   /** The value under `name` in any case; undefined when absent. */
   get(name: string): unknown;
@@ -77,7 +77,7 @@ export interface JsonApiParams {
   toRecord(): Record<string, unknown>;
 }
 
-/** The URL of the request: `raw` is `cgi.QUERY_STRING` without `?`; `params` is the URL scope only. */
+/** The URL of the request: `raw` is `cgi.QUERY_STRING` without `?`, which the start-up scan leaves as sent; `params` is the URL scope only, as the scan leaves it. */
 export interface JsonApiQuery {
   raw: string;
   params: JsonApiParams;

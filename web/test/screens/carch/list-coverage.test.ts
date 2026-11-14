@@ -1,5 +1,6 @@
 // cArch.list of carch/list.cfm and the carch list() controller: the strategies-content tree read and its outcomes, the
 // content modules' session writes and tab script, and the LEGACY module grid with its pager and filter sidebar.
+import { legacyScopeParams, portcullisScan } from '@opt2/platform/legacy-compat';
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { toString } from '@/lib/html';
@@ -7,7 +8,12 @@ import { ORIGINAL_URL_HEADER, type AdminRequest } from '@/lib/request-context';
 import { listScreen } from '@/screens/carch/list';
 import { COMPONENT_MODULE_ID, CONTENT_MODULE_ID, FORM_MODULE_ID, ROOT_CONTENT_ID } from '@/screens/carch/model';
 import type { ScreenContext } from '@/screens/registry';
-import { adminS2Request, editorRequest, type AdminRequestPartial } from '../../helpers/admin-request';
+import {
+  adminS2Request,
+  buildTestAdminRequest,
+  editorRequest,
+  type AdminRequestPartial,
+} from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeReply } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext } from '../../helpers/screen-context';
@@ -136,6 +142,27 @@ describe('carch.list controller', () => {
 
     expect(sentQuery(ctx).keywords).toBe('spring,news');
     expect(ctx.req.session.keywords).toBe('spring,news');
+  });
+
+  it.each<[string, Readonly<Record<string, string>> | undefined]>([
+    ['alone', undefined],
+    ['beside a posted keywords field', { keywords: 'posted' }],
+  ])("sends the forwarded target's keywords as posted %s, for the owner's one scan", async (_case, form) => {
+    const req = await buildTestAdminRequest({
+      circuit: 'carch',
+      action: 'list',
+      query: { siteid: SITE, keywords: '\u201C x \u201D' },
+      form,
+      mode: 'page',
+      user: 'admin',
+      headers: { [ORIGINAL_URL_HEADER]: `/admin/?muraAction=cArch.list&siteid=${SITE}&keywords=%E2%80%9C+x+%E2%80%9D` },
+    });
+    const ctx = listContext(req, ok(treeModel()));
+    expect(await screen.redirect(ctx)).toBeUndefined();
+
+    expect(sentQuery(ctx).keywords).toBe('\u201C x \u201D');
+    expect(legacyScopeParams(portcullisScan(Object.entries(sentQuery(ctx)))).keywords).toBe('" x "');
+    expect(ctx.req.session.keywords).toBe('" x "');
   });
 
   it('sends no keywords when neither the forwarded target nor rc.currentURL names them', async () => {

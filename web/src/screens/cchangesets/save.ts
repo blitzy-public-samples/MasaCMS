@@ -1,5 +1,6 @@
 // The `cChangesets.save` action: the strategies-content save, then FW/1's list redirect or the edit view re-rendered.
 import { okBody } from '@/lib/gateway-client';
+import { relayContext } from '@/lib/request-context';
 import type { PageControllerRedirect, PageRedirect, PageScreen, ScreenContext } from '../registry';
 import { changesetEditData, renderChangesetEditView, type ChangesetEditData } from './edit';
 
@@ -33,7 +34,7 @@ async function saveChangeset(ctx: ScreenContext): Promise<PageControllerRedirect
   const { rc } = ctx.req;
   const response = await ctx.gateway.strategiesContent.call('post', '/v1/sites/{siteid}/changesets', {
     params: { siteid: rc.siteid ?? '' },
-    form: Object.entries(rc),
+    form: Object.entries(relayContext(ctx.req)),
   });
   if (response.location !== undefined) return { kind: 'location', location: response.location };
   const { errors, redirect, data } = okBody(response, SERVICE, OPERATION);

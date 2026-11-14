@@ -7,9 +7,9 @@ import {
   CSRF_FIELD_EXPIRES,
   CSRF_FIELD_TOKEN,
   LEGACY_ERROR_MAP,
-  routeKeyForRequest,
+  scannedRouteKey,
   type RouteKeyOptions,
-  type RouteKeyRequest,
+  type ScannedRouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
 import type { Extraction, MultipartSpec, PollSpec, Scenario, SettleSpec, Step, StepExpectation } from './catalogue.js';
 import { GoldenConfigError } from './errors.js';
@@ -530,9 +530,10 @@ function queryOf(params: URLSearchParams): Record<string, string | string[]> {
 
 function routeKeyOf(ctx: ScenarioContext, request: RecordedRequest, body: ResolvedBody, opts: StepRunOptions): string {
   const url = new URL(request.url, 'http://route.invalid');
-  const input: RouteKeyRequest = {
+  const input: ScannedRouteKeyRequest = {
     method: request.method,
     path: url.pathname,
+    url: request.url,
     query: queryOf(url.searchParams),
     headers: { ...request.headers },
   };
@@ -542,7 +543,7 @@ function routeKeyOf(ctx: ScenarioContext, request: RecordedRequest, body: Resolv
   }
   if (body.kind === 'json') input.jsonBody = body.value;
   const base = opts.routeKeyOptions ?? defaultRouteKeyOptions();
-  return routeKeyForRequest(input, { appReloadKey: appReloadKey(ctx.env), ...base }).key;
+  return scannedRouteKey(input, { appReloadKey: appReloadKey(ctx.env), ...base }).result.key;
 }
 
 /** Sends `shape` once in the step's session, with the step's auth and CSRF tokens, and remembers the response. */

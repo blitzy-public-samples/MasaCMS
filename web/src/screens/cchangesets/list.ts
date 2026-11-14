@@ -12,6 +12,7 @@ import {
 import { formatDateTimeShort, lsDateFormatString, parseLegacyDate } from '@/lib/dates';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtmlAttr, encodeJs, encodeUrl, html, join, raw, type SafeHtml } from '@/lib/html';
+import { relayFields } from '@/lib/request-context';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { PageScreen, Rc, ScreenContext } from '../registry';
 import { renderCategoriesNest, type ChangesetCategoryNode } from './dsp_categories_nest';
@@ -171,7 +172,7 @@ export async function loadChangesetList(ctx: ScreenContext): Promise<ChangesetLi
   const { rc } = ctx.req;
   const response = await ctx.gateway.strategiesContent.call('get', '/v1/sites/{siteid}/changesets', {
     params: { siteid: rc.siteid ?? '' },
-    query: {
+    query: relayFields(ctx.req, {
       keywords: rc.keywords,
       startrow: rc.startrow,
       page: rc.page,
@@ -179,7 +180,7 @@ export async function loadChangesetList(ctx: ScreenContext): Promise<ChangesetLi
       stopdate: rc.stopdate,
       categoryid: rc.categoryid,
       tags: rc.tags,
-    },
+    }),
   });
   const data = listData(okBody(response, SERVICE, OPERATION).rc, rc.stopdate ?? '');
   await ctx.csrf.prefetch(data.rows.map((row) => row.changesetId));

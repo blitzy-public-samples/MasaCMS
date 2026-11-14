@@ -1226,6 +1226,14 @@ describe('update', () => {
       expect(effectsOf(res)).toEqual({ openSectionList: HOME, mura: { editBean: null } });
     });
 
+    // Own oracle (probe.py form): ` <script>x</script>T ` -> `[INVALID]T`, `onerror` -> `[INVALID]`, `body` and `content` as posted.
+    it('saves the form values the start-up scan left, filtering every field but the excepted body', async () => {
+      const rows = seedTree();
+      const form = add({ title: ' <script>x</script>T ', summary: '<img src=x onerror=alert(1)>\0', body: ' <script>b</script> ', notes: 'javascript:alert(1)' });
+      expect((await raw('update', { form })).statusCode).toBe(302);
+      expect(savedOf(rows)).toMatchObject({ title: '[INVALID]T', summary: '<img src=x [INVALID]=alert(1)>', body: ' <script>b</script> ', notes: '[INVALID]alert(1)' });
+    });
+
     it('normalises a non-numeric orderno to 0 and URL-decodes non-JSON object params before the save', async () => {
       const rows = seedTree();
       await raw('update', { form: add({ orderno: 'abc', objectparams: '%7B%22a%22%3A1%7D' }) });
@@ -1292,7 +1300,8 @@ describe('update', () => {
       expect(effectsOf(res)).toBeUndefined();
     });
 
-    it.each(['qqfile', 'QQFile'])('answers the uploader with {success:true} where the query names %s', async (key) => {
+    // Own oracle: the start-up scan leaves `qqfile` in the url scope for `qq-file=` (stripped copy) and `qqfileamp;=` (renamed).
+    it.each(['qqfile', 'QQFile', 'qq-file', 'qqfileamp;'])('answers the uploader with {success:true} where the query names %s', async (key) => {
       seedTree();
       identity.csrfValid = () => false;
       const res = await raw('update', { query: { [key]: 'notes.txt' }, form: { parentid: HOME, action: 'multiFileUpload', murakeepediting: 'true', ...TOKEN } });

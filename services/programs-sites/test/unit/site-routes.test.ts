@@ -522,6 +522,8 @@ describe('POST /v1/sites/:siteId/update', () => {
     ['an S2 user posting the form without Razuna fields', 's2', FORM, `siteid=&action=Update&tagline=Hi&${TOKEN_FIELDS}`],
     ['an S2 user posting JSON with a lower-case action', 's2', { ...JSON_BODY, 'x-csrf_token': 'T', 'x-csrf_token_expires': 'E' }, { SiteID: 'TENANT-A', action: 'update' }],
     ['a site admin posting multipart with a file part', 'site-admin', { 'content-type': `multipart/form-data; boundary=${boundary}` }, multipart],
+    // Oracle: probe.py shows the admin start-up scan trimming form values (DOMAIN ' saved.example.test ' to saved.example.test).
+    ['an S2 user posting an action the admin start-up scan trims', 's2', FORM, `siteid=tenant-a&action=%20Update%20&${TOKEN_FIELDS}`],
   ])('refuses the withheld Update of %s with the legacy 503 before any CSRF consume, read or write', async (_label, as, headers, body) => {
     const res = await send('POST', url, as, headers, body);
     const { statusCode: status, body: answer } = res;

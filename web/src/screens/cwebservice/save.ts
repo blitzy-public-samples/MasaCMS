@@ -1,6 +1,7 @@
 // `cwebservice.save`: relays the Web Service form to identity, then redirects or re-renders the form (server-only).
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-compat';
 import { okBody } from '@/lib/gateway-client';
+import { relayField } from '@/lib/request-context';
 import type { PageRedirect, Rc, ScreenContext, SubmitResult } from '../registry';
 import { loadEditState, renderEditView, type WebServiceEditState, type WebServiceErrors } from './edit';
 import { effectiveGrantType } from './list';
@@ -65,10 +66,7 @@ export async function submitSave(ctx: ScreenContext): Promise<SubmitResult> {
   const siteid = rcField(rc, 'siteid');
   if (siteid === undefined) return { ...LIST_REDIRECT, rc: { siteid: session.siteid } };
   // Only the fields rc carries, so identity leaves the stored value of any other in place as `set(rc)` does.
-  const form = SAVE_FIELDS.flatMap((name): Array<[string, string]> => {
-    const value = rcField(rc, name);
-    return value === undefined ? [] : [[name, value]];
-  });
+  const form = SAVE_FIELDS.flatMap((name) => Object.entries(relayField(ctx.req, name)));
   const response = await ctx.gateway.identity.call('put', '/v1/oauth-clients/{clientId}', {
     params: { clientId: rcField(rc, 'clientid') ?? '' },
     form,

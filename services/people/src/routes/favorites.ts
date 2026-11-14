@@ -4,7 +4,6 @@ import { LEGACY_ERROR_PAGE_HTML, LEGACY_ERROR_STATUS_TEXT, LEGACY_HTML_CONTENT_T
 import type { WriteContext } from '@opt2/platform/migration-kit';
 import {
   defaultSurfaceOf,
-  recordOutcomeReason,
   sendLegacyResponse,
   type FastifyInstance,
   type FastifyReply,
@@ -37,28 +36,32 @@ export function containerRefuses(target: string): boolean {
   return REFUSED_CHARACTER.test(target) || (query >= 0 && MALFORMED_ESCAPE.test(target.slice(query + 1)));
 }
 
-/** Whether `request` targets the templates' folder in any letter case, percent escapes decoded as the router decodes them. */
-function inFavoritesFolder(request: FastifyRequest): boolean {
-  return decodeURI(request.url.split('?', 1)[0] ?? '').toLowerCase().startsWith(FAVORITES_FOLDER);
+/** The path of `request`, percent escapes decoded as the router decodes them. */
+function decodedPathOf(request: FastifyRequest): string {
+  return decodeURI(request.url.split('?', 1)[0] ?? '');
 }
+
+/** Whether the decoded path of `request` lies in the templates' folder, in any letter case. */
+function inFavoritesFolder(request: FastifyRequest): boolean {
+  return decodedPathOf(request).toLowerCase().startsWith(FAVORITES_FOLDER);
+}
+
+/** A `.cfm` or `.cfc` name, its extension in any letter case; legacy answers a missing one at 404 whatever the start-up scan finds. */
+const TEMPLATE_NAME = /\.cf[cm]$/i;
 
 /** The error surface of a request: the ColdFusion error page for a path in the templates' folder; the platform default elsewhere. */
 export function favoritesSurfaceOf(request: FastifyRequest): LegacySurface {
   return inFavoritesFolder(request) ? 'admin' : defaultSurfaceOf(request);
 }
 
-/**
- * The servlet container's answer to a request target it refuses in the templates' folder, before ColdFusion runs: an empty
- * 400 that closes the connection. The reply is hijacked, so no onSend hook adds the Generator or HSTS header the container
- * omits, and it carries no Date header either.
- */
-function refuseRequestTarget(request: FastifyRequest, reply: FastifyReply): void {
-  if (!containerRefuses(request.url) || !inFavoritesFolder(request)) return;
-  recordOutcomeReason(request, 'container-refused-target');
-  reply.hijack();
-  reply.raw.sendDate = false;
-  reply.raw.writeHead(400, { 'Content-Length': '0', Connection: 'close' });
-  reply.raw.end();
+/** createService's `containerRefusesTarget`: whether the container refuses the target of a path in the templates' folder, in any letter case. */
+export function favoritesTargetRefused(request: FastifyRequest): boolean {
+  return containerRefuses(request.url) && inFavoritesFolder(request);
+}
+
+/** createService's `skipsStartupScan`: whether a path in the templates' folder, in any letter case, names a template no route serves, so its 404 stands. */
+export function favoritesTemplateMissing(request: FastifyRequest): boolean {
+  return request.routeOptions.url === undefined && inFavoritesFolder(request) && TEMPLATE_NAME.test(decodedPathOf(request));
 }
 
 // Public with no CSRF check and no site check, as legacy runs the templates for anonymous callers; they read url fields only.
@@ -93,13 +96,8 @@ const TEMPLATES: readonly (readonly [string, Template])[] = [
   ['deleteRSSFavorite.cfm', deleteRssFavorites],
 ];
 
-/** Registers each favorites template for every contract method, and the container's refusal of a request target in their folder. */
+/** Registers each favorites template for every contract method; the app's createService takes {@link favoritesTargetRefused} and {@link favoritesTemplateMissing}. */
 export function registerFavoriteRoutes(app: FastifyInstance, deps: FavoriteDeps): void {
-  // App-wide, so a folder path in another letter case, which the router does not match, is refused as the container refuses it.
-  app.addHook('onRequest', (request, reply, done) => {
-    refuseRequestTarget(request, reply);
-    done();
-  });
   for (const [file, template] of TEMPLATES) {
     app.route({
       method: [...METHODS],

@@ -487,6 +487,62 @@ describe('createMatcher signed file URLs', () => {
   });
 });
 
+describe('createMatcher halted requests', () => {
+  const PERSON_UNITS = ['people.person', 'people.user_address'];
+  const HALT_INDEX = indexOf([
+    ...ENTRIES.filter(({ route }) => route !== 'admin:cusers.update{type=1}'),
+    { ...entry('admin:cusers.update{type=1}', 'people'), kind: 'write', group: 'grp:people', units: PERSON_UNITS },
+    entry('page:render', 'strategies-content'),
+  ]);
+  const modes = createResponseModes(factsOf({ 'admin:cusers.list': { responseMode: 'page' }, 'admin:cusers.update{type=1}': { responseMode: 'redirect' } }));
+  const halting = (): Matcher => matcherWith({ active: () => HALT_INDEX, modes });
+  const form = (body: string): Sent => ({ method: 'POST', contentType: URLENCODED, body });
+
+  // Each halted request is one whose scan outcome varied between identical requests or runs on the legacy oracle.
+  it.each<[string, string, Sent | undefined, string]>([
+    ['an admin scan fault', '/admin/?muraAction=cUsers.list&siteid=default&x=null', undefined, 'admin:cusers.list'],
+    ['admin url names stripped onto one', `${LIST_URL}&a-b=one&a.b=two`, undefined, 'admin:cusers.list'],
+    ['JSON API url names renamed onto one', '/_api/json/v1/tenant-a/?method=generateCSRFTokens&amp%3Bxy=one&xyamp%3B=two', undefined, 'api:generatecsrftokens'],
+    ['JSON API posted names stripped onto one', '/_api/json/v1/tenant-a/', form('method=generateCSRFTokens&a-b=one&a.b=two'), 'api:generatecsrftokens'],
+    ['front-end url names stripped onto one', '/?a-b=one&a.b=two', undefined, 'page:render'],
+    ['a front-end array nested as deep as the stack decides', `/?q=${'%5B'.repeat(600)}${'%5D'.repeat(600)}`, undefined, 'page:render'],
+  ])('serves %s on legacy under its unhalted entry', async (_label, url, sent, route) => {
+    const outcome = await matchOf(halting(), url, sent);
+    expect(outcome.result?.key).toBe(route);
+    expect(outcome.entry).toMatchObject({ route, state: 'legacy', kind: 'read' });
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
+  });
+
+  it('serves a halted carried write on legacy as a legacy-write over its units, so its write window opens', async () => {
+    const outcome = await matchOf(halting(), '/admin/?muraAction=cUsers.update', form('type=1&a-b=one&a.b=two'));
+    expect(outcome.entry).toStrictEqual({ ...entry('admin:cusers.update{type=1}', 'people', 'legacy'), kind: 'legacy-write', group: 'grp:people', units: PERSON_UNITS });
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
+    expect(HALT_INDEX.entryFor('admin:cusers.update{type=1}')).toMatchObject({ kind: 'write', state: 'target' });
+  });
+
+  it('sends a halted request whose unhalted key has no entry to legacy without one', async () => {
+    const outcome = await matchOf(halting(), '/admin/?muraAction=cUsers.delete&a-b=one&a.b=two');
+    expect([outcome.result?.key, outcome.entry, outcome.destination]).toStrictEqual(['admin:cusers.delete', undefined, { kind: 'legacy' }]);
+  });
+
+  it.each<[string, string, Sent | undefined, string]>([
+    ['an ordinary admin request', `${LIST_URL}&ab=one`, undefined, 'web'],
+    ['a stripped name over a plain one, which legacy scans alike every time', `${LIST_URL}&ab=one&a-b=two`, undefined, 'web'],
+    ['a root-served scan fault, which the service answers with the error page', '/_api/json/v1/tenant-a/?method=generateCSRFTokens&x=null', undefined, 'identity'],
+    ['names stripped onto one with equal values', '/?a-b=x&a.b=x', undefined, 'strategies-content'],
+    ['a carried write', '/admin/?muraAction=cUsers.update', form('type=1&ab=one'), 'web'],
+  ])('keeps %s on its target entry', async (_label, url, sent, service) => {
+    const outcome = await matchOf(halting(), url, sent);
+    expect(outcome.entry?.state).toBe('target');
+    expect(outcome.destination).toMatchObject({ kind: 'target', service });
+  });
+
+  it('keeps target-only paths, which no legacy scan reads, on their entries', async () => {
+    expect((await matchOf(halting(), '/opt2/stub/ping?a-b=one&a.b=two')).destination).toMatchObject({ kind: 'target', service: 'stub' });
+    expect((await matchOf(halting(), '/gateway/legacy-bridge/cfml/session.cfm?a-b=one&a.b=two')).destination).toStrictEqual({ kind: 'bare', status: 404 });
+  });
+});
+
 describe('createMatcher storage key', () => {
   it('reads no storage key for a request that is not a signed file URL', async () => {
     const outcome = await matchOf(matcherWith({ env: { OPT2_STATE_DIR: keylessDir } }), '/opt2/stub/ping');

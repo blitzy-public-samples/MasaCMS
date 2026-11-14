@@ -1,8 +1,8 @@
 /** The cUsers roster writes over a throwaway `people` schema: `cUsers.update` Type=2 Add and Update and `cUsers.updateAddress` through `app.inject` with the identity double. */
 import { describe, expect, it } from 'vitest';
 import { adminUrl, cfUuid } from '@opt2/platform/legacy-compat';
-import { TENANT_A } from '@opt2/platform/testing';
-import { TEST_CLOCK } from '../helpers/app.js';
+import { TENANT_A, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { TEST_CLOCK, userHeaders } from '../helpers/app.js';
 import { PG_AVAILABLE, withPgApp, type PgTestApp } from '../helpers/pg-app.js';
 import type { IdentityDouble } from '../helpers/identity-double.js';
 import { ADMIN_S2, DEFAULT_PEOPLE_SEED, S2_USER, SITE_ADMIN_A, SYSTEM_USER_A_PERSON, accountFor, seedPeople, type TestActor } from '../helpers/fixtures.js';
@@ -11,6 +11,7 @@ import {
   CATEGORY_2,
   GROUP,
   LEGACY_503,
+  OPENAPI,
   S2_TARGET,
   SITE,
   STORED_USER,
@@ -27,6 +28,7 @@ import {
   userForm,
   userQuery,
   without,
+  type Post,
   type Redirect,
   type RouteResult,
 } from '../helpers/roster-posts.js';
@@ -336,5 +338,36 @@ describe.skipIf(!PG_AVAILABLE)('cUsers roster writes over PostgreSQL', () => {
       const update = userForm('Update', { email: SYSTEM_USER_A_PERSON.email ?? '', usernameNoCache: 'system_user_a', passwordNoCache: '', password2: '', ...fields });
       const { body } = await send<UpdateResult>(app, UPDATE_USER, SITE_ADMIN_A, { fields: update, query: userQuery(STORED_USER) });
       expect(body).toEqual({ written: true, redirect: { url: expected }, errors: {} });
+    }));
+
+  // Oracle: admin start-up's Portcullis scan of the form [legacy: admin/Application.cfc:246-265]; a JSON body is not scanned.
+  const MARKUP = { fname: '<script>alert(1)</script>Aaliyah', lname: 'Frami<img src=x onerror=alert(1)>', company: 'javascript:alert(1)', remoteID: 'javascript:alert(1)' };
+  const SCANNED = { fname: '[INVALID]Aaliyah', lname: 'Frami<img src=x [INVALID]=alert(1)>', company: '[INVALID]alert(1)', remoteID: '[INVALID]alert(1)' };
+  it.each<[string, Pick<Post, 'files' | 'json'>, typeof MARKUP]>([
+    ['a urlencoded form', {}, SCANNED],
+    ['a multipart form', { files: [{ field: 'newFile', filename: '' }] }, SCANNED],
+    ['a JSON body', { json: true }, MARKUP],
+  ])('saves the person and account values of a roster edit posted as %s as request start-up leaves them', (_name, encoding, expected) =>
+    onPeople(async ({ app, identity, db }) => {
+      const fields = userForm('Update', { email: SYSTEM_USER_A_PERSON.email ?? '', usernameNoCache: 'system_user_a', passwordNoCache: '', password2: '', ...MARKUP });
+      const { body } = await send<UpdateResult>(app, UPDATE_USER, SITE_ADMIN_A, { fields, query: userQuery(STORED_USER), ...encoding });
+      expect(body.written).toBe(true);
+      const { remoteID, ...person } = expected;
+      expect(await rowsOf(db, 'person', STORED_USER)).toEqual([expect.objectContaining(person)]);
+      expect(soleOperation(identity).operation.request.account).toMatchObject({ UserName: 'system_user_a', remoteID });
+    }));
+
+  it('stores address notes as the start-up scan leaves them, and the address screen reads them back', () =>
+    onPeople(async ({ app, db }) => {
+      const before = new Set((await rowsOf(db, 'user_address', STORED_USER)).map((row) => row.addressid));
+      const fields = addressForm('Add', { addressNotes: 'note <b>bold</b> <script>alert(1)</script>' });
+      const { body } = await send<RouteResult>(app, UPDATE_ADDRESS, SITE_ADMIN_A, { fields, query: addressQuery(STORED_USER) });
+      expect(body.written).toBe(true);
+      const added = (await rowsOf(db, 'user_address', STORED_USER)).filter((row) => !before.has(row.addressid));
+      expect(added).toEqual([expect.objectContaining({ addressnotes: 'note <b>bold</b> [INVALID]' })]);
+      const url = `/v1/users/address?siteid=${SITE}&userid=${STORED_USER}&addressid=${String(added[0]?.addressid)}`;
+      const res = await app.inject({ method: 'GET', url, headers: await userHeaders(SITE_ADMIN_A) });
+      const read = assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+      expect(read).toMatchObject({ isNew: false, address: { addressNotes: 'note <b>bold</b> [INVALID]' } });
     }));
 });

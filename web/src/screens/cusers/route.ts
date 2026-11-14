@@ -1,6 +1,6 @@
 // The cUsers `route()` step and the `cUsers.route` action: clear the retained edit values, then redirect (server-only).
 import { okBody } from '@/lib/gateway-client';
-import { applyDefaults } from '@/lib/request-context';
+import { applyDefaults, relayFields } from '@/lib/request-context';
 import type { RedirectScreen, ScreenContext, SubmitResult } from '../registry';
 import { cusersGate, normaliseCusersRc, type CusersRc } from './gate';
 
@@ -26,7 +26,7 @@ export async function cusersRoute(ctx: CusersRouteContext, rc: CusersRouteRc): P
   const { siteid, ispublic, routeid, returnurl } = rc;
   // userid is not sent: route() never reads it, and the contract caps it at 35 characters that legacy never checks.
   const response = await ctx.gateway.people.call('get', '/v1/users/route', {
-    query: { siteid: siteid === '' ? undefined : siteid, ispublic, routeid, returnurl },
+    query: relayFields(ctx.req, { siteid: siteid === '' ? undefined : siteid, ispublic, routeid, returnurl }),
   });
   const { redirect } = okBody(response, 'people', 'routeUser');
   if (routeid === '') {

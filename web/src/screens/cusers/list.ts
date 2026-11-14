@@ -5,6 +5,7 @@ import { cfEq } from '@/lib/cfml';
 import { parseLegacyDate } from '@/lib/dates';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeJs, encodeUrl, join, raw } from '@/lib/html';
+import { relayFields } from '@/lib/request-context';
 import { buildUrl } from '@/lib/urls';
 import type { PageScreen, ScreenContext } from '../registry';
 import { cusersGate, isCusersAdmin, normaliseCusersRc, type CusersRc } from './gate';
@@ -75,12 +76,12 @@ function nextNOf(page: UserGroupsPage['nextn']): NextN {
 export async function loadGroupList(ctx: ScreenContext): Promise<GroupListData> {
   const rc = normaliseCusersRc(ctx.req);
   const response = await ctx.gateway.people.call('get', '/v1/users/groups', {
-    query: {
+    query: relayFields(ctx.req, {
       siteid: rc.siteid,
       ispublic: rc.ispublic,
       startrow: String(rc.startRow),
       recordsperpage: String(rc.recordsperpage),
-    },
+    }),
   });
   const page = okBody(response, 'people', 'listUserGroups');
   const nextn = nextNOf(page.nextn);

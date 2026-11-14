@@ -3,7 +3,12 @@ import { cfEq, cfToBoolean } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/people';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeUrl, raw } from '@/lib/html';
-import { ORIGINAL_URL_HEADER, type AdminRequest, type AdvancedSearchParam } from '@/lib/request-context';
+import {
+  ORIGINAL_URL_HEADER,
+  relayFields,
+  type AdminRequest,
+  type AdvancedSearchParam,
+} from '@/lib/request-context';
 import { buildUrl } from '@/lib/urls';
 import type { PageScreen, ScreenContext } from '../registry';
 import { storeAdvancedSearchCriteria, type AdvancedSearchPage, type AdvancedSearchQuery } from './advancedsearchtocsv';
@@ -265,7 +270,7 @@ export async function loadAdvancedSearch(
     stored ??
     okBody(
       await ctx.gateway.people.call('get', '/v2/users/advanced-search', {
-        query: { ...query, newsearch: String(rc.newsearch) },
+        query: relayFields(ctx.req, { ...query, newsearch: String(rc.newsearch) }),
       }),
       'people',
       'getAdvancedSearchV2',

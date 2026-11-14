@@ -12,7 +12,7 @@ import { parseLegacyDate } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw } from '@/lib/html';
-import { siteDataOf, urlEncodedFormat, type SiteData } from '@/lib/request-context';
+import { relayFields, siteDataOf, urlEncodedFormat, type SiteData } from '@/lib/request-context';
 import { buildUrl } from '@/lib/urls';
 import type { PageScreen, ScreenContext } from '../registry';
 import { renderUserCategoriesNest, type InterestCategoryLoader, type InterestCategoryRow } from './dsp_categories_nest';
@@ -340,13 +340,13 @@ export async function loadEditUser(
   const { site } = ctx.req;
   if (site === undefined) throw new TypeError('cUsers.editUser: the request carries no site data');
   const setIsPublic = rc.setispublic;
-  const query = {
+  const query = relayFields(ctx.req, {
     siteid: rc.siteid,
     userid: rc.userid,
     routeid: rc.routeid,
     ...(setIsPublic === undefined ? {} : { setispublic: rcText(setIsPublic, 'setispublic') }),
     ...(rc['removeBlock'] === undefined ? {} : { removeBlock: rcText(rc['removeBlock'], 'removeBlock') }),
-  };
+  });
   const edit = okBody(await ctx.gateway.people.call('get', '/v1/users/edit', { query }), 'people', 'getUserEdit');
   const { bean, passwordExpired } = editBean(rc, edit);
   // `cf_filetools` prints the file name of a non-image file, which people's person record does not carry.

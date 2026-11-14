@@ -38,7 +38,14 @@ import type { PersonFence } from '../../src/domain/person-fence.js';
 import { personFence } from '../../src/domain/roster-protocol.js';
 import { createPeopleRepository, type PeopleRepository } from '../../src/repo/repository.js';
 import { PEOPLE_UNITS, type FavoriteRow } from '../../src/repo/tables.js';
-import { FAVORITES_PATH, containerRefuses, favoritesSurfaceOf, registerFavoriteRoutes } from '../../src/routes/favorites.js';
+import {
+  FAVORITES_PATH,
+  containerRefuses,
+  favoritesSurfaceOf,
+  favoritesTargetRefused,
+  favoritesTemplateMissing,
+  registerFavoriteRoutes,
+} from '../../src/routes/favorites.js';
 import { createIdentityDouble } from '../helpers/identity-double.js';
 import { silentLogger } from '../helpers/route-app.js';
 import { DEFAULT_PEOPLE_SEED, POOLED_MEMBER_PERSON, SYSTEM_USER_A_PERSON, favoriteRow, seedPeople } from '../helpers/fixtures.js';
@@ -256,6 +263,8 @@ describe.skipIf(!(await pgAvailable()))('favorites templates against PostgreSQL'
       pool: db,
       logger: silentLogger(),
       surfaceOf: favoritesSurfaceOf,
+      containerRefusesTarget: favoritesTargetRefused,
+      skipsStartupScan: favoritesTemplateMissing,
     });
     registerWritePositionHeader(app);
     // The person read fails with `repoFault` when one is set, as an unexpected storage failure would.
@@ -717,6 +726,10 @@ describe.skipIf(!(await pgAvailable()))('favorites templates against PostgreSQL'
       ['%u0041', 'GET', 'deleteRSSFavorite.cfm', () => `userID=${SYSTEM_USER}&siteID=${TENANT_A.siteId}&x=%u0041`],
       ['%zz beside a complete save', 'POST', 'saveFavorite.cfm', () => `${query(saveFields({ favoriteName: 'Refused' }))}&x=%zz`],
       ['%ZZ beside a complete HEAD save', 'HEAD', 'saveFavorite.cfm', () => `${query(saveFields({ favoriteName: 'Refused' }))}&x=%ZZ`],
+      // Oracle: favorites/ajax/nosuch.cfm?x=null&y=% and ?x=null&y=%ZZ answer the container's empty 400 before ColdFusion runs.
+      ['a lone % beside the scan-faulting x=null', 'GET', 'deleteFavorite.cfm', (id) => `favoriteID=${id}&x=null&y=%`],
+      ['%ZZ beside the scan-faulting x=null', 'DELETE', 'deleteFavorite.cfm', (id) => `x=null&y=%ZZ&favoriteID=${id}`],
+      ['%zz beside a complete save and the scan-faulting x=null', 'POST', 'saveFavorite.cfm', () => `${query(saveFields({ favoriteName: 'Refused' }))}&x=null&y=%zz`],
     ])('refuses %s with the empty 400 that closes the connection, before the template runs', async (_case, method, template, fields) => {
       const stored = await storeFavorite(favoriteRow({ tenant_id: A, userid: SYSTEM_USER, siteid: TENANT_A.siteId, type: 'RSS' }));
       const before = await favoriteCount();
@@ -726,9 +739,12 @@ describe.skipIf(!(await pgAvailable()))('favorites templates against PostgreSQL'
       await withGatedTenant(db, A, (tx) => repo.deleteFavorites(tx, [stored]));
     });
 
-    it('refuses a malformed escape under a template path in another letter case, as the container refuses it before any template is found', async () => {
+    it.each([
+      ['a malformed escape under a template path in another letter case', `${FAVORITES_PATH}/savefavorite.cfm?${query(saveFields())}&x=%`],
+      ['a malformed escape beside the scan-faulting x=null under a folder path in another letter case', '/core/modules/v1/Favorites/AJAX/nosuch.cfm?x=null&y=%'],
+    ])('refuses %s, as the container refuses it before any template is found', async (_case, url) => {
       const headers = { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SERVICE })}` };
-      expectRefused(await app.inject({ method: 'GET', url: `${FAVORITES_PATH}/savefavorite.cfm?${query(saveFields())}&x=%`, headers }));
+      expectRefused(await app.inject({ method: 'GET', url, headers }));
     });
 
     it.each(['a+b', '+', '%C3%A9x%E9', '%00', '%ff%FE'])('runs the template for favoriteID=%s, which the container decodes', async (favoriteID) => {
@@ -781,6 +797,8 @@ describe.skipIf(!(await pgAvailable()))('favorites templates against PostgreSQL'
       ['| in a field name', `${TARGET}?favoriteID=a&x|y=1`],
       ['| in the template name', `${FAVORITES_PATH}/dele|teFavorite.cfm?favoriteID=a`],
       ['# before the query', `${TARGET}#x?favoriteID=a`],
+      // Oracle: favorites/ajax/nosuch.cfm?favoriteID=a&x=null&y=a|b answers the container's empty 400 before ColdFusion runs.
+      ['| beside the scan-faulting x=null', `${TARGET}?favoriteID=a&x=null&y=a|b`],
     ])('answers a raw %s with the empty 400 that closes the connection, before the template runs', async (_case, target) => {
       const before = await favoriteCount();
       const res = await rawGet(target);
@@ -823,6 +841,16 @@ describe.skipIf(!(await pgAvailable()))('favorites templates against PostgreSQL'
       ['GET of saveFavorite.cfm under the folder in another letter case', 404, 'GET', () => save('/core/modules/v1/Favorites/AJAX', 'saveFavorite.cfm')],
       ['a save whose person read fails unexpectedly', 500, 'GET', () => save(FAVORITES_PATH, 'saveFavorite.cfm'), new Error('connection reset')],
       ['a save under a percent-encoded folder for no stored user', 503, 'GET', () => `/core/modules/v1/favorites/%61jax/saveFavorite.cfm?${unknownUser}`],
+      // Oracle: favorites/ajax/deletefavorite.cfm, savefavorite.cfm, nosuch.cfm and DELETEFAVORITE.CFM ?x=null answer 404; nosuch.txt and nosuch.cfm/ ?x=null answer 500.
+      ['GET of deletefavorite.cfm, the template in another letter case, beside the scan-faulting x=null', 404, 'GET', (id) => `${FAVORITES_PATH}/deletefavorite.cfm?favoriteID=${id}&x=null`],
+      ['GET of DELETEFAVORITE.CFM, the extension in another letter case, beside the scan-faulting x=null', 404, 'GET', (id) => `${FAVORITES_PATH}/DELETEFAVORITE.CFM?favoriteID=${id}&x=null`],
+      ['GET of nosuch.cfm, which names no template, beside the scan-faulting x=null', 404, 'GET', () => `${FAVORITES_PATH}/nosuch.cfm?x=null`],
+      ['GET of deleteFavorite.cfm under the folder in another letter case beside the scan-faulting x=null', 404, 'GET', (id) => `/core/modules/v1/Favorites/ajax/deleteFavorite.cfm?favoriteID=${id}&x=null`],
+      ['GET of deleteFavorite.cfm beside the scan-faulting x=null', 500, 'GET', (id) => `${FAVORITES_PATH}/deleteFavorite.cfm?favoriteID=${id}&x=null`],
+      ['GET of saveFavorite.cfm beside the scan-faulting x=null', 500, 'GET', () => `${save(FAVORITES_PATH, 'saveFavorite.cfm')}&x=null`],
+      ['DELETE of deleteRSSFavorite.cfm beside the scan-faulting x=null', 500, 'DELETE', () => `${removeRss('deleteRSSFavorite.cfm')()}&x=null`],
+      ['GET of nosuch.txt, which ColdFusion does not serve, beside the scan-faulting x=null', 500, 'GET', () => `${FAVORITES_PATH}/nosuch.txt?x=null`],
+      ['GET of nosuch.cfm/ beside the scan-faulting x=null', 500, 'GET', () => `${FAVORITES_PATH}/nosuch.cfm/?x=null`],
     ])('%s answers the ColdFusion error page at %i, writing nothing', async (_case, status, method, target, fault) => {
       const stored = await storeFavorite(favoriteRow({ tenant_id: A, userid: SYSTEM_USER, siteid: TENANT_A.siteId, type: 'RSS' }));
       const before = await favoriteCount();

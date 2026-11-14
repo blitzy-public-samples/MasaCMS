@@ -39,8 +39,10 @@ const READERS = [Roles.esignatureSigner, Roles.esignatureAuditor];
 const MISSING_ID = '00000000-0000-0000-0000000000000000';
 const GOOD_TOKEN = 'VALIDCSRFTOKEN';
 const CSRF = { 'x-csrf_token': GOOD_TOKEN, 'x-csrf_token_expires': '991231235959000' };
+const FORM_TYPE = { 'content-type': 'application/x-www-form-urlencoded' };
 const DOCUMENT = Buffer.from('%PDF-1.7 synthetic fixture contract');
 const CREATE = { documentName: 'contract.pdf', documentBase64: DOCUMENT.toString('base64'), signerUserId: SIGNER_USER_ID };
+const MARKED_NAME = '  <b>Q3</b> <script>x</script> plan  ';
 // An unknown site in each body type a fixture request may carry.
 const FORM_SITE = { type: 'application/x-www-form-urlencoded', text: 'siteid=nosuch' };
 const MULTIPART_SITE = { type: 'multipart/form-data; boundary=opt2', text: '--opt2\r\nContent-Disposition: form-data; name="siteid"\r\n\r\nnosuch\r\n--opt2--\r\n' };
@@ -50,6 +52,18 @@ const ANONYMOUS_SESSION = { sub: ANONYMOUS_PRINCIPAL_UID, roles: [] };
 
 /** People's answer to every read: a person, an outage or a denial. */
 type PeopleMode = 'answer' | 'unavailable' | 'denied';
+
+/** How a POST carries its fields: a JSON object body or a urlencoded form. */
+type Encoding = 'json' | 'form';
+
+/** A signed request's stored name, typed name and `signed` audit entry. */
+type StoredSigning = { document_name: string; typed_name: string; detail: string; prev_hash: Buffer; entry_hash: Buffer };
+
+/** usp_audit_append's hash of SIGNER's `signed` entry: SHA-256 of prev_hash and the UTF-16LE `request_id|2|signed|actor|detail|at` text. */
+function signedEntryHash(id: string, prev: Buffer, detail: string, at: string): string {
+  const canonical = [id.padEnd(35, ' '), '2', 'signed', SIGNER_USER_ID.padEnd(35, ' '), detail, at].join('|');
+  return createHash('sha256').update(prev).update(Buffer.from(canonical, 'utf16le')).digest('hex');
+}
 
 type Injected = Awaited<ReturnType<FastifyInstance['inject']>>;
 
@@ -161,7 +175,7 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
 
   /**
    * Sends `method` to `url` as user `sub` holding `roles` on `site`, `override` as X-HTTP-Method-Override when given, with a valid
-   * CSRF token on a POST or a POST override unless `csrf` is false.
+   * CSRF token on a POST or a POST override unless `csrf` is false; `payload` goes as `encoding`.
    */
   async function send(
     method: 'GET' | 'POST',
@@ -171,6 +185,7 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
       roles = SIGNER,
       site = TENANT_A.siteId,
       payload,
+      encoding = 'json',
       csrf = true,
       contract = true,
       override,
@@ -179,17 +194,21 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
       roles?: readonly string[];
       site?: string;
       payload?: Record<string, unknown>;
+      encoding?: Encoding;
       csrf?: boolean;
       contract?: boolean;
       override?: string;
     } = {},
   ): Promise<Injected> {
+    const form = payload !== undefined && encoding === 'form';
     const headers = {
       ...(await userHeaders({ sub, site, roles })),
       ...((method === 'POST' || override === 'POST') && csrf ? CSRF : {}),
       ...(override === undefined ? {} : { 'x-http-method-override': override }),
+      ...(form ? FORM_TYPE : {}),
     };
-    const res = await app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload }) });
+    const body = form ? new URLSearchParams(payload as Record<string, string>).toString() : payload;
+    const res = await app.inject({ method, url, headers, ...(body === undefined ? {} : { payload: body }) });
     return contract ? conforms(res, method, url) : res;
   }
 
@@ -418,6 +437,7 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     ['DELETE', 'form', 404, 'Not Found', FORM_SITE],
     ['OPTIONS', 'form', 404, 'Not Found', FORM_SITE],
     ['PUT', 'multipart', 404, 'Not Found', MULTIPART_SITE],
+
     ['POST', 'form', 400, 'Invalid parameters', FORM_SITE],
     ['POST', 'multipart', 400, 'Invalid parameters', MULTIPART_SITE],
     ['PUT', 'JSON', 400, 'Invalid parameters', JSON_SITE],
@@ -465,6 +485,7 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
     ['a member listing', () => send('GET', P, { roles: [Roles.member] }), 403, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
     ['an auditor creating', () => send('POST', P, { roles: AUDITOR, payload: CREATE }), 403, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
     ['a siteid other than the token site', () => send('GET', `${P}?siteid=${TENANT_B.siteId}`), 403, 'esignature.requests', 'invalid_request', 'Insufficient Account Permissions'],
+    ['site: a padded JSON-body siteid, which no scan trims, as an unknown site', () => send('POST', P, { payload: { ...CREATE, siteid: ' tenant-a ' } }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
     ['a role-less user of an unregistered site', () => send('GET', P, { roles: [Roles.member], site: 'retired-site' }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
     ['site: an unregistered token site', () => send('GET', P, { site: 'retired-site' }), 400, 'esignature.requests', 'invalid_request', 'Invalid parameters'],
     ['csrf: a create without a token', () => send('POST', P, { payload: CREATE, csrf: false }), 400, 'esignature.requests', 'invalid_request', 'Invalid CSRF tokens'],
@@ -545,5 +566,95 @@ describe.skipIf(!available)('e-signature fixture routes', () => {
   it('lists none of tenant-a\'s requests to an umbrella signer', async () => {
     const res = await send('GET', P, { site: TENANT_UMBRELLA.siteId });
     expect([res.statusCode, res.json().data.totalitems]).toEqual([200, 0]);
+  });
+
+  /** The stored document name, signature typed name and `signed` audit entry of request `id`, read under tenant-a. */
+  async function storedSigning(id: string): Promise<StoredSigning> {
+    return handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
+      const { rows } = await tx.query<StoredSigning>(
+        `SELECT r.document_name, s.typed_name, e.detail, e.prev_hash, e.entry_hash FROM ${handle.schema}.signature_request r
+         JOIN ${handle.schema}.signature s ON s.request_id = r.request_id
+         JOIN ${handle.schema}.audit_entry e ON e.request_id = r.request_id AND e.action = 'signed'
+         WHERE r.request_id = $1`,
+        [id],
+      );
+      return rows[0] as StoredSigning;
+    });
+  }
+
+  it.each<[Encoding, string, string, string]>([
+    ['form', '<b>Q3</b> [INVALID] plan', '  Alice  ', 'Alice'],
+    ['json', MARKED_NAME, '  Alice  ', '  Alice  '],
+    ['form', '<b>Q3</b> [INVALID] plan', ' <script>x</script>Alice ', '[INVALID]Alice'],
+    ['json', MARKED_NAME, ' <script>x</script>Alice ', ' <script>x</script>Alice '],
+    ['form', '<b>Q3</b> [INVALID] plan', 'javascript:alert(1)', '[INVALID]alert(1)'],
+    ['json', MARKED_NAME, 'javascript:alert(1)', 'javascript:alert(1)'],
+    ['form', '<b>Q3</b> [INVALID] plan', '\u201cAl\u201d', '"Al"'],
+  ])('stores, hashes and answers %s fields as Masa script protection leaves them: document name %j, typedName %j as %j', async (encoding, documentName, typedName, kept) => {
+    const created = await send('POST', P, { payload: { ...CREATE, documentName: MARKED_NAME }, encoding });
+    expect([created.statusCode, created.json().data.document_name]).toEqual([200, documentName]);
+    const id: string = created.json().data.request_id;
+    const signed = await send('POST', `${P}/${id}/sign`, { payload: { typedName }, encoding });
+    expect([signed.statusCode, signed.json().data]).toEqual([200, { ...created.json().data, state: 'SIGNED' }]);
+
+    const stored = await storedSigning(id);
+    expect(stored).toMatchObject({ document_name: documentName, typed_name: kept, detail: kept });
+    const [, entry] = await auditItems(id);
+    expect(entry).toMatchObject({ seq: 2, detail: kept, entry_hash: stored.entry_hash.toString('hex') });
+    expect(stored.entry_hash.toString('hex')).toBe(signedEntryHash(id, stored.prev_hash, kept, String(entry?.at)));
+    expect((await send('GET', `${P}/${id}/verify`)).json().data).toEqual({ valid: true, entries: 2, brokenat: 0 });
+  });
+
+  it.each<[string, (id: string) => string, string, Record<string, number>]>([
+    ['padded and signed page parameters', () => `${P}?pageIndex=%201%20&itemsPerPage=%20%2B3%20`, 'esignature.requests', { pageindex: 1, itemsperpage: 3 }],
+    ['a blank page size', () => `${P}?itemsPerPage=%20`, 'esignature.requests', { pageindex: 1, itemsperpage: 50 }],
+    ['padded audit paging', (id) => `${P}/${id}/audit?pageIndex=%201%20&itemsPerPage=%201%20`, 'esignature.requests.audit', { pageindex: 1, itemsperpage: 1, totalitems: 1 }],
+  ])('accepts %s in the url scope, trimmed as Masa script protection trims it', async (_case, url, method, page) => {
+    const { request_id: id } = await createRequest();
+    const res = await send('GET', url(id));
+    expect([res.statusCode, res.json().method, res.json().data]).toEqual([200, method, expect.objectContaining(page)]);
+  });
+
+  it.each<[string, Encoding | 'url', Record<string, unknown>]>([
+    ['  Alice  ', 'form', { valid: true, entries: 2, brokenat: 0 }],
+    [' <script>x</script>Alice ', 'form', { valid: false, entries: 2, brokenat: 2 }],
+    [' <script>x</script>Alice ', 'json', { valid: true, entries: 2, brokenat: 0 }],
+    ['javascript:alert(1)', 'url', { valid: false, entries: 2, brokenat: 2 }],
+    ['javascript:alert(1)', 'json', { valid: true, entries: 2, brokenat: 0 }],
+  ])('verifies a chain signed %j from its audit items as %s entries text, scanned as legacy scans it', async (typedName, carrier, verdict) => {
+    const { request_id: id } = await createRequest();
+    expect((await send('POST', `${P}/${id}/sign`, { payload: { typedName } })).statusCode).toBe(200);
+    const entries = JSON.stringify(await auditItems(id));
+    const res =
+      carrier === 'url'
+        ? await send('POST', `${P}/${id}/verify?entries=${encodeURIComponent(entries)}`)
+        : await send('POST', `${P}/${id}/verify`, { payload: { entries }, encoding: carrier });
+    expect([res.statusCode, res.json().data]).toEqual([200, verdict]);
+  });
+
+  it.each<[string, 'form' | 'url', string]>([
+    ['a padded form siteid', 'form', ' tenant-a '],
+    ['a padded url siteid', 'url', '%20tenant-a%20'],
+    ['a NUL-padded url siteid', 'url', 'tenant-a%00'],
+  ])('creates, signs and lists with %s as the scanned legacy scope holds it, storing site tenant-a and the trimmed typed name', async (_case, carrier, sent) => {
+    // `sent` is the form value as typed, or the url value already encoded.
+    const post = (url: string, fields: Record<string, unknown>): Promise<Injected> =>
+      carrier === 'form'
+        ? send('POST', url, { payload: { ...fields, siteid: sent }, encoding: 'form' })
+        : send('POST', `${url}?siteid=${sent}`, { payload: fields, encoding: 'form' });
+    type Row = { request_id: string; siteid: string };
+    const created = await post(P, CREATE);
+    const row = created.json<{ data: Row }>().data;
+    expect([created.statusCode, row.siteid]).toEqual([200, TENANT_A.siteId]);
+    const signed = await post(`${P}/${row.request_id}/sign`, { typedName: '  Alice  ' });
+    const signedRow = signed.json<{ data: Row }>().data;
+    expect([signed.statusCode, signedRow]).toEqual([200, { ...row, state: 'SIGNED' }]);
+
+    const storedSite = await handle.app.withTenant(TENANT_A.tenantId, async (tx) =>
+      (await tx.query<{ siteid: string }>(`SELECT siteid FROM ${handle.schema}.signature_request WHERE request_id = $1`, [row.request_id])).rows[0]?.siteid,
+    );
+    expect([storedSite, await storedSigning(row.request_id)]).toEqual([TENANT_A.siteId, expect.objectContaining({ typed_name: 'Alice', detail: 'Alice' })]);
+    const listed = await send('GET', `${P}?itemsPerPage=1000&siteid=${carrier === 'url' ? sent : encodeURIComponent(sent)}`);
+    expect([listed.statusCode, listed.json<{ data: { items: Row[] } }>().data.items]).toEqual([200, expect.arrayContaining([signedRow])]);
   });
 });

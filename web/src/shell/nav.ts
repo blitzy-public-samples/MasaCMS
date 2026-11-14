@@ -4,8 +4,8 @@ import { formatDateTimeShort } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { encodeJs, encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
 import {
-  ORIGINAL_URL_HEADER,
   administersSessionSite,
+  forwardedUrlScope,
   sessionSiteModulePerm,
   type AdminRequest,
 } from '@/lib/request-context';
@@ -112,16 +112,16 @@ const listFindNoCase = (list: string, value: string): boolean =>
 /** The constant attribute fragment `markup` when `flag` holds, else nothing. */
 const when = (flag: boolean, markup: SafeHtml): SafeHtml | null => (flag ? markup : null);
 
-/** URL-scope names: the forwarded request target's query, else the pairs of `rc.currentURL`. */
+/** URL-scope names: the forwarded request target's scanned URL scope, else the pairs of `rc.currentURL`. */
 export function urlScopeNames(ctx: AdminRequest): ReadonlySet<string> {
-  const target = ctx.headers.get(ORIGINAL_URL_HEADER);
+  const url = forwardedUrlScope(ctx.headers);
   const names =
-    target === null
+    url === undefined
       ? ctx.currentUrl
           .replace(/^\.\/\??/, '')
           .split('&')
           .map((pair) => pair.split('=', 1)[0] ?? '')
-      : [...new URLSearchParams(target.includes('?') ? target.slice(target.indexOf('?') + 1) : '').keys()];
+      : Object.keys(url);
   return new Set(names.filter((name) => name !== '').map((name) => name.toLowerCase()));
 }
 

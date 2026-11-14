@@ -4,6 +4,7 @@ import { parseLegacyDate } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, html, isSafeHtml, raw, type SafeHtml } from '@/lib/html';
+import { relayFields } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
 import type { PageScreen, ScreenContext } from '../registry';
 import { renderChangesetsMenu } from './secondary-menu';
@@ -220,7 +221,7 @@ export async function loadChangesetAssignments(ctx: ScreenContext): Promise<Chan
   const [response] = await Promise.all([
     ctx.gateway.strategiesContent.call('get', ASSIGNMENTS_PATH, {
       params: { siteid: rc.siteid ?? '', changesetid },
-      query: { keywords: rc.keywords ?? '' },
+      query: relayFields(ctx.req, { keywords: rc.keywords ?? '' }),
     }),
     ctx.csrf.prefetch([changesetid]),
   ]);

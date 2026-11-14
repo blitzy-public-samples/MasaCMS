@@ -73,13 +73,11 @@ export type CfValue = string | CfNumber | boolean | CfArray | CfStruct | typeof 
 export type CfArray = Array<CfValue | null>;
 
 /**
- * A CFML struct: keys match ignoring case and keep their first spelling; a JSON null leaves a key no lookup finds. A struct
- * `deserializeJSON` builds iterates in insertion order; one CFML code builds iterates in ACF's hash order.
+ * A CFML struct: keys match ignoring case and keep their first spelling; a JSON null leaves a key no lookup finds. It
+ * iterates in ACF's hash order, whether `deserializeJSON` or CFML code builds it.
  */
 export class CfStruct {
   readonly #entries = new Map<string, { key: string; value: CfValue | null }>();
-
-  constructor(readonly ordered = false) {}
 
   /** `struct[key] = value`; null as `deserializeJSON` stores a JSON null. */
   set(key: string, value: CfValue | null): void {
@@ -102,8 +100,7 @@ export class CfStruct {
 
   /** `for (key in struct)`: every key, JSON nulls included, in the struct's iteration order. */
   keys(): string[] {
-    const keys = [...this.#entries.values()].map((entry) => entry.key);
-    return this.ordered ? keys : acfStructKeyOrder(keys);
+    return acfStructKeyOrder([...this.#entries.values()].map((entry) => entry.key));
   }
 
   get size(): number {
@@ -136,7 +133,7 @@ function jsonNumber(literal: string): CfNumber {
   return new CfNumber(cfNumberString(value), value);
 }
 
-/** A strict JSON reader that keeps object key order and number text, as `isJSON` and `deserializeJSON` read the text. */
+/** A strict JSON reader that assigns object keys in text order and keeps number text, as `isJSON` and `deserializeJSON` read the text. */
 class JsonReader {
   #at = 0;
 
@@ -188,7 +185,7 @@ class JsonReader {
   }
 
   #object(): CfStruct {
-    const struct = new CfStruct(true);
+    const struct = new CfStruct();
     this.#expect('{');
     this.#space();
     if (this.text.charAt(this.#at) === '}') {

@@ -15,4 +15,7 @@ export * from './csv.js';
 export * from './admin-url.js';
 export * from './unavailable.js';
 export * from './route-key.js';
+export * from './portcullis.js';
+export * from './request-scopes.js';
+export * from './scanned-route-key.js';
 export { strictLocalInstant, type Civil } from './java-calendar.js';

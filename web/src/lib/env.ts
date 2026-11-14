@@ -1,4 +1,5 @@
 // Web process environment and the Masa global settings (application.configBean) the admin shell renders (server-only).
+import { cfIsNumeric, cfToNumber, cfVal } from '@opt2/platform/legacy-compat';
 import { baseEnvSchema, loadEnv, z, type LoadedEnv } from '@opt2/platform/service-kit';
 
 /** Masa core version: configBean `version`, printed as `application.coreversion`. */
@@ -126,12 +127,6 @@ function cfBoolean(value: string): boolean | undefined {
   return isCfNumeric(text) ? Number(text) !== 0 : undefined;
 }
 
-/** CFML `val`: the leading numeric prefix, else 0. */
-function cfVal(value: string): number {
-  const number = Number.parseFloat(value);
-  return Number.isFinite(number) ? number : 0;
-}
-
 /** configBean `cleanFilePath`: drops one trailing `/` or `\`. */
 const cleanFilePath = (path: string): string => (/[/\\]$/.test(path) ? path.slice(0, -1) : path);
 
@@ -170,7 +165,13 @@ const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSet
   adminDomain: { key: 'admindomain', template: '', fallback: '', apply: asIs },
   adminEmail: { key: 'adminemail', template: '', fallback: '', apply: asIs },
   adminSSL: { key: 'adminssl', template: 'false', fallback: false, apply: cfBoolean },
-  sessionTimeout: { key: 'sessiontimeout', template: '180', fallback: 180, apply: cfVal },
+  // html_head prints val(sessionTimeout * 60), so numeric text converts whole (exponents included); other text keeps its Val prefix.
+  sessionTimeout: {
+    key: 'sessiontimeout',
+    template: '180',
+    fallback: 180,
+    apply: (value) => (cfIsNumeric(value) ? cfToNumber(value) : cfVal(value)),
+  },
   // Not a configBean property; the admin layout reads it with defaultValue=true.
   renderMuraAlerts: { key: 'rendermuraalerts', template: 'true', fallback: true, apply: cfBoolean },
   secureCookies: { key: 'securecookies', template: 'false', fallback: false, apply: cfBoolean },

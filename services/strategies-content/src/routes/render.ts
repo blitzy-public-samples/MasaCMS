@@ -6,6 +6,8 @@ import {
   LEGACY_HTML_CONTENT_TYPE,
   LegacyServiceUnavailableError,
   isCfUuid,
+  portcullisInputsOf,
+  portcullisScan,
 } from '@opt2/platform/legacy-compat';
 import { recordOutcomeReason, sendLegacyResponse, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import { StorageObjectNotFoundError, sendLegacyFile, type StoragePort } from '@opt2/platform/storage';
@@ -61,12 +63,11 @@ const ERROR_PAGE = Object.freeze({
   body: LEGACY_ERROR_PAGE_HTML,
 });
 
-/** CFML url scope: keys ignore case, a repeated key's values are joined with `,`. */
+/** CFML url scope after the start-up scan: keys ignore case, a repeated key's values are joined with `,`, an undefined value is absent. */
 function urlScope(query: RenderQuery): Map<string, string> {
   const scope = new Map<string, string>();
-  for (const [key, value] of Object.entries(query)) {
-    if (value !== undefined) scope.set(key.toLowerCase(), typeof value === 'string' ? value : value.join(','));
-  }
+  const inputs = portcullisInputsOf(query).filter(([, value]) => value !== undefined);
+  for (const [key, value] of portcullisScan(inputs).entries) scope.set(key.toLowerCase(), String(value));
   return scope;
 }
 

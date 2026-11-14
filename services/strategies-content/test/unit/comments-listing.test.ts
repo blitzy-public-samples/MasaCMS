@@ -191,6 +191,9 @@ describe.skipIf(!(await pgAvailable()))('comment listings over a throwaway conte
     ['a pageno below 1', { nextn: 10, pageno: 0 }, {}, { recordCount: 30, nextN: 10, pageNo: 1, totalPages: 3, start: 0, end: 10 }],
     ['a fractional nextn', { nextn: '2.5', pageno: 2 }, {}, { recordCount: 30, nextN: 2.5, pageNo: 2, totalPages: 12, start: 2, end: 5 }],
     ['a fractional pageno', { nextn: 10, pageno: '2.5' }, {}, { recordCount: 30, nextN: 10, pageNo: 2.5, totalPages: 3, start: 15, end: 25 }],
+    ['an exponent nextn, which Val reads up to the e', { nextn: '1e2', pageno: 2 }, {}, { recordCount: 30, nextN: 1, pageNo: 2, totalPages: 30, start: 1, end: 2 }],
+    ['an exponent pageno', { nextn: 10, pageno: '2e1' }, {}, { recordCount: 30, nextN: 10, pageNo: 2, totalPages: 3, start: 10, end: 20 }],
+    ['a nextn with trailing text', { nextn: '12abc', pageno: 2 }, {}, { recordCount: 30, nextN: 12, pageNo: 2, totalPages: 3, start: 12, end: 24 }],
     ['a descending name sort', { sortby: 'name', sortdirection: 'desc', nextn: 7, pageno: 2 }, { sortBy: 'name', sortDirection: 'desc' }, { recordCount: 30, nextN: 7, pageNo: 2, totalPages: 5, start: 7, end: 14 }],
     ['the last partial page by flagcount', { sortby: 'flagcount', nextn: 8, pageno: 4 }, { sortBy: 'flagcount' }, { recordCount: 30, nextN: 8, pageNo: 4, totalPages: 4, start: 24, end: 30 }],
   ])('loadComments with %s returns the full-fetch page', async (_label, rc, args, expected) => {

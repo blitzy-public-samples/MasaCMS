@@ -11,7 +11,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import { legacySettings } from '@/lib/env';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw } from '@/lib/html';
-import { ORIGINAL_URL_HEADER, type AdminRequest } from '@/lib/request-context';
+import { forwardedUrlScope, type AdminRequest } from '@/lib/request-context';
 import { selectLayout, type ShellView } from '@/shell/document';
 import type { PageControllerRedirect, PageScreen, Rc, ScreenContext } from '../registry';
 import { CARCH_OWNER, applyCarchDefaults, carchGate } from './controller';
@@ -141,16 +141,16 @@ function imageDetailsData(rc: CarchStruct, requested: string | undefined, loadsC
   };
 }
 
-/** CFML `isDefined('url.<name>')`: the forwarded request target's query, else the pairs of `rc.currentURL`. */
+/** CFML `isDefined('url.<name>')`: the forwarded target's scanned URL scope, else the pairs of `rc.currentURL`. */
 function inUrlScope(req: AdminRequest, name: string): boolean {
-  const target = req.headers.get(ORIGINAL_URL_HEADER);
+  const url = forwardedUrlScope(req.headers);
   const names =
-    target === null
+    url === undefined
       ? req.currentUrl
           .replace(/^\.\/\??/, '')
           .split('&')
           .map((pair) => pair.split('=', 1)[0] ?? '')
-      : [...new URLSearchParams(target.includes('?') ? target.slice(target.indexOf('?') + 1) : '').keys()];
+      : Object.keys(url);
   const lower = name.toLowerCase();
   return names.some((candidate) => candidate.toLowerCase() === lower);
 }

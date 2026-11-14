@@ -2,7 +2,7 @@
 import { inspect } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { collectRouteMatrix } from '@opt2/platform/auth';
-import { etag } from '@opt2/platform/legacy-compat';
+import { etag, scannedRouteKey } from '@opt2/platform/legacy-compat';
 import { validateLogRecord } from '@opt2/platform/logging';
 import { EnvValidationError, SERVICE_CALL_TIMEOUT_MS, type FastifyInstance, type ServiceClient, type ServiceResponse } from '@opt2/platform/service-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
@@ -221,9 +221,53 @@ describe('JSON API over an in-memory registry', () => {
     expect(res.headers.etag).toBe(etag(res.body));
   });
 
+  // The gateway keys the target as sent through scannedRouteKey: onRequestStart tests url.appreload before the scan, whose
+  // stripped name `appreload` of `app-reload` reloads nothing, and ColdFusion joins url names differing only in case.
+  it.each<[string, string, string, number]>([
+    ['a space-padded method', `${API}?method=%20findProperties%20&entityname=group`, 'api:group.findproperties', 200],
+    ['a space-padded entityname', `${API}/findProperties?entityname=%20group%20`, 'api:group.findproperties', 200],
+    ['app-reload, which the scan strips to the reload key', `${API}/group/properties?app-reload`, 'api:group.findproperties', 200],
+    ['the reload key as sent', `${API}/group/properties?appreload`, 'reload:application', 404],
+    ['entityname and ENTITYNAME, joined', `${API}?method=findProperties&entityname=group&ENTITYNAME=x`, 'api:group,x.findproperties', 404],
+  ])('answers %s under the route key the gateway computes', async (_label, url, gatewayKey, status) => {
+    const [path = '', search = ''] = url.split('?');
+    const query: Record<string, string | string[]> = {};
+    for (const [name, value] of new URLSearchParams(search)) {
+      const previous = query[name];
+      query[name] = previous === undefined ? value : [previous, value].flat();
+    }
+    const keyed = scannedRouteKey({ method: 'GET', path, url, query, headers: {} }, { appReloadKey: SETTINGS.appReloadKey });
+
+    const res = await send(app, 'GET', url, await headersFor(S2));
+
+    expect(keyed.result.key).toBe(gatewayKey);
+    expect(res.statusCode).toBe(status);
+    expect(json(res)).toMatchObject(status === 200 ? { method: 'findProperties' } : { error: ERRORS.invalidMethodCall });
+  });
+
+  // The gateway's body read keeps a multipart file part out of the form, so its name reaches the key only as a file.
+  it('keys a multipart file part named method as the gateway does, by its file name alone', async () => {
+    const url = `${API}/group/properties`;
+    const boundary = '----opt2KeyBoundary';
+    const contentType = `multipart/form-data; boundary=${boundary}`;
+    const payload = `--${boundary}\r\nContent-Disposition: form-data; name="method"; filename="findNew"\r\nContent-Type: text/plain\r\n\r\nx\r\n--${boundary}--\r\n`;
+    const keyed = scannedRouteKey(
+      { method: 'POST', path: url, url, query: {}, form: {}, headers: { 'content-type': contentType }, multipartFileNames: [{ field: 'method', filename: 'findNew' }] },
+      { appReloadKey: SETTINGS.appReloadKey },
+    );
+
+    const res = await app.inject({ method: 'POST', url, headers: { host: HOST, ...(await headersFor(S2)), 'content-type': contentType }, payload });
+
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+    expect(keyed.result.key).toBe('api:group.findproperties');
+    expect(res.statusCode).toBe(200);
+    expect(json(res).method).toBe('findProperties');
+  });
+
   it.each([
     ['a registered path site', `/_api/json/v1/${SITE_B}/group/properties`],
     ['a registered url siteid', `${API}/group/properties?siteid=${SITE_B}`],
+    ['a registered url siteid the scan trims', `${API}/group/properties?siteid=%20${SITE_B}%09`],
   ])("refuses %s other than the token's site with 403", async (_label, url) => {
     const res = await send(app, 'GET', url, await headersFor(S2));
 
@@ -283,6 +327,21 @@ describe('JSON API over an in-memory registry', () => {
       method: 'findCurrentUser',
       data: { userid: 'U1', fname: '', isnew: 1, score: 1.5, addresses, memberships: [], membershipids: [], isloggedin: false },
     });
+  });
+
+  // Start-up's scan trims url values, drops NUL and replaces script before processRequest reads params.siteid and url.fields.
+  it.each<[string, Record<string, string>]>([
+    ['siteid=%20default%20&fields=%09fname%0A', { siteid: SITE, fields: 'fname' }],
+    ['expand=%3Cscript%3Ealert(1)%3C%2Fscript%3Eaddresses', { siteid: SITE, expand: '[INVALID]addresses' }],
+    ['expanddepth=2%00&fields=javascript:fname', { siteid: SITE, expanddepth: '2', fields: '[INVALID]fname' }],
+  ])("forwards findCurrentUser's url %s to people as start-up's scan leaves it", async (query, forwarded) => {
+    people.calls.length = 0;
+    people.answer = { status: 200, headers: {}, body: { data: { userid: '', siteid: SITE } } };
+
+    const res = await send(app, 'GET', `${API}/findCurrentUser?${query}`, await headersFor());
+
+    expect(res.statusCode).toBe(200);
+    expect(people.calls.map((call) => call.query)).toEqual([{ endpoint: `http://${HOST}/index.cfm${API}`, adminpath: `http://${HOST}/admin`, ...forwarded }]);
   });
 
   it('flattens findCurrentUser for useDataNamespace=false in ACF key order', async () => {
@@ -472,6 +531,38 @@ describe('JSON API over an in-memory registry', () => {
         expect(json(res)).toMatchObject({ error: ERRORS.serverError });
       },
     );
+
+    // Oracle (own ACF, POST of the same texts as a JSON body): start-up scans only the url and form scopes, so these
+    // validations reach deserializeJSON as sent rather than re-serialized, and their errors iterate in another order.
+    it('answers ad hoc validations posted in a JSON body in the order their unscanned text gives', async () => {
+      const answer = validateAnswer('adhoc:key-order-12');
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `${API}/validate`,
+        headers: { host: HOST, ...(await headersFor(S2)), 'content-type': 'application/json' },
+        payload: JSON.stringify({ entityname: 'group', data: answer.data, validations: answer.validations }),
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(json(res).method).toBe('validate');
+      expect(Object.keys(dataOf(res))).toEqual(['bravo', 'whiskey', 'victor', 'echo', 'delta', 'alpha', 'charlie', 'foxtrot', 'zeta', 'yankee', 'mike', 'xray']);
+    });
+
+    // isPostedFile reads the scanned form after processRequest appended params to it, url values included (jsonApiUtility.cfc:845).
+    it.each<[string, string, Record<string, string> | undefined]>([
+      ['a form value', '', { photo: 'x.upload' }],
+      ['a padded form value', '', { photo: ' x.upload ' }],
+      ['a url value', '&photo=x.upload', undefined],
+    ])("treats a complex regex-checked property named by %s ending .upload as a posted file, halting at the ACF regex check", async (_label, query, form) => {
+      const path = `${API}/validate?entityname=group&data=${encodeURIComponent('{"photo":[1]}')}&validations=${encodeURIComponent('{"properties":{"photo":[{"required":true},{"regex":"1"}]}}')}${query}`;
+
+      const res = await send(app, form === undefined ? 'GET' : 'POST', path, await headersFor(S2), form);
+
+      expect(res.statusCode).toBe(503);
+      expect(json(res)).toMatchObject({ error: ERRORS.serverError });
+    });
+
   });
 
   it('refuses validating a group to a caller without the Users module', async () => {

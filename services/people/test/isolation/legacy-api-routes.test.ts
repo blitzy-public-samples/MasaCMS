@@ -58,6 +58,7 @@ const OPENAPI = parse(readFileSync(fileURLToPath(new URL('../../contracts/openap
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const SETTINGS: LegacyApiSettings = Object.freeze({ adminSSL: false, serverPort: '', context: '', appReloadKey: 'appreload', adminDomain: '' });
 const FORM = Object.freeze({ 'content-type': 'application/x-www-form-urlencoded' });
+const JSON_BODY = Object.freeze({ 'content-type': 'application/json' });
 const CSRF = Object.freeze({ csrf_token: 'TOKEN', csrf_token_expires: '260630110000000' });
 const API = '/_api/json/v1/tenant-a';
 const ENDPOINT = `http://localhost${API.replace('/_api', '/index.cfm/_api')}`;
@@ -175,10 +176,11 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
     return { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: gateway };
   }
 
-  /** Sends one request, checks the answer against the contract and the legacy wire headers, and returns its JSON body. */
-  async function send(method: Method, url: string, actor?: TestActor, form?: Record<string, string>, extra: Record<string, string> = {}) {
-    const headers = { ...(await headersFor(actor)), ...(form === undefined ? {} : FORM), ...extra };
-    const res = await app.inject({ method, url, headers, ...(form === undefined ? {} : { payload: new URLSearchParams(form).toString() }) });
+  /** Sends one request, `form` as a form or a JSON body, checks the answer against the contract and the legacy wire headers, and returns its JSON body. */
+  async function send(method: Method, url: string, actor?: TestActor, form?: Record<string, string>, extra: Record<string, string> = {}, json = false) {
+    const headers = { ...(await headersFor(actor)), ...(form === undefined ? {} : json ? JSON_BODY : FORM), ...extra };
+    const payload = form === undefined ? undefined : json ? JSON.stringify(form) : new URLSearchParams(form).toString();
+    const res = await app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload }) });
     assertResponseMatchesOpenApi(OPENAPI, { method, path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
     if (res.statusCode !== 503) expect(res.headers.etag).toMatch(ETAG);
     return { status: res.statusCode, headers: res.headers, body: res.json() as Record<string, unknown> };
@@ -531,6 +533,23 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
       expect(identity.calls).toEqual(expect.arrayContaining(['prepare', 'commit', 'finish']));
       // The answer is built from the committed operation, so identity is not called after its finish.
       expect(identity.calls.at(-1)).toBe('finish');
+    });
+
+    // Oracle: root start-up's Portcullis scan of url and form [legacy: core/appcfc/scriptProtect_include.cfm:4-20]; a JSON body is not scanned.
+    it.each<[string, 'form' | 'url' | 'json', string]>([
+      ['a form', 'form', '[INVALID]Cassie'],
+      ['the url', 'url', '[INVALID]Cassie'],
+      ['a JSON body', 'json', '<script>alert(1)</script>Cassie'],
+    ])('stores the fname %s carries as request start-up leaves it', async (_name, carrier, stored) => {
+      const userId = SELF_SAVER.sub;
+      const before = await storedPerson(userId);
+      const fname = '<script>alert(1)</script>Cassie';
+      const values = { ...CSRF, userid: userId, siteid: TENANT_A.siteId, lname: before?.lname ?? '', email: before?.email ?? '', username: 'casey' };
+      const url = carrier === 'url' ? `${API}/user?fname=${encodeURIComponent(fname)}` : `${API}/user`;
+      const res = await send('POST', url, SELF_SAVER, carrier === 'url' ? values : { ...values, fname }, {}, carrier === 'json');
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ fname: stored });
+      expect((await storedPerson(userId))?.fname).toBe(stored);
     });
 
     it("answers a posted photo file with the extension strategies-content gives it under the operation's intent, before identity's prepare", async () => {
