@@ -50,9 +50,9 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | relations | — | 121 |
 | storedProcedures | static | 0 |
 | storedProcedures | live | pending-run |
-| dispositions | carry | 754 |
+| dispositions | carry | 755 |
 | dispositions | legacy-served | 150 |
-| dispositions | decision | 136 |
+| dispositions | decision | 135 |
 | dispositions | retired | 21 |
 | notes | withSiteIdStatic | Counts tcontentfilemetadata, whose siteID comes from the beanORMVersioned base, and tremotepointer, which an install creates lazily; a fresh live catalog shows one fewer. |
 | notes | dispositions | Tallied over controller variants, frontEnd entries, site-monitor steps, routes, entities, services and tables. |
@@ -196,16 +196,16 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:cextend.editsubtype` | `admin:cextend.editsubtype` | — | decision (3) | none | page (text/html) |
 | `ctl:cextend.export` | `admin:cextend.export` | — | decision (3) | none | page (text/html) |
 | `ctl:cextend.exportsubtype` | `admin:cextend.exportsubtype` | — | decision (3) | none | page (text/html) |
-| `ctl:cextend.importsubtypes` | `admin:cextend.importsubtypes` | spans communications, identity, people, programs-sites, strategies-content | decision (2) | validates `import` | page (text/html) |
+| `ctl:cextend.importsubtypes` | `admin:cextend.importsubtypes` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (2) | validates `import` | page (text/html) |
 | `ctl:cextend.listsets` | `admin:cextend.listsets` | — | decision (3) | none | page (text/html) |
 | `ctl:cextend.listsubtypes` | `admin:cextend.listsubtypes` | — | decision (3) | none | page (text/html) |
-| `ctl:cextend.saveattributesort` | `admin:cextend.saveattributesort` | spans people, programs-sites, strategies-content | decision (3) | none | json (application/json) |
-| `ctl:cextend.saveextendsetsort` | `admin:cextend.saveextendsetsort` | spans people, programs-sites, strategies-content | decision (3) | none | json (application/json) |
-| `ctl:cextend.saverelatedsetsort` | `admin:cextend.saverelatedsetsort` | spans people, programs-sites, strategies-content | decision (3) | none | json (application/json) |
-| `ctl:cextend.updateattribute` | `admin:cextend.updateattribute` | spans identity, people, programs-sites, strategies-content | decision (3) | validates `rc.attributeid` | redirect |
-| `ctl:cextend.updaterelatedcontentset` | `admin:cextend.updaterelatedcontentset` | spans people, programs-sites, strategies-content | decision (3) | validates `rc.relatedContentSetID` | redirect |
-| `ctl:cextend.updateset` | `admin:cextend.updateset` | spans identity, people, programs-sites, strategies-content | decision (3) | validates `rc.extendsetid` | redirect |
-| `ctl:cextend.updatesubtype` | `admin:cextend.updatesubtype` | spans identity, people, programs-sites, strategies-content | decision (3) | validates `rc.subtypeid` | redirect |
+| `ctl:cextend.saveattributesort` | `admin:cextend.saveattributesort` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3) | none | json (application/json) |
+| `ctl:cextend.saveextendsetsort` | `admin:cextend.saveextendsetsort` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3) | none | json (application/json) |
+| `ctl:cextend.saverelatedsetsort` | `admin:cextend.saverelatedsetsort` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3) | none | json (application/json) |
+| `ctl:cextend.updateattribute` | `admin:cextend.updateattribute` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3) | validates `rc.attributeid` | redirect |
+| `ctl:cextend.updaterelatedcontentset` | `admin:cextend.updaterelatedcontentset` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3) | validates `rc.relatedContentSetID` | redirect |
+| `ctl:cextend.updateset` | `admin:cextend.updateset` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3) | validates `rc.extendsetid` | redirect |
+| `ctl:cextend.updatesubtype` | `admin:cextend.updatesubtype` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3) | validates `rc.subtypeid` | redirect |
 | `ctl:cfeed.edit` | `admin:cfeed.edit` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:cfeed.import1` | `admin:cfeed.import1` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:cfeed.import2` | `admin:cfeed.import2` | strategies-content | decision (2) (corrected; expected carry) | none | page (text/html) |
@@ -257,10 +257,10 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:csettings.updatesite{bundle}` | `admin:csettings.updatesite{bundle}` | spans communications, identity, people, programs-sites, reporting, strategies-content | decision (2) | validates `"" \| rc.siteID` | redirect |
 | `ctl:csettings.updatesite{action=add}` | `admin:csettings.updatesite{action=add}` | programs-sites | decision (2) | validates `"" \| rc.siteID` | redirect |
 | `ctl:csettings.updatesite{action=delete}` | `admin:csettings.updatesite{action=delete}` | programs-sites | decision (2) | validates `"" \| rc.siteID` | redirect |
-| `ctl:csettings.updatesite{action=update}` | `admin:csettings.updatesite{action=update}` | spans people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | validates `"" \| rc.siteID` | redirect |
+| `ctl:csettings.updatesite{action=update}` | `admin:csettings.updatesite{action=update}` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (2) (corrected; expected carry) | validates `"" \| rc.siteID` | redirect |
 | `ctl:csettings.updatesite` | `admin:csettings.updatesite` | programs-sites | carry (5) | validates `"" \| rc.siteID` | redirect |
 | `ctl:ctrash.detail` | `admin:ctrash.detail` | — | decision (3) | none | page (text/html) |
-| `ctl:ctrash.empty` | `admin:ctrash.empty` | spans communications, identity, people, programs-sites, strategies-content | decision (2) | validates `'emptytrash' & rc.siteID` | redirect |
+| `ctl:ctrash.empty` | `admin:ctrash.empty` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (2) | validates `'emptytrash' & rc.siteID` | redirect |
 | `ctl:ctrash.list` | `admin:ctrash.list` | — | decision (3) | none | page (text/html) |
 | `ctl:ctrash.restore` | `admin:ctrash.restore` | — | decision (3) | validates `'restore' & rc.objectID` | redirect |
 | `ctl:cusers.addtogroup` | `admin:cusers.addtogroup` | identity | carry (5) | validates `rc.userid & rc.groupid & 'addtogroup'` | redirect |
@@ -485,7 +485,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `api:group.validate` | `api:group.validate` | identity | carry (5) | none | — |
 | `api:login` | `api:login` | identity | carry (5) | validates `login` | — |
 | `api:logout` | `api:logout` | identity | carry (5) | none | — |
-| `api:processasyncobject` | `api:processasyncobject` | spans communications, identity, people, programs-sites, strategies-content | decision (3) (corrected; expected legacy-served) | validates | `opt2/decision-list.json#api:processasyncobject` |
+| `api:processasyncobject` | `api:processasyncobject` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3) (corrected; expected legacy-served) | validates | `opt2/decision-list.json#api:processasyncobject` |
 | `api:processasyncobject{saveform}` | `api:processasyncobject{saveform}` | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | validates `getValue('formID')` | `opt2/decision-list.json#api:processasyncobject{saveform}` |
 | `api:site.delete` | `api:site.delete` | programs-sites | carry (5) | validates `arguments.id` | — |
 | `api:site.findall` | `api:site.findall` | programs-sites | carry (5) | none | — |
@@ -495,7 +495,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `api:site.findpermissions` | `api:site.findpermissions` | programs-sites | carry (5) | none | — |
 | `api:site.findproperties` | `api:site.findproperties` | programs-sites | carry (5) | none | — |
 | `api:site.findquery` | `api:site.findquery` | programs-sites | carry (5) | none | — |
-| `api:site.save` | `api:site.save` | spans communications, identity, people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#trazunasettings` |
+| `api:site.save` | `api:site.save` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (2) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#trazunasettings` |
 | `api:site.save{bundle}` | `api:site.save{bundle}` | spans communications, identity, people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#tplugindisplayobjects` |
 | `api:site.validate` | `api:site.validate` | programs-sites | carry (5) | none | — |
 | `api:stats.delete` | `api:stats.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
@@ -703,7 +703,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `rest:site.findpermissions` | `rest:site.findpermissions` | programs-sites | carry (5) | none | — |
 | `rest:site.findproperties` | `rest:site.findproperties` | programs-sites | carry (5) | none | — |
 | `rest:site.findquery` | `rest:site.findquery` | programs-sites | carry (5) | none | — |
-| `rest:site.save` | `rest:site.save` | spans communications, identity, people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#trazunasettings` |
+| `rest:site.save` | `rest:site.save` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (2) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#trazunasettings` |
 | `rest:site.save{bundle}` | `rest:site.save{bundle}` | spans communications, identity, people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#tplugindisplayobjects` |
 | `rest:site.validate` | `rest:site.validate` | programs-sites | carry (5) | none | — |
 | `rest:stats.delete` | `rest:stats.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
@@ -838,7 +838,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `fe:doaction=updateprofile` | doaction=updateprofile: address create, update or delete, or userManager.update then loginByUserID | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) | validates `editprofile` | yes | relogin |
 | `fe:doaction=validateMember` | doaction=validateMember: master mailing list display object validates a member | communications | legacy-served (4) | validates | no | none |
 | `fe:processasyncobject{saveform}` | processAsyncObject rendering the form display object with saveform | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | validates `getValue('formID')` | yes | none |
-| `fe:render` | page render through handleRootRequest; session tracking writes tsessiontracking | spans communications, identity, people, programs-sites, reporting, strategies-content | decision (3) (corrected; expected legacy-served) | validates | yes | relogin |
+| `fe:render` | page render through handleRootRequest; session tracking writes tsessiontracking | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3) (corrected; expected legacy-served) | validates | yes | relogin |
 | `fe:saveform` | form display object submits through dataCollectionBean.submit while rendering | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | validates `getValue('formID')` | yes | none |
 
 ## Site monitor
@@ -896,12 +896,12 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `tbl:tchangesetrollback` | orm | yes | yes | strategies-content | 1 | carry (5) | 4 |
 | `tbl:tchangesets` | migration | yes | yes | strategies-content | 1 | carry (5) | 12 |
 | `tbl:tchangesettagassign` | orm | yes | yes | strategies-content | 1 | carry (5) | 12 |
-| `tbl:tclassextend` | bootstrap | yes | yes | people, programs-sites, strategies-content | 1 | carry (5) | 15 |
-| `tbl:tclassextendattributes` | bootstrap | yes | yes | people, programs-sites, strategies-content | 1 | carry (5) | 15 |
-| `tbl:tclassextenddata` | bootstrap | yes | yes | people, programs-sites, strategies-content | 1 | carry (5) | 41 |
+| `tbl:tclassextend` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 15 |
+| `tbl:tclassextendattributes` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 15 |
+| `tbl:tclassextenddata` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 41 |
 | `tbl:tclassextenddatauseractivity` | bootstrap | yes | yes | identity, people | 1 | carry (5) | 28 |
-| `tbl:tclassextendrcsets` | orm | yes | yes | people, programs-sites, strategies-content | 1 | carry (5) | 6 |
-| `tbl:tclassextendsets` | bootstrap | yes | yes | people, programs-sites, strategies-content | 1 | carry (5) | 16 |
+| `tbl:tclassextendrcsets` | orm | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 6 |
+| `tbl:tclassextendsets` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 16 |
 | `tbl:tclustercommands` | migration | no | yes | — | 5 | decision (2) | 10 |
 | `tbl:tclusterpeers` | migration | no | yes | — | 5 | decision (2) | 9 |
 | `tbl:tcontent` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 101 |
@@ -954,7 +954,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `tbl:tsessiontracking` | bootstrap | yes | yes | reporting | 1 | legacy-served (4) | 6 |
 | `tbl:tsettings` | bootstrap | yes | yes (bootstrap: no) | programs-sites | 1 | carry (5) | 32 |
 | `tbl:tsystemobjects` | bootstrap | yes | no | programs-sites | 1 | carry (5) | 15 |
-| `tbl:ttrash` | migration | yes | yes | communications, identity, people, programs-sites, strategies-content | 1 | carry (5) | 10 |
+| `tbl:ttrash` | migration | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 10 |
 | `tbl:tuseraddresses` | bootstrap | yes | yes | identity, people | 1 | carry (5) | 13 |
 | `tbl:tuserdevice` | orm | yes | yes | identity | 1 | carry (5) | 2 |
 | `tbl:tuserremotesessions` | migration | no | yes | identity | 1 | carry (5) | 5 |

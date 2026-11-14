@@ -760,7 +760,7 @@ const EXTEND_SUBTYPE_COLUMNS = [
   { name: 'adminonly', type: 'i' },
 ] as const satisfies Columns;
 
-/** `content.extend_subtype`, the `baseTable = tcontent` rows of Masa `tclassextend`. */
+/** `content.extend_subtype`, the Masa `tclassextend` rows whose `baseTable` strategies-content owns. */
 export const EXTEND_SUBTYPE = unitTable('content.extend_subtype', EXTEND_SUBTYPE_COLUMNS, ['subtypeid']);
 
 const EXTEND_SET_COLUMNS = [

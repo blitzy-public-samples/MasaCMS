@@ -1,10 +1,11 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** The surveys mappings against table ownership, the fixture DDL and the surveys tables: column coverage, units, tenant sources and byte-exact round trips. */
+/** The surveys mappings against table ownership, the fixture DDL and the surveys tables: column coverage, units, splits, tenant sources, byte-exact round trips and migration applies. */
 import { Buffer } from 'node:buffer';
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_UMBRELLA_SITE_ID,
+  MIGRATION_PATH_PREFIX,
   diffCoverage,
   encodeRow,
   mappingCoverage,
@@ -17,21 +18,36 @@ import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B } from '@opt2/platform/testing';
 import {
   MAPPINGS,
+  extendAttributeMapping,
+  extendDataMapping,
+  extendRcSetMapping,
+  extendSetMapping,
+  extendSubtypeMapping,
   surveyMapping,
   surveyReminderMapping,
   surveyResponseMapping,
   surveyScheduleMapping,
   surveyTargetMapping,
+  trashMapping,
 } from '../../src/migration/mappings/index.js';
 import { OWNED_TABLES, TARGET_ONLY_COLUMNS, UNITS } from '../../src/repo/tables.js';
+import { buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 
 const OWNER = 'surveys';
 
 interface OwnershipTarget {
   unit: string;
+  rowPredicate: string | null;
   keyColumns: string[];
   columnPolicy: 'whole-table' | 'explicit';
   ownedColumns: string[];
+}
+
+interface OwnershipSplit {
+  by: string;
+  resolve?: string;
+  baseTableOwners?: Record<string, string>;
+  classMap?: { classes: string[]; ownerBy?: string; owners?: Record<string, string> }[];
 }
 
 interface OwnershipTable {
@@ -42,6 +58,7 @@ interface OwnershipTable {
   serializedDocumentColumns: string[];
   tenantResolution: string | null;
   tenantParent?: { table: string; join: string };
+  split?: OwnershipSplit;
   targets?: OwnershipTarget[];
 }
 
@@ -50,13 +67,28 @@ interface Ownership {
   tables: OwnershipTable[];
 }
 
-/** A surveys target of table ownership with its legacy table. */
+/** A surveys target of table ownership with its legacy table and the key `mappingCoverage` files it under. */
 interface OwnedTarget {
   table: OwnershipTable;
   target: OwnershipTarget;
+  coverageKey: string;
 }
 
 type LegacyRow = Readonly<Record<string, unknown>>;
+
+/** Discriminator values a split target's row predicate names: `baseTable in ('<table>', …)` or `classMap owner = <owner>`. */
+function predicateValues(target: OwnershipTarget): string[] {
+  const listed = /^baseTable in \((.+)\)$/.exec(target.rowPredicate ?? '')?.[1];
+  if (listed !== undefined) return [...listed.matchAll(/'([^']+)'/g)].map((match) => match[1] as string);
+  const owner = /^classMap owner = (\S+)$/.exec(target.rowPredicate ?? '')?.[1];
+  if (owner === undefined) throw new Error(`${target.unit}: unreadable row predicate ${String(target.rowPredicate)}`);
+  return [owner];
+}
+
+/** `<table>`, or `<table>{<by>=<values>}` for a split table, the values those of the target's row predicate. */
+function coverageKeyOf(table: OwnershipTable, target: OwnershipTarget): string {
+  return table.split === undefined ? table.table : `${table.table}{${table.split.by}=${predicateValues(target).join(',')}}`;
+}
 
 const read = (relative: string): string => readFileSync(new URL(relative, import.meta.url), 'utf8');
 const OWNERSHIP = JSON.parse(read('../../../../opt2/table-ownership.json')) as Ownership;
@@ -64,8 +96,25 @@ const FIXTURE_DDL = read('../../../../legacy-fixtures/sql/surveys/100_tables.sql
 const OWNED_UNITS = OWNERSHIP.units.filter((unit) => unit.owner === OWNER);
 const OWNED_UNIT_IDS: ReadonlySet<string> = new Set(OWNED_UNITS.map((unit) => unit.unit));
 const OWNED_TARGETS: readonly OwnedTarget[] = OWNERSHIP.tables.flatMap((table) =>
-  (table.targets ?? []).filter((target) => OWNED_UNIT_IDS.has(target.unit)).map((target) => ({ table, target })),
+  (table.targets ?? [])
+    .filter((target) => OWNED_UNIT_IDS.has(target.unit))
+    .map((target) => ({ table, target, coverageKey: coverageKeyOf(table, target) })),
 );
+/** Targets of the `synthetic.survey*` fixture tables, which surveys owns whole. */
+const FIXTURE_TARGETS = OWNED_TARGETS.filter(({ table }) => table.split === undefined);
+/** Targets of the surveys shares of the split Masa class-extension tables and `ttrash`. */
+const SHARE_TARGETS = OWNED_TARGETS.filter(({ table }) => table.split !== undefined);
+const EXTEND_MAPPINGS: readonly Mapping[] = [extendSubtypeMapping, extendSetMapping, extendAttributeMapping, extendRcSetMapping, extendDataMapping];
+
+/** Discriminator values the split rule of `mapping` accepts, in declared order. */
+function splitValues(mapping: Mapping): Array<string | number> {
+  return mapping.split === undefined ? [] : [mapping.split.value].flat();
+}
+
+/** The apply-row discriminator of an owned row: the first accepted value when the split rule reads no row column. */
+function ownDiscriminator(mapping: Mapping): string | number | undefined {
+  return mapping.split !== undefined && mapping.split.column === undefined ? splitValues(mapping)[0] : undefined;
+}
 
 /** The one mapping of the target's legacy table onto its unit. */
 function mappingFor({ table, target }: OwnedTarget): Mapping {
@@ -149,6 +198,95 @@ const RESPONSE_ROW: LegacyRow = {
   created: at(4, 14, 998),
 };
 
+const SUBTYPE_ID = cfId(60);
+const SET_ID = cfId(61);
+const ATTRIBUTE_ID = 4021;
+const SUBTYPE_ROW: LegacyRow = {
+  subTypeID: SUBTYPE_ID,
+  siteID: TENANT_A.siteId,
+  baseTable: 'synthetic.survey',
+  baseKeyField: 'survey_id',
+  dataTable: 'tclassextenddata',
+  type: 'Survey',
+  subType: 'Pulse',
+  isActive: 1,
+  notes: null,
+  lastUpdate: at(1, 9),
+  dateCreated: at(1, 8, 3),
+  lastUpdateBy: 'Admin User',
+  hasSummary: 0,
+  hasBody: 0,
+  description: 'Pulse fields: très bien',
+  availableSubTypes: '',
+  iconclass: 'mi-clipboard',
+  hasAssocFile: 0,
+  hasConfigurator: 1,
+  adminonly: 0,
+};
+const SET_ROW: LegacyRow = {
+  extendSetID: SET_ID,
+  subTypeID: SUBTYPE_ID,
+  categoryID: null,
+  siteID: TENANT_A.siteId,
+  name: 'Default',
+  orderno: 1,
+  isActive: 1,
+  container: 'Default',
+};
+const ATTRIBUTE_ROW: LegacyRow = {
+  attributeID: ATTRIBUTE_ID,
+  extendSetID: SET_ID,
+  siteID: TENANT_A.siteId,
+  name: 'pulseAudience',
+  label: 'Audience',
+  hint: null,
+  type: 'SelectBox',
+  orderno: 1,
+  isActive: 1,
+  required: 'false',
+  validation: '',
+  regex: '',
+  message: '',
+  defaultValue: 'staff',
+  optionList: 'staff^managers',
+  optionLabelList: 'Staff^Managers',
+  adminonly: 0,
+};
+const RC_SET_ROW: LegacyRow = {
+  subTypeID: SUBTYPE_ID,
+  availableSubTypes: 'Page/Default',
+  siteID: TENANT_A.siteId,
+  entitytype: 'content',
+  name: 'Related pages',
+  orderNo: 1,
+  relatedContentSetID: cfId(62),
+};
+const DATA_ROW: LegacyRow = {
+  dataID: 98021,
+  baseID: SURVEY_ID,
+  attributeID: ATTRIBUTE_ID,
+  siteID: TENANT_A.siteId,
+  attributeValue: 'staff',
+  remoteID: null,
+  datetimevalue: at(2, 8),
+  numericvalue: 12.5,
+  stringvalue: 'staff',
+};
+const TRASH_ROW: LegacyRow = {
+  objectID: SUBTYPE_ID,
+  parentID: cfId(63),
+  siteID: TENANT_A.siteId,
+  objectLabel: 'Survey/Pulse',
+  objectClass: 'extendObject',
+  objectType: 'Survey',
+  objectSubType: 'Pulse',
+  objectstring: "<wddxPacket version='1.0'><header/><data><struct><var name='SUBTYPE'><string>Pulse</string></var></struct></data></wddxPacket>",
+  deletedDate: at(5, 11),
+  deletedBy: 'Admin User',
+  deleteid: cfId(64),
+  orderno: 1,
+};
+
 const SAMPLES: ReadonlyArray<readonly [label: string, mapping: Mapping, row: LegacyRow]> = [
   ['survey', surveyMapping, SURVEY_ROW],
   ['survey_schedule', surveyScheduleMapping, SCHEDULE_ROW],
@@ -156,6 +294,12 @@ const SAMPLES: ReadonlyArray<readonly [label: string, mapping: Mapping, row: Leg
   ['survey_target with a group', surveyTargetMapping, TARGET_GROUP_ROW],
   ['survey_target without a group', surveyTargetMapping, TARGET_SITE_ROW],
   ['survey_response', surveyResponseMapping, RESPONSE_ROW],
+  ['tclassextend', extendSubtypeMapping, SUBTYPE_ROW],
+  ['tclassextendsets', extendSetMapping, SET_ROW],
+  ['tclassextendattributes', extendAttributeMapping, ATTRIBUTE_ROW],
+  ['tclassextendrcsets', extendRcSetMapping, RC_SET_ROW],
+  ['tclassextenddata', extendDataMapping, DATA_ROW],
+  ['ttrash', trashMapping, TRASH_ROW],
 ];
 
 const LOOKUPS: TenantLookups = {
@@ -173,14 +317,14 @@ function targetOf(mapping: Mapping, row: LegacyRow): Record<string, unknown> {
 
 describe('surveys mapping coverage', () => {
   it('maps exactly the legacy columns table ownership assigns to surveys', () => {
-    const expected = Object.fromEntries(OWNED_TARGETS.map(({ table, target }) => [table.table, target.ownedColumns]));
+    const expected = Object.fromEntries(OWNED_TARGETS.map(({ coverageKey, target }) => [coverageKey, target.ownedColumns]));
     const diff = diffCoverage(expected, mappingCoverage(MAPPINGS));
 
     expect(OWNED_TARGETS).toHaveLength(UNITS.length);
     expect(diff, JSON.stringify(diff, null, 2)).toStrictEqual({ missing: {}, extra: {} });
   });
 
-  it.each(OWNED_TARGETS.map((entry) => [entry.table.table, entry.target.unit, entry] as const))(
+  it.each(FIXTURE_TARGETS.map((entry) => [entry.table.table, entry.target.unit, entry] as const))(
     'maps every %s fixture column in catalog order onto %s, keyed on its primary key',
     (_legacyTable, unit, entry) => {
       const mapping = mappingFor(entry);
@@ -194,6 +338,21 @@ describe('surveys mapping coverage', () => {
     },
   );
 
+  it.each(SHARE_TARGETS.map((entry) => [entry.coverageKey, entry.target.unit, entry] as const))(
+    'maps every %s live column in catalog order onto %s, keyed on its primary key',
+    (_coverageKey, unit, entry) => {
+      const mapping = mappingFor(entry);
+      // Only a split resolved from the table's own column (`<table>.<column>`) reads it from the row.
+      const ownColumn = new RegExp(`^${entry.table.table}\\.(\\w+)$`).exec(entry.table.split?.resolve ?? '')?.[1];
+
+      expect(entry.target.columnPolicy).toBe('whole-table');
+      expect(entry.target.ownedColumns).toStrictEqual(entry.table.columns);
+      expect(mapping.legacyColumns.map((column) => column.name)).toStrictEqual(entry.table.columns);
+      expect([mapping.targetTable, mapping.key, mapping.keyless, mapping.fold]).toStrictEqual([unit, entry.target.keyColumns, false, undefined]);
+      expect([mapping.split?.by, splitValues(mapping), mapping.split?.column]).toStrictEqual([entry.table.split?.by, predicateValues(entry.target), ownColumn]);
+    },
+  );
+
   it('declares one mapping per surveys unit in UNITS order, each from the legacy table ownership lists for it', () => {
     expect(MAPPINGS.map((mapping) => mapping.unit)).toStrictEqual([...UNITS]);
     expect([...OWNED_UNIT_IDS].sort()).toStrictEqual([...UNITS].sort());
@@ -203,9 +362,21 @@ describe('surveys mapping coverage', () => {
   });
 
   it('lists the named mappings in the frozen barrel, survey before its children', () => {
-    const named = [surveyMapping, surveyScheduleMapping, surveyReminderMapping, surveyTargetMapping, surveyResponseMapping];
+    const named = [
+      surveyMapping,
+      surveyScheduleMapping,
+      surveyReminderMapping,
+      surveyTargetMapping,
+      surveyResponseMapping,
+      extendSubtypeMapping,
+      extendSetMapping,
+      extendAttributeMapping,
+      extendRcSetMapping,
+      extendDataMapping,
+      trashMapping,
+    ];
 
-    expect(MAPPINGS.map((mapping) => named.indexOf(mapping))).toStrictEqual([0, 1, 2, 3, 4]);
+    expect(MAPPINGS.map((mapping) => named.indexOf(mapping))).toStrictEqual(named.map((_mapping, index) => index));
     expect(Object.isFrozen(MAPPINGS)).toBe(true);
   });
 
@@ -225,7 +396,7 @@ describe('surveys mapping coverage', () => {
     expect(surveyScheduleMapping.legacyColumns.map((column) => column.name)).not.toContain('row_version');
   });
 
-  it('maps the serialized answers document as byte-exact text', () => {
+  it('maps the serialized answers and trash objectstring documents as byte-exact text', () => {
     const documents = OWNED_TARGETS.flatMap(({ table }) =>
       table.serializedDocumentColumns.map((name) => [
         table.table,
@@ -234,7 +405,10 @@ describe('surveys mapping coverage', () => {
       ]),
     );
 
-    expect(documents).toStrictEqual([[surveyResponseMapping.legacyTable, 'answers', 's']]);
+    expect(documents).toStrictEqual([
+      [trashMapping.legacyTable, 'objectstring', 's'],
+      [surveyResponseMapping.legacyTable, 'answers', 's'],
+    ]);
   });
 });
 
@@ -287,6 +461,129 @@ describe('tenant sources', () => {
     expect(resolved).toStrictEqual(IN_TENANT_A);
     expect(resolved.tenantId).not.toBe(tenantIdForSite(TENANT_B.siteId));
   });
+
+  it.each(SHARE_TARGETS.map((entry) => [entry.table.table, entry] as const))(
+    'resolves the %s tenant from the row its own siteID names, else the umbrella as an orphan',
+    (_legacyTable, entry) => {
+      const mapping = mappingFor(entry);
+      const source: TenantSource = mapping.tenant ?? { kind: 'umbrella' };
+
+      expect(['siteID', 'siteID-or-umbrella']).toContain(entry.table.tenantResolution);
+      expect(mapping.tenant).toStrictEqual({ kind: 'site', column: entry.table.siteIdColumn });
+      expect(resolveTenant(source, { siteID: TENANT_A.siteId }, LOOKUPS)).toStrictEqual(IN_TENANT_A);
+      expect(resolveTenant(source, { siteID: null }, LOOKUPS)).toStrictEqual({
+        tenantId: tenantIdForSite(DEFAULT_UMBRELLA_SITE_ID),
+        siteId: DEFAULT_UMBRELLA_SITE_ID,
+        orphan: true,
+      });
+    },
+  );
+});
+
+describe('split shares', () => {
+  const extendTarget = SHARE_TARGETS.find(({ target }) => target.unit === extendSubtypeMapping.unit);
+  const baseTables = extendTarget === undefined ? [] : predicateValues(extendTarget.target);
+  const trashTable = ownershipTable(trashMapping.legacyTable);
+
+  /** Whether `mapping` takes a row of a subtype with `baseTable`, read from the row or carried by the apply row. */
+  function takes(mapping: Mapping, baseTable: string | undefined): boolean {
+    const column = mapping.split?.column;
+    return column === undefined ? mapping.acceptsRow({}, baseTable) : mapping.acceptsRow({ [column]: baseTable ?? null });
+  }
+
+  it('takes exactly the base tables table ownership gives surveys, for subtypes and for trashed extend objects', () => {
+    const surveysOf = (owners: Record<string, string> | undefined): string[] =>
+      Object.entries(owners ?? {}).filter(([, owner]) => owner === OWNER).map(([table]) => table).sort();
+    const extendObject = trashTable.split?.classMap?.find((entry) => entry.classes.includes('extendObject'));
+
+    expect(baseTables).toHaveLength(5);
+    expect(SHARE_TARGETS.filter(({ table }) => table.split?.by === 'baseTable').map(({ target }) => predicateValues(target))).toStrictEqual(
+      EXTEND_MAPPINGS.map(() => baseTables),
+    );
+    expect(surveysOf(extendTarget?.table.split?.baseTableOwners)).toStrictEqual([...baseTables].sort());
+    expect([extendObject?.ownerBy, surveysOf(extendObject?.owners)]).toStrictEqual(['baseTable', [...baseTables].sort()]);
+  });
+
+  it.each(EXTEND_MAPPINGS.flatMap((mapping) => baseTables.map((baseTable) => [mapping.legacyTable, baseTable, mapping] as const)))(
+    'takes a %s row of a subtype with baseTable %s',
+    (_legacyTable, baseTable, mapping) => {
+      expect(takes(mapping, baseTable)).toBe(true);
+    },
+  );
+
+  it.each(
+    EXTEND_MAPPINGS.flatMap((mapping) =>
+      (['tcontent', 'temails', 'custom', undefined] as const).map((baseTable) => [mapping.legacyTable, baseTable ?? 'no discriminator', baseTable, mapping] as const),
+    ),
+  )('leaves a %s row with %s to another owner or legacy', (_legacyTable, _label, baseTable, mapping) => {
+    expect(takes(mapping, baseTable)).toBe(false);
+  });
+
+  it('decides a tclassextend row by its own baseTable, never by an apply-row discriminator', () => {
+    expect(extendSubtypeMapping.acceptsRow({ baseTable: 'tcontent' }, 'synthetic.survey')).toBe(false);
+    expect(extendSubtypeMapping.acceptsRow({ baseTable: 'synthetic.survey_target' }, 'tcontent')).toBe(true);
+  });
+
+  it.each([
+    ['surveys', true],
+    ['communications', false],
+    ['programs-sites', false],
+    ['extendObject', false],
+    ['no discriminator', false],
+  ] as const)('takes a ttrash row whose class-map owner is %s: %s', (owner, taken) => {
+    expect(trashTable.split?.by).toBe('objectClass');
+    expect(trashMapping.acceptsRow({ objectClass: 'extendObject' }, owner === 'no discriminator' ? undefined : owner)).toBe(taken);
+  });
+});
+
+describe('migration applies of the split shares', () => {
+  type ShareCase = readonly [unit: string, mapping: Mapping, owned: LegacyRow, ownedDiscriminator: string | undefined, other: LegacyRow, otherDiscriminator: string | undefined];
+  const CASES: readonly ShareCase[] = [
+    [extendSubtypeMapping.unit, extendSubtypeMapping, SUBTYPE_ROW, undefined, { ...SUBTYPE_ROW, subTypeID: cfId(70), baseTable: 'custom' }, undefined],
+    [extendSetMapping.unit, extendSetMapping, SET_ROW, 'synthetic.survey', { ...SET_ROW, extendSetID: cfId(71) }, 'custom'],
+    [extendAttributeMapping.unit, extendAttributeMapping, ATTRIBUTE_ROW, 'synthetic.survey_target', { ...ATTRIBUTE_ROW, attributeID: 4022 }, 'tcontent'],
+    [extendRcSetMapping.unit, extendRcSetMapping, RC_SET_ROW, 'synthetic.survey_response', { ...RC_SET_ROW, relatedContentSetID: cfId(72) }, 'temails'],
+    [extendDataMapping.unit, extendDataMapping, DATA_ROW, 'synthetic.survey_schedule', { ...DATA_ROW, dataID: 98022 }, undefined],
+    [trashMapping.unit, trashMapping, TRASH_ROW, 'surveys', { ...TRASH_ROW, objectID: cfId(73) }, 'communications'],
+  ];
+  let t: TestApp;
+
+  beforeEach(async () => {
+    t = await buildTestApp();
+  });
+
+  afterEach(async () => {
+    await t.app.close();
+  });
+
+  it.each(CASES)('applies to %s only the row of its own share', async (unit, mapping, owned, ownedDiscriminator, other, otherDiscriminator) => {
+    const row = (values: LegacyRow, discriminator: string | undefined) => ({
+      op: 'upsert',
+      row: encodeRow(mapping.legacyColumns, values),
+      ...(discriminator === undefined ? {} : { discriminator }),
+    });
+    const batchId = `share-${unit}`;
+    const res = await t.app.inject({
+      method: 'POST',
+      url: `${MIGRATION_PATH_PREFIX}/apply`,
+      headers: await headersFor('service:migration'),
+      payload: {
+        batchId,
+        origin: 'backfill',
+        legacyTable: mapping.legacyTable,
+        siteId: TENANT_A.siteId,
+        columns: mapping.legacyColumns,
+        rows: [row(owned, ownedDiscriminator), row(other, otherDiscriminator)],
+      },
+    });
+    const stored = t.db.rows(unit.slice(`${OWNER}.`.length));
+
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toStrictEqual({ batchId, duplicate: false, applied: 1, skipped: 1 });
+    expect(stored.map((target) => [target.tenant_id, mapping.encodeLegacy(target)])).toStrictEqual([
+      [TENANT_A.tenantId, encodeRow(mapping.legacyColumns, owned)],
+    ]);
+  });
 });
 
 describe('row round trips', () => {
@@ -294,7 +591,7 @@ describe('row round trips', () => {
     const encoding = encodeRow(mapping.legacyColumns, row);
     const target = mapping.toTarget(mapping.decodeLegacy(mapping.legacyColumns, encoding));
 
-    expect(mapping.acceptsRow(row)).toBe(true);
+    expect(mapping.acceptsRow(row, ownDiscriminator(mapping))).toBe(true);
     expect(Object.keys(target)).toStrictEqual(mapping.targetColumns.map((column) => column.name));
     expect(mapping.encodeLegacy(target)).toBe(encoding);
     expect(encodeRow(mapping.legacyColumns, mapping.toLegacy(target))).toBe(encoding);

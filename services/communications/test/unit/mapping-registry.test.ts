@@ -1,5 +1,5 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** The communications mapping registry: every mapping module once, per-unit tables and columns, tenant sources, and the ttrash objectClass share. */
+/** The communications mapping registry: every mapping module once, per-unit tables and columns, tenant sources, and the ttrash objectClass and class-extension baseTable shares. */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { mappingCoverage, resolveTenant, type Mapping } from '@opt2/platform/migration-kit';
@@ -7,6 +7,13 @@ import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_UMBRELLA } from '@opt2/platform/testing';
 import { deliveryStatusMapping } from '../../src/migration/mappings/delivery-status.js';
 import { emailMapping, emailReturnStatMapping, emailStatMapping } from '../../src/migration/mappings/email.js';
+import {
+  extendAttributeMapping,
+  extendDataMapping,
+  extendRcSetMapping,
+  extendSetMapping,
+  extendSubtypeMapping,
+} from '../../src/migration/mappings/extend.js';
 import * as registry from '../../src/migration/mappings/index.js';
 import { mailingListMapping, mailingListMemberMapping } from '../../src/migration/mappings/mailing-list.js';
 import { messageTemplateMapping } from '../../src/migration/mappings/message-template.js';
@@ -17,6 +24,7 @@ import { OWNED_TABLES, SCHEDULED_TASK, TARGET_ONLY_COLUMNS, TRASH, UNITS } from 
 interface ClassMapEntry {
   classes: string[];
   owner?: string;
+  owners?: Record<string, string>;
 }
 
 interface Ownership {
@@ -25,10 +33,17 @@ interface Ownership {
 
 const OWNERSHIP = JSON.parse(readFileSync(new URL('../../../../opt2/table-ownership.json', import.meta.url), 'utf8')) as Ownership;
 const TRASH_CLASS_MAP = OWNERSHIP.tables.find((table) => table.table === 'ttrash')?.split?.classMap ?? [];
-const COMMUNICATIONS_CLASSES = TRASH_CLASS_MAP.filter((entry) => entry.owner === 'communications').flatMap((entry) => entry.classes);
-const OTHER_CLASSES = TRASH_CLASS_MAP.filter((entry) => entry.owner !== 'communications')
-  .flatMap((entry) => entry.classes)
-  .filter((objectClass) => !objectClass.startsWith('<'));
+/** The class-map owner of trashed mailing lists, which the migration sends as the discriminator of each communications ttrash row. */
+const TRASH_OWNER = TRASH_CLASS_MAP.find((entry) => entry.classes.includes('mailinglist'))?.owner;
+const COMMUNICATIONS_CLASSES = TRASH_CLASS_MAP.filter((entry) => entry.owner === TRASH_OWNER).flatMap((entry) => entry.classes);
+/** Base tables whose extendObject trash rows the class map assigns to communications, sorted. */
+const EXTEND_OBJECT_BASE_TABLES = Object.entries(TRASH_CLASS_MAP.find((entry) => entry.classes.includes('extendObject'))?.owners ?? {})
+  .flatMap(([baseTable, owner]) => (owner === TRASH_OWNER ? [baseTable] : []))
+  .sort();
+/** Every other owner the class map names, sorted. */
+const OTHER_OWNERS = [...new Set(TRASH_CLASS_MAP.flatMap((entry) => [entry.owner, ...Object.values(entry.owners ?? {})]))]
+  .filter((owner): owner is string => owner !== undefined && owner !== TRASH_OWNER)
+  .sort();
 
 const MODULE_MAPPINGS: Record<string, Mapping> = {
   messageTemplateMapping,
@@ -40,7 +55,15 @@ const MODULE_MAPPINGS: Record<string, Mapping> = {
   mailingListMapping,
   mailingListMemberMapping,
   trashMapping,
+  extendSubtypeMapping,
+  extendSetMapping,
+  extendAttributeMapping,
+  extendRcSetMapping,
+  extendDataMapping,
 };
+
+/** The base tables of the communications class-extension share, as `mappingCoverage` suffixes them. */
+const BASE_TABLES = 'synthetic.delivery_status,synthetic.message,synthetic.message_template,temailreturnstats,temails,temailstats,tmailinglist,tmailinglistmembers';
 
 const MANAGED_COLUMNS = ['tenant_id', 'legacy_row_hash', 'occurrence'];
 
@@ -84,7 +107,7 @@ describe('communications mapping registry', () => {
     for (const [name, mapping] of Object.entries(MODULE_MAPPINGS)) expect(named[name as keyof typeof named]).toBe(mapping);
   });
 
-  it('covers each legacy table once, and ttrash only as its objectClass share', () => {
+  it('covers each legacy table once, ttrash only as its objectClass share and the class-extension tables only as their baseTable share', () => {
     expect(Object.keys(mappingCoverage(registry.MAPPINGS))).toStrictEqual([
       'synthetic.message_template',
       'synthetic.message',
@@ -94,7 +117,12 @@ describe('communications mapping registry', () => {
       'temailreturnstats',
       'tmailinglist',
       'tmailinglistmembers',
-      'ttrash{objectClass=mailinglist,email}',
+      'ttrash{objectClass=communications}',
+      `tclassextend{baseTable=${BASE_TABLES}}`,
+      `tclassextendsets{baseTable=${BASE_TABLES}}`,
+      `tclassextendattributes{baseTable=${BASE_TABLES}}`,
+      `tclassextendrcsets{baseTable=${BASE_TABLES}}`,
+      `tclassextenddata{baseTable=${BASE_TABLES}}`,
     ]);
   });
 
@@ -124,6 +152,11 @@ describe('communications mapping registry', () => {
       ['tmailinglist', 'site'],
       ['tmailinglistmembers', 'site'],
       ['ttrash', 'site'],
+      ['tclassextend', 'site'],
+      ['tclassextendsets', 'site'],
+      ['tclassextendattributes', 'site'],
+      ['tclassextendrcsets', 'site'],
+      ['tclassextenddata', 'site'],
     ]);
   });
 
@@ -145,24 +178,20 @@ describe('communications mapping registry', () => {
 });
 
 describe('trash mapping', () => {
-  it('takes the ttrash rows of the objectClasses table ownership assigns to communications', () => {
+  it('takes the ttrash rows of class-map owner communications: its mailinglist and email rows and the extendObject rows of its base tables', () => {
+    expect(TRASH_OWNER).toBe('communications');
     expect(COMMUNICATIONS_CLASSES).toStrictEqual(['mailinglist', 'email']);
+    expect(EXTEND_OBJECT_BASE_TABLES.join(',')).toBe(BASE_TABLES);
     expect(trashMapping).toMatchObject({ legacyTable: 'ttrash', targetTable: 'communications.trash', unit: TRASH.unit, key: ['objectID'] });
-    expect(trashMapping.split).toStrictEqual({ by: 'objectClass', value: COMMUNICATIONS_CLASSES, column: 'objectClass' });
+    expect(trashMapping.split).toStrictEqual({ by: 'objectClass', value: TRASH_OWNER });
   });
 
-  it.each<[boolean, string, Record<string, unknown>]>([
-    [true, 'objectClass email', { objectClass: 'email' }],
-    [true, 'objectClass mailinglist', { objectClass: 'mailinglist' }],
-    [true, 'a class differing in case and trailing padding', { OBJECTCLASS: 'MailingList  ' }],
-    [false, 'a null class', { objectClass: null }],
-    [false, 'no class', {}],
-  ])('answers %s for a ttrash row of %s', (accepted, _label, row) => {
-    expect(trashMapping.acceptsRow(row)).toBe(accepted);
-  });
-
-  it.each(OTHER_CLASSES)('leaves ttrash rows of objectClass %s to their owner', (objectClass) => {
-    expect(trashMapping.acceptsRow({ ...TRASHED_LIST, objectClass })).toBe(false);
+  it.each(
+    [...COMMUNICATIONS_CLASSES, 'extendObject'].flatMap((objectClass) =>
+      [TRASH_OWNER, ...OTHER_OWNERS, null, undefined].map((discriminator) => [discriminator === TRASH_OWNER, objectClass, discriminator] as const),
+    ),
+  )('answers %s for a ttrash row of objectClass %s sent under discriminator %s', (accepted, objectClass, discriminator) => {
+    expect(trashMapping.acceptsRow({ ...TRASHED_LIST, objectClass }, discriminator)).toBe(accepted);
   });
 
   it('maps a trashed mailing list onto communications.trash with its WDDX objectstring byte-exact and back', () => {

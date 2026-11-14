@@ -1,5 +1,5 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Owned tables of schema `finance`, one per fixture table `Program_<id>.finance_*`, as the platform repository declares them. */
+/** Owned tables of schema `finance`, one per fixture table `Program_<id>.finance_*` and one per split Masa share, as the platform repository declares them. */
 import type { CanonicalColumn, RepositoryRow, TableDefinition } from '@opt2/platform/migration-kit';
 import { objectKey, type BucketName } from '@opt2/platform/storage';
 
@@ -13,7 +13,18 @@ export const SCHEMA = 'finance';
 export const ATTACHMENT_BUCKET = 'finance-attachments' satisfies BucketName;
 
 /** Units of write authority of schema `finance`, as `opt2/table-ownership.json` names them, in declaration order. */
-export const UNITS = Object.freeze(['finance.record', 'finance.record_version', 'finance.attachment', 'finance.rollup'] as const);
+export const UNITS = Object.freeze([
+  'finance.record',
+  'finance.record_version',
+  'finance.attachment',
+  'finance.rollup',
+  'finance.extend_subtype',
+  'finance.extend_set',
+  'finance.extend_attribute',
+  'finance.extend_rc_set',
+  'finance.extend_data',
+  'finance.trash',
+] as const);
 
 /** One finance unit id. */
 export type FinanceUnit = (typeof UNITS)[number];
@@ -121,6 +132,141 @@ export const FINANCE_ROLLUP = frozen<FinanceTableDefinition<'finance.rollup'>>({
   unit: 'finance.rollup',
 });
 
+// The Masa dbo shares below are not folded: they carry no legacy_program_id and take their tenant from siteID.
+
+/** `finance.extend_subtype`, the Masa `tclassextend` rows whose `baseTable` is a finance table. */
+export const EXTEND_SUBTYPE = frozen<FinanceTableDefinition<'finance.extend_subtype'>>({
+  table: 'extend_subtype',
+  columns: [
+    TENANT_ID,
+    { name: 'subtypeid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'basetable', type: 's' },
+    { name: 'basekeyfield', type: 's' },
+    { name: 'datatable', type: 's' },
+    { name: 'type', type: 's' },
+    { name: 'subtype', type: 's' },
+    { name: 'isactive', type: 'i' },
+    { name: 'notes', type: 's' },
+    { name: 'lastupdate', type: 't' },
+    { name: 'datecreated', type: 't' },
+    { name: 'lastupdateby', type: 's' },
+    { name: 'hassummary', type: 'i' },
+    { name: 'hasbody', type: 'i' },
+    { name: 'description', type: 's' },
+    { name: 'availablesubtypes', type: 's' },
+    { name: 'iconclass', type: 's' },
+    { name: 'hasassocfile', type: 'i' },
+    { name: 'hasconfigurator', type: 'i' },
+    { name: 'adminonly', type: 'i' },
+  ],
+  key: ['subtypeid'],
+  unit: 'finance.extend_subtype',
+});
+
+/** `finance.extend_set`, the Masa `tclassextendsets` rows of finance subtypes. */
+export const EXTEND_SET = frozen<FinanceTableDefinition<'finance.extend_set'>>({
+  table: 'extend_set',
+  columns: [
+    TENANT_ID,
+    { name: 'extendsetid', type: 's' },
+    { name: 'subtypeid', type: 's' },
+    { name: 'categoryid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'isactive', type: 'i' },
+    { name: 'container', type: 's' },
+  ],
+  key: ['extendsetid'],
+  unit: 'finance.extend_set',
+});
+
+/** `finance.extend_attribute`, the Masa `tclassextendattributes` rows of finance extend sets. */
+export const EXTEND_ATTRIBUTE = frozen<FinanceTableDefinition<'finance.extend_attribute'>>({
+  table: 'extend_attribute',
+  columns: [
+    TENANT_ID,
+    { name: 'attributeid', type: 'i' },
+    { name: 'extendsetid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'label', type: 's' },
+    { name: 'hint', type: 's' },
+    { name: 'type', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'isactive', type: 'i' },
+    { name: 'required', type: 's' },
+    { name: 'validation', type: 's' },
+    { name: 'regex', type: 's' },
+    { name: 'message', type: 's' },
+    { name: 'defaultvalue', type: 's' },
+    { name: 'optionlist', type: 's' },
+    { name: 'optionlabellist', type: 's' },
+    { name: 'adminonly', type: 'i' },
+  ],
+  key: ['attributeid'],
+  unit: 'finance.extend_attribute',
+});
+
+/** `finance.extend_rc_set`, the Masa `tclassextendrcsets` rows of finance subtypes. */
+export const EXTEND_RC_SET = frozen<FinanceTableDefinition<'finance.extend_rc_set'>>({
+  table: 'extend_rc_set',
+  columns: [
+    TENANT_ID,
+    { name: 'subtypeid', type: 's' },
+    { name: 'availablesubtypes', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'entitytype', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'relatedcontentsetid', type: 's' },
+  ],
+  key: ['relatedcontentsetid'],
+  unit: 'finance.extend_rc_set',
+});
+
+/** `finance.extend_data`, the Masa `tclassextenddata` rows of finance attributes. */
+export const EXTEND_DATA = frozen<FinanceTableDefinition<'finance.extend_data'>>({
+  table: 'extend_data',
+  columns: [
+    TENANT_ID,
+    { name: 'dataid', type: 'i' },
+    { name: 'baseid', type: 's' },
+    { name: 'attributeid', type: 'i' },
+    { name: 'siteid', type: 's' },
+    { name: 'attributevalue', type: 's' },
+    { name: 'remoteid', type: 's' },
+    { name: 'datetimevalue', type: 't' },
+    { name: 'numericvalue', type: 'f' },
+    { name: 'stringvalue', type: 's' },
+  ],
+  key: ['dataid'],
+  unit: 'finance.extend_data',
+});
+
+/** `finance.trash`, the Masa `ttrash` rows whose class-map owner is finance; `objectstring` is byte-exact WDDX. */
+export const TRASH = frozen<FinanceTableDefinition<'finance.trash'>>({
+  table: 'trash',
+  columns: [
+    TENANT_ID,
+    { name: 'objectid', type: 's' },
+    { name: 'parentid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'objectlabel', type: 's' },
+    { name: 'objectclass', type: 's' },
+    { name: 'objecttype', type: 's' },
+    { name: 'objectsubtype', type: 's' },
+    { name: 'objectstring', type: 's' },
+    { name: 'deleteddate', type: 't' },
+    { name: 'deletedby', type: 's' },
+    { name: 'deleteid', type: 's' },
+    { name: 'orderno', type: 'i' },
+  ],
+  key: ['objectid'],
+  unit: 'finance.trash',
+});
+
 /** `finance.program_binding`, the `Program_<id>` schema a tenant's rows were folded from, one per tenant. */
 export const PROGRAM_BINDING = frozen<TableDefinition & { key: string[] }>({
   table: 'program_binding',
@@ -155,6 +301,12 @@ export const OWNED_TABLES: TablesForUnits<typeof UNITS> = Object.freeze([
   FINANCE_RECORD_VERSION,
   FINANCE_ATTACHMENT,
   FINANCE_ROLLUP,
+  EXTEND_SUBTYPE,
+  EXTEND_SET,
+  EXTEND_ATTRIBUTE,
+  EXTEND_RC_SET,
+  EXTEND_DATA,
+  TRASH,
 ] as const);
 
 /** Finance tables without a unit: never migrated, projected or gated, but still written with changelog rows. */

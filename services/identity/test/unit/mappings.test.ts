@@ -1,4 +1,4 @@
-/** Identity's auth-record and membership mappings against table ownership: columns, keys, tenant sources, the ttrash share, row round trips and drifted definitions. */
+/** Identity's auth-record, membership and class-extension mappings against table ownership: columns, keys, tenant sources, the ttrash share, row round trips and drifted definitions. */
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mappingCoverage, resolveTenant, type Mapping, type TenantLookups, type TenantSource } from '@opt2/platform/migration-kit';
@@ -13,6 +13,13 @@ import {
   tuserremotesessionsMapping,
   tuserstrikesMapping,
 } from '../../src/migration/mappings/auth-records.js';
+import {
+  tclassextendattributesIdentityMapping,
+  tclassextenddataIdentityMapping,
+  tclassextendIdentityMapping,
+  tclassextendrcsetsIdentityMapping,
+  tclassextendsetsIdentityMapping,
+} from '../../src/migration/mappings/extend.js';
 import { tpermissionsMapping, tusersmembMapping } from '../../src/migration/mappings/memberships.js';
 import { UNIT_TABLES } from '../../src/repo/tables.js';
 
@@ -47,7 +54,16 @@ const MAPPINGS: readonly Mapping[] = [
   ttrashGroupMapping,
   tusersmembMapping,
   tpermissionsMapping,
+  tclassextendIdentityMapping,
+  tclassextendsetsIdentityMapping,
+  tclassextendattributesIdentityMapping,
+  tclassextendrcsetsIdentityMapping,
+  tclassextenddataIdentityMapping,
 ];
+
+// The coverage key suffix of the class-extension tables: their identity share, by subtype base table.
+const IDENTITY_BASE_TABLE_SHARE =
+  '{baseTable=toauthclients,toauthtokens,tpermissions,tredirects,tuserdevice,tuserremotesessions,tusersmemb,tuserstrikes}';
 
 const byName = (a: { name: string }, b: { name: string }): number => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
@@ -123,6 +139,11 @@ describe('identity auth-record and membership mappings', () => {
       'ttrash{objectClass=identity}',
       'tusersmemb',
       'tpermissions',
+      `tclassextend${IDENTITY_BASE_TABLE_SHARE}`,
+      `tclassextendsets${IDENTITY_BASE_TABLE_SHARE}`,
+      `tclassextendattributes${IDENTITY_BASE_TABLE_SHARE}`,
+      `tclassextendrcsets${IDENTITY_BASE_TABLE_SHARE}`,
+      `tclassextenddata${IDENTITY_BASE_TABLE_SHARE}`,
     ]);
   });
 });
@@ -151,7 +172,7 @@ describe('ttrash identity share', () => {
     );
 
     expect(target.rowPredicate).toBe('classMap owner = identity');
-    expect(identityClasses.flatMap((entry) => entry.classes)).toStrictEqual(['group', 'user', 'address']);
+    expect(identityClasses.flatMap((entry) => entry.classes)).toStrictEqual(['group', 'user', 'address', 'extendObject']);
     expect(ttrashGroupMapping.split).toStrictEqual({ by: 'objectClass', value: 'identity' });
   });
 
@@ -209,10 +230,11 @@ describe('mapping construction against a drifted table definition', () => {
     vi.resetModules();
   });
 
-  it.each<{ legacyTable: string; definition: 'USER_STRIKE' | 'OAUTH_TOKEN' | 'MEMBERSHIP'; unit: string; dropped: string; load: () => Promise<unknown> }>([
+  it.each<{ legacyTable: string; definition: 'USER_STRIKE' | 'OAUTH_TOKEN' | 'MEMBERSHIP' | 'EXTEND_SUBTYPE'; unit: string; dropped: string; load: () => Promise<unknown> }>([
     { legacyTable: 'tuserstrikes', definition: 'USER_STRIKE', unit: 'identity.user_strike', dropped: 'lastAttempt', load: () => import('../../src/migration/mappings/auth-records.js') },
     { legacyTable: 'toauthtokens', definition: 'OAUTH_TOKEN', unit: 'identity.oauth_token', dropped: 'accessCode', load: () => import('../../src/migration/mappings/auth-records.js') },
     { legacyTable: 'tusersmemb', definition: 'MEMBERSHIP', unit: 'identity.membership', dropped: 'GroupID', load: () => import('../../src/migration/mappings/memberships.js') },
+    { legacyTable: 'tclassextend', definition: 'EXTEND_SUBTYPE', unit: 'identity.extend_subtype', dropped: 'hasConfigurator', load: () => import('../../src/migration/mappings/extend.js') },
   ])('refuses to build $legacyTable when its target lacks the column for $dropped', async ({ legacyTable, definition, unit, dropped, load }) => {
     vi.resetModules();
     vi.doMock('../../src/repo/tables.js', async (importOriginal) => {

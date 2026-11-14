@@ -1,8 +1,8 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Finance table definitions against the target DDL, the fixture DDL, the ownership file and the platform repository contract. */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { canonicalTypeForPostgres, canonicalTypeForSqlServer, createRepository } from '@opt2/platform/migration-kit';
+import { LEGACY_PROGRAM_ID_COLUMN, canonicalTypeForPostgres, canonicalTypeForSqlServer, createRepository } from '@opt2/platform/migration-kit';
 import { BUCKETS, InvalidObjectKeyError, objectKey } from '@opt2/platform/storage';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { rlsSql } from '@opt2/platform/tenancy';
@@ -23,16 +23,37 @@ interface DdlColumn {
   type: string;
 }
 
+interface OwnershipTarget {
+  unit: string;
+  owner: string;
+  table: string;
+  keyColumns: string[];
+  ownedColumns: string[];
+}
+
 const read = (relative: string): string => readFileSync(new URL(relative, import.meta.url), 'utf8');
-const TARGET_DDL = read('../../db/migrations/0001_finance.sql');
+const MIGRATIONS_DIR = new URL('../../db/migrations/', import.meta.url);
+/** Every finance migration, in apply order. */
+const TARGET_DDL = readdirSync(MIGRATIONS_DIR)
+  .filter((name) => name.endsWith('.sql'))
+  .sort()
+  .map((name) => readFileSync(new URL(name, MIGRATIONS_DIR), 'utf8'))
+  .join('\n');
 const FIXTURE_DDL = read('../../../../legacy-fixtures/sql/finance/110_tables.program.sql');
 const OWNERSHIP = JSON.parse(read('../../../../opt2/table-ownership.json')) as {
   units: { unit: string; owner: string }[];
   newTables: { table: string; owner: string }[];
+  tables: { table: string; programFold?: boolean; targets?: OwnershipTarget[] }[];
 };
 
 /** Columns the target adds to every folded fixture table. */
 const TARGET_ONLY = ['tenant_id', 'object_key', 'legacy_program_id', 'row_version'];
+/** Unit tables folded from a `Program_<id>.finance_*` fixture table. */
+const FOLDED_TABLES = OWNED_TABLES.filter((definition) => definition.columns.some((column) => column.name === LEGACY_PROGRAM_ID_COLUMN));
+/** Finance's targets in split Masa dbo tables, which are not folded. */
+const MASA_TARGETS = OWNERSHIP.tables
+  .filter((entry) => entry.programFold !== true)
+  .flatMap((entry) => (entry.targets ?? []).filter((target) => target.owner === OWNER));
 
 /** Trimmed, non-empty body lines of the first `CREATE TABLE` block that `head` opens and `tail` closes. */
 function tableBody(ddl: string, head: string, tail: string): string[] {
@@ -42,7 +63,7 @@ function tableBody(ddl: string, head: string, tail: string): string[] {
   return ddl.slice(from, ddl.indexOf(tail, from)).split('\n').map((line) => line.trim()).filter((line) => line !== '');
 }
 
-/** Columns and primary key of `finance.<table>` in `0001_finance.sql`. */
+/** Columns and primary key of `finance.<table>` in `db/migrations`. */
 function targetTable(table: string): { columns: DdlColumn[]; primaryKey: string[] } {
   const body = tableBody(TARGET_DDL, `CREATE TABLE finance.${table} (`, '\n);').map((line) => line.replace(/,$/, ''));
   const definitions = body.filter((line) => !/^(?:PRIMARY KEY|UNIQUE|CHECK)\b/.test(line));
@@ -88,15 +109,33 @@ describe.each([...OWNED_TABLES, ...NON_UNIT_TABLES].map((definition) => [definit
 });
 
 describe.each(OWNED_TABLES.map((definition) => [definition.table, definition] as const))('finance.%s unit', (table, definition) => {
+  it('is gated by its own finance unit', () => {
+    expect(definition.unit).toBe(`finance.${table}`);
+  });
+});
+
+describe.each(FOLDED_TABLES.map((definition) => [definition.table, definition] as const))('folded finance.%s', (table, definition) => {
   it('carries exactly the fixture columns besides the target-only ones, never the attachment bytes', () => {
     const fixture = fixtureTable(table).filter((column) => column.name !== ATTACHMENT_CONTENT_FIELD);
     expect(definition.columns.filter((column) => !TARGET_ONLY.includes(column.name)).map(canonical)).toEqual(
       fixture.map((column) => canonical({ name: column.name, ...canonicalTypeForSqlServer(column.type) })),
     );
   });
+});
 
-  it('is gated by its own finance unit', () => {
-    expect(definition.unit).toBe(`finance.${table}`);
+describe.each(MASA_TARGETS.map((target) => [target.table, target] as const))('Masa-shared finance.%s', (table, target) => {
+  it('carries exactly the owned legacy columns, lower-cased, keyed on the legacy key and never folded', () => {
+    const definition = OWNED_TABLES.find((candidate) => candidate.table === table);
+    expect(definition?.unit).toBe(target.unit);
+    expect(definition?.columns.map((column) => column.name)).toEqual(['tenant_id', ...target.ownedColumns.map((column) => column.toLowerCase())]);
+    expect(definition?.key).toEqual(target.keyColumns.map((column) => column.toLowerCase()));
+  });
+});
+
+describe('finance table split', () => {
+  it('folds only the four fixture tables and shares the six split Masa tables', () => {
+    expect(FOLDED_TABLES.map((definition) => definition.unit)).toEqual(UNITS.slice(0, 4));
+    expect(MASA_TARGETS.map((target) => target.unit).sort()).toEqual(UNITS.slice(4).sort());
   });
 });
 

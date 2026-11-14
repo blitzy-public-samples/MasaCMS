@@ -6,6 +6,7 @@ import { deliveryStatusMapping } from './delivery-status.js';
 import { emailMapping, emailStatMapping, emailReturnStatMapping } from './email.js';
 import { mailingListMapping, mailingListMemberMapping } from './mailing-list.js';
 import { trashMapping } from './trash.js';
+import { extendSubtypeMapping, extendSetMapping, extendAttributeMapping, extendRcSetMapping, extendDataMapping } from './extend.js';
 
 export { messageTemplateMapping } from './message-template.js';
 export { messageMapping } from './message.js';
@@ -13,6 +14,7 @@ export { deliveryStatusMapping } from './delivery-status.js';
 export { emailMapping, emailStatMapping, emailReturnStatMapping } from './email.js';
 export { mailingListMapping, mailingListMemberMapping } from './mailing-list.js';
 export { trashMapping } from './trash.js';
+export { extendSubtypeMapping, extendSetMapping, extendAttributeMapping, extendRcSetMapping, extendDataMapping } from './extend.js';
 
 // communications.trash is a unit (this service's objectClass share of ttrash), so it is mapped like every other legacy-fed unit;
 // the scheduled_task unit has no legacy table and is never mapped.
@@ -27,4 +29,9 @@ export const MAPPINGS: readonly Mapping[] = Object.freeze([
   mailingListMapping,
   mailingListMemberMapping,
   trashMapping,
+  extendSubtypeMapping,
+  extendSetMapping,
+  extendAttributeMapping,
+  extendRcSetMapping,
+  extendDataMapping,
 ]);

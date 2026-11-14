@@ -2,6 +2,12 @@ import { defineMapping } from '@opt2/platform/migration-kit';
 import type { Mapping } from '@opt2/platform/migration-kit';
 import { EXTEND_SUBTYPE } from '../../repo/tables.js';
 
+/**
+ * Base tables whose subtypes people owns, in the order of their opt2/table-ownership.json row predicate. Masa stores
+ * Address subtypes under `tusersaddresses` (extension-config import) or `tuseraddresses` (subtype editor).
+ */
+export const PEOPLE_BASE_TABLES: readonly string[] = ['tusers', 'tusersaddresses', 'synthetic.person_archive', 'tuseraddresses'];
+
 /** Masa `tclassextend` user, group and address subtypes ↔ `people.extend_subtype`; tenant from `siteID`, else the umbrella as an orphan. */
 export const extendSubtypeMapping: Mapping = defineMapping({
   legacyTable: 'tclassextend',
@@ -31,7 +37,6 @@ export const extendSubtypeMapping: Mapping = defineMapping({
     { legacy: 'adminonly', target: 'adminonly', type: 'i' },
   ],
   key: ['subTypeID'],
-  // People owns both user base tables: Masa's extension-config import stores Address subtypes under `tusersaddresses`.
-  split: { by: 'baseTable', value: ['tusers', 'tusersaddresses'], column: 'baseTable' },
+  split: { by: 'baseTable', value: PEOPLE_BASE_TABLES, column: 'baseTable' },
   tenant: { kind: 'site', column: 'siteID' },
 });

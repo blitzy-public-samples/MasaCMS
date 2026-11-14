@@ -26,8 +26,8 @@ export const ttrashMapping: Mapping = defineMapping({
   unit: TRASH.unit,
   columns: LEGACY_COLUMNS.map(trashColumn),
   key: ['objectID'],
-  // The content share is content, feed, category and changeset plus extendObject rows whose subtype has
-  // baseTable = tcontent, which no ttrash column holds: like the identity, people and programs-sites shares, the split
+  // The content share is content, feed, category and changeset plus extendObject rows whose subtype's baseTable
+  // strategies-content owns, which no ttrash column holds: like the identity, people and programs-sites shares, the split
   // takes each apply row's class-map owner as its discriminator rather than matching the objectClass column.
   split: { by: 'objectClass', value: 'strategies-content' },
   tenant: { kind: 'site', column: 'siteID' },

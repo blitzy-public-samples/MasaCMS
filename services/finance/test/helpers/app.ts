@@ -293,7 +293,7 @@ type DataStmt = SelectStmt | InsertStmt | UpdateStmt | DeleteStmt;
 
 /** Column type as the catalogue declares it; `int8` also covers `xid8` and `bigserial`. */
 interface ColumnType {
-  readonly base: 'text' | 'char' | 'uuid' | 'int4' | 'int8' | 'numeric' | 'timestamp' | 'bool';
+  readonly base: 'text' | 'char' | 'uuid' | 'int2' | 'int4' | 'int8' | 'float8' | 'numeric' | 'timestamp' | 'bool';
   readonly array: boolean;
   readonly length?: number;
   readonly precision?: number;
@@ -832,7 +832,9 @@ class SqlParser {
   }
 
   private columnType(): ColumnType {
-    const word = this.name();
+    const lead = this.name();
+    // `double precision` is the one two-word type name the migrations declare.
+    const word = lead === 'double' && this.eatWord('precision') ? 'double precision' : lead;
     const modifiers: number[] = [];
     if (this.eatOp('(')) {
       do {
@@ -857,10 +859,16 @@ class SqlParser {
         return { base: 'char', array, length: first ?? 1 };
       case 'uuid':
         return { base: 'uuid', array };
+      case 'smallint':
+      case 'int2':
+        return { base: 'int2', array };
       case 'integer':
       case 'int':
       case 'int4':
         return { base: 'int4', array };
+      case 'double precision':
+      case 'float8':
+        return { base: 'float8', array };
       case 'bigint':
       case 'int8':
       case 'xid8':
@@ -924,6 +932,8 @@ const DECIMAL_TEXT = /^\s*([+-])?(\d*)(?:\.(\d*))?\s*$/;
 const INTEGER_TEXT = /^\s*([+-]?\d+)\s*$/;
 const UUID_TEXT = /^\{?([0-9a-f]{8})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{12})\}?$/i;
 const TIMESTAMP_TEXT = /^\s*(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?\s*(?:Z|[+-]\d{2}(?::?\d{2})?)?\s*$/i;
+const INT2_MIN = -32_768n;
+const INT2_MAX = 32_767n;
 const INT4_MIN = -2_147_483_648n;
 const INT4_MAX = 2_147_483_647n;
 const INT8_MIN = -(2n ** 63n);
@@ -1003,7 +1013,7 @@ function fitNumeric(value: Decimal, type: ColumnType): Decimal {
   return fitted;
 }
 
-function integerOf(value: unknown, type: 'integer' | 'bigint'): bigint {
+function integerOf(value: unknown, type: 'smallint' | 'integer' | 'bigint'): bigint {
   let result: bigint | undefined;
   if (typeof value === 'bigint') result = value;
   else if (typeof value === 'number' && Number.isInteger(value)) result = BigInt(value);
@@ -1013,13 +1023,27 @@ function integerOf(value: unknown, type: 'integer' | 'bigint'): bigint {
     if (digits !== undefined) result = BigInt(digits);
   }
   if (result === undefined) throw invalidInput(type, value);
-  const [min, max] = type === 'integer' ? [INT4_MIN, INT4_MAX] : [INT8_MIN, INT8_MAX];
+  const [min, max] = type === 'smallint' ? [INT2_MIN, INT2_MAX] : type === 'integer' ? [INT4_MIN, INT4_MAX] : [INT8_MIN, INT8_MAX];
   if (result < min || result > max) throw pgError('22003', `value "${describeValue(value)}" is out of range for type ${type}`);
   return result;
 }
 
+function toInt2(value: unknown): number {
+  return Number(integerOf(value, 'smallint'));
+}
+
 function toInt4(value: unknown): number {
   return Number(integerOf(value, 'integer'));
+}
+
+/** `value` as float8 stores it; node-pg returns it as a number. */
+function toFloat8(value: unknown): number {
+  let number = Number.NaN;
+  if (typeof value === 'number') number = value;
+  else if (value instanceof Decimal) number = Number(decimalText(value));
+  else if (typeof value === 'string' && value.trim() !== '') number = Number(value);
+  if (Number.isNaN(number)) throw invalidInput('double precision', value);
+  return number;
 }
 
 function toInt8(value: unknown): bigint {
@@ -1130,10 +1154,14 @@ function storeScalar(value: unknown, type: ColumnType): unknown {
       return bpchar(textOf(value), type.length ?? 1);
     case 'uuid':
       return uuidText(value instanceof Bpchar ? value.text : value);
+    case 'int2':
+      return toInt2(value);
     case 'int4':
       return toInt4(value);
     case 'int8':
       return toInt8(value).toString();
+    case 'float8':
+      return toFloat8(value);
     case 'numeric':
       return decimalText(fitNumeric(toDecimal(value), type));
     case 'timestamp':

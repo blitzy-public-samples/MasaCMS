@@ -2,8 +2,8 @@
   "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
   "generatedBy": "gateway/src/cutover/build-groups.ts",
   "inputs": {
-    "inventorySha256": "db3d7639dca6030acdf4a74a88135127efbce5a410bc6fc1291cd2b2a98e71d3",
-    "tableOwnershipSha256": "fa0eda738deedda9002a8b7d570459d5a001d78b1d725e22c4b6c0ad3044f668"
+    "inventorySha256": "f6d7c7847300c60256e6ca63ca64da4244de6c745557b7d2e492f76be0e1864e",
+    "tableOwnershipSha256": "a7a37fcf57dabbe4a277f63caf5bce9de38f26e0f4f4d5c6fed4345b1f4408dd"
   },
   "groups": [
     {
@@ -37,6 +37,46 @@
       "id": "grp:communications.email_stat",
       "units": [
         "communications.email_stat"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.extend_attribute",
+      "units": [
+        "communications.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.extend_data",
+      "units": [
+        "communications.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.extend_rc_set",
+      "units": [
+        "communications.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.extend_set",
+      "units": [
+        "communications.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.extend_subtype",
+      "units": [
+        "communications.extend_subtype"
       ],
       "writeEntries": [],
       "hasCarryWrite": false
@@ -289,6 +329,54 @@
       "hasCarryWrite": true
     },
     {
+      "id": "grp:esignature.extend_attribute",
+      "units": [
+        "esignature.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:esignature.extend_data",
+      "units": [
+        "esignature.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:esignature.extend_rc_set",
+      "units": [
+        "esignature.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:esignature.extend_set",
+      "units": [
+        "esignature.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:esignature.extend_subtype",
+      "units": [
+        "esignature.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:esignature.trash",
+      "units": [
+        "esignature.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
       "id": "grp:finance.attachment",
       "units": [
         "finance.attachment"
@@ -297,6 +385,46 @@
         "fixture:finance/records/{id}/attachments@post"
       ],
       "hasCarryWrite": true
+    },
+    {
+      "id": "grp:finance.extend_attribute",
+      "units": [
+        "finance.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:finance.extend_data",
+      "units": [
+        "finance.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:finance.extend_rc_set",
+      "units": [
+        "finance.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:finance.extend_set",
+      "units": [
+        "finance.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:finance.extend_subtype",
+      "units": [
+        "finance.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
     },
     {
       "id": "grp:finance.record",
@@ -314,6 +442,14 @@
         "fixture:finance/records@post"
       ],
       "hasCarryWrite": true
+    },
+    {
+      "id": "grp:finance.trash",
+      "units": [
+        "finance.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
     },
     {
       "id": "grp:identity.credential",
@@ -364,9 +500,49 @@
       "hasCarryWrite": true
     },
     {
+      "id": "grp:identity.extend_attribute",
+      "units": [
+        "identity.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.extend_data",
+      "units": [
+        "identity.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
       "id": "grp:identity.extend_data_user_activity",
       "units": [
         "identity.extend_data_user_activity"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.extend_rc_set",
+      "units": [
+        "identity.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.extend_set",
+      "units": [
+        "identity.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.extend_subtype",
+      "units": [
+        "identity.extend_subtype"
       ],
       "writeEntries": [],
       "hasCarryWrite": false
@@ -587,9 +763,97 @@
       "hasCarryWrite": true
     },
     {
+      "id": "grp:reporting.extend_attribute",
+      "units": [
+        "reporting.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.extend_data",
+      "units": [
+        "reporting.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.extend_rc_set",
+      "units": [
+        "reporting.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.extend_set",
+      "units": [
+        "reporting.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.extend_subtype",
+      "units": [
+        "reporting.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
       "id": "grp:reporting.session_tracking",
       "units": [
         "reporting.session_tracking"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.trash",
+      "units": [
+        "reporting.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:surveys.extend_attribute",
+      "units": [
+        "surveys.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:surveys.extend_data",
+      "units": [
+        "surveys.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:surveys.extend_rc_set",
+      "units": [
+        "surveys.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:surveys.extend_set",
+      "units": [
+        "surveys.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:surveys.extend_subtype",
+      "units": [
+        "surveys.extend_subtype"
       ],
       "writeEntries": [],
       "hasCarryWrite": false
@@ -633,6 +897,14 @@
       "hasCarryWrite": true
     },
     {
+      "id": "grp:surveys.trash",
+      "units": [
+        "surveys.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
       "id": "grp:timesheets.approval_action",
       "units": [
         "timesheets.approval_action",
@@ -648,9 +920,57 @@
       "hasCarryWrite": true
     },
     {
+      "id": "grp:timesheets.extend_attribute",
+      "units": [
+        "timesheets.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:timesheets.extend_data",
+      "units": [
+        "timesheets.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:timesheets.extend_rc_set",
+      "units": [
+        "timesheets.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:timesheets.extend_set",
+      "units": [
+        "timesheets.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:timesheets.extend_subtype",
+      "units": [
+        "timesheets.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
       "id": "grp:timesheets.timesheet",
       "units": [
         "timesheets.timesheet"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:timesheets.trash",
+      "units": [
+        "timesheets.trash"
       ],
       "writeEntries": [],
       "hasCarryWrite": false

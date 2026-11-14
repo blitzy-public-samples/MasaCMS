@@ -22,6 +22,13 @@ import {
   tuserremotesessionsMapping,
   tuserstrikesMapping,
 } from './auth-records.js';
+import {
+  tclassextendattributesIdentityMapping,
+  tclassextenddataIdentityMapping,
+  tclassextendIdentityMapping,
+  tclassextendrcsetsIdentityMapping,
+  tclassextendsetsIdentityMapping,
+} from './extend.js';
 
 export {
   tusersCredentialMapping,
@@ -46,6 +53,13 @@ export {
   tuserremotesessionsMapping,
   tuserstrikesMapping,
 } from './auth-records.js';
+export {
+  tclassextendattributesIdentityMapping,
+  tclassextenddataIdentityMapping,
+  tclassextendIdentityMapping,
+  tclassextendrcsetsIdentityMapping,
+  tclassextendsetsIdentityMapping,
+} from './extend.js';
 
 /** Identity's legacy↔target mappings in dependency order, one per unit in `IDENTITY_UNITS` order. */
 export const mappings: readonly Mapping[] = Object.freeze([
@@ -67,4 +81,9 @@ export const mappings: readonly Mapping[] = Object.freeze([
   toauthclientsMapping,
   toauthtokensMapping,
   ttrashGroupMapping,
+  tclassextendIdentityMapping,
+  tclassextendsetsIdentityMapping,
+  tclassextendattributesIdentityMapping,
+  tclassextendrcsetsIdentityMapping,
+  tclassextenddataIdentityMapping,
 ]);

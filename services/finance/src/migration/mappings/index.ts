@@ -5,19 +5,42 @@ import { financeRecordMapping } from './finance-record.js';
 import { financeRecordVersionMapping } from './finance-record-version.js';
 import { financeAttachmentMapping } from './finance-attachment.js';
 import { financeRollupMapping } from './finance-rollup.js';
+import {
+  tclassextendMapping,
+  tclassextendattributesMapping,
+  tclassextenddataMapping,
+  tclassextendrcsetsMapping,
+  tclassextendsetsMapping,
+} from './extend.js';
+import { ttrashMapping } from './trash.js';
 
 export { financeRecordMapping } from './finance-record.js';
 export { financeRecordVersionMapping } from './finance-record-version.js';
 export { financeAttachmentMapping } from './finance-attachment.js';
 export { financeRollupMapping } from './finance-rollup.js';
+export {
+  FINANCE_BASE_TABLES,
+  tclassextendMapping,
+  tclassextendattributesMapping,
+  tclassextenddataMapping,
+  tclassextendrcsetsMapping,
+  tclassextendsetsMapping,
+} from './extend.js';
+export { ttrashMapping } from './trash.js';
 
 // finance.program_binding and finance.staged_object have no unit and are never mapped.
-/** The finance mappings, record before its children, one per unit in `UNITS` order. */
+/** The finance mappings, record before its children and each subtype before its sets, one per unit in `UNITS` order. */
 export const mappings: readonly Mapping[] = Object.freeze([
   financeRecordMapping,
   financeRecordVersionMapping,
   financeAttachmentMapping,
   financeRollupMapping,
+  tclassextendMapping,
+  tclassextendsetsMapping,
+  tclassextendattributesMapping,
+  tclassextendrcsetsMapping,
+  tclassextenddataMapping,
+  ttrashMapping,
 ]);
 
 /** Units of write authority the migration handlers gate, exactly `UNITS` in its order. */

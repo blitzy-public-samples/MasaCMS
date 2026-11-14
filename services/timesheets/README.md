@@ -72,6 +72,17 @@ Schema `timesheets`, created by `opt2-db bootstrap` (`migration/src/db-bootstrap
 | `[Program_1\|Program_2].approval_action` | `timesheets.approval_action` | `grp:timesheets.approval_action` | One row per applied action |
 | `[Program_1\|Program_2].blackout` | `timesheets.blackout` | `grp:people.person_archive` | One row per blacked-out day; a unit of the people-roster rollback set `R` |
 
+The timesheets share of the Masa class-extension tables and of `ttrash` lives in `dbo`, so it is not folded: `tenant_id` is `tenantIdForSite(siteID)`, else the umbrella tenant as an orphan. Its subtypes are those whose `baseTable` is a timesheets table (`Program_1` and `Program_2` `timesheet`, `timesheet_day`, `approval_action`, `blackout`; `synthetic.timesheet_transition`, `synthetic.transition_rule`); sets, attributes, related-content sets and values follow their subtype. Only migration writes these units; the `cextend` and `ctrash` screens stay on legacy (decision list).
+
+| Legacy table | Target table | Cut-over group | Rows |
+|---|---|---|---|
+| `tclassextend` | `timesheets.extend_subtype` | `grp:timesheets.extend_subtype` | Subtypes of a timesheets base table, selected by their own `baseTable`; key `subTypeID` |
+| `tclassextendsets` | `timesheets.extend_set` | `grp:timesheets.extend_set` | Sets of those subtypes; key `extendSetID` |
+| `tclassextendattributes` | `timesheets.extend_attribute` | `grp:timesheets.extend_attribute` | Attributes of those sets; key `attributeID` |
+| `tclassextendrcsets` | `timesheets.extend_rc_set` | `grp:timesheets.extend_rc_set` | Related-content sets of those subtypes; key `relatedContentSetID` |
+| `tclassextenddata` | `timesheets.extend_data` | `grp:timesheets.extend_data` | Values of those attributes; key `dataID` |
+| `ttrash` | `timesheets.trash` | `grp:timesheets.trash` | `extendObject` rows of those base tables, whose class-map owner is timesheets; `objectstring` byte-exact WDDX; key `objectID` |
+
 - **Owned, not migrated.** `synthetic.timesheet_transition` and `synthetic.transition_rule`, loaded from the exported report.
 - **Platform tables.** `tenant_registry`, `tenant_grant`, `changelog`, `unit_gate`, `open_operation`, `migration_batch`, `migration_watermark`, `inbox`, `consumer_aggregate_version`, `outbox`.
 - **Isolation.** Every tenant-owned table carries `tenant_id uuid NOT NULL` with row-level security enabled and forced under `tenant_isolation` on `app.tenant_id`.

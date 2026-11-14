@@ -272,7 +272,7 @@ const CLASS_EXTEND_DATA_CATALOG = [
   { name: 'stringvalue', type: 's' },
 ] as const satisfies Columns;
 
-/** `people.extend_data`: Masa `tclassextenddata` rows of `tusers` subtypes. */
+/** `people.extend_data`: Masa `tclassextenddata` rows of people subtypes. */
 export const CLASS_EXTEND_DATA = unitTable('people.extend_data', CLASS_EXTEND_DATA_CATALOG, ['dataid']);
 
 const TRASH_CATALOG = [
@@ -318,7 +318,7 @@ const EXTEND_SUBTYPE_CATALOG = [
   { name: 'adminonly', type: 'i' },
 ] as const satisfies Columns;
 
-/** `people.extend_subtype`: Masa `tclassextend` subtypes of baseTable `tusers` (types 1, 2, User, Group, Address). */
+/** `people.extend_subtype`: Masa `tclassextend` subtypes whose baseTable people owns. */
 export const EXTEND_SUBTYPE = unitTable('people.extend_subtype', EXTEND_SUBTYPE_CATALOG, ['subtypeid']);
 
 const EXTEND_SET_CATALOG = [
@@ -333,7 +333,7 @@ const EXTEND_SET_CATALOG = [
   { name: 'container', type: 's' },
 ] as const satisfies Columns;
 
-/** `people.extend_set`: Masa `tclassextendsets` rows of `tusers` subtypes. */
+/** `people.extend_set`: Masa `tclassextendsets` rows of people subtypes. */
 export const EXTEND_SET = unitTable('people.extend_set', EXTEND_SET_CATALOG, ['extendsetid']);
 
 const EXTEND_ATTRIBUTE_CATALOG = [
@@ -357,7 +357,7 @@ const EXTEND_ATTRIBUTE_CATALOG = [
   { name: 'adminonly', type: 'i' },
 ] as const satisfies Columns;
 
-/** `people.extend_attribute`: Masa `tclassextendattributes` rows of `tusers` subtype sets. */
+/** `people.extend_attribute`: Masa `tclassextendattributes` rows of people subtype sets. */
 export const EXTEND_ATTRIBUTE = unitTable('people.extend_attribute', EXTEND_ATTRIBUTE_CATALOG, ['attributeid']);
 
 const EXTEND_RCSET_CATALOG = [
@@ -371,7 +371,7 @@ const EXTEND_RCSET_CATALOG = [
   { name: 'relatedcontentsetid', type: 's' },
 ] as const satisfies Columns;
 
-/** `people.extend_rc_set`: Masa `tclassextendrcsets` rows of `tusers` subtypes. */
+/** `people.extend_rc_set`: Masa `tclassextendrcsets` rows of people subtypes. */
 export const EXTEND_RCSET = unitTable('people.extend_rc_set', EXTEND_RCSET_CATALOG, ['relatedcontentsetid']);
 
 const PERSON_ARCHIVE_CATALOG = [

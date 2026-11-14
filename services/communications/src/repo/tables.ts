@@ -15,6 +15,11 @@ export const UNITS = [
   'communications.mailing_list',
   'communications.mailing_list_member',
   'communications.trash',
+  'communications.extend_subtype',
+  'communications.extend_set',
+  'communications.extend_attribute',
+  'communications.extend_rc_set',
+  'communications.extend_data',
 ] as const;
 
 /** One communications unit id. */
@@ -254,7 +259,7 @@ export const MAILING_LIST_MEMBER: CommunicationsTableDefinition = {
   unit: 'communications.mailing_list_member',
 };
 
-/** `communications.trash`, the `ttrash` rows of objectClass email and mailinglist; mapping-only, `objectstring` is byte-exact WDDX. */
+/** `communications.trash`, the `ttrash` rows of objectClass email and mailinglist and the extendObject rows of communications subtypes; mapping-only, `objectstring` is byte-exact WDDX. */
 export const TRASH: CommunicationsTableDefinition = {
   table: 'trash',
   columns: [
@@ -276,6 +281,117 @@ export const TRASH: CommunicationsTableDefinition = {
   unit: 'communications.trash',
 };
 
+/** `communications.extend_subtype`, the Masa `tclassextend` rows whose `baseTable` is a communications table; mapping-only. */
+export const EXTEND_SUBTYPE: CommunicationsTableDefinition = {
+  table: 'extend_subtype',
+  columns: [
+    TENANT_ID,
+    { name: 'subtypeid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'basetable', type: 's' },
+    { name: 'basekeyfield', type: 's' },
+    { name: 'datatable', type: 's' },
+    { name: 'type', type: 's' },
+    { name: 'subtype', type: 's' },
+    { name: 'isactive', type: 'i' },
+    { name: 'notes', type: 's' },
+    { name: 'lastupdate', type: 't' },
+    { name: 'datecreated', type: 't' },
+    { name: 'lastupdateby', type: 's' },
+    { name: 'hassummary', type: 'i' },
+    { name: 'hasbody', type: 'i' },
+    { name: 'description', type: 's' },
+    { name: 'availablesubtypes', type: 's' },
+    { name: 'iconclass', type: 's' },
+    { name: 'hasassocfile', type: 'i' },
+    { name: 'hasconfigurator', type: 'i' },
+    { name: 'adminonly', type: 'i' },
+  ],
+  key: ['subtypeid'],
+  unit: 'communications.extend_subtype',
+};
+
+/** `communications.extend_set`, the Masa `tclassextendsets` rows of those subtypes; mapping-only. */
+export const EXTEND_SET: CommunicationsTableDefinition = {
+  table: 'extend_set',
+  columns: [
+    TENANT_ID,
+    { name: 'extendsetid', type: 's' },
+    { name: 'subtypeid', type: 's' },
+    { name: 'categoryid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'isactive', type: 'i' },
+    { name: 'container', type: 's' },
+  ],
+  key: ['extendsetid'],
+  unit: 'communications.extend_set',
+};
+
+/** `communications.extend_attribute`, the Masa `tclassextendattributes` rows of those sets; mapping-only. */
+export const EXTEND_ATTRIBUTE: CommunicationsTableDefinition = {
+  table: 'extend_attribute',
+  columns: [
+    TENANT_ID,
+    { name: 'attributeid', type: 'i' },
+    { name: 'extendsetid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'label', type: 's' },
+    { name: 'hint', type: 's' },
+    { name: 'type', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'isactive', type: 'i' },
+    { name: 'required', type: 's' },
+    { name: 'validation', type: 's' },
+    { name: 'regex', type: 's' },
+    { name: 'message', type: 's' },
+    { name: 'defaultvalue', type: 's' },
+    { name: 'optionlist', type: 's' },
+    { name: 'optionlabellist', type: 's' },
+    { name: 'adminonly', type: 'i' },
+  ],
+  key: ['attributeid'],
+  unit: 'communications.extend_attribute',
+};
+
+/** `communications.extend_rc_set`, the Masa `tclassextendrcsets` rows of those subtypes; mapping-only. */
+export const EXTEND_RC_SET: CommunicationsTableDefinition = {
+  table: 'extend_rc_set',
+  columns: [
+    TENANT_ID,
+    { name: 'subtypeid', type: 's' },
+    { name: 'availablesubtypes', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'entitytype', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'relatedcontentsetid', type: 's' },
+  ],
+  key: ['relatedcontentsetid'],
+  unit: 'communications.extend_rc_set',
+};
+
+/** `communications.extend_data`, the Masa `tclassextenddata` values of those attributes; mapping-only. */
+export const EXTEND_DATA: CommunicationsTableDefinition = {
+  table: 'extend_data',
+  columns: [
+    TENANT_ID,
+    { name: 'dataid', type: 'i' },
+    { name: 'baseid', type: 's' },
+    { name: 'attributeid', type: 'i' },
+    { name: 'siteid', type: 's' },
+    { name: 'attributevalue', type: 's' },
+    { name: 'remoteid', type: 's' },
+    { name: 'datetimevalue', type: 't' },
+    { name: 'numericvalue', type: 'f' },
+    { name: 'stringvalue', type: 's' },
+  ],
+  key: ['dataid'],
+  unit: 'communications.extend_data',
+};
+
 /** Every owned table, in catalog order; the `tables` of the communications repository. */
 export const OWNED_TABLES: readonly TableDefinition[] = [
   MESSAGE_TEMPLATE,
@@ -288,6 +404,11 @@ export const OWNED_TABLES: readonly TableDefinition[] = [
   MAILING_LIST,
   MAILING_LIST_MEMBER,
   TRASH,
+  EXTEND_SUBTYPE,
+  EXTEND_SET,
+  EXTEND_ATTRIBUTE,
+  EXTEND_RC_SET,
+  EXTEND_DATA,
 ];
 
 /** Columns per mapped table that exist only in the target and are never mapped to or from legacy. */
@@ -456,4 +577,90 @@ export type TrashRow = {
   deletedby: string;
   deleteid: string | null;
   orderno: number | null;
+};
+
+/** A `communications.extend_subtype` row as pg returns it. */
+export type ExtendSubtypeRow = {
+  tenant_id: string;
+  subtypeid: string;
+  siteid: string | null;
+  basetable: string | null;
+  basekeyfield: string | null;
+  datatable: string | null;
+  type: string | null;
+  subtype: string | null;
+  isactive: number | null;
+  notes: string | null;
+  lastupdate: Date | null;
+  datecreated: Date | null;
+  lastupdateby: string | null;
+  hassummary: number | null;
+  hasbody: number | null;
+  description: string | null;
+  availablesubtypes: string | null;
+  iconclass: string | null;
+  hasassocfile: number | null;
+  hasconfigurator: number | null;
+  adminonly: number | null;
+};
+
+/** A `communications.extend_set` row as pg returns it. */
+export type ExtendSetRow = {
+  tenant_id: string;
+  extendsetid: string;
+  subtypeid: string | null;
+  categoryid: string | null;
+  siteid: string | null;
+  name: string | null;
+  orderno: number | null;
+  isactive: number | null;
+  container: string | null;
+};
+
+/** A `communications.extend_attribute` row as pg returns it. */
+export type ExtendAttributeRow = {
+  tenant_id: string;
+  attributeid: number;
+  extendsetid: string | null;
+  siteid: string | null;
+  name: string | null;
+  label: string | null;
+  hint: string | null;
+  type: string | null;
+  orderno: number | null;
+  isactive: number | null;
+  required: string | null;
+  validation: string | null;
+  regex: string | null;
+  message: string | null;
+  defaultvalue: string | null;
+  optionlist: string | null;
+  optionlabellist: string | null;
+  adminonly: number | null;
+};
+
+/** A `communications.extend_rc_set` row as pg returns it. */
+export type ExtendRcSetRow = {
+  tenant_id: string;
+  subtypeid: string | null;
+  availablesubtypes: string | null;
+  siteid: string | null;
+  entitytype: string | null;
+  name: string;
+  orderno: number | null;
+  relatedcontentsetid: string;
+};
+
+/** A `communications.extend_data` row as pg returns it. */
+export type ExtendDataRow = {
+  tenant_id: string;
+  dataid: number;
+  baseid: string;
+  attributeid: number;
+  siteid: string | null;
+  attributevalue: string | null;
+  remoteid: string | null;
+  datetimevalue: Date | null;
+  numericvalue: number | null;
+  stringvalue: string | null;
 };

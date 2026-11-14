@@ -55,6 +55,7 @@ Legacy tables, as split in [`opt2/table-ownership.json`](../../opt2/table-owners
 | `tuseraddresses`, `tusersinterests`, `tuserstags`, `tusersfavorites`, `tclassextenddatauseractivity` | `identity.user_address`, `identity.user_interest`, `identity.user_tag`, `identity.user_favorite`, `identity.extend_data_user_activity` | Rows of `Type = 1` groups; the rows of `Type = 2` users belong to people | 1 |
 | `tuserstrikes`, `tuserremotesessions`, `tuserdevice`, `tredirects`, `toauthclients`, `toauthtokens` | `identity.user_strike`, `identity.remote_session`, `identity.user_device`, `identity.redirect`, `identity.oauth_client`, `identity.oauth_token` | All | 1 |
 | `ttrash` | `identity.trash` | Rows whose `objectClass` belongs to identity | 1 |
+| `tclassextend`, `tclassextendsets`, `tclassextendattributes`, `tclassextendrcsets`, `tclassextenddata` | `identity.extend_subtype`, `identity.extend_set`, `identity.extend_attribute`, `identity.extend_rc_set`, `identity.extend_data` | Subtypes whose `baseTable` is an identity table, with their sets, attributes, related-content sets and values; written only by migration apply | 1 |
 
 The person columns of `Type = 2` rows belong to people; the reverse projector reassembles each legacy `tusers` row from both owners.
 

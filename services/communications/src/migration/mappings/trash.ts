@@ -3,8 +3,9 @@ import { defineMapping } from '@opt2/platform/migration-kit';
 import type { Mapping } from '@opt2/platform/migration-kit';
 import { TRASH } from '../../repo/tables.js';
 
-// ttrash is split by objectClass; communications owns the rows Masa's trashManager writes for the `mailinglist` and `email` entities.
-/** Masa `ttrash` rows of objectClass `mailinglist` and `email` ↔ `communications.trash`; `objectstring` is byte-exact WDDX, tenant from `siteID`. */
+// ttrash is split by objectClass; communications owns the mailinglist and email rows and the extendObject rows of subtypes
+// whose baseTable is a communications table, which no ttrash column holds alone, so each apply row's discriminator is its class-map owner.
+/** Masa `ttrash` rows of class-map owner communications ↔ `communications.trash`, keyed by `objectID`; `objectstring` is byte-exact WDDX, tenant from `siteID`. */
 export const trashMapping: Mapping = defineMapping({
   legacyTable: 'ttrash',
   targetTable: TRASH.unit,
@@ -24,6 +25,6 @@ export const trashMapping: Mapping = defineMapping({
     { legacy: 'orderno', target: 'orderno', type: 'i' },
   ],
   key: ['objectID'],
-  split: { by: 'objectClass', value: ['mailinglist', 'email'], column: 'objectClass' },
+  split: { by: 'objectClass', value: 'communications' },
   tenant: { kind: 'site', column: 'siteID' },
 });

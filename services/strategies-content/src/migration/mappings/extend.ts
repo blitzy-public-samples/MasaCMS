@@ -1,11 +1,20 @@
-/** Migration-kit mappings of the strategies-content share (`baseTable = tcontent`) of the Masa class-extension tables. */
+/** Migration-kit mappings of the strategies-content share (the subtypes of its base tables) of the Masa class-extension tables. */
 import { MappingError, defineMapping } from '@opt2/platform/migration-kit';
 import type { Mapping, MappingColumn } from '@opt2/platform/migration-kit';
 import { EXTEND_ATTRIBUTE, EXTEND_DATA, EXTEND_RCSET, EXTEND_SET, EXTEND_SUBTYPE } from '../../repo/tables.js';
 import type { ContentUnitTableDefinition } from '../../repo/tables.js';
 
-/** Base table of content subtypes; Masa gives it to Page, Folder, Component, File, Link, Calendar, Gallery, Base and Form. */
-const CONTENT_BASE_TABLE = 'tcontent';
+/** Base tables whose subtypes strategies-content owns, in the order of their opt2/table-ownership.json row predicate. */
+const CONTENT_BASE_TABLES: readonly string[] = [
+  'tcontent', 'tapprovalactions', 'tapprovalassignments', 'tapprovalchains', 'tapprovalmemberships',
+  'tapprovalrequests', 'tchangesetcategoryassign', 'tchangesetrollback', 'tchangesets', 'tchangesettagassign',
+  'tcontentassignments', 'tcontentcategories', 'tcontentcategoryassign', 'tcontentcommentcommenters',
+  'tcontentcomments', 'tcontentdisplaytitleapprovals', 'tcontentfeedadvancedparams', 'tcontentfeeditems',
+  'tcontentfeeds', 'tcontentfilemetadata', 'tcontentfilenamearchive', 'tcontentobjects',
+  'tcontentpublicsubmissionapprovals', 'tcontentratings', 'tcontentrelated', 'tcontentremotepointer',
+  'tcontentsourcemaps', 'tcontentstats', 'tcontenttags', 'tcontentvariationtargeting', 'tfiles',
+  'tformresponsepackets', 'tformresponsequestions',
+];
 
 // Legacy names keep the live-catalog spelling and order of opt2/table-ownership.json; target names and canonical types
 // come from the repository definitions. defineMapping needs a schema-qualified target, which is each definition's unit.
@@ -22,7 +31,7 @@ function columnsOf(legacyTable: string, definition: ContentUnitTableDefinition, 
   });
 }
 
-/** Masa `tclassextend` content subtypes (`baseTable = tcontent`) ↔ `content.extend_subtype`, keyed by `subTypeID`. */
+/** Masa `tclassextend` subtypes of a CONTENT_BASE_TABLES base table ↔ `content.extend_subtype`, keyed by `subTypeID`. */
 export const tclassextendMapping: Mapping = defineMapping({
   legacyTable: 'tclassextend',
   targetTable: EXTEND_SUBTYPE.unit,
@@ -35,7 +44,7 @@ export const tclassextendMapping: Mapping = defineMapping({
     'hasAssocFile', 'hasConfigurator', 'adminonly',
   ]),
   key: ['subTypeID'],
-  split: { by: 'baseTable', value: CONTENT_BASE_TABLE, column: 'baseTable' },
+  split: { by: 'baseTable', value: CONTENT_BASE_TABLES, column: 'baseTable' },
   tenant: { kind: 'site', column: 'siteID' },
 });
 
@@ -50,7 +59,7 @@ export const tclassextendsetsMapping: Mapping = defineMapping({
   ]),
   key: ['extendSetID'],
   // Sets carry no baseTable: each apply row's discriminator is its subtype's tclassextend.baseTable, joined on subTypeID.
-  split: { by: 'baseTable', value: CONTENT_BASE_TABLE },
+  split: { by: 'baseTable', value: CONTENT_BASE_TABLES },
   tenant: { kind: 'site', column: 'siteID' },
 });
 
@@ -67,7 +76,7 @@ export const tclassextendattributesMapping: Mapping = defineMapping({
   // The integer identity keeps its legacy value, which tclassextenddata.attributeID references.
   key: ['attributeID'],
   // The apply row's discriminator is tclassextend.baseTable reached through extendSetID -> tclassextendsets.subTypeID.
-  split: { by: 'baseTable', value: CONTENT_BASE_TABLE },
+  split: { by: 'baseTable', value: CONTENT_BASE_TABLES },
   tenant: { kind: 'site', column: 'siteID' },
 });
 
@@ -82,11 +91,11 @@ export const tclassextendrcsetsMapping: Mapping = defineMapping({
   ]),
   key: ['relatedContentSetID'],
   // The apply row's discriminator is its subtype's tclassextend.baseTable, joined on subTypeID.
-  split: { by: 'baseTable', value: CONTENT_BASE_TABLE },
+  split: { by: 'baseTable', value: CONTENT_BASE_TABLES },
   tenant: { kind: 'site', column: 'siteID' },
 });
 
-/** Masa `tclassextenddata` values of content attributes ↔ `content.extend_data`, keyed by `dataID`; `baseID` is a `contentHistID`. */
+/** Masa `tclassextenddata` values of content attributes ↔ `content.extend_data`, keyed by `dataID`; `baseID` keys the base row, a `contentHistID` for `tcontent`. */
 export const tclassextenddataMapping: Mapping = defineMapping({
   legacyTable: 'tclassextenddata',
   targetTable: EXTEND_DATA.unit,
@@ -98,6 +107,6 @@ export const tclassextenddataMapping: Mapping = defineMapping({
   key: ['dataID'],
   // The apply row's discriminator is tclassextend.baseTable reached through attributeID ->
   // tclassextendattributes.extendSetID -> tclassextendsets.subTypeID.
-  split: { by: 'baseTable', value: CONTENT_BASE_TABLE },
+  split: { by: 'baseTable', value: CONTENT_BASE_TABLES },
   tenant: { kind: 'site', column: 'siteID' },
 });

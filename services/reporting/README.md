@@ -57,6 +57,12 @@ Exports are compared by content, never by bytes: XLSX by cell values per sheet, 
 | `reporting.export_definition` | `synthetic.export_definition` | One-to-one; `tenant_id` from `siteID` |
 | `reporting.export_job` | `synthetic.export_job` | One-to-one; `tenant_id` from `siteID`. The `output varbinary(max)` bytes become an object in bucket `reporting-exports`. A run stores its output at `<tenantId>/<job_id>.<claim>.<format>`, `<claim>` being the job's row version once the run claimed it; a migration apply stores the legacy bytes at output slot `<tenantId>/<job_id>.a.<format>` or `.b.<format>`, whichever the committed row does not name, unless the object the row names already holds them. The row keeps `object_key`, the key of its stored object, and `output_sha256`, which equals the object's SHA-256; read the key from `object_key`, never rebuild it |
 | `reporting.session_tracking` | Masa `tsessiontracking` [core/setup/db/mssql.sql:349-367], with `fname`, `lname` and `company` added by [core/mura/dbUpdates/6.1.1.cfm:2-5] | Mapping only, no routes. `tenant_id` from `siteID`, or the umbrella tenant when it names no site |
+| `reporting.extend_subtype` | Masa `tclassextend` rows whose `baseTable` is `synthetic.export_definition`, `synthetic.export_job` or `tsessiontracking` [core/setup/db/mssql.sql:569-582] | Mapping only, no routes. The row's own `baseTable` selects it |
+| `reporting.extend_set`, `reporting.extend_attribute`, `reporting.extend_rc_set` | Masa `tclassextendsets` [core/setup/db/mssql.sql:605-613], `tclassextendattributes` [core/setup/db/mssql.sql:585-602] and `tclassextendrcsets` [core/mura/extend/extendRelatedContentSetBean.cfc:1] rows of those subtypes | Mapping only, no routes. Sets and related-content sets follow their subtype, attributes their set; each apply row carries its subtype's `baseTable` |
+| `reporting.extend_data` | Masa `tclassextenddata` values of those attributes [core/setup/db/mssql.sql:560-566] | Mapping only, no routes. Selected through `attributeID` → `extendSetID` → `subTypeID` |
+| `reporting.trash` | Masa `ttrash` `extendObject` rows of those subtypes [core/mura/dbUpdates/5.2.1.2893.cfm:7-18] | Mapping only, no routes. Each apply row carries its class-map owner; `objectstring` is kept byte-exact |
+
+The extension and trash units take `tenant_id` from `siteID`, or the umbrella tenant when it names no site. The class-extension and trash screens are withheld on the decision list, so these units stay `legacy`-authoritative and only backfill and the change feed write them.
 
 `tsessiontracking` stays `legacy`-authoritative in every cut-over version. No carry entry writes it, so its group `grp:reporting.session_tracking` never moves, and only backfill and the change feed keep the target copy current. Its legacy writers are:
 
@@ -68,7 +74,7 @@ The legacy-served `cdashboard` screens read the table and write nothing to it.
 
 ## Schema and roles
 
-Schema `reporting` is created with its roles by `opt2-db bootstrap` (`migration/src/db-bootstrap/`). Its DDL is in `db/migrations/0001_platform.sql` and `db/migrations/0002_reporting.sql`.
+Schema `reporting` is created with its roles by `opt2-db bootstrap` (`migration/src/db-bootstrap/`). Its DDL is in `db/migrations/0001_platform.sql`, `db/migrations/0002_reporting.sql` and `db/migrations/0003_extensions.sql`.
 
 | Role | Attributes | Use |
 |---|---|---|

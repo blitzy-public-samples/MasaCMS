@@ -864,7 +864,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   const lockExtendByAttributesSql =
     `SELECT dataid, attributeid FROM ${extendData} WHERE tenant_id = $1 AND ${idEquals('baseid', '$2')}` +
     ' AND attributeid = ANY($3::integer[]) ORDER BY dataid FOR UPDATE';
-  // The schema holds only the people split (baseTable tusers or tusersaddresses), so no baseTable predicate is needed.
+  // The schema holds only the people split (the baseTables table ownership gives people), so no baseTable predicate is needed.
   const subtypesSql =
     `SELECT * FROM ${subtype} WHERE tenant_id = $1 AND ${siteEquals('siteid', '$2')}` +
     ` AND ($3::text[] IS NULL OR ${ciText('type')} = ANY (SELECT ${ciText('t')} FROM unnest($3::text[]) AS t))` +

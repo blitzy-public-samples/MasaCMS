@@ -1,6 +1,7 @@
 import { MappingError, defineMapping } from '@opt2/platform/migration-kit';
 import type { Mapping, MappingColumn } from '@opt2/platform/migration-kit';
 import { EXTEND_RC_SET } from '../../repo/tables.js';
+import { PROGRAMS_SITES_BASE_TABLES } from './tclassextend.js';
 
 const LEGACY_TABLE = 'tclassextendrcsets';
 
@@ -14,7 +15,7 @@ function rcSetColumn(legacy: string): MappingColumn {
   return { legacy, target: target.name, type: target.type };
 }
 
-/** Masa `tclassextendrcsets` related-content sets of site subtypes ↔ `programs_sites.extend_rc_set`, keyed by `relatedContentSetID`. */
+/** Masa `tclassextendrcsets` related-content sets of programs-sites subtypes ↔ `programs_sites.extend_rc_set`, keyed by `relatedContentSetID`. */
 export const tclassextendrcsetsMapping: Mapping = defineMapping({
   legacyTable: LEGACY_TABLE,
   // defineMapping needs a schema-qualified target: EXTEND_RC_SET.table is unqualified, EXTEND_RC_SET.unit is the qualified name.
@@ -24,7 +25,7 @@ export const tclassextendrcsetsMapping: Mapping = defineMapping({
   key: ['relatedContentSetID'],
   // The table has no baseTable column: the apply row carries its subtype's tclassextend.baseTable (joined on subTypeID)
   // as the discriminator, and a row whose subtype does not resolve carries none and is rejected.
-  split: { by: 'baseTable', value: 'tsettings' },
+  split: { by: 'baseTable', value: PROGRAMS_SITES_BASE_TABLES },
   // opt2/table-ownership.json resolves this table as siteID-or-umbrella, and TenantSource takes one source: a null or
   // empty siteID loads under the umbrella tenant as an orphan rather than inheriting the subtype's tenant.
   tenant: { kind: 'site', column: 'siteID' },

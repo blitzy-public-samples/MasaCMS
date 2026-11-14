@@ -42,12 +42,18 @@ import { SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { findGrantor } from '../../src/repo/grants.js';
 import { createSurveysRepository, launchTaskName, reminderTaskName } from '../../src/repo/repository.js';
 import {
+  EXTEND_ATTRIBUTE,
+  EXTEND_DATA,
+  EXTEND_RC_SET,
+  EXTEND_SET,
+  EXTEND_SUBTYPE,
   OWNED_TABLES,
   SURVEY,
   SURVEY_REMINDER,
   SURVEY_RESPONSE,
   SURVEY_SCHEDULE,
   SURVEY_TARGET,
+  TRASH,
   UNITS,
   type SurveyResponseRow,
 } from '../../src/repo/tables.js';
@@ -95,6 +101,14 @@ const grantSurvey = (): string => setUp(grantSurveyId, 'tenant A grant survey');
 /** SHA-256 hex digest of a fresh UUID, shaped like a stored task-token hash. */
 function tokenHash(): string {
   return createHash('sha256').update(randomUUID()).digest('hex');
+}
+
+let lastLegacyId = 0;
+
+/** A fresh positive integer, as the legacy IDENTITY keys `attributeID` and `dataID` are. */
+function legacyId(): number {
+  lastLegacyId += 1;
+  return lastLegacyId;
 }
 
 // Probe outbox rows are already published and probe tasks done, so no sweep or dispatcher acts on them.
@@ -145,6 +159,21 @@ const ROW_BUILDERS: Readonly<Record<string, (tenant: TenantFixture) => Row>> = {
     respondent_user_id: cfUuid(),
     answers: ANSWERS,
     created: TEST_CLOCK.now(),
+  }),
+  [EXTEND_SUBTYPE.table]: (tenant) => ({ subtypeid: cfUuid(), siteid: tenant.siteId, basetable: 'synthetic.survey' }),
+  [EXTEND_SET.table]: (tenant) => ({ extendsetid: cfUuid(), subtypeid: cfUuid(), siteid: tenant.siteId }),
+  [EXTEND_ATTRIBUTE.table]: (tenant) => ({ attributeid: legacyId(), extendsetid: cfUuid(), siteid: tenant.siteId }),
+  [EXTEND_RC_SET.table]: (tenant) => ({ relatedcontentsetid: cfUuid(), subtypeid: cfUuid(), siteid: tenant.siteId, name: 'Related' }),
+  [EXTEND_DATA.table]: (tenant) => ({ dataid: legacyId(), baseid: cfUuid(), attributeid: legacyId(), siteid: tenant.siteId }),
+  [TRASH.table]: (tenant) => ({
+    objectid: cfUuid(),
+    parentid: cfUuid(),
+    siteid: tenant.siteId,
+    objectlabel: `Isolation subtype ${tenant.key}`,
+    objectclass: 'extendObject',
+    objecttype: 'Survey',
+    objectsubtype: 'Default',
+    deletedby: 'Isolation',
   }),
   outbox: () => ({
     event_id: randomUUID(),

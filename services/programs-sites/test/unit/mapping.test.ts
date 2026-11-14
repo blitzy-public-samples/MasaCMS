@@ -40,7 +40,7 @@ interface OwnershipTable {
   columns: string[];
   siteIdColumn: string | null;
   rowIdentity: 'key' | 'multiset';
-  split?: { by: string };
+  split?: { by: string; baseTableOwners?: Record<string, string> };
   targets?: OwnershipTarget[];
 }
 
@@ -59,12 +59,21 @@ interface OwnedTarget {
 const OWNERSHIP = JSON.parse(readFileSync(new URL('../../../../opt2/table-ownership.json', import.meta.url), 'utf8')) as Ownership;
 const OWNED_UNITS: ReadonlySet<string> = new Set(OWNERSHIP.units.filter((unit) => unit.owner === OWNER).map((unit) => unit.unit));
 
-/** `<table>`, or `<table>{<by>=<value>}` for a split table, the value taken from the target's row predicate. */
+/** The values a row predicate selects: the quoted list of `<column> in (...)`, else the one value after `=`. */
+function predicateValues(target: OwnershipTarget): string[] | undefined {
+  const predicate = target.rowPredicate ?? '';
+  const listed = /^\S+ in \((.+)\)$/.exec(predicate)?.[1];
+  if (listed !== undefined) return [...listed.matchAll(/'([^']*)'/g)].map((match) => match[1] ?? '');
+  const value = /=\s*'?([^']+?)'?$/.exec(predicate)?.[1];
+  return value === undefined ? undefined : [value];
+}
+
+/** `<table>`, or `<table>{<by>=<values>}` for a split table, the values taken from the target's row predicate. */
 function coverageKeyOf(table: OwnershipTable, target: OwnershipTarget): string {
   if (table.split === undefined) return table.table;
-  const value = /=\s*'?([^']+?)'?$/.exec(target.rowPredicate ?? '')?.[1];
-  if (value === undefined) throw new Error(`${table.table}: split target ${target.unit} has no row predicate value`);
-  return `${table.table}{${table.split.by}=${value}}`;
+  const values = predicateValues(target);
+  if (values === undefined) throw new Error(`${table.table}: split target ${target.unit} has no row predicate value`);
+  return `${table.table}{${table.split.by}=${values.join(',')}}`;
 }
 
 const OWNED_TARGETS: readonly OwnedTarget[] = OWNERSHIP.tables.flatMap((table) =>
@@ -147,6 +156,13 @@ function sampleRow(mapping: Mapping): { row: Record<string, unknown>; nullColumn
 /** The apply-row discriminator of a split mapping without a discriminator column. */
 function discriminatorOf(mapping: Mapping): string | number | undefined {
   return mapping.split !== undefined && mapping.split.column === undefined ? ownedValue(mapping.split) : undefined;
+}
+
+/** Whether a baseTable split mapping takes a sample row of `baseTable`, read from its own column or else the apply discriminator. */
+function acceptsBaseTable(mapping: Mapping, baseTable: string): boolean {
+  const { row } = sampleRow(mapping);
+  const column = mapping.split?.column;
+  return column === undefined ? mapping.acceptsRow(row, baseTable) : mapping.acceptsRow({ ...row, [column]: baseTable });
 }
 
 describe('programs-sites mapping coverage', () => {
@@ -243,6 +259,42 @@ describe('split ownership', () => {
       expect(mapping.acceptsRow(sampleRow(mapping).row, discriminator)).toBe(false);
     },
   );
+
+  const baseTableTargets = OWNED_TARGETS.filter(({ table }) => table.split?.by === 'baseTable');
+  const splits = mappings.filter((mapping) => mapping.split?.by === 'baseTable');
+
+  it.each(baseTableTargets.map((entry) => [entry.target.unit, entry] as const))(
+    'selects the %s rows by its row predicate, the base tables table ownership gives programs-sites, in predicate order',
+    (_unit, entry) => {
+      const values = predicateValues(entry.target) ?? [];
+      const ownerBaseTables = Object.entries(entry.table.split?.baseTableOwners ?? {})
+        .filter(([, owner]) => owner === OWNER)
+        .map(([baseTable]) => baseTable);
+
+      expect(mappingFor(entry).split?.value).toStrictEqual(values);
+      expect([...values].sort()).toStrictEqual(ownerBaseTables.sort());
+    },
+  );
+
+  it.each(
+    baseTableTargets.flatMap((entry) =>
+      Object.entries(entry.table.split?.baseTableOwners ?? {}).map(
+        ([baseTable, owner]) => [entry.table.table, baseTable, owner, mappingFor(entry)] as const,
+      ),
+    ),
+  )('answers whether a %s row of baseTable %s (owner %s) is programs-sites', (_legacyTable, baseTable, owner, mapping) => {
+    expect(acceptsBaseTable(mapping, baseTable)).toBe(owner === OWNER);
+  });
+
+  it.each(
+    splits.flatMap((mapping) =>
+      ([['timagesizes', true], ['tfiles', false], ['tuseraddresses', false], ['temails', false], ['custom', false]] as const).map(
+        ([baseTable, accepted]) => [mapping.legacyTable, baseTable, accepted, mapping] as const,
+      ),
+    ),
+  )('answers whether a %s row of baseTable %s is programs-sites with %s', (_legacyTable, baseTable, accepted, mapping) => {
+    expect(acceptsBaseTable(mapping, baseTable)).toBe(accepted);
+  });
 });
 
 describe('tsystemobjects multiset rows', () => {

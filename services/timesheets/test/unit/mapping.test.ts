@@ -1,8 +1,8 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** The timesheets mappings barrel against table ownership, the fixture and target DDL, the Program_<id> fold and the canonical encoding. */
+/** The timesheets mappings barrel against table ownership, the fixture and target DDL, the Program_<id> fold, the canonical encoding and migration applies of the split shares. */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_UMBRELLA_SITE_ID,
   LEGACY_PROGRAM_ID_COLUMN,
@@ -16,12 +16,15 @@ import {
   parseProgramTable,
   programTableName,
   resolveTenant,
+  type ApplyRequest,
+  type ApplyResponse,
   type CanonicalColumn,
   type CanonicalValue,
   type Mapping,
   type TenantLookups,
   type TenantSource,
 } from '@opt2/platform/migration-kit';
+import { cfUuid } from '@opt2/platform/legacy-compat';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, type TenantFixture } from '@opt2/platform/testing';
 import {
@@ -29,24 +32,45 @@ import {
   approvalActionMapping,
   blackoutMapping,
   mappings,
+  tclassextendMapping,
+  tclassextendattributesMapping,
+  tclassextenddataMapping,
+  tclassextendrcsetsMapping,
+  tclassextendsetsMapping,
   timesheetDayMapping,
   timesheetMapping,
+  trashMapping,
   units,
 } from '../../src/migration/mappings/index.js';
-import { APPROVAL_ACTION, BLACKOUT, TIMESHEET, TIMESHEET_DAY, TIMESHEETS_UNITS } from '../../src/repo/tables.js';
+import {
+  APPROVAL_ACTION,
+  BLACKOUT,
+  EXTEND_ATTRIBUTE,
+  EXTEND_DATA,
+  EXTEND_RC_SET,
+  EXTEND_SET,
+  EXTEND_SUBTYPE,
+  TIMESHEET,
+  TIMESHEET_DAY,
+  TIMESHEETS_UNITS,
+  TRASH,
+} from '../../src/repo/tables.js';
+import { buildTestApp, headersFor, type TableName, type TestApp } from '../helpers/app.js';
 import { approvalActionRow, blackoutRow, dayRow, timesheetRow } from '../helpers/days.js';
 
 interface OwnershipTarget {
   unit: string;
   columnPolicy: 'whole-table' | 'explicit';
   ownedColumns: string[];
+  rowPredicate?: string;
 }
 
 interface OwnershipTable {
   table: string;
   columns?: string[];
-  programFold?: boolean;
+  programFold?: boolean | null;
   programSchemas?: string[];
+  split?: { by: string };
   targets?: OwnershipTarget[];
 }
 
@@ -73,7 +97,10 @@ const FIXTURE_DDL = createTableBodies(
   repoFile('legacy-fixtures/sql/timesheets/110_tables.program.sql'),
   /CREATE TABLE \[\$\(PROGRAM_SCHEMA\)\]\.\[(\w+)\] \(\n([\s\S]*?)\n\s*\) ON /g,
 );
-const TARGET_DDL = createTableBodies(repoFile('services/timesheets/db/migrations/0001_timesheets.sql'), /CREATE TABLE (timesheets\.\w+) \(\n([\s\S]*?)\n\);/g);
+const TARGET_DDL = createTableBodies(
+  ['0001_timesheets.sql', '0002_extensions.sql'].map((file) => repoFile(`services/timesheets/db/migrations/${file}`)).join('\n'),
+  /CREATE TABLE (timesheets\.\w+) \(\n([\s\S]*?)\n\);/g,
+);
 const PROGRAM_SITE_ROWS = Object.fromEntries(
   [...repoFile('legacy-fixtures/sql/010_program_site.sql').matchAll(/\((\d+), N'([^']+)'\)/g)].map((match) => [Number(match[1]), match[2]]),
 );
@@ -87,11 +114,26 @@ const OWNED = OWNERSHIP.tables.flatMap((entry) =>
   (entry.targets ?? []).filter((target) => target.unit.startsWith('timesheets.')).map((target) => ({ entry, target })),
 );
 
-/** Legacy columns table ownership assigns to timesheets, per legacy table, in the shape `diffCoverage` compares. */
+/** The values a split target's row predicate selects: a `baseTable in (...)` list, or the owner of `classMap owner = <owner>`. */
+function predicateValues(rowPredicate: string | undefined): string[] {
+  const list = /^\w+ in \((.*)\)$/.exec(rowPredicate ?? '')?.[1];
+  if (list !== undefined) return [...list.matchAll(/'([^']*)'/g)].map((match) => match[1] ?? '');
+  const owner = /^classMap owner = (\S+)$/.exec(rowPredicate ?? '')?.[1];
+  if (owner !== undefined) return [owner];
+  throw new Error(`unreadable row predicate ${String(rowPredicate)}`);
+}
+
+/** The key `mappingCoverage` files a target under: its legacy table, suffixed `{<by>=<values>}` for a split table. */
+function coverageKeyOf(entry: OwnershipTable, target: OwnershipTarget): string {
+  if (entry.split === undefined) return legacyTableOf(entry);
+  return `${entry.table}{${entry.split.by}=${predicateValues(target.rowPredicate).join(',')}}`;
+}
+
+/** Legacy columns table ownership assigns to timesheets, per coverage key, in the shape `diffCoverage` compares. */
 const EXPECTED: Record<string, string[]> = {};
 for (const { entry, target } of OWNED) {
   const owned = target.columnPolicy === 'whole-table' ? (entry.columns ?? target.ownedColumns) : target.ownedColumns;
-  EXPECTED[legacyTableOf(entry)] = [...(EXPECTED[legacyTableOf(entry)] ?? []), ...owned];
+  EXPECTED[coverageKeyOf(entry, target)] = [...(EXPECTED[coverageKeyOf(entry, target)] ?? []), ...owned];
 }
 
 /** `body` of a `CREATE TABLE` named `table`; throws when the DDL declares no such table. */
@@ -200,6 +242,36 @@ const CASES: readonly { table: string; mapping: Mapping; columnCount: number; ro
   },
 ];
 
+/** Mappings of the timesheets share of a Masa `dbo` table, in `TIMESHEETS_UNITS` order; none is folded. */
+const SHARE_MAPPINGS: readonly Mapping[] = [
+  tclassextendMapping,
+  tclassextendsetsMapping,
+  tclassextendattributesMapping,
+  tclassextendrcsetsMapping,
+  tclassextenddataMapping,
+  trashMapping,
+];
+
+/** A driver-shaped value of `column` distinct per column position. */
+function shareValue(column: CanonicalColumn, position: number): unknown {
+  switch (column.type) {
+    case 'i':
+      return position;
+    case 'f':
+      return position + 0.5;
+    case 't':
+      return new Date(2026, 5, 10 + position, 9, 15, 0, 997);
+    default:
+      return `${column.name}-${String(position)}`;
+  }
+}
+
+/** A legacy row of share `mapping` in canonical value form, in site `siteId`, with `overrides` applied. */
+function shareRow(mapping: Mapping, siteId: string | null, overrides: Readonly<Record<string, CanonicalValue>> = {}): Record<string, CanonicalValue> {
+  const raw = Object.fromEntries(mapping.legacyColumns.map((column, position): [string, unknown] => [column.name, shareValue(column, position)]));
+  return { ...decodeRow(mapping.legacyColumns, encodeRow(mapping.legacyColumns, raw)), siteID: siteId, ...overrides };
+}
+
 /** The canonical legacy row of `table` in `CASES`; throws for a table it does not list. */
 function legacyRowOf(table: string): Readonly<Record<string, CanonicalValue>> {
   const found = CASES.find((entry) => entry.table === table);
@@ -235,7 +307,7 @@ describe('timesheets mapping coverage', () => {
     expect(diff, JSON.stringify(diff, null, 2)).toEqual({ missing: {}, extra: {} });
   });
 
-  it('owns exactly the timesheets units, each recorded in table-ownership units from its Program_N fixture table', () => {
+  it('owns exactly the timesheets units, each recorded in table-ownership units from its legacy table', () => {
     const owned = OWNERSHIP.units.filter((unit) => unit.owner === 'timesheets');
 
     expect(new Set(OWNED.map(({ target }) => target.unit))).toEqual(new Set(TIMESHEETS_UNITS));
@@ -246,7 +318,10 @@ describe('timesheets mapping coverage', () => {
   });
 
   it('folds every Program_<id> schema table-ownership lists from a program synthetic.program_site maps', () => {
-    for (const { entry } of OWNED) {
+    const folded = OWNED.filter(({ entry }) => entry.programFold === true);
+
+    expect(folded.map(({ target }) => target.unit).sort()).toStrictEqual([TIMESHEET.unit, TIMESHEET_DAY.unit, APPROVAL_ACTION.unit, BLACKOUT.unit].sort());
+    for (const { entry } of folded) {
       const programs = (entry.programSchemas ?? []).map((schema) => parseProgramTable(`${schema}.${legacyTableOf(entry)}`));
 
       expect(entry.programFold).toBe(true);
@@ -257,11 +332,12 @@ describe('timesheets mapping coverage', () => {
 
 describe('timesheets mappings barrel', () => {
   it('exposes TIMESHEETS_UNITS as its units and one mapping per unit in that order', () => {
-    const named = [timesheetMapping, timesheetDayMapping, approvalActionMapping, blackoutMapping];
+    const named = [timesheetMapping, timesheetDayMapping, approvalActionMapping, blackoutMapping, ...SHARE_MAPPINGS];
+    const definitions = [TIMESHEET, TIMESHEET_DAY, APPROVAL_ACTION, BLACKOUT, EXTEND_SUBTYPE, EXTEND_SET, EXTEND_ATTRIBUTE, EXTEND_RC_SET, EXTEND_DATA, TRASH];
 
     expect(units).toEqual(TIMESHEETS_UNITS);
-    expect(mappings.map((mapping) => named.indexOf(mapping))).toEqual([0, 1, 2, 3]);
-    expect(mappings.map((mapping) => mapping.unit)).toEqual([TIMESHEET.unit, TIMESHEET_DAY.unit, APPROVAL_ACTION.unit, BLACKOUT.unit]);
+    expect(mappings.map((mapping) => named.indexOf(mapping))).toEqual(named.map((_mapping, index) => index));
+    expect(mappings.map((mapping) => mapping.unit)).toEqual(definitions.map((definition) => definition.unit));
     expect(mappings.map((mapping) => mapping.targetTable)).toEqual([...TIMESHEETS_UNITS]);
   });
 
@@ -354,5 +430,77 @@ describe('timesheets canonical value forms', () => {
     expect(encodeRow(columns, emptyComment)).not.toBe(encodeRow(columns, nullComment));
     expect(decodeRow(columns, encodeRow(columns, emptyComment))['comment']).toBe('');
     expect(decodeRow(columns, encodeRow(columns, nullComment))['comment']).toBeNull();
+  });
+});
+
+describe.each(SHARE_MAPPINGS.map((mapping) => [mapping.legacyTable, mapping] as const))('%s share mapping', (_legacyTable, mapping) => {
+  it('adds only tenant_id to the mapped columns of its target DDL', () => {
+    const ddl = targetDdlColumns(mapping.targetTable);
+    const mapped = new Set(mapping.columns.map((column) => column.target));
+
+    expect(ddl.filter((column) => !mapped.has(column.name)).map((column) => column.name)).toEqual(['tenant_id']);
+    expect(ddl.filter((column) => column.name !== 'tenant_id')).toStrictEqual(mapping.targetColumns);
+  });
+
+  it.each([TENANT_A, TENANT_B])('places a row of site $siteId in its own tenant from siteID, unfolded whatever program id it is given', (tenant) => {
+    const row = shareRow(mapping, tenant.siteId);
+
+    expect(mapping.fold).toBeUndefined();
+    expect(mapping.toTarget(row, { legacyProgramId: 1 })).toStrictEqual(mapping.toTarget(row));
+    expect(mapping.toTarget(row)).not.toHaveProperty(LEGACY_PROGRAM_ID_COLUMN);
+    expect(resolveTenant(tenantSourceOf(mapping), row, LOOKUPS, { legacyProgramId: 1 })).toStrictEqual({
+      tenantId: tenant.tenantId,
+      siteId: tenant.siteId,
+      orphan: false,
+    });
+  });
+
+  it.each([null, ''])('places a row with siteID %j under the umbrella tenant as an orphan', (siteId) => {
+    expect(resolveTenant(tenantSourceOf(mapping), shareRow(mapping, siteId), LOOKUPS)).toStrictEqual({
+      tenantId: tenantIdForSite(DEFAULT_UMBRELLA_SITE_ID),
+      siteId: DEFAULT_UMBRELLA_SITE_ID,
+      orphan: true,
+    });
+  });
+});
+
+describe('migration applies of the timesheets split shares', () => {
+  const APPLY_URL = '/internal/v1/migration/apply';
+  let t: TestApp;
+
+  beforeEach(async () => {
+    t = await buildTestApp();
+  });
+
+  afterEach(async () => {
+    await t.app.close();
+  });
+
+  /** A tenant-a row of `mapping` keyed `key`, carrying `value` in its split column, else as its apply-row discriminator. */
+  function splitRow(mapping: Mapping, keyColumn: string, key: string, value: string): ApplyRequest['rows'][number] {
+    const column = mapping.split?.column;
+    const row = shareRow(mapping, TENANT_A.siteId, column === undefined ? { [keyColumn]: key } : { [keyColumn]: key, [column]: value });
+    return { op: 'upsert', row: encodeRow(mapping.legacyColumns, row), ...(column === undefined ? { discriminator: value } : {}) };
+  }
+
+  it.each<[string, string, string, Extract<TableName, 'extend_subtype' | 'extend_set' | 'trash'>, Mapping, string]>([
+    ['tclassextend', 'Program_1.timesheet', 'custom', 'extend_subtype', tclassextendMapping, 'subTypeID'],
+    ['tclassextendsets', 'Program_1.timesheet', 'custom', 'extend_set', tclassextendsetsMapping, 'extendSetID'],
+    ['ttrash', 'timesheets', 'people', 'trash', trashMapping, 'objectID'],
+  ])('lands the %s row of %s, not that of %s, in timesheets.%s', async (legacyTable, owned, other, table, mapping, keyColumn) => {
+    const [ownedKey, otherKey] = [cfUuid(), cfUuid()];
+    const body: ApplyRequest = {
+      batchId: `share-${legacyTable}`,
+      origin: 'backfill',
+      legacyTable,
+      tenantId: TENANT_A.tenantId,
+      columns: mapping.legacyColumns,
+      rows: [splitRow(mapping, keyColumn, ownedKey, owned), splitRow(mapping, keyColumn, otherKey, other)],
+    };
+
+    const res = await t.app.inject({ method: 'POST', url: APPLY_URL, headers: await headersFor('service:migration', { csrf: false }), payload: body });
+
+    expect([res.statusCode, res.json<ApplyResponse>()]).toStrictEqual([200, { batchId: body.batchId, duplicate: false, applied: 1, skipped: 1 }]);
+    expect(t.db.rowsOf(table, TENANT_A.tenantId).map((row) => row[keyColumn.toLowerCase()])).toStrictEqual([ownedKey]);
   });
 });

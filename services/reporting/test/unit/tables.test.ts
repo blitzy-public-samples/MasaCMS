@@ -22,6 +22,7 @@ import {
   type ExportFormat,
   type OutputSlot,
 } from '../../src/repo/tables.js';
+import { coverageKeyOf } from '../helpers/ownership.js';
 
 interface DdlColumn {
   name: string;
@@ -31,6 +32,7 @@ interface DdlColumn {
 interface OwnershipTarget {
   unit: string;
   table: string;
+  rowPredicate: string | null;
   keyColumns: string[];
   columnPolicy: 'whole-table' | 'explicit';
   ownedColumns: string[];
@@ -41,6 +43,7 @@ interface OwnershipTarget {
 interface OwnershipTable {
   table: string;
   columns: string[];
+  split?: { by: string };
   targets: OwnershipTarget[];
 }
 
@@ -50,7 +53,7 @@ interface Ownership {
 }
 
 const read = (relative: string): string => readFileSync(new URL(relative, import.meta.url), 'utf8');
-const TARGET_DDL = read('../../db/migrations/0002_reporting.sql');
+const TARGET_DDL = ['0002_reporting.sql', '0003_extensions.sql'].map((file) => read(`../../db/migrations/${file}`)).join('\n');
 const FIXTURE_DDL = read('../../../../legacy-fixtures/sql/reporting/100_tables.sql');
 const OWNERSHIP = JSON.parse(read('../../../../opt2/table-ownership.json')) as Ownership;
 
@@ -65,7 +68,7 @@ function tableBody(ddl: string, head: string, tail: string): string[] {
   return ddl.slice(from, ddl.indexOf(tail, from)).split('\n').map((line) => line.trim()).filter((line) => line !== '');
 }
 
-/** Columns and primary key of `reporting.<table>` in `0002_reporting.sql`. */
+/** Columns and primary key of `reporting.<table>` in `0002_reporting.sql` or `0003_extensions.sql`. */
 function targetTable(table: string): { columns: DdlColumn[]; primaryKey: string[] } {
   const body = tableBody(TARGET_DDL, `CREATE TABLE reporting.${table} (`, '\n);').map((line) => line.replace(/,$/, ''));
   const columns = body
@@ -181,7 +184,7 @@ describe('reporting mapping coverage', () => {
   it('maps exactly the legacy columns ownership assigns to reporting, besides its object columns', () => {
     expect(OWNED_TARGETS.map(({ target }) => target.unit).sort()).toEqual([...UNITS].sort());
     const expected: Record<string, string[]> = {};
-    for (const entry of OWNED_TARGETS) (expected[entry.table.table] ??= []).push(...canonicalColumns(entry));
+    for (const entry of OWNED_TARGETS) (expected[coverageKeyOf(entry.table, entry.target)] ??= []).push(...canonicalColumns(entry));
     const diff = diffCoverage(expected, mappingCoverage(mappings));
 
     expect(diff, JSON.stringify(diff, null, 2)).toStrictEqual({ missing: {}, extra: {} });
@@ -198,7 +201,7 @@ describe('reporting mapping coverage', () => {
       expect([...canonical, ...objects].sort()).toEqual([...assigned].sort());
     }
     const total = (key: keyof (typeof split)[number]): number => split.reduce((sum, columns) => sum + columns[key].length, 0);
-    expect([total('assigned'), total('canonical'), total('objects')]).toEqual([39, 38, 1]);
+    expect([total('assigned'), total('canonical'), total('objects')]).toEqual([112, 111, 1]);
     const objectColumns = OWNED_TARGETS.flatMap(({ table, target }) =>
       Object.entries(target.objectColumns ?? {}).map(([column, bucket]) => [table.table, column, bucket]),
     );

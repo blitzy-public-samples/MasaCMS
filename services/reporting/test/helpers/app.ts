@@ -391,11 +391,17 @@ export type DescribeBlock = (name: string, fn: () => void) => unknown;
 /** Owned tables {@link TestApp.seed} writes, the `table` names of `OWNED_TABLES`. */
 export type SeedTable = Extract<MemoryTable, 'export_definition' | 'export_job' | 'session_tracking'>;
 
-/** Gate state of each unit in a new test app: the export units take target writes, session tracking stays legacy-authoritative. */
+/** Gate state of each unit in a new test app: the export units take target writes; session tracking, extension and trash stay legacy-authoritative. */
 export const DEFAULT_GATES: Readonly<Record<ReportingUnit, GateState>> = Object.freeze({
   'reporting.export_definition': 'open',
   'reporting.export_job': 'open',
   'reporting.session_tracking': 'legacy',
+  'reporting.extend_subtype': 'legacy',
+  'reporting.extend_set': 'legacy',
+  'reporting.extend_attribute': 'legacy',
+  'reporting.extend_rc_set': 'legacy',
+  'reporting.extend_data': 'legacy',
+  'reporting.trash': 'legacy',
 });
 
 /** Holder id of gates a test app closes; the gate table requires a holder exactly when a gate is closed. */

@@ -89,12 +89,21 @@ function ownershipTable(name: string): OwnershipTable {
   return table;
 }
 
-/** `<table>`, or `<table>{<by>=<value>}` for a split table, the value taken from the target's row predicate. */
+/** The values a row predicate selects: the quoted list of `<column> in (...)`, else the one value after `=`. */
+function predicateValues(target: OwnershipTarget): string[] | undefined {
+  const predicate = target.rowPredicate ?? '';
+  const listed = /^\S+ in \((.+)\)$/.exec(predicate)?.[1];
+  if (listed !== undefined) return [...listed.matchAll(/'([^']*)'/g)].map((match) => match[1] ?? '');
+  const value = /=\s*'?([^']+?)'?$/.exec(predicate)?.[1];
+  return value === undefined ? undefined : [value];
+}
+
+/** `<table>`, or `<table>{<by>=<values>}` for a split table, the values taken from the target's row predicate. */
 function coverageKeyOf(table: OwnershipTable, target: OwnershipTarget): string {
   if (table.split === undefined) return table.table;
-  const value = /=\s*'?([^']+?)'?$/.exec(target.rowPredicate ?? '')?.[1];
-  if (value === undefined) throw new Error(`${table.table}: split target ${target.unit} has no row predicate value`);
-  return `${table.table}{${table.split.by}=${value}}`;
+  const values = predicateValues(target);
+  if (values === undefined) throw new Error(`${table.table}: split target ${target.unit} has no row predicate value`);
+  return `${table.table}{${table.split.by}=${values.join(',')}}`;
 }
 
 const OWNED_TARGETS: readonly OwnedTarget[] = OWNERSHIP.tables.flatMap((table) =>
@@ -216,6 +225,13 @@ function sampleRow(mapping: Mapping): { row: Record<string, unknown>; nullColumn
 /** The apply-row discriminator of a split mapping without a discriminator column. */
 function discriminatorOf(mapping: Mapping): string | number | undefined {
   return mapping.split !== undefined && mapping.split.column === undefined ? ownedValue(mapping.split) : undefined;
+}
+
+/** Whether a baseTable split mapping takes a sample row of `baseTable`, read from its own column or else the apply discriminator. */
+function acceptsBaseTable(mapping: Mapping, baseTable: string): boolean {
+  const { row } = sampleRow(mapping);
+  const column = mapping.split?.column;
+  return column === undefined ? mapping.acceptsRow(row, baseTable) : mapping.acceptsRow({ ...row, [column]: baseTable });
 }
 
 /** Target row of a legacy row, decoded from its canonical encoding as the apply handler receives it. */
@@ -343,13 +359,26 @@ describe('row round trips', () => {
 describe('baseTable split of the class-extension tables', () => {
   const splits = mappings.filter((mapping) => mapping.split?.by === 'baseTable');
 
-  it('splits exactly the tables table ownership splits by baseTable, giving tcontent to strategies-content', () => {
-    const owned = OWNED_TARGETS.filter(({ table }) => table.split?.by === 'baseTable');
+  const owned = OWNED_TARGETS.filter(({ table }) => table.split?.by === 'baseTable');
 
+  it('splits exactly the tables table ownership splits by baseTable, giving tcontent to strategies-content', () => {
     expect(splits.map((mapping) => mapping.legacyTable).sort()).toStrictEqual(owned.map(({ table }) => table.table).sort());
     expect(owned.map(({ table }) => table.split?.baseTableOwners?.['tcontent'])).toStrictEqual(owned.map(() => OWNER));
-    expect(tclassextendMapping.split).toStrictEqual({ by: 'baseTable', value: 'tcontent', column: 'baseTable' });
+    expect(tclassextendMapping.split?.column).toBe('baseTable');
   });
+
+  it.each(owned.map((entry) => [entry.target.unit, entry] as const))(
+    'selects the %s rows by its row predicate, the base tables table ownership gives strategies-content, in predicate order',
+    (_unit, entry) => {
+      const values = predicateValues(entry.target) ?? [];
+      const ownerBaseTables = Object.entries(entry.table.split?.baseTableOwners ?? {})
+        .filter(([, owner]) => owner === OWNER)
+        .map(([baseTable]) => baseTable);
+
+      expect(mappingFor(entry).split?.value).toStrictEqual(values);
+      expect([...values].sort()).toStrictEqual(ownerBaseTables.sort());
+    },
+  );
 
   it.each(
     splits.flatMap((mapping) =>
@@ -358,11 +387,17 @@ describe('baseTable split of the class-extension tables', () => {
       ),
     ),
   )('answers whether a %s row of baseTable %s (owner %s) is strategies-content', (_legacyTable, baseTable, owner, mapping) => {
-    const { row } = sampleRow(mapping);
-    const column = mapping.split?.column;
-    const accepted = column === undefined ? mapping.acceptsRow(row, baseTable) : mapping.acceptsRow({ ...row, [column]: baseTable });
+    expect(acceptsBaseTable(mapping, baseTable)).toBe(owner === OWNER);
+  });
 
-    expect(accepted).toBe(owner === OWNER);
+  it.each(
+    splits.flatMap((mapping) =>
+      ([['tfiles', true], ['tuseraddresses', false], ['timagesizes', false], ['temails', false], ['custom', false]] as const).map(
+        ([baseTable, accepted]) => [mapping.legacyTable, baseTable, accepted, mapping] as const,
+      ),
+    ),
+  )('answers whether a %s row of baseTable %s is strategies-content with %s', (_legacyTable, baseTable, accepted, mapping) => {
+    expect(acceptsBaseTable(mapping, baseTable)).toBe(accepted);
   });
 
   it.each(splits.map((mapping) => [mapping.legacyTable, mapping] as const))(

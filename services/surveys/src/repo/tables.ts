@@ -1,5 +1,5 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Owned tables of schema `surveys`, one per fixture table `synthetic.survey*`, as the platform repository declares them. */
+/** Owned tables of schema `surveys`, as the platform repository declares them: the `synthetic.survey*` fixture tables, then the surveys shares of the Masa class-extension tables and `ttrash`. */
 import type { CanonicalColumn, TableDefinition } from '@opt2/platform/migration-kit';
 
 /** Units of write authority of schema `surveys`, in declaration order. */
@@ -9,6 +9,12 @@ export const UNITS = [
   'surveys.survey_reminder',
   'surveys.survey_target',
   'surveys.survey_response',
+  'surveys.extend_subtype',
+  'surveys.extend_set',
+  'surveys.extend_attribute',
+  'surveys.extend_rc_set',
+  'surveys.extend_data',
+  'surveys.trash',
 ] as const;
 
 /** One surveys unit id. */
@@ -114,8 +120,153 @@ export const SURVEY_RESPONSE: SurveyTableDefinition = {
   unit: 'surveys.survey_response',
 };
 
+/** `surveys.extend_subtype`, the Masa `tclassextend` rows whose `baseTable` is a `synthetic.survey*` table. */
+export const EXTEND_SUBTYPE: SurveyTableDefinition = {
+  table: 'extend_subtype',
+  columns: [
+    TENANT_ID,
+    { name: 'subtypeid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'basetable', type: 's' },
+    { name: 'basekeyfield', type: 's' },
+    { name: 'datatable', type: 's' },
+    { name: 'type', type: 's' },
+    { name: 'subtype', type: 's' },
+    { name: 'isactive', type: 'i' },
+    { name: 'notes', type: 's' },
+    { name: 'lastupdate', type: 't' },
+    { name: 'datecreated', type: 't' },
+    { name: 'lastupdateby', type: 's' },
+    { name: 'hassummary', type: 'i' },
+    { name: 'hasbody', type: 'i' },
+    { name: 'description', type: 's' },
+    { name: 'availablesubtypes', type: 's' },
+    { name: 'iconclass', type: 's' },
+    { name: 'hasassocfile', type: 'i' },
+    { name: 'hasconfigurator', type: 'i' },
+    { name: 'adminonly', type: 'i' },
+  ],
+  key: ['subtypeid'],
+  unit: 'surveys.extend_subtype',
+};
+
+/** `surveys.extend_set`, the Masa `tclassextendsets` rows of survey subtypes. */
+export const EXTEND_SET: SurveyTableDefinition = {
+  table: 'extend_set',
+  columns: [
+    TENANT_ID,
+    { name: 'extendsetid', type: 's' },
+    { name: 'subtypeid', type: 's' },
+    { name: 'categoryid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'isactive', type: 'i' },
+    { name: 'container', type: 's' },
+  ],
+  key: ['extendsetid'],
+  unit: 'surveys.extend_set',
+};
+
+/** `surveys.extend_attribute`, the Masa `tclassextendattributes` rows of survey extend sets. */
+export const EXTEND_ATTRIBUTE: SurveyTableDefinition = {
+  table: 'extend_attribute',
+  columns: [
+    TENANT_ID,
+    { name: 'attributeid', type: 'i' },
+    { name: 'extendsetid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'label', type: 's' },
+    { name: 'hint', type: 's' },
+    { name: 'type', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'isactive', type: 'i' },
+    { name: 'required', type: 's' },
+    { name: 'validation', type: 's' },
+    { name: 'regex', type: 's' },
+    { name: 'message', type: 's' },
+    { name: 'defaultvalue', type: 's' },
+    { name: 'optionlist', type: 's' },
+    { name: 'optionlabellist', type: 's' },
+    { name: 'adminonly', type: 'i' },
+  ],
+  key: ['attributeid'],
+  unit: 'surveys.extend_attribute',
+};
+
+/** `surveys.extend_rc_set`, the Masa `tclassextendrcsets` related-content sets of survey subtypes. */
+export const EXTEND_RC_SET: SurveyTableDefinition = {
+  table: 'extend_rc_set',
+  columns: [
+    TENANT_ID,
+    { name: 'subtypeid', type: 's' },
+    { name: 'availablesubtypes', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'entitytype', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'relatedcontentsetid', type: 's' },
+  ],
+  key: ['relatedcontentsetid'],
+  unit: 'surveys.extend_rc_set',
+};
+
+/** `surveys.extend_data`, the Masa `tclassextenddata` values of survey attributes. */
+export const EXTEND_DATA: SurveyTableDefinition = {
+  table: 'extend_data',
+  columns: [
+    TENANT_ID,
+    { name: 'dataid', type: 'i' },
+    { name: 'baseid', type: 's' },
+    { name: 'attributeid', type: 'i' },
+    { name: 'siteid', type: 's' },
+    { name: 'attributevalue', type: 's' },
+    { name: 'remoteid', type: 's' },
+    { name: 'datetimevalue', type: 't' },
+    { name: 'numericvalue', type: 'f' },
+    { name: 'stringvalue', type: 's' },
+  ],
+  key: ['dataid'],
+  unit: 'surveys.extend_data',
+};
+
+/** `surveys.trash`, the Masa `ttrash` extendObject rows of survey subtypes; `objectstring` is byte-exact WDDX. */
+export const TRASH: SurveyTableDefinition = {
+  table: 'trash',
+  columns: [
+    TENANT_ID,
+    { name: 'objectid', type: 's' },
+    { name: 'parentid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'objectlabel', type: 's' },
+    { name: 'objectclass', type: 's' },
+    { name: 'objecttype', type: 's' },
+    { name: 'objectsubtype', type: 's' },
+    { name: 'objectstring', type: 's' },
+    { name: 'deleteddate', type: 't' },
+    { name: 'deletedby', type: 's' },
+    { name: 'deleteid', type: 's' },
+    { name: 'orderno', type: 'i' },
+  ],
+  key: ['objectid'],
+  unit: 'surveys.trash',
+};
+
 /** Every owned table, in `UNITS` order; the `tables` of the surveys repository. */
-export const OWNED_TABLES: readonly SurveyTableDefinition[] = [SURVEY, SURVEY_SCHEDULE, SURVEY_REMINDER, SURVEY_TARGET, SURVEY_RESPONSE];
+export const OWNED_TABLES: readonly SurveyTableDefinition[] = [
+  SURVEY,
+  SURVEY_SCHEDULE,
+  SURVEY_REMINDER,
+  SURVEY_TARGET,
+  SURVEY_RESPONSE,
+  EXTEND_SUBTYPE,
+  EXTEND_SET,
+  EXTEND_ATTRIBUTE,
+  EXTEND_RC_SET,
+  EXTEND_DATA,
+  TRASH,
+];
 
 /** Columns per table that exist only in the target and are never mapped to or from legacy. */
 export const TARGET_ONLY_COLUMNS: Readonly<Record<string, readonly string[]>> = {

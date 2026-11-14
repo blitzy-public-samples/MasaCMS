@@ -1,5 +1,5 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Owned tables of schema `timesheets`, one per fixture table `Program_<id>.<table>`, as the platform repository declares them. */
+/** Owned tables of schema `timesheets`, as the platform repository declares them: one per fixture table `Program_<id>.<table>`, and the timesheets share of the Masa class-extension tables and `ttrash`. */
 import type { CanonicalColumn, TableDefinition } from '@opt2/platform/migration-kit';
 
 /** PostgreSQL schema owned by the timesheets service. */
@@ -11,6 +11,12 @@ export const TIMESHEETS_UNITS = Object.freeze([
   'timesheets.timesheet_day',
   'timesheets.approval_action',
   'timesheets.blackout',
+  'timesheets.extend_subtype',
+  'timesheets.extend_set',
+  'timesheets.extend_attribute',
+  'timesheets.extend_rc_set',
+  'timesheets.extend_data',
+  'timesheets.trash',
 ] as const);
 
 /** One timesheets unit id. */
@@ -106,8 +112,152 @@ export const BLACKOUT = frozen<UnitTable<'timesheets.blackout'>>({
   unit: 'timesheets.blackout',
 });
 
+/** `timesheets.extend_subtype`, the Masa `tclassextend` rows whose `baseTable` is a timesheets table. */
+export const EXTEND_SUBTYPE = frozen<UnitTable<'timesheets.extend_subtype'>>({
+  table: 'extend_subtype',
+  columns: [
+    TENANT_ID,
+    { name: 'subtypeid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'basetable', type: 's' },
+    { name: 'basekeyfield', type: 's' },
+    { name: 'datatable', type: 's' },
+    { name: 'type', type: 's' },
+    { name: 'subtype', type: 's' },
+    { name: 'isactive', type: 'i' },
+    { name: 'notes', type: 's' },
+    { name: 'lastupdate', type: 't' },
+    { name: 'datecreated', type: 't' },
+    { name: 'lastupdateby', type: 's' },
+    { name: 'hassummary', type: 'i' },
+    { name: 'hasbody', type: 'i' },
+    { name: 'description', type: 's' },
+    { name: 'availablesubtypes', type: 's' },
+    { name: 'iconclass', type: 's' },
+    { name: 'hasassocfile', type: 'i' },
+    { name: 'hasconfigurator', type: 'i' },
+    { name: 'adminonly', type: 'i' },
+  ],
+  key: ['subtypeid'],
+  unit: 'timesheets.extend_subtype',
+});
+
+/** `timesheets.extend_set`, the Masa `tclassextendsets` rows of timesheets subtypes. */
+export const EXTEND_SET = frozen<UnitTable<'timesheets.extend_set'>>({
+  table: 'extend_set',
+  columns: [
+    TENANT_ID,
+    { name: 'extendsetid', type: 's' },
+    { name: 'subtypeid', type: 's' },
+    { name: 'categoryid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'isactive', type: 'i' },
+    { name: 'container', type: 's' },
+  ],
+  key: ['extendsetid'],
+  unit: 'timesheets.extend_set',
+});
+
+/** `timesheets.extend_attribute`, the Masa `tclassextendattributes` rows of timesheets extend sets. */
+export const EXTEND_ATTRIBUTE = frozen<UnitTable<'timesheets.extend_attribute'>>({
+  table: 'extend_attribute',
+  columns: [
+    TENANT_ID,
+    { name: 'attributeid', type: 'i' },
+    { name: 'extendsetid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'label', type: 's' },
+    { name: 'hint', type: 's' },
+    { name: 'type', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'isactive', type: 'i' },
+    { name: 'required', type: 's' },
+    { name: 'validation', type: 's' },
+    { name: 'regex', type: 's' },
+    { name: 'message', type: 's' },
+    { name: 'defaultvalue', type: 's' },
+    { name: 'optionlist', type: 's' },
+    { name: 'optionlabellist', type: 's' },
+    { name: 'adminonly', type: 'i' },
+  ],
+  key: ['attributeid'],
+  unit: 'timesheets.extend_attribute',
+});
+
+/** `timesheets.extend_rc_set`, the Masa `tclassextendrcsets` rows of timesheets subtypes. */
+export const EXTEND_RC_SET = frozen<UnitTable<'timesheets.extend_rc_set'>>({
+  table: 'extend_rc_set',
+  columns: [
+    TENANT_ID,
+    { name: 'subtypeid', type: 's' },
+    { name: 'availablesubtypes', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'entitytype', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'relatedcontentsetid', type: 's' },
+  ],
+  key: ['relatedcontentsetid'],
+  unit: 'timesheets.extend_rc_set',
+});
+
+/** `timesheets.extend_data`, the Masa `tclassextenddata` values of timesheets attributes. */
+export const EXTEND_DATA = frozen<UnitTable<'timesheets.extend_data'>>({
+  table: 'extend_data',
+  columns: [
+    TENANT_ID,
+    { name: 'dataid', type: 'i' },
+    { name: 'baseid', type: 's' },
+    { name: 'attributeid', type: 'i' },
+    { name: 'siteid', type: 's' },
+    { name: 'attributevalue', type: 's' },
+    { name: 'remoteid', type: 's' },
+    { name: 'datetimevalue', type: 't' },
+    { name: 'numericvalue', type: 'f' },
+    { name: 'stringvalue', type: 's' },
+  ],
+  key: ['dataid'],
+  unit: 'timesheets.extend_data',
+});
+
+/** `timesheets.trash`, the Masa `ttrash` rows whose class-map owner is timesheets; `objectstring` is byte-exact WDDX. */
+export const TRASH = frozen<UnitTable<'timesheets.trash'>>({
+  table: 'trash',
+  columns: [
+    TENANT_ID,
+    { name: 'objectid', type: 's' },
+    { name: 'parentid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'objectlabel', type: 's' },
+    { name: 'objectclass', type: 's' },
+    { name: 'objecttype', type: 's' },
+    { name: 'objectsubtype', type: 's' },
+    { name: 'objectstring', type: 's' },
+    { name: 'deleteddate', type: 't' },
+    { name: 'deletedby', type: 's' },
+    { name: 'deleteid', type: 's' },
+    { name: 'orderno', type: 'i' },
+  ],
+  key: ['objectid'],
+  unit: 'timesheets.trash',
+});
+
 /** Every owned table, in `TIMESHEETS_UNITS` order; the `tables` of the timesheets repository. */
-export const tables = Object.freeze([TIMESHEET, TIMESHEET_DAY, APPROVAL_ACTION, BLACKOUT] as const);
+export const tables = Object.freeze([
+  TIMESHEET,
+  TIMESHEET_DAY,
+  APPROVAL_ACTION,
+  BLACKOUT,
+  EXTEND_SUBTYPE,
+  EXTEND_SET,
+  EXTEND_ATTRIBUTE,
+  EXTEND_RC_SET,
+  EXTEND_DATA,
+  TRASH,
+] as const);
 
 // Row shapes are type aliases, not interfaces, so they stay assignable to the repository's Record<string, unknown> rows.
 

@@ -471,6 +471,20 @@ describe('buildVersions on fixture inventories', () => {
     expect(entryOf(v0002, EXPORTS)).toMatchObject({ kind: 'read', state: 'legacy' });
   });
 
+  it("leaves a synthetic service's split units out of its reads and keeps a migrated service's", () => {
+    const { 'reporting.export_definition': _d, 'reporting.session_tracking': _s, ...units } = UNITS;
+    const base = fixtureContext({ units: { ...units, 'content.trash': ['ttrash'], 'reporting.trash': ['ttrash'] } });
+    const trash = {
+      table: 'ttrash',
+      owner: 'split',
+      targets: ['content.trash', 'reporting.trash'].map((unit) => ({ unit, rowPredicate: null, ownedColumns: [] })),
+    };
+    const tables = [...base.ownership.tables.filter((table) => table.table !== 'ttrash'), trash];
+    const v0002 = buildVersions({ ...base, ownership: { ...base.ownership, tables } }, { available: true })[1] as CutoverTable;
+    expect(entryOf(v0002, EXPORTS)).toMatchObject({ kind: 'read', units: ['reporting.export_job'], state: 'target' });
+    expect(entryOf(v0002, EDIT)).toMatchObject({ kind: 'read', units: ['content.content', 'content.trash'], state: 'legacy' });
+  });
+
   it('names the uncarried fixture-backed group of a synthetic service when fixtures are unavailable', () => {
     const ctx = fixtureContext({ units: { ...UNITS, 'reporting.session_tracking': ['synthetic.session_tracking'] } });
     expect(() => buildVersions(ctx, { available: false })).toThrow(/static:\/v1\/reporting\/\*\*: fixture-backed units span groups/);

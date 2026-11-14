@@ -1,6 +1,7 @@
 import { MappingError, defineMapping } from '@opt2/platform/migration-kit';
 import type { Mapping, MappingColumn } from '@opt2/platform/migration-kit';
 import { EXTEND_ATTRIBUTE } from '../../repo/tables.js';
+import { PROGRAMS_SITES_BASE_TABLES } from './tclassextend.js';
 
 const LEGACY_TABLE = 'tclassextendattributes';
 
@@ -17,7 +18,7 @@ function extendAttributeColumn(legacy: string): MappingColumn {
   return { legacy, target: target.name, type: target.type };
 }
 
-/** Masa `tclassextendattributes` rows of site extend sets (`baseTable = tsettings`) ↔ `programs_sites.extend_attribute`, keyed by `attributeID`. */
+/** Masa `tclassextendattributes` rows of programs-sites extend sets ↔ `programs_sites.extend_attribute`, keyed by `attributeID`. */
 export const tclassextendattributesMapping: Mapping = defineMapping({
   legacyTable: LEGACY_TABLE,
   // defineMapping needs a schema-qualified target: EXTEND_ATTRIBUTE.table is unqualified, EXTEND_ATTRIBUTE.unit is the qualified name.
@@ -28,7 +29,7 @@ export const tclassextendattributesMapping: Mapping = defineMapping({
   key: ['attributeID'],
   // Attributes carry no baseTable: the apply row's discriminator is tclassextend.baseTable reached through
   // extendSetID -> tclassextendsets.subTypeID, and a row whose chain does not resolve carries none and is rejected.
-  split: { by: 'baseTable', value: 'tsettings' },
+  split: { by: 'baseTable', value: PROGRAMS_SITES_BASE_TABLES },
   // opt2/table-ownership.json resolves this table as siteID-or-umbrella, and TenantSource takes one source: a null or
   // empty siteID loads under the umbrella tenant as an orphan rather than inheriting the set's tenant.
   tenant: { kind: 'site', column: 'siteID' },

@@ -107,14 +107,19 @@ function expectedTenant(table: OwnershipTable): TenantSource {
   return { kind: 'parent', parentLegacyTable: table.tenantParent?.table ?? '', columns: { [child]: parent } };
 }
 
+/** The key `mappingCoverage` files a people target's rows under, from the split its row predicate states. */
+function coverageKeyOf(table: OwnershipTable, target: OwnershipTarget): string {
+  const split = expectedSplit(table, target.rowPredicate);
+  const values = split === undefined ? [] : typeof split.value === 'object' ? split.value : [split.value];
+  return split === undefined ? table.table : `${table.table}{${split.by}=${values.map(String).join(',')}}`;
+}
+
 /** The legacy columns table ownership assigns to people, keyed as `mappingCoverage` keys a mapping with the target's split. */
 function assignedPeopleCoverage(): Record<string, string[]> {
   const coverage: Record<string, string[]> = {};
   for (const table of OWNERSHIP.tables) {
     for (const target of table.targets.filter((entry) => entry.unit.startsWith('people.'))) {
-      const split = expectedSplit(table, target.rowPredicate);
-      const values = split === undefined ? [] : typeof split.value === 'object' ? split.value : [split.value];
-      const key = split === undefined ? table.table : `${table.table}{${split.by}=${values.map(String).join(',')}}`;
+      const key = coverageKeyOf(table, target);
       // A whole-table target owns every live catalog column; its ownedColumns list only the static set.
       const columns = target.columnPolicy === 'whole-table' ? table.columns : [...target.keyColumns, ...target.ownedColumns];
       coverage[key] = [...(coverage[key] ?? []), ...columns];
@@ -147,21 +152,13 @@ describe('people mappings against table ownership', () => {
   });
 
   it('covers each legacy table once under its split key, and exports the rcset and trash lists', () => {
-    expect(Object.keys(mappingCoverage(MAPPINGS))).toStrictEqual([
-      'tusers{Type=2}',
-      'tuseraddresses{Type=2}',
-      'tusersinterests{Type=2}',
-      'tuserstags{Type=2}',
-      'tusersfavorites{Type=2}',
-      'ttrash{objectClass=people}',
-      'tclassextend{baseTable=tusers,tusersaddresses}',
-      'tclassextendsets{baseTable=tusers,tusersaddresses}',
-      'tclassextendattributes{baseTable=tusers,tusersaddresses}',
-      'tclassextendrcsets{baseTable=tusers,tusersaddresses}',
-      'tclassextenddatauseractivity{Type=2}',
-      'tclassextenddata{baseTable=tusers,tusersaddresses}',
-      'synthetic.person_archive',
-    ]);
+    const keys = MAPPINGS.map((mapping) => {
+      const { table, target } = ownershipOf(mapping);
+      return coverageKeyOf(table, target);
+    });
+
+    expect(new Set(keys).size).toBe(MAPPINGS.length);
+    expect(Object.keys(mappingCoverage(MAPPINGS))).toStrictEqual(keys);
     expect(EXTEND_RCSET_MAPPINGS).toStrictEqual([extendRcsetMapping]);
     expect(TRASH_MAPPINGS).toStrictEqual([trashMapping]);
   });

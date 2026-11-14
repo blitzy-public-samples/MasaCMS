@@ -8,6 +8,11 @@
     "grp:communications.email": "legacy",
     "grp:communications.email_return_stat": "legacy",
     "grp:communications.email_stat": "legacy",
+    "grp:communications.extend_attribute": "legacy",
+    "grp:communications.extend_data": "legacy",
+    "grp:communications.extend_rc_set": "legacy",
+    "grp:communications.extend_set": "legacy",
+    "grp:communications.extend_subtype": "legacy",
     "grp:communications.mailing_list": "legacy",
     "grp:communications.mailing_list_member": "legacy",
     "grp:communications.message_template": "target",
@@ -23,10 +28,27 @@
     "grp:content.extend_subtype": "legacy",
     "grp:content.variation_targeting": "target",
     "grp:esignature.audit_entry": "target",
+    "grp:esignature.extend_attribute": "legacy",
+    "grp:esignature.extend_data": "legacy",
+    "grp:esignature.extend_rc_set": "legacy",
+    "grp:esignature.extend_set": "legacy",
+    "grp:esignature.extend_subtype": "legacy",
+    "grp:esignature.trash": "legacy",
     "grp:finance.attachment": "target",
+    "grp:finance.extend_attribute": "legacy",
+    "grp:finance.extend_data": "legacy",
+    "grp:finance.extend_rc_set": "legacy",
+    "grp:finance.extend_set": "legacy",
+    "grp:finance.extend_subtype": "legacy",
     "grp:finance.record": "target",
+    "grp:finance.trash": "legacy",
     "grp:identity.credential": "legacy",
+    "grp:identity.extend_attribute": "legacy",
+    "grp:identity.extend_data": "legacy",
     "grp:identity.extend_data_user_activity": "legacy",
+    "grp:identity.extend_rc_set": "legacy",
+    "grp:identity.extend_set": "legacy",
+    "grp:identity.extend_subtype": "legacy",
     "grp:identity.permission": "legacy",
     "grp:identity.remote_session": "legacy",
     "grp:identity.trash": "legacy",
@@ -52,12 +74,30 @@
     "grp:programs_sites.trash": "legacy",
     "grp:reporting.export_definition": "legacy",
     "grp:reporting.export_job": "target",
+    "grp:reporting.extend_attribute": "legacy",
+    "grp:reporting.extend_data": "legacy",
+    "grp:reporting.extend_rc_set": "legacy",
+    "grp:reporting.extend_set": "legacy",
+    "grp:reporting.extend_subtype": "legacy",
     "grp:reporting.session_tracking": "legacy",
+    "grp:reporting.trash": "legacy",
+    "grp:surveys.extend_attribute": "legacy",
+    "grp:surveys.extend_data": "legacy",
+    "grp:surveys.extend_rc_set": "legacy",
+    "grp:surveys.extend_set": "legacy",
+    "grp:surveys.extend_subtype": "legacy",
     "grp:surveys.survey": "target",
     "grp:surveys.survey_response": "target",
     "grp:surveys.survey_target": "target",
+    "grp:surveys.trash": "legacy",
     "grp:timesheets.approval_action": "target",
-    "grp:timesheets.timesheet": "legacy"
+    "grp:timesheets.extend_attribute": "legacy",
+    "grp:timesheets.extend_data": "legacy",
+    "grp:timesheets.extend_rc_set": "legacy",
+    "grp:timesheets.extend_set": "legacy",
+    "grp:timesheets.extend_subtype": "legacy",
+    "grp:timesheets.timesheet": "legacy",
+    "grp:timesheets.trash": "legacy"
   },
   "rollbackRefs": [
     {
@@ -647,8 +687,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -4177,8 +4216,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -4198,8 +4236,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -4219,8 +4256,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -4240,8 +4276,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -4261,8 +4296,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -4282,8 +4316,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -4303,8 +4336,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -4401,6 +4433,8 @@
       "kind": "legacy-write",
       "group": null,
       "units": [
+        "communications.extend_rc_set",
+        "communications.extend_set",
         "communications.mailing_list",
         "communications.mailing_list_member",
         "content.approval_action",
@@ -4433,8 +4467,14 @@
         "content.form_response_packet",
         "content.form_response_question",
         "content.variation_targeting",
+        "esignature.extend_rc_set",
+        "esignature.extend_set",
+        "finance.extend_rc_set",
+        "finance.extend_set",
         "identity.credential",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -4461,7 +4501,13 @@
         "programs_sites.image_size",
         "programs_sites.site",
         "programs_sites.system_object",
-        "programs_sites.trash"
+        "programs_sites.trash",
+        "reporting.extend_rc_set",
+        "reporting.extend_set",
+        "surveys.extend_rc_set",
+        "surveys.extend_set",
+        "timesheets.extend_rc_set",
+        "timesheets.extend_set"
       ],
       "disposition": "decision"
     },
@@ -4493,9 +4539,16 @@
       "kind": "legacy-write",
       "group": null,
       "units": [
+        "communications.extend_attribute",
         "content.extend_attribute",
+        "esignature.extend_attribute",
+        "finance.extend_attribute",
+        "identity.extend_attribute",
         "people.extend_attribute",
-        "programs_sites.extend_attribute"
+        "programs_sites.extend_attribute",
+        "reporting.extend_attribute",
+        "surveys.extend_attribute",
+        "timesheets.extend_attribute"
       ],
       "disposition": "decision"
     },
@@ -4507,9 +4560,16 @@
       "kind": "legacy-write",
       "group": null,
       "units": [
+        "communications.extend_set",
         "content.extend_set",
+        "esignature.extend_set",
+        "finance.extend_set",
+        "identity.extend_set",
         "people.extend_set",
-        "programs_sites.extend_set"
+        "programs_sites.extend_set",
+        "reporting.extend_set",
+        "surveys.extend_set",
+        "timesheets.extend_set"
       ],
       "disposition": "decision"
     },
@@ -4521,9 +4581,16 @@
       "kind": "legacy-write",
       "group": null,
       "units": [
+        "communications.extend_rc_set",
         "content.extend_rc_set",
+        "esignature.extend_rc_set",
+        "finance.extend_rc_set",
+        "identity.extend_rc_set",
         "people.extend_rc_set",
-        "programs_sites.extend_rc_set"
+        "programs_sites.extend_rc_set",
+        "reporting.extend_rc_set",
+        "surveys.extend_rc_set",
+        "timesheets.extend_rc_set"
       ],
       "disposition": "decision"
     },
@@ -4535,15 +4602,29 @@
       "kind": "legacy-write",
       "group": null,
       "units": [
+        "communications.extend_attribute",
+        "communications.extend_data",
         "content.extend_attribute",
         "content.extend_data",
         "content.file",
+        "esignature.extend_attribute",
+        "esignature.extend_data",
+        "finance.extend_attribute",
+        "finance.extend_data",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
         "people.extend_attribute",
         "people.extend_data",
         "people.extend_data_user_activity",
         "programs_sites.extend_attribute",
-        "programs_sites.extend_data"
+        "programs_sites.extend_data",
+        "reporting.extend_attribute",
+        "reporting.extend_data",
+        "surveys.extend_attribute",
+        "surveys.extend_data",
+        "timesheets.extend_attribute",
+        "timesheets.extend_data"
       ],
       "disposition": "decision"
     },
@@ -4555,9 +4636,16 @@
       "kind": "legacy-write",
       "group": null,
       "units": [
+        "communications.extend_rc_set",
         "content.extend_rc_set",
+        "esignature.extend_rc_set",
+        "finance.extend_rc_set",
+        "identity.extend_rc_set",
         "people.extend_rc_set",
-        "programs_sites.extend_rc_set"
+        "programs_sites.extend_rc_set",
+        "reporting.extend_rc_set",
+        "surveys.extend_rc_set",
+        "timesheets.extend_rc_set"
       ],
       "disposition": "decision"
     },
@@ -4569,18 +4657,39 @@
       "kind": "legacy-write",
       "group": null,
       "units": [
+        "communications.extend_attribute",
+        "communications.extend_data",
+        "communications.extend_set",
         "content.extend_attribute",
         "content.extend_data",
         "content.extend_set",
         "content.file",
+        "esignature.extend_attribute",
+        "esignature.extend_data",
+        "esignature.extend_set",
+        "finance.extend_attribute",
+        "finance.extend_data",
+        "finance.extend_set",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_set",
         "people.extend_attribute",
         "people.extend_data",
         "people.extend_data_user_activity",
         "people.extend_set",
         "programs_sites.extend_attribute",
         "programs_sites.extend_data",
-        "programs_sites.extend_set"
+        "programs_sites.extend_set",
+        "reporting.extend_attribute",
+        "reporting.extend_data",
+        "reporting.extend_set",
+        "surveys.extend_attribute",
+        "surveys.extend_data",
+        "surveys.extend_set",
+        "timesheets.extend_attribute",
+        "timesheets.extend_data",
+        "timesheets.extend_set"
       ],
       "disposition": "decision"
     },
@@ -4592,12 +4701,28 @@
       "kind": "legacy-write",
       "group": null,
       "units": [
+        "communications.extend_attribute",
+        "communications.extend_data",
+        "communications.extend_set",
+        "communications.extend_subtype",
         "content.extend_attribute",
         "content.extend_data",
         "content.extend_set",
         "content.extend_subtype",
         "content.file",
+        "esignature.extend_attribute",
+        "esignature.extend_data",
+        "esignature.extend_set",
+        "esignature.extend_subtype",
+        "finance.extend_attribute",
+        "finance.extend_data",
+        "finance.extend_set",
+        "finance.extend_subtype",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "people.extend_attribute",
         "people.extend_data",
         "people.extend_data_user_activity",
@@ -4606,7 +4731,19 @@
         "programs_sites.extend_attribute",
         "programs_sites.extend_data",
         "programs_sites.extend_set",
-        "programs_sites.extend_subtype"
+        "programs_sites.extend_subtype",
+        "reporting.extend_attribute",
+        "reporting.extend_data",
+        "reporting.extend_set",
+        "reporting.extend_subtype",
+        "surveys.extend_attribute",
+        "surveys.extend_data",
+        "surveys.extend_set",
+        "surveys.extend_subtype",
+        "timesheets.extend_attribute",
+        "timesheets.extend_data",
+        "timesheets.extend_set",
+        "timesheets.extend_subtype"
       ],
       "disposition": "decision"
     },
@@ -5359,7 +5496,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -5407,8 +5549,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -5428,8 +5569,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -5449,8 +5589,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -5470,8 +5609,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -5510,7 +5648,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -5589,7 +5732,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -5618,7 +5766,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -5954,6 +6107,8 @@
         "content.form_response_question",
         "content.trash",
         "content.variation_targeting",
+        "esignature.trash",
+        "finance.trash",
         "identity.credential",
         "identity.extend_data_user_activity",
         "identity.group_account",
@@ -5982,7 +6137,10 @@
         "programs_sites.image_size",
         "programs_sites.site",
         "programs_sites.system_object",
-        "programs_sites.trash"
+        "programs_sites.trash",
+        "reporting.trash",
+        "surveys.trash",
+        "timesheets.trash"
       ],
       "disposition": "decision"
     },
@@ -6145,12 +6303,20 @@
       "kind": "legacy-write",
       "group": null,
       "units": [
+        "communications.extend_attribute",
+        "communications.extend_subtype",
         "communications.mailing_list",
         "content.content",
         "content.extend_attribute",
         "content.extend_subtype",
         "content.file",
+        "esignature.extend_attribute",
+        "esignature.extend_subtype",
+        "finance.extend_attribute",
+        "finance.extend_subtype",
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.user_account",
         "people.extend_attribute",
@@ -6163,7 +6329,13 @@
         "programs_sites.extend_subtype",
         "programs_sites.image_size",
         "programs_sites.site",
-        "programs_sites.system_object"
+        "programs_sites.system_object",
+        "reporting.extend_attribute",
+        "reporting.extend_subtype",
+        "surveys.extend_attribute",
+        "surveys.extend_subtype",
+        "timesheets.extend_attribute",
+        "timesheets.extend_subtype"
       ],
       "disposition": "decision"
     },
@@ -6242,9 +6414,17 @@
       "kind": "legacy-write",
       "group": null,
       "units": [
+        "communications.extend_attribute",
+        "communications.extend_subtype",
         "content.extend_attribute",
         "content.extend_subtype",
         "content.file",
+        "esignature.extend_attribute",
+        "esignature.extend_subtype",
+        "finance.extend_attribute",
+        "finance.extend_subtype",
+        "identity.extend_attribute",
+        "identity.extend_subtype",
         "people.extend_attribute",
         "people.extend_subtype",
         "programs_sites.extend_attribute",
@@ -6253,7 +6433,13 @@
         "programs_sites.extend_set",
         "programs_sites.extend_subtype",
         "programs_sites.image_size",
-        "programs_sites.site"
+        "programs_sites.site",
+        "reporting.extend_attribute",
+        "reporting.extend_subtype",
+        "surveys.extend_attribute",
+        "surveys.extend_subtype",
+        "timesheets.extend_attribute",
+        "timesheets.extend_subtype"
       ],
       "disposition": "decision"
     },
@@ -6363,6 +6549,8 @@
         "content.form_response_question",
         "content.trash",
         "content.variation_targeting",
+        "esignature.trash",
+        "finance.trash",
         "identity.membership",
         "identity.permission",
         "identity.trash",
@@ -6373,7 +6561,10 @@
         "people.user_address",
         "people.user_favorite",
         "people.user_interest",
-        "programs_sites.trash"
+        "programs_sites.trash",
+        "reporting.trash",
+        "surveys.trash",
+        "timesheets.trash"
       ],
       "disposition": "decision"
     },
@@ -6514,7 +6705,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -6567,7 +6763,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -6596,7 +6797,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -7027,7 +7233,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -7069,7 +7280,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -12940,7 +13156,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -13069,7 +13290,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -13165,7 +13391,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -13194,7 +13425,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -13223,7 +13459,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -13252,7 +13493,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -13281,7 +13527,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -13310,7 +13561,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -13339,7 +13595,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -13426,7 +13687,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -13469,7 +13735,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -13504,6 +13775,8 @@
         "content.content_stats",
         "content.file",
         "content.trash",
+        "esignature.trash",
+        "finance.trash",
         "identity.credential",
         "identity.extend_data_user_activity",
         "identity.group_account",
@@ -13524,7 +13797,10 @@
         "people.user_address",
         "people.user_interest",
         "people.user_tag",
-        "programs_sites.trash"
+        "programs_sites.trash",
+        "reporting.trash",
+        "surveys.trash",
+        "timesheets.trash"
       ],
       "disposition": "decision"
     },
@@ -13719,12 +13995,20 @@
       "kind": "legacy-write",
       "group": null,
       "units": [
+        "communications.extend_attribute",
+        "communications.extend_subtype",
         "communications.mailing_list",
         "content.content",
         "content.extend_attribute",
         "content.extend_subtype",
         "content.file",
+        "esignature.extend_attribute",
+        "esignature.extend_subtype",
+        "finance.extend_attribute",
+        "finance.extend_subtype",
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.user_account",
         "people.extend_attribute",
@@ -13737,7 +14021,13 @@
         "programs_sites.extend_subtype",
         "programs_sites.image_size",
         "programs_sites.site",
-        "programs_sites.system_object"
+        "programs_sites.system_object",
+        "reporting.extend_attribute",
+        "reporting.extend_subtype",
+        "surveys.extend_attribute",
+        "surveys.extend_subtype",
+        "timesheets.extend_attribute",
+        "timesheets.extend_subtype"
       ],
       "disposition": "decision"
     },
@@ -14634,7 +14924,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -15428,8 +15723,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "carry"
     },
@@ -15449,8 +15743,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "carry"
     },
@@ -15483,8 +15776,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "carry"
     },
@@ -16208,8 +16500,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "carry"
     },
@@ -16392,8 +16683,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
-        "communications.scheduled_task",
-        "communications.trash"
+        "communications.scheduled_task"
       ],
       "disposition": "legacy-served"
     },
@@ -16433,7 +16723,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -16478,6 +16773,8 @@
         "content.commenter",
         "content.content_stats",
         "content.trash",
+        "esignature.trash",
+        "finance.trash",
         "identity.credential",
         "identity.extend_data_user_activity",
         "identity.group_account",
@@ -16498,7 +16795,10 @@
         "people.user_interest",
         "people.user_tag",
         "programs_sites.trash",
-        "reporting.session_tracking"
+        "reporting.session_tracking",
+        "reporting.trash",
+        "surveys.trash",
+        "timesheets.trash"
       ],
       "disposition": "decision"
     },
@@ -22321,7 +22621,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -22450,7 +22755,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -22546,7 +22856,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -22575,7 +22890,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -22604,7 +22924,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -22633,7 +22958,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -22662,7 +22992,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -22691,7 +23026,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -22720,7 +23060,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -22807,7 +23152,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -22850,7 +23200,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
@@ -23122,12 +23477,20 @@
       "kind": "legacy-write",
       "group": null,
       "units": [
+        "communications.extend_attribute",
+        "communications.extend_subtype",
         "communications.mailing_list",
         "content.content",
         "content.extend_attribute",
         "content.extend_subtype",
         "content.file",
+        "esignature.extend_attribute",
+        "esignature.extend_subtype",
+        "finance.extend_attribute",
+        "finance.extend_subtype",
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.user_account",
         "people.extend_attribute",
@@ -23140,7 +23503,13 @@
         "programs_sites.extend_subtype",
         "programs_sites.image_size",
         "programs_sites.site",
-        "programs_sites.system_object"
+        "programs_sites.system_object",
+        "reporting.extend_attribute",
+        "reporting.extend_subtype",
+        "surveys.extend_attribute",
+        "surveys.extend_subtype",
+        "timesheets.extend_attribute",
+        "timesheets.extend_subtype"
       ],
       "disposition": "decision"
     },
@@ -24047,7 +24416,12 @@
       "group": null,
       "units": [
         "identity.credential",
+        "identity.extend_attribute",
+        "identity.extend_data",
         "identity.extend_data_user_activity",
+        "identity.extend_rc_set",
+        "identity.extend_set",
+        "identity.extend_subtype",
         "identity.group_account",
         "identity.login_state",
         "identity.membership",

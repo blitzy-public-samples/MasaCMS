@@ -152,12 +152,21 @@ export type UnitGateRow = {
 /** A row of a platform table, keyed by column name. */
 type PlatformRow = Record<string, unknown>;
 
+/** A row of an owned table only migration applies write, keyed by column name. */
+type MigratedRow = Record<string, unknown>;
+
 /** Row shape of each table of schema `timesheets`, by its unqualified name. */
 export interface RecordingRowTypes {
   timesheet: TimesheetRow;
   timesheet_day: TimesheetDayRow;
   approval_action: ApprovalActionRow;
   blackout: BlackoutRow;
+  extend_subtype: MigratedRow;
+  extend_set: MigratedRow;
+  extend_attribute: MigratedRow;
+  extend_rc_set: MigratedRow;
+  extend_data: MigratedRow;
+  trash: MigratedRow;
   unit_gate: UnitGateRow;
   tenant_registry: PlatformRow;
   tenant_grant: PlatformRow;
@@ -178,6 +187,12 @@ const TABLE_NAMES: readonly TableName[] = Object.freeze([
   'timesheet_day',
   'approval_action',
   'blackout',
+  'extend_subtype',
+  'extend_set',
+  'extend_attribute',
+  'extend_rc_set',
+  'extend_data',
+  'trash',
   UNIT_GATE_TABLE,
   'tenant_registry',
   'tenant_grant',
@@ -236,7 +251,7 @@ class CatalogueDriftError extends Error {
 }
 
 /** Stored column type; `int8` also covers `bigserial` and identity columns. */
-type ColumnKind = 'uuid' | 'text' | 'char' | 'int4' | 'int8' | 'xid8' | 'numeric' | 'timestamp' | 'bool' | 'jsonb';
+type ColumnKind = 'uuid' | 'text' | 'char' | 'int2' | 'int4' | 'int8' | 'xid8' | 'float8' | 'numeric' | 'timestamp' | 'bool' | 'jsonb';
 
 /** A column default the catalogue applies when an insert omits the column. */
 type ColumnFallback = { readonly kind: 'value'; readonly value: unknown } | { readonly kind: 'now' } | { readonly kind: 'xid' } | { readonly kind: 'serial' };
@@ -273,7 +288,9 @@ const COLUMN_TYPES: readonly (readonly [RegExp, (match: RegExpExecArray) => Pick
   [/^char\((\d+)\)/i, (m) => ({ kind: 'char', array: false, length: Number(m[1]) })],
   [/^bigserial/i, () => ({ kind: 'int8', array: false })],
   [/^bigint/i, () => ({ kind: 'int8', array: false })],
+  [/^smallint/i, () => ({ kind: 'int2', array: false })],
   [/^integer/i, () => ({ kind: 'int4', array: false })],
+  [/^double precision/i, () => ({ kind: 'float8', array: false })],
   [/^xid8/i, () => ({ kind: 'xid8', array: false })],
   [/^numeric\((\d+),(\d+)\)/i, (m) => ({ kind: 'numeric', array: false, precision: Number(m[1]), scale: Number(m[2]) })],
   [/^timestamp\(3\) without time zone/i, () => ({ kind: 'timestamp', array: false })],
@@ -431,6 +448,8 @@ const NUMERIC_MAX_EXPONENT = 1_073_741_823;
 const NUMERIC_MAX_DSCALE = 16_383;
 const NUMERIC_MAX_WHOLE_DIGITS = 131_072;
 const NUMERIC_MAX_PRECISION = 1000;
+const INT2_MIN = -32_768;
+const INT2_MAX = 32_767;
 const INT4_MIN = -2_147_483_648;
 const INT4_MAX = 2_147_483_647;
 
@@ -499,6 +518,23 @@ function toInt4(value: unknown): number {
   const integer = toBigInt(typeof value === 'boolean' ? Number(value) : value);
   if (integer < BigInt(INT4_MIN) || integer > BigInt(INT4_MAX)) throw pgError('22003', 'value "' + integer.toString() + '" is out of range for type integer');
   return Number(integer);
+}
+
+function toInt2(value: unknown): number {
+  const integer = toInt4(value);
+  if (integer < INT2_MIN || integer > INT2_MAX) throw pgError('22003', `value "${String(integer)}" is out of range for type smallint`);
+  return integer;
+}
+
+/** A `double precision` value: a number as node-pg binds and returns it, or its text form (`NaN` and `Infinity` included). */
+function toFloat8(value: unknown): number {
+  if (typeof value === 'number') return value;
+  const text = describeValue(value).trim();
+  const number = Number(text);
+  if (text === '' || (Number.isNaN(number) && !/^nan$/i.test(text))) {
+    throw pgError('22P02', `invalid input syntax for type double precision: "${describeValue(value)}"`);
+  }
+  return number;
 }
 
 function toBool(value: unknown): boolean {
@@ -586,11 +622,15 @@ function coerceScalar(column: CatalogColumn, value: unknown): unknown {
       if (text.trimEnd().length > length) throw pgError('22001', `value too long for type character(${length})`);
       return text.slice(0, Math.max(length, text.trimEnd().length)).padEnd(length, ' ');
     }
+    case 'int2':
+      return toInt2(value);
     case 'int4':
       return toInt4(value);
     case 'int8':
     case 'xid8':
       return toBigInt(value).toString();
+    case 'float8':
+      return toFloat8(value);
     case 'numeric':
       return fixedScale(value, column.precision ?? NUMERIC_MAX_PRECISION, column.scale ?? 0);
     case 'timestamp':
@@ -1321,8 +1361,12 @@ function asColumnType(column: CatalogColumn | undefined, value: unknown): unknow
     case 'int8':
     case 'xid8':
       return toBigInt(value);
+    case 'int2':
+      return toInt2(value);
     case 'int4':
       return toInt4(value);
+    case 'float8':
+      return toFloat8(value);
     case 'timestamp':
       return toDate(value);
     case 'bool':

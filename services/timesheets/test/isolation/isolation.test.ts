@@ -24,7 +24,19 @@ import {
 import { PERSON_ARCHIVED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { PERSON_ARCHIVED_TOPIC } from '../../src/events/person-archived.js';
 import { createTimesheetsRepository, type TimesheetsRepository } from '../../src/repo/repository.js';
-import { APPROVAL_ACTION, BLACKOUT, TIMESHEET, TIMESHEET_DAY, tables } from '../../src/repo/tables.js';
+import {
+  APPROVAL_ACTION,
+  BLACKOUT,
+  EXTEND_ATTRIBUTE,
+  EXTEND_DATA,
+  EXTEND_RC_SET,
+  EXTEND_SET,
+  EXTEND_SUBTYPE,
+  TIMESHEET,
+  TIMESHEET_DAY,
+  TRASH,
+  tables,
+} from '../../src/repo/tables.js';
 import { BUSINESS_DATE, TEST_CLOCK, buildTestApp, createTimesheetsSchema, headersFor, type TestApp } from '../helpers/app.js';
 import {
   EFFECTIVE_FROM,
@@ -69,6 +81,14 @@ function qualified(table: string): string {
   return `"${built().handle.schema}"."${table}"`;
 }
 
+let lastIntegerId = 0;
+
+/** A fresh legacy integer identity, as `attributeID` and `dataID` are. */
+function freshIntegerId(): number {
+  lastIntegerId += 1;
+  return lastIntegerId;
+}
+
 /** A fresh row of the unit table `table` for `tenant`, of a person no seed set uses, so archives of the shared person never touch it. */
 function rowFor(table: string, tenant: TenantFixture): Row {
   const sheet = timesheetRow({ tenant });
@@ -82,6 +102,29 @@ function rowFor(table: string, tenant: TenantFixture): Row {
       return approvalActionRow(day, { action: 'submit', role: 'timesheets.employee', from: 'DRAFT', to: 'SUBMITTED', actor: sheet.person_id });
     case BLACKOUT.table:
       return blackoutRow(day, { archiveId: cfUuid(), personId: sheet.person_id });
+    case EXTEND_SUBTYPE.table:
+      return { subtypeid: cfUuid(), siteid: tenant.siteId, basetable: 'Program_1.timesheet', type: 'Timesheet', subtype: 'Default', isactive: 1 };
+    case EXTEND_SET.table:
+      return { extendsetid: cfUuid(), subtypeid: cfUuid(), siteid: tenant.siteId, name: 'Default', orderno: 1, isactive: 1 };
+    case EXTEND_ATTRIBUTE.table:
+      return { attributeid: freshIntegerId(), extendsetid: cfUuid(), siteid: tenant.siteId, name: 'costCentre', type: 'TextBox', orderno: 1, isactive: 1 };
+    case EXTEND_RC_SET.table:
+      return { relatedcontentsetid: cfUuid(), subtypeid: cfUuid(), siteid: tenant.siteId, name: 'Related', orderno: 1 };
+    case EXTEND_DATA.table:
+      return { dataid: freshIntegerId(), baseid: sheet.timesheet_id, attributeid: freshIntegerId(), siteid: tenant.siteId, attributevalue: '1.5', numericvalue: 1.5 };
+    case TRASH.table:
+      return {
+        objectid: cfUuid(),
+        parentid: cfUuid(),
+        siteid: tenant.siteId,
+        objectlabel: 'Default',
+        objectclass: 'extendObject',
+        objecttype: 'Timesheet',
+        objectsubtype: 'Default',
+        objectstring: '<wddxPacket version="1.0"><header/><data><struct/></data></wddxPacket>',
+        deletedby: 'admin',
+        orderno: 1,
+      };
     default:
       throw new TypeError(`timesheets has no unit table ${table}`);
   }

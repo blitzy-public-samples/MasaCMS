@@ -1,8 +1,9 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** The finance mappings against table ownership and the finance tables: column coverage, units, keys, the Program_<id> fold and its tenancy, canonical value forms, byte-exact round trips and the program binding of applies. */
+/** The finance mappings against table ownership and the finance tables: column coverage, units, keys, the Program_<id> fold and its tenancy, the split Masa shares, canonical value forms, byte-exact round trips and the program binding of applies. */
 import { Buffer } from 'node:buffer';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { cfUuid } from '@opt2/platform/legacy-compat';
 import {
   DEFAULT_UMBRELLA_SITE_ID,
   LEGACY_PROGRAM_ID_COLUMN,
@@ -26,16 +27,24 @@ import {
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, type TenantFixture } from '@opt2/platform/testing';
 import {
+  FINANCE_BASE_TABLES,
   PROGRAM_SITES,
   financeAttachmentMapping,
   financeRecordMapping,
   financeRecordVersionMapping,
   financeRollupMapping,
   mappings,
+  tclassextendMapping,
+  tclassextendattributesMapping,
+  tclassextenddataMapping,
+  tclassextendrcsetsMapping,
+  tclassextendsetsMapping,
+  ttrashMapping,
   units,
 } from '../../src/migration/mappings/index.js';
 import {
   ATTACHMENT_CONTENT_FIELD,
+  EXTEND_SUBTYPE,
   FINANCE_RECORD,
   FINANCE_ROLLUP,
   OWNED_TABLES,
@@ -65,6 +74,7 @@ const NULLABLE: Readonly<Record<string, readonly string[]>> = { finance_record: 
 
 interface OwnershipTarget {
   unit: string;
+  rowPredicate: string | null;
   keyColumns: string[];
   ownedColumns: string[];
   objectColumns?: Record<string, string>;
@@ -75,6 +85,7 @@ interface OwnershipTable {
   programFold?: boolean;
   tenantResolution: string | null;
   rowIdentity: 'key' | 'multiset';
+  split?: { by: string };
   targets?: OwnershipTarget[];
 }
 
@@ -103,6 +114,32 @@ const OWNED_TARGETS: readonly OwnedTarget[] = OWNERSHIP.tables.flatMap((table) =
     .filter((target) => OWNED_UNITS.has(target.unit))
     .map((target) => ({ table, target, legacyTable: table.programFold === true ? (table.table.split('.').at(-1) ?? '') : table.table })),
 );
+/** Targets folded from the `Program_<id>` fixture schemas, and finance's shares of split Masa dbo tables. */
+const FOLDED_TARGETS = OWNED_TARGETS.filter((entry) => entry.table.programFold === true);
+const SHARED_TARGETS = OWNED_TARGETS.filter((entry) => entry.table.programFold !== true);
+const FOLDED_MAPPINGS = mappings.filter((mapping) => mapping.fold === 'Program');
+const SHARED_MAPPINGS = mappings.filter((mapping) => mapping.fold === undefined);
+/** The finance shares of the class-extension tables, split by their subtype's baseTable. */
+const EXTENSION_MAPPINGS = [tclassextendMapping, tclassextendsetsMapping, tclassextendattributesMapping, tclassextendrcsetsMapping, tclassextenddataMapping];
+
+/** Values a split target's row predicate names: the list of `<column> in ('a', 'b')`, or the owner of `classMap owner = <owner>`. */
+function predicateValues(predicate: string | null): string[] {
+  const listed = /\bin \(([^)]*)\)$/.exec(predicate ?? '')?.[1];
+  if (listed !== undefined) return listed.split(',').map((value) => value.trim().replace(/^'|'$/g, ''));
+  const owner = /^classMap owner = (\S+)$/.exec(predicate ?? '')?.[1];
+  if (owner === undefined) throw new Error(`row predicate ${JSON.stringify(predicate)} names no split values`);
+  return [owner];
+}
+
+/** The key `mappingCoverage` files a target under: its legacy table, suffixed `{<by>=<values>}` when the table is split. */
+function coverageKeyOf({ table, target, legacyTable }: OwnedTarget): string {
+  return table.split === undefined ? legacyTable : `${legacyTable}{${table.split.by}=${predicateValues(target.rowPredicate).join(',')}}`;
+}
+
+/** The values a split mapping accepts, as a list. */
+function splitValuesOf(mapping: Mapping): (string | number)[] {
+  return mapping.split === undefined ? [] : [mapping.split.value].flat();
+}
 
 /** `Program_<id>` schema of a fixture site. */
 function programOf(siteId: string): number {
@@ -128,6 +165,8 @@ function sampleValue(column: CanonicalColumn, position: number): unknown {
       return position + 1;
     case 'd':
       return `-${String(position)}.0125`;
+    case 'f':
+      return position + 0.25;
     case 't':
       return new Date(2026, 5, 30, 12, 0, position, 3);
     default:
@@ -135,12 +174,20 @@ function sampleValue(column: CanonicalColumn, position: number): unknown {
   }
 }
 
-/** A sample legacy row of `mapping`, its nullable columns NULL. */
+/** A sample legacy row of `mapping`, its nullable columns NULL; a site-tenanted row is of site tenant-a and in finance's split share. */
 function sampleRow(mapping: Mapping): Record<string, unknown> {
   const nullable = new Set(NULLABLE[mapping.legacyTable] ?? []);
-  return Object.fromEntries(
+  const row: Record<string, unknown> = Object.fromEntries(
     mapping.legacyColumns.map((column, position): [string, unknown] => [column.name, nullable.has(column.name) ? null : sampleValue(column, position)]),
   );
+  if (mapping.tenant?.kind === 'site') row[mapping.tenant.column] = TENANT_A.siteId;
+  if (mapping.split?.column !== undefined) row[mapping.split.column] = splitValuesOf(mapping)[0];
+  return row;
+}
+
+/** The apply-row discriminator finance's share of a split table without a discriminator column carries. */
+function discriminatorOf(mapping: Mapping): string | number | undefined {
+  return mapping.split?.column === undefined ? splitValuesOf(mapping)[0] : undefined;
 }
 
 /** The canonical encoding of a sample row and the owned values `decodeLegacy` reads from it. */
@@ -160,9 +207,9 @@ function roundTrip(mapping: Mapping, row: Readonly<Record<string, unknown>>): { 
 describe('finance mapping coverage', () => {
   it('maps exactly the legacy columns table ownership assigns to finance, besides its object columns', () => {
     const expected = Object.fromEntries(
-      OWNED_TARGETS.map(({ legacyTable, target }) => [
-        legacyTable,
-        target.ownedColumns.filter((column) => !Object.hasOwn(target.objectColumns ?? {}, column)),
+      OWNED_TARGETS.map((entry) => [
+        coverageKeyOf(entry),
+        entry.target.ownedColumns.filter((column) => !Object.hasOwn(entry.target.objectColumns ?? {}, column)),
       ]),
     );
     const diff = diffCoverage(expected, mappingCoverage(mappings));
@@ -178,7 +225,7 @@ describe('finance mapping coverage', () => {
     expect(objectColumns).toStrictEqual([['finance_attachment', ATTACHMENT_CONTENT_FIELD, 'finance-attachments']]);
   });
 
-  it.each(OWNED_TARGETS.map((entry) => [entry.legacyTable, entry.target.unit, entry] as const))(
+  it.each(FOLDED_TARGETS.map((entry) => [entry.legacyTable, entry.target.unit, entry] as const))(
     'maps %s onto %s with its key, folded under its Program_<id> tenant',
     (_legacyTable, unit, entry) => {
       const mapping = mappingFor(entry);
@@ -191,6 +238,22 @@ describe('finance mapping coverage', () => {
     },
   );
 
+  it.each(SHARED_TARGETS.map((entry) => [entry.legacyTable, entry.target.unit, entry] as const))(
+    'maps %s onto %s with its key and the row predicate split values, unfolded under its siteID tenant',
+    (_legacyTable, unit, entry) => {
+      const mapping = mappingFor(entry);
+
+      expect(mapping.targetTable).toBe(unit);
+      expect(mapping.key).toStrictEqual(entry.target.keyColumns);
+      expect(mapping.keyless).toBe(false);
+      expect(mapping.fold).toBeUndefined();
+      expect(mapping.split?.by).toBe(entry.table.split?.by);
+      expect(splitValuesOf(mapping)).toStrictEqual(predicateValues(entry.target.rowPredicate));
+      expect(['siteID', 'siteID-or-umbrella']).toContain(entry.table.tenantResolution);
+      expect(mapping.tenant).toStrictEqual({ kind: 'site', column: 'siteID' });
+    },
+  );
+
   it('declares one mapping per finance unit in UNITS order and exposes UNITS as its units', () => {
     expect(mappings.map((mapping) => mapping.unit)).toStrictEqual([...UNITS]);
     expect([...OWNED_UNITS].sort()).toStrictEqual([...UNITS].sort());
@@ -198,10 +261,21 @@ describe('finance mapping coverage', () => {
     expect(Object.isFrozen(mappings)).toBe(true);
   });
 
-  it('lists the named mappings in the barrel, record before its children', () => {
-    const named = [financeRecordMapping, financeRecordVersionMapping, financeAttachmentMapping, financeRollupMapping];
+  it('lists the named mappings in the barrel, record before its children and each subtype before its sets', () => {
+    const named = [
+      financeRecordMapping,
+      financeRecordVersionMapping,
+      financeAttachmentMapping,
+      financeRollupMapping,
+      tclassextendMapping,
+      tclassextendsetsMapping,
+      tclassextendattributesMapping,
+      tclassextendrcsetsMapping,
+      tclassextenddataMapping,
+      ttrashMapping,
+    ];
 
-    expect(mappings.map((mapping) => named.indexOf(mapping))).toStrictEqual([0, 1, 2, 3]);
+    expect(mappings.map((mapping) => named.indexOf(mapping))).toStrictEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
   it.each(mappings.map((mapping) => [mapping.unit, mapping] as const))(
@@ -220,7 +294,7 @@ describe('finance mapping coverage', () => {
 });
 
 describe('row round trips', () => {
-  it.each(mappings.map((mapping) => [mapping.legacyTable, mapping] as const))(
+  it.each(FOLDED_MAPPINGS.map((mapping) => [mapping.legacyTable, mapping] as const))(
     'keeps a sample Program_1.%s row byte-exact through its target row, under the tenant of the program site',
     (_legacyTable, mapping) => {
       const { row, encoding, decoded } = decodedSample(mapping);
@@ -238,13 +312,36 @@ describe('row round trips', () => {
     },
   );
 
+  it.each(SHARED_MAPPINGS.map((mapping) => [mapping.legacyTable, mapping] as const))(
+    'keeps a sample finance-share %s row byte-exact through its target row, unfolded under the tenant of its siteID',
+    (_legacyTable, mapping) => {
+      const { row, encoding, decoded } = decodedSample(mapping);
+      const target = mapping.toTarget(decoded);
+
+      expect(mapping.acceptsRow(row, discriminatorOf(mapping))).toBe(true);
+      expect(target).not.toHaveProperty(LEGACY_PROGRAM_ID_COLUMN);
+      expect(mapping.encodeLegacy(target)).toBe(encoding);
+      expect(encodeRow(mapping.legacyColumns, mapping.toLegacy(target))).toBe(encoding);
+      expect(resolveTenant(mapping.tenant ?? { kind: 'umbrella' }, row, LOOKUPS)).toStrictEqual({
+        tenantId: tenantIdForSite(TENANT_A.siteId),
+        siteId: TENANT_A.siteId,
+        orphan: false,
+      });
+      expect(resolveTenant(mapping.tenant ?? { kind: 'umbrella' }, { ...row, siteID: null }, LOOKUPS)).toStrictEqual({
+        tenantId: tenantIdForSite(DEFAULT_UMBRELLA_SITE_ID),
+        siteId: DEFAULT_UMBRELLA_SITE_ID,
+        orphan: true,
+      });
+    },
+  );
+
   it('keeps the NULL lastUpdate and lastUpdateByID of a never-edited record NULL', () => {
     const target = financeRecordMapping.toTarget(decodedSample(financeRecordMapping).decoded, { legacyProgramId: PROGRAM_ID });
 
     expect([target.lastupdate, target.lastupdatebyid]).toStrictEqual([null, null]);
   });
 
-  it.each(mappings.map((mapping) => [mapping.legacyTable, mapping] as const))(
+  it.each(FOLDED_MAPPINGS.map((mapping) => [mapping.legacyTable, mapping] as const))(
     'refuses a folded %s row without its legacyProgramId',
     (_legacyTable, mapping) => {
       expect(() => mapping.toTarget(decodedSample(mapping).decoded)).toThrow(MappingError);
@@ -270,7 +367,7 @@ describe('Program_<id> fold', () => {
   });
 
   it.each(
-    mappings.flatMap((mapping) =>
+    FOLDED_MAPPINGS.flatMap((mapping) =>
       PROGRAMS.map(({ program, tenant }) => ({ name: programTableName(program, mapping.legacyTable), program, site: tenant.siteId, mapping })),
     ),
   )('folds $name into its unit with legacy_program_id $program under $site', ({ name, program, site, mapping }) => {
@@ -306,6 +403,69 @@ describe('Program_<id> fold', () => {
     });
   });
 });
+
+describe('finance shares of split Masa tables', () => {
+  /** Whether `mapping` takes a sample row whose split value is `value`: its own split column, else the apply-row discriminator. */
+  function accepts(mapping: Mapping, value: string | undefined): boolean {
+    const column = mapping.split?.column;
+    return column === undefined ? mapping.acceptsRow(sampleRow(mapping), value) : mapping.acceptsRow({ ...sampleRow(mapping), [column]: value ?? null });
+  }
+
+  it('lists the base tables of every finance extension row predicate, in its order', () => {
+    const extensionTargets = SHARED_TARGETS.filter((entry) => entry.table.split?.by === 'baseTable');
+
+    expect(extensionTargets.map((entry) => entry.target.unit).sort()).toStrictEqual(EXTENSION_MAPPINGS.map((mapping) => mapping.unit).sort());
+    for (const { target } of extensionTargets) expect(FINANCE_BASE_TABLES).toStrictEqual(predicateValues(target.rowPredicate));
+  });
+
+  it.each(
+    EXTENSION_MAPPINGS.flatMap((mapping) =>
+      FINANCE_BASE_TABLES.flatMap((baseTable) => [baseTable, baseTable.toUpperCase()].map((value) => ({ table: mapping.legacyTable, value, mapping }))),
+    ),
+  )('takes a $table row of base table $value', ({ mapping, value }) => {
+    expect(accepts(mapping, value)).toBe(true);
+  });
+
+  /** Base tables finance never takes: another owner's tables, the subtype editor's Custom type, and none. */
+  const FOREIGN_BASE_TABLES = [
+    { shown: "'tcontent'", value: 'tcontent' },
+    { shown: "'temails'", value: 'temails' },
+    { shown: "'custom'", value: 'custom' },
+    { shown: 'no base table', value: undefined },
+  ] as const;
+
+  it.each(
+    EXTENSION_MAPPINGS.flatMap((mapping) => FOREIGN_BASE_TABLES.map((entry) => ({ ...entry, table: mapping.legacyTable, mapping }))),
+  )('leaves a $table row of $shown to its owner or to legacy', ({ mapping, value }) => {
+    expect(accepts(mapping, value)).toBe(false);
+  });
+
+  it("splits tclassextend by the row's own baseTable, never by an apply-row discriminator", () => {
+    const row = sampleRow(tclassextendMapping);
+
+    expect(tclassextendMapping.acceptsRow({ ...row, baseTable: 'custom' }, 'Program_1.finance_record')).toBe(false);
+    expect(tclassextendMapping.acceptsRow({ ...row, baseTable: 'Program_1.finance_record' }, 'custom')).toBe(true);
+  });
+
+  it.each([
+    { value: 'finance', taken: true },
+    { value: 'FINANCE', taken: true },
+    { value: 'strategies-content', taken: false },
+    { value: 'communications', taken: false },
+    { value: 'people', taken: false },
+    { value: 'timesheets', taken: false },
+    { value: 'extendObject', taken: false },
+    { value: undefined, taken: false },
+  ])('takes a ttrash row of class-map owner $value: $taken', ({ value, taken }) => {
+    expect(accepts(ttrashMapping, value)).toBe(taken);
+  });
+
+  it('splits ttrash by its class-map owner, never by its objectClass column', () => {
+    expect(ttrashMapping.split).toStrictEqual({ by: 'objectClass', value: OWNER });
+    expect(ttrashMapping.acceptsRow({ ...sampleRow(ttrashMapping), objectClass: OWNER })).toBe(false);
+  });
+});
+
 
 describe('canonical value forms of a Program_1 record', () => {
   /** An edited fixture record in legacy column names. */
@@ -459,6 +619,39 @@ describe('program bindings of migration applies', () => {
     t.db.clear();
 
     expect(await apply(body)).toStrictEqual({ status: 200, body: { batchId: body.batchId, duplicate: true, applied: 0, skipped: 0 } });
+    expect(t.db.writes()).toStrictEqual([]);
+  });
+
+  /** A backfill batch of dbo `tclassextend` subtypes of tenant-a, one per base table. */
+  function subtypeBatch(batchId: string, legacyTable: string, baseTables: readonly string[]): { body: ApplyRequest; ids: string[] } {
+    const rows = baseTables.map((baseTable) => ({ ...sampleRow(tclassextendMapping), subTypeID: cfUuid(), baseTable }));
+    const body: ApplyRequest = {
+      batchId,
+      origin: 'backfill',
+      legacyTable,
+      tenantId: TENANT_A.tenantId,
+      columns: tclassextendMapping.legacyColumns,
+      rows: rows.map((row) => ({ op: 'upsert', row: encodeRow(tclassextendMapping.legacyColumns, row) })),
+    };
+    return { body, ids: rows.map((row) => row.subTypeID) };
+  }
+
+  it('lands only the finance subtype of a tclassextend batch in finance.extend_subtype, unfolded and binding no program', async () => {
+    const { body, ids } = subtypeBatch('extend-subtypes', 'tclassextend', ['Program_1.finance_record', 'custom']);
+
+    expect(await apply(body)).toStrictEqual({ status: 200, body: { batchId: body.batchId, duplicate: false, applied: 1, skipped: 1 } });
+    expect(writesOf(EXTEND_SUBTYPE.table).map(({ op, row }) => [op, row.tenant_id, row.subtypeid, row.basetable])).toStrictEqual([
+      ['insert', TENANT_A.tenantId, ids[0], 'Program_1.finance_record'],
+    ]);
+    expect(writesOf(EXTEND_SUBTYPE.table)[0]?.row).not.toHaveProperty(LEGACY_PROGRAM_ID_COLUMN);
+    expect(bindingWrites()).toStrictEqual([]);
+  });
+
+  it('refuses a Program_<id> copy of tclassextend, which is not a per-program table, writing nothing', async () => {
+    const { body } = subtypeBatch('extend-folded', programTableName(PROGRAM_ID, 'tclassextend'), ['Program_1.finance_record']);
+    t.db.clear();
+
+    expect((await apply(body)).status).toBe(400);
     expect(t.db.writes()).toStrictEqual([]);
   });
 

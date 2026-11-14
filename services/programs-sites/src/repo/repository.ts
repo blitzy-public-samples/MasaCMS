@@ -40,7 +40,7 @@ export type ImageSizeInput = Pick<ImageSizeRow, 'siteid' | 'name' | 'height' | '
 /** Lookup of `settingsImageSizeBean.getQuery`: by `sizeId`, else by `name` within `siteId`, compared with SQL Server's equality, trailing spaces of `sizeId` and `name` ignored. */
 export type ImageSizeLookup = { sizeId: string } | { name: string; siteId: string };
 
-/** The `baseTable = tsettings` extend definitions of one site, each list in legacy display order. */
+/** The programs-sites extend definitions of one site, each list in legacy display order. */
 export interface SiteExtendDefinitions {
   subtypes: ExtendSubtypeRow[];
   sets: ExtendSetRow[];

@@ -1,7 +1,10 @@
 import { defineMapping } from '@opt2/platform/migration-kit';
 import { EXTEND_SUBTYPE } from '../../repo/tables.js';
 
-/** Masa `tclassextend` site subtypes (`baseTable = tsettings`) ↔ `programs_sites.extend_subtype`; tenant from `siteID`, else the umbrella as an orphan. */
+/** Base tables whose subtypes programs-sites owns, in the order of their opt2/table-ownership.json row predicate. */
+export const PROGRAMS_SITES_BASE_TABLES: readonly string[] = ['tsettings', 'synthetic.program_site', 'tdirectories', 'timagesizes', 'tsystemobjects'];
+
+/** Masa `tclassextend` subtypes of a PROGRAMS_SITES_BASE_TABLES base table ↔ `programs_sites.extend_subtype`; tenant from `siteID`, else the umbrella as an orphan. */
 export const tclassextendMapping = defineMapping({
   legacyTable: 'tclassextend',
   // defineMapping needs the schema-qualified name, which is the unit; EXTEND_SUBTYPE.table is unqualified.
@@ -30,6 +33,6 @@ export const tclassextendMapping = defineMapping({
     { legacy: 'adminonly', target: 'adminonly', type: 'i' },
   ],
   key: ['subTypeID'],
-  split: { by: 'baseTable', value: 'tsettings', column: 'baseTable' },
+  split: { by: 'baseTable', value: PROGRAMS_SITES_BASE_TABLES, column: 'baseTable' },
   tenant: { kind: 'site', column: 'siteID' },
 });

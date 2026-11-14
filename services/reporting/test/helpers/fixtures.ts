@@ -356,3 +356,139 @@ export const LEGACY_SESSION_TRACKING_ROWS: readonly LegacyRow[] = Object.freeze(
     company: null,
   }),
 ]);
+
+/** Ids the extension and trash samples share, so each child names the parent sample above it. */
+const VISIT_SUBTYPE_ID = cfUuid();
+const VISIT_SET_ID = cfUuid();
+const VISIT_ATTRIBUTE_ID = '7';
+
+/** Masa `tclassextend` rows of reporting base tables: a tenant-a `tsessiontracking` subtype and a tenant-b `synthetic.export_job` one. */
+export const LEGACY_EXTEND_SUBTYPE_ROWS: readonly LegacyRow[] = Object.freeze([
+  Object.freeze({
+    subTypeID: VISIT_SUBTYPE_ID,
+    siteID: TENANT_A.siteId,
+    baseTable: 'tsessiontracking',
+    baseKeyField: 'trackingID',
+    dataTable: 'tclassextenddata',
+    type: 'Visit',
+    subType: 'Default',
+    isActive: '1',
+    notes: '',
+    lastUpdate: LEGACY_NOW,
+    dateCreated: LEGACY_NOW,
+    lastUpdateBy: 'Admin User',
+    hasSummary: '0',
+    hasBody: '0',
+    description: null,
+    availableSubTypes: '',
+    iconclass: 'mi-line-chart',
+    hasAssocFile: '0',
+    hasConfigurator: '0',
+    adminonly: '0',
+  }),
+  Object.freeze({
+    subTypeID: cfUuid(),
+    siteID: TENANT_B.siteId,
+    baseTable: 'synthetic.export_job',
+    baseKeyField: 'job_id',
+    dataTable: 'tclassextenddata',
+    type: 'Export',
+    subType: 'Scheduled',
+    isActive: '0',
+    notes: null,
+    lastUpdate: LEGACY_NOW,
+    dateCreated: null,
+    lastUpdateBy: null,
+    hasSummary: null,
+    hasBody: null,
+    description: 'Nightly export',
+    availableSubTypes: null,
+    iconclass: null,
+    hasAssocFile: null,
+    hasConfigurator: '1',
+    adminonly: '1',
+  }),
+]);
+
+/** Masa `tclassextendsets` row of the tenant-a visit subtype. */
+export const LEGACY_EXTEND_SET_ROWS: readonly LegacyRow[] = Object.freeze([
+  Object.freeze({
+    extendSetID: VISIT_SET_ID,
+    subTypeID: VISIT_SUBTYPE_ID,
+    categoryID: '',
+    siteID: TENANT_A.siteId,
+    name: 'Visit details',
+    orderno: '1',
+    isActive: '1',
+    container: 'Default',
+  }),
+]);
+
+/** Masa `tclassextendattributes` row of the tenant-a visit set. */
+export const LEGACY_EXTEND_ATTRIBUTE_ROWS: readonly LegacyRow[] = Object.freeze([
+  Object.freeze({
+    attributeID: VISIT_ATTRIBUTE_ID,
+    extendSetID: VISIT_SET_ID,
+    siteID: TENANT_A.siteId,
+    name: 'campaign',
+    label: 'Campaign',
+    hint: '',
+    type: 'TextBox',
+    orderno: '1',
+    isActive: '1',
+    required: 'false',
+    validation: '',
+    regex: null,
+    message: '',
+    defaultValue: '',
+    optionList: null,
+    optionLabelList: null,
+    adminonly: '0',
+  }),
+]);
+
+/** Masa `tclassextendrcsets` row of the tenant-a visit subtype, in live-catalog column order. */
+export const LEGACY_EXTEND_RC_SET_ROWS: readonly LegacyRow[] = Object.freeze([
+  Object.freeze({
+    subTypeID: VISIT_SUBTYPE_ID,
+    availableSubTypes: 'Page/Default',
+    siteID: TENANT_A.siteId,
+    entitytype: 'content',
+    name: 'Related reports',
+    orderNo: '1',
+    relatedContentSetID: cfUuid(),
+  }),
+]);
+
+/** Masa `tclassextenddata` value of the tenant-a visit attribute, with its typed copies. */
+export const LEGACY_EXTEND_DATA_ROWS: readonly LegacyRow[] = Object.freeze([
+  Object.freeze({
+    dataID: '11',
+    baseID: cfUuid(),
+    attributeID: VISIT_ATTRIBUTE_ID,
+    siteID: TENANT_A.siteId,
+    attributeValue: '12.5',
+    remoteID: null,
+    datetimevalue: LEGACY_NOW,
+    numericvalue: '12.5',
+    stringvalue: '12.5',
+  }),
+]);
+
+/** Masa `ttrash` row of the deleted tenant-a visit subtype; `objectstring` is WDDX kept byte-exact. */
+export const LEGACY_TRASH_ROWS: readonly LegacyRow[] = Object.freeze([
+  Object.freeze({
+    objectID: VISIT_SUBTYPE_ID,
+    parentID: '00000000000000000000000000000000001',
+    siteID: TENANT_A.siteId,
+    objectLabel: 'Visit/Default',
+    objectClass: 'extendObject',
+    objectType: 'Visit',
+    objectSubType: 'Default',
+    objectstring: "<wddxPacket version='1.0'><header/><data><struct><var name='baseTable'><string>tsessiontracking</string></var></struct></data></wddxPacket>",
+    deletedDate: LEGACY_NOW,
+    deletedBy: 'Admin User',
+    deleteid: cfUuid(),
+    orderno: null,
+  }),
+]);

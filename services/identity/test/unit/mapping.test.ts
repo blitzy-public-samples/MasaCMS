@@ -1,6 +1,8 @@
-/** Identity's mappings against table ownership: column coverage, the tusers Type split, units, legacy types, canonical round trips and row tenants. */
+/** Identity's mappings against table ownership: column coverage, the tusers Type split, the class-extension baseTable split, units, legacy types, canonical round trips, row tenants and extension applies. */
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { cfUuid } from '@opt2/platform/legacy-compat';
 import {
   DEFAULT_UMBRELLA_SITE_ID,
   canonicalTypeForSqlServer,
@@ -9,6 +11,7 @@ import {
   encodeRow,
   mappingCoverage,
   resolveTenant,
+  type ApplyRequest,
   type CanonicalColumn,
   type CanonicalValue,
   type Mapping,
@@ -16,9 +19,15 @@ import {
   type SplitRule,
   type TenantLookups,
 } from '@opt2/platform/migration-kit';
-import { tenantIdForSite } from '@opt2/platform/tenancy';
+import { tenantIdForSite, withTenant } from '@opt2/platform/tenancy';
+import { TENANT_A, createThrowawaySchema, pgAvailable, seedRegistry, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   mappings,
+  tclassextendattributesIdentityMapping,
+  tclassextenddataIdentityMapping,
+  tclassextendIdentityMapping,
+  tclassextendrcsetsIdentityMapping,
+  tclassextendsetsIdentityMapping,
   tclassextenddatauseractivityGroupMapping,
   toauthclientsMapping,
   toauthtokensMapping,
@@ -38,7 +47,8 @@ import {
   tuserstrikesMapping,
   tusersUserAccountMapping,
 } from '../../src/migration/mappings/index.js';
-import { IDENTITY_UNITS, OWNED_TABLES, UNIT_TABLES } from '../../src/repo/tables.js';
+import { EXTEND_SUBTYPE, IDENTITY_UNITS, OWNED_TABLES, UNIT_TABLES } from '../../src/repo/tables.js';
+import { buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 
 const OWNER = 'identity';
 const SITE_ID = 'tenant-a';
@@ -61,7 +71,7 @@ interface OwnershipTable {
   columns: string[];
   siteIdColumn: string | null;
   serializedDocumentColumns: string[];
-  split?: { by: string; parent?: { table: string; join: string } };
+  split?: { by: string; parent?: { table: string; join: string }; baseTableOwners?: Record<string, string> };
   targets?: OwnershipTarget[];
 }
 
@@ -96,7 +106,7 @@ const OWNERSHIP = JSON.parse(readFileSync(new URL('../../../../opt2/table-owners
 const TABLES: ReadonlyMap<string, OwnershipTable> = new Map(OWNERSHIP.tables.map((table) => [table.table, table]));
 
 // Ownership names the tusers split `Type+column` and the group-child splits `ownerType`; both select rows by a tusers Type.
-const SPLIT_BY: Readonly<Record<string, SplitRule['by']>> = { 'Type+column': 'Type', ownerType: 'Type', objectClass: 'objectClass' };
+const SPLIT_BY: Readonly<Record<string, SplitRule['by']>> = { 'Type+column': 'Type', ownerType: 'Type', objectClass: 'objectClass', baseTable: 'baseTable' };
 
 /** The ownership entry of a legacy table. */
 function tableNamed(name: string): OwnershipTable {
@@ -105,11 +115,19 @@ function tableNamed(name: string): OwnershipTable {
   return table;
 }
 
-/** `<table>`, or `<table>{<by>=<value>}` for a split target, the value taken from its row predicate. */
+/** The quoted values of an `<column> in ('a', 'b')` row predicate, in predicate order; undefined for any other predicate. */
+function listedValues(predicate: string): string[] | undefined {
+  return / in \((.+)\)$/
+    .exec(predicate)?.[1]
+    ?.split(',')
+    .map((item) => item.trim().replace(/^'(.*)'$/, '$1'));
+}
+
+/** `<table>`, or `<table>{<by>=<value>}` for a split target, the value (or comma-joined values) taken from its row predicate. */
 function coverageKeyOf(table: OwnershipTable, target: OwnershipTarget): string {
   if (target.rowPredicate === null) return table.table;
   const by = SPLIT_BY[table.split?.by ?? ''];
-  const value = /=\s*(\S+)$/.exec(target.rowPredicate)?.[1];
+  const value = listedValues(target.rowPredicate)?.join(',') ?? /=\s*(\S+)$/.exec(target.rowPredicate)?.[1];
   if (by === undefined || value === undefined) throw new Error(`${table.table}: unreadable split of ${target.unit}`);
   return `${table.table}{${by}=${value}}`;
 }
@@ -227,6 +245,11 @@ const NULL_AND_EMPTY: Readonly<Record<string, readonly [nulls: readonly string[]
   'identity.oauth_client': [['description'], ['redirecturl']],
   'identity.oauth_token': [['accessCode'], []],
   'identity.trash': [['deleteid'], ['deletedBy']],
+  'identity.extend_subtype': [['notes'], ['description']],
+  'identity.extend_set': [['categoryID'], ['container']],
+  'identity.extend_attribute': [['hint'], ['regex']],
+  'identity.extend_rc_set': [['availableSubTypes'], ['entitytype']],
+  'identity.extend_data': [['remoteID'], ['attributeValue']],
 };
 
 const SESSION_DOCUMENT = readFileSync(new URL('../fixtures/legacy/oauth-token-data.json', import.meta.url), 'utf8');
@@ -344,6 +367,31 @@ const GROUP_CHILD_MAPPINGS: ReadonlyArray<readonly [string, Mapping]> = [
   ['tclassextenddatauseractivity', tclassextenddatauseractivityGroupMapping],
 ];
 
+const EXTENSION_MAPPINGS: ReadonlyArray<readonly [string, Mapping]> = [
+  ['tclassextend', tclassextendIdentityMapping],
+  ['tclassextendsets', tclassextendsetsIdentityMapping],
+  ['tclassextendattributes', tclassextendattributesIdentityMapping],
+  ['tclassextendrcsets', tclassextendrcsetsIdentityMapping],
+  ['tclassextenddata', tclassextenddataIdentityMapping],
+];
+
+// Base tables of other owners' shares, the subtype editor's unowned Custom type, and no base table at all.
+const FOREIGN_BASE_TABLES: readonly (string | undefined)[] = ['tcontent', 'tusers', 'custom', undefined];
+
+/** The base tables the identity row predicate of `mapping`'s target lists, in predicate order. */
+function identityBaseTables(mapping: Mapping): string[] {
+  const listed = listedValues(OWNED_TARGETS.find(({ target }) => target.unit === mapping.unit)?.target.rowPredicate ?? '');
+  if (listed === undefined) throw new Error(`${mapping.unit}: no listed base tables`);
+  return listed;
+}
+
+/** Whether `mapping` takes a sample row whose subtype base table is `baseTable`: from its own column, else from the apply row. */
+function acceptsBaseTable(mapping: Mapping, baseTable: string | undefined): boolean {
+  const { row } = sampleRow(mapping);
+  const column = mapping.split?.column;
+  return column === undefined ? mapping.acceptsRow(row, baseTable) : mapping.acceptsRow({ ...row, [column]: baseTable ?? null });
+}
+
 const TYPE2_COLUMNS: ReadonlyArray<readonly [string, Mapping, readonly string[]]> = [
   [
     tusersUserAccountMapping.unit,
@@ -384,7 +432,7 @@ describe('identity mapping coverage', () => {
     expect([...identity, ...person].sort()).toStrictEqual([...tusers.columns].sort());
   });
 
-  it.each([...SINGLE_MAPPINGS, ...GROUP_CHILD_MAPPINGS])('maps %s through exactly one identity mapping', (legacyTable, mapping) => {
+  it.each([...SINGLE_MAPPINGS, ...GROUP_CHILD_MAPPINGS, ...EXTENSION_MAPPINGS])('maps %s through exactly one identity mapping', (legacyTable, mapping) => {
     const found = mappings.filter((candidate) => candidate.legacyTable === legacyTable);
 
     expect(found).toHaveLength(1);
@@ -405,6 +453,29 @@ describe('identity mapping coverage', () => {
     });
 
     expect(answers).toStrictEqual([true, false, false]);
+  });
+
+  it('treats as class-extension tables exactly the tables ownership splits by baseTable', () => {
+    const splitByBaseTable = OWNED_TARGETS.filter(({ table }) => table.split?.by === 'baseTable').map(({ table }) => table.table);
+
+    expect(splitByBaseTable.sort()).toStrictEqual(EXTENSION_MAPPINGS.map(([legacyTable]) => legacyTable).sort());
+  });
+
+  it.each(EXTENSION_MAPPINGS)('splits %s on the base tables its identity row predicate lists, the ones baseTableOwners gives identity', (legacyTable, mapping) => {
+    const table = tableNamed(legacyTable);
+    const owned = Object.entries(table.split?.baseTableOwners ?? {}).filter(([, owner]) => owner === OWNER).map(([baseTable]) => baseTable);
+
+    expect(mapping.split?.value).toStrictEqual(identityBaseTables(mapping));
+    expect([...identityBaseTables(mapping)].sort()).toStrictEqual(owned.sort());
+    expect(mapping.split?.column).toBe(table.columns.includes('baseTable') ? 'baseTable' : undefined);
+  });
+
+  it.each(EXTENSION_MAPPINGS)('accepts a %s row for each identity base table and none for another owner, Custom or no base table', (_legacyTable, mapping) => {
+    const owned = identityBaseTables(mapping);
+
+    expect(owned).toHaveLength(8);
+    expect(owned.map((baseTable) => acceptsBaseTable(mapping, baseTable))).toStrictEqual(owned.map(() => true));
+    expect(FOREIGN_BASE_TABLES.map((baseTable) => acceptsBaseTable(mapping, baseTable))).toStrictEqual(FOREIGN_BASE_TABLES.map(() => false));
   });
 });
 
@@ -492,5 +563,53 @@ describe('row tenants', () => {
       siteId: PARENT_SITE_ID,
       orphan: false,
     });
+  });
+});
+
+const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
+const PG_READY = ['PG_HOST', 'PG_USER', 'PG_PASSWORD', 'PG_DATABASE'].every((name) => Boolean(process.env[name])) && (await pgAvailable());
+
+describe.skipIf(!PG_READY)('class-extension applies against PostgreSQL', () => {
+  let schema!: ThrowawaySchema;
+  let app!: TestApp['app'];
+
+  beforeAll(async () => {
+    schema = await createThrowawaySchema({ service: OWNER, migrationsDir: MIGRATIONS_DIR });
+    await seedRegistry(schema.app, schema.schema);
+    ({ app } = await buildTestApp({ db: schema.app }));
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app?.close();
+    await schema?.drop();
+  });
+
+  /** A tenant-a tclassextend row of subtype `subTypeID` on `baseTable`, NULL in every other column. */
+  function subtypeRow(subTypeID: string, baseTable: string): Record<string, unknown> {
+    const columns = tclassextendIdentityMapping.legacyColumns.map((column) => [column.name, null]);
+    return { ...Object.fromEntries(columns), subTypeID, siteID: TENANT_A.siteId, baseTable };
+  }
+
+  it('stores the tclassextend row of an identity base table in identity.extend_subtype and skips a Custom subtype', async () => {
+    const [owned, custom] = [cfUuid(), cfUuid()];
+    const columns = tclassextendIdentityMapping.legacyColumns;
+    const body: ApplyRequest = {
+      batchId: `extend-subtype-${owned}`,
+      origin: 'backfill',
+      legacyTable: 'tclassextend',
+      siteId: TENANT_A.siteId,
+      columns: columns.map((column) => ({ ...column })),
+      rows: [subtypeRow(owned, 'tusersmemb'), subtypeRow(custom, 'custom')].map((row) => ({ op: 'upsert' as const, row: encodeRow(columns, row) })),
+    };
+
+    const res = await app.inject({ method: 'POST', url: '/internal/v1/migration/apply', headers: await headersFor('service:migration'), payload: body });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toStrictEqual({ batchId: body.batchId, duplicate: false, applied: 1, skipped: 1 });
+    const stored = await withTenant(schema.app, TENANT_A.tenantId, (tx) =>
+      tx.query(`SELECT subtypeid, basetable FROM ${schema.schema}.${EXTEND_SUBTYPE.table} ORDER BY subtypeid`),
+    );
+    expect(stored.rows).toStrictEqual([{ subtypeid: owned, basetable: 'tusersmemb' }]);
   });
 });

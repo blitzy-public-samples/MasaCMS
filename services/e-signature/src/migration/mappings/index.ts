@@ -4,11 +4,39 @@ import { UNITS } from '../../repo/tables.js';
 import { signatureRequestMapping } from './signature-request.js';
 import { signatureMapping } from './signature.js';
 import { auditEntryMapping } from './audit-entry.js';
+import {
+  tclassextendMapping,
+  tclassextendsetsMapping,
+  tclassextendattributesMapping,
+  tclassextendrcsetsMapping,
+  tclassextenddataMapping,
+} from './extend.js';
+import { trashMapping } from './trash.js';
 
-export { signatureRequestMapping, signatureMapping, auditEntryMapping };
+export {
+  signatureRequestMapping,
+  signatureMapping,
+  auditEntryMapping,
+  tclassextendMapping,
+  tclassextendsetsMapping,
+  tclassextendattributesMapping,
+  tclassextendrcsetsMapping,
+  tclassextenddataMapping,
+  trashMapping,
+};
 
 /** The e-signature mappings, request before its children, one per unit in `UNITS` order. */
-export const mappings: readonly Mapping[] = Object.freeze([signatureRequestMapping, signatureMapping, auditEntryMapping]);
+export const mappings: readonly Mapping[] = Object.freeze([
+  signatureRequestMapping,
+  signatureMapping,
+  auditEntryMapping,
+  tclassextendMapping,
+  tclassextendsetsMapping,
+  tclassextendattributesMapping,
+  tclassextendrcsetsMapping,
+  tclassextenddataMapping,
+  trashMapping,
+]);
 
 /** Units of write authority the migration handlers gate, exactly `UNITS` in its order. */
 export const units = UNITS;

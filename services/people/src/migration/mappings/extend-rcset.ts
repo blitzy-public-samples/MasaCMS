@@ -1,6 +1,7 @@
 import { MappingError, defineMapping } from '@opt2/platform/migration-kit';
 import type { Mapping, MappingColumn } from '@opt2/platform/migration-kit';
 import { EXTEND_RCSET } from '../../repo/tables.js';
+import { PEOPLE_BASE_TABLES } from './extend-subtype.js';
 
 const LEGACY_TABLE = 'tclassextendrcsets';
 
@@ -14,7 +15,7 @@ function rcsetColumn(legacy: string): MappingColumn {
   return { legacy, target: target.name, type: target.type };
 }
 
-/** Masa `tclassextendrcsets` related-content sets of user and address subtypes ↔ `people.extend_rc_set`, keyed by `relatedContentSetID`. */
+/** Masa `tclassextendrcsets` related-content sets of people subtypes ↔ `people.extend_rc_set`, keyed by `relatedContentSetID`. */
 export const extendRcsetMapping: Mapping = defineMapping({
   legacyTable: LEGACY_TABLE,
   // defineMapping needs a schema-qualified target: EXTEND_RCSET.table is unqualified, EXTEND_RCSET.unit is the qualified name.
@@ -23,9 +24,8 @@ export const extendRcsetMapping: Mapping = defineMapping({
   columns: LEGACY_COLUMNS.map(rcsetColumn),
   key: ['relatedContentSetID'],
   // The table has no baseTable column: the apply row carries its subtype's tclassextend.baseTable (joined on subTypeID)
-  // as the discriminator, and a row whose subtype does not resolve carries none and is rejected. People owns both user
-  // base tables, as for its subtypes: Masa's extension-config import stores Address subtypes under `tusersaddresses`.
-  split: { by: 'baseTable', value: ['tusers', 'tusersaddresses'] },
+  // as the discriminator, and a row whose subtype does not resolve carries none and is rejected.
+  split: { by: 'baseTable', value: PEOPLE_BASE_TABLES },
   // opt2/table-ownership.json resolves this table as siteID-or-umbrella, and TenantSource takes one source: a null or
   // empty siteID loads under the umbrella tenant as an orphan rather than inheriting the subtype's tenant.
   tenant: { kind: 'site', column: 'siteID' },

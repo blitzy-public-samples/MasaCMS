@@ -1,6 +1,7 @@
 import { MappingError, defineMapping } from '@opt2/platform/migration-kit';
 import type { Mapping, MappingColumn } from '@opt2/platform/migration-kit';
 import { EXTEND_ATTRIBUTE } from '../../repo/tables.js';
+import { PEOPLE_BASE_TABLES } from './extend-subtype.js';
 
 const LEGACY_TABLE = 'tclassextendattributes';
 
@@ -17,7 +18,7 @@ function extendAttributeColumn(legacy: string): MappingColumn {
   return { legacy, target: target.name, type: target.type };
 }
 
-/** Masa `tclassextendattributes` rows of user extend sets (`baseTable` `tusers` or `tusersaddresses`) ↔ `people.extend_attribute`, keyed by `attributeID`. */
+/** Masa `tclassextendattributes` rows of people extend sets (`baseTable` in PEOPLE_BASE_TABLES) ↔ `people.extend_attribute`, keyed by `attributeID`. */
 export const extendAttributeMapping: Mapping = defineMapping({
   legacyTable: LEGACY_TABLE,
   // defineMapping needs a schema-qualified target: EXTEND_ATTRIBUTE.table is unqualified, EXTEND_ATTRIBUTE.unit is the qualified name.
@@ -28,9 +29,8 @@ export const extendAttributeMapping: Mapping = defineMapping({
   key: ['attributeID'],
   // Attributes carry no baseTable: the apply row's discriminator is tclassextend.baseTable reached through
   // extendSetID -> tclassextendsets.subTypeID, and a row whose chain does not resolve carries none and is rejected.
-  // Attributes follow their set, so this accepts both base tables extendSetMapping takes, as opt2/table-ownership.json
-  // assigns them: Masa's extension-config import stores Address subtypes under `tusersaddresses`.
-  split: { by: 'baseTable', value: ['tusers', 'tusersaddresses'] },
+  // Attributes follow their set, so this accepts the base tables extendSetMapping takes.
+  split: { by: 'baseTable', value: PEOPLE_BASE_TABLES },
   // opt2/table-ownership.json resolves this table as siteID-or-umbrella, and TenantSource takes one source: a null or
   // empty siteID loads under the umbrella tenant as an orphan rather than inheriting the set's tenant.
   tenant: { kind: 'site', column: 'siteID' },

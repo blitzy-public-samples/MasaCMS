@@ -37,7 +37,7 @@ interface Ownership {
 }
 
 const read = (relative: string): string => readFileSync(new URL(relative, import.meta.url), 'utf8');
-const TARGET_DDL = read('../../db/migrations/0002_communications.sql');
+const TARGET_DDL = ['0002_communications.sql', '0003_extensions.sql'].map((file) => read(`../../db/migrations/${file}`)).join('\n');
 const FIXTURE_DDL = read('../../../../legacy-fixtures/sql/communications/100_tables.sql');
 const OWNERSHIP = JSON.parse(read('../../../../opt2/table-ownership.json')) as Ownership;
 const EVENT = JSON.parse(read('../../contracts/events/communications.message.delivery-status-changed.v1.json')) as {
@@ -54,7 +54,7 @@ function tableBody(ddl: string, head: string, tail: string): string[] {
   return ddl.slice(from, ddl.indexOf(tail, from)).split('\n').map((line) => line.trim()).filter((line) => line !== '');
 }
 
-/** Columns (with any `IN (...)` check) and primary key of `communications.<table>` in `0002_communications.sql`. */
+/** Columns (with any `IN (...)` check) and primary key of `communications.<table>` in the target DDL. */
 function targetTable(table: string): { columns: DdlColumn[]; primaryKey: string[] } {
   const body = tableBody(TARGET_DDL, `CREATE TABLE communications.${table} (`, '\n);');
   const columns = body.flatMap((line) => {

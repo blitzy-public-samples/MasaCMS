@@ -31,7 +31,17 @@ export const EXPORT_SOURCES = Object.freeze(['timesheets.sheets', 'finance.recor
 export type ExportSource = (typeof EXPORT_SOURCES)[number];
 
 /** Units of write authority of schema `reporting`, as `opt2/table-ownership.json` names them, in declaration order. */
-export const UNITS = Object.freeze(['reporting.export_definition', 'reporting.export_job', 'reporting.session_tracking'] as const);
+export const UNITS = Object.freeze([
+  'reporting.export_definition',
+  'reporting.export_job',
+  'reporting.session_tracking',
+  'reporting.extend_subtype',
+  'reporting.extend_set',
+  'reporting.extend_attribute',
+  'reporting.extend_rc_set',
+  'reporting.extend_data',
+  'reporting.trash',
+] as const);
 
 /** One reporting unit id. */
 export type ReportingUnit = (typeof UNITS)[number];
@@ -122,11 +132,156 @@ export const TSESSIONTRACKING = frozen<ReportingTableDefinition<'reporting.sessi
   unit: 'reporting.session_tracking',
 });
 
+// The extension and trash units hold the rows of subtypes whose baseTable is a reporting table; only migration applies write them.
+
+/** `reporting.extend_subtype`, the Masa `tclassextend` rows of baseTable `synthetic.export_definition`, `synthetic.export_job` or `tsessiontracking`. */
+export const EXTEND_SUBTYPE = frozen<ReportingTableDefinition<'reporting.extend_subtype'>>({
+  table: 'extend_subtype',
+  columns: [
+    TENANT_ID,
+    { name: 'subtypeid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'basetable', type: 's' },
+    { name: 'basekeyfield', type: 's' },
+    { name: 'datatable', type: 's' },
+    { name: 'type', type: 's' },
+    { name: 'subtype', type: 's' },
+    { name: 'isactive', type: 'i' },
+    { name: 'notes', type: 's' },
+    { name: 'lastupdate', type: 't' },
+    { name: 'datecreated', type: 't' },
+    { name: 'lastupdateby', type: 's' },
+    { name: 'hassummary', type: 'i' },
+    { name: 'hasbody', type: 'i' },
+    { name: 'description', type: 's' },
+    { name: 'availablesubtypes', type: 's' },
+    { name: 'iconclass', type: 's' },
+    { name: 'hasassocfile', type: 'i' },
+    { name: 'hasconfigurator', type: 'i' },
+    { name: 'adminonly', type: 'i' },
+  ],
+  key: ['subtypeid'],
+  unit: 'reporting.extend_subtype',
+});
+
+/** `reporting.extend_set`, the Masa `tclassextendsets` rows of reporting subtypes. */
+export const EXTEND_SET = frozen<ReportingTableDefinition<'reporting.extend_set'>>({
+  table: 'extend_set',
+  columns: [
+    TENANT_ID,
+    { name: 'extendsetid', type: 's' },
+    { name: 'subtypeid', type: 's' },
+    { name: 'categoryid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'isactive', type: 'i' },
+    { name: 'container', type: 's' },
+  ],
+  key: ['extendsetid'],
+  unit: 'reporting.extend_set',
+});
+
+/** `reporting.extend_attribute`, the Masa `tclassextendattributes` rows of reporting extend sets. */
+export const EXTEND_ATTRIBUTE = frozen<ReportingTableDefinition<'reporting.extend_attribute'>>({
+  table: 'extend_attribute',
+  columns: [
+    TENANT_ID,
+    { name: 'attributeid', type: 'i' },
+    { name: 'extendsetid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'label', type: 's' },
+    { name: 'hint', type: 's' },
+    { name: 'type', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'isactive', type: 'i' },
+    { name: 'required', type: 's' },
+    { name: 'validation', type: 's' },
+    { name: 'regex', type: 's' },
+    { name: 'message', type: 's' },
+    { name: 'defaultvalue', type: 's' },
+    { name: 'optionlist', type: 's' },
+    { name: 'optionlabellist', type: 's' },
+    { name: 'adminonly', type: 'i' },
+  ],
+  key: ['attributeid'],
+  unit: 'reporting.extend_attribute',
+});
+
+/** `reporting.extend_rc_set`, the Masa `tclassextendrcsets` rows of reporting subtypes. */
+export const EXTEND_RC_SET = frozen<ReportingTableDefinition<'reporting.extend_rc_set'>>({
+  table: 'extend_rc_set',
+  columns: [
+    TENANT_ID,
+    { name: 'subtypeid', type: 's' },
+    { name: 'availablesubtypes', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'entitytype', type: 's' },
+    { name: 'name', type: 's' },
+    { name: 'orderno', type: 'i' },
+    { name: 'relatedcontentsetid', type: 's' },
+  ],
+  key: ['relatedcontentsetid'],
+  unit: 'reporting.extend_rc_set',
+});
+
+/** `reporting.extend_data`, the Masa `tclassextenddata` rows of reporting attributes. */
+export const EXTEND_DATA = frozen<ReportingTableDefinition<'reporting.extend_data'>>({
+  table: 'extend_data',
+  columns: [
+    TENANT_ID,
+    { name: 'dataid', type: 'i' },
+    { name: 'baseid', type: 's' },
+    { name: 'attributeid', type: 'i' },
+    { name: 'siteid', type: 's' },
+    { name: 'attributevalue', type: 's' },
+    { name: 'remoteid', type: 's' },
+    { name: 'datetimevalue', type: 't' },
+    { name: 'numericvalue', type: 'f' },
+    { name: 'stringvalue', type: 's' },
+  ],
+  key: ['dataid'],
+  unit: 'reporting.extend_data',
+});
+
+/** `reporting.trash`, the Masa `ttrash` rows of reporting extend objects; `objectstring` is byte-exact WDDX. */
+export const TRASH = frozen<ReportingTableDefinition<'reporting.trash'>>({
+  table: 'trash',
+  columns: [
+    TENANT_ID,
+    { name: 'objectid', type: 's' },
+    { name: 'parentid', type: 's' },
+    { name: 'siteid', type: 's' },
+    { name: 'objectlabel', type: 's' },
+    { name: 'objectclass', type: 's' },
+    { name: 'objecttype', type: 's' },
+    { name: 'objectsubtype', type: 's' },
+    { name: 'objectstring', type: 's' },
+    { name: 'deleteddate', type: 't' },
+    { name: 'deletedby', type: 's' },
+    { name: 'deleteid', type: 's' },
+    { name: 'orderno', type: 'i' },
+  ],
+  key: ['objectid'],
+  unit: 'reporting.trash',
+});
+
 /** Table definitions position for position with the unit tuple `T`. */
 type TablesForUnits<T extends readonly ReportingUnit[]> = { readonly [I in keyof T]: ReportingTableDefinition<T[I]> };
 
 /** Every owned table, in `UNITS` order; the `tables` of the reporting repository. */
-export const OWNED_TABLES: TablesForUnits<typeof UNITS> = Object.freeze([EXPORT_DEFINITION, EXPORT_JOB, TSESSIONTRACKING] as const);
+export const OWNED_TABLES: TablesForUnits<typeof UNITS> = Object.freeze([
+  EXPORT_DEFINITION,
+  EXPORT_JOB,
+  TSESSIONTRACKING,
+  EXTEND_SUBTYPE,
+  EXTEND_SET,
+  EXTEND_ATTRIBUTE,
+  EXTEND_RC_SET,
+  EXTEND_DATA,
+  TRASH,
+] as const);
 
 // Row shapes are type aliases, not interfaces, so they stay assignable to the repository's Record<string, unknown> rows.
 

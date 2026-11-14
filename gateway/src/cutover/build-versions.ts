@@ -226,8 +226,16 @@ function inventoriedEntries(ctx: ValidationContext): { entries: PlannedEntry[]; 
   const groupOf = carriedGroups(carried, ctx.groups);
   const closures = keyClosures(ctx, closure);
   const heldBack = legacyWriteExceptionKeys(ctx.exceptions);
+  // Fixture modules read only fixture tables, never the class-extension and trash rows a split gives their service.
+  const syntheticServices = new Set<string>(SYNTHETIC_MODULES.map((module) => module.service));
+  const splitUnits = new Set(
+    ctx.ownership.tables.filter((table) => table.owner === 'split').flatMap((table) => table.targets.map((target) => target.unit)),
+  );
   const ownerUnits = new Map<string, string[]>();
-  for (const { unit, owner } of ctx.ownership.units) ownerUnits.set(owner, sorted([...(ownerUnits.get(owner) ?? []), unit]));
+  for (const { unit, owner } of ctx.ownership.units) {
+    if (syntheticServices.has(owner) && splitUnits.has(unit)) continue;
+    ownerUnits.set(owner, sorted([...(ownerUnits.get(owner) ?? []), unit]));
+  }
 
   const entries = [...ctx.inventoryKeys].map(([route, facts]): PlannedEntry => {
     const owner = owningService(facts.owningService, route);

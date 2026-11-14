@@ -54,6 +54,17 @@ Schema `finance`, created by `opt2-db bootstrap` (`migration/src/db-bootstrap/`)
 | `[Program_1\|Program_2].finance_attachment` | `finance.attachment` | Metadata and `sha256`; the bytes become objects |
 | `[Program_1\|Program_2].finance_rollup` | `finance.rollup` | Keyed by program, period and state |
 
+Finance also takes its share of split Masa tables (`db/migrations/0002_extensions.sql`). These rows are not folded: `tenant_id` comes from their `siteID`, else the umbrella tenant. They are migrated only; their `cextend` and `ctrash` screens stay legacy-served.
+
+| Legacy table | Target table | Finance's rows |
+|---|---|---|
+| `tclassextend` | `finance.extend_subtype` | Subtypes whose `baseTable` is a finance fixture table: `Program_1\|Program_2.finance_record`, `finance_record_version`, `finance_attachment`, `finance_rollup`, or `synthetic.finance_transition` |
+| `tclassextendsets` | `finance.extend_set` | Sets of those subtypes |
+| `tclassextendattributes` | `finance.extend_attribute` | Attributes of those sets |
+| `tclassextendrcsets` | `finance.extend_rc_set` | Related-content sets of those subtypes |
+| `tclassextenddata` | `finance.extend_data` | Values of those attributes |
+| `ttrash` | `finance.trash` | `extendObject` rows of those subtypes; `objectstring` kept byte-exact |
+
 - **Service-only tables.** `finance.program_binding` (the program each tenant was folded from) and `finance.staged_object` (attachment objects stored before their row commits, or replaced since, until they are collected).
 - **Platform tables.** `tenant_registry`, `tenant_grant`, `changelog`, `unit_gate`, `open_operation`, `migration_batch`, `migration_watermark`, `inbox`, `consumer_aggregate_version`.
 - **Isolation.** Every tenant-owned table carries `tenant_id uuid NOT NULL` with row-level security enabled and forced under `tenant_isolation` on `app.tenant_id`.

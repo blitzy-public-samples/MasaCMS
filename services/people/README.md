@@ -47,7 +47,7 @@ Units, as split in [`opt2/table-ownership.json`](../../opt2/table-ownership.json
 | `tuserstags` | `people.user_tag` | Rows of `Type = 2` users | 1 |
 | `tusersfavorites` | `people.user_favorite` | Rows of `Type = 2` users; content ids kept | 1, 3 |
 | `tclassextenddatauseractivity` | `people.extend_data_user_activity` | Rows of `Type = 2` users and their addresses | 1 |
-| `tclassextend`, `tclassextendsets`, `tclassextendattributes`, `tclassextendrcsets`, `tclassextenddata` | `people.extend_subtype`, `people.extend_set`, `people.extend_attribute`, `people.extend_rc_set`, `people.extend_data` | Definitions and values whose subtype has `baseTable` `tusers` or `tusersaddresses` | 1 |
+| `tclassextend`, `tclassextendsets`, `tclassextendattributes`, `tclassextendrcsets`, `tclassextenddata` | `people.extend_subtype`, `people.extend_set`, `people.extend_attribute`, `people.extend_rc_set`, `people.extend_data` | Definitions and values whose subtype has `baseTable` `tusers`, `tusersaddresses`, `synthetic.person_archive` or `tuseraddresses` | 1 |
 | `ttrash` | `people.trash` | Trashed users of `Type = 2`, their addresses, and user extensions | 1 |
 | `synthetic.person_archive` (fixture) | `people.person_archive` | All | 1 |
 

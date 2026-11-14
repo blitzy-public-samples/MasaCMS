@@ -1,7 +1,7 @@
 /** Owned tables of schema `programs_sites`, as the platform repository declares them. */
 import type { CanonicalColumn, RepositoryRow, TableDefinition } from '@opt2/platform/migration-kit';
 
-// programs_sites.trash is a unit because opt2/table-ownership.json assigns the tsettings extendObject share of ttrash here.
+// programs_sites.trash is a unit because opt2/table-ownership.json assigns the extendObject share of ttrash for its base tables here.
 /** Units of write authority of schema `programs_sites`, as `opt2/table-ownership.json` names them, in declaration order. */
 export const UNITS = [
   'programs_sites.site',
@@ -187,7 +187,7 @@ export const SYSTEM_OBJECT: ProgramsSitesTableDefinition<'programs_sites.system_
   unit: 'programs_sites.system_object',
 };
 
-/** `programs_sites.extend_subtype`, the `baseTable = tsettings` rows of Masa `tclassextend`. */
+/** `programs_sites.extend_subtype`, the Masa `tclassextend` rows whose `baseTable` programs-sites owns. */
 export const EXTEND_SUBTYPE: ProgramsSitesTableDefinition<'programs_sites.extend_subtype'> = {
   table: 'extend_subtype',
   columns: [
@@ -217,7 +217,7 @@ export const EXTEND_SUBTYPE: ProgramsSitesTableDefinition<'programs_sites.extend
   unit: 'programs_sites.extend_subtype',
 };
 
-/** `programs_sites.extend_set`, the Masa `tclassextendsets` rows of site subtypes. */
+/** `programs_sites.extend_set`, the Masa `tclassextendsets` rows of programs-sites subtypes. */
 export const EXTEND_SET: ProgramsSitesTableDefinition<'programs_sites.extend_set'> = {
   table: 'extend_set',
   columns: [
@@ -235,7 +235,7 @@ export const EXTEND_SET: ProgramsSitesTableDefinition<'programs_sites.extend_set
   unit: 'programs_sites.extend_set',
 };
 
-/** `programs_sites.extend_attribute`, the Masa `tclassextendattributes` rows of site extend sets. */
+/** `programs_sites.extend_attribute`, the Masa `tclassextendattributes` rows of programs-sites extend sets. */
 export const EXTEND_ATTRIBUTE: ProgramsSitesTableDefinition<'programs_sites.extend_attribute'> = {
   table: 'extend_attribute',
   columns: [
@@ -262,7 +262,7 @@ export const EXTEND_ATTRIBUTE: ProgramsSitesTableDefinition<'programs_sites.exte
   unit: 'programs_sites.extend_attribute',
 };
 
-/** `programs_sites.extend_rc_set`, the Masa `tclassextendrcsets` rows of site subtypes. */
+/** `programs_sites.extend_rc_set`, the Masa `tclassextendrcsets` rows of programs-sites subtypes. */
 export const EXTEND_RC_SET: ProgramsSitesTableDefinition<'programs_sites.extend_rc_set'> = {
   table: 'extend_rc_set',
   columns: [
@@ -279,7 +279,7 @@ export const EXTEND_RC_SET: ProgramsSitesTableDefinition<'programs_sites.extend_
   unit: 'programs_sites.extend_rc_set',
 };
 
-/** `programs_sites.extend_data`, the Masa `tclassextenddata` rows of site attributes. */
+/** `programs_sites.extend_data`, the Masa `tclassextenddata` rows of programs-sites attributes. */
 export const EXTEND_DATA: ProgramsSitesTableDefinition<'programs_sites.extend_data'> = {
   table: 'extend_data',
   columns: [

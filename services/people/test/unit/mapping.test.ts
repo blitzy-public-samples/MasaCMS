@@ -283,6 +283,16 @@ describe('row predicates', () => {
     expect(split === undefined ? [] : splitValues(split).map(String).sort()).toStrictEqual(peopleBaseTables.sort());
   });
 
+  it.each(
+    BASE_TABLE_CASES.flatMap(([unit, owned]) =>
+      ([['tuseraddresses', true], ['tfiles', false], ['timagesizes', false], ['temails', false], ['custom', false]] as const).map(
+        ([baseTable, accepted]) => [unit, baseTable, accepted, owned] as const,
+      ),
+    ),
+  )('answers whether a %s row of baseTable %s is people with %s', (_unit, baseTable, accepted, owned) => {
+    expect(acceptsValue(mappingOf(owned), baseTable)).toBe(accepted);
+  });
+
   it.each(OWNER_TYPE_CASES)('selects the %s rows by the Type of their owning tusers row, the Type people.person takes', (_unit, owned) => {
     expect(owned.table.split?.parent?.table).toBe(TUSERS.table);
     expect(splitValues(requiredSplit(owned))).toStrictEqual(splitValues(requiredSplit({ table: TUSERS, target: PERSON_TARGET })));

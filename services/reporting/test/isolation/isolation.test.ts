@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Roles } from '@opt2/platform/auth';
 import { cfUuid, errorSpec } from '@opt2/platform/legacy-compat';
+import type { CanonicalValue, Mapping } from '@opt2/platform/migration-kit';
 import { CLOUD_TASKS_HEADERS, QUEUES, TaskTenantMismatchError, type TaskWireBody } from '@opt2/platform/tasks';
 import { withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import {
@@ -23,6 +24,14 @@ import {
 import { SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { FIXTURE_ERROR_MAP } from '../../src/legacy/envelope.js';
 import { FIXTURE_PREFIX } from '../../src/legacy/index.js';
+import {
+  tclassextendMapping,
+  tclassextendattributesMapping,
+  tclassextenddataMapping,
+  tclassextendrcsetsMapping,
+  tclassextendsetsMapping,
+  trashMapping,
+} from '../../src/migration/mappings/index.js';
 import { createReportingRepository, type ReportingRepository } from '../../src/repo/repository.js';
 import {
   EXPORT_BUCKET,
@@ -36,7 +45,17 @@ import {
 } from '../../src/repo/tables.js';
 import { exportRunTaskName } from '../../src/tasks/enqueue.js';
 import { SERVICE, TEST_AS_OF, TEST_CLOCK, buildTestApp, headersFor, identityOf, queueRun, siteChangedEnvelope, type TestApp } from '../helpers/app.js';
-import { LEGACY_SESSION_TRACKING_ROWS, definitionFor, jobFor } from '../helpers/fixtures.js';
+import {
+  LEGACY_EXTEND_ATTRIBUTE_ROWS,
+  LEGACY_EXTEND_DATA_ROWS,
+  LEGACY_EXTEND_RC_SET_ROWS,
+  LEGACY_EXTEND_SET_ROWS,
+  LEGACY_EXTEND_SUBTYPE_ROWS,
+  LEGACY_SESSION_TRACKING_ROWS,
+  LEGACY_TRASH_ROWS,
+  definitionFor,
+  jobFor,
+} from '../helpers/fixtures.js';
 
 type Row = Record<string, unknown>;
 
@@ -76,8 +95,38 @@ function sessionTrackingRow(tenant: TenantFixture): Row {
   return { ...row, tenant_id: tenant.tenantId, trackingid: trackingIds, entered: TEST_CLOCK.now() };
 }
 
-/** A fresh row of owned `table` for `tenant` that meets every constraint of 0002_reporting.sql. */
+type LegacySamples = readonly [Mapping, readonly Readonly<Record<string, CanonicalValue>>[]];
+
+/** The extension and trash mappings with their legacy samples, keyed by reporting table. */
+const MIGRATED_SAMPLES: ReadonlyMap<string, LegacySamples> = new Map(
+  (
+    [
+      [tclassextendMapping, LEGACY_EXTEND_SUBTYPE_ROWS],
+      [tclassextendsetsMapping, LEGACY_EXTEND_SET_ROWS],
+      [tclassextendattributesMapping, LEGACY_EXTEND_ATTRIBUTE_ROWS],
+      [tclassextendrcsetsMapping, LEGACY_EXTEND_RC_SET_ROWS],
+      [tclassextenddataMapping, LEGACY_EXTEND_DATA_ROWS],
+      [trashMapping, LEGACY_TRASH_ROWS],
+    ] as const
+  ).map((samples) => [samples[0].unit.slice(samples[0].unit.indexOf('.') + 1), samples] as const),
+);
+let migratedIds = 0;
+
+/** The target row `mapping` gives its first legacy sample as a `tenant` row of the tenant's site, under fresh key values. */
+function migratedRow([mapping, [sample]]: LegacySamples, tenant: TenantFixture): Row {
+  if (sample === undefined) throw new TypeError(`${mapping.legacyTable} has no legacy sample`);
+  migratedIds += 1;
+  const keys = (mapping.key ?? []).map((name) => {
+    const type = mapping.legacyColumns.find((column) => column.name === name)?.type;
+    return [name, type === 'i' ? String(migratedIds) : cfUuid()] as const;
+  });
+  return { tenant_id: tenant.tenantId, ...mapping.toTarget({ ...sample, siteID: tenant.siteId, ...Object.fromEntries(keys) }) };
+}
+
+/** A fresh row of owned `table` for `tenant` that meets every constraint of 0002_reporting.sql and 0003_extensions.sql. */
 function rowFor(table: string, tenant: TenantFixture): Row {
+  const migrated = MIGRATED_SAMPLES.get(table);
+  if (migrated !== undefined) return migratedRow(migrated, tenant);
   switch (table) {
     case EXPORT_DEFINITION.table:
       return definitionFor(tenant, 'finance.records', { definition_id: cfUuid() });
@@ -167,8 +216,19 @@ function answerOf(res: InjectResponse): Row {
 
 describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
   beforeAll(async () => {
-    // Session tracking is legacy-authoritative by default; opened so the suite can write it through the repository.
-    handle = await buildTestApp({ db: 'pg', gates: { 'reporting.session_tracking': 'open' } });
+    // Session tracking, extension and trash are legacy-authoritative by default; opened so the suite can write them through the repository.
+    handle = await buildTestApp({
+      db: 'pg',
+      gates: {
+        'reporting.session_tracking': 'open',
+        'reporting.extend_subtype': 'open',
+        'reporting.extend_set': 'open',
+        'reporting.extend_attribute': 'open',
+        'reporting.extend_rc_set': 'open',
+        'reporting.extend_data': 'open',
+        'reporting.trash': 'open',
+      },
+    });
     repository = createReportingRepository({ db: handle.db, storage: handle.storage, clock: TEST_CLOCK });
   });
 

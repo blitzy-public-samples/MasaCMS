@@ -1,4 +1,4 @@
--- Class-extension definitions of baseTable tusers and tusersaddresses; read-only to people, written by migration apply.
+-- Class-extension definitions of the baseTables people owns; read-only to people, written by migration apply.
 CREATE TABLE people.extend_subtype (
   tenant_id uuid NOT NULL,
   subtypeid char(35) NOT NULL,

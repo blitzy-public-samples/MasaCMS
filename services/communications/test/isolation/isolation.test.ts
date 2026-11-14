@@ -1,6 +1,6 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Tenant isolation of the communications schema, its scheduled-task routes and its login-mail consumer against PostgreSQL. */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomInt, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DEAD_LETTER_REASON_ATTRIBUTE, INBOX_TABLE, dlqTopicName, type DeadLetterReason } from '@opt2/platform/events';
@@ -40,6 +40,11 @@ import {
   type EmailReturnStatRow,
   type EmailRow,
   type EmailStatRow,
+  type ExtendAttributeRow,
+  type ExtendDataRow,
+  type ExtendRcSetRow,
+  type ExtendSetRow,
+  type ExtendSubtypeRow,
   type MailingListMemberRow,
   type MailingListRow,
   type MessageRow,
@@ -92,7 +97,7 @@ function keyless(): Pick<EmailStatRow, KeylessManaged> {
   return { legacy_row_hash: rowHash(), occurrence: 1 };
 }
 
-// Fresh rows of every owned table, typed by its row shape so each NOT NULL and CHECK value of 0002_communications.sql is met.
+// Fresh rows of every owned table, typed by its row shape so each NOT NULL and CHECK value of the target DDL is met.
 const SAMPLE_ROWS = {
   message_template: (tenant: TenantFixture): Fresh<MessageTemplateRow> => ({
     template_id: cfUuid(),
@@ -222,6 +227,77 @@ const SAMPLE_ROWS = {
     deletedby: 'Isolation',
     deleteid: null,
     orderno: null,
+  }),
+  extend_subtype: (tenant: TenantFixture): Fresh<ExtendSubtypeRow> => ({
+    subtypeid: cfUuid(),
+    siteid: tenant.siteId,
+    basetable: 'temails',
+    basekeyfield: 'emailID',
+    datatable: 'tclassextenddata',
+    type: 'Email',
+    subtype: `Isolation ${tenant.key}`,
+    isactive: 1,
+    notes: null,
+    lastupdate: TEST_CLOCK.now(),
+    datecreated: TEST_CLOCK.now(),
+    lastupdateby: 'Isolation',
+    hassummary: 0,
+    hasbody: 1,
+    description: null,
+    availablesubtypes: null,
+    iconclass: null,
+    hasassocfile: 0,
+    hasconfigurator: 0,
+    adminonly: 0,
+  }),
+  extend_set: (tenant: TenantFixture): Fresh<ExtendSetRow> => ({
+    extendsetid: cfUuid(),
+    subtypeid: cfUuid(),
+    categoryid: null,
+    siteid: tenant.siteId,
+    name: `Isolation set ${tenant.key}`,
+    orderno: 1,
+    isactive: 1,
+    container: 'Default',
+  }),
+  extend_attribute: (tenant: TenantFixture): Fresh<ExtendAttributeRow> => ({
+    attributeid: randomInt(1, 2 ** 31 - 1),
+    extendsetid: cfUuid(),
+    siteid: tenant.siteId,
+    name: `isolation${tenant.key}`,
+    label: 'Isolation',
+    hint: null,
+    type: 'TextBox',
+    orderno: 1,
+    isactive: 1,
+    required: 'false',
+    validation: null,
+    regex: null,
+    message: null,
+    defaultvalue: null,
+    optionlist: null,
+    optionlabellist: null,
+    adminonly: 0,
+  }),
+  extend_rc_set: (tenant: TenantFixture): Fresh<ExtendRcSetRow> => ({
+    subtypeid: cfUuid(),
+    availablesubtypes: null,
+    siteid: tenant.siteId,
+    entitytype: 'content',
+    name: `Isolation related ${tenant.key}`,
+    orderno: 1,
+    relatedcontentsetid: cfUuid(),
+  }),
+  extend_data: (tenant: TenantFixture): Fresh<ExtendDataRow> => ({
+    dataid: randomInt(1, 2 ** 31 - 1),
+    baseid: cfUuid(),
+    attributeid: randomInt(1, 2 ** 31 - 1),
+    siteid: tenant.siteId,
+    attributevalue: `Isolation ${tenant.key}`,
+    remoteid: null,
+    datetimevalue: null,
+    numericvalue: null,
+    stringvalue: `Isolation ${tenant.key}`,
   }),
 } satisfies Readonly<Record<string, (tenant: TenantFixture) => Row>>;
 

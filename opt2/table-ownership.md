@@ -25,7 +25,7 @@ Source SHA: 696383140578f8dea3ece26f80cd7bfb370ddf0f
 | Tables with a `siteID` column | 55 | Includes `tcontentfilemetadata` (`siteID` from `beanORMVersioned`) and `tremotepointer` (created lazily), so a fresh live catalog shows 54 |
 | Bootstrap tables without a primary key | 10 | 8 live: `tsettings` gains its key in `core/mura/dbUpdates/6.1.cfm:120-122` and `tglobals` is retired |
 | Fixture, dynamic-pattern, test-suite and OPT-2 tables | 26, 2, 2, 1 | Listed under Owners and Fixture tables |
-| Units | 109 | Listed under Units |
+| Units | 149 | Listed under Units |
 
 The keyless bootstrap tables are `tcontentdisplaytitleapprovals`, `tcontenteventreminders`, `tcontentpublicsubmissionapprovals`, `temailreturnstats`, `temailstats`, `tglobals`, `tmailinglist`, `tmailinglistmembers`, `tsettings` and `tsystemobjects`; keyless live tables match as a multiset of full-row encodings, with `legacy_row_hash` and an occurrence number on each target row.
 
@@ -33,17 +33,17 @@ The live-catalog counts in `opt2/inventory/legacy-inventory.json` govern over th
 
 ## Owners
 
-Unit counts cover Masa tables; fixture tables and their units are under Fixture tables.
+Unit counts cover Masa tables; fixture tables, their units and the extension and trash units of fixture-only owners are under Fixture tables. An owner's extension shares are the `tclassextend`, `tclassextendsets`, `tclassextendattributes`, `tclassextendrcsets` and `tclassextenddata` rows whose subtype's `baseTable` resolves to it (Shared tables).
 
 | Owner | Legacy tables | Target tables | Step |
 |---|---|---|---|
-| identity | `tusersmemb`, `tpermissions`, `tuserstrikes`, `tuserremotesessions`, `tuserdevice`, `tredirects`, `toauthclients`, `toauthtokens`; the identity shares of `tusers`, `tuseraddresses`, `tusersinterests`, `tuserstags`, `tusersfavorites`, `tclassextenddatauseractivity` and `ttrash` | Schema `identity`, 18 units | 2 for `tusersmemb` and `tpermissions`; 1 for the rest |
+| identity | `tusersmemb`, `tpermissions`, `tuserstrikes`, `tuserremotesessions`, `tuserdevice`, `tredirects`, `toauthclients`, `toauthtokens`; the identity shares of `tusers`, `tuseraddresses`, `tusersinterests`, `tuserstags`, `tusersfavorites`, `tclassextenddatauseractivity` and `ttrash`; its extension shares | Schema `identity`, 23 units | 2 for `tusersmemb` and `tpermissions`; 1 for the rest |
 | people | The people shares of `tusers`, `tuseraddresses`, `tusersinterests`, `tuserstags`, `tusersfavorites`, `tclassextenddatauseractivity`, `tclassextend`, `tclassextendsets`, `tclassextendattributes`, `tclassextendrcsets`, `tclassextenddata` and `ttrash` | Schema `people`, 12 units | 1; 1 and 3 for `tusersinterests` (category ids kept, names by projection) and `tusersfavorites` (content ids kept, resolved through strategies-content) |
-| programs-sites | `tsettings`, `timagesizes`, `tdirectories`, `tsystemobjects`; the `baseTable = 'tsettings'` shares of `tclassextend`, `tclassextendsets`, `tclassextendattributes`, `tclassextendrcsets`, `tclassextenddata`; its `ttrash` share | Schema `programs_sites`, 10 units | 1 |
-| strategies-content (content) | `tcontent`, `tcontentobjects`, `tcontentrelated`, `tcontenttags`, `tcontentcategoryassign`, `tcontentcategories`, `tcontentassignments`, `tcontentstats`, `tcontentratings`, `tcontentcomments`, `tcontentcommentcommenters`, `tcontentfeeds`, `tcontentfeeditems`, `tcontentfeedadvancedparams`, `tfiles`, `tcontentfilemetadata`, `tcontentfilenamearchive`, `tcontentsourcemaps`, `tcontentremotepointer`, `tcontentvariationtargeting`, `tcontentdisplaytitleapprovals`, `tcontentpublicsubmissionapprovals`, `tformresponsepackets`, `tformresponsequestions`; the `baseTable = 'tcontent'` shares of `tclassextend`, `tclassextendsets`, `tclassextendattributes`, `tclassextendrcsets`, `tclassextenddata`; its `ttrash` share | Schema `content`, 30 units | 1 |
+| programs-sites | `tsettings`, `timagesizes`, `tdirectories`, `tsystemobjects`; its extension shares; its `ttrash` share | Schema `programs_sites`, 10 units | 1 |
+| strategies-content (content) | `tcontent`, `tcontentobjects`, `tcontentrelated`, `tcontenttags`, `tcontentcategoryassign`, `tcontentcategories`, `tcontentassignments`, `tcontentstats`, `tcontentratings`, `tcontentcomments`, `tcontentcommentcommenters`, `tcontentfeeds`, `tcontentfeeditems`, `tcontentfeedadvancedparams`, `tfiles`, `tcontentfilemetadata`, `tcontentfilenamearchive`, `tcontentsourcemaps`, `tcontentremotepointer`, `tcontentvariationtargeting`, `tcontentdisplaytitleapprovals`, `tcontentpublicsubmissionapprovals`, `tformresponsepackets`, `tformresponsequestions`; its extension shares, approval and change-set base tables included; its `ttrash` share | Schema `content`, 30 units | 1 |
 | strategies-content (approvals and change sets) | `tapprovalchains`, `tapprovalmemberships`, `tapprovalassignments`, `tapprovalrequests`, `tapprovalactions`, `tchangesets`, `tchangesetrollback`, `tchangesetcategoryassign`, `tchangesettagassign` | Schema `content`, 9 units | 1; `tapprovalmemberships` links chains to approving groups, which is workflow configuration, so step 2 does not apply |
-| communications | `temails`, `temailstats`, `temailreturnstats`, `tmailinglist`, `tmailinglistmembers`; its `ttrash` share | Schema `communications`, 6 units | 1 |
-| reporting | `tsessiontracking` | Schema `reporting`, 1 unit | 1 |
+| communications | `temails`, `temailstats`, `temailreturnstats`, `tmailinglist`, `tmailinglistmembers`; its extension shares; its `ttrash` share | Schema `communications`, 11 units | 1 |
+| reporting | `tsessiontracking`; its extension shares; its `ttrash` share | Schema `reporting`, 7 units | 1 |
 | retired | `tglobals` (dropped by `core/mura/dbUpdates/5.7.cfm:136`); `testoption`, `testwidget` (created only by the TestBox entities spec) | None; nothing migrates | — |
 | decision list | `tplugins`, `tpluginsettings`, `tpluginscripts`, `tplugindisplayobjects`, `tclusterpeers`, `tclustercommands`, `tentity`, `tentity-declared:*`, `tremotepointer`, `trazunasettings`, `tcontenteventreminders`, `fb_*` (`opt2/decision-list.md`, pending) | None until approved | 5 |
 | migration | `opt2_sync.projector_checkpoint` (reverse-projector checkpoint in the legacy database) | None; coordination state that never migrates | — |
@@ -67,9 +67,9 @@ The reverse projector reassembles each legacy row from every owner's columns, an
 | Shared table | Split |
 |---|---|
 | `tuseraddresses`, `tusersinterests`, `tuserstags`, `tusersfavorites`, `tclassextenddatauseractivity` | By the `Type` of the owning `tusers` row: 1 to identity, 2 to people. The join is `userID = tusers.UserID`; `tclassextenddatauseractivity` joins on `baseID = tusers.UserID`, or on `baseID = tuseraddresses.addressID` and then `tuseraddresses.userID = tusers.UserID` for address extended data |
-| `tclassextenddata` | By the `baseTable` of the attribute's subtype, through `attributeID` → `tclassextendattributes.extendSetID` → `tclassextendsets.subTypeID` → `tclassextend.baseTable`. `tcontent` to strategies-content, `tsettings` to programs-sites, `tusers` and `tusersaddresses` to people; any other `baseTable` to the owner this map gives that table, and an unmapped one fails `services/*/test/unit/mapping.test.ts` |
-| `tclassextend`, `tclassextendsets`, `tclassextendattributes`, `tclassextendrcsets` | By `baseTable`, with the same owners: `tclassextend` directly, `tclassextendsets` and `tclassextendrcsets` through `subTypeID`, `tclassextendattributes` through `extendSetID` → `subTypeID` |
-| `ttrash` | By `objectClass` (`core/mura/trash/trashManager.cfc:175-176`): `content`, `feed`, `category`, `changeset` to strategies-content; `mailinglist`, `email` to communications; `group` to identity; `user` by its stored `Type` (1 identity, 2 people); `address` by its owning user's `Type`; `extendObject` by `baseTable` as above; an ORM entity name to the owner of the entity's table, which only dynamic decision-list entities reach, so those rows stay on legacy. An unmapped class fails `services/*/test/unit/mapping.test.ts` |
+| `tclassextenddata` | By the `baseTable` of the attribute's subtype, through `attributeID` → `tclassextendattributes.extendSetID` → `tclassextendsets.subTypeID` → `tclassextend.baseTable`, resolved by `split.baseTableOwners`: `tcontent` to strategies-content, `tsettings` to programs-sites, `tusers` and both Address spellings, `tusersaddresses` (XML import, `core/mura/extend/extendManager.cfc:1906-1910`) and `tuseraddresses` (subtype editor, `admin/core/views/cextend/editsubtype.cfm:80`), to people; every other table the JSON gives to one data owner, `Program_N` as `Program_1` and `Program_2`, to that owner's `extend_data`. Any other value (`custom`, an empty `baseTable`, a split, decision-list, retired or migration table, an unlisted name) resolves to no owner, and its rows stay on legacy with the withheld `cextend` and `ctrash` screens |
+| `tclassextend`, `tclassextendsets`, `tclassextendattributes`, `tclassextendrcsets` | By `baseTable`, resolved by the same `split.baseTableOwners` (named values, both Address spellings, every other single-data-owner table to its owner, any other value left on legacy), into that owner's `extend_subtype`, `extend_set`, `extend_attribute` and `extend_rc_set`: `tclassextend` directly, `tclassextendsets` and `tclassextendrcsets` through `subTypeID`, `tclassextendattributes` through `extendSetID` → `subTypeID` |
+| `ttrash` | By `objectClass` (`core/mura/trash/trashManager.cfc:175-176`): `content`, `feed`, `category`, `changeset` to strategies-content; `mailinglist`, `email` to communications; `group` to identity; `user` by its stored `Type` (1 identity, 2 people); `address` by its owning user's `Type`; `extendObject` by its subtype's `baseTable`, resolved as above, an unresolved one staying on legacy; an ORM entity name to the owner of the entity's table, which only dynamic decision-list entities reach, so those rows stay on legacy. An unmapped class fails `services/*/test/unit/mapping.test.ts` |
 
 ## Pools
 
@@ -90,7 +90,12 @@ Each unit is one target table; `newTables` in the JSON lists target-only tables,
 | Owner | Unit | Legacy tables |
 |---|---|---|
 | identity | `identity.credential` | `tusers` |
+| identity | `identity.extend_attribute` | `tclassextendattributes` |
+| identity | `identity.extend_data` | `tclassextenddata` |
 | identity | `identity.extend_data_user_activity` | `tclassextenddatauseractivity` |
+| identity | `identity.extend_rc_set` | `tclassextendrcsets` |
+| identity | `identity.extend_set` | `tclassextendsets` |
+| identity | `identity.extend_subtype` | `tclassextend` |
 | identity | `identity.group_account` | `tusers` |
 | identity | `identity.login_state` | `tusers` |
 | identity | `identity.membership` | `tusersmemb` |
@@ -173,6 +178,11 @@ Each unit is one target table; `newTables` in the JSON lists target-only tables,
 | communications | `communications.email` | `temails` |
 | communications | `communications.email_return_stat` | `temailreturnstats` |
 | communications | `communications.email_stat` | `temailstats` |
+| communications | `communications.extend_attribute` | `tclassextendattributes` |
+| communications | `communications.extend_data` | `tclassextenddata` |
+| communications | `communications.extend_rc_set` | `tclassextendrcsets` |
+| communications | `communications.extend_set` | `tclassextendsets` |
+| communications | `communications.extend_subtype` | `tclassextend` |
 | communications | `communications.mailing_list` | `tmailinglist` |
 | communications | `communications.mailing_list_member` | `tmailinglistmembers` |
 | communications | `communications.message` | `synthetic.message` |
@@ -181,23 +191,53 @@ Each unit is one target table; `newTables` in the JSON lists target-only tables,
 | communications | `communications.trash` | `ttrash` |
 | reporting | `reporting.export_definition` | `synthetic.export_definition` |
 | reporting | `reporting.export_job` | `synthetic.export_job` |
+| reporting | `reporting.extend_attribute` | `tclassextendattributes` |
+| reporting | `reporting.extend_data` | `tclassextenddata` |
+| reporting | `reporting.extend_rc_set` | `tclassextendrcsets` |
+| reporting | `reporting.extend_set` | `tclassextendsets` |
+| reporting | `reporting.extend_subtype` | `tclassextend` |
 | reporting | `reporting.session_tracking` | `tsessiontracking` |
+| reporting | `reporting.trash` | `ttrash` |
+| surveys | `surveys.extend_attribute` | `tclassextendattributes` |
+| surveys | `surveys.extend_data` | `tclassextenddata` |
+| surveys | `surveys.extend_rc_set` | `tclassextendrcsets` |
+| surveys | `surveys.extend_set` | `tclassextendsets` |
+| surveys | `surveys.extend_subtype` | `tclassextend` |
 | surveys | `surveys.survey` | `synthetic.survey` |
 | surveys | `surveys.survey_reminder` | `synthetic.survey_reminder` |
 | surveys | `surveys.survey_response` | `synthetic.survey_response` |
 | surveys | `surveys.survey_schedule` | `synthetic.survey_schedule` |
 | surveys | `surveys.survey_target` | `synthetic.survey_target` |
+| surveys | `surveys.trash` | `ttrash` |
 | timesheets | `timesheets.approval_action` | `Program_N.approval_action` |
 | timesheets | `timesheets.blackout` | `Program_N.blackout` |
+| timesheets | `timesheets.extend_attribute` | `tclassextendattributes` |
+| timesheets | `timesheets.extend_data` | `tclassextenddata` |
+| timesheets | `timesheets.extend_rc_set` | `tclassextendrcsets` |
+| timesheets | `timesheets.extend_set` | `tclassextendsets` |
+| timesheets | `timesheets.extend_subtype` | `tclassextend` |
 | timesheets | `timesheets.timesheet` | `Program_N.timesheet` |
 | timesheets | `timesheets.timesheet_day` | `Program_N.timesheet_day` |
+| timesheets | `timesheets.trash` | `ttrash` |
 | finance | `finance.attachment` | `Program_N.finance_attachment` |
+| finance | `finance.extend_attribute` | `tclassextendattributes` |
+| finance | `finance.extend_data` | `tclassextenddata` |
+| finance | `finance.extend_rc_set` | `tclassextendrcsets` |
+| finance | `finance.extend_set` | `tclassextendsets` |
+| finance | `finance.extend_subtype` | `tclassextend` |
 | finance | `finance.record` | `Program_N.finance_record` |
 | finance | `finance.record_version` | `Program_N.finance_record_version` |
 | finance | `finance.rollup` | `Program_N.finance_rollup` |
+| finance | `finance.trash` | `ttrash` |
 | e-signature | `esignature.audit_entry` | `synthetic.audit_entry` |
+| e-signature | `esignature.extend_attribute` | `tclassextendattributes` |
+| e-signature | `esignature.extend_data` | `tclassextenddata` |
+| e-signature | `esignature.extend_rc_set` | `tclassextendrcsets` |
+| e-signature | `esignature.extend_set` | `tclassextendsets` |
+| e-signature | `esignature.extend_subtype` | `tclassextend` |
 | e-signature | `esignature.signature` | `synthetic.signature` |
 | e-signature | `esignature.signature_request` | `synthetic.signature_request` |
+| e-signature | `esignature.trash` | `ttrash` |
 
 ## Fixture tables
 
@@ -231,3 +271,12 @@ Each unit is one target table; `newTables` in the JSON lists target-only tables,
 | `synthetic.finance_transition` | None (owner finance) | Not migrated; loaded from `opt2/reports/state-machines/finance.json` |
 | `synthetic.timesheet_transition` | None (owner timesheets) | Not migrated; loaded from `opt2/reports/state-machines/timesheets.json` |
 | `synthetic.transition_rule` | None (owner timesheets) | Not migrated; holds the timesheets blackout rule from `opt2/reports/state-machines/timesheets.json` |
+
+A subtype whose `baseTable` is a fixture table, `Program_N` written as `Program_1` or `Program_2`, follows that table's owner: `synthetic.person_archive` joins the people extension units, `synthetic.program_site` the programs-sites ones, and the communications and reporting fixture tables the extension units counted under Owners. The fixture-only owners take these Masa-table units, the `trash` unit holding the `extendObject` rows of those subtypes:
+
+| Owner | Base tables | Extension and trash units | Target tables |
+|---|---|---|---|
+| timesheets | `Program_N.timesheet`, `Program_N.timesheet_day`, `Program_N.approval_action`, `Program_N.blackout`, `synthetic.timesheet_transition`, `synthetic.transition_rule` | `timesheets.extend_subtype`, `timesheets.extend_set`, `timesheets.extend_attribute`, `timesheets.extend_rc_set`, `timesheets.extend_data`, `timesheets.trash` | Schema `timesheets`, 10 units: 4 fixture, 6 extension and trash |
+| finance | `Program_N.finance_record`, `Program_N.finance_record_version`, `Program_N.finance_attachment`, `Program_N.finance_rollup`, `synthetic.finance_transition` | `finance.extend_subtype`, `finance.extend_set`, `finance.extend_attribute`, `finance.extend_rc_set`, `finance.extend_data`, `finance.trash` | Schema `finance`, 10 units: 4 fixture, 6 extension and trash |
+| surveys | `synthetic.survey`, `synthetic.survey_schedule`, `synthetic.survey_reminder`, `synthetic.survey_target`, `synthetic.survey_response` | `surveys.extend_subtype`, `surveys.extend_set`, `surveys.extend_attribute`, `surveys.extend_rc_set`, `surveys.extend_data`, `surveys.trash` | Schema `surveys`, 11 units: 5 fixture, 6 extension and trash |
+| e-signature | `synthetic.signature_request`, `synthetic.signature`, `synthetic.audit_entry` | `esignature.extend_subtype`, `esignature.extend_set`, `esignature.extend_attribute`, `esignature.extend_rc_set`, `esignature.extend_data`, `esignature.trash` | Schema `esignature`, 9 units: 3 fixture, 6 extension and trash |

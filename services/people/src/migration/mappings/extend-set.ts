@@ -1,6 +1,7 @@
 import { MappingError, defineMapping } from '@opt2/platform/migration-kit';
 import type { Mapping, MappingColumn } from '@opt2/platform/migration-kit';
 import { EXTEND_SET } from '../../repo/tables.js';
+import { PEOPLE_BASE_TABLES } from './extend-subtype.js';
 
 const LEGACY_TABLE = 'tclassextendsets';
 
@@ -14,7 +15,7 @@ function extendSetColumn(legacy: string): MappingColumn {
   return { legacy, target: target.name, type: target.type };
 }
 
-/** Masa `tclassextendsets` rows of user subtypes (`baseTable` `tusers` or `tusersaddresses`) ↔ `people.extend_set`, keyed by `extendSetID`. */
+/** Masa `tclassextendsets` rows of people subtypes (`baseTable` in PEOPLE_BASE_TABLES) ↔ `people.extend_set`, keyed by `extendSetID`. */
 export const extendSetMapping: Mapping = defineMapping({
   legacyTable: LEGACY_TABLE,
   // defineMapping needs a schema-qualified target: EXTEND_SET.table is the repository's unqualified name, EXTEND_SET.unit the qualified one.
@@ -23,9 +24,8 @@ export const extendSetMapping: Mapping = defineMapping({
   columns: LEGACY_COLUMNS.map(extendSetColumn),
   key: ['extendSetID'],
   // Sets carry no baseTable: each apply row's discriminator is its subtype's tclassextend.baseTable, joined on subTypeID.
-  // Sets follow their subtype, so this accepts both base tables extendSubtypeMapping takes, as opt2/table-ownership.json
-  // assigns them: Masa's extension-config import stores Address subtypes under `tusersaddresses`.
-  split: { by: 'baseTable', value: ['tusers', 'tusersaddresses'] },
+  // Sets follow their subtype, so this accepts the base tables extendSubtypeMapping takes.
+  split: { by: 'baseTable', value: PEOPLE_BASE_TABLES },
   // A mapping takes one tenant source, so this is the ownership file's siteID-or-umbrella rule rather than a parent fallback.
   // Masa saves a set with its subtype's siteID, so a null-siteID set sits under a null-siteID subtype, which also loads under the umbrella.
   tenant: { kind: 'site', column: 'siteID' },

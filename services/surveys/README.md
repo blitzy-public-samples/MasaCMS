@@ -52,6 +52,19 @@ Fixture tables, as assigned in [`opt2/table-ownership.json`](../../opt2/table-ow
 | `synthetic.survey_target` | `surveys.survey_target` | The parent survey's; its `siteID` is the targeted site, not the owner | — |
 | `synthetic.survey_response` | `surveys.survey_response` | `tenantIdForSite(siteID)`, where `siteID` is the survey's site | — |
 
+Shares of the split Masa tables (rule step 1), created in `db/migrations/0003_extensions.sql` and written only by migration apply; the `cextend` and `ctrash` screens that write them stay legacy-served (`opt2/decision-list.json`):
+
+| Legacy table | Rows | Target table | Tenant |
+|---|---|---|---|
+| `tclassextend` | Subtypes whose `baseTable` is `synthetic.survey`, `synthetic.survey_reminder`, `synthetic.survey_response`, `synthetic.survey_schedule` or `synthetic.survey_target` | `surveys.extend_subtype` | `tenantIdForSite(siteID)`, else the umbrella tenant as an orphan |
+| `tclassextendsets` | Sets of those subtypes, by `subTypeID` | `surveys.extend_set` | As `tclassextend` |
+| `tclassextendattributes` | Attributes of those sets, by `extendSetID` | `surveys.extend_attribute` | As `tclassextend` |
+| `tclassextendrcsets` | Related-content sets of those subtypes, by `subTypeID` | `surveys.extend_rc_set` | As `tclassextend` |
+| `tclassextenddata` | Values of those attributes, by `attributeID` | `surveys.extend_data` | As `tclassextend` |
+| `ttrash` | `extendObject` rows of those subtypes (class-map owner `surveys`); `objectstring` byte-exact | `surveys.trash` | `tenantIdForSite(siteID)` |
+
+Only `tclassextend` carries its own `baseTable`. The other shares take a row only when its apply row carries the discriminator: one of those base tables, or `surveys` for `ttrash`.
+
 Every table adds `tenant_id uuid NOT NULL`, with row-level security enabled and forced under the `tenant_isolation` policy on `app.tenant_id`. No table declares a foreign key.
 
 Platform tables (`db/migrations/0001_platform.sql`): `tenant_registry`, `tenant_grant`, `changelog`, `unit_gate`, `open_operation`, `migration_batch`, `migration_watermark`, `inbox`, `consumer_aggregate_version`, `outbox`, `scheduled_task_queue` and `scheduled_task_queue_state`. `tenant_registry`, `tenant_grant`, `unit_gate`, `open_operation` and `migration_watermark` are non-tenant tables without row-level security or a `tenant_isolation` policy: they hold tenant metadata, never tenant data. `tenant_registry` maps each site to its `tenant_id` and pool tenants; `tenant_grant` stores `grantor_tenant` and `grantee_tenant`.

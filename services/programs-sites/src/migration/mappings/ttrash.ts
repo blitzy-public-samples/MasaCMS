@@ -17,7 +17,7 @@ function trashColumn(legacy: string): MappingColumn {
   return { legacy, target: target.name, type: target.type };
 }
 
-/** Masa `ttrash` rows of site extend objects ↔ `programs_sites.trash`, keyed by `objectID`; `objectstring` is byte-exact WDDX. */
+/** Masa `ttrash` rows of programs-sites extend objects ↔ `programs_sites.trash`, keyed by `objectID`; `objectstring` is byte-exact WDDX. */
 export const ttrashMapping: Mapping = defineMapping({
   legacyTable: LEGACY_TABLE,
   // defineMapping needs a schema-qualified target: TRASH.table is unqualified, TRASH.unit is the qualified name.
@@ -25,7 +25,7 @@ export const ttrashMapping: Mapping = defineMapping({
   unit: TRASH.unit,
   columns: LEGACY_COLUMNS.map(trashColumn),
   key: ['objectID'],
-  // opt2/table-ownership.json assigns programs-sites the extendObject rows whose subtype has baseTable = tsettings, which
+  // opt2/table-ownership.json assigns programs-sites the extendObject rows whose subtype's baseTable it owns, which
   // no ttrash column holds alone: each apply row's discriminator is its class-map owner, as for identity's share.
   split: { by: 'objectClass', value: 'programs-sites' },
   tenant: { kind: 'site', column: 'siteID' },

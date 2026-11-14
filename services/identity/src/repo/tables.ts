@@ -21,6 +21,11 @@ export const IDENTITY_UNITS = [
   'identity.oauth_client',
   'identity.oauth_token',
   'identity.trash',
+  'identity.extend_subtype',
+  'identity.extend_set',
+  'identity.extend_attribute',
+  'identity.extend_rc_set',
+  'identity.extend_data',
 ] as const;
 
 /** One identity unit id. */
@@ -331,6 +336,102 @@ const GROUP_TRASH_COLUMNS = [
 /** `identity.trash`: Masa `ttrash` rows of the identity objectClass share; `objectstring` is byte-exact WDDX. */
 export const GROUP_TRASH = unitTable('identity.trash', GROUP_TRASH_COLUMNS, ['objectid']);
 
+const EXTEND_SUBTYPE_COLUMNS = [
+  TENANT_ID,
+  { name: 'subtypeid', type: 's' },
+  { name: 'siteid', type: 's' },
+  { name: 'basetable', type: 's' },
+  { name: 'basekeyfield', type: 's' },
+  { name: 'datatable', type: 's' },
+  { name: 'type', type: 's' },
+  { name: 'subtype', type: 's' },
+  { name: 'isactive', type: 'i' },
+  { name: 'notes', type: 's' },
+  { name: 'lastupdate', type: 't' },
+  { name: 'datecreated', type: 't' },
+  { name: 'lastupdateby', type: 's' },
+  { name: 'hassummary', type: 'i' },
+  { name: 'hasbody', type: 'i' },
+  { name: 'description', type: 's' },
+  { name: 'availablesubtypes', type: 's' },
+  { name: 'iconclass', type: 's' },
+  { name: 'hasassocfile', type: 'i' },
+  { name: 'hasconfigurator', type: 'i' },
+  { name: 'adminonly', type: 'i' },
+] as const satisfies Columns;
+
+/** `identity.extend_subtype`: Masa `tclassextend` rows whose `baseTable` is an identity table. */
+export const EXTEND_SUBTYPE = unitTable('identity.extend_subtype', EXTEND_SUBTYPE_COLUMNS, ['subtypeid']);
+
+const EXTEND_SET_COLUMNS = [
+  TENANT_ID,
+  { name: 'extendsetid', type: 's' },
+  { name: 'subtypeid', type: 's' },
+  { name: 'categoryid', type: 's' },
+  { name: 'siteid', type: 's' },
+  { name: 'name', type: 's' },
+  { name: 'orderno', type: 'i' },
+  { name: 'isactive', type: 'i' },
+  { name: 'container', type: 's' },
+] as const satisfies Columns;
+
+/** `identity.extend_set`: Masa `tclassextendsets` rows of identity subtypes. */
+export const EXTEND_SET = unitTable('identity.extend_set', EXTEND_SET_COLUMNS, ['extendsetid']);
+
+const EXTEND_ATTRIBUTE_COLUMNS = [
+  TENANT_ID,
+  { name: 'attributeid', type: 'i' },
+  { name: 'extendsetid', type: 's' },
+  { name: 'siteid', type: 's' },
+  { name: 'name', type: 's' },
+  { name: 'label', type: 's' },
+  { name: 'hint', type: 's' },
+  { name: 'type', type: 's' },
+  { name: 'orderno', type: 'i' },
+  { name: 'isactive', type: 'i' },
+  { name: 'required', type: 's' },
+  { name: 'validation', type: 's' },
+  { name: 'regex', type: 's' },
+  { name: 'message', type: 's' },
+  { name: 'defaultvalue', type: 's' },
+  { name: 'optionlist', type: 's' },
+  { name: 'optionlabellist', type: 's' },
+  { name: 'adminonly', type: 'i' },
+] as const satisfies Columns;
+
+/** `identity.extend_attribute`: Masa `tclassextendattributes` rows of identity extend sets. */
+export const EXTEND_ATTRIBUTE = unitTable('identity.extend_attribute', EXTEND_ATTRIBUTE_COLUMNS, ['attributeid']);
+
+const EXTEND_RC_SET_COLUMNS = [
+  TENANT_ID,
+  { name: 'subtypeid', type: 's' },
+  { name: 'availablesubtypes', type: 's' },
+  { name: 'siteid', type: 's' },
+  { name: 'entitytype', type: 's' },
+  { name: 'name', type: 's' },
+  { name: 'orderno', type: 'i' },
+  { name: 'relatedcontentsetid', type: 's' },
+] as const satisfies Columns;
+
+/** `identity.extend_rc_set`: Masa `tclassextendrcsets` rows of identity subtypes. */
+export const EXTEND_RC_SET = unitTable('identity.extend_rc_set', EXTEND_RC_SET_COLUMNS, ['relatedcontentsetid']);
+
+const EXTEND_DATA_COLUMNS = [
+  TENANT_ID,
+  { name: 'dataid', type: 'i' },
+  { name: 'baseid', type: 's' },
+  { name: 'attributeid', type: 'i' },
+  { name: 'siteid', type: 's' },
+  { name: 'attributevalue', type: 's' },
+  { name: 'remoteid', type: 's' },
+  { name: 'datetimevalue', type: 't' },
+  { name: 'numericvalue', type: 'f' },
+  { name: 'stringvalue', type: 's' },
+] as const satisfies Columns;
+
+/** `identity.extend_data`: Masa `tclassextenddata` values of identity attributes. */
+export const EXTEND_DATA = unitTable('identity.extend_data', EXTEND_DATA_COLUMNS, ['dataid']);
+
 const SESSION_COLUMNS = [
   TENANT_ID,
   { name: 'session_id', type: 's' },
@@ -449,6 +550,11 @@ export const UNIT_TABLES: TablesForUnits<typeof IDENTITY_UNITS> = [
   OAUTH_CLIENT,
   OAUTH_TOKEN,
   GROUP_TRASH,
+  EXTEND_SUBTYPE,
+  EXTEND_SET,
+  EXTEND_ATTRIBUTE,
+  EXTEND_RC_SET,
+  EXTEND_DATA,
 ];
 
 /** Every owned table, unit tables first, in migration order; the `tables` of the identity repository. */
@@ -553,6 +659,16 @@ export type GroupTrashRow = RowOf<
   typeof GROUP_TRASH_COLUMNS,
   'tenant_id' | 'objectid' | 'parentid' | 'siteid' | 'objectlabel' | 'objectclass' | 'objecttype' | 'objectsubtype' | 'deletedby'
 >;
+/** An `extend_subtype` row. */
+export type ExtendSubtypeRow = RowOf<typeof EXTEND_SUBTYPE_COLUMNS, 'tenant_id' | 'subtypeid'>;
+/** An `extend_set` row. */
+export type ExtendSetRow = RowOf<typeof EXTEND_SET_COLUMNS, 'tenant_id' | 'extendsetid'>;
+/** An `extend_attribute` row. */
+export type ExtendAttributeRow = RowOf<typeof EXTEND_ATTRIBUTE_COLUMNS, 'tenant_id' | 'attributeid'>;
+/** An `extend_rc_set` row. */
+export type ExtendRcSetRow = RowOf<typeof EXTEND_RC_SET_COLUMNS, 'tenant_id' | 'name' | 'relatedcontentsetid'>;
+/** An `extend_data` row. */
+export type ExtendDataRow = RowOf<typeof EXTEND_DATA_COLUMNS, 'tenant_id' | 'dataid' | 'baseid' | 'attributeid'>;
 /** A `session` row; `login_snapshot` is the JSON text of a {@link LoginSnapshot}, `admin_state` that of the stored admin session values, and the int8 `epoch` a decimal string. */
 export type SessionRow = Override<
   RowOf<typeof SESSION_COLUMNS, 'tenant_id' | 'session_id' | 'epoch' | 'csrf_secret' | 'mode' | 'state' | 'created_at' | 'updated_at'>,

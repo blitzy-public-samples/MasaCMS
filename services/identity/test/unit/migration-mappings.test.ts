@@ -16,6 +16,7 @@ import {
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA } from '@opt2/platform/testing';
 import * as authRecords from '../../src/migration/mappings/auth-records.js';
+import * as extend from '../../src/migration/mappings/extend.js';
 import * as groupChildren from '../../src/migration/mappings/group-children.js';
 import * as barrel from '../../src/migration/mappings/index.js';
 import * as memberships from '../../src/migration/mappings/memberships.js';
@@ -187,8 +188,8 @@ describe('mapping barrel', () => {
     expect(Object.isFrozen(barrel.mappings)).toBe(true);
   });
 
-  it('re-exports every mapping of the four mapping modules unchanged and lists each of them', () => {
-    const modules: Record<string, Mapping> = { ...tusers, ...memberships, ...groupChildren, ...authRecords };
+  it('re-exports every mapping of the five mapping modules unchanged and lists each of them', () => {
+    const modules: Record<string, Mapping> = { ...tusers, ...memberships, ...groupChildren, ...authRecords, ...extend };
     const exported: Record<string, unknown> = { ...barrel };
 
     expect(Object.keys(exported).filter((name) => name !== 'mappings').sort()).toStrictEqual(Object.keys(modules).sort());

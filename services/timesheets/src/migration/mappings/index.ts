@@ -5,11 +5,28 @@ import { timesheetMapping } from './timesheet.js';
 import { timesheetDayMapping } from './timesheet-day.js';
 import { approvalActionMapping } from './approval-action.js';
 import { blackoutMapping } from './blackout.js';
+import {
+  tclassextendMapping,
+  tclassextendattributesMapping,
+  tclassextenddataMapping,
+  tclassextendrcsetsMapping,
+  tclassextendsetsMapping,
+} from './extend.js';
+import { trashMapping } from './trash.js';
 
 export { timesheetMapping } from './timesheet.js';
 export { timesheetDayMapping } from './timesheet-day.js';
 export { approvalActionMapping } from './approval-action.js';
 export { blackoutMapping } from './blackout.js';
+export {
+  TIMESHEETS_BASE_TABLES,
+  tclassextendMapping,
+  tclassextendattributesMapping,
+  tclassextenddataMapping,
+  tclassextendrcsetsMapping,
+  tclassextendsetsMapping,
+} from './extend.js';
+export { trashMapping } from './trash.js';
 
 /** The timesheets mappings, parents before children, one per unit in `TIMESHEETS_UNITS` order. */
 export const mappings: readonly Mapping[] = Object.freeze([
@@ -17,6 +34,12 @@ export const mappings: readonly Mapping[] = Object.freeze([
   timesheetDayMapping,
   approvalActionMapping,
   blackoutMapping,
+  tclassextendMapping,
+  tclassextendsetsMapping,
+  tclassextendattributesMapping,
+  tclassextendrcsetsMapping,
+  tclassextenddataMapping,
+  trashMapping,
 ]);
 
 /** Units of write authority the migration handlers gate, exactly `TIMESHEETS_UNITS` in its order. */

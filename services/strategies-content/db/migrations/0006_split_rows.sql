@@ -1,4 +1,4 @@
--- strategies-content shares of the split tables tclassextend* (baseTable tcontent) and ttrash (content object classes); varchar and nvarchar map to text by the canonical type map.
+-- strategies-content shares of the split tables tclassextend* (the baseTables it owns) and ttrash (content object classes); varchar and nvarchar map to text by the canonical type map.
 CREATE TABLE content.extend_subtype (
   tenant_id uuid NOT NULL,
   subtypeid char(35) NOT NULL,

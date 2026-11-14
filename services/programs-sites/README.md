@@ -69,12 +69,12 @@ Legacy tables, as split in [`opt2/table-ownership.json`](../../opt2/table-owners
 | `timagesizes` [core/mura/dbUpdates/5.7.cfm:94-102] | `image_size` | All | `sizeID` |
 | `tdirectories` [core/mura/dbUpdates/5.7.cfm:158-164] | `directory` | All | `dirID` |
 | `tsystemobjects` [core/setup/db/mssql.sql:436] | `system_object` | All | No key: multiset, stored with `legacy_row_hash` and `occurrence` |
-| `tclassextend` | `extend_subtype` | Subtypes with `baseTable = 'tsettings'` | `subTypeID` |
+| `tclassextend` | `extend_subtype` | Subtypes whose `baseTable` programs-sites owns: `tsettings`, `synthetic.program_site`, `tdirectories`, `timagesizes`, `tsystemobjects` | `subTypeID` |
 | `tclassextendsets` | `extend_set` | Sets of those subtypes | `extendSetID` |
 | `tclassextendattributes` | `extend_attribute` | Attributes of those sets | `attributeID` |
 | `tclassextendrcsets` | `extend_rc_set` | Related-content sets of those subtypes | `relatedContentSetID` |
 | `tclassextenddata` | `extend_data` | Values of those attributes | `dataID` |
-| `ttrash` | `trash` | `extendObject` rows whose `baseTable` is `tsettings` | `objectID` |
+| `ttrash` | `trash` | `extendObject` rows whose `baseTable` programs-sites owns | `objectID` |
 
 Also owned: `sitemonitor_state` (new), and the platform tables `tenant_registry`, `tenant_grant`, `changelog`, `unit_gate`, `open_operation`, `migration_batch`, `migration_watermark`, `outbox`, `inbox`, `consumer_aggregate_version`, `scheduled_task_queue` and `scheduled_task_queue_state`. `synthetic.program_site` is owned too but not migrated; the migration kit reads it to fold `Program_<id>` rows.
 

@@ -57,7 +57,9 @@ Every tenant-owned table has `tenant_id uuid NOT NULL`, with row-level security 
 | `temailreturnstats` | `communications.email_return_stat` | multiset | The parent `temails` row's |
 | `tmailinglist` | `communications.mailing_list` | multiset | `SiteID`, else the umbrella tenant as an orphan |
 | `tmailinglistmembers` | `communications.mailing_list_member` | multiset | `SiteID`, else the umbrella tenant as an orphan |
-| `ttrash`, rows of `objectClass` `email` and `mailinglist` | `communications.trash` | `objectID` | `siteID`; `objectstring` is byte-exact WDDX. The trash screens are withheld (decision list) |
+| `ttrash`, rows of `objectClass` `email` and `mailinglist`, plus the `extendObject` rows of communications subtypes | `communications.trash` | `objectID` | `siteID`; `objectstring` is byte-exact WDDX; the migration sends each row's class-map owner with it. The trash screens are withheld (decision list) |
+| `tclassextend`, rows whose `baseTable` is a communications table (`temails`, `temailstats`, `temailreturnstats`, `tmailinglist`, `tmailinglistmembers` or one of the three fixture tables) | `communications.extend_subtype` | `subTypeID` | `siteID`, else the umbrella tenant as an orphan. The class-extension screens (`cextend`) are withheld (decision list) |
+| `tclassextendsets`, `tclassextendattributes`, `tclassextendrcsets`, `tclassextenddata`, rows reaching those subtypes through `subTypeID`, `extendSetID` and `attributeID` | `communications.extend_set`, `communications.extend_attribute`, `communications.extend_rc_set`, `communications.extend_data` | `extendSetID`, `attributeID`, `relatedContentSetID`, `dataID` | `siteID`, else the umbrella tenant as an orphan; the migration sends each row's subtype `baseTable` with it |
 
 `temailstats`, `temailreturnstats`, `tmailinglist` and `tmailinglistmembers` have no primary key [core/setup/db/mssql.sql:239,231,312,323]. Each target row stores `legacy_row_hash` and an `occurrence` number, so duplicates stay distinct and reconciliation compares them as multisets (AAP 0.8.4).
 

@@ -126,6 +126,11 @@ import {
   type CredentialRow,
   type CsrfClaimRow,
   type CsrfClaimState,
+  type ExtendAttributeRow,
+  type ExtendDataRow,
+  type ExtendRcSetRow,
+  type ExtendSetRow,
+  type ExtendSubtypeRow,
   type GroupAccountRow,
   type GroupAddressRow,
   type GroupExtendDataRow,
@@ -940,6 +945,11 @@ export interface IdentityRowTypes {
   oauth_client: OAuthClientRow;
   oauth_token: OAuthTokenRow;
   trash: GroupTrashRow;
+  extend_subtype: ExtendSubtypeRow;
+  extend_set: ExtendSetRow;
+  extend_attribute: ExtendAttributeRow;
+  extend_rc_set: ExtendRcSetRow;
+  extend_data: ExtendDataRow;
   session: SessionRow;
   csrf_claim: CsrfClaimRow;
   account_operation: AccountOperationRow;

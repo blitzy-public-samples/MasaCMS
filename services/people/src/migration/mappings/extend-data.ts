@@ -2,6 +2,7 @@ import { MappingError, defineMapping } from '@opt2/platform/migration-kit';
 import type { Mapping, MappingColumn } from '@opt2/platform/migration-kit';
 import { CLASS_EXTEND_DATA, EXTEND_DATA } from '../../repo/tables.js';
 import type { PeopleUnitTableDefinition } from '../../repo/tables.js';
+import { PEOPLE_BASE_TABLES } from './extend-subtype.js';
 
 const USER_ACTIVITY_TABLE = 'tclassextenddatauseractivity';
 const CLASS_DATA_TABLE = 'tclassextenddata';
@@ -39,7 +40,7 @@ export const extendDataMapping: Mapping = defineMapping({
   tenant: { kind: 'site', column: 'siteID' },
 });
 
-/** tclassextenddata values of user and address subtypes (baseTable tusers or tusersaddresses) → people.extend_data [mssql.sql:560-566,828-829; 5.2.1.2696.cfm:88; 5.2.2655.cfm:53-59]. */
+/** tclassextenddata values of people subtypes (baseTable in PEOPLE_BASE_TABLES) → people.extend_data [mssql.sql:560-566,828-829; 5.2.1.2696.cfm:88; 5.2.2655.cfm:53-59]. */
 export const classExtendDataMapping: Mapping = defineMapping({
   legacyTable: CLASS_DATA_TABLE,
   targetTable: CLASS_EXTEND_DATA.unit,
@@ -49,7 +50,7 @@ export const classExtendDataMapping: Mapping = defineMapping({
   key: ['dataID'],
   // Values carry no baseTable: the apply row's discriminator is tclassextend.baseTable reached through attributeID ->
   // tclassextendattributes.extendSetID -> tclassextendsets.subTypeID; a row whose chain does not resolve carries none and is rejected.
-  split: { by: 'baseTable', value: ['tusers', 'tusersaddresses'] },
+  split: { by: 'baseTable', value: PEOPLE_BASE_TABLES },
   // siteID-or-umbrella in table ownership, as for the content and programs-sites shares of this table.
   tenant: { kind: 'site', column: 'siteID' },
 });

@@ -3,20 +3,59 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { canonicalTypeForPostgres, canonicalTypeForSqlServer, createRepository } from '@opt2/platform/migration-kit';
-import { APPROVAL_ACTION, BLACKOUT, TIMESHEET, TIMESHEET_DAY, TIMESHEETS_SCHEMA, TIMESHEETS_UNITS, tables } from '../../src/repo/tables.js';
+import {
+  APPROVAL_ACTION,
+  BLACKOUT,
+  EXTEND_ATTRIBUTE,
+  EXTEND_DATA,
+  EXTEND_RC_SET,
+  EXTEND_SET,
+  EXTEND_SUBTYPE,
+  TIMESHEET,
+  TIMESHEET_DAY,
+  TIMESHEETS_SCHEMA,
+  TIMESHEETS_UNITS,
+  TRASH,
+  tables,
+} from '../../src/repo/tables.js';
 
 interface DdlColumn {
   name: string;
   type: string;
 }
 
+interface OwnershipTarget {
+  unit: string;
+  keyColumns: string[];
+  ownedColumns: string[];
+}
+
+interface Ownership {
+  units: { unit: string; owner: string }[];
+  tables: { table: string; targets?: OwnershipTarget[] }[];
+}
+
 const read = (relative: string): string => readFileSync(new URL(relative, import.meta.url), 'utf8');
-const TARGET_DDL = read('../../db/migrations/0001_timesheets.sql');
+const TARGET_DDL = [read('../../db/migrations/0001_timesheets.sql'), read('../../db/migrations/0002_extensions.sql')].join('\n');
 const FIXTURE_DDL = read('../../../../legacy-fixtures/sql/timesheets/110_tables.program.sql');
-const OWNERSHIP = JSON.parse(read('../../../../opt2/table-ownership.json')) as { units: { unit: string; owner: string }[] };
+const OWNERSHIP = JSON.parse(read('../../../../opt2/table-ownership.json')) as Ownership;
 
 /** Columns the target adds to every folded `Program_<id>` table. */
 const TARGET_ONLY = ['tenant_id', 'legacy_program_id'];
+
+/** Tables folded from the fixture tables `Program_<id>.<table>`. */
+const FOLDED_TABLES = [TIMESHEET, TIMESHEET_DAY, APPROVAL_ACTION, BLACKOUT] as const;
+
+/** Tables of the timesheets share of a Masa `dbo` table, which are not folded. */
+const MASA_TABLES = [EXTEND_SUBTYPE, EXTEND_SET, EXTEND_ATTRIBUTE, EXTEND_RC_SET, EXTEND_DATA, TRASH] as const;
+
+/** The table-ownership target of `unit`; throws when the file names none or several. */
+function ownershipTarget(unit: string): OwnershipTarget {
+  const found = OWNERSHIP.tables.flatMap((entry) => (entry.targets ?? []).filter((target) => target.unit === unit));
+  const [target] = found;
+  if (found.length !== 1 || target === undefined) throw new Error(`${String(found.length)} ownership targets for ${unit}`);
+  return target;
+}
 
 /** Trimmed, non-empty body lines of the first `CREATE TABLE` block that `head` opens and `tail` closes. */
 function tableBody(ddl: string, head: string, tail: string): string[] {
@@ -26,7 +65,7 @@ function tableBody(ddl: string, head: string, tail: string): string[] {
   return ddl.slice(from, ddl.indexOf(tail, from)).split('\n').map((line) => line.trim()).filter((line) => line !== '');
 }
 
-/** Columns and primary key of `timesheets.<table>` in `0001_timesheets.sql`. */
+/** Columns and primary key of `timesheets.<table>` in `db/migrations`. */
 function targetTable(table: string): { columns: DdlColumn[]; primaryKey: string[] } {
   const body = tableBody(TARGET_DDL, `CREATE TABLE timesheets.${table} (`, '\n);').map((line) => line.replace(/,$/, ''));
   const columns = body
@@ -59,6 +98,14 @@ describe.each(tables.map((definition) => [definition.table, definition] as const
     );
   });
 
+  it('is gated by its own timesheets unit and cannot be changed by a consumer', () => {
+    expect(definition.unit).toBe(`${TIMESHEETS_SCHEMA}.${table}`);
+    expect(Object.isFrozen(definition) && Object.isFrozen(definition.columns) && Object.isFrozen(definition.key)).toBe(true);
+    expect(definition.columns.every((column) => Object.isFrozen(column))).toBe(true);
+  });
+});
+
+describe.each(FOLDED_TABLES.map((definition) => [definition.table, definition] as const))('timesheets.%s', (table, definition) => {
   it('carries exactly the fixture columns besides tenant_id and legacy_program_id', () => {
     expect(definition.columns.filter((column) => !TARGET_ONLY.includes(column.name)).map(canonical)).toEqual(
       fixtureTable(table).columns.map((column) => canonical({ name: column.name, ...canonicalTypeForSqlServer(column.type) })),
@@ -74,11 +121,18 @@ describe.each(tables.map((definition) => [definition.table, definition] as const
     expect(fixtureTable(table).primaryKey).toEqual(definition.key);
     expect(targetTable(table).primaryKey).toEqual(['tenant_id', ...definition.key]);
   });
+});
 
-  it('is gated by its own timesheets unit and cannot be changed by a consumer', () => {
-    expect(definition.unit).toBe(`${TIMESHEETS_SCHEMA}.${table}`);
-    expect(Object.isFrozen(definition) && Object.isFrozen(definition.columns) && Object.isFrozen(definition.key)).toBe(true);
-    expect(definition.columns.every((column) => Object.isFrozen(column))).toBe(true);
+describe.each(MASA_TABLES.map((definition) => [definition.table, definition] as const))('timesheets.%s', (table, definition) => {
+  const target = ownershipTarget(definition.unit);
+
+  it('carries tenant_id, then the lower-cased owned columns of its ownership target in their order, and no legacy_program_id', () => {
+    expect(definition.columns.map((column) => column.name)).toEqual(['tenant_id', ...target.ownedColumns.map((name) => name.toLowerCase())]);
+  });
+
+  it('keys on the ownership key columns, which the target primary key prefixes with tenant_id', () => {
+    expect(definition.key).toEqual(target.keyColumns.map((name) => name.toLowerCase()));
+    expect(targetTable(table).primaryKey).toEqual(['tenant_id', ...definition.key]);
   });
 });
 
@@ -87,9 +141,20 @@ describe('timesheets tables', () => {
     const owned = OWNERSHIP.units.filter((unit) => unit.owner === 'timesheets').map((unit) => unit.unit);
     const repository = createRepository({ owner: 'timesheets', schema: TIMESHEETS_SCHEMA, tables });
     expect(TIMESHEETS_SCHEMA).toBe('timesheets');
-    expect([...TIMESHEETS_UNITS]).toEqual(['timesheets.timesheet', 'timesheets.timesheet_day', 'timesheets.approval_action', 'timesheets.blackout']);
+    expect([...TIMESHEETS_UNITS]).toEqual([
+      'timesheets.timesheet',
+      'timesheets.timesheet_day',
+      'timesheets.approval_action',
+      'timesheets.blackout',
+      'timesheets.extend_subtype',
+      'timesheets.extend_set',
+      'timesheets.extend_attribute',
+      'timesheets.extend_rc_set',
+      'timesheets.extend_data',
+      'timesheets.trash',
+    ]);
     expect([...TIMESHEETS_UNITS].sort()).toEqual(owned.sort());
-    expect(tables).toEqual([TIMESHEET, TIMESHEET_DAY, APPROVAL_ACTION, BLACKOUT]);
+    expect(tables).toEqual([...FOLDED_TABLES, ...MASA_TABLES]);
     expect(tables.map((definition) => definition.unit)).toEqual([...TIMESHEETS_UNITS]);
     expect(repository.units()).toEqual([...TIMESHEETS_UNITS]);
     expect(repository.definition('timesheet_day')).toEqual(TIMESHEET_DAY);

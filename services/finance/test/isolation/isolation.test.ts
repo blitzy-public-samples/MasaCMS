@@ -2,6 +2,7 @@
 /** Tenant isolation of the finance schema, its record routes and its site registry consumer against PostgreSQL. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { cfUuid } from '@opt2/platform/legacy-compat';
 import { SITE_CHANGED_TOPIC, tenantDbFromPool, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
@@ -23,12 +24,18 @@ import {
 import { SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { createFinanceRepository, type FinanceRepository } from '../../src/repo/repository.js';
 import {
+  EXTEND_ATTRIBUTE,
+  EXTEND_DATA,
+  EXTEND_RC_SET,
+  EXTEND_SET,
+  EXTEND_SUBTYPE,
   FINANCE_ATTACHMENT,
   FINANCE_RECORD,
   FINANCE_RECORD_VERSION,
   FINANCE_ROLLUP,
   OWNED_TABLES,
   PROGRAM_BINDING,
+  TRASH,
   UNITS,
   type FinanceRecordRow,
   type FinanceRollupRow,
@@ -59,6 +66,7 @@ let schema: ThrowawaySchema | undefined;
 let service: TestApp<TenantDb> | undefined;
 let repository: FinanceRepository | undefined;
 let rollupPeriods = 0;
+let legacyIdentities = 0;
 
 /** What the outer beforeAll built; throws when building it failed. */
 function built(): { schema: ThrowawaySchema; service: TestApp<TenantDb>; repository: FinanceRepository } {
@@ -97,6 +105,12 @@ function rollupOf(tenant: TenantFixture): FinanceRollupRow {
   };
 }
 
+/** A legacy integer identity (`attributeid`, `dataid`) no earlier call used, so every row meets the primary key. */
+function nextIdentity(): number {
+  legacyIdentities += 1;
+  return legacyIdentities;
+}
+
 /** A fresh complete row of the unit table `table` for `tenant`. */
 function rowFor(table: string, tenant: TenantFixture): Row {
   switch (table) {
@@ -108,6 +122,28 @@ function rowFor(table: string, tenant: TenantFixture): Row {
       return attachmentRow(recordOf(tenant), ATTACHMENT).row;
     case FINANCE_ROLLUP.table:
       return rollupOf(tenant);
+    case EXTEND_SUBTYPE.table:
+      return { subtypeid: cfUuid(), siteid: tenant.siteId, basetable: 'Program_1.finance_record', type: 'Finance', subtype: 'Default', isactive: 1 };
+    case EXTEND_SET.table:
+      return { extendsetid: cfUuid(), subtypeid: cfUuid(), siteid: tenant.siteId, name: 'Default', orderno: 1, isactive: 1 };
+    case EXTEND_ATTRIBUTE.table:
+      return { attributeid: nextIdentity(), extendsetid: cfUuid(), siteid: tenant.siteId, name: 'costCentre', type: 'TextBox', isactive: 1 };
+    case EXTEND_RC_SET.table:
+      return { subtypeid: cfUuid(), siteid: tenant.siteId, name: 'Related', orderno: 1, relatedcontentsetid: cfUuid() };
+    case EXTEND_DATA.table:
+      return { dataid: nextIdentity(), baseid: cfUuid(), attributeid: nextIdentity(), siteid: tenant.siteId, attributevalue: 'CC-1', numericvalue: 1.5 };
+    case TRASH.table:
+      return {
+        objectid: cfUuid(),
+        parentid: cfUuid(),
+        siteid: tenant.siteId,
+        objectlabel: 'Finance',
+        objectclass: 'extendObject',
+        objecttype: 'Program_1.finance_record',
+        objectsubtype: 'Default',
+        objectstring: '<wddxPacket version="1.0"/>',
+        deletedby: 'admin',
+      };
     default:
       throw new TypeError(`finance has no unit table ${table}`);
   }
