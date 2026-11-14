@@ -24,6 +24,7 @@ describe('e-signature barrel', () => {
   });
 
   it.each<[string, readonly string[]]>([
+    ['create-request', [SIGNER]],
     ['sign', [SIGNER]],
     ['verify', [SIGNER, AUDITOR]],
   ])('registers action %s with roles %j behind a gate', (action, roles) => {
@@ -39,7 +40,15 @@ describe('e-signature barrel', () => {
 
   it('registers each slug once, lower-case', () => {
     const slugs = [...esignatureScreens.map((def) => `screen:${def.screen}`), ...esignatureActions.map((def) => `action:${def.action}`)];
-    expect(slugs).toEqual(['screen:requests', 'screen:request', 'screen:audit', 'screen:verify', 'action:sign', 'action:verify']);
+    expect(slugs).toEqual([
+      'screen:requests',
+      'screen:request',
+      'screen:audit',
+      'screen:verify',
+      'action:create-request',
+      'action:sign',
+      'action:verify',
+    ]);
     expect(slugs.every((slug) => slug === slug.toLowerCase())).toBe(true);
   });
 

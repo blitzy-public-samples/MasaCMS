@@ -11,6 +11,7 @@ import {
   SIGNER_ROLES,
   VERIFY_ACTION,
 } from './common';
+import { createRequestAction } from './create-request';
 import { loadRequest, renderRequest, type RequestData } from './request';
 import { requestsScreen } from './requests';
 import { submitSign } from './sign';
@@ -49,5 +50,9 @@ export const esignatureScreens: readonly Opt2ScreenDefinition[] = Object.freeze(
   verifyScreen,
 ]);
 
-/** The e-signature post actions: the typed-name signature and the verification of a supplied chain copy. */
-export const esignatureActions: readonly Opt2ActionDefinition[] = Object.freeze([signAction, verifyAction]);
+/** The e-signature post actions: a new request, the typed-name signature and the verification of a chain copy. */
+export const esignatureActions: readonly Opt2ActionDefinition[] = Object.freeze([
+  createRequestAction,
+  signAction,
+  verifyAction,
+]);
