@@ -40,7 +40,10 @@ function pagedGroups(rows: readonly GroupListItem[]): (request: RecordedRequest)
 function contextFor(groups: (request: RecordedRequest) => FakeReply, chains: number) {
   const gateway = fakeGatewayClient({
     [routeKey('GET', 'identity', `/v1/permissions/content/${CONTENT_NODE_IDS.root}`)]: { status: 200, body: cpermMainAnswer },
-    [routeKey('GET', 'strategies-content', `/v1/sites/${SITE}/content/${CONTENT_NODE_IDS.root}/history`)]: { status: 404 },
+    [routeKey('GET', 'strategies-content', `/v1/sites/${SITE}/content/${CONTENT_NODE_IDS.root}/crumbs`)]: {
+      status: 200,
+      body: { rc: { crumbdata: [] } },
+    },
     [routeKey('GET', 'strategies-content', `/v1/sites/${SITE}/approval-chains`)]: {
       status: 200,
       body: { rc: { chains: Array.from({ length: chains }, (_, n) => ({ chainID: `CH-${n}`, name: `Chain ${n}` })) } },

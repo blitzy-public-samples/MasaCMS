@@ -40,26 +40,30 @@ function member(struct: Struct, key: string): unknown {
   return name === undefined ? undefined : struct[name];
 }
 
-/** The `title` of the history model's `rc.contentBean` (`contentManager.getActiveContent`), NULL as `''`. */
-function beanTitle(rc: Struct): string {
-  const bean = member(rc, 'contentBean');
-  if (typeof bean !== 'object' || bean === null || Array.isArray(bean)) {
-    throw new TypeError('rc.contentBean is not a struct');
+const CRUMBS_OPERATION = 'getContentCrumbs';
+
+/** The `title` of the crumbs' node row, the active row `getModule` selects; NULL as `''`. */
+function nodeTitle(rc: Struct): string {
+  const crumbs = member(rc, 'crumbdata');
+  if (!Array.isArray(crumbs)) throw new TypeError(`${CRUMBS_OPERATION} returned no rc.crumbdata array`);
+  if (!crumbs.every((crumb: unknown) => typeof crumb === 'object' && crumb !== null && !Array.isArray(crumb))) {
+    throw new TypeError(`${CRUMBS_OPERATION} returned an rc.crumbdata entry that is not a struct`);
   }
-  const title = member(bean as Struct, 'title');
+  const [node] = crumbs as Struct[];
+  // getModule then selects no row, and CFML reads an empty query's title as ''.
+  if (node === undefined) return '';
+  const title = member(node, 'title');
   if (title === undefined || title === null) return '';
   if (typeof title === 'string' || typeof title === 'number' || typeof title === 'boolean') return String(title);
-  throw new TypeError('rc.contentBean.title is not a simple value');
+  throw new TypeError(`${CRUMBS_OPERATION} returned a node crumb whose title is not a simple value`);
 }
 
-/** The active `tcontent` title of `contentid`, read from strategies-content; `''` when the node does not exist. */
+/** The active `tcontent` title of `contentid`, from strategies-content's crumbs; `''` when it has no active row. */
 async function activeTitle(ctx: ScreenContext, siteid: string, contentid: string): Promise<string> {
-  const response = await ctx.gateway.strategiesContent.call('get', '/v1/sites/{siteid}/content/{contentid}/history', {
+  const response = await ctx.gateway.strategiesContent.call('get', '/v1/sites/{siteid}/content/{contentid}/crumbs', {
     params: { siteid, contentid },
   });
-  // getModule then selects no row, and CFML reads an empty query's title as ''.
-  if (response.status === 404) return '';
-  return beanTitle(okBody(response, 'strategies-content', 'getContentHistory').rc);
+  return nodeTitle(okBody(response, 'strategies-content', CRUMBS_OPERATION).rc);
 }
 
 /** Identity's system and member groups of the token site with their `module` grant on `contentid`. */

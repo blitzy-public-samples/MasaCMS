@@ -1,8 +1,8 @@
 // cperm.main's model and permission grid against admin/core/views/cperm/main.cfm.
-import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-compat';
+import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, apiUnavailableResponse } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { components } from '@/generated/clients/identity';
-import { GatewayDenialError, type ServicePath } from '@/lib/gateway-client';
+import { GatewayDenialError, GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
 import { isSafeHtml, toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { cpermScreens } from '@/screens/cperm';
@@ -15,10 +15,17 @@ import {
   cpermMainChildAnswer,
   cpermMainSystemGroupsAnswer,
 } from '../../fixtures/identity/permissions';
-import { adminS2Request, editorRequest, type AdminRequestPartial } from '../../helpers/admin-request';
-import { fragmentModel, type DomModel } from '../../helpers/dom-model';
+import { adminS2Request, editorRequest, siteAdminRequest, type AdminRequestPartial } from '../../helpers/admin-request';
+import { domModel, fragmentModel, type DomModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from '../../helpers/fake-gateway';
+import {
+  fakeGatewayClient,
+  loadFixture,
+  routeKey,
+  type FakeGatewayClient,
+  type FakeReply,
+} from '../../helpers/fake-gateway';
+import { TENANT_A } from '../../helpers/tokens';
 import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../helpers/screen-context';
 
 // The screen context reads only the registry's shell hooks, so the circuit barrels stay unloaded.
@@ -38,10 +45,11 @@ const CHAINS = [
 const NOACCESS = '/admin/?muraAction=cMessage.noaccess';
 
 const permissionsPath = (contentid: string): ServicePath => `/v1/permissions/content/${contentid}`;
+const crumbsPath = (contentid: string): ServicePath => `/v1/sites/${SITE}/content/${contentid}/crumbs`;
 const historyPath = (contentid: string): ServicePath => `/v1/sites/${SITE}/content/${contentid}/history`;
 const CHAINS_PATH: ServicePath = `/v1/sites/${SITE}/approval-chains`;
 
-/** A `getCrumbList` struct of carch.hist's `crumbdata`, the node's chain assignment on the active-row crumb. */
+/** A `getContentCrumbs` struct of `crumbdata`, the node's chain assignment on the active-row crumb. */
 const crumb = (values: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> => ({
   siteid: SITE,
   moduleid: CONTENT_MODULE_ID,
@@ -64,6 +72,8 @@ interface Answers {
   /** Rows as served, malformed ones included; a reply replaces the whole answer. */
   readonly crumbs?: readonly unknown[] | FakeReply;
   readonly chains?: readonly unknown[] | FakeReply;
+  /** carch.hist's answer for the node, which cperm.main never requests. */
+  readonly history?: FakeReply;
 }
 
 const isReply = (value: unknown): value is FakeReply =>
@@ -72,13 +82,14 @@ const isReply = (value: unknown): value is FakeReply =>
 /** What `cperm.main` reads: identity's verdicts and groups, strategies-content's crumbs and chains. */
 function gatewayFor(
   contentid: string,
-  { permissions = cpermMainAnswer, crumbs = [ROOT_CRUMB], chains = CHAINS }: Answers,
+  { permissions = cpermMainAnswer, crumbs = [ROOT_CRUMB], chains = CHAINS, history }: Answers,
 ): FakeGatewayClient {
   const answer = (value: unknown, body: (v: never) => unknown): FakeReply =>
     isReply(value) ? value : { status: 200, body: body(value as never) };
   return fakeGatewayClient({
     [routeKey('GET', 'identity', permissionsPath(contentid))]: answer(permissions, (v) => v),
-    [routeKey('GET', 'strategies-content', historyPath(contentid))]: answer(crumbs, (v) => ({ rc: { crumbdata: v } })),
+    [routeKey('GET', 'strategies-content', crumbsPath(contentid))]: answer(crumbs, (v) => ({ rc: { crumbdata: v } })),
+    ...(history === undefined ? {} : { [routeKey('GET', 'strategies-content', historyPath(contentid))]: history }),
     [routeKey('GET', 'strategies-content', CHAINS_PATH)]: answer(chains, (v) => ({ rc: { chains: v } })),
     [routeKey('GET', 'identity', '/v1/groups')]: { status: 200, body: cpermMainSystemGroupsAnswer },
   });
@@ -182,10 +193,10 @@ describe('loadCpermMain', () => {
     });
   });
 
-  it('reads a node without an active row as untitled and unassigned when the history read answers 404', async () => {
+  it('reads a node without an active row, whose crumbdata is empty, as untitled and unassigned', async () => {
     const model = await loadCpermMain(
       contextFor(mainRequest({ contentid: ROOT, moduleid: CONTENT_MODULE_ID }), {
-        crumbs: { status: 404 },
+        crumbs: [],
         chains: [],
       }),
     );
@@ -197,12 +208,12 @@ describe('loadCpermMain', () => {
     [
       'no crumbdata array',
       { crumbs: { status: 200, body: { rc: { crumbdata: {} } } } },
-      /getContentHistory returned no rc\.crumbdata array/,
+      /getContentCrumbs returned no rc\.crumbdata array/,
     ],
     [
       'a crumb that is not a struct',
       { crumbs: [[ROOT]] },
-      /getContentHistory returned an rc\.crumbdata entry that is not a struct/,
+      /getContentCrumbs returned an rc\.crumbdata entry that is not a struct/,
     ],
     [
       'a complex crumb title',
@@ -226,7 +237,7 @@ describe('loadCpermMain', () => {
       'strategies-content refuses the crumbs',
       { crumbs: { status: 401, body: {} } },
       'strategies-content',
-      'getContentHistory',
+      'getContentCrumbs',
     ],
     [
       'strategies-content refuses the chains',
@@ -239,6 +250,37 @@ describe('loadCpermMain', () => {
 
     expect(error).toBeInstanceOf(GatewayDenialError);
     expect(error).toMatchObject({ service, operation });
+  });
+
+  it('raises GatewayUnavailableError when strategies-content cannot answer the crumbs', async () => {
+    const error = await caught(
+      loadCpermMain(contextFor(mainRequest({ contentid: ROOT }), { crumbs: apiUnavailableResponse() })),
+    );
+
+    expect(error).toBeInstanceOf(GatewayUnavailableError);
+    expect(error).toMatchObject({ service: 'strategies-content', status: 503 });
+  });
+
+  it('loads a Page whose history read strategies-content halts, requesting only its crumbs', async () => {
+    const page = crumb({ contentid: CHILD, menutitle: 'About', title: 'About Us', iconclass: 'mi-file' });
+    const ctx = contextFor(mainRequest({ contentid: CHILD, moduleid: CONTENT_MODULE_ID }), {
+      permissions: cpermMainChildAnswer,
+      crumbs: [page, ROOT_CRUMB],
+      history: apiUnavailableResponse(),
+    });
+
+    const model = await loadCpermMain(ctx);
+
+    expect(model).toMatchObject({
+      title: 'About Us',
+      crumbs: [
+        { contentid: CHILD, menutitle: 'About', type: 'Page', icon: 'mi-file' },
+        { contentid: ROOT, menutitle: 'Home', type: 'Page' },
+      ],
+      assignment: { chainID: '', exemptID: '' },
+    });
+    const contentReads = ctx.gateway.calls.filter(({ service }) => service === 'strategies-content');
+    expect(contentReads.map(({ path }) => path)).toEqual([crumbsPath(CHILD), CHAINS_PATH]);
   });
 });
 
@@ -295,7 +337,7 @@ describe('renderCpermMain', () => {
   it('shows a non-Site Manager module root with unset verdicts as Deny under the Component heading', async () => {
     const { markup, model } = await renderFor(
       mainRequest({ contentid: COMPONENTS_MODULE, moduleid: COMPONENTS_MODULE, type: 'Component' }),
-      { crumbs: { status: 404 }, chains: [] },
+      { crumbs: [], chains: [] },
     );
 
     expect(model.headings[0]).toBe('Component Permissions');
@@ -441,5 +483,60 @@ describe('cperm.main page', () => {
     const ctx = contextFor(mainRequest({ contentid: ROOT }), { permissions: { status: 403, body: {} } });
 
     await expect(renderScreenPage(cpermMain, ctx)).resolves.toEqual({ kind: 'redirect', location: NOACCESS });
+  });
+});
+
+describe('cperm.main over the provider-recorded Page answers', () => {
+  // strategies-content's recorded answers for tenant-a's About Us Page, pinned by cperm-crumbs.table.test.ts.
+  const PAGE_CRUMBS = loadFixture('strategies-content/cperm-crumbs-page.json');
+  const PAGE_HISTORY = loadFixture<FakeReply>('strategies-content/cperm-history-page-halted.json');
+  const PAGE_SITE = TENANT_A.siteId;
+  const PAGE = 'A1B2C3D4-0001-4A5B-8C7D9E0F1A2B3C4D';
+  const PAGE_HOME = '00000000000000000000000000000000001';
+  const PAGE_CHAIN = 'F1B2C3D4-0011-4A5B-8C7D9E0F1A2B3C4D';
+  const pagePath = (tail: string): ServicePath => `/v1/sites/${PAGE_SITE}/content/${PAGE}/${tail}`;
+
+  it('renders the Page and its breadcrumb from the recorded crumbs without reading its halted history', async () => {
+    const chains = [CHAINS[0], { chainID: PAGE_CHAIN, name: 'Board' }];
+    const gateway = fakeGatewayClient({
+      [routeKey('GET', 'identity', permissionsPath(PAGE))]: {
+        status: 200,
+        body: { ...cpermMainChildAnswer, contentId: PAGE, siteId: PAGE_SITE },
+      },
+      [routeKey('GET', 'strategies-content', pagePath('crumbs'))]: { status: 200, body: PAGE_CRUMBS },
+      [routeKey('GET', 'strategies-content', pagePath('history'))]: PAGE_HISTORY,
+      [routeKey('GET', 'strategies-content', `/v1/sites/${PAGE_SITE}/approval-chains`)]: {
+        status: 200,
+        body: { rc: { chains } },
+      },
+      [routeKey('GET', 'identity', '/v1/groups')]: { status: 200, body: cpermMainSystemGroupsAnswer },
+    });
+    const rc = { siteid: PAGE_SITE, contentid: PAGE, moduleid: CONTENT_MODULE_ID };
+    const req = siteAdminRequest(PAGE_SITE, { circuit: 'cperm', item: 'main', rc });
+    const ctx = makeScreenContext({ req, gateway });
+
+    const page = await renderScreenPage(cpermMain, ctx);
+
+    if (page.kind !== 'document') throw new Error(`cperm.main redirected to ${page.location}`);
+    expect(page.html).toContain('<h1>Content Permissions</h1>');
+    expect(page.html).toContain('To set permissions for <em>About Us</em>');
+    const breadcrumb = /<ul class="breadcrumb">[\s\S]*?<\/ul>/.exec(page.html)?.[0] ?? '';
+    expect(breadcrumb).toMatch(/<li class="">\s*<a [^>]*>\s*<i class="mi-file"><\/i>Home<\/a><\/li>/);
+    expect(breadcrumb).toMatch(
+      /<li class=""><strong>\s*<a [^>]*>\s*<i class="mi-star"><\/i>About<\/a><\/strong><\/li>/,
+    );
+    // The DOM model's canonical admin URL: muraAction lower-cased, the other params sorted.
+    const listLink = (topid: string): string =>
+      `/admin/?muraAction=carch.list&activeTab=0&moduleid=${CONTENT_MODULE_ID}&siteid=${PAGE_SITE}&topid=${topid}`;
+    expect(fragmentModel(breadcrumb).links).toEqual([
+      { href: listLink(PAGE_HOME), text: 'Home' },
+      { href: listLink(PAGE), text: 'About' },
+    ]);
+    expect(domModel(page.html).controls.find(({ name }) => name === 'chainID')?.options).toEqual([
+      { value: '', label: 'None', selected: false },
+      { value: CHAINS[0]?.chainID, label: 'Legal & Review', selected: false },
+      { value: PAGE_CHAIN, label: 'Board', selected: true },
+    ]);
+    expect(gateway.calls.filter(({ path }) => path === pagePath('history'))).toEqual([]);
   });
 });

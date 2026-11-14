@@ -1047,7 +1047,7 @@ function haltVersionPreviews(action: string, versions: readonly { type: string |
   }
 }
 
-/** Registers the carch page and write operations the contract lists; raw responses are registered by `./raw.ts`. */
+/** Registers the contract's carch page and write operations and cperm's crumbs read; raw responses are registered by `./raw.ts`. */
 export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRouteContext): Promise<void> {
   const config = circuitRouteConfig('carch');
   type Site = { Params: { siteid: string } };
@@ -1109,6 +1109,18 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
     haltVersionPreviews('cArch.hist', model.items);
     const items = model.items.map((item) => ({ ...item, parentid: model.parents.get(item.contenthistid ?? '') ?? '' }));
     return viewModel({ ...rc, ...screen, items, historyTotal: model.historyTotal });
+  });
+
+  /** cperm.main and cperm.module: the node's `getCrumbList(contentid, siteid)` (main.cfm:79) with each crumb's icon class. */
+  app.get<Item>('/v1/sites/:siteid/content/:contentid/crumbs', { config: circuitRouteConfig('cperm') }, async (request) => {
+    const actor = await requireCircuitAccess(request, ctx, 'cperm', request.params.siteid);
+    const crumbs = await getCrumbList(ctx.domain, actor, { contentId: request.params.contentid, siteId: actor.siteId });
+    const customIcons = await customIconsOf(ctx, actor, actor.siteId);
+    return viewModel({
+      siteid: actor.siteId,
+      contentid: request.params.contentid,
+      crumbdata: crumbs.map((crumb) => ({ ...crumb, iconclass: iconClass(customIcons, crumb) })),
+    });
   });
 
   /** carch.audit (carch.cfc:464-467): one version's audit trail. */

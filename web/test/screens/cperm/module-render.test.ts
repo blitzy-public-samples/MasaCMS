@@ -1,7 +1,8 @@
 // cperm.module against legacy cperm/module.cfm and the cperm.cfc module() step.
+import { apiUnavailableResponse } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { components as IdentitySchemas } from '@/generated/clients/identity';
-import { GatewayDenialError } from '@/lib/gateway-client';
+import { GatewayDenialError, GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
 import { isSafeHtml, toString } from '@/lib/html';
 import { cpermModule, loadCpermModule, renderCpermModule, type CpermModuleModel } from '@/screens/cperm/module';
 import { cpermGate } from '@/screens/cperm/partials';
@@ -40,6 +41,8 @@ const CATEGORIES_CSRF: IssuedCsrfToken = {
 };
 
 const grantsRoute = (moduleId: string): string => routeKey('GET', 'identity', `/v1/permissions/modules/${moduleId}`);
+const crumbsPath = (contentid: string): ServicePath => `/v1/sites/${SITE}/content/${contentid}/crumbs`;
+const crumbsRoute = (contentid: string): string => routeKey('GET', 'strategies-content', crumbsPath(contentid));
 const historyRoute = (contentid: string): string =>
   routeKey('GET', 'strategies-content', `/v1/sites/${SITE}/content/${contentid}/history`);
 
@@ -54,7 +57,12 @@ const grants = (moduleId: string, privateGroups: ModuleGroupGrant[], publicGroup
   body: { moduleId, siteId: SITE, privateGroups, publicGroups } satisfies ModulePermissions,
 });
 
-const history = (title: unknown): FakeReply => ({ status: 200, body: { rc: { contentBean: { title } } } });
+/** strategies-content's crumbs answer holding `rc`. */
+const crumbsReply = (rc: Readonly<Record<string, unknown>>): FakeReply => ({ status: 200, body: { rc } });
+/** strategies-content's crumbs of a node whose active row holds `title`. */
+const crumbs = (title: unknown): FakeReply => crumbsReply({ crumbdata: [{ type: 'Module', title }] });
+/** strategies-content's crumbs of a node without an active row. */
+const NO_CRUMBS: FakeReply = crumbsReply({ crumbdata: [] });
 
 /** Identity issuing the fixture pair of each context, the categories pair for that module. */
 function csrfReply(request: RecordedRequest): FakeReply {
@@ -70,7 +78,7 @@ function csrfReply(request: RecordedRequest): FakeReply {
 const siteMembersRoutes = (): Record<string, FakeRoute> => ({
   [CSRF_ROUTE]: csrfReply,
   [grantsRoute(USERS_MODULE)]: grants(USERS_MODULE, [grant(defaultEditorGroup, false)], []),
-  [historyRoute(USERS_MODULE)]: history('Site Members'),
+  [crumbsRoute(USERS_MODULE)]: crumbs('Site Members'),
 });
 
 /** The categories module's answers: Editor granted, a role group not, and the granted umbrella members. */
@@ -81,7 +89,7 @@ const categoriesRoutes = (): Record<string, FakeRoute> => ({
     [grant(defaultEditorGroup, true), grant(groupsById[GROUP_IDS.financeApprover]!, false)],
     [grant(umbrellaMembersGroup, true)],
   ),
-  [historyRoute(CATEGORIES_MODULE)]: history('Categories'),
+  [crumbsRoute(CATEGORIES_MODULE)]: crumbs('Categories'),
 });
 
 /** The S2 admin's request for the permissions of `moduleId`, as the module links send it. */
@@ -276,7 +284,7 @@ describe('cpermModule', () => {
     ['markup', '<b>Tags</b> & More', '<b>Tags</b> & More'],
     ['a list, whose first item fills {1}', 'Tags, Topics', 'Tags'],
   ])('writes a title with %s unencoded into the heading and the help text', async (_case, title, filled) => {
-    const gateway = fakeGatewayClient({ ...categoriesRoutes(), [historyRoute(CATEGORIES_MODULE)]: history(title) });
+    const gateway = fakeGatewayClient({ ...categoriesRoutes(), [crumbsRoute(CATEGORIES_MODULE)]: crumbs(title) });
     const markup = await markupOf(gateway, CATEGORIES_MODULE);
     expect(markup).toContain(`<h1>${title} Permissions</h1>`);
     expect(markup).toContain(`<div class="help-block">To set permissions for ${filled}, check the box`);
@@ -303,7 +311,7 @@ describe('cpermModule', () => {
       {
         service: 'strategies-content',
         method: 'GET',
-        path: `/v1/sites/${SITE}/content/${CATEGORIES_MODULE}/history`,
+        path: crumbsPath(CATEGORIES_MODULE),
         query: undefined,
         json: undefined,
       },
@@ -357,26 +365,33 @@ describe('loadCpermModule', () => {
     });
   });
 
-  it.each<[string, unknown, string]>([
-    ['a missing node', undefined, ''],
-    ['a NULL title', null, ''],
-    ['a numeric title', 42, '42'],
-    ['a boolean title', true, 'true'],
-  ])('reads %s', async (_case, title, expected) => {
+  it.each<[string, FakeReply, string]>([
+    ['a node without an active row', NO_CRUMBS, ''],
+    ['a NULL title', crumbs(null), ''],
+    ['a node crumb without a title', crumbsReply({ crumbdata: [{ type: 'Module' }] }), ''],
+    ['a numeric title', crumbs(42), '42'],
+    ['a boolean title', crumbs(true), 'true'],
+    ['the node crumb title, first of several', crumbsReply({ crumbdata: [{ title: 'A' }, { title: 'B' }] }), 'A'],
+    ['the crumbdata and title keys ignoring case', crumbsReply({ CRUMBDATA: [{ Title: 'Members' }] }), 'Members'],
+  ])('reads %s', async (_case, reply, expected) => {
     const routes = siteMembersRoutes();
-    routes[historyRoute(USERS_MODULE)] = title === undefined ? { status: 404 } : history(title);
+    routes[crumbsRoute(USERS_MODULE)] = reply;
     expect((await load(fakeGatewayClient(routes))).title).toBe(expected);
   });
 
-  it('reads the bean and title keys case-insensitively', async () => {
+  it('loads a Page whose history read strategies-content halts, requesting only its crumbs', async () => {
     const routes = siteMembersRoutes();
-    routes[historyRoute(USERS_MODULE)] = { status: 200, body: { rc: { CONTENTBEAN: { Title: 'Members' } } } };
-    expect((await load(fakeGatewayClient(routes))).title).toBe('Members');
+    routes[historyRoute(USERS_MODULE)] = apiUnavailableResponse();
+    routes[crumbsRoute(USERS_MODULE)] = crumbsReply({ crumbdata: [{ type: 'Page', title: 'About' }] });
+    const gateway = fakeGatewayClient(routes);
+    expect((await load(gateway)).title).toBe('About');
+    const contentReads = gateway.calls.filter(({ service }) => service === 'strategies-content');
+    expect(contentReads.map(({ path }) => path)).toEqual([crumbsPath(USERS_MODULE)]);
   });
 
   it('renders a missing node as legacy renders an empty query', async () => {
     const routes = siteMembersRoutes();
-    routes[historyRoute(USERS_MODULE)] = { status: 404 };
+    routes[crumbsRoute(USERS_MODULE)] = NO_CRUMBS;
     const ctx = makeScreenContext({ req: moduleRequest(USERS_MODULE), gateway: fakeGatewayClient(routes) });
     const markup = toString(renderCpermModule(await loadCpermModule(ctx), ctx));
     expect(markup).toContain('<h1> Permissions</h1>');
@@ -384,14 +399,17 @@ describe('loadCpermModule', () => {
   });
 
   it.each<[string, unknown]>([
-    ['a bean that is not a struct', { rc: { contentBean: 'x' } }],
-    ['a null bean', { rc: { contentBean: null } }],
-    ['a bean list', { rc: { contentBean: [] } }],
-    ['no bean', { rc: {} }],
-    ['a title that is not simple', { rc: { contentBean: { title: { text: 'x' } } } }],
+    ['no crumbdata', { rc: {} }],
+    ['a crumbdata struct', { rc: { crumbdata: { title: 'x' } } }],
+    ['a null crumbdata', { rc: { crumbdata: null } }],
+    ['a node crumb that is not a struct', { rc: { crumbdata: ['x'] } }],
+    ['a null node crumb', { rc: { crumbdata: [null] } }],
+    ['a node crumb list', { rc: { crumbdata: [[]] } }],
+    ['a later crumb that is not a struct', { rc: { crumbdata: [{ title: 'x' }, 'y'] } }],
+    ['a title that is not simple', { rc: { crumbdata: [{ title: { text: 'x' } }] } }],
   ])('rejects %s', async (_case, body) => {
     const routes = siteMembersRoutes();
-    routes[historyRoute(USERS_MODULE)] = { status: 200, body };
+    routes[crumbsRoute(USERS_MODULE)] = { status: 200, body };
     await expect(load(fakeGatewayClient(routes))).rejects.toThrow(TypeError);
   });
 
@@ -403,13 +421,21 @@ describe('loadCpermModule', () => {
 
   it.each<[string, string, 401 | 403]>([
     ['identity', grantsRoute(USERS_MODULE), 403],
-    ['strategies-content', historyRoute(USERS_MODULE), 401],
+    ['strategies-content', crumbsRoute(USERS_MODULE), 401],
   ])('raises a %s denial', async (service, route, status) => {
     const routes = siteMembersRoutes();
     routes[route] = { status };
     const error = await load(fakeGatewayClient(routes)).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(GatewayDenialError);
     expect(error).toMatchObject({ service, status });
+  });
+
+  it('raises GatewayUnavailableError when strategies-content cannot answer the crumbs', async () => {
+    const routes = siteMembersRoutes();
+    routes[crumbsRoute(USERS_MODULE)] = apiUnavailableResponse();
+    const error = await load(fakeGatewayClient(routes)).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GatewayUnavailableError);
+    expect(error).toMatchObject({ service: 'strategies-content', status: 503 });
   });
 
   it('fails on another identity error', async () => {

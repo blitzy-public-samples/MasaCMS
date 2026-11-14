@@ -12,8 +12,8 @@ import type { ContentRouteContext } from '../index.js';
 
 export { ADMIN_LOGIN_REDIRECT_ACTION, ADMIN_NOACCESS_ACTION } from '@opt2/platform/legacy-compat';
 
-/** Admin circuits strategies-content serves. */
-export type ContentAdminCircuit = 'carch' | 'cchangesets' | 'ccomments' | 'ccategory' | 'cfeed' | 'cchain' | 'cform' | 'cnav';
+/** Admin circuits strategies-content serves; for cperm, only its content reads. */
+export type ContentAdminCircuit = 'carch' | 'cchangesets' | 'ccomments' | 'ccategory' | 'cfeed' | 'cchain' | 'cform' | 'cnav' | 'cperm';
 
 /** Circuits with a controller `before()` gate; cnav has none, so the contract declares its operations public. */
 export type GatedContentAdminCircuit = Exclude<ContentAdminCircuit, 'cnav'>;
@@ -39,6 +39,7 @@ export const CIRCUIT_ROUTE_REQUIRES: Readonly<Record<GatedContentAdminCircuit, r
   cfeed: adminRolesAnd(moduleRole(COLLECTIONS_MODULE_ID)),
   cchain: adminRolesAnd(),
   cform: adminRolesAnd(moduleRole(FORMS_MODULE_ID)),
+  cperm: adminRolesAnd(),
 });
 
 /** Where the cfeed gate reads `tsettings.feedManager`: no verified source holds it here, so only the role part is evaluated. */
@@ -60,6 +61,8 @@ const CIRCUIT_GATES: Readonly<Record<ContentAdminCircuit, (actor: Actor) => bool
   cchain: chainAccess,
   cform: (actor: Actor) => getModulePerm(actor, SITE_MANAGER_MODULE_ID) && getModulePerm(actor, FORMS_MODULE_ID),
   cnav: () => true,
+  // cperm.cfc's before() admits exactly what cchain.cfc's does: the site's private-pool Admin group or S2.
+  cperm: chainAccess,
 });
 
 /** The route `config` a circuit's operations spread: the contract's roles on the service transport; cnav is public. */

@@ -20,6 +20,7 @@ import { domModel, fragmentModel, type DomModel } from '../../helpers/dom-model'
 import { useTestEnv } from '../../helpers/env';
 import {
   fakeGatewayClient,
+  loadFixture,
   routeKey,
   type FakeGatewayClient,
   type FakeReply,
@@ -117,7 +118,7 @@ const CATEGORIES: ModuleCase = {
 
 const grantsRoute = (moduleId: string): string => routeKey('GET', 'identity', `/v1/permissions/modules/${moduleId}`);
 const titleRoute = (siteid: string, contentid: string): string =>
-  routeKey('GET', 'strategies-content', `/v1/sites/${siteid}/content/${contentid}/history`);
+  routeKey('GET', 'strategies-content', `/v1/sites/${siteid}/content/${contentid}/crumbs`);
 
 /** Identity's grants (as `answer`, for `siteid`), the module node's title and the CSRF pairs of `module`. */
 function moduleRoutes(
@@ -126,11 +127,11 @@ function moduleRoutes(
   answer: ModulePermissions = module.answer,
 ): FakeRouteTable {
   const grants: ModulePermissions = { ...answer, siteId: siteid };
-  const history: AdminView = { rc: { contentBean: { title: module.title } } };
+  const crumbs: AdminView = { rc: { crumbdata: [{ type: 'Module', title: module.title }] } };
   return {
     [CSRF_ROUTE]: issueCsrf,
     [grantsRoute(module.moduleId)]: { status: 200, body: grants },
-    [titleRoute(siteid, module.moduleId)]: { status: 200, body: history },
+    [titleRoute(siteid, module.moduleId)]: { status: 200, body: crumbs },
   };
 }
 
@@ -322,7 +323,7 @@ describe('cperm.module gate and data reach', () => {
       {
         service: 'strategies-content',
         method: 'GET',
-        path: `/v1/sites/${SITE}/content/${MODULE_IDS.users}/history`,
+        path: `/v1/sites/${SITE}/content/${MODULE_IDS.users}/crumbs`,
         query: undefined,
         json: undefined,
       },
@@ -334,5 +335,32 @@ describe('cperm.module gate and data reach', () => {
         json: { contexts: [MODULE_IDS.users] },
       },
     ]);
+  });
+});
+
+describe('cperm.module over the provider-recorded Page answers', () => {
+  // strategies-content's recorded answers for tenant-a's About Us Page, pinned by cperm-crumbs.table.test.ts.
+  const PAGE_CRUMBS = loadFixture('strategies-content/cperm-crumbs-page.json');
+  const PAGE_HISTORY = loadFixture<FakeReply>('strategies-content/cperm-history-page-halted.json');
+  const PAGE = 'A1B2C3D4-0001-4A5B-8C7D9E0F1A2B3C4D';
+  const historyPath = `/v1/sites/${SITE}/content/${PAGE}/history` as const;
+
+  it('heads the Page with its recorded title without reading its halted history', async () => {
+    const routes: FakeRouteTable = {
+      [grantsRoute(PAGE)]: { status: 200, body: { ...cpermModuleUsersAnswer, moduleId: PAGE, siteId: SITE } },
+      [titleRoute(SITE, PAGE)]: { status: 200, body: PAGE_CRUMBS },
+      [routeKey('GET', 'strategies-content', historyPath)]: PAGE_HISTORY,
+    };
+    const rc = { contentid: PAGE, moduleid: MODULE_IDS.content };
+
+    const { model, $, gateway } = await renderPage(
+      siteAdminRequest(SITE, { circuit: 'cperm', item: 'module', rc }),
+      routes,
+    );
+
+    expect(model.headings).toEqual(['About Us Permissions', 'System Groups', 'Member Groups']);
+    expect($('div.help-block').first().html()).toBe(moduleText('About Us'));
+    expect(checkboxes(model)).toEqual(expectedCheckboxes(USERS));
+    expect(gateway.calls.filter(({ path }) => path === historyPath)).toEqual([]);
   });
 });

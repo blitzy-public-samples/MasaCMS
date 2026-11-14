@@ -932,6 +932,66 @@ describe('carch.hist and carch.audit', () => {
   });
 });
 
+describe('cperm crumbs', () => {
+  const CRUMBS_URL = `/v1/sites/${SITE}/content/${NODE}/crumbs`;
+  const CHAIN = 'F1B2C3D4-0011-4A5B-8C7D9E0F1A2B3C4D';
+  const EXEMPT = 'F1B2C3D4-0012-4A5B-8C7D9E0F1A2B3C4D';
+  /** NODE, a Page of a custom-icon subtype with its chain assignment, under the restricted Folder CHILD at the site root. */
+  const crumbRows = [
+    crumb(NODE, { parentid: CHILD, subtype: 'Landing', title: 'About Us', chainid: CHAIN, exemptid: EXEMPT }),
+    crumb(CHILD, { type: 'Folder', menutitle: 'Home', restricted: 1 }),
+  ];
+
+  it('reads the node’s crumbs node first with their icon classes in the token tenant, without the session or a version read', async () => {
+    t.db.respond(CRUMBS, (params) => crumbRows.filter((row) => (params[0] as string[]).includes(String(row.contentid))));
+    t.db.respond(SUBTYPES, [{ siteid: SITE, type: 'Page', subtype: 'Landing', iconclass: 'icon-star' }]);
+    const rc = await rcOf(CRUMBS_URL);
+    expect(rc).toEqual({
+      siteid: SITE,
+      contentid: NODE,
+      crumbdata: [
+        expect.objectContaining({ contentid: NODE, title: 'About Us', chainid: CHAIN, exemptid: EXEMPT, parentarray: [NODE, CHILD], iconclass: 'mi-star' }),
+        expect.objectContaining({ contentid: CHILD, type: 'Folder', restricted: 1, iconclass: 'mi-folder-open-o' }),
+      ],
+    });
+    expect(paramsOfFirst(CRUMBS)).toEqual([[NODE, NODE.toLowerCase()], SITE]);
+    const reads = t.db.statements.filter((statement) => CRUMBS.test(statement.sql) || SUBTYPES.test(statement.sql));
+    expect(new Set(reads.map((statement) => statement.tenantId))).toEqual(new Set([TENANT_A.tenantId]));
+    expect([calls, ran(ACTIVE), ran(HISTORY_TOTAL), ran(HISTORY_ROWS)]).toEqual([[], false, false, false]);
+  });
+
+  it('serves the crumbs of a node whose Page history the history read halts, reading no version', async () => {
+    t.db.respond(CRUMBS, [crumb(NODE, { title: 'About' })]);
+    t.db.respond(HISTORY_TOTAL, [{ total: 2 }]);
+    t.db.respond(HISTORY_ROWS, [versionRow(), versionRow({ contenthistid: OLDER_HIST, active: 0 })]);
+    expect((await call('GET', `/v1/sites/${SITE}/content/${NODE}/history`)).statusCode).toBe(503);
+    expect(routeErrors).toEqual([expect.objectContaining({ reason: CARCH_SITE_SETTINGS_REASON })]);
+    t.db.clear();
+    calls.length = 0;
+    const res = await call('GET', CRUMBS_URL);
+    expect(res.statusCode, res.body).toBe(200);
+    expect((res.json() as { rc: Json }).rc.crumbdata).toEqual([expect.objectContaining({ contentid: NODE, title: 'About', iconclass: 'mi-file' })]);
+    expect([calls, ran(HISTORY_TOTAL), ran(HISTORY_ROWS)]).toEqual([[], false, false]);
+  });
+
+  it('answers an empty crumbdata for a node without an active row', async () => {
+    expect(await rcOf(`/v1/sites/${SITE}/content/${GRANDCHILD}/crumbs`)).toEqual({ siteid: SITE, contentid: GRANDCHILD, crumbdata: [] });
+  });
+
+  it.each([
+    ['s2', [Roles.systemUser, Roles.s2], SITE, 200],
+    ['a site admin', [Roles.systemUser, Roles.siteAdmin], SITE, 200],
+    ['the Site Manager module role alone', [Roles.systemUser, m('000')], SITE, 403],
+    ['a member', [Roles.member], SITE, 403],
+    ['a token of another site', [Roles.s2], TENANT_B.siteId, 403],
+    ['no credential', null, SITE, 401],
+  ] as const)('answers %s (roles %j, site %s) with %i as cperm before() admits, refusing before any read', async (_name, roles, site, status) => {
+    const res = await call('GET', CRUMBS_URL, { roles, site });
+    expect(res.statusCode, res.body).toBe(status);
+    expect([t.db.statements.length > 0, calls]).toEqual([status === 200, []]);
+  });
+});
+
 describe('carch.multiFileUpload, carch.imagedetails and the version summary', () => {
   it.each([
     ['the upload screen of a parent', `/v1/sites/${SITE}/content/${NODE}/multi-file-upload`],

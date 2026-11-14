@@ -28,7 +28,7 @@ type ContractOperation = Record<string, unknown>;
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
-const CIRCUITS: readonly ContentAdminCircuit[] = ['carch', 'cchangesets', 'ccomments', 'ccategory', 'cfeed', 'cchain', 'cform', 'cnav'];
+const CIRCUITS: readonly ContentAdminCircuit[] = ['carch', 'cchangesets', 'ccomments', 'ccategory', 'cfeed', 'cchain', 'cform', 'cnav', 'cperm'];
 const SITE = 'default';
 const USER = 'U0000001-AAAA-BBBB-CCCCDDDDEEEEFFFF';
 const m = (digits: string): string => moduleRole(`00000000000000000000000000000000${digits}`);
@@ -167,6 +167,9 @@ describe('circuit gates and denials', () => {
     ['cform', [Roles.s2], 200],
     ['cchain', [Roles.siteAdmin], 200],
     ['cchain', [m('000')], 403],
+    ['cperm', [Roles.siteAdmin], 200],
+    ['cperm', [Roles.s2], 200],
+    ['cperm', [m('000')], 403],
     ['cnav', [], 200],
   ] as const)('%s admits %j with %i', async (circuit, roles, status) => {
     const response = await get(`/v1/sites/${SITE}/gate-${circuit}`, roles);

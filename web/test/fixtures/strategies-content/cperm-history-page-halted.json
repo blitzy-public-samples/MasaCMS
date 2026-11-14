@@ -1,0 +1,11 @@
+{
+  "status": 503,
+  "body": {
+    "apiversion": "v1",
+    "method": "invalid",
+    "error": {
+      "message": "Unhandled Exception",
+      "code": "server_error"
+    }
+  }
+}

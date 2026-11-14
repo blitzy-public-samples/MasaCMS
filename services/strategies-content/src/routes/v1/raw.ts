@@ -120,7 +120,7 @@ const cfeed: Readonly<Record<string, RawActionSpec>> = cfeedRawActions;
 const cform: Readonly<Record<string, RawActionSpec>> = cformRawActions;
 const cnav: Readonly<Record<string, RawActionSpec>> = cnavRawActions;
 
-/** Each circuit's raw entries by action; ccategory and cchain answer no raw response. */
+/** Each circuit's raw entries by action; ccategory, cchain and cperm answer no raw response. */
 const RAW_ACTIONS: Readonly<Record<ContentAdminCircuit, Readonly<Record<string, RawActionSpec>>>> = Object.freeze({
   carch,
   cchangesets,
@@ -130,6 +130,7 @@ const RAW_ACTIONS: Readonly<Record<ContentAdminCircuit, Readonly<Record<string, 
   cchain: {},
   cform,
   cnav,
+  cperm: {},
 });
 
 /** The circuit's own entry for `action`, never an inherited property. */

@@ -2479,6 +2479,28 @@ paths:
           $ref: '#/components/responses/AdminNotFound'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/sites/{siteid}/content/{contentid}/crumbs:
+    parameters:
+      - $ref: '#/components/parameters/SiteIdPath'
+      - $ref: '#/components/parameters/ContentIdPath'
+    get:
+      operationId: getContentCrumbs
+      summary: Reads a content node's crumbs, node first, for the permission screens.
+      description: '`rc` holds `siteid`, `contentid` and `crumbdata`, the `contentManager.getCrumbList(contentid, siteid)` rows cperm main.cfm:79 reads, each with its `iconclass`. The first crumb is the node''s active row, whose `title`, `chainid` and `exemptid` permUtility `getcontent` and `getModule` read; `crumbdata` is empty when the node has no active row. No version rows are read, so no preview URL is printed.'
+      tags: [content]
+      x-opt2-transport: service
+      x-opt2-requires: [s2, site-admin]
+      x-opt2-legacy-actions: [cperm.main, cperm.module]
+      security: [{userToken: [], invocationCredential: []}]
+      responses:
+        '200':
+          $ref: '#/components/responses/AdminView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/content/{contentid}/versions/{contenthistid}/audit:
     parameters:
       - $ref: '#/components/parameters/SiteIdPath'

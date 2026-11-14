@@ -65,7 +65,7 @@ type CpermMainView = Awaited<ReturnType<PageScreen<CpermMainModel>['render']>>;
 type Struct = Readonly<Record<string, unknown>>;
 
 const STRATEGIES_CONTENT = 'strategies-content';
-const HISTORY_OPERATION = 'getContentHistory';
+const CRUMBS_OPERATION = 'getContentCrumbs';
 const CHAINS_OPERATION = 'listApprovalChains';
 
 /** `rc[name]` after the cperm defaults; `''` for a name neither rc nor the defaults hold. */
@@ -101,7 +101,7 @@ function structArray(rc: Struct, key: string, operation: string): readonly Struc
 
 /** A `getCrumbList` struct as `dspZoom` reads it. */
 function zoomCrumbOf(crumb: Struct): ZoomCrumb {
-  const text = (key: string): string => structText(crumb, key, HISTORY_OPERATION);
+  const text = (key: string): string => structText(crumb, key, CRUMBS_OPERATION);
   const type = text('type');
   return {
     menutitle: text('menutitle'),
@@ -119,17 +119,15 @@ function zoomCrumbOf(crumb: Struct): ZoomCrumb {
 }
 
 /**
- * The node's crumbs, node first; none when the node has no active row (the history read answers 404).
+ * The view's `getCrumbList(rc.contentid, rc.siteid)`, node first; empty when the node has no active row.
  * @throws GatewayDenialError When strategies-content answers 401 or 403.
  */
 async function loadCrumbData(ctx: ScreenContext, siteid: string, contentid: string): Promise<readonly Struct[]> {
-  // strategies-content declares no cperm read; carch.hist's model carries the same getCrumbList(contentid, siteid)
-  // under the view's name `crumbdata`, and its active-row crumb holds the title and the node's chain assignment.
-  const response = await ctx.gateway.strategiesContent.call('get', '/v1/sites/{siteid}/content/{contentid}/history', {
+  // The node crumb is getcontent's active row joined to its approval assignment, so it holds the title and chain.
+  const response = await ctx.gateway.strategiesContent.call('get', '/v1/sites/{siteid}/content/{contentid}/crumbs', {
     params: { siteid, contentid },
   });
-  if (response.status === 404) return [];
-  return structArray(okBody(response, STRATEGIES_CONTENT, HISTORY_OPERATION).rc, 'crumbdata', HISTORY_OPERATION);
+  return structArray(okBody(response, STRATEGIES_CONTENT, CRUMBS_OPERATION).rc, 'crumbdata', CRUMBS_OPERATION);
 }
 
 /**
@@ -196,7 +194,7 @@ export async function loadCpermMain(ctx: ScreenContext): Promise<CpermMainModel>
     perm,
   });
   const node = crumbData[0];
-  const nodeText = (key: string): string => (node === undefined ? '' : structText(node, key, HISTORY_OPERATION));
+  const nodeText = (key: string): string => (node === undefined ? '' : structText(node, key, CRUMBS_OPERATION));
   return {
     title: nodeText('title'),
     crumbs: cfEq(param(rc, 'moduleid'), CONTENT_MODULE_ID) ? crumbData.map(zoomCrumbOf) : [],
