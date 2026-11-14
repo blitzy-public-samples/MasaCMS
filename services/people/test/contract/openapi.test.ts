@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, collectRouteMatrix, type RouteMatrixEntry } from '@opt2/platform/auth';
 import { normaliseRouteKey, routeKeyForRequest, type RouteKeyRequest } from '@opt2/platform/legacy-compat';
@@ -35,6 +35,7 @@ import {
   SYSTEM_USER_A_PERSON,
   TENANT_A_SYSTEM_USERS,
   accountsForSeed,
+  rosterOperationRow,
   type TenantPeopleSeed,
 } from '../helpers/fixtures.js';
 
@@ -320,9 +321,11 @@ function routeKey(route: Pick<RouteMatrixEntry, 'method' | 'url'>): string {
   return `${route.method} ${toTemplate(route.url)}`;
 }
 
-function operationKey({ method, path, op }: ContractOperation): string {
-  const fastifyPath = op['x-opt2-fastify-path'];
-  return `${method} ${typeof fastifyPath === 'string' ? toTemplate(fastifyPath) : path}`;
+/** `METHOD path` keys an operation is served under: its `x-opt2-fastify-path` patterns, one or a list, as templates, else its path. */
+function operationKeys({ method, path, op }: ContractOperation): string[] {
+  const fastifyPath = op['x-opt2-fastify-path'] as string | string[] | undefined;
+  const paths = fastifyPath === undefined ? [path] : [fastifyPath].flat().map(toTemplate);
+  return paths.map((served) => `${method} ${served}`);
 }
 
 function servedRoutes(routes: readonly RouteMatrixEntry[]): RouteMatrixEntry[] {
@@ -332,12 +335,11 @@ function servedRoutes(routes: readonly RouteMatrixEntry[]): RouteMatrixEntry[] {
 
 function diffRouteSets(routes: readonly RouteMatrixEntry[], operations: readonly ContractOperation[]): { missingInContract: string[]; missingInApp: string[] } {
   const registered = new Set(routes.map(routeKey));
-  const declared = new Set(operations.map(operationKey));
+  const declared = new Set(operations.flatMap(operationKeys));
   return {
     missingInContract: [...registered].filter((key) => !declared.has(key)).sort(),
     missingInApp: operations
-      .filter((operation) => !registered.has(operationKey(operation)))
-      .map((operation) => `${operation.operationId} (${operationKey(operation)})`)
+      .flatMap((operation) => operationKeys(operation).filter((key) => !registered.has(key)).map((key) => `${operation.operationId} (${key})`))
       .sort(),
   };
 }
@@ -345,7 +347,7 @@ function diffRouteSets(routes: readonly RouteMatrixEntry[], operations: readonly
 function declarationMismatches(routes: readonly RouteMatrixEntry[], operations: readonly ContractOperation[]): string[] {
   return routes.flatMap((route) =>
     operations
-      .filter((operation) => operationKey(operation) === routeKey(route))
+      .filter((operation) => operationKeys(operation).includes(routeKey(route)))
       .filter(({ op }) => {
         const contracted = declaration(op['x-opt2-transport'], op['x-opt2-requires'], op['x-opt2-public']);
         return JSON.stringify(contracted) !== JSON.stringify(declaration(route.transport, route.requires, route.public));
@@ -415,6 +417,8 @@ const POOL_STRANGER = 'A0000000-0000-0000-00000000000000FF';
 const CURRENT_USER_QUERY = `siteid=${SITE_A}&endpoint=${encodeURIComponent(`http://localhost/index.cfm/_api/json/v1/${SITE_A}`)}&adminpath=${encodeURIComponent('http://localhost/admin')}`;
 const FAVORITE_COLUMNS = FAVORITE.columns.filter(({ name }) => name !== 'tenant_id').map(({ name, type }) => ({ name, type }));
 const UMBRELLA_MEMBERS = (DEFAULT_PEOPLE_SEED[TENANT_UMBRELLA.tenantId]?.groupNames ?? [])[0];
+
+const HALTED_OPERATION = rosterOperationRow({ user_id: MODULE_USER, state: 'halted', identity_unreachable_since: TEST_CLOCK.now(), halted_at: TEST_CLOCK.now() });
 
 const rejectedUsername = (ctx: TestApp): void => ctx.identity.setPrepareErrors(MODULE_USER, { username: USERNAME_TAKEN });
 const unreachableIdentity = (ctx: TestApp): void => ctx.identity.setUnreachable(true);
@@ -767,6 +771,21 @@ const CASES: Record<string, Case[]> = {
       verify: ({ body }) => expect(record(record(body).data).userid).toBe(SYSTEM_USER),
     },
   ],
+  listHaltedRosterOperations: [
+    {
+      name: "lists tenant-a's halted roster operation for the operator",
+      inject: send('GET', '/internal/v1/roster-operations/halted', OPERATOR),
+      setup: (ctx) =>
+        ctx.db.respond(/FROM "people"\."roster_operation" WHERE tenant_id = \$1 AND halted_at IS NOT NULL/, (_text, values) =>
+          values[0] === TENANT_A.tenantId ? [HALTED_OPERATION] : [],
+        ),
+      status: 200,
+      verify: ({ body }) =>
+        expect(record(body).operations).toEqual([
+          expect.objectContaining({ operationId: HALTED_OPERATION.operation_id, tenantId: TENANT_A.tenantId, userId: MODULE_USER, kind: 'admin-update', state: 'halted' }),
+        ]),
+    },
+  ],
   readPoolUser: [
     {
       name: "reads a tenant-a pool user for e-signature's signer check",
@@ -1041,7 +1060,7 @@ describe('registered routes', () => {
     expect({ missingInContract, missingInApp }).toEqual({
       missingInContract: [],
       missingInApp: OPERATIONS.filter(isUnserved)
-        .map((operation) => `${operation.operationId} (${operationKey(operation)})`)
+        .flatMap((operation) => operationKeys(operation).map((key) => `${operation.operationId} (${key})`))
         .sort(),
     });
     expect(OPERATIONS.filter(isUnserved)).toHaveLength(18);
@@ -1088,7 +1107,7 @@ describe('registered routes', () => {
       ...['archivePerson', 'getPersonArchive'],
       ...['listUserGroups', 'listUsers', 'searchUsers', 'getAdvancedSearch', 'setAdvancedSearch', 'downloadAdvancedSearchCsv', 'downloadUsersCsv'],
       ...['getUserEdit', 'updateUser', 'getAddressEdit', 'updateAddress', 'routeUser', 'getProfile', 'updateProfile'],
-      ...['listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2', 'readCurrentUser', 'readPoolUser'],
+      ...['listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2', 'readCurrentUser', 'readPoolUser', 'listHaltedRosterOperations'],
       ...['Apply', 'Export', 'Changes', 'Position', 'WatermarkGet', 'WatermarkPost', 'Gate'].map((name) => `migration${name}`),
       ...['pushSiteChanged', 'pushGroupChanged', 'outboxSweep', 'queuePause', 'queueResume', 'queueEnsure', 'healthz'],
     ];
@@ -1157,6 +1176,71 @@ describe('JSON API route keys', () => {
       headers: await userHeaders(SITE_ADMIN_A),
     });
     expect(isUnservedAnswer(res), `${String(res.statusCode)} ${res.body.slice(0, 300)}`).toBe(false);
+  });
+});
+
+describe('JSON API path forms', () => {
+  const CONTEXT = '/masa';
+  const USER_ITEM = `/${SITE_A}/user/${SYSTEM_USER}`;
+  const SITELESS = SHAPES.SitelessRoot.rest;
+  const apps: Partial<Record<'root' | 'context', TestApp>> = {};
+
+  beforeAll(async () => {
+    apps.root = await buildTestApp();
+    seedApp(apps.root);
+    // app.ts and the routes read the configBean context from MURA_CONTEXT while the app is built.
+    vi.stubEnv('MURA_CONTEXT', CONTEXT);
+    try {
+      apps.context = await buildTestApp();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    seedApp(apps.context);
+  });
+
+  afterAll(async () => {
+    await Promise.all(Object.values(apps).map((built) => built.close()));
+  });
+
+  function appNamed(name: 'root' | 'context'): TestApp {
+    const built = apps[name];
+    if (built === undefined) throw new Error(`no ${name} app`);
+    return built;
+  }
+
+  /** The family routes of `lead`: each prefix bare and behind `/index.cfm`, alone and with a tail. */
+  const familyRoutes = (lead: string): string[] =>
+    LEGACY_FAMILIES.flatMap((family) => [`${lead}/_api/${family}/v1`, `${lead}/index.cfm/_api/${family}/v1`]).flatMap((prefix) => [prefix, `${prefix}/*`]);
+
+  const jsonApiRoutes = (name: 'root' | 'context'): string[] =>
+    [...new Set(collectRouteMatrix(appNamed(name).app).routes.filter(({ url }) => url.includes('/_api/')).map(({ url }) => url))].sort();
+
+  it('registers the context forms only behind a configured context', () => {
+    expect(jsonApiRoutes('root')).toEqual(familyRoutes('').sort());
+    expect(jsonApiRoutes('context')).toEqual([...familyRoutes(''), ...familyRoutes(CONTEXT)].sort());
+  });
+
+  it.each<[string, 'root' | 'context', string, string, number]>([
+    ['behind /index.cfm', 'root', jsonApi('json', USER_ITEM), `/index.cfm${jsonApi('json', USER_ITEM)}`, 200],
+    ['in upper case behind an upper-case /INDEX.CFM', 'root', jsonApi('json', USER_ITEM), `/INDEX.CFM/_API/JSON/V1${USER_ITEM}`, 200],
+    ['as the siteless family path behind /index.cfm', 'root', jsonApi('json', SITELESS), `/index.cfm${jsonApi('json', SITELESS)}`, 200],
+    ['in the ajax family behind /index.cfm', 'root', jsonApi('ajax', USER_ITEM), `/index.cfm${jsonApi('ajax', USER_ITEM)}`, 200],
+    ['in the rest family behind /index.cfm', 'root', jsonApi('rest', USER_ITEM), `/index.cfm${jsonApi('rest', USER_ITEM)}`, 500],
+    ['behind the configured context', 'context', jsonApi('json', USER_ITEM), `${CONTEXT}${jsonApi('json', USER_ITEM)}`, 200],
+    ['behind the configured context and /index.cfm', 'context', jsonApi('json', USER_ITEM), `${CONTEXT}/index.cfm${jsonApi('json', USER_ITEM)}`, 200],
+    ['in upper case behind the configured context and /INDEX.CFM', 'context', jsonApi('ajax', USER_ITEM), `/MASA/INDEX.CFM/_API/AJAX/V1${USER_ITEM}`, 200],
+    ['as the siteless family path behind the configured context and /index.cfm', 'context', jsonApi('json', SITELESS), `${CONTEXT}/index.cfm${jsonApi('json', SITELESS)}`, 200],
+  ])('answers the JSON API %s as the bare path does: status, body, ETag and contract', async (_label, name, bare, alias, status) => {
+    const { app } = appNamed(name);
+    const headers = await userHeaders(SITE_ADMIN_A);
+
+    const canonical = await app.inject({ method: 'GET', url: bare, headers });
+    const res = await app.inject({ method: 'GET', url: alias, headers });
+
+    expect(canonical.statusCode, canonical.body.slice(0, 300)).toBe(status);
+    expect({ status: res.statusCode, body: res.body, etag: res.headers.etag }).toEqual({ status: canonical.statusCode, body: canonical.body, etag: canonical.headers.etag });
+    // An alias answers as the contract operation of the bare path it stands for.
+    assertResponseMatchesOpenApi(DOC, { method: 'GET', path: bare, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
   });
 });
 

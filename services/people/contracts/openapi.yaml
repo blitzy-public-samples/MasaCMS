@@ -29,6 +29,8 @@ tags:
     description: The Edit Profile screen of the logged-in user.
   - name: internal
     description: Reads another service makes on behalf of its caller.
+  - name: operator
+    description: Reads for the operator and parity replay.
   - name: migration
     description: Owner endpoints the migration service calls.
   - name: events
@@ -42,10 +44,11 @@ paths:
     get:
       operationId: jsonSitelessRootGet
       summary: Calls the user or address operation the `method` parameter names through the JSON API for the site a `siteid` form or url field names, else `default`.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -79,10 +82,11 @@ paths:
     post:
       operationId: jsonSitelessRootPost
       summary: Calls the user or address operation the `method` parameter names through the JSON API for the site a `siteid` form or url field names, else `default`.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -118,10 +122,11 @@ paths:
     put:
       operationId: jsonSitelessRootPut
       summary: Calls the user or address operation the `method` parameter names through the JSON API for the site a `siteid` form or url field names, else `default`.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -157,10 +162,11 @@ paths:
     delete:
       operationId: jsonSitelessRootDelete
       summary: Calls the user or address operation the `method` parameter names through the JSON API for the site a `siteid` form or url field names, else `default`.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/json/v1, /index.cfm/_api/json/v1]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -199,11 +205,11 @@ paths:
     get:
       operationId: jsonRootGet
       summary: Calls the user or address operation the `method` parameter names through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -236,11 +242,11 @@ paths:
     post:
       operationId: jsonRootPost
       summary: Calls the user or address operation the `method` parameter names through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -275,11 +281,11 @@ paths:
     put:
       operationId: jsonRootPut
       summary: Calls the user or address operation the `method` parameter names through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -314,11 +320,11 @@ paths:
     delete:
       operationId: jsonRootDelete
       summary: Calls the user or address operation the `method` parameter names through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -357,11 +363,11 @@ paths:
     get:
       operationId: jsonSegmentGet
       summary: Reads users or addresses, or calls the method the segment names, through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -392,11 +398,11 @@ paths:
     post:
       operationId: jsonSegmentPost
       summary: Saves a user or address, or calls the method the segment names, through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -429,11 +435,11 @@ paths:
     put:
       operationId: jsonSegmentPut
       summary: Saves a user or address, or calls the method the segment names, through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -466,11 +472,11 @@ paths:
     delete:
       operationId: jsonSegmentDelete
       summary: Calls the method the segment names through the JSON API; user and address deletes stay on legacy.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -508,11 +514,11 @@ paths:
     get:
       operationId: jsonItemGet
       summary: Reads one user or address, a new entity, its properties or permissions, or `pollState`, through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -543,11 +549,11 @@ paths:
     post:
       operationId: jsonItemPost
       summary: Saves one user or address, or calls a method with path parameters, through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -580,11 +586,11 @@ paths:
     put:
       operationId: jsonItemPut
       summary: Saves one user or address, or calls a method with path parameters, through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -617,11 +623,11 @@ paths:
     delete:
       operationId: jsonItemDelete
       summary: Calls a method with path parameters through the JSON API; user and address deletes stay on legacy.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -660,11 +666,11 @@ paths:
     get:
       operationId: jsonSuffixGet
       summary: Reads the permissions of one user or address, or calls `pollState` or a method with path parameters, through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -695,11 +701,11 @@ paths:
     post:
       operationId: jsonSuffixPost
       summary: Saves one user or address, or calls a method with path parameters, through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -732,11 +738,11 @@ paths:
     put:
       operationId: jsonSuffixPut
       summary: Saves one user or address, or calls a method with path parameters, through the JSON API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -769,11 +775,11 @@ paths:
     delete:
       operationId: jsonSuffixDelete
       summary: Calls a method with path parameters through the JSON API; user and address deletes stay on legacy.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1/*, /index.cfm/_api/json/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -807,10 +813,11 @@ paths:
     get:
       operationId: ajaxSitelessRootGet
       summary: Calls the user or address operation the `method` parameter names through the AJAX API for the site a `siteid` form or url field names, else `default`.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -844,10 +851,11 @@ paths:
     post:
       operationId: ajaxSitelessRootPost
       summary: Calls the user or address operation the `method` parameter names through the AJAX API for the site a `siteid` form or url field names, else `default`.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -883,10 +891,11 @@ paths:
     put:
       operationId: ajaxSitelessRootPut
       summary: Calls the user or address operation the `method` parameter names through the AJAX API for the site a `siteid` form or url field names, else `default`.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -922,10 +931,11 @@ paths:
     delete:
       operationId: ajaxSitelessRootDelete
       summary: Calls the user or address operation the `method` parameter names through the AJAX API for the site a `siteid` form or url field names, else `default`.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/ajax/v1, /index.cfm/_api/ajax/v1]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -964,11 +974,11 @@ paths:
     get:
       operationId: ajaxRootGet
       summary: Calls the user or address operation the `method` parameter names through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1001,11 +1011,11 @@ paths:
     post:
       operationId: ajaxRootPost
       summary: Calls the user or address operation the `method` parameter names through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1040,11 +1050,11 @@ paths:
     put:
       operationId: ajaxRootPut
       summary: Calls the user or address operation the `method` parameter names through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1079,11 +1089,11 @@ paths:
     delete:
       operationId: ajaxRootDelete
       summary: Calls the user or address operation the `method` parameter names through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1122,11 +1132,11 @@ paths:
     get:
       operationId: ajaxSegmentGet
       summary: Reads users or addresses, or calls the method the segment names, through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1157,11 +1167,11 @@ paths:
     post:
       operationId: ajaxSegmentPost
       summary: Saves a user or address, or calls the method the segment names, through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1194,11 +1204,11 @@ paths:
     put:
       operationId: ajaxSegmentPut
       summary: Saves a user or address, or calls the method the segment names, through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1231,11 +1241,11 @@ paths:
     delete:
       operationId: ajaxSegmentDelete
       summary: Calls the method the segment names through the AJAX API; user and address deletes stay on legacy.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1273,11 +1283,11 @@ paths:
     get:
       operationId: ajaxItemGet
       summary: Reads one user or address, a new entity, its properties or permissions, or `pollState`, through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1308,11 +1318,11 @@ paths:
     post:
       operationId: ajaxItemPost
       summary: Saves one user or address, or calls a method with path parameters, through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1345,11 +1355,11 @@ paths:
     put:
       operationId: ajaxItemPut
       summary: Saves one user or address, or calls a method with path parameters, through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1382,11 +1392,11 @@ paths:
     delete:
       operationId: ajaxItemDelete
       summary: Calls a method with path parameters through the AJAX API; user and address deletes stay on legacy.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1425,11 +1435,11 @@ paths:
     get:
       operationId: ajaxSuffixGet
       summary: Reads the permissions of one user or address, or calls `pollState` or a method with path parameters, through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1460,11 +1470,11 @@ paths:
     post:
       operationId: ajaxSuffixPost
       summary: Saves one user or address, or calls a method with path parameters, through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1497,11 +1507,11 @@ paths:
     put:
       operationId: ajaxSuffixPut
       summary: Saves one user or address, or calls a method with path parameters, through the AJAX API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1534,11 +1544,11 @@ paths:
     delete:
       operationId: ajaxSuffixDelete
       summary: Calls a method with path parameters through the AJAX API; user and address deletes stay on legacy.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1/*, /index.cfm/_api/ajax/v1/*]
       x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1572,10 +1582,11 @@ paths:
     get:
       operationId: restSitelessRootGet
       summary: Calls the user or address operation the `method` parameter names through the sessionless REST API for the site a `siteid` form or url field names, else `default`.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1, /index.cfm/_api/rest/v1]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1607,10 +1618,11 @@ paths:
     post:
       operationId: restSitelessRootPost
       summary: Calls the user or address operation the `method` parameter names through the sessionless REST API for the site a `siteid` form or url field names, else `default`.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1, /index.cfm/_api/rest/v1]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1644,10 +1656,11 @@ paths:
     put:
       operationId: restSitelessRootPut
       summary: Calls the user or address operation the `method` parameter names through the sessionless REST API for the site a `siteid` form or url field names, else `default`.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1, /index.cfm/_api/rest/v1]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1681,10 +1694,11 @@ paths:
     delete:
       operationId: restSitelessRootDelete
       summary: Calls the user or address operation the `method` parameter names through the sessionless REST API for the site a `siteid` form or url field names, else `default`.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: [/_api/rest/v1, /index.cfm/_api/rest/v1]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1721,11 +1735,11 @@ paths:
     get:
       operationId: restRootGet
       summary: Calls the user or address operation the `method` parameter names through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1756,11 +1770,11 @@ paths:
     post:
       operationId: restRootPost
       summary: Calls the user or address operation the `method` parameter names through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1793,11 +1807,11 @@ paths:
     put:
       operationId: restRootPut
       summary: Calls the user or address operation the `method` parameter names through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1830,11 +1844,11 @@ paths:
     delete:
       operationId: restRootDelete
       summary: Calls the user or address operation the `method` parameter names through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1871,11 +1885,11 @@ paths:
     get:
       operationId: restSegmentGet
       summary: Reads users or addresses, or calls the method the segment names, through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1904,11 +1918,11 @@ paths:
     post:
       operationId: restSegmentPost
       summary: Saves a user or address, or calls the method the segment names, through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1939,11 +1953,11 @@ paths:
     put:
       operationId: restSegmentPut
       summary: Saves a user or address, or calls the method the segment names, through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -1974,11 +1988,11 @@ paths:
     delete:
       operationId: restSegmentDelete
       summary: Calls the method the segment names through the sessionless REST API; user and address deletes stay on legacy.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -2014,11 +2028,11 @@ paths:
     get:
       operationId: restItemGet
       summary: Reads one user or address, a new entity, its properties or permissions, or `pollState`, through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -2047,11 +2061,11 @@ paths:
     post:
       operationId: restItemPost
       summary: Saves one user or address, or calls a method with path parameters, through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -2082,11 +2096,11 @@ paths:
     put:
       operationId: restItemPut
       summary: Saves one user or address, or calls a method with path parameters, through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -2117,11 +2131,11 @@ paths:
     delete:
       operationId: restItemDelete
       summary: Calls a method with path parameters through the sessionless REST API; user and address deletes stay on legacy.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -2158,11 +2172,11 @@ paths:
     get:
       operationId: restSuffixGet
       summary: Reads the permissions of one user or address, or calls `pollState` or a method with path parameters, through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -2191,11 +2205,11 @@ paths:
     post:
       operationId: restSuffixPost
       summary: Saves one user or address, or calls a method with path parameters, through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -2226,11 +2240,11 @@ paths:
     put:
       operationId: restSuffixPut
       summary: Saves one user or address, or calls a method with path parameters, through the sessionless REST API.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -2261,11 +2275,11 @@ paths:
     delete:
       operationId: restSuffixDelete
       summary: Calls a method with path parameters through the sessionless REST API; user and address deletes stay on legacy.
-      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1/*, /index.cfm/_api/rest/v1/*]
       x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
@@ -3366,6 +3380,34 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
           description: The user stayed closed by an open roster operation for 10 s, the token's tenant has no registry entry, or identity or the database is unavailable.
+
+  /internal/v1/roster-operations/halted:
+    get:
+      operationId: listHaltedRosterOperations
+      summary: Lists every roster operation recovery ever halted after identity stayed unreachable past 5 minutes, across the registered tenants.
+      description: A halted operation keeps its user closed until `opt2-people resolve-operation <operationId> --to rolled-back|done` resolves it; it stays listed afterwards with its new state, so parity replay records each halt on the exceptions list.
+      tags: [operator]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security: [{invocationCredential: []}]
+      responses:
+        '200':
+          description: The operations recovery halted, resolved or not, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HaltedRosterOperations'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The database is unavailable.
 
   /internal/v1/migration/apply:
     post:
@@ -4982,6 +5024,80 @@ components:
           description: Tasks of the queue still running when pause answered.
         ensured:
           $ref: '#/components/schemas/EnsureRecurringResult'
+    HaltedRosterOperations:
+      type: object
+      required:
+        - operations
+      additionalProperties: false
+      properties:
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/HaltedRosterOperation'
+    HaltedRosterOperation:
+      type: object
+      description: One roster operation recovery halted; `updatedAt` is its last write or operator claim.
+      required:
+        - operationId
+        - tenantId
+        - userId
+        - kind
+        - state
+        - startedAt
+        - updatedAt
+        - haltedAt
+        - identityUnreachableSince
+        - units
+      additionalProperties: false
+      properties:
+        operationId:
+          $ref: '#/components/schemas/CfUuid'
+        tenantId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          minLength: 1
+          description: The user the operation keeps closed, without its char(35) padding.
+        kind:
+          type: string
+          description: The carried entry point that ran the roster write protocol.
+          enum:
+            - admin-add
+            - admin-update
+            - json-save
+            - profile-update
+        state:
+          type: string
+          description: The operation's state now; `halted` until an operator resolves it.
+          enum:
+            - started
+            - people-committed
+            - done
+            - rolled-back
+            - halted
+        startedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        haltedAt:
+          type: string
+          format: date-time
+          description: When recovery halted the operation.
+        identityUnreachableSince:
+          description: Start of the identity unreachability that halted the operation; null once the operation is resolved.
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        units:
+          type: array
+          description: Units of people and identity the operation keeps closed for its user while it is halted.
+          items:
+            type: string
+            minLength: 1
     CanonicalType:
       type: string
       description: Canonical encoding tag.

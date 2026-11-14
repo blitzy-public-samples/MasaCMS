@@ -21,8 +21,8 @@ export type AccountCommitRequest = Schemas['AccountCommitRequest'];
 export type AccountOperation = Schemas['AccountOperation'];
 /** State of a roster operation at identity. */
 export type AccountOperationState = Schemas['AccountOperationState'];
-/** Identity's commit reply; `writePosition` is the xid8 of identity's commit transaction. */
-export type CommitOutcome = Schemas['AccountCommitResult'];
+/** Identity's commit reply; `writePosition` is the xid8 of identity's commit transaction, `account` and `groupIds` the user as committed. */
+export type CommitOutcome = Omit<Schemas['AccountCommitResult'], 'account'> & { account: AccountView };
 /** Field name to legacy validation message, in identity's key order. */
 export type LegacyErrors = Schemas['LegacyErrors'];
 /** The site's system and member groups and the user's memberships, for the Group Memberships tab of `cusers.editUser`. */
@@ -103,7 +103,7 @@ export interface ActingUser {
 export interface IdentityClient {
   /** `prepareAccountOperation`: validates and records the account part and closes the user; throws LegacyStorageError, nothing recorded, for an account value its legacy column cannot store. */
   prepare(userId: string, operationId: string, change: AccountPrepareRequest, options?: IdentityCallOptions): Promise<PrepareOutcome>;
-  /** `commitAccountOperation`: applies the prepared change and records identity's write position; `request` is sent only when given. */
+  /** `commitAccountOperation`: applies the prepared change, records identity's write position and answers the account and memberships as committed; `request` is sent only when given. */
   commit(userId: string, operationId: string, request?: AccountCommitRequest, options?: IdentityCallOptions): Promise<CommitOutcome>;
   /** `abortAccountOperation`: discards a prepared change; an operation identity never prepared resolves too. */
   abort(userId: string, operationId: string, options?: IdentityCallOptions): Promise<void>;
@@ -337,9 +337,9 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
     async commit(userId, operationId, request, options) {
       const op = OPS.commit;
       const body = request === undefined ? {} : { json: request };
-      const result = okBody(op, await send<CommitOutcome>(op, fillPath(op.path, userId, operationId), { ...body, ...callBounds(options) }));
+      const result = okBody(op, await send<Schemas['AccountCommitResult']>(op, fillPath(op.path, userId, operationId), { ...body, ...callBounds(options) }));
       if (currentRequestContext() !== undefined) recordWritePosition(IDENTITY_SERVICE, result.writePosition);
-      return result;
+      return { ...result, account: accountView(result.account) };
     },
 
     abort: (userId, operationId, options) => step(OPS.abort, userId, operationId, true, options),

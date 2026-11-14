@@ -220,7 +220,9 @@ describe.skipIf(!available)('roster observers against PostgreSQL', () => {
         const change = prepared.get(operationId);
         const stored = accounts.get(userId);
         if (change !== undefined && stored !== undefined) accounts.set(userId, { ...stored, username: change.account.UserName });
-        return Promise.resolve({ operationId, userId, state: 'committed', writePosition: '42' });
+        const account = accounts.get(userId);
+        if (account === undefined) return Promise.reject(new Error(`no account ${userId}`));
+        return Promise.resolve({ operationId, userId, state: 'committed', writePosition: '42', account, groupIds: [] });
       },
       abort: () => Promise.resolve(),
       finish: () => Promise.resolve(),

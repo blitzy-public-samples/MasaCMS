@@ -5,7 +5,7 @@ import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { localTimestamp } from '@opt2/platform/outbox';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
-import { registeredTenants, registryEntryForTenant, tenantIdForSite, type TenantDb, type TenantRegistryEntry } from '@opt2/platform/tenancy';
+import { registeredTenants, registryEntryForTenant, tenantIdForSite, withTenant, type TenantDb, type TenantRegistryEntry } from '@opt2/platform/tenancy';
 import type { components } from '../generated/openapi.js';
 import { charKey, type AccountFilter, type AccountRecordRow, type IdentityRepository, type PoolGroupRow } from '../repo/repository.js';
 import {
@@ -88,7 +88,8 @@ function timestamp(value: Date | null): string | null {
   return value === null ? null : localTimestamp(value).replace(' ', 'T');
 }
 
-function accountRecord(row: AccountRecordRow): AccountRecord {
+/** An account row as the contract's `AccountRecord`. */
+export function accountRecord(row: AccountRecordRow): AccountRecord {
   return {
     UserID: row.userid,
     // A NULL SiteID reads as '' from the legacy query, as userDAO.read hands it to the bean.
@@ -105,6 +106,50 @@ function accountRecord(row: AccountRecordRow): AccountRecord {
     LastLogin: timestamp(row.lastlogin),
     tablist: row.tablist,
   };
+}
+
+/** SQL Server equality key of a `char(35)` id: case-insensitive, trailing spaces ignored. */
+function idKey(id: string): string {
+  return id.replace(/ +$/, '').toLowerCase();
+}
+
+/** The listing order of `order by tusers.groupname`: NULL names first, then names ignoring case, ties by id. */
+function byGroupName(a: { userid: string; groupname: string | null }, b: { userid: string; groupname: string | null }): number {
+  const left = a.groupname?.toLowerCase() ?? null;
+  const right = b.groupname?.toLowerCase() ?? null;
+  if (left !== right) {
+    if (left === null) return -1;
+    if (right === null) return 1;
+    return left < right ? -1 : 1;
+  }
+  const leftId = idKey(a.userid);
+  const rightId = idKey(b.userid);
+  return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+}
+
+/**
+ * `readMembershipIDs`: the stored groups `userId` belongs to, by group name, read in `tenants` (default every registered tenant);
+ * the membership rows live in the member's tenant and the groups in their pools' tenants [legacy: core/mura/user/userDAO.cfc:632-644].
+ */
+export async function readMembershipIds(deps: { db: TenantDb; repo: IdentityRepository }, userId: string, tenants?: readonly string[]): Promise<string[]> {
+  const { db, repo } = deps;
+  const read = tenants ?? (await registeredTenants(db)).map((entry) => entry.tenantId);
+  const held: string[] = [];
+  for (const tenantId of read) held.push(...(await withTenant(db, tenantId, (tx) => repo.membershipGroupIds(tx, userId))));
+  return groupIdsByName(deps, held, read);
+}
+
+/** The listed group ids, once each, whose group exists in `tenants`, by group name as `readMembershipIDs` orders them. */
+export async function groupIdsByName(deps: { db: TenantDb; repo: IdentityRepository }, groupIds: readonly string[], tenants: readonly string[]): Promise<string[]> {
+  const held = new Map<string, string>();
+  for (const groupId of groupIds) held.set(idKey(groupId), groupId);
+  if (held.size === 0) return [];
+  const ids = [...held.values()];
+  const found = new Map<string, { userid: string; groupname: string | null }>();
+  for (const tenantId of tenants) {
+    for (const group of await withTenant(deps.db, tenantId, (tx) => deps.repo.findGroupsByIds(tx, ids))) found.set(idKey(group.userid), group);
+  }
+  return [...found.values()].sort(byGroupName).map((group) => group.userid);
 }
 
 function siteGroup(row: PoolGroupRow): SiteGroup {

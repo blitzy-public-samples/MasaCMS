@@ -695,6 +695,51 @@ describe.skipIf(!PG_AVAILABLE)('observers of a user in an open roster operation'
     }), 30_000);
 });
 
+describe.skipIf(!PG_AVAILABLE)('a JSON API save once its operation is done', () => {
+  /** Holds the save's `:finish` until `afterDone` has run, then answers it; also the number of identity requests up to the finish. */
+  async function saveThroughFinish(world: World, userId: string, afterDone: () => Promise<void>): Promise<{ answer: Answer; untilFinish: number }> {
+    const hold = world.identity.holdAt('finish');
+    const saved = save(world, JSON_SAVE, userId);
+    await hold.reached;
+    const untilFinish = world.identity.requests.length;
+    await afterDone();
+    hold.release();
+    return { answer: await saved, untilFinish };
+  }
+
+  it('answers success with the committed values while identity fails every call after its finish, calling identity no further', () =>
+    inWorld(async (world) => {
+      const userId = JSON_SAVE.target();
+      const { answer, untilFinish } = await saveThroughFinish(world, userId, async () => {
+        for (const step of ['prepare', 'commit', 'abort', 'revert', 'status', 'read', 'csrf'] as const) world.identity.failAt(step, 'unreachable', { times: Infinity });
+      });
+      JSON_SAVE.expectSaved(answer, userId);
+      expect(answer.body).toMatchObject({ data: { username: NEW.username } });
+      expect(world.identity.requests.slice(untilFinish - 1).map((request) => request.operationId)).toEqual(['finishAccountOperation']);
+      const operation = await rosterOperation(world, userId);
+      expect(operation).toMatchObject({ state: 'done', error: null });
+      expect(identityState(world, operation.operation_id)).toBe('finished');
+      await expectNewValues(world, JSON_SAVE, userId);
+    }));
+
+  it('answers success with the committed values at once when another operation closes the user right after done', () =>
+    inWorld(async (world) => {
+      const userId = JSON_SAVE.target();
+      let closing: RosterOperationRow | undefined;
+      const { answer, untilFinish } = await saveThroughFinish(world, userId, async () => {
+        closing = await world.db.withTenant(TENANT, (tx) => world.repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
+      });
+      JSON_SAVE.expectSaved(answer, userId);
+      expect(answer.body).toMatchObject({ data: { username: NEW.username } });
+      expect(answer.elapsedMs).toBeLessThan(USER_CLOSED_WAIT_MS);
+      expect(world.identity.requests).toHaveLength(untilFinish);
+      const operations = await rosterOperations(world, userId);
+      expect(operations.map(({ operation_id, state }) => ({ operation_id, state }))).toEqual(
+        expect.arrayContaining([{ operation_id: closing?.operation_id, state: 'started' }, expect.objectContaining({ state: 'done' })]),
+      );
+    }));
+});
+
 describe.skipIf(!PG_AVAILABLE)('held rows of an open roster operation', () => {
   it('holds the person event unpublished through a sweep and reports its changelog rows open, then releases exactly one event at done', () =>
     inWorld(async (world) => {
@@ -843,6 +888,57 @@ describe.skipIf(!PG_AVAILABLE)('roster recovery, halting and opt2-people resolve
       await recover(world);
       expect(await rosterOperation(world, userId)).toMatchObject({ state: 'halted' });
     }));
+
+  it.each(['rolled-back', 'done'] as const)(
+    'lists a halted operation on listHaltedRosterOperations with its halt time, still after resolve-operation --to %s settles it',
+    (to) =>
+      inWorld(async (world) => {
+        const { userId, operationId } = await haltOperation(world);
+        const haltedAt = world.clock.now();
+        const halted = await rosterOperation(world, userId);
+        const listHalted = async (): Promise<unknown> => {
+          const url = '/internal/v1/roster-operations/halted';
+          const res = await world.app.inject({ method: 'GET', url, headers: await headersFor('service:operator') });
+          assertResponseMatchesOpenApi(CONTRACT, { method: 'GET', path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+          expect(res.statusCode).toBe(200);
+          return res.json();
+        };
+        const listed = (row: RosterOperationRow): unknown => ({
+          operations: [
+            {
+              operationId,
+              tenantId: TENANT,
+              userId,
+              kind: 'admin-update',
+              state: row.state,
+              startedAt: row.started_at.toISOString(),
+              updatedAt: row.updated_at.toISOString(),
+              haltedAt: haltedAt.toISOString(),
+              identityUnreachableSince: row.identity_unreachable_since?.toISOString() ?? null,
+              units: [
+                'people.person',
+                'people.user_address',
+                'people.user_interest',
+                'people.user_tag',
+                'people.extend_data_user_activity',
+                'people.trash',
+                'identity.user_account',
+                'identity.credential',
+                'identity.login_state',
+                'identity.membership',
+              ],
+            },
+          ],
+        });
+        expect(halted).toMatchObject({ state: 'halted', halted_at: haltedAt });
+        expect(await listHalted()).toEqual(listed(halted));
+        world.identity.setUnreachable(false);
+        expect((await runResolveOperation(recoveryDeps(world), { operationId, to })).settled).toBe(true);
+        const resolved = await rosterOperation(world, userId);
+        expect(resolved).toMatchObject({ state: to, identity_unreachable_since: null, halted_at: haltedAt });
+        expect(await listHalted()).toEqual(listed(resolved));
+      }),
+  );
 
   it('resolves a halted operation only with resolve-operation --to, restoring both sides and reopening the user', () =>
     inWorld(async (world) => {

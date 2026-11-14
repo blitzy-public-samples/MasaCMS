@@ -15,6 +15,7 @@ import { pinnedSha } from '../../src/lib/pin.js';
 const SECRET = ['logging', 'fixture', 'value'].join('-');
 const MAILPIT = 'http://127.0.0.1:18026';
 const GATEWAY = 'http://127.0.0.1:18100';
+const PEOPLE = 'http://127.0.0.1:18112';
 const BROWSER_MESSAGE = 'GS-ID-02: browser flow admin-login, replayed by harness/e2e/ui/interactions.e2e.ts';
 const BROWSER = { id: 'GS-ID-02', service: 'identity', steps: [], browser: { flow: 'admin-login', console: 'no-new-errors' } };
 /** Scenario fields of a crossing whose transition precedes step `after`. */
@@ -82,6 +83,7 @@ describe('replayScenario logging', () => {
       sourceSha: pinnedSha(),
       tableVersion: 'v0002',
       env,
+      invoker: { headersFor: async () => ({}) },
       ...over,
     };
   }
@@ -173,6 +175,7 @@ describe('replayScenario logging', () => {
       if (new URL(input).origin === MAILPIT) {
         return Response.json(init.method === 'DELETE' ? {} : { total: 0, messages: [] });
       }
+      if (new URL(input).origin === PEOPLE) return Response.json({ operations: [] });
       if (answer === 'throw') throw new TypeError('fetch failed');
       return new Response('', { status: answer });
     };
@@ -186,7 +189,7 @@ describe('replayScenario logging', () => {
       ...(gap === undefined ? {} : { gap }),
     };
     const { logger, lines } = collectingLogger();
-    env = { ...env, MAILPIT_API_URL: MAILPIT, OPT2_GATEWAY_URL: GATEWAY };
+    env = { ...env, MAILPIT_API_URL: MAILPIT, OPT2_GATEWAY_URL: GATEWAY, OPT2_SERVICE_URLS: JSON.stringify({ people: PEOPLE }) };
     const readGolden = async (id: string): Promise<GoldenSet> => ({ ...golden(id), steps: [step] });
 
     await replayScenario(scenario(over), deps({ logger, fetch, exceptions: { path: exceptionsPath }, readGolden }), phase);

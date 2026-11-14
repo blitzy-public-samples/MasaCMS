@@ -46,8 +46,10 @@ import {
   haltEvidence,
   haltedExceptionEntry,
   isEquivalenceImpossible,
+  isRosterHaltId,
 } from './errors.js';
 import { RULES_PATH, loadRules, type NormaliseRules } from './normalise/rules.js';
+import { haltedRosterOperations, recordRosterHalts, rosterHaltId } from './roster-halts.js';
 import {
   createScenarioContext,
   loadSecretStore,
@@ -64,10 +66,11 @@ import {
   resolveSideEffectConfig,
   settleHook,
   type SettleHook,
+  type SideEffectConfig,
   type SideEffectDeps,
   type SideEffects,
 } from './side-effects.js';
-import { redact, runScenarioSteps, type StepRecord, type StepRunOptions } from './steps.js';
+import { redact, runScenarioSteps, type FieldValues, type RecordedRequest, type StepRecord, type StepRunOptions } from './steps.js';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
 import { safeDiagnostic } from '../lib/diagnostics.js';
 import { createHttpSession, type FetchLike, type HttpResult } from '../lib/http.js';
@@ -410,8 +413,7 @@ const gatesSchema = z.looseObject({
 
 /**
  * The fail-closed cause `gatesList` reports for `units`: each write window holding any of them `import-pending`, with
- * those units; `undefined` when none is, and without a request when `units` is empty. The migration contract carries
- * no roster-operation state, so a 503 from a halted roster operation is not reported here and stays a difference.
+ * those units; `undefined` when none is, and without a request when `units` is empty.
  */
 export async function importPendingCause(deps: OperatorDeps, units: readonly string[]): Promise<string | undefined> {
   const wanted = new Set(units);
@@ -494,6 +496,53 @@ interface Unavailable {
   legacyStatus: number;
   /** Index of its record among the scenario's records, when the step produced one. */
   record?: number;
+  /** Values the 503's request carried: its path segments, query values and form, multipart or JSON body values. */
+  carried: readonly string[];
+}
+
+/** Every string anywhere in a JSON value. */
+function jsonStrings(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  return typeof value === 'object' && value !== null ? Object.values(value).flatMap(jsonStrings) : [];
+}
+
+/** Path segments and query values of an absolute or origin-relative `url`. */
+function urlValues(url: string): string[] {
+  const parsed = new URL(url, 'http://replay.invalid');
+  return [...parsed.pathname.split('/').filter((segment) => segment !== ''), ...parsed.searchParams.values()];
+}
+
+/** Values `request` carried in its URL and body. */
+function recordedValues(request: RecordedRequest): string[] {
+  const { body } = request;
+  const fields: FieldValues = body.kind === 'form' ? body.value : body.kind === 'multipart' ? body.value.fields : {};
+  const sent = body.kind === 'json' ? jsonStrings(body.value) : Object.values(fields).flat();
+  return [...urlValues(request.url), ...sent];
+}
+
+/** A request as `FetchLike` sent it. */
+interface SentRequest {
+  url: string;
+  init: RequestInit;
+}
+
+/** Values `sent` carried in its URL and form, multipart or JSON body. */
+async function sentValues(sent: SentRequest | undefined): Promise<string[]> {
+  if (sent === undefined) return [];
+  const contentType = new Headers(sent.init.headers).get('content-type') ?? '';
+  const { body } = sent.init;
+  if (body === undefined || body === null) return urlValues(sent.url);
+  const parsed = new Response(body, { headers: { 'content-type': contentType } });
+  if (/^application\/json\b/i.test(contentType)) return [...urlValues(sent.url), ...jsonStrings(await parsed.json())];
+  if (!/^(?:application\/x-www-form-urlencoded|multipart\/form-data)\b/i.test(contentType)) return urlValues(sent.url);
+  const fields = [...(await parsed.formData()).values()].filter((value): value is string => typeof value === 'string');
+  return [...urlValues(sent.url), ...fields];
+}
+
+/** Whether `carried` holds `userId`, compared trimmed and case-insensitively as char(35) user ids compare. */
+function carriesUser(carried: readonly string[], userId: string): boolean {
+  const wanted = userId.trim().toUpperCase();
+  return carried.some((value) => value.trim().toUpperCase() === wanted);
 }
 
 /** The first of `produced` answered 503 where its golden step was not; `offset` is the index of `produced[0]`. */
@@ -505,46 +554,66 @@ function unavailableRecord(
   for (const [index, record] of produced.entries()) {
     const legacyStatus = golden.get(stepKey(record.name, record.matrixKey))?.normalised.status;
     if (record.response.status === UNAVAILABLE && legacyStatus !== undefined && legacyStatus !== UNAVAILABLE) {
-      return { step: record.name, routeKey: record.routeKey, legacyStatus, record: offset + index };
+      const carried = recordedValues(record.request);
+      return { step: record.name, routeKey: record.routeKey, legacyStatus, record: offset + index, carried };
     }
   }
   return undefined;
 }
 
+/** Collaborators of {@link unavailableHalt}: operator access, the active version, the service map and the list writer. */
+type UnavailableDeps = OperatorDeps &
+  Pick<ReplayDeps, 'tableVersion' | 'sourceSha' | 'exceptions'> & { config: SideEffectConfig };
+
 /**
  * Raises `EquivalenceImpossible` for `answer` when an import-pending write window holds a unit of its route's cut-over
- * entry; `undefined` otherwise.
+ * entry, else when operations halted now keep one closed for a user the 503's request names, declaring the first one's
+ * entry after recording each; `undefined` otherwise.
  */
-async function unavailableHalt(
-  scenarioId: string,
-  answer: Unavailable,
-  deps: OperatorDeps & Pick<ReplayDeps, 'tableVersion'>,
-): Promise<Halt | undefined> {
+async function unavailableHalt(scenarioId: string, answer: Unavailable, deps: UnavailableDeps): Promise<Halt | undefined> {
   const units = await routeUnits(answer.routeKey, deps.tableVersion, deps.env ?? process.env);
+  const at = answer.record === undefined ? { step: answer.step } : { step: answer.step, record: answer.record };
+  const halt = (reason: string): EquivalenceImpossible =>
+    new EquivalenceImpossible({
+      scenario: scenarioId,
+      routeKey: answer.routeKey,
+      reason,
+      evidence: haltEvidence(scenarioId),
+      difference: `the gateway answered the legacy-shaped 503 where legacy answered ${answer.legacyStatus}`,
+    });
   const cause = await importPendingCause(deps, units);
-  if (cause === undefined) return undefined;
-  const err = new EquivalenceImpossible({
-    scenario: scenarioId,
-    routeKey: answer.routeKey,
-    reason: cause,
-    evidence: haltEvidence(scenarioId),
-    difference: `the gateway answered the legacy-shaped 503 where legacy answered ${answer.legacyStatus}`,
-  });
-  return answer.record === undefined ? { err, step: answer.step } : { err, step: answer.step, record: answer.record };
+  if (cause !== undefined) return { err: halt(cause), ...at };
+  if (units.length === 0) return undefined;
+  const closing = (await haltedRosterOperations(deps)).filter(
+    (operation) =>
+      operation.state === 'halted' &&
+      operation.units.some((unit) => units.includes(unit)) &&
+      carriesUser(answer.carried, operation.userId),
+  );
+  const [first] = closing;
+  if (first === undefined) return undefined;
+  await recordRosterHalts(closing, scenarioId, deps.sourceSha, exceptionOptions(deps));
+  const reason = closing
+    .map((operation) => `halted roster operation ${operation.operationId} keeps user ${operation.userId} closed`)
+    .join('; ');
+  return { err: halt(reason), ...at, declaredId: rosterHaltId(first) };
 }
 
-/** Fetch remembering the status of the last response it returned, so a step that threw still shows its answer. */
+/** Fetch remembering the last response's status and the request behind it, so a step that threw still shows its answer. */
 interface ObservedFetch {
   fetch: FetchLike;
   lastStatus: number | undefined;
+  lastRequest: SentRequest | undefined;
 }
 
 function observingFetch(base: FetchLike | undefined): ObservedFetch {
   const observed: ObservedFetch = {
     lastStatus: undefined,
+    lastRequest: undefined,
     fetch: async (input, init) => {
       const response = await (base ?? globalThis.fetch)(input, init);
       observed.lastStatus = response.status;
+      observed.lastRequest = { url: input, init };
       return response;
     },
   };
@@ -573,7 +642,11 @@ async function recordHalt(halt: Halt, sourceSha: string, opts: AppendExceptionOp
     return (await appendExceptionEntry(haltedExceptionEntry(err, { id: declaredId, sourceSha }), opts)).id;
   }
   const same = entries.find(
-    (entry) => entry.scenario === err.scenario && entry.routeKey === err.routeKey && entry.status === 'halted',
+    (entry) =>
+      !isRosterHaltId(entry.id) &&
+      entry.scenario === err.scenario &&
+      entry.routeKey === err.routeKey &&
+      entry.status === 'halted',
   );
   if (same !== undefined) return same.id;
   const id = nextHaltId(entries, err.scenario);
@@ -723,7 +796,7 @@ async function runSteps(
   scenario: Scenario,
   golden: GoldenSet,
   range: StepRange,
-  deps: ReplayDeps & { observed: ObservedFetch },
+  deps: ReplayDeps & { observed: ObservedFetch; config: SideEffectConfig },
   settle: SettleHook,
 ): Promise<StepRun> {
   const { observed } = deps;
@@ -734,6 +807,7 @@ async function runSteps(
   for (let index = range.start; index < range.end; index += 1) {
     const name = scenario.steps[index]?.name ?? String(index);
     observed.lastStatus = undefined;
+    observed.lastRequest = undefined;
     try {
       const produced = await runScenarioSteps(ctx, scenario, {
         mode: 'replay',
@@ -756,12 +830,19 @@ async function runSteps(
         return { records, error };
       }
       const answer = { step: name, routeKey: legacy.routeKey, legacyStatus: legacy.normalised.status };
-      // An unreadable gate state or cut-over version leaves the step's own error as the outcome.
-      const stop = await unavailableHalt(scenario.id, answer, deps).catch(() => undefined);
+      // An unreadable gate state, cut-over version or request body leaves the step's own error as the outcome.
+      const stop = await sentValues(observed.lastRequest)
+        .then((carried) => unavailableHalt(scenario.id, { ...answer, carried }, deps))
+        .catch(() => undefined);
       return stop === undefined ? { records, error } : { records, stop };
     }
   }
   return { records };
+}
+
+/** Exceptions-list options of replay's writes, stamped with {@link GENERATED_BY}. */
+function exceptionOptions(deps: Pick<ReplayDeps, 'exceptions'>): AppendExceptionOptions {
+  return { ...deps.exceptions, report: { generatedBy: GENERATED_BY, ...deps.exceptions?.report } };
 }
 
 /** Records every halt in the exceptions list, once per `(step, routeKey)`; returns them and the ids by record index. */
@@ -769,10 +850,7 @@ async function recordHalts(
   halts: readonly Halt[],
   deps: Pick<ReplayDeps, 'sourceSha' | 'exceptions'>,
 ): Promise<{ halted: ReplayHalt[]; ids: Map<number, string> }> {
-  const opts: AppendExceptionOptions = {
-    ...deps.exceptions,
-    report: { generatedBy: GENERATED_BY, ...deps.exceptions?.report },
-  };
+  const opts = exceptionOptions(deps);
   const halted: ReplayHalt[] = [];
   const ids = new Map<number, string>();
   const seen = new Set<string>();
@@ -821,7 +899,7 @@ async function replayRun(
   });
   if (range.state !== undefined) await restoreSessions(ctx, range.state, observed.fetch);
   const run = await withFaults(deps, scenario.replayFaults ?? [], () =>
-    runSteps(ctx, scenario, golden, range, { ...deps, observed }, settleHook(ctx, scenario, sideDeps)),
+    runSteps(ctx, scenario, golden, range, { ...deps, observed, config }, settleHook(ctx, scenario, sideDeps)),
   );
   const records = [...(range.state?.records ?? []), ...run.records];
 
@@ -841,6 +919,13 @@ async function replayRun(
     } catch (err) {
       error = { message: describeError(err, secretValues(ctx)) };
     }
+  }
+  // Each roster operation people lists as once halted is recorded once, under the first scenario replayed after it halted.
+  try {
+    const operations = await haltedRosterOperations({ config, env, fetch: deps.fetch, invoker: deps.invoker });
+    await recordRosterHalts(operations, scenario.id, deps.sourceSha, exceptionOptions(deps));
+  } catch (err) {
+    error ??= { message: describeError(err, secretValues(ctx)) };
   }
   const halts = [...declaredHalts(scenario.id, records, goldenSteps(golden)), ...(run.stop === undefined ? [] : [run.stop])];
   const { halted, ids } = await recordHalts(halts, deps);
@@ -871,8 +956,9 @@ async function replayRun(
 /**
  * Replays `scenario` through the gateway in `phase`. A fixture-dependent scenario without fixtures yields a `skipped`
  * output and a browser scenario nothing (the Playwright interaction suite replays it). Otherwise its steps run in
- * replay mode with any replay-only faults armed, halted cases are recorded in the exceptions list, side effects are
- * collected on the gateway, and the redacted output is written; a failure yields an `error` output.
+ * replay mode with any replay-only faults armed, side effects are collected on the gateway, halted cases and every
+ * halted people roster operation are recorded in the exceptions list, and the redacted output is written; a failure
+ * yields an `error` output.
  */
 export async function replayScenario(scenario: Scenario, deps: ReplayDeps, phase: RunPhase = 'full'): Promise<ReplayResult> {
   const env = deps.env ?? process.env;

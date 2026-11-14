@@ -38,6 +38,7 @@ import {
   type ExtendSubtypeRow,
   type FavoriteRow,
   type GroupNameRow,
+  type HaltedRosterOperationRow,
   type InterestRow,
   type PeopleTableName,
   type PersonArchiveRow,
@@ -424,6 +425,8 @@ export interface RosterOperationStatePatch {
   identityXid?: string | null;
   error?: string | null;
   identityUnreachableSince?: Date | null;
+  /** When recovery halted the operation; an operation keeps its first halt time. */
+  haltedAt?: Date;
 }
 
 /** Who writes a roster operation: its request when `claim` is absent, else the recovery resolution holding that claim token. */
@@ -621,6 +624,8 @@ export interface PeopleRepository extends Repository {
   findOpenRosterOperations(tx: TenantTx, userIds?: readonly string[]): Promise<RosterOperationRow[]>;
   /** How many operations, in any state and only among `operationIds` when given, any of `userIds` has; ids match as `findOpenRosterOperation` matches them. */
   countRosterOperations(tx: TenantTx, userIds: readonly string[], operationIds?: readonly string[]): Promise<number>;
+  /** Every operation of the tenant recovery ever halted, in whatever state it is now, oldest first. */
+  listHaltedRosterOperations(tx: TenantTx): Promise<HaltedRosterOperationRow[]>;
   /** Takes the transaction tenant's roster lock until `tx` ends; tenant-wide readers share it, a roster intent takes it exclusively; throws RosterLockTimeoutError past `opts.timeoutMs`. */
   lockRosterTenant(tx: TenantTx, mode: RosterLockMode, opts?: RosterLockOptions): Promise<void>;
   /** Takes each user's roster lock until `tx` ends, once per collation-equal id and in key order, before the tenant's when both are needed; throws RosterLockTimeoutError past `opts.timeoutMs`. */
@@ -892,6 +897,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   const openTenantRostersSql = `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND state = ANY($2::text[]) ORDER BY started_at, operation_id`;
   const rosterCountSql = `SELECT count(*)::int AS count FROM ${rosterOperation} WHERE tenant_id = $1 AND ${idIn('user_id', '$2')}`;
   const rosterCountAmongSql = `${rosterCountSql} AND operation_id = ANY($3::bpchar[])`;
+  const haltedRostersSql = `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND halted_at IS NOT NULL ORDER BY started_at, operation_id`;
   const openRosterSql =
     `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND ${idEquals('user_id', '$2')} AND state = ANY($3::text[])` +
     ' ORDER BY started_at, operation_id LIMIT 1';
@@ -1415,6 +1421,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
       updated_at: now,
       identity_unreachable_since: null,
       claimed_by: null,
+      halted_at: null,
     };
     try {
       return await base.insert<RosterOperationRow>(tx, ROSTER_OPERATION.table, row, ctx);
@@ -1449,6 +1456,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
       identity_xid: patch.identityXid,
       error: patch.error,
       identity_unreachable_since: patch.identityUnreachableSince,
+      halted_at: held.halted_at === null ? patch.haltedAt : undefined,
       updated_at: clock.now(),
     };
     return base.update<RosterOperationRow>(tx, ROSTER_OPERATION.table, { operation_id: operationId }, values, ctx);
@@ -1489,6 +1497,10 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
         ? await select<{ count: number }>(tx, rosterCountSql, [tx.tenantId, [...userIds]])
         : await select<{ count: number }>(tx, rosterCountAmongSql, [tx.tenantId, [...userIds], [...operationIds]]);
     return row?.count ?? 0;
+  }
+
+  function listHaltedRosterOperations(tx: TenantTx): Promise<HaltedRosterOperationRow[]> {
+    return select<HaltedRosterOperationRow>(tx, haltedRostersSql, [tx.tenantId]);
   }
 
   /** The statement taking the transaction tenant's roster lock. */
@@ -1627,6 +1639,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     findOpenRosterOperation,
     findOpenRosterOperations,
     countRosterOperations,
+    listHaltedRosterOperations,
     lockRosterTenant,
     lockRosterUsers,
     listStaleRosterOperations,

@@ -80,7 +80,49 @@ const CHANGE: AccountPrepareRequest = {
 };
 
 const PREPARED = { operationId: OPERATION_ID, userId: USER_ID, kind: 'update', state: 'prepared', before: null };
-const COMMITTED = { operationId: OPERATION_ID, userId: USER_ID, state: 'committed', writePosition: '9007199254740993' };
+const COMMITTED_GROUP_ID = 'F1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+/** The commit reply in the contract's casing, carrying the account and memberships as committed. */
+const COMMITTED = {
+  operationId: OPERATION_ID,
+  userId: USER_ID,
+  state: 'committed',
+  writePosition: '9007199254740993',
+  account: {
+    UserID: USER_ID,
+    SiteID: 'tenant-a',
+    UserName: 'jdoe',
+    Type: 2,
+    Admin: null,
+    S2: 0,
+    Perm: 0,
+    InActive: 0,
+    isPublic: 0,
+    remoteID: 'R-1',
+    PasswordCreated: '2026-06-30T09:15:00.000',
+    LastLogin: null,
+    tablist: 'Basic',
+  },
+  groupIds: [COMMITTED_GROUP_ID],
+};
+/** The commit reply as people's client answers it: the account as its account view. */
+const COMMIT_OUTCOME = {
+  ...COMMITTED,
+  account: {
+    userId: USER_ID,
+    siteId: 'tenant-a',
+    username: 'jdoe',
+    s2: 0,
+    isPublic: 0,
+    inactive: 0,
+    type: 2,
+    perm: 0,
+    admin: null,
+    remoteId: 'R-1',
+    lastLogin: null,
+    passwordCreated: '2026-06-30T09:15:00.000',
+    tablist: 'Basic',
+  },
+};
 
 describe('roster protocol calls', () => {
   it('prepares with the change as JSON on the :prepare path and returns the operation', async () => {
@@ -124,14 +166,12 @@ describe('roster protocol calls', () => {
     await expect(failure).rejects.toMatchObject(rejection);
   });
 
-  it('commits on the :commit path and records both the header and the reply position for identity', async () => {
-    const { identity, requests } = identityWith({
-      status: 200,
-      body: COMMITTED,
-      headers: { 'x-opt2-write-position': ['identity=12', 'people=4'] },
-    });
+  it('commits on the :commit path, answers the committed account as its view and records both the header and the reply position for identity', async () => {
+    const reply = { status: 200, body: COMMITTED, headers: { 'x-opt2-write-position': ['identity=12', 'people=4'] } };
+    const { identity, requests } = identityWith(reply);
     const { result, store } = await inContext(() => identity.commit(USER_ID, OPERATION_ID));
-    expect(result).toEqual(COMMITTED);
+    expect(result).toEqual(COMMIT_OUTCOME);
+    assertIdentityReply(requests[0], reply);
     expect(requests[0]).toEqual({ service: 'identity', method: 'POST', path: `${OPERATION_BASE}:commit` });
     expect(requests[0]).not.toHaveProperty('json');
     expect(Object.fromEntries(store.writePositions)).toEqual({ identity: '9007199254740993', people: '4' });
@@ -146,7 +186,7 @@ describe('roster protocol calls', () => {
     ],
   ])('commits with %s as the contract body', async (_case, request) => {
     const { identity, requests } = identityWith({ status: 200, body: COMMITTED });
-    await expect(identity.commit(USER_ID, OPERATION_ID, request)).resolves.toEqual(COMMITTED);
+    await expect(identity.commit(USER_ID, OPERATION_ID, request)).resolves.toEqual(COMMIT_OUTCOME);
     expect(requests).toEqual([{ service: 'identity', method: 'POST', path: `${OPERATION_BASE}:commit`, json: request }]);
     assertIdentityRequestBody(requests[0]);
   });
@@ -168,7 +208,7 @@ describe('roster protocol calls', () => {
 
   it('commits outside a request context without recording positions', async () => {
     const { identity } = identityWith({ status: 200, body: COMMITTED, headers: { 'x-opt2-write-position': 'identity=3' } });
-    await expect(identity.commit(USER_ID, OPERATION_ID)).resolves.toEqual(COMMITTED);
+    await expect(identity.commit(USER_ID, OPERATION_ID)).resolves.toEqual(COMMIT_OUTCOME);
   });
 
   it.each([409, 503])('fails closed when commit answers %i', async (status) => {

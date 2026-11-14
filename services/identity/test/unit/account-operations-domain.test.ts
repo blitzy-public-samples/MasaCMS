@@ -721,7 +721,24 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       const outcome = await commitAccountOperation(deps(), prepare.operationId, { userId });
 
       const row = await operationOf(prepare.operationId);
-      expect(outcome).toEqual({ outcome: 'committed', result: { operationId: prepare.operationId, userId, state: 'committed', writePosition: row?.commit_xid } });
+      const account = {
+        UserID: userId,
+        SiteID: SITE_A,
+        UserName: prepare.change.username,
+        Type: 2,
+        Admin: null,
+        S2: 0,
+        Perm: 0,
+        InActive: 0,
+        isPublic: 0,
+        remoteID: null,
+        PasswordCreated: '2026-06-30T13:30:00.000',
+        LastLogin: null,
+        tablist: null,
+      };
+      // readMembershipIDs orders by group name, not by the stored group id.
+      const result = { operationId: prepare.operationId, userId, state: 'committed', writePosition: row?.commit_xid, account, groupIds: [AUTHORS, EDITORS] };
+      expect(outcome).toEqual({ outcome: 'committed', result });
       expect(row?.commit_xid).toMatch(/^\d+$/);
       expect(await accountOf(userId)).toMatchObject({ opt2_state: 'active', username: prepare.change.username });
       expect(await loginStateOf(userId)).toMatchObject({ lastlogin: null });
@@ -820,11 +837,14 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       );
     });
 
-    it('answers a repeated commit, and a commit after finish, with the recorded write position', async () => {
-      const userId = await seedUser(uname('again'));
+    it('answers a repeated commit, and a commit after finish, with the recorded write position and the committed account', async () => {
+      const userId = await seedUser(uname('again'), { groupIds: [EDITORS, MISSING_GROUP] });
       const prepare = input('update', userId, {});
       const position = await committed(prepare);
-      const expected = { outcome: 'committed', result: { operationId: prepare.operationId, userId, state: 'committed', writePosition: position } };
+      const account = expect.objectContaining({ UserID: userId, UserName: prepare.change.username, PasswordCreated: '2026-06-01T09:15:00.000' }) as unknown;
+      // A membership whose group no tenant holds drops out, as legacy's join drops it.
+      const result = { operationId: prepare.operationId, userId, state: 'committed', writePosition: position, account, groupIds: [EDITORS] };
+      const expected = { outcome: 'committed', result };
 
       expect(await commitAccountOperation(deps(), prepare.operationId)).toEqual(expected);
       await finishAccountOperation(deps(), prepare.operationId);

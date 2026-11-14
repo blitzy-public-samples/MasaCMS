@@ -297,4 +297,9 @@ describe('toFixtureError', () => {
       expectFixtureResponse(toFixtureError(err, CTX), 503, errorBody(CTX.method, 'server_error', 'Unhandled Exception'));
     },
   );
+
+  it('rethrows the body-limit error for the service-kit Post Size page', () => {
+    const err = Object.assign(new Error('Request body is too large'), { code: 'FST_ERR_CTP_BODY_TOO_LARGE', statusCode: 413 });
+    expect(thrownBy(() => toFixtureError(err, CTX))).toBe(err);
+  });
 });

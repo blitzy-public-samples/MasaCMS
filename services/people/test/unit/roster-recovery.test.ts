@@ -12,6 +12,7 @@ import {
   RECOVERY_THRESHOLD_MS,
   RosterRecoveryError,
   RosterResolutionError,
+  listHaltedOperations,
   resolveOperation,
   rosterRecoveryHook,
   type RecoveryDeps,
@@ -504,17 +505,17 @@ describe('halting', () => {
     const open = { operationId: operation.operation_id, from: 'people-committed', to: 'people-committed', action: 'unchanged' };
 
     expect(await resolve(w, operation)).toEqual(open);
-    expect(stateOf(w, operation)).toMatchObject({ state: 'people-committed', identity_unreachable_since: since });
+    expect(stateOf(w, operation)).toMatchObject({ state: 'people-committed', identity_unreachable_since: since, halted_at: null });
 
     w.clock.advance(HALT_AFTER_MS - STALE_MS);
     w.db.clear();
     expect(await resolve(w, operation)).toEqual(open);
     expect(rosterUpdates(w)).toHaveLength(1);
-    expect(stateOf(w, operation)).toMatchObject({ state: 'people-committed', identity_unreachable_since: since });
+    expect(stateOf(w, operation)).toMatchObject({ state: 'people-committed', identity_unreachable_since: since, halted_at: null });
 
     w.clock.advance(STALE_MS + 1);
     expect(await resolve(w, operation)).toEqual({ ...open, to: 'halted', action: 'halted' });
-    expect(stateOf(w, operation)).toMatchObject({ state: 'halted', identity_unreachable_since: since });
+    expect(stateOf(w, operation)).toMatchObject({ state: 'halted', identity_unreachable_since: since, halted_at: w.clock.now() });
     expect(ended(w, operation)).toBe(false);
     expect(w.identity.isUserClosed(operation.user_id)).toBe(true);
     expect(personWrites(w)).toEqual([]);
@@ -557,6 +558,7 @@ describe('halting', () => {
       state: 'halted',
       updated_at: w.clock.now(),
       identity_unreachable_since: ago(w, HALT_AFTER_MS + 1_000),
+      halted_at: w.clock.now(),
     });
     await stageIdentity(w, halted.operation, identity);
     return halted;
@@ -576,17 +578,71 @@ describe('halting', () => {
     ['rolled-back', 'prepared', 'aborted', [STATUS, ABORT], false],
     ['rolled-back', 'committed', 'reverted', [STATUS, REVERT], false],
     ['done', 'committed', 'finished', [STATUS, FINISH], true],
-  ])('resolves a halted operation to %s at once when identity recorded it %s', async (to, identity, action, calls, published) => {
+  ])('resolves a halted operation to %s at once when identity recorded it %s, keeping its halt time', async (to, identity, action, calls, published) => {
     const w = world();
     const { operation, before } = await haltedOperation(w, identity);
+    const haltedAt = operation.halted_at;
     const mark = w.identity.requests.length;
 
     expect(await resolve(w, operation, to)).toEqual({ operationId: operation.operation_id, from: 'halted', to, action, identityState: identity });
     expect(callsSince(w, mark)).toEqual(calls);
-    expect(stateOf(w, operation)).toMatchObject({ state: to, error: null, identity_unreachable_since: null });
+    expect(stateOf(w, operation)).toMatchObject({ state: to, error: null, identity_unreachable_since: null, halted_at: haltedAt });
     expect(ended(w, operation)).toBe(true);
     expect(w.persons.get(before.userid)).toEqual(to === 'rolled-back' ? { ...before, row_version: '3' } : { ...before, fname: 'Robin', row_version: '2' });
     expect(w.publisher.published).toHaveLength(published ? 1 : 0);
+  });
+
+  it('lists every operation of each registry tenant that ever halted once, oldest first, in its current state, each user unpadded with the units it keeps closed', async () => {
+    const w = world();
+    w.db.respond(/ FROM people\.tenant_registry /, [A, A.toUpperCase(), B].map((tenantId, index) => ({ tenant_id: tenantId, site_id: `site-${String(index)}` })));
+    const since = ago(w, HALT_AFTER_MS + 1_000);
+    const haltedAt = ago(w, 1_000);
+    const later = rosterOperationRow({ tenant_id: B, state: 'halted', kind: 'json-save', user_id: 'SHORT-USER-ID'.padEnd(35), started_at: ago(w, 2_000), identity_unreachable_since: since, halted_at: haltedAt });
+    const resolved = rosterOperationRow({ tenant_id: A, state: 'rolled-back', started_at: ago(w, 5_000), halted_at: haltedAt });
+    const stored = [later, resolved, rosterOperationRow({ tenant_id: A, state: 'people-committed' }), rosterOperationRow({ tenant_id: B, state: 'rolled-back' })];
+    const haltedSelect = /^SELECT \* FROM "people"\."roster_operation" WHERE tenant_id = \$1 AND halted_at IS NOT NULL ORDER BY started_at, operation_id$/;
+    w.db.respond(haltedSelect, (_text, values) => stored.filter((row) => sameTenant(row, values[0]) && row.halted_at !== null));
+    const units = [
+      'people.person',
+      'people.user_address',
+      'people.user_interest',
+      'people.user_tag',
+      'people.extend_data_user_activity',
+      'people.trash',
+      'identity.user_account',
+      'identity.credential',
+      'identity.login_state',
+      'identity.membership',
+    ];
+
+    expect(await listHaltedOperations(w.deps)).toEqual([
+      {
+        operationId: resolved.operation_id,
+        tenantId: A,
+        userId: resolved.user_id,
+        kind: 'admin-update',
+        state: 'rolled-back',
+        startedAt: resolved.started_at,
+        updatedAt: resolved.updated_at,
+        haltedAt,
+        identityUnreachableSince: null,
+        units,
+      },
+      {
+        operationId: later.operation_id,
+        tenantId: B,
+        userId: 'SHORT-USER-ID',
+        kind: 'json-save',
+        state: 'halted',
+        startedAt: later.started_at,
+        updatedAt: later.updated_at,
+        haltedAt,
+        identityUnreachableSince: since,
+        units,
+      },
+    ]);
+    expect(w.db.statements().filter((statement) => haltedSelect.test(statement.text)).map((statement) => statement.values[0])).toEqual([A, B]);
+    expect(w.db.writes()).toEqual([]);
   });
 
   it("fails an operator's run while identity is unreachable and leaves the halted operation as it was", async () => {

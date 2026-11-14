@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Pool, PoolClient, QueryConfig, QueryResult, QueryResultRow } from 'pg';
 import { untilAborted } from '../auth/deadline.js';
+import { LegacyServiceUnavailableError } from '../legacy-compat/errors.js';
+import { SAFE_ERROR_TEXT } from '../logging/safe-error.js';
 import type { NotificationHandlers, NotificationListener } from './listener.js';
 import { assertTenantId } from './tenant-id.js';
 import { tenancyWarning } from './warning.js';
@@ -86,6 +88,60 @@ export class TransactionRolledBackError extends Error {
   }
 }
 
+/** PostgreSQL refused, dropped or would not serve the connection before COMMIT was sent; renders as the legacy 503. */
+export class DatabaseUnavailableError extends LegacyServiceUnavailableError {
+  override readonly name: string = 'DatabaseUnavailableError';
+
+  constructor(
+    /** Node network code or SQLSTATE of the connection failure. */
+    readonly failureCode: string,
+    override readonly cause: unknown,
+  ) {
+    super(`Database unavailable (${failureCode})`, 'auto', 'database-unavailable');
+  }
+
+  /** The message, which names only the failure code, for logs and spans. */
+  get [SAFE_ERROR_TEXT](): string {
+    return this.message;
+  }
+}
+
+/** Node network codes and SQLSTATEs 57P01-57P03 of a connection that was refused, lost or not accepting sessions. */
+const CONNECTION_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  '57P01',
+  '57P02',
+  '57P03',
+]);
+
+/** SQLSTATE class 08, connection exception. */
+const CONNECTION_EXCEPTION = /^08[0-9A-Z]{3}$/;
+
+// Codes only: pg-pool's code-less connect timeout also fires while a saturated pool queues the checkout, which is no outage.
+/**
+ * `err` as a DatabaseUnavailableError when a link of its cause chain that `raised` accepts carries a connection-failure code,
+ * else `err` unchanged; a LegacyServiceUnavailableError already answers the legacy 503 and is kept.
+ */
+function unavailableOr(err: unknown, raised: (link: object) => boolean = () => true): unknown {
+  if (err instanceof LegacyServiceUnavailableError) return err;
+  const seen = new Set<object>();
+  for (let link: unknown = err; typeof link === 'object' && link !== null && !seen.has(link); link = (link as { cause?: unknown }).cause) {
+    seen.add(link);
+    const { code } = link as { code?: unknown };
+    if (raised(link) && typeof code === 'string' && (CONNECTION_FAILURE_CODES.has(code) || CONNECTION_EXCEPTION.test(code))) {
+      return new DatabaseUnavailableError(code, err);
+    }
+  }
+  return err;
+}
+
 const SET_TENANT_SQL = "SELECT set_config('app.tenant_id', $1, true)";
 const warn = tenancyWarning('Commit callback error handler failed: ');
 
@@ -133,7 +189,8 @@ export function requireTenantTx(): TenantTx {
 
 /**
  * Runs `fn` in one transaction whose first statement sets `app.tenant_id` transaction-locally to `tenantSetting`.
- * Resolves after COMMIT and every commit callback; on failure rolls back, discards the callbacks and rethrows.
+ * Resolves after COMMIT and every commit callback; on failure rolls back, discards the callbacks and rethrows, a connection
+ * refused or lost before COMMIT was sent as DatabaseUnavailableError.
  * An abort of `signal` before the connection returns to the pool ends the transaction and rejects with the abort reason.
  */
 export async function runTransaction<X extends TenantTx | MetadataTx, T>(
@@ -145,7 +202,7 @@ export async function runTransaction<X extends TenantTx | MetadataTx, T>(
   { signal }: TransactionCallOptions = {},
 ): Promise<T> {
   const lease = signal === undefined ? undefined : await leaseUntilAborted(pool, signal);
-  const client: Connection = lease === undefined ? await pool.connect() : lease.client;
+  const client: Connection = lease === undefined ? await connect(pool) : lease.client;
   const callbacks: PendingCallback[] = [];
   let open = true;
   let tx: X | undefined;
@@ -155,12 +212,19 @@ export async function runTransaction<X extends TenantTx | MetadataTx, T>(
       openTransactions.delete(tx);
     }
   };
+  // Failures of statements sent before COMMIT, which PostgreSQL never commits; COMMIT's own outcome is unknown and stays out.
+  const raised = new WeakSet<object>();
+  const statement = <R>(pending: Promise<R>): Promise<R> =>
+    pending.catch((err: unknown) => {
+      if (typeof err === 'object' && err !== null) raised.add(err);
+      throw err;
+    });
   const base: TxBase = {
     schema: opts.schema,
     query: <R extends QueryResultRow = QueryResultRow>(
       text: string | QueryConfig,
       values?: unknown[],
-    ): Promise<QueryResult<R>> => (open ? client.query<R>(text, values) : Promise.reject(new TransactionEndedError())),
+    ): Promise<QueryResult<R>> => (open ? statement(client.query<R>(text, values)) : Promise.reject(new TransactionEndedError())),
     onCommit: (cb: CommitCallback, onError?: CommitErrorHandler): void => {
       if (!open) {
         throw new TransactionEndedError();
@@ -172,8 +236,8 @@ export async function runTransaction<X extends TenantTx | MetadataTx, T>(
   const run = async (): Promise<T> => {
     let result: T;
     try {
-      await client.query('BEGIN');
-      await client.query(SET_TENANT_SQL, [tenantSetting]);
+      await statement(client.query('BEGIN'));
+      await statement(client.query(SET_TENANT_SQL, [tenantSetting]));
       const built = build(base);
       Object.freeze(built);
       tx = built;
@@ -191,7 +255,7 @@ export async function runTransaction<X extends TenantTx | MetadataTx, T>(
     } catch (err) {
       close();
       await rollbackAndRelease(client);
-      throw err;
+      throw unavailableOr(err, (link) => raised.has(link));
     }
     client.release();
     // Callbacks run with no transaction in scope, so a withTenant they open starts its own scope and connection.
@@ -248,10 +312,19 @@ async function leaseUntilAborted(pool: Pool, signal: AbortSignal): Promise<Lease
   return { client, settle };
 }
 
-/** `pool.connect()` that rejects with the abort reason as soon as `signal` aborts. */
+/** `pool.connect()`, rejecting with DatabaseUnavailableError when the connection is refused or lost. */
+async function connect(pool: Pool): Promise<PoolClient> {
+  try {
+    return await pool.connect();
+  } catch (err) {
+    throw unavailableOr(err);
+  }
+}
+
+/** {@link connect} that rejects with the abort reason as soon as `signal` aborts. */
 async function checkout(pool: Pool, signal: AbortSignal): Promise<PoolClient> {
   signal.throwIfAborted();
-  const pending = pool.connect();
+  const pending = connect(pool);
   try {
     return await untilAborted(pending, signal);
   } catch (err) {

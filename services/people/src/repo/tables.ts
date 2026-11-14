@@ -402,6 +402,7 @@ const ROSTER_OPERATION_CATALOG = [
   { name: 'updated_at', type: 't' },
   { name: 'identity_unreachable_since', type: 't' },
   { name: 'claimed_by', type: 's' },
+  { name: 'halted_at', type: 't' },
 ] as const satisfies Columns;
 
 /** `people.roster_operation`: durable intent of a roster write operation. */
@@ -529,6 +530,8 @@ export type RosterOperationRow = Override<
   RowOf<typeof ROSTER_OPERATION_CATALOG, 'tenant_id' | 'operation_id' | 'kind' | 'user_id' | 'payload' | 'state' | 'started_at' | 'updated_at'>,
   { state: RosterState }
 >;
+/** A `roster_operation` row of an operation recovery once halted, whatever its state now. */
+export type HaltedRosterOperationRow = RosterOperationRow & { halted_at: Date };
 /** A `group_name` row; pg returns `deleted` as a boolean and the int8 `aggregate_version` as a decimal string. */
 export type GroupNameRow = Override<
   RowOf<typeof GROUP_NAME_CATALOG, 'tenant_id' | 'group_id' | 'deleted' | 'aggregate_version'>,

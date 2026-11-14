@@ -15,7 +15,7 @@ import {
   type LegacyErrorSpec,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
-import { isUnstorableTextError, legacyParamsOf, type FastifyRequest } from '@opt2/platform/service-kit';
+import { isBodyTooLargeError, isUnstorableTextError, legacyParamsOf, type FastifyRequest } from '@opt2/platform/service-kit';
 import { EsignatureDomainError } from '../domain/signing.js';
 import { PeopleReadDeniedError } from './people-client.js';
 
@@ -179,10 +179,11 @@ export function fixtureError(type: FixtureErrorType, ctx: FixtureContext, messag
 
 /**
  * Fixture error response for a thrown value, as api.cfm answers it; anything unrecognised is a 500 `server_error` without detail,
- * which the caller logs. Rethrows `LegacyServiceUnavailableError` for service-kit's legacy 503.
+ * which the caller logs. Rethrows `LegacyServiceUnavailableError` and the body-limit error for service-kit's legacy 503 and Post Size page.
  */
 export function toFixtureError(err: unknown, ctx: FixtureContext): FixtureResponse {
   if (err instanceof LegacyServiceUnavailableError) throw err;
+  if (isBodyTooLargeError(err)) throw err;
   // SQL Server stores a NUL the fixture accepts; PostgreSQL refuses it, answered as every target service answers it.
   if (isUnstorableTextError(err)) return fixtureError('invalidParameters', ctx);
   if (err instanceof FixtureApiError || err instanceof EsignatureDomainError) return fixtureError(err.type, ctx, err.message);

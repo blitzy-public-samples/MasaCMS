@@ -17,6 +17,10 @@ import { registerAdminRosterRoutes } from './admin-roster.js';
 import { registerAdminUserRoutes, storedCriteria } from './admin-users.js';
 import { registerFixtureArchiveRoutes } from './fixture-archive.js';
 import { registerLegacyApiRoutes } from './legacy-api.js';
+import { registerRosterOperationRoutes } from './roster-operations.js';
+
+// `app.ts` routes the JSON API families in any letter case, behind `/index.cfm` and the configBean context.
+export { legacyApiPrefixes, legacyApiSettings } from './legacy-api.js';
 
 // `logger` and `env` complete the shape `app.ts` passes; no route module or domain operation reads them yet.
 /** Runtime dependencies `app.ts` passes to the route registry. */
@@ -39,7 +43,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   const { photoFileExts } = createContentClient(deps.client);
 
   const search: SearchDeps = { db, repo, identity, clock, photoFileExts };
-  const roster: RosterDeps = { db, repo, identity, events, clock, faults };
+  const roster: RosterDeps = { db, repo, identity, events, clock, faults, photoFileExts };
   const addresses: AddressDeps = { db, repo, clock, fence: personFence };
   const archive: ArchiveDeps = { db, repo, events, clock, fence: personFence };
   // getAdvancedSearch(session, …) reads the criteria the cUsers advanced search stored in the forwarded token's session.
@@ -51,4 +55,5 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await registerAdminProfileRoutes(app, { roster });
   await registerLegacyApiRoutes(app, { db, repository: repo, identity, clock, roster, search, addresses });
   await registerFixtureArchiveRoutes(app, { archive, identity });
+  await registerRosterOperationRoutes(app, { db, repo });
 }

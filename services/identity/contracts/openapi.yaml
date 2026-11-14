@@ -2995,7 +2995,7 @@ paths:
               $ref: '#/components/schemas/AccountCommitRequest'
       responses:
         '200':
-          description: The change is committed; repeating the call returns the same commit position.
+          description: The change is committed, with the account and memberships as stored; repeating the call returns the same commit position.
           headers:
             X-Opt2-Write-Position:
               $ref: '#/components/headers/XOpt2WritePosition'
@@ -6467,6 +6467,8 @@ components:
         - userId
         - state
         - writePosition
+        - account
+        - groupIds
       additionalProperties: false
       properties:
         operationId:
@@ -6478,6 +6480,13 @@ components:
           const: committed
         writePosition:
           $ref: '#/components/schemas/Xid8'
+        account:
+          $ref: '#/components/schemas/AccountRecord'
+        groupIds:
+          type: array
+          description: The committed memberships whose group exists, by group name, as `readMembershipIDs` reads them.
+          items:
+            $ref: '#/components/schemas/CfUuid'
     AccountOperationStep:
       type: object
       required:

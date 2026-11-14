@@ -88,6 +88,12 @@ describe('photo file extensions', () => {
     assertContentReply(requests[0], reply);
   });
 
+  it('bounds a lookup by the timeout its caller gives', async () => {
+    const { content, requests } = contentWith({ status: 200, body: { items: [{ fileId: PHOTO_ID, fileExt: 'gif' }] } });
+    await expect(content.photoFileExts([PHOTO_ID], { timeoutMs: 1234 })).resolves.toEqual(new Map([[PHOTO_ID, 'gif']]));
+    expect(requests).toEqual([{ service: 'strategies-content', method: 'POST', path: LOOKUP_PATH, json: { fileIds: [PHOTO_ID] }, timeoutMs: 1234 }]);
+  });
+
   it.each([[[]], [[null, undefined, '']]])('makes no call for the photo ids %j', async (fileIds) => {
     const { content, requests } = contentWith();
     await expect(content.photoFileExts(fileIds)).resolves.toEqual(new Map());

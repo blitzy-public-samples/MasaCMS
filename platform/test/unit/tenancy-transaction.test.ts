@@ -1,10 +1,12 @@
 import type { Pool, QueryConfig, QueryResult } from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { LegacyServiceUnavailableError } from '../../src/legacy-compat/errors.js';
 import { setDiagnosticLogger } from '../../src/logging/diagnostics.js';
 import { createLogger } from '../../src/logging/logger.js';
 import { validateLogRecord } from '../../src/logging/validate.js';
 import { InvalidTenantIdError, tenantIdForSite } from '../../src/tenancy/tenant-id.js';
 import {
+  DatabaseUnavailableError,
   OutsideTenantTransactionError,
   TransactionEndedError,
   TransactionRolledBackError,
@@ -727,6 +729,137 @@ describe('abortable metadata transactions', () => {
     expect(result).toBe('value');
     expect(h.client.releases).toEqual([undefined]);
     expect(second).toHaveBeenCalledOnce();
+  });
+});
+
+describe('database unavailability', () => {
+  const pgError = (code: string, severity = 'FATAL'): Error => Object.assign(new Error(LEAKY_TEXT), { code, severity });
+  const netError = (code: string, syscall = 'read'): Error => Object.assign(new Error(`${syscall} ${code} 10.0.0.7:5432`), { code, syscall });
+  const signalOf = (signal: boolean) => (signal ? { signal: new AbortController().signal } : {});
+
+  /** Asserts `outcome` is the DatabaseUnavailableError of `code` wrapping `cause`, or `cause` itself when `code` is undefined. */
+  function expectOutcome(outcome: unknown, cause: unknown, code: string | undefined): void {
+    if (code === undefined) {
+      expect(outcome).toBe(cause);
+      return;
+    }
+    expect(outcome).toBeInstanceOf(DatabaseUnavailableError);
+    expect(outcome).toBeInstanceOf(LegacyServiceUnavailableError);
+    const unavailable = outcome as DatabaseUnavailableError;
+    expect(unavailable.cause).toBe(cause);
+    expect(unavailable).toMatchObject({
+      name: 'DatabaseUnavailableError',
+      message: `Database unavailable (${code})`,
+      failureCode: code,
+      surface: 'auto',
+      reason: 'database-unavailable',
+    });
+  }
+
+  it.each([
+    { label: 'a refused connection', error: netError('ECONNREFUSED', 'connect'), code: 'ECONNREFUSED', signal: false },
+    { label: 'a refused connection', error: netError('ECONNREFUSED', 'connect'), code: 'ECONNREFUSED', signal: true },
+    {
+      // Node's AggregateError for a host whose every address refused: the first code, no syscall.
+      label: 'every address of the host refusing',
+      error: Object.assign(new Error('connect failed'), { code: 'ECONNREFUSED', errors: [netError('ECONNREFUSED', 'connect')] }),
+      code: 'ECONNREFUSED',
+      signal: false,
+    },
+    { label: 'an unresolvable host', error: netError('ENOTFOUND', 'getaddrinfo'), code: 'ENOTFOUND', signal: true },
+    { label: 'a connect timeout', error: netError('ETIMEDOUT', 'connect'), code: 'ETIMEDOUT', signal: false },
+    { label: 'a server still starting up', error: pgError('57P03'), code: '57P03', signal: false },
+    { label: 'a connection exception', error: pgError('08001'), code: '08001', signal: true },
+    { label: "pg-pool's code-less checkout timeout", error: new Error('timeout exceeded when trying to connect'), code: undefined, signal: false },
+    { label: 'a rejected password', error: pgError('28P01'), code: undefined, signal: true },
+  ])('a checkout failing with $label (signal: $signal) rejects with its DatabaseUnavailableError, if any, before any statement', async ({ error, code, signal }) => {
+    const h = setup();
+    h.connect.mockImplementationOnce(() => Promise.reject(error));
+    const fn = vi.fn(() => Promise.resolve());
+
+    const outcome = await runTransaction(h.pool, h.opts, '', asMetadata, fn, signalOf(signal)).catch((err: unknown) => err);
+
+    expectOutcome(outcome, error, code);
+    expect(fn).not.toHaveBeenCalled();
+    expect(h.client.calls).toEqual([]);
+    expect(h.client.releases).toEqual([]);
+  });
+
+  it.each([
+    { statement: 'BEGIN', error: netError('ECONNRESET'), code: 'ECONNRESET', signal: false },
+    { statement: SET_TENANT, error: pgError('57P01'), code: '57P01', signal: true },
+    { statement: 'SELECT 1', error: pgError('57P02'), code: '57P02', signal: false },
+    { statement: 'SELECT 1', error: pgError('08006'), code: '08006', signal: true },
+    { statement: 'SELECT 1', error: netError('EPIPE', 'write'), code: 'EPIPE', signal: false },
+    { statement: 'SELECT 1', error: pgError('23505', 'ERROR'), code: undefined, signal: false },
+    { statement: 'COMMIT', error: pgError('57P01'), code: undefined, signal: false },
+    { statement: 'COMMIT', error: netError('ECONNRESET'), code: undefined, signal: true },
+  ])('a $statement failing with $error.code (signal: $signal) rolls back, releases and rejects with its DatabaseUnavailableError, if any', async ({ statement, error, code, signal }) => {
+    const h = setup();
+    h.client.failures.set(statement, error);
+    const committed = vi.fn();
+
+    const outcome = await runTransaction(
+      h.pool,
+      h.opts,
+      '',
+      asMetadata,
+      async (tx) => {
+        tx.onCommit(committed);
+        await tx.query('SELECT 1');
+      },
+      signalOf(signal),
+    ).catch((err: unknown) => err);
+
+    expectOutcome(outcome, error, code);
+    expect(h.client.calls.at(-1)?.[0]).toBe('ROLLBACK');
+    expect(h.client.releases).toEqual([undefined]);
+    expect(committed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'rethrows a lost statement as the cause of its own error',
+      failure: pgError('57P01'),
+      thrown: (failure: unknown): unknown => new Error('save failed', { cause: failure }),
+      code: '57P01',
+    },
+    {
+      label: 'throws a connection-coded error no statement raised',
+      failure: undefined,
+      thrown: (): unknown => netError('ECONNREFUSED', 'connect'),
+      code: undefined,
+    },
+    {
+      label: 'throws a LegacyServiceUnavailableError caused by a lost statement',
+      failure: pgError('57P01'),
+      thrown: (failure: unknown): unknown => Object.assign(new LegacyServiceUnavailableError('busy'), { cause: failure }),
+      code: undefined,
+    },
+    {
+      label: 'throws a cyclic cause chain without a connection failure',
+      failure: pgError('23505', 'ERROR'),
+      thrown: (failure: unknown): unknown => {
+        const outer = new Error('loop', { cause: failure });
+        Object.assign(failure as Error, { cause: outer });
+        return outer;
+      },
+      code: undefined,
+    },
+  ])('a callback that $label rejects with its DatabaseUnavailableError, if any', async ({ failure, thrown, code }) => {
+    const h = setup();
+    if (failure !== undefined) h.client.failures.set('SELECT 1', failure);
+    let raised: unknown;
+
+    const outcome = await runTenantTransaction(h.pool, h.opts, TENANT_A, async (tx) => {
+      const caught = failure === undefined ? undefined : await tx.query('SELECT 1').catch((err: unknown) => err);
+      raised = thrown(caught);
+      throw raised;
+    }).catch((err: unknown) => err);
+
+    expectOutcome(outcome, raised, code);
+    expect(h.client.calls.at(-1)?.[0]).toBe('ROLLBACK');
+    expect(h.client.releases).toEqual([undefined]);
   });
 });
 

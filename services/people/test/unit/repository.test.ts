@@ -836,6 +836,36 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect(await inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }))).toMatchObject({ state: 'started' });
     });
 
+    it('keeps the first halt time through later writes and lists every operation of the tenant that ever halted, oldest first, through its partial index', async () => {
+      const resolved = await startedOperation();
+      repo = createPeopleRepository({ clock: fixedClock(LATER), schema: handle.schema });
+      const halted = await startedOperation();
+      const never = await startedOperation();
+      const second = new Date(LATER.getTime() + 1_000);
+      await inTenant((tx) => repo.setRosterOperationState(tx, resolved.operation_id, { state: 'halted', haltedAt: LATER }));
+      await inTenant((tx) => repo.setRosterOperationState(tx, resolved.operation_id, { state: 'halted', haltedAt: second }));
+      await inTenant((tx) => repo.setRosterOperationState(tx, resolved.operation_id, { state: 'rolled-back', identityUnreachableSince: null }));
+      await inTenant((tx) => repo.setRosterOperationState(tx, halted.operation_id, { state: 'halted', haltedAt: second }));
+      await inTenant((tx) => repo.setRosterOperationState(tx, never.operation_id, { state: 'rolled-back' }));
+      const ids = [resolved, halted, never].map((row) => row.operation_id);
+
+      const listed = (await inTenant((tx) => repo.listHaltedRosterOperations(tx))).filter((row) => ids.includes(row.operation_id));
+
+      expect(listed.map((row) => [row.operation_id, row.state, row.halted_at])).toEqual([
+        [resolved.operation_id, 'rolled-back', LATER],
+        [halted.operation_id, 'halted', second],
+      ]);
+      expect(await inTenant((tx) => repo.listHaltedRosterOperations(tx), TENANT_B.tenantId)).toEqual([]);
+      expect((await changelog('roster_operation', resolved.operation_id)).map((change) => [change.op, change.columns.includes('halted_at')])).toEqual([
+        ['insert', true],
+        ['update', true],
+        ['update', false],
+        ['update', false],
+      ]);
+      const plan = planNodes(await planOf((tx) => repo.listHaltedRosterOperations(tx), 'roster_operation'));
+      expect(plan.map((node) => node['Index Name'])).toContain('roster_operation_tenant_halted_idx');
+    });
+
     it('rethrows other insert failures', async () => {
       await expect(
         inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'x', userId: 'x'.repeat(36), payload: '{}' })),

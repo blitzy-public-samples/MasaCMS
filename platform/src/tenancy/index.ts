@@ -9,6 +9,7 @@ export {
   OutsideTenantTransactionError,
   TransactionEndedError,
   TransactionRolledBackError,
+  DatabaseUnavailableError,
 } from './transaction.js';
 export type { TenantDb, TenantTx, TxBase, Queryable, CommitCallback, CommitErrorHandler, TransactionCallOptions } from './transaction.js';
 export type { NotificationHandlers, NotificationListener } from './listener.js';

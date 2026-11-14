@@ -15,7 +15,7 @@ import {
   type LegacyErrorSpec,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
-import { isUnstorableTextError, legacyParamsOf, type FastifyRequest } from '@opt2/platform/service-kit';
+import { isBodyTooLargeError, isUnstorableTextError, legacyParamsOf, type FastifyRequest } from '@opt2/platform/service-kit';
 import { TransitionRejectedError } from '@opt2/platform/state-machine';
 import type { DayActionResult } from '../domain/day-action.js';
 
@@ -166,10 +166,11 @@ export function fixtureDayAction(
 /**
  * Fixture error response for a thrown value, as api.cfm answers it; a value PostgreSQL cannot store is invalidParameters, and
  * anything unrecognised is a 500 `server_error` without detail, which the caller logs. Rethrows `LegacyServiceUnavailableError`
- * for service-kit's legacy 503.
+ * and the body-limit error for service-kit's legacy 503 and Post Size page.
  */
 export function toFixtureError(err: unknown, ctx: FixtureContext): FixtureResponse {
   if (err instanceof LegacyServiceUnavailableError) throw err;
+  if (isBodyTooLargeError(err)) throw err;
   if (isUnstorableTextError(err)) return fixtureError('invalidParameters', ctx);
   if (err instanceof FixtureApiError) return fixtureError(err.type, ctx, err.message);
   if (err instanceof TransitionRejectedError) {

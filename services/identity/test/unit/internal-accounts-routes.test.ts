@@ -284,6 +284,9 @@ describe('request validation', () => {
     ['a group id that is no CF UUID', opUrl(SOME_USER, SOME_OPERATION, 'prepare'), { ...prepareBody('create', 'x'), groupIds: ['g'] }],
     ['an updateGroups that is no boolean', opUrl(SOME_USER, SOME_OPERATION, 'prepare'), { ...prepareBody('update', 'x'), updateGroups: 'some' }],
     ['a tablist that is no text', opUrl(SOME_USER, SOME_OPERATION, 'prepare'), prepareBody('create', 'x', { tablist: { tab: 'Basic' } })],
+    ['a prepare property the contract does not declare', opUrl(SOME_USER, SOME_OPERATION, 'prepare'), { ...prepareBody('create', 'x'), evil: 1 }],
+    ['an account property the contract does not declare', opUrl(SOME_USER, SOME_OPERATION, 'prepare'), prepareBody('create', 'x', { Evil: 'x' })],
+    ['a commit property the contract does not declare', opUrl(SOME_USER, SOME_OPERATION, 'commit'), { sessionEffects: { reloginSessionId: SOME_SESSION }, evil: 1 }],
     ['a commit body that is no object', opUrl(SOME_USER, SOME_OPERATION, 'commit'), 'sessionEffects'],
     ['session effects without a session id', opUrl(SOME_USER, SOME_OPERATION, 'commit'), { sessionEffects: { reloginSessionId: '' } }],
     ['session effects with partial person fields', opUrl(SOME_USER, SOME_OPERATION, 'commit'), { sessionEffects: { reloginSessionId: SOME_SESSION, person: { fname: 'Pat' } } }],
@@ -297,6 +300,10 @@ describe('request validation', () => {
 
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ error: { message: 'Invalid parameters' } });
+    // A body's 400 is the one prepare and commit declare; the bodiless steps' path cases are not checked against the contract.
+    if (payload !== undefined) {
+      assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+    }
   });
 });
 

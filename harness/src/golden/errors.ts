@@ -79,6 +79,14 @@ export interface ExceptionEntry {
   sourceSha: string;
 }
 
+/** Id prefix of an exceptions entry keyed by one halted people roster operation, `EX-ROSTER-HALT-<operationId>`. */
+export const ROSTER_HALT_ID_PREFIX = 'EX-ROSTER-HALT-';
+
+/** Whether `id` names an entry keyed by one roster operation, which is matched by its id alone. */
+export function isRosterHaltId(id: string): boolean {
+  return id.startsWith(ROSTER_HALT_ID_PREFIX);
+}
+
 /** Halted `preserve` exceptions entry recording `err`. */
 export function haltedExceptionEntry(err: EquivalenceImpossible, opts: { id: string; sourceSha: string }): ExceptionEntry {
   return {

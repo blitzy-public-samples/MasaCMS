@@ -50,7 +50,15 @@ import { registryEntries, tenantIdForSite, withTenant, type TenantDb, type Tenan
 import { listAddresses, saveAddress, type AddressDeps } from '../domain/addresses.js';
 import { EXTEND_CONFIG_DEFAULTS, extendSetData, extendSetsData, loadSubmittedAttributes, validateExtendedData, type ExtendSetData } from '../domain/extended-data.js';
 import { applyUserInput, newUserValues, normaliseParams, resolveUserSite, type UserValues } from '../domain/person.js';
-import { PhotoBranchError, observePersons, runRosterOperation, type PersonObserver, type PersonObserverDeps, type RosterDeps } from '../domain/roster-protocol.js';
+import {
+  PhotoBranchError,
+  observePersons,
+  runRosterOperation,
+  type CommittedUser,
+  type PersonObserver,
+  type PersonObserverDeps,
+  type RosterDeps,
+} from '../domain/roster-protocol.js';
 import {
   getAdvancedSearchWindow,
   newAdvancedSearchCriteria,
@@ -113,6 +121,13 @@ export type LegacyApiRouteDeps = {
 
 const FAMILIES = ['json', 'ajax', 'rest'] as const;
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE'] as const;
+
+/** JSON API family prefixes, bare and behind `/index.cfm`, then both behind a non-empty configBean `context`; createService takes them as `noCasePathPrefixes`. */
+export function legacyApiPrefixes(context = ''): readonly string[] {
+  const segments = context.split('/').filter((segment) => segment !== '');
+  const leads = segments.length === 0 ? [''] : ['', `/${segments.join('/')}`];
+  return Object.freeze(leads.flatMap((lead) => FAMILIES.flatMap((family) => [`${lead}/_api/${family}/v1`, `${lead}/index.cfm/_api/${family}/v1`])));
+}
 
 // Anonymous callers reach `pollState`, `findPermissions` and saves, so every legacy permission rule runs in the handler,
 // after the API site fallback; the hooks' site check would refuse an unregistered `siteid` legacy answers itself.
@@ -1642,16 +1657,11 @@ function saveErrorsOf(vals: Readonly<Struct>): unknown {
   return valueOf(vals, 'saveerrors') ?? '';
 }
 
-// The save committed on both sides, so it answers success (roster protocol: a failed finish is success); a reload would
-// wait out identity's closure of the user and answer the 503 that only a rejected save may answer.
-/** The saved user while identity's `:finish` is pending: the saved bean over people's own rows, without identity's reload. */
-async function savedUserBean(call: ApiCall, tenants: readonly string[], userId: string, values: UserValues): Promise<UserBean> {
-  const stored = await observePersons(
-    observerDeps(call),
-    (observer) => findPersonRows(call, observer, tenants, userId),
-    (rows) => Promise.resolve(rows),
-  );
-  return { values, exists: true, tenantId: stored?.tenantId, addresses: stored?.addresses ?? [], extendData: stored?.extend.data ?? {} };
+/** The saved user `loadBy` reloads, from the values the operation committed on both sides, so no read can fail the committed save. */
+function committedUserBean(call: ApiCall, committed: CommittedUser): UserBean {
+  const { person, account, groupIds, categoryIds, extend, photoFileExt } = committed;
+  const source = { person, account, groupIds, categoryIds, extend, photoFileExt };
+  return { values: userBeanValues(source, call.deps.clock), exists: true, tenantId: committed.tenantId, addresses: committed.addresses, extendData: extend.data };
 }
 
 /** save(entityName='user') of a Type=2 user without a photo or extended data, under the roster write protocol (jsonApiUtility.cfc:1903-2074). */
@@ -1693,11 +1703,9 @@ async function saveUser(call: ApiCall): Promise<UserEntity> {
   });
   const errors: LegacyErrors = result.ok ? {} : result.errors;
   const saveErrors = saveErrorsOf(vals);
-  const reloadId = result.ok ? result.userId : target;
-  const reloaded =
-    result.ok && result.finishPending === true
-      ? await savedUserBean(call, [tenantId, ...tenants], result.userId, result.values)
-      : ((await readStoredUser(call, [tenantId, ...tenants], reloadId)) ?? (await newUserBean(call)));
+  const reloaded = result.ok
+    ? committedUserBean(call, result.committed)
+    : ((await readStoredUser(call, [tenantId, ...tenants], target)) ?? (await newUserBean(call)));
   const values = overlayRequestValues(reloaded.values, input, { saveErrors, errors, entityName: 'user' });
   const entity = userEntity(call, { ...reloaded, values }, { expanded: true, editableCheck: false });
   return saveResponse(entity, { saveErrors, errors }) as UserEntity;
@@ -1939,8 +1947,10 @@ export async function registerLegacyApiRoutes(app: FastifyInstance, deps: Legacy
     }
   }
 
-  for (const family of FAMILIES) {
-    for (const url of [`/_api/${family}/v1`, `/_api/${family}/v1/*`]) {
+  for (const prefix of legacyApiPrefixes(settings.context)) {
+    // The router reads `:` as a parameter, so a context's literal colon is doubled.
+    const lead = prefix.replaceAll(':', '::');
+    for (const url of [lead, `${lead}/*`]) {
       app.route({ method: [...HTTP_METHODS], url, config: { opt2: { ...ROUTE_AUTH } }, onSend: allowOrigin, handler: handle });
     }
   }

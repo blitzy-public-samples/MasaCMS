@@ -26,7 +26,7 @@ import { createIdentityClient, type IdentityClient } from './legacy/identity-cli
 import { PEOPLE_MAPPINGS } from './migration/mappings/index.js';
 import { SCHEMA, createPeopleRepository } from './repo/repository.js';
 import { PEOPLE_UNITS } from './repo/tables.js';
-import { registerRoutes } from './routes/index.js';
+import { legacyApiPrefixes, legacyApiSettings, registerRoutes } from './routes/index.js';
 import { createPeopleTaskPort, ensureStartupChains, registerQueueControlRoutes, registerSweep } from './tasks/port.js';
 
 /** Service name of logs, invocation credentials, subscriptions and the outbox. */
@@ -59,9 +59,6 @@ export type PeopleEnv = BaseEnv;
 // Default project of the harness's local Pub/Sub topology; OPT2_ENV=cloud makes GOOGLE_CLOUD_PROJECT required.
 const LOCAL_PROJECT_ID = 'opt2-local';
 
-// contentServer.cfc matches these leads with CFML's case-insensitive `eq`; people's JSON API routes are registered under this spelling.
-const JSON_API_PREFIXES: readonly string[] = Object.freeze((['json', 'ajax', 'rest'] as const).map((family) => `/_api/${family}/v1`));
-
 /** Dependencies `buildApp` uses instead of building its own from the environment. */
 export interface BuildAppOptions {
   env?: PeopleEnv;
@@ -80,13 +77,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const clock = options.clock ?? systemClock;
   // Checked before createService acquires anything; an injected publisher needs no emulator.
   const emulatorHost = options.publisher === undefined ? publisherEmulatorHost(env) : undefined;
+  // contentServer.cfc matches these leads with CFML's case-insensitive `eq`; the context comes from Masa's `MURA_<KEY>` variables, as the routes read it.
+  const noCasePathPrefixes = legacyApiPrefixes(legacyApiSettings(process.env).context);
   const app = await createService({
     name: SERVICE_NAME,
     version: SERVICE_VERSION,
     env,
     clock,
     verifierOverride: options.verifierOverride,
-    noCasePathPrefixes: JSON_API_PREFIXES,
+    noCasePathPrefixes,
     // api.cfm lower-cases the module, resource and action segments before dispatching, so the archive route matches any case.
     legacyFixturePaths: true,
     // createService takes an injected pool or the schema whose pool it opens, never both.

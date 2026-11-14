@@ -83,7 +83,7 @@ const RECURRING_TEXT = `No live chain task on queue ${QUEUE}: tombstoned slots $
 
 /** Every text `safeErrorMessage` produces besides REDACTED, platform errors' supplied texts included, plus the sanitized message of @opentelemetry/instrumentation-pg. */
 const SAFE_TEXT = new RegExp(
-  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|(?:[a-z][a-z0-9-]*: )?invalid environment(?: \([A-Z][A-Z0-9_]*(?:\.[a-z][a-z0-9-]*)?(?:, [A-Z][A-Z0-9_]*(?:\.[a-z][a-z0-9-]*)?)*\))?|(?:[a-z][a-z0-9-]*: )?invalid configuration file [a-z][a-z0-9-]*\.json|${GRPC_STATUS_TEXT}|${ABORT_TEXT}|SMTP ${SMTP_COMMAND} E[A-Z0-9_]+|${GATE_TEXT}|${RECURRING_TEXT})$`,
+  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|Database unavailable \((?:E[A-Z0-9_]+|[0-9A-Z]{5})\)|(?:[a-z][a-z0-9-]*: )?invalid environment(?: \([A-Z][A-Z0-9_]*(?:\.[a-z][a-z0-9-]*)?(?:, [A-Z][A-Z0-9_]*(?:\.[a-z][a-z0-9-]*)?)*\))?|(?:[a-z][a-z0-9-]*: )?invalid configuration file [a-z][a-z0-9-]*\.json|${GRPC_STATUS_TEXT}|${ABORT_TEXT}|SMTP ${SMTP_COMMAND} E[A-Z0-9_]+|${GATE_TEXT}|${RECURRING_TEXT})$`,
 );
 
 /** Most causes `safeErrorMessage` follows past an error without identifiers; also ends a cyclic chain. */

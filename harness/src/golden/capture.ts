@@ -16,7 +16,7 @@ import {
   type Scenario,
   type StepExpectation,
 } from './catalogue.js';
-import { GoldenConfigError, haltEvidence, type ExceptionEntry } from './errors.js';
+import { GoldenConfigError, haltEvidence, isRosterHaltId, type ExceptionEntry } from './errors.js';
 import {
   KNOWN_ISSUE_IDS,
   createNormaliseState,
@@ -523,8 +523,9 @@ export interface AppendExceptionOptions {
 
 /**
  * Upserts `entry` into the exceptions list: an entry with the same `(scenario, routeKey, status)` is updated and keeps
- * its id, else one with the same id is replaced, else `entry` is appended. A `fix` entry is a proposal for the user and
- * is never changed. The file is rewritten only when it changes; returns the entry as stored.
+ * its id, else one with the same id is replaced, else `entry` is appended; an entry keyed by a roster operation matches
+ * by id alone. A `fix` entry is a proposal for the user and is never changed. The file is rewritten only when it
+ * changes; returns the entry as stored.
  */
 export async function appendExceptionEntry(
   entry: ExceptionEntry,
@@ -533,9 +534,15 @@ export async function appendExceptionEntry(
   const file = opts.path ?? EXCEPTIONS_LIST_PATH;
   const list = await readJson(file, exceptionsListSchema);
   const { entries } = list;
-  const sameCase = entries.findIndex(
-    (e) => e.scenario === entry.scenario && e.routeKey === entry.routeKey && e.status === entry.status,
-  );
+  const sameCase = isRosterHaltId(entry.id)
+    ? -1
+    : entries.findIndex(
+        (e) =>
+          !isRosterHaltId(e.id) &&
+          e.scenario === entry.scenario &&
+          e.routeKey === entry.routeKey &&
+          e.status === entry.status,
+      );
   const index = sameCase >= 0 ? sameCase : entries.findIndex((e) => e.id === entry.id);
   const existing = index >= 0 ? entries[index] : undefined;
   if (existing?.decision === 'fix') return existing;

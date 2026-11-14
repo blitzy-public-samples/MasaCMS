@@ -410,11 +410,11 @@ describe.skipIf(!available)('against PostgreSQL', () => {
     return minted;
   }
 
-  it('mints a site-scoped token from the session login snapshot, ignoring claims the body names', async () => {
+  it('mints a site-scoped token from the session login snapshot, refusing a body that names claims', async () => {
     const res = await send(app(), 'POST', TOKENS, await headersFor('gateway'), { sessionId: 'S-S2', siteId: SITE, roles: ['s2'], sub: USER });
     const minted = await mintVerified('S-S2', SITE);
 
-    expect(res.json()).toMatchObject({ claims: { sub: S2_USER } });
+    expect([res.statusCode, res.json()]).toMatchObject([400, { error: { code: 'invalid_request', message: 'Invalid parameters' } }]);
     expect(minted).toMatchObject({ epoch: 1, claims: { sub: S2_USER, sid: 'S-S2', site: SITE, tid: tenantIdForSite(SITE), roles: ['s2'], s2: true, epoch: 1 } });
   });
 

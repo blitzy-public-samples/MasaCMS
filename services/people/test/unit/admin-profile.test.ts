@@ -81,7 +81,9 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
     },
     async commit(userId, operationId) {
       identityCalls.push('commit');
-      return { operationId, userId, state: 'committed', writePosition: '42' };
+      const account = accounts.get(userId);
+      if (account === undefined) throw new Error(`no account ${userId}`);
+      return { operationId, userId, state: 'committed', writePosition: '42', account, groupIds: [] };
     },
     async abort() {
       identityCalls.push('abort');

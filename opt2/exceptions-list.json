@@ -326,6 +326,241 @@
         "replay": "opt2/reports/parity.json#GS-ID-04"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-PROFILE-ACCOUNT-KEYS",
+      "scenario": "GS-PE-04",
+      "routeKey": "admin:ceditprofile.update",
+      "appliesTo": [],
+      "difference": "Legacy `cEditProfile.update` deletes `isPublic`, `s2`, `type` and `groupID` from the request context before saving the session user (admin/core/controllers/ceditprofile.cfc:124-141, deletes at 130-133), but `userManager.update` passes that context to `mura.event.init`, which keeps it by reference and appends every form and URL field back into it without overwriting (core/mura/user/userManager.cfc:419; core/mura/event.cfc:82-89). `userBean.set` then takes the posted `type` and `isPublic`, the latter choosing the site's public or private user pool as `SiteID` (userManager.cfc:432-434; core/mura/user/userBean.cfc:202-242, pool at 227-239), and `userDAO.update` writes `Type`, `isPublic` and `SiteID` (core/mura/user/userDAO.cfc:422,432,444). A profile save posting `type=1` therefore turns the caller's own account into a group, and `isPublic=1` moves it to the public user pool, as the oracle did for a system user; a posted `s2` is reset for a non-super user (userManager.cfc:439-441), and `groupID` changes no membership, the save passing `updateGroups` false (ceditprofile.cfc:134). people drops all four keys before the save (`restrictProfileInput`, services/people/src/domain/person.ts, applied to the profile update in services/people/src/domain/roster-protocol.ts), so the account keeps its stored type and pool while the other fields are saved. A posted `switchToPublic` or `switchToPrivate`, which neither side drops, is the pool move of EX-ROSTER-POOLMOVE. The weakness is SEC-09 in opt2/reports/pre-existing-defects.md.",
+      "decision": "fix",
+      "reason": "Pre-existing weakness, reported and not fixed: the run proposes the target's behaviour, a profile save that drops the four keys and keeps the account's stored type and pool. The proposal is not activated: callers keep the legacy contract, and this open entry holds `admin:ceditprofile.update` as a `legacy-write` entry, `legacy` in every cut-over version. The user decides.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-PE-04.json",
+        "replay": "opt2/reports/parity.json#GS-PE-04"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-USER-EDIT-SITE",
+      "scenario": "GS-ID-05",
+      "routeKey": "admin:cusers.edituser",
+      "appliesTo": [
+        "admin:cusers.editaddress",
+        "api:user.findone",
+        "rest:user.findone",
+        "api:address.findone",
+        "rest:address.findone"
+      ],
+      "difference": "Legacy `cUsers.editUser` and `cUsers.editAddress` load the posted `userid` with `userManager.read` (admin/core/controllers/cusers.cfc:243-261, read at 245; 284-288), which selects the `tusers` row by id alone (core/mura/user/userManager.cfc:125-195; core/mura/user/userDAO.cfc:92-120), so a site admin asking for another site's user is shown that user with its addresses and memberships, and Edit Address shows any address by id (admin/core/views/cusers/editaddress.cfm:77-78; userDAO.cfc:736-747); the `cUsers` permission check reads only the request's `siteid` (cusers.cfc:90-124). The JSON API `findOne` of `user` and `address` likewise loads the bean by its id alone and checks only the request site's module permission (core/mura/client/api/json/v1/jsonApiUtility.cfc:2349-2369, 1686-1738). people reads users and addresses only in the token site's tenant and its two user pools (`readUserBean` and `userTenants` in services/people/src/routes/admin-users.ts; `loadUser` and `loadAddress` in services/people/src/routes/legacy-api.ts), so `GET /v1/users/edit`, `GET /v1/users/address` and those findOne calls answer a new blank user or address for an id held elsewhere, as services/people/test/isolation/isolation.test.ts pins. The weakness is SEC-10 in opt2/reports/pre-existing-defects.md.",
+      "decision": "fix",
+      "reason": "Pre-existing weakness, reported and not fixed: the run proposes the target's behaviour, reading users and addresses by id only in the token site's tenant and its two user pools. The proposal is not activated: callers keep the legacy contract, and this open entry holds `admin:cusers.edituser` as a `legacy-write` entry and its reads on legacy in every cut-over version. The user decides.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ID-05.json",
+        "replay": "opt2/reports/parity.json#GS-ID-05"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-SEC-GROUP-SITE",
+      "scenario": "GS-ID-06",
+      "routeKey": "admin:cusers.addtogroup",
+      "appliesTo": [
+        "admin:cusers.removefromgroup",
+        "admin:cusers.editgroup",
+        "admin:cusers.editgroupmembers",
+        "admin:cusers.downloadgroupmembers",
+        "admin:cusers.edituser",
+        "api:group.findone",
+        "rest:group.findone"
+      ],
+      "difference": "Legacy reaches groups and memberships by id across sites: the `cUsers` permission check reads only the request's `siteid` (admin/core/controllers/cusers.cfc:90-124), and `userManager.read` selects the `tusers` row by id alone (core/mura/user/userManager.cfc:125-195; core/mura/user/userDAO.cfc:92-120). `cUsers.editGroup`, `editGroupMembers` and `downloadGroupMembers` show another site's group and its members' names, emails, phones and companies (cusers.cfc:219-241,263-270; userManager.cfc:746-749; userDAO.cfc:646-660), Edit User lists a user's group ids (userDAO.cfc:632-644), and the JSON API `findOne` of `group` loads it by id alone (core/mura/client/api/json/v1/jsonApiUtility.cfc:2349-2363). `removeFromGroup` deletes any membership from a GET with no CSRF check (cusers.cfc:279-282; userManager.cfc:801-807; userDAO.cfc:535-543), and `addToGroup` checks only a token of the caller's own session for the context `userid & groupid & 'addtogroup'` (cusers.cfc:272-277; userManager.cfc:793-800; userDAO.cfc:545-559), which the JSON API's `generateCSRFTokens` mints for any context (jsonApiUtility.cfc:4111-4112), so a site admin can add themself to another site's Admin group and hold that site's admin role at the next login. Identity reproduces each case, searching every registered tenant for the id (`candidateTenants`, `locateGroup`, `findGroupForSite`, `locateMember` and `changeMembership` in services/identity/src/domain/groups.ts; `locateLoadedGroup` in services/identity/src/routes/legacy-api.ts; the group routes of services/identity/src/routes/admin-groups.ts), as services/identity/test/isolation/isolation.test.ts pins. The weakness is SEC-08 in opt2/reports/pre-existing-defects.md.",
+      "decision": "fix",
+      "reason": "Pre-existing weakness, reported and not fixed: the run proposes reading and writing groups and memberships by id only in the request site's tenant and its two user pools, and validating a CSRF token on `removeFromGroup`. The proposal is not built and not activated: callers keep the legacy contract, and this open entry holds `admin:cusers.addtogroup`, `admin:cusers.removefromgroup` and `admin:cusers.edituser` as `legacy-write` entries and its reads on legacy in every cut-over version. The user decides.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ID-06.json",
+        "replay": "opt2/reports/parity.json#GS-ID-06"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-UNSTORABLE-TEXT-FINANCE",
+      "scenario": "GS-FI-03",
+      "routeKey": "fixture:finance/records@post",
+      "appliesTo": [
+        "fixture:finance/records/{id}/edit@post"
+      ],
+      "difference": "A NUL (U+0000) or an unpaired UTF-16 surrogate in a finance record's `title`, sent as a JSON body's `\\u0000` or `\\ud800` escape (legacy-fixtures/cfml/api.cfm:24-32 merges a JSON body into the params), passes the fixture's title checks, and the create and edit bind it as `cf_sql_nvarchar` (legacy-fixtures/cfml/modules/finance.cfc:61-79,85-104,205-241, binding at 237), so legacy stores it and answers 200. The oracle's ACF driver stores both as sent (a probe bound `a\\u0000b` and `\\ud800x` from `deserializeJSON` as `cf_sql_nvarchar` into nvarchar and read back 0x610000006200 and 0x00D87800), and its UTF-8 response writes the surrogate as `?`. PostgreSQL text holds neither. A NUL fails the statement with SQLSTATE 22021, which finance answers with the legacy-shaped 400 `invalidParameters`, writing nothing (services/finance/src/legacy/envelope.ts:177-179; platform/src/service-kit/create-service.ts:375-385; platform/src/legacy-compat/errors.ts:33). node-postgres sends parameters as UTF-8, which turns the surrogate into U+FFFD, so the target stores and answers `\\uFFFD` (`\\ud800x` reads back `\\uFFFDx` where legacy answers `?x`). A legacy row holding an unpaired surrogate has no canonical form for backfill or reconciliation (platform/src/migration-kit/canonical.ts:96-101).",
+      "decision": "preserve",
+      "reason": "A NUL cannot be stored in PostgreSQL text, so equivalence is impossible for it; the request body decides the case, which no withheld variant selects and the gateway cannot route to legacy on its own, so the target refuses it with `invalidParameters` and writes nothing. Halting these keys would hold every write of `grp:finance.record` on legacy, so the entry stays open as the record of the refusal. The surrogate case can be matched: the target is to write `?` for an unpaired surrogate, as legacy's UTF-8 encoding answers it, and the entry closes for it once it does.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-FI-03.json",
+        "replay": "opt2/reports/parity.json#GS-FI-03"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-UNSTORABLE-TEXT-COMMUNICATIONS",
+      "scenario": "GS-CM-01",
+      "routeKey": "fixture:communications/templates@post",
+      "appliesTo": [
+        "fixture:communications/messages@post"
+      ],
+      "difference": "A NUL (U+0000) or an unpaired UTF-16 surrogate in a template's `name`, `subject`, `bodyText` or `bodyHtml`, or in a message's subject or bodies (its addresses must pass `isValid(\"email\")`), sent as a JSON body's `\\u0000` or `\\ud800` escape (legacy-fixtures/cfml/api.cfm:24-32 merges a JSON body into the params), is bound as `cf_sql_nvarchar` or `cf_sql_longnvarchar` (legacy-fixtures/cfml/modules/communications.cfc:51-79, binding at 70-74; 96-141, binding at 108-114), so legacy stores it and answers 200. The oracle's ACF driver stores both as sent (a probe bound `a\\u0000b` and `\\ud800x` from `deserializeJSON` as `cf_sql_nvarchar` into nvarchar and read back 0x610000006200 and 0x00D87800), and its UTF-8 response writes the surrogate as `?`. PostgreSQL text holds neither. A NUL fails the statement with SQLSTATE 22021, which communications answers with the legacy-shaped 400 `invalidParameters`, writing nothing (services/communications/src/legacy/fixture-envelope.ts:304-307; platform/src/service-kit/create-service.ts:375-385; platform/src/legacy-compat/errors.ts:33). node-postgres sends parameters as UTF-8, which turns the surrogate into U+FFFD, so the target stores and answers `\\uFFFD` (`\\ud800x` reads back `\\uFFFDx` where legacy answers `?x`). A legacy row holding an unpaired surrogate has no canonical form for backfill or reconciliation (platform/src/migration-kit/canonical.ts:96-101).",
+      "decision": "preserve",
+      "reason": "A NUL cannot be stored in PostgreSQL text, so equivalence is impossible for it; the request body decides the case, which no withheld variant selects and the gateway cannot route to legacy on its own, so the target refuses it with `invalidParameters` and writes nothing. Halting these keys would hold every write of `grp:communications.message_template` and `grp:communications.delivery_status` on legacy, so the entry stays open as the record of the refusal. The surrogate case can be matched: the target is to write `?` for an unpaired surrogate, as legacy's UTF-8 encoding answers it, and the entry closes for it once it does.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CM-01.json",
+        "replay": "opt2/reports/parity.json#GS-CM-01"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-UNSTORABLE-TEXT-ESIGNATURE",
+      "scenario": "GS-ES-01",
+      "routeKey": "fixture:esignature/requests@post",
+      "appliesTo": [
+        "fixture:esignature/requests/{id}/sign@post"
+      ],
+      "difference": "A NUL (U+0000) or an unpaired UTF-16 surrogate in a request's `documentName` or a signature's `typedName`, sent as a JSON body's `\\u0000` or `\\ud800` escape (legacy-fixtures/cfml/api.cfm:24-32 merges a JSON body into the params), passes the fixture's checks (a length limit, and for `typedName` an emptiness test after removing separator, format and control characters), and is bound as `cf_sql_nvarchar` (legacy-fixtures/cfml/modules/esignature.cfc:68-99, binding at 88; 101-143, binding at 135), so legacy stores it and answers 200. The oracle's ACF driver stores both as sent (a probe bound `a\\u0000b` and `\\ud800x` from `deserializeJSON` as `cf_sql_nvarchar` into nvarchar and read back 0x610000006200 and 0x00D87800), and its UTF-8 response writes the surrogate as `?`. PostgreSQL text holds neither. A NUL fails the statement with SQLSTATE 22021, which e-signature answers with the legacy-shaped 400 `invalidParameters`, writing nothing (services/e-signature/src/legacy/envelope.ts:185-187; platform/src/service-kit/create-service.ts:375-385; platform/src/legacy-compat/errors.ts:33). node-postgres sends parameters as UTF-8, which turns the surrogate into U+FFFD, so the target stores and answers `\\uFFFD` (`\\ud800x` reads back `\\uFFFDx` where legacy answers `?x`). A legacy row holding an unpaired surrogate has no canonical form for backfill or reconciliation (platform/src/migration-kit/canonical.ts:96-101).",
+      "decision": "preserve",
+      "reason": "A NUL cannot be stored in PostgreSQL text, so equivalence is impossible for it; the request body decides the case, which no withheld variant selects and the gateway cannot route to legacy on its own, so the target refuses it with `invalidParameters` and writes nothing. Halting these keys would hold every write of `grp:esignature.audit_entry` on legacy, so the entry stays open as the record of the refusal. The surrogate case can be matched: the target is to write `?` for an unpaired surrogate, as legacy's UTF-8 encoding answers it, and the entry closes for it once it does.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ES-01.json",
+        "replay": "opt2/reports/parity.json#GS-ES-01"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-UNSTORABLE-TEXT-SURVEYS",
+      "scenario": "GS-SU-02",
+      "routeKey": "fixture:surveys/surveys@post",
+      "appliesTo": [
+        "fixture:surveys/surveys/{id}/responses@post"
+      ],
+      "difference": "A NUL (U+0000) or an unpaired UTF-16 surrogate in a survey's `title` or a response's `answers`, sent as a JSON body's `\\u0000` or `\\ud800` escape (legacy-fixtures/cfml/api.cfm:24-32 merges a JSON body into the params), is bound as `cf_sql_nvarchar` or `cf_sql_longnvarchar` (legacy-fixtures/cfml/modules/surveys.cfc:61-80, binding at 74; 301-343, binding at 335), so legacy stores it and answers 200. The oracle's ACF driver stores both as sent (a probe bound `a\\u0000b` and `\\ud800x` from `deserializeJSON` as `cf_sql_nvarchar` into nvarchar and read back 0x610000006200 and 0x00D87800), and its UTF-8 response writes the surrogate as `?`. PostgreSQL text holds neither. A NUL fails the statement with SQLSTATE 22021, which surveys answers with the legacy-shaped 400 `invalidParameters`, writing nothing (services/surveys/src/legacy/fixture-envelope.ts:297-300; platform/src/service-kit/create-service.ts:375-385; platform/src/legacy-compat/errors.ts:33). node-postgres sends parameters as UTF-8, which turns the surrogate into U+FFFD, so the target stores and answers `\\uFFFD` (`\\ud800x` reads back `\\uFFFDx` where legacy answers `?x`). A legacy row holding an unpaired surrogate has no canonical form for backfill or reconciliation (platform/src/migration-kit/canonical.ts:96-101).",
+      "decision": "preserve",
+      "reason": "A NUL cannot be stored in PostgreSQL text, so equivalence is impossible for it; the request body decides the case, which no withheld variant selects and the gateway cannot route to legacy on its own, so the target refuses it with `invalidParameters` and writes nothing. Halting these keys would hold every write of `grp:surveys.survey` and `grp:surveys.survey_response` on legacy, so the entry stays open as the record of the refusal. The surrogate case can be matched: the target is to write `?` for an unpaired surrogate, as legacy's UTF-8 encoding answers it, and the entry closes for it once it does.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-SU-02.json",
+        "replay": "opt2/reports/parity.json#GS-SU-02"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-UNSTORABLE-TEXT-TIMESHEETS",
+      "scenario": "GS-TS-03",
+      "routeKey": "fixture:timesheets/days/{id}/submit@post",
+      "appliesTo": [
+        "fixture:timesheets/days/{id}/primary-approve@post",
+        "fixture:timesheets/days/{id}/secondary-approve@post",
+        "fixture:timesheets/days/{id}/return@post",
+        "fixture:timesheets/days/{id}/resubmit@post"
+      ],
+      "difference": "A NUL (U+0000) or an unpaired UTF-16 surrogate in a day action's `comment`, sent as a JSON body's `\\u0000` or `\\ud800` escape (legacy-fixtures/cfml/api.cfm:24-32 merges a JSON body into the params), is bound as `cf_sql_nvarchar` (legacy-fixtures/cfml/modules/timesheets.cfc:63-95, binding at 87), so legacy stores it and answers 200. The oracle's ACF driver stores both as sent (a probe bound `a\\u0000b` and `\\ud800x` from `deserializeJSON` as `cf_sql_nvarchar` into nvarchar and read back 0x610000006200 and 0x00D87800), and its UTF-8 response writes the surrogate as `?`. PostgreSQL text holds neither. A NUL fails the statement with SQLSTATE 22021, which timesheets answers with the legacy-shaped 400 `invalidParameters`, writing nothing (services/timesheets/src/legacy/envelope.ts:171-173; platform/src/service-kit/create-service.ts:375-385; platform/src/legacy-compat/errors.ts:33). node-postgres sends parameters as UTF-8, which turns the surrogate into U+FFFD, so the target stores and answers `\\uFFFD` (`\\ud800x` reads back `\\uFFFDx` where legacy answers `?x`). A legacy row holding an unpaired surrogate has no canonical form for backfill or reconciliation (platform/src/migration-kit/canonical.ts:96-101).",
+      "decision": "preserve",
+      "reason": "A NUL cannot be stored in PostgreSQL text, so equivalence is impossible for it; the request body decides the case, which no withheld variant selects and the gateway cannot route to legacy on its own, so the target refuses it with `invalidParameters` and writes nothing. Halting these keys would hold every write of `grp:timesheets.approval_action` on legacy, so the entry stays open as the record of the refusal. The surrogate case can be matched: the target is to write `?` for an unpaired surrogate, as legacy's UTF-8 encoding answers it, and the entry closes for it once it does.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-TS-03.json",
+        "replay": "opt2/reports/parity.json#GS-TS-03"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-UNSTORABLE-TEXT-VARIATIONTARGETING",
+      "scenario": "GS-CO-19",
+      "routeKey": "api:variationtargeting.save",
+      "appliesTo": [
+        "rest:variationtargeting.save"
+      ],
+      "difference": "A NUL (U+0000) or an unpaired UTF-16 surrogate in a variation targeting's `initjs` or `targetingjs`, sent as a JSON body's `\\u0000` or `\\ud800` escape (core/mura/client/api/json/v1/jsonApiUtility.cfc:398-412 merges a JSON body into the params), is saved by `beanORM`, which binds each column with the `cf_sql_` type of its live datatype (core/mura/bean/beanORM.cfc:319-366), `varchar` for these nvarchar columns (core/mura/dbUtility.cfc:1509-1531): legacy stores a NUL and answers 200, and its non-Unicode binding stores the surrogate as `?`. The oracle's ACF driver stores a NUL in both bindings and a surrogate bound as `cf_sql_varchar` as `?` (a probe read back 0x610000006200 and 0x3F007800). PostgreSQL text holds neither. A NUL fails the statement with SQLSTATE 22021, which strategies-content answers with the legacy-shaped 400 `invalidParameters`, writing nothing (platform/src/service-kit/create-service.ts:375-385,675-678; platform/src/legacy-compat/errors.ts:33). node-postgres sends parameters as UTF-8, which turns the surrogate into U+FFFD, so the target stores and answers `\\uFFFD` (`\\ud800x` reads back `\\uFFFDx` where legacy answers `?x`).",
+      "decision": "preserve",
+      "reason": "A NUL cannot be stored in PostgreSQL text, so equivalence is impossible for it; the request body decides the case, which no withheld variant selects and the gateway cannot route to legacy on its own, so the target refuses it with `invalidParameters` and writes nothing. Halting these keys would hold every write of `grp:content.variation_targeting` on legacy, so the entry stays open as the record of the refusal. The surrogate case can be matched: the target is to write `?` for an unpaired surrogate, as legacy's UTF-8 encoding answers it, which for these columns is also the value legacy stores, and the entry closes for it once it does.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-19.json",
+        "replay": "opt2/reports/parity.json#GS-CO-19"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-PEOPLE-TEXT-CODEPAGE",
+      "scenario": "GS-PE-02",
+      "routeKey": "admin:cusers.updateaddress",
+      "appliesTo": [
+        "admin:cusers.update{type=2,action=update}",
+        "admin:cusers.update{type=2,action=add}",
+        "admin:ceditprofile.update",
+        "api:user.save",
+        "rest:user.save",
+        "api:address.save",
+        "rest:address.save"
+      ],
+      "difference": "Legacy binds every user and address text column as `cf_sql_varchar` or `cf_sql_longvarchar` (core/mura/user/userDAO.cfc:300-355 create, 404-500 update with `company` at 439, 749-808 address update and create with `city` at 757), and its application datasource sets no Unicode string option (core/appcfc/applicationSettings.cfm:496-507), so ACF's SQL Server driver sends the values in the database code page, Windows-1252 under SQL_Latin1_General_CP1_CI_AS, although the columns are nvarchar (core/setup/db/mssql.sql:444-464 with `city` at 451, 467-505 with `Company` at 476). Each UTF-16 code unit outside that code page is stored as `?`: on the oracle, `cUsers.updateAddress` stored the city `Zürich 日本 ✓` as `Zürich ?? ?` and Edit Profile stored the company `Émoji 😀 Co ✓` as `Émoji ?? Co ?`, the emoji's two code units each becoming `?`. people stores person and address text exactly as posted (`insertPerson`, `updatePerson`, `insertAddress` and `updateAddress` in services/people/src/repo/repository.ts) and answers it back. The reverse projector binds nvarchar columns as `NVarChar` (migration/src/reverse/apply-legacy.ts:305-337, nvarchar at 315-319), so a target write reaches legacy as exact Unicode, which legacy pages then show. A later legacy save of the same user or address, such as a withheld `{photo}` or `{extdata}` variant inside a write window, rewrites every text column through the binding above, and the window import sends the substituted values back to people as `legacy-window` writes (migration/src/windows/import.ts:470-488), which the projector skips (migration/src/reverse/operations.ts:17-18; platform/src/migration-kit/handlers.ts:86); backfill likewise imports the `?` legacy stores.",
+      "decision": "preserve",
+      "reason": "The substitution follows from legacy's parameter binding, not from the request, and the target can reproduce it: people is to replace each UTF-16 code unit outside Windows-1252 with `?` before storing, as legacy does, and the reverse projector then writes the same text. Halting these carried writes would take them out of `grp:identity.credential`, so the entry stays open as the record until people applies the substitution, and then closes.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-PE-02.json",
+        "replay": "opt2/reports/parity.json#GS-PE-02"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-PEOPLE-FEED",
+      "scenario": "GS-PE-06",
+      "routeKey": "api:address.findquery",
+      "appliesTo": [
+        "rest:address.findquery",
+        "api:address.findall",
+        "rest:address.findall",
+        "api:address.findmany",
+        "rest:address.findmany",
+        "api:user.findquery",
+        "rest:user.findquery",
+        "api:user.findall",
+        "rest:user.findall",
+        "api:user.findmany",
+        "rest:user.findmany"
+      ],
+      "difference": "Legacy JSON API feeds of `address` and `user` read rows or columns people does not hold in cases the request decides. An address feed is a `beanFeed` over the site's `tuseraddresses` rows whatever their owner's type (core/mura/user/addressBean.cfc:79; core/mura/bean/beanFeed.cfc:978-979, through core/mura/client/api/json/v1/jsonApiUtility.cfc:2542-2918), so it lists group addresses, which are identity's `user_address` rows (opt2/table-ownership.json). A user feed's `sort` or `orderby` list becomes the `ORDER BY` of `userGateway.getAdvancedSearch`, each item without a table part prefixed `tusers.` (jsonApiUtility.cfc:2955-3071; core/mura/user/userGateway.cfc:567-571), so an item may name a `tusers` column of identity's account, credential or login state other than `username` (`Password`, `PasswordCreated`, `LastLogin`, `Type`, `Admin`, `S2`, `Perm`, `InActive`, `isPublic`, `SiteID`, `remoteID`, `tablist`), a column of `tfiles`, strategies-content's photo join (userGateway.cfc:312), or a column of a table a param's prefix joins (userGateway.cfc:316-333). people answers every address `findAll` and `findQuery`, an address `findMany` naming an id it holds no address for (`addressFeedRefused`), and a user feed ordered by such an item (`applyFeedProps`) with the legacy-shaped 503 (services/people/src/routes/legacy-api.ts).",
+      "decision": "preserve",
+      "reason": "Equivalence is impossible for these cases, which order or list another owner's rows and columns in one SQL Server statement, so the address and user feed keys stay `legacy` in every cut-over version, and people answers the cases with the legacy-shaped 503. EX-PEOPLE-FEED-ORDER records the user feed orders people refuses although it holds their columns.",
+      "status": "halted",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-PE-06.json",
+        "replay": "opt2/reports/parity.json#GS-PE-06"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-PEOPLE-FEED-ORDER",
+      "scenario": "GS-PE-06",
+      "routeKey": "api:user.findquery",
+      "appliesTo": [
+        "rest:user.findquery",
+        "api:user.findall",
+        "rest:user.findall",
+        "api:user.findmany",
+        "rest:user.findmany"
+      ],
+      "difference": "Legacy orders a user feed by any `sort` or `orderby` list `setFeedProps` builds, each item without a table part prefixed `tusers.` (core/mura/client/api/json/v1/jsonApiUtility.cfc:2955-3071; core/mura/user/userGateway.cfc:567-571). Three orders over columns people holds are refused with the legacy-shaped 503 (`applyFeedProps` and `addUserParam`, services/people/src/routes/legacy-api.ts): a list of more than one item, such as `sort=lname,fname`; one item naming a person column outside userGateway's built-in sort options `fname`, `lname`, `username`, `company`, `lastupdate`, `created` and `email` (userGateway.cfc:181), such as `sort=jobtitle`; and a findQuery `orderby` param, such as `?lname=Huel&orderby=fname`, which people refuses as the feed's `orderby` setter that `addParam` calls (core/mura/bean/beanFeed.cfc:316-319; jsonApiUtility.cfc:2867-2888) although `setFeedProps` then makes it the order exactly as `sort` (jsonApiUtility.cfc:2905,2961-2967,3071), so legacy answers it ordered by `tusers.fname`. A single built-in item, in `sort` or in a `findAll` or `findMany` `orderby`, is reproduced.",
+      "decision": "preserve",
+      "reason": "These orders need no other owner's data: people is to order its feed by every item of the list over the person columns and `username` with the ordering it already applies to the built-in sorts, and to read a findQuery `orderby` as `setFeedProps` does; the entry then closes. The user feed keys stay `legacy` in every cut-over version, so callers keep the legacy answers meanwhile.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-PE-06.json",
+        "replay": "opt2/reports/parity.json#GS-PE-06"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }
   ]
 }

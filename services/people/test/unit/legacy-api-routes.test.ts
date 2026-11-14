@@ -7,7 +7,15 @@ import { INVOCATION_HEADER, Roles, moduleRole } from '@opt2/platform/auth';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
-import { CSRF_CONSUME_PATH, createService, loadEnv, type CsrfConsumeRequest, type FastifyInstance, type ServiceRequest } from '@opt2/platform/service-kit';
+import {
+  CSRF_CONSUME_PATH,
+  ServiceUnavailableError,
+  createService,
+  loadEnv,
+  type CsrfConsumeRequest,
+  type FastifyInstance,
+  type ServiceRequest,
+} from '@opt2/platform/service-kit';
 import { withTenant, type TenantDb } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
@@ -24,7 +32,8 @@ import {
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { createFaultHooks } from '../../src/domain/faults.js';
-import { personFence, type RosterDeps } from '../../src/domain/roster-protocol.js';
+import { REQUEST_BUDGET_MS, personFence, type RosterDeps } from '../../src/domain/roster-protocol.js';
+import type { SearchDeps } from '../../src/domain/search.js';
 import { createPeopleEvents } from '../../src/events/publish.js';
 import { peoplePayloadValidators } from '../../src/events/topics.js';
 import { createPeopleRepository, type PeopleRepository } from '../../src/repo/repository.js';
@@ -84,6 +93,9 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
   let repo: PeopleRepository;
   let identity: IdentityDouble;
   let app: FastifyInstance;
+  /** The routes' search and roster collaborators; `withPhotoLookup` sets strategies-content's photo lookup on both. */
+  let search: SearchDeps;
+  let roster: RosterDeps;
   const consumed: CsrfConsumeRequest[] = [];
   let csrfValid = true;
   /** The relation reads the routes made, in order. */
@@ -104,7 +116,7 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
     identity.seedAccounts(accountsForSeed(DEFAULT_PEOPLE_SEED));
     createOutbox({ service: SERVICE, db, publisher: createCapturingPublisher(), logger, clock, payloadValidators: peoplePayloadValidators });
     const instant = (): Promise<void> => Promise.resolve();
-    const roster: RosterDeps = { db, repo, events: createPeopleEvents(repo), identity, clock, faults: createFaultHooks({}, {}), sleep: instant };
+    roster = { db, repo, events: createPeopleEvents(repo), identity, clock, faults: createFaultHooks({}, {}), sleep: instant };
     app = await createService({
       name: SERVICE,
       version: '1.0.0',
@@ -123,13 +135,14 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
       logger,
     });
     const noted = noting(repo, reads);
+    search = { db, repo: noted, identity, clock, sleep: instant };
     await registerLegacyApiRoutes(app, {
       db,
       repository: noted,
       identity,
       clock,
       roster,
-      search: { db, repo: noted, identity, clock, sleep: instant },
+      search,
       addresses: { db, repo, clock, fence: personFence },
       legacy: SETTINGS,
     });
@@ -176,6 +189,26 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
     return withTenant(db, TENANT_A.tenantId, (tx) => repo.findPerson(tx, userId));
   }
 
+  /** tenant-a's roster operations of `userId` by id, with their state and error. */
+  async function rosterOperations(userId: string): Promise<Map<string, { state: string; error: string | null }>> {
+    const { rows } = await withTenant(db, TENANT_A.tenantId, (tx) =>
+      tx.query<{ operation_id: string; state: string; error: string | null }>(`SELECT operation_id, state, error FROM ${handle.schema}.roster_operation WHERE user_id = $1`, [userId]),
+    );
+    return new Map(rows.map(({ operation_id: id, state, error }) => [id, { state, error }]));
+  }
+
+  /** Runs `fn` with `lookup` as strategies-content's photo lookup of the routes' reads and roster saves, as `registerRoutes` wires it. */
+  async function withPhotoLookup(lookup: NonNullable<RosterDeps['photoFileExts']>, fn: () => Promise<void>): Promise<void> {
+    search.photoFileExts = lookup;
+    roster.photoFileExts = lookup;
+    try {
+      await fn();
+    } finally {
+      delete search.photoFileExts;
+      delete roster.photoFileExts;
+    }
+  }
+
   /** tenant-a's stored addresses of `userId`. */
   async function storedAddresses(userId: string) {
     return withTenant(db, TENANT_A.tenantId, (tx) => repo.listAddresses(tx, userId));
@@ -189,14 +222,15 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
       'user.~pollstate',
     ];
 
-    /** Every operation the contract tags `legacy-api`, with its family and Fastify path. */
+    /** Every operation the contract tags `legacy-api`, with its family and Fastify paths. */
     function legacyOperations() {
       const paths = (OPENAPI as { paths: Record<string, Record<string, Record<string, unknown> | undefined>> }).paths;
       return Object.entries(paths).flatMap(([path, item]) =>
         (['get', 'post', 'put', 'delete'] as const).flatMap((verb) => {
           const op = item[verb];
           if (op === undefined || !(op.tags as string[] | undefined)?.includes('legacy-api')) return [];
-          return [{ verb, path, family: path.split('/')[2] ?? '', url: (op['x-opt2-fastify-path'] as string | undefined) ?? path, op }];
+          const urls = [(op['x-opt2-fastify-path'] as string | string[] | undefined) ?? path].flat();
+          return [{ verb, path, family: path.split('/')[2] ?? '', urls, op }];
         }),
       );
     }
@@ -204,8 +238,9 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
     it('registers every legacy-api operation as a public service route serving the declared keys', () => {
       const operations = legacyOperations();
       expect(operations).toHaveLength(60);
-      for (const { verb, family, url, op } of operations) {
-        expect(app.hasRoute({ method: verb.toUpperCase() as Method, url })).toBe(true);
+      for (const { verb, family, urls, op } of operations) {
+        expect(urls).toHaveLength(2);
+        for (const url of urls) expect(app.hasRoute({ method: verb.toUpperCase(), url })).toBe(true);
         expect(op).toMatchObject({ 'x-opt2-transport': 'service', 'x-opt2-public': true });
         const prefix = family === 'rest' ? 'rest' : 'api';
         expect([...(op['x-opt2-route-keys'] as string[])].sort()).toEqual(SERVED.map((key) => `${prefix}:${key}`).sort());
@@ -494,6 +529,78 @@ describe.skipIf(!(await pgAvailable()))('JSON API user and address routes', () =
       expect((await storedPerson(userId))?.fname).toBe('Cassie');
       expect(consumed).toEqual([expect.objectContaining({ sessionId: `SESSION-${userId}`, context: 'new', token: 'TOKEN' })]);
       expect(identity.calls).toEqual(expect.arrayContaining(['prepare', 'commit', 'finish']));
+      // The answer is built from the committed operation, so identity is not called after its finish.
+      expect(identity.calls.at(-1)).toBe('finish');
+    });
+
+    it("answers a posted photo file with the extension strategies-content gives it under the operation's intent, before identity's prepare", async () => {
+      const userId = SELF_SAVER.sub;
+      const before = await storedPerson(userId);
+      const photoId = cfUuid();
+      const lookups: { ids: unknown[]; timeoutMs: number | undefined; identityCalls: string[]; open: string[] }[] = [];
+      const lookup: NonNullable<RosterDeps['photoFileExts']> = async (ids, options) => {
+        const open = await withTenant(db, TENANT_A.tenantId, (tx) => repo.findOpenRosterOperations(tx, [userId]));
+        lookups.push({ ids: [...ids], timeoutMs: options?.timeoutMs, identityCalls: [...identity.calls], open: open.map((row) => row.state) });
+        return new Map(ids.includes(photoId) ? [[photoId, 'png']] : []);
+      };
+      await withPhotoLookup(lookup, async () => {
+        const form = { ...CSRF, userid: userId, siteid: TENANT_A.siteId, fname: 'Pia', lname: before?.lname ?? '', email: before?.email ?? '', photofileid: ` ${photoId} ` };
+        const res = await send('POST', `${API}/user`, SELF_SAVER, form);
+        expect(res.status).toBe(200);
+        expect(res.body.data).toMatchObject({ userid: userId, fname: 'Pia', photofileid: photoId, photofileext: 'png', errors: {} });
+        const committed = lookups.filter(({ ids }) => ids.includes(photoId));
+        expect(committed).toEqual([{ ids: [photoId], timeoutMs: expect.any(Number) as unknown, identityCalls: expect.not.arrayContaining(['prepare']) as unknown, open: ['started'] }]);
+        expect(committed[0]?.timeoutMs).toBeGreaterThan(0);
+        expect(committed[0]?.timeoutMs).toBeLessThanOrEqual(REQUEST_BUDGET_MS);
+        expect(identity.calls.at(-1)).toBe('finish');
+      });
+    });
+
+    it("answers the legacy 503 and rolls the operation back before identity's prepare when the committed photo's lookup fails", async () => {
+      const userId = SELF_SAVER.sub;
+      const before = await storedPerson(userId);
+      const operations = await rosterOperations(userId);
+      const photoId = cfUuid();
+      const lookup: NonNullable<RosterDeps['photoFileExts']> = (ids) =>
+        ids.includes(photoId) ? Promise.reject(new ServiceUnavailableError('strategies-content', new Error('down'))) : Promise.resolve(new Map());
+      await withPhotoLookup(lookup, async () => {
+        const form = { ...CSRF, userid: userId, siteid: TENANT_A.siteId, fname: 'Quinn', lname: before?.lname ?? '', email: before?.email ?? '', photofileid: photoId };
+        const res = await send('POST', `${API}/user`, SELF_SAVER, form);
+        expect(res.status).toBe(503);
+        expect(await storedPerson(userId)).toEqual(before);
+        expect(identity.calls.filter((name) => ['prepare', 'commit', 'abort', 'finish'].includes(name))).toEqual([]);
+        const added = [...(await rosterOperations(userId))].filter(([id]) => !operations.has(id)).map(([, row]) => row);
+        expect(added).toEqual([{ state: 'rolled-back', error: 'shape' }]);
+      });
+    });
+
+    it('answers the photo a competing save committed ahead of the intent with that photo\'s extension', async () => {
+      const userId = SELF_SAVER.sub;
+      const before = await storedPerson(userId);
+      const photoId = cfUuid();
+      const names = { lname: before?.lname ?? '', email: before?.email ?? '' };
+      const original = identity.actingUser;
+      let rival: Awaited<ReturnType<typeof send>> | undefined;
+      // The rival save completes after the outer save's stored-user read and before its intent.
+      identity.actingUser = async (...args) => {
+        identity.actingUser = original;
+        rival = await send('POST', `${API}/user`, SELF_SAVER, { ...CSRF, userid: userId, siteid: TENANT_A.siteId, fname: before?.fname ?? '', ...names, photofileid: photoId });
+        return original(...args);
+      };
+      try {
+        await withPhotoLookup(
+          (ids) => Promise.resolve(new Map(ids.includes(photoId) ? [[photoId, 'png']] : [])),
+          async () => {
+            const outer = await send('POST', `${API}/user`, SELF_SAVER, { ...CSRF, userid: userId, siteid: TENANT_A.siteId, fname: 'Rae', ...names });
+            expect(rival).toMatchObject({ status: 200, body: { data: { photofileid: photoId, photofileext: 'png' } } });
+            expect(outer.status).toBe(200);
+            expect(outer.body.data).toMatchObject({ userid: userId, fname: 'Rae', photofileid: photoId, photofileext: 'png', errors: {} });
+            expect(await storedPerson(userId)).toMatchObject({ fname: 'Rae', photofileid: photoId });
+          },
+        );
+      } finally {
+        identity.actingUser = original;
+      }
     });
 
     it("refuses a save of another user's record without the Users module", async () => {

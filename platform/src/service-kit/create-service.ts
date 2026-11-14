@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { open, rm } from 'node:fs/promises';
-import { maxHeaderSize } from 'node:http';
+import { maxHeaderSize, type IncomingMessage } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parse as parseQuery } from 'node:querystring';
@@ -37,7 +37,7 @@ import {
   type UnavailableSurface,
 } from '../legacy-compat/index.js';
 import { createLogger, fastifyLoggerOptions, serializeError, type LogFields, type Logger } from '../logging/index.js';
-import { createPool, type TenantDb } from '../tenancy/index.js';
+import { DatabaseUnavailableError, createPool, type TenantDb } from '../tenancy/index.js';
 import { shutdownTracing } from '../tracing/index.js';
 import { createServiceClient, type ServiceClient } from './client.js';
 import { systemClock, type Clock } from './clock.js';
@@ -49,8 +49,14 @@ import { createMultipartHeaderScanner, type MultipartHeaderScanner } from './mul
 /** Surface a request's legacy error responses are rendered on. */
 export type LegacySurface = UnavailableSurface;
 
-/** ColdFusion's default maximum POST size: the body, multipart file and field limit of every route. */
+/** Memory bound of every route's body and multipart file and field; legacy reads non-POST and chunked bodies of any size. */
 export const LEGACY_POST_LIMIT_BYTES = 100 * 1024 * 1024;
+
+/** Largest POST Content-Length the legacy servlet container accepts; it answers a larger one with its Post Size page. */
+export const LEGACY_MAX_POST_CONTENT_LENGTH = 20 * 1024 * 1024 + 1;
+
+/** Log `route` of a request no route matched or the router rejected; never its path, which can carry session ids, secrets or PII. */
+export const UNMATCHED_ROUTE = '(unmatched)';
 
 /** Options of {@link createService}. */
 export interface CreateServiceOptions<E extends BaseEnv = BaseEnv> {
@@ -139,11 +145,13 @@ interface LegacyResponse {
 
 const CONTEXT = Symbol('opt2.service-kit.context');
 const FILES = Symbol('opt2.service-kit.files');
+const UPLOADS = Symbol('opt2.service-kit.uploads');
 const PART_HEADERS = Symbol('opt2.service-kit.part-headers');
 const BODY_LIMIT = Symbol('opt2.service-kit.body-limit');
 const RESPONSE_CLOSED = Symbol('opt2.service-kit.response-closed');
 const REASON = Symbol('opt2.service-kit.reason');
 const DISCONNECT = Symbol('opt2.service-kit.disconnect');
+const CONTAINER = Symbol('opt2.service-kit.container');
 
 /** Per-request state kept on module-private symbols. */
 interface KitRequestState {
@@ -151,14 +159,18 @@ interface KitRequestState {
   /** Aborts with a RequestAbortedError once the response closes before it ended, which is the client disconnecting. */
   [DISCONNECT]: AbortSignal | null;
   [FILES]: SpooledFile[] | null;
+  /** Temporary files the request spooled that are not yet deleted. */
+  [UPLOADS]: string[] | null;
   /** The part headers of a multipart request's body, scanned as it streams. */
   [PART_HEADERS]: MultipartHeaderScanner | null;
   /** The body-limit error that aborted the request's multipart parse. */
   [BODY_LIMIT]: FastifyError | null;
-  /** Whether a multipart request's response has closed, after which the plugin no longer deletes listed uploads. */
+  /** Whether a multipart request's response has closed, after which no further upload is spooled. */
   [RESPONSE_CLOSED]: boolean;
   /** Fixed identifier of why the request was denied or rejected, such as an AuthDenial reason; never request input. */
   [REASON]: string | null;
+  /** Whether the response is the legacy servlet container's own, which carries none of Masa's headers. */
+  [CONTAINER]: boolean;
   [EVENT_SCOPE]: EventLogScope | null;
 }
 
@@ -337,6 +349,20 @@ export function multipartFilesOf(request: FastifyRequest): MultipartFileData[] {
   }));
 }
 
+/** Deletes the request's spooled uploads once, skipping missing files; never rejects, logging each failed delete. */
+async function removeUploads(request: FastifyRequest): Promise<void> {
+  const state = stateOf(request);
+  const uploads = state[UPLOADS];
+  if (uploads === null) return;
+  state[UPLOADS] = null;
+  const results = await Promise.allSettled(uploads.map((filepath) => rm(filepath, { force: true })));
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      request.log.error({ ...scopeFields(request), error: serializeError(result.reason) }, 'upload cleanup failed');
+    }
+  }
+}
+
 /** Writes a legacy-compat response object: status, reason phrase when given, headers and exact body. */
 export function sendLegacyResponse(reply: FastifyReply, res: LegacyResponse): FastifyReply {
   if (res.statusText !== undefined) reply.raw.statusMessage = res.statusText;
@@ -366,7 +392,7 @@ function answerFrameworkError(
   const startedAt = performance.now();
   reply.raw.once('finish', () => {
     // This request lacks the decorated reason slot, so the router's fixed error code is passed as the reason.
-    logCompletion(request, reply.statusCode, pathOf(request), Math.round(performance.now() - startedAt), error.code);
+    logCompletion(request, reply.statusCode, UNMATCHED_ROUTE, Math.round(performance.now() - startedAt), error.code);
   });
   if (error.code === 'FST_ERR_BAD_URL') {
     // Legacy's servlet container rejects a malformed path escape before Masa runs: an empty 400 that closes the connection.
@@ -396,6 +422,37 @@ function answerFrameworkError(
 /** Fastify's own request errors below 500, such as an oversized body or an unsupported media type. */
 function isFastifyClientError(error: FastifyError): boolean {
   return typeof error.code === 'string' && error.code.startsWith('FST_') && (error.statusCode ?? 500) < 500;
+}
+
+const BODY_TOO_LARGE = 'FST_ERR_CTP_BODY_TOO_LARGE';
+
+/** Whether `err` is Fastify's body-limit error, a body over {@link LEGACY_POST_LIMIT_BYTES}, which service-kit answers as the container's Post Size page. */
+export function isBodyTooLargeError(err: unknown): err is FastifyError & { code: typeof BODY_TOO_LARGE } {
+  return err instanceof Error && (err as Partial<FastifyError>).code === BODY_TOO_LARGE;
+}
+
+/** Service-to-service routes: no legacy request reaches them, and migration sends them batches and file objects of any size. */
+const INTERNAL_PREFIX = '/internal/';
+
+/** Whether the legacy container refuses `req` before Masa runs: a POST declaring more than {@link LEGACY_MAX_POST_CONTENT_LENGTH} bytes. */
+function exceedsLegacyPostSize(req: IncomingMessage): boolean {
+  if (req.method !== 'POST' || (req.url ?? '').startsWith(INTERNAL_PREFIX)) return false;
+  return Number(req.headers['content-length']) > LEGACY_MAX_POST_CONTENT_LENGTH;
+}
+
+/** The legacy container's answer to a POST over its size limit. */
+const POST_SIZE_EXCEEDED: LegacyResponse = {
+  status: 400,
+  statusText: 'Post Size exceeds the maximum limit.',
+  headers: { 'Content-Type': LEGACY_HTML_CONTENT_TYPE },
+  body: '<html><head><title>Error</title></head><body>Post Size exceeds the maximum limit.</body></html>',
+};
+
+/** Answers the container's Post Size page without Masa's headers, recording the body-limit code as the rejection reason. */
+function sendPostSizeExceeded(request: FastifyRequest, reply: FastifyReply): FastifyReply {
+  stateOf(request)[CONTAINER] = true;
+  recordOutcomeReason(request, BODY_TOO_LARGE);
+  return sendLegacyResponse(reply, POST_SIZE_EXCEEDED);
 }
 
 /**
@@ -460,7 +517,7 @@ const OUTCOME_BY_STATUS: ReadonlyMap<number, string> = new Map([
   [403, 'request denied'],
 ]);
 
-/** Writes a request's WARNING line when `statusCode` is a denial or rejection, then its completion line; `route` omits the query string, which can carry credentials. */
+/** Writes a request's WARNING line when `statusCode` is a denial or rejection, then its completion line; `route` is the matched route template or {@link UNMATCHED_ROUTE}, never request input. */
 function logCompletion(request: FastifyRequest, statusCode: number, route: string, latencyMs: number, reason: string | null): void {
   const outcome = OUTCOME_BY_STATUS.get(statusCode);
   if (outcome !== undefined) {
@@ -531,8 +588,9 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     exposeHeadRoutes: false,
     // Legacy caps no path parameter, so only the request line the HTTP parser admits bounds one; ColdFusion session ids exceed Fastify's 100.
     routerOptions: { ignoreTrailingSlash: true, maxParamLength: maxHeaderSize },
-    // Merged onto Fastify's Ajv defaults; admits multi-type schemas without strict-mode warnings.
-    ajv: { customOptions: { allowUnionTypes: true } },
+    // Merged onto Fastify's Ajv defaults; admits multi-type schemas without strict-mode warnings, and an
+    // `additionalProperties: false` schema rejects an unknown property instead of Fastify's default of stripping it.
+    ajv: { customOptions: { allowUnionTypes: true, removeAdditional: false } },
     // Without it the router answers a malformed escape or an over-long parameter with its own body, echoing the path.
     frameworkErrors: (error, request, reply) => {
       answerFrameworkError(error, request, reply, surfaceOf);
@@ -561,10 +619,12 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   app.decorateRequest(CONTEXT, null, []);
   app.decorateRequest(DISCONNECT, null, []);
   app.decorateRequest(FILES, null, []);
+  app.decorateRequest(UPLOADS, null, []);
   app.decorateRequest(PART_HEADERS, null, []);
   app.decorateRequest(BODY_LIMIT, null, []);
   app.decorateRequest(RESPONSE_CLOSED, false, []);
   app.decorateRequest(REASON, null, []);
+  app.decorateRequest(CONTAINER, false, []);
   app.decorateRequest(EVENT_SCOPE, null, []);
 
   await app.register(cookie);
@@ -579,13 +639,14 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
       const filepath = path.join(tmpdir(), `opt2-upload-${randomUUID()}`);
       const file = await open(filepath, 'wx', 0o600);
       if (state[RESPONSE_CLOSED]) {
-        // The plugin's premature-close cleanup has already run, so a file listed now would outlive the request.
+        // The premature-close cleanup has already run, so a file listed now would outlive the request.
         await file.close();
         await rm(filepath, { force: true });
         throw new this.server.multipartErrors.PrematureCloseError();
       }
-      // Listed once it exists and before it is written, so the plugin's response and premature-close cleanup delete it on every outcome.
-      (this.tmpUploads ??= []).push(filepath);
+      // Listed once it exists and before it is written, so the response or premature-close cleanup deletes it on every outcome.
+      // Kept out of the plugin's tmpUploads, which both its response and close cleanup unlink.
+      (state[UPLOADS] ??= []).push(filepath);
       const hash = createHash('sha256');
       let size = 0;
       const digest = new Transform({
@@ -618,9 +679,14 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
       done(tooLarge());
       return;
     }
-    // Fires after the multipart plugin's own close listener, which deletes the uploads listed so far.
+    // A finished response's uploads are deleted by onResponse; a close without finish may skip onResponse, so it deletes them.
+    let finished = false;
+    reply.raw.once('finish', () => {
+      finished = true;
+    });
     reply.raw.once('close', () => {
       stateOf(request)[RESPONSE_CLOSED] = true;
+      if (!finished) void removeUploads(request);
     });
     const raw = request.raw;
     let received = 0;
@@ -687,6 +753,17 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     else requestContext.run(store, () => done());
   });
 
+  // The container refuses an oversized POST before any auth or Masa code runs.
+  app.addHook('onRequest', (request, reply, done) => {
+    if (exceedsLegacyPostSize(request.raw)) sendPostSizeExceeded(request, reply);
+    else done();
+  });
+  // Node would send `100 Continue` first; the container sends none to a POST it refuses, so Node then closes the connection.
+  app.server.on('checkContinue', (req: IncomingMessage, res) => {
+    if (!exceedsLegacyPostSize(req)) res.writeContinue();
+    app.server.emit('request', req, res);
+  });
+
   registerAuth(app, {
     transports: auth.transports,
     // A hook-time denial skips the scope hook below, so what was verified before it is bound here.
@@ -705,7 +782,11 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   app.get('/healthz', { config: { opt2: { public: true } } }, async () => ({ status: 'ok' }));
 
   const headers = Object.entries(legacyHeaders());
-  app.addHook('onSend', (_request, reply, payload, done) => {
+  app.addHook('onSend', (request, reply, payload, done) => {
+    if (stateOf(request)[CONTAINER]) {
+      done(null, payload);
+      return;
+    }
     for (const [header, value] of headers) {
       if (!reply.hasHeader(header)) reply.header(header, value);
     }
@@ -714,7 +795,7 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     if (error instanceof RequestAbortedError) {
-      const route = request.routeOptions.url ?? pathOf(request);
+      const route = request.routeOptions.url ?? UNMATCHED_ROUTE;
       request.log.info({ route, httpMethod: request.method, latencyMs: Math.round(reply.elapsedTime), ...scopeFields(request) }, 'request abandoned');
       // 499 is the client-closed-request code; the socket is gone, so it never reaches the wire.
       return reply.code(499).send();
@@ -724,6 +805,11 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     if (error instanceof AuthDenial) {
       recordOutcomeReason(request, error.reason);
       return sendLegacyResponse(reply, renderAuthDenial(error, request));
+    }
+    // A database outage is a failure, so it logs at ERROR; its surface is always 'auto'.
+    if (error instanceof DatabaseUnavailableError) {
+      request.log.error({ ...scopeFields(request), error: serializeError(error) }, 'database unavailable');
+      return sendLegacyResponse(reply, unavailableResponseFor(surfaceOf(request), { method, params }));
     }
     if (error instanceof LegacyServiceUnavailableError) {
       request.log.warn({ ...scopeFields(request), error: serializeError(error) }, 'service unavailable');
@@ -751,6 +837,8 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
       recordOutcomeReason(request, error.code);
       return sendLegacyResponse(reply, legacyErrorResponse('invalidParameters', { method, params }));
     }
+    // A body over the memory bound gets the closest legacy rejection, the container's Post Size page.
+    if (isBodyTooLargeError(error)) return sendPostSizeExceeded(request, reply);
     if (isFastifyClientError(error)) {
       recordOutcomeReason(request, error.code);
       return sendLegacyResponse(reply, legacyErrorResponse('badRequest', { method, params }));
@@ -767,9 +855,13 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   app.setNotFoundHandler((request, reply) => sendLegacyResponse(reply, notFoundResponse(request, surfaceOf(request))));
 
   app.addHook('onResponse', (request, reply, done) => {
-    const route = request.routeOptions.url ?? pathOf(request);
+    const route = request.routeOptions.url ?? UNMATCHED_ROUTE;
     logCompletion(request, reply.statusCode, route, Math.round(reply.elapsedTime), stateOf(request)[REASON]);
     done();
+  });
+  // After the completion line, so deleting a request's uploads never delays it.
+  app.addHook('onResponse', async (request) => {
+    await removeUploads(request);
   });
 
   const onSigterm = (): void => {

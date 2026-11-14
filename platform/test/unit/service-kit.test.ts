@@ -21,6 +21,7 @@ import {
   isClock,
   loadEnv,
   systemClock,
+  UNMATCHED_ROUTE,
   type Clock,
   type FastifyInstance,
 } from '../../src/service-kit/index.js';
@@ -220,7 +221,9 @@ describe('createService', () => {
     const completed = lines.filter((line) => line.message === 'request completed');
     expect(completed).toHaveLength(1);
     expect(validateLogRecord(completed[0]).errors).toStrictEqual([]);
-    expect(completed[0]).toMatchObject({ requestId: 'req-err', route: url, httpMethod: 'GET', statusCode: status });
+    // Only the unmatched rows register no route.
+    const route = error === undefined ? UNMATCHED_ROUTE : url;
+    expect(completed[0]).toMatchObject({ requestId: 'req-err', route, httpMethod: 'GET', statusCode: status });
     expect(completed[0]?.latencyMs).toEqual(expect.any(Number));
   });
 
@@ -328,7 +331,7 @@ describe('createService', () => {
     expect(completed).toHaveLength(1);
     expect(completed[0]).toMatchObject({
       requestId: 'req-router',
-      route: row.path,
+      route: UNMATCHED_ROUTE,
       httpMethod: 'GET',
       statusCode: row.status,
       latencyMs: expect.any(Number),
@@ -336,8 +339,9 @@ describe('createService', () => {
     const outcomes = lines.filter((line) => line.severity === 'WARNING' || line.message === 'request completed');
     expect(outcomes.map((line) => line.message)).toStrictEqual([...row.warnings, 'request completed']);
     for (const line of outcomes) {
-      expect(line).toMatchObject({ requestId: 'req-router', route: row.path, httpMethod: 'GET', statusCode: row.status });
+      expect(line).toMatchObject({ requestId: 'req-router', route: UNMATCHED_ROUTE, httpMethod: 'GET', statusCode: row.status });
     }
     expect(JSON.stringify(lines)).not.toContain('method=findOne');
+    expect(JSON.stringify(lines)).not.toContain(row.path);
   });
 });

@@ -223,7 +223,14 @@ const CASES = {
     operations: ['commitAccountOperation'],
     arrange: ({ identity, userId, operationId }) => stepThrough(identity, userId, operationId, ['prepare']),
     act: ({ identity, userId, operationId }) => identity.commit(userId, operationId),
-    expected: ({ userId, operationId }): CommitOutcome => ({ operationId, userId, state: 'committed', writePosition: expect.stringMatching(/^[0-9]+$/) as string }),
+    expected: ({ userId, operationId }): CommitOutcome => ({
+      operationId,
+      userId,
+      state: 'committed',
+      writePosition: expect.stringMatching(/^[0-9]+$/) as string,
+      account: expect.objectContaining({ userId, siteId: SYSTEM_USER_ACCOUNT.siteId, username: UPDATE.account.UserName, type: 2 }) as CommitOutcome['account'],
+      groupIds: [MEMBERS_GROUP.UserID],
+    }),
   },
   abort: {
     operations: ['abortAccountOperation'],

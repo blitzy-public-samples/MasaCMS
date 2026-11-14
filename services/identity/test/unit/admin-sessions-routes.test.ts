@@ -625,13 +625,14 @@ describe.skipIf(!available)('admin sessions against PostgreSQL', () => {
     expect(ended.statusCode).toBe(401);
   });
 
-  it('stores admin values whole by key, drops the read-only default-password flag, and refuses an ended session', async () => {
+  it('stores admin values whole by key, drops the read-only default-password flag, refuses undeclared keys and an ended session', async () => {
     const { sid } = await newSession();
     const headers = await headersFor([], { sid });
     const first = { siteid: SITE_A, paramArray: [{ Field: 'tusers.lname', Relationship: 'Contains', Criteria: 'Ada', Condition: 'AND' }], mura: { errors: { a: 1 } } };
 
     const saved = await send('POST', '/v1/sessions/current/admin-state', headers, { ...first, hasdefaultpassword: true });
     const merged = await send('POST', '/v1/sessions/current/admin-state', headers, { mura: { objectInstanceId: 'x' }, dashboardSpan: 30 });
+    const undeclared = await send('POST', '/v1/sessions/current/admin-state', headers, { siteid: DEFAULT, blockLoginUntil: 'x' });
     const read = await send('GET', '/v1/sessions/current/admin-state', headers);
     await send('POST', '/v1/sessions/logout', headers);
     const ended = await send('POST', '/v1/sessions/current/admin-state', headers, { siteid: DEFAULT });
@@ -639,6 +640,7 @@ describe.skipIf(!available)('admin sessions against PostgreSQL', () => {
 
     expect(saved.json()).toEqual(first);
     expect(merged.json()).toEqual({ ...first, mura: { objectInstanceId: 'x' }, dashboardSpan: 30 });
+    expect([undeclared.statusCode, undeclared.json()]).toMatchObject([400, { error: { code: 'invalid_request', message: 'Invalid parameters' } }]);
     expect(read.json()).toEqual(merged.json());
     expect(ended.statusCode).toBe(401);
     expect(endedRead.json()).toEqual({});

@@ -100,7 +100,7 @@ const PARAM_CRITERION = {
   properties: { Field: TEXT, Relationship: TEXT, Criteria: TEXT, Condition: TEXT },
 } as const;
 
-// The contract's AdminSessionState without the read-only `hasdefaultpassword`, which only login sets.
+// The contract's AdminSessionState; the save drops its read-only `hasdefaultpassword`, which only login sets.
 const ADMIN_STATE_BODY = {
   type: 'object',
   additionalProperties: false,
@@ -127,6 +127,7 @@ const ADMIN_STATE_BODY = {
     frontEndProxyLoc: TEXT,
     flash: { type: 'object', additionalProperties: { type: 'object', additionalProperties: TEXT } },
     nextPreserveKey: INTEGER,
+    hasdefaultpassword: { type: 'boolean' },
     moduleTopIds: { type: 'object', additionalProperties: TEXT },
     mura: { type: 'object', additionalProperties: true },
   },
@@ -478,13 +479,14 @@ export async function registerAdminSessionRoutes(app: FastifyInstance, deps: Adm
     { schema: { body: ADMIN_STATE_BODY }, config: { opt2: ADMIN_STATE_SAVE_AUTH } },
     async (request) => {
       const user = relayedUserOf(request.opt2Auth);
+      const values = Object.fromEntries(Object.entries(request.body).filter(([key]) => key !== 'hasdefaultpassword')) as AdminState;
       const located = await locateSession(sessions, user.sid);
       const merged =
         located === undefined
           ? null
           : await withTenant(sessions.db, located.tenantId, async (tx) => {
               const row = await sessions.repo.lockSession(tx, user.sid, 'update');
-              return row?.state === 'active' ? sessions.repo.mergeSessionAdminState(tx, user.sid, request.body) : null;
+              return row?.state === 'active' ? sessions.repo.mergeSessionAdminState(tx, user.sid, values) : null;
             });
       // The token names a session that no longer exists or has ended, so there is no session to store into.
       if (merged === null) throw AuthDenial.unauthenticated('invalid-credential');

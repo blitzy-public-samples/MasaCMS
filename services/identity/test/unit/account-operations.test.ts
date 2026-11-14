@@ -133,7 +133,7 @@ function sameId(stored: string | null, wanted: string): boolean {
   return stored !== null && stored.trimEnd().toUpperCase() === wanted.trimEnd().toUpperCase();
 }
 
-/** Answers the real repository's `account_operation` reads from the memory repo, so code reading through it sees the operations recorded there. */
+/** Answers the real repository's `account_operation` and account record reads from the memory repo, so code reading through it sees the rows recorded there. */
 function mirrorOperations(t: TestApp): void {
   t.db.respond(/^SELECT .+ FROM "identity"\."account_operation" WHERE /, (sql, values) => {
     const rows = t.repo.rows(ACCOUNT_OPERATION.table, String(values[0]));
@@ -146,6 +146,20 @@ function mirrorOperations(t: TestApp): void {
     }
     const wanted = /\boperation_id = ANY\(/.test(sql) ? (values[1] as string[]) : [String(values[1])];
     return rows.filter((row) => wanted.some((operationId) => sameId(row.operation_id, operationId)));
+  });
+  // The commit answer reads the stored account back with its credential date and last login.
+  t.db.respond(/^SELECT u\.userid, u\.username, .+ FROM "identity"\."user_account" u /, (_sql, values) => {
+    const [tenantId, userIds] = values as [string, string[]];
+    const ofUser = <R extends { userid: string }>(rows: readonly R[], userId: string): R | undefined => rows.find((row) => sameId(row.userid, userId));
+    return t.repo
+      .rows(USER_ACCOUNT.table, tenantId)
+      .filter((row) => row.type === 2 && userIds.some((userId) => sameId(row.userid, userId)))
+      .map((row) => ({
+        ...row,
+        passwordcreated: ofUser(t.repo.rows(CREDENTIAL.table, tenantId), row.userid)?.passwordcreated ?? null,
+        lastlogin: ofUser(t.repo.rows(LOGIN_STATE.table, tenantId), row.userid)?.lastlogin ?? null,
+        closed: true,
+      }));
   });
 }
 
@@ -321,7 +335,7 @@ describe('a roster create', () => {
     });
   });
 
-  it('commit activates the account with its credential, login state and memberships, and answers its commit transaction id', async () => {
+  it('commit activates the account with its credential, login state and memberships, and answers its commit transaction id with the stored account', async () => {
     const input = createInput();
     await drive(deps, input, []);
 
@@ -329,7 +343,28 @@ describe('a roster create', () => {
 
     expect(outcome).toEqual({
       outcome: 'committed',
-      result: { operationId: input.operationId, userId: input.userId, state: 'committed', writePosition: expect.stringMatching(/^\d+$/) },
+      result: {
+        operationId: input.operationId,
+        userId: input.userId,
+        state: 'committed',
+        writePosition: expect.stringMatching(/^\d+$/),
+        account: {
+          UserID: input.userId,
+          SiteID: TENANT_A.siteId,
+          UserName: 'roster_new',
+          Type: 2,
+          Admin: null,
+          S2: 0,
+          Perm: 0,
+          InActive: 0,
+          isPublic: 0,
+          remoteID: null,
+          PasswordCreated: '2026-06-30T15:00:00.000',
+          LastLogin: null,
+          tablist: null,
+        },
+        groupIds: [EDITORS.userid],
+      },
     });
     const { writePosition } = (outcome as Extract<CommitOutcome, { outcome: 'committed' }>).result;
     expect(operationOf(t, input.operationId)).toMatchObject({ state: 'committed', commit_xid: writePosition });
@@ -412,6 +447,21 @@ describe('a roster edit', () => {
       step: { state: 'finished' },
     });
     expect(operationOf(t, input.operationId)?.state).toBe('finished');
+  });
+
+  it('commit answers the edited account with its new credential date and the memberships after the change', async () => {
+    const input = updateInput();
+    await drive(deps, input, []);
+
+    const outcome = await commitAccountOperation(deps, input.operationId, { userId: input.userId });
+
+    expect(outcome).toMatchObject({
+      outcome: 'committed',
+      result: {
+        account: { UserID: input.userId, UserName: 'site_admin_renamed', remoteID: 'remote-7', PasswordCreated: '2026-06-30T15:00:00.000', InActive: 0 },
+        groupIds: [EDITORS.userid],
+      },
+    });
   });
 
   it('holds the membership event its commit writes under the operation until finish releases it', async () => {
@@ -761,6 +811,7 @@ describe('account operation routes', () => {
     const { writePosition } = res.json() as { writePosition: string };
     expect(writePosition).toMatch(/^\d+$/);
     expect(res.headers['x-opt2-write-position']).toBe(`identity=${writePosition}`);
+    expect(res.json()).toMatchObject({ account: { UserID: input.userId, UserName: 'roster_new', Type: 2 } });
   });
 
   it.each([

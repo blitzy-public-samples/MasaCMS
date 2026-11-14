@@ -4129,8 +4129,8 @@
       "owningService": "people",
       "tableVersion": "v0001",
       "state": "legacy",
-      "kind": "write",
-      "group": "grp:identity.credential",
+      "kind": "legacy-write",
+      "group": null,
       "units": [
         "identity.credential",
         "identity.membership",
@@ -6593,8 +6593,8 @@
       "owningService": "identity",
       "tableVersion": "v0001",
       "state": "legacy",
-      "kind": "write",
-      "group": "grp:identity.credential",
+      "kind": "legacy-write",
+      "group": null,
       "units": [
         "identity.membership"
       ],
@@ -6827,8 +6827,8 @@
       "owningService": "identity",
       "tableVersion": "v0001",
       "state": "legacy",
-      "kind": "write",
-      "group": "grp:identity.credential",
+      "kind": "legacy-write",
+      "group": null,
       "units": [
         "identity.user_strike"
       ],
@@ -6911,8 +6911,8 @@
       "owningService": "identity",
       "tableVersion": "v0001",
       "state": "legacy",
-      "kind": "write",
-      "group": "grp:identity.credential",
+      "kind": "legacy-write",
+      "group": null,
       "units": [
         "identity.membership"
       ],

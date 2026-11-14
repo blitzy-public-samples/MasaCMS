@@ -18,6 +18,7 @@ import { discardOperation, releaseOperation } from '@opt2/platform/outbox';
 import { ServiceUnavailableError, type Clock } from '@opt2/platform/service-kit';
 import { registeredTenants, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import type { PeopleEvents } from '../events/publish.js';
+import type { ContentClient } from '../legacy/content-client.js';
 import type {
   AccountCommitRequest,
   AccountOperationState,
@@ -61,6 +62,7 @@ import {
 import {
   applyAddressInput,
   insertAddressInTx,
+  listAddresses,
   primaryAddressFor,
   resolveAddressPoolSite,
   setPrimaryAddress,
@@ -149,13 +151,50 @@ export interface RosterInput {
   sessionReloginId?: string;
 }
 
-/**
- * Legacy's outcome of the save: the saved bean, or its validation errors with the values the form re-renders.
- * `finishPending` marks a save whose identity `:finish` recovery still owes; identity keeps the user closed to every read until then.
- */
-export type RosterResult =
-  | { ok: true; userId: string; values: UserValues; finishPending?: true }
-  | { ok: false; errors: LegacyErrors; values: UserValues };
+/** The user as the operation committed it: people's rows read in its commit, identity's account and memberships from its commit answer. */
+export interface CommittedUser {
+  /** The tenant holding the person. */
+  tenantId: string;
+  person: PersonRow;
+  account: AccountView;
+  /** Membership group ids, in identity's `readMembershipIDs` order. */
+  groupIds: string[];
+  /** Interest category ids, in `readInterestGroupIDs` order. */
+  categoryIds: string[];
+  addresses: AddressRow[];
+  extend: EntityExtendData;
+  /** The committed photo's `tfiles.fileExt`, looked up under the operation for a JSON API save; '' otherwise. */
+  photoFileExt: string;
+}
+
+/** A save committed on both sides: the saved bean's values and the user as committed. */
+export interface CommittedSave {
+  ok: true;
+  userId: string;
+  values: UserValues;
+  committed: CommittedUser;
+}
+
+/** An admin action `restrictAdminInput` voided: nothing written, the route re-routes with these values. */
+export interface VoidedResult {
+  ok: true;
+  voided: true;
+  userId: string;
+  values: UserValues;
+}
+
+/** Legacy's validation errors with the values the form re-renders; nothing written. */
+export interface RejectedSave {
+  ok: false;
+  errors: LegacyErrors;
+  values: UserValues;
+}
+
+/** Legacy's outcome of the save; only the admin kinds can be voided. */
+export type RosterResult = CommittedSave | VoidedResult | RejectedSave;
+
+/** The kinds `restrictAdminInput` applies to. */
+type AdminKind = Extract<RosterKind, 'admin-add' | 'admin-update'>;
 
 /** The `{photo}` branches are withheld and served by legacy; raised before any write. */
 export class PhotoBranchError extends LegacyServiceUnavailableError {
@@ -199,6 +238,8 @@ export interface RosterDeps {
   locale?: string;
   /** Wait between closed-user and identity-state polls; defaults to a timer. */
   sleep?: Sleep;
+  /** strategies-content's photo lookup; without it a committed `photoFileExt` is ''. */
+  photoFileExts?: ContentClient['photoFileExts'];
 }
 
 /** Options of `awaitPersonOpen`; `selfOperationId` names the caller's own operation, which does not close the user to it. */
@@ -534,6 +575,8 @@ interface ShapedSave {
   /** The posted address an update re-saves; '' for none. */
   addressId: string;
   addressPoolSite?: string;
+  /** The `tfiles.fileExt` of `person.photofileid`, from `shapeUnderIntent`. */
+  photoFileExt: string;
 }
 
 /** The action `restrictAdminInput` voided: no write, the route re-routes with these values. */
@@ -581,7 +624,7 @@ function saveTarget(input: RosterInput): SaveTarget {
 }
 
 /** Under the intent: the controller restrictions, the bean values, the pool and S2 rules and people's validation, reading only. */
-async function shapeSave(deps: RosterDeps, input: RosterInput, target: SaveTarget, budget: Budget): Promise<ShapedSave | VoidedSave> {
+async function shapeSave(deps: RosterDeps, input: RosterInput, target: SaveTarget, budget: Budget): Promise<Omit<ShapedSave, 'photoFileExt'> | VoidedSave> {
   const { claims, tenantId } = input;
   let params = input.params;
   let voided = false;
@@ -609,7 +652,7 @@ async function shapeSave(deps: RosterDeps, input: RosterInput, target: SaveTarge
   if (input.kind === 'profile-update' && stored !== null) {
     params = restrictProfileInput(params, { userId, siteId: stored.account.siteId });
   }
-  // `tfiles.fileExt` belongs to strategies-content, and a save without a photo neither reads nor writes it.
+  // `tfiles.fileExt` belongs to strategies-content, and a save without a photo writes none.
   const base = stored === null ? newUserValues(deps.clock) : userBeanValues({ ...stored, photoFileExt: '' }, deps.clock);
   if (voided) return { voided: true, userId, values: base };
 
@@ -686,20 +729,32 @@ function payloadOf(shaped: ShapedSave): string {
   });
 }
 
-/** Step 1: commits the operation in state `started` with an empty payload, waiting out another open operation or its roster locks' holders once, within `USER_CLOSED_WAIT_MS`. */
+/** Step 1: commits the operation in state `started` with an empty payload, waiting out the user's open operations and its roster locks' holders until `USER_CLOSED_WAIT_MS` is spent. */
 async function recordIntent(deps: RosterDeps, input: RosterInput, userId: string, write: WriteContext): Promise<RosterOperationRow> {
   const intent = { kind: input.kind, userId, payload: '{}' };
   const budget = startBudget(deps.clock, USER_CLOSED_WAIT_MS, deps.sleep ?? timerSleep);
-  for (let waited = false; ; waited = true) {
+  for (;;) {
     try {
       return await withTenant(deps.db, input.tenantId, (tx) => deps.repo.insertRosterOperation(tx, intent, write, lockWait(budget)));
     } catch (err) {
-      if (err instanceof RosterLockTimeoutError) budget.charge(err.timeoutMs);
-      else if (!(err instanceof RosterOperationOpenError)) throw err;
-      if (waited) throw userClosed(userId);
+      if (err instanceof RosterLockTimeoutError) {
+        budget.charge(err.timeoutMs);
+        if (budget.remaining() <= 0) throw lockNotGranted(err);
+        continue;
+      }
+      if (!(err instanceof RosterOperationOpenError)) throw err;
     }
+    if (budget.remaining() <= 0) throw userClosed(userId);
+    // awaitOpen cannot see a holder of another tenant, so every retry first waits one poll.
+    await budget.pause(CLOSED_POLL_MS);
     await awaitOpen(deps.db, input.tenantId, userId, budget);
   }
+}
+
+/** The `tfiles.fileExt` `userDAO.read` joins for the photo a JSON API save commits; '' for no photo and for the other kinds. */
+async function committedPhotoExt(deps: RosterDeps, input: RosterInput, fileId: string | null, budget: Budget): Promise<string> {
+  if (input.kind !== 'json-save' || deps.photoFileExts === undefined || fileId === null || fileId === '') return '';
+  return (await deps.photoFileExts([fileId], callOptions(budget, 'shape'))).get(fileId) ?? '';
 }
 
 /** Shapes the save under its intent and records the payload; a failed or voided save closes the operation `rolled-back`. */
@@ -715,8 +770,11 @@ async function shapeUnderIntent(
     guarded('shape', () => closeOperation(deps, input.tenantId, operationId, { state: 'rolled-back', error }, write));
   let shaped: ShapedSave | VoidedSave;
   try {
-    shaped = await shapeSave(deps, input, target, budget);
-    if (!('voided' in shaped)) {
+    const save = await shapeSave(deps, input, target, budget);
+    if ('voided' in save) {
+      shaped = save;
+    } else {
+      shaped = { ...save, photoFileExt: await committedPhotoExt(deps, input, save.person.photofileid, budget) };
       const payload = payloadOf(shaped);
       await guarded('shape', () => withTenant(deps.db, input.tenantId, (tx) => deps.repo.setRosterOperationState(tx, operationId, { state: 'started', payload }, write)));
     }
@@ -774,6 +832,18 @@ async function fenceMovedAddress(repo: PeopleRepository, tx: TenantTx, shaped: S
   if (open !== undefined) throw new PersonClosedSignal(open.user_id.replace(/ +$/, ''), open.operation_id);
 }
 
+/** People's part of the committed user. */
+type CommittedRows = Pick<CommittedUser, 'person' | 'categoryIds' | 'addresses' | 'extend'>;
+
+/** The person's rows as `userDAO.read` reloads them after the save, read in the people commit's transaction. */
+async function committedRows(repo: PeopleRepository, tx: TenantTx, person: PersonRow, config: ExtendConfig): Promise<CommittedRows> {
+  const categoryIds = (await repo.listInterests(tx, person.userid)).map((row) => row.categoryid);
+  const addresses = await listAddresses(repo, tx, person.userid);
+  // getAllValues builds the bean's extended data for its site, Type 2 and subtype (beanExtendable.cfc:139-151).
+  const extend = await extendSetData(repo, tx, person.userid, { siteId: person.siteid ?? '', type: '2', subtype: person.subtype ?? '' }, config);
+  return { person, categoryIds, addresses, extend };
+}
+
 /** Step 3: people's writes of `userManager.update`/`create` in one fenced, gated transaction, the held person event and state `people-committed`; fence waits draw on `budget`. */
 async function commitPeople(
   deps: RosterDeps,
@@ -782,7 +852,7 @@ async function commitPeople(
   operationId: string,
   budget: Budget,
   write: WriteContext,
-): Promise<{ operation: RosterOperationRow; person: PersonRow; audit: { lastupdateby: string; lastupdatebyid: string } }> {
+): Promise<{ operation: RosterOperationRow; person: PersonRow; audit: { lastupdateby: string; lastupdatebyid: string }; rows: CommittedRows }> {
   const { repo } = deps;
   const { userId, values } = shaped;
   const audit = lastUpdateInfo(auditActorFor(input.claims, input.acting), { userid: userId, fname: values.fname, lname: values.lname });
@@ -817,7 +887,7 @@ async function commitPeople(
     await deps.events.publishPersonChanged(tx, person, { operationId });
     const operation = await repo.setRosterOperationState(tx, operationId, { state: 'people-committed', beforeImage: JSON.stringify(before) }, write);
     if (operation === null) throw new Error(`Roster operation ${operationId} is missing from its tenant`);
-    return { operation, person, audit };
+    return { operation, person, audit, rows: await committedRows(repo, tx, person, config) };
   };
   return runPersonsOpen(deps.db, input.tenantId, commit, reserving(budget, IDENTITY_CALL_RESERVE_MS));
 }
@@ -848,16 +918,14 @@ function commitRequest(input: RosterInput, person: PersonRow): AccountCommitRequ
   return { sessionEffects: { reloginSessionId: input.sessionReloginId, person: { fname, lname, email, company, subtype } } };
 }
 
-/** Step 5 after `done`: identity's `:finish`, then the operation leaves `finish-pending` and its registration ends; false when recovery owes the finish. */
-async function finishOperation(deps: RosterDeps, tenantId: string, userId: string, operationId: string, budget: Budget, write: WriteContext): Promise<boolean> {
+/** Step 5 after `done`: identity's `:finish`, then the operation leaves `finish-pending` and its registration ends; on a failure recovery owes the finish. */
+async function finishOperation(deps: RosterDeps, tenantId: string, userId: string, operationId: string, budget: Budget, write: WriteContext): Promise<void> {
   try {
     await deps.faults.at('after-done');
     await deps.identity.finish(userId, operationId, callOptions(budget, 'finish'));
     await closeOperation(deps, tenantId, operationId, { state: 'done', error: null }, write);
-    return true;
   } catch {
     // The change is complete on both sides, so the save succeeds; recovery repeats the `finish-pending` operation's `:finish`.
-    return false;
   }
 }
 
@@ -887,6 +955,8 @@ async function prepareAccount(
  * Runs one Type=2 save under the roster write protocol. Returns legacy's validation outcome as `ok: false`; throws the
  * legacy 503 for a rejected save, which leaves no change on either side once any open step is recovered.
  */
+export function runRosterOperation(deps: RosterDeps, input: RosterInput & { kind: Exclude<RosterKind, AdminKind> }): Promise<CommittedSave | RejectedSave>;
+export function runRosterOperation(deps: RosterDeps, input: RosterInput): Promise<RosterResult>;
 export async function runRosterOperation(deps: RosterDeps, input: RosterInput): Promise<RosterResult> {
   assertNoPhoto(input.params);
   const { tenantId, claims } = input;
@@ -899,7 +969,7 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
   const budget = startBudget(deps.clock, REQUEST_BUDGET_MS, deps.sleep ?? timerSleep);
   const write: WriteContext = { ...base, operationId };
   const shaped = await shapeUnderIntent(deps, input, target, operationId, budget, write);
-  if ('voided' in shaped) return { ok: true, userId: shaped.userId, values: shaped.values };
+  if ('voided' in shaped) return { ok: true, voided: true, userId: shaped.userId, values: shaped.values };
   const { userId } = shaped;
   try {
     // Only people's units: this schema holds no identity gates, and identity registers its own units at prepare.
@@ -973,9 +1043,9 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
       await releaseOperation(tx, operationId);
     }),
   );
-  const finished = await finishOperation(deps, tenantId, userId, operationId, budget, write);
+  await finishOperation(deps, tenantId, userId, operationId, budget, write);
   const values = { ...shaped.values, ...committed.audit, isnew: 0, errors: {} };
-  return finished ? { ok: true, userId, values } : { ok: true, userId, values, finishPending: true };
+  return { ok: true, userId, values, committed: { tenantId, ...committed.rows, account: commit.account, groupIds: commit.groupIds, photoFileExt: shaped.photoFileExt } };
 }
 
 /** `row` with its timestamp columns, which JSON carries as ISO text, back as Dates. */

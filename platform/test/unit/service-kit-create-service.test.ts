@@ -1,16 +1,15 @@
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { createServer, maxHeaderSize, request as httpRequest, type IncomingMessage } from 'node:http';
 import { createRequire } from 'node:module';
-import type { AddressInfo } from 'node:net';
+import { connect, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { text } from 'node:stream/consumers';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { DestinationStream } from 'pino';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { errorCodes, type FastifyInstance, type FastifyRequest } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AuthDenial,
@@ -31,7 +30,7 @@ import {
   legacyErrorResponse,
 } from '../../src/legacy-compat/index.js';
 import { REDACTED, createLogger, validateLogRecord, type Logger } from '../../src/logging/index.js';
-import { tenantIdForSite, type TenantDb } from '../../src/tenancy/index.js';
+import { DatabaseUnavailableError, tenantIdForSite, type TenantDb } from '../../src/tenancy/index.js';
 import { mintUserToken } from '../../src/testing/index.js';
 import {
   MemorySpanExporter,
@@ -44,15 +43,18 @@ import {
 import { ServiceUnavailableError, UnknownServiceError } from '../../src/service-kit/client.js';
 import { currentRequestContext, throwIfRequestAborted } from '../../src/service-kit/context.js';
 import {
+  LEGACY_MAX_POST_CONTENT_LENGTH,
   LEGACY_POST_LIMIT_BYTES,
   abandonOnDisconnect,
   createService,
   defaultSurfaceOf,
+  isBodyTooLargeError,
   isUnstorableTextError,
   legacyParamsOf,
   multipartFilesOf,
   recordOutcomeReason,
   sendLegacyResponse,
+  UNMATCHED_ROUTE,
   type CreateServiceOptions,
   type LegacyParamsOptions,
 } from '../../src/service-kit/create-service.js';
@@ -158,6 +160,10 @@ function multipartBody(boundary: string, parts: Array<{ name: string; value: str
 
 const MIB = 1024 * 1024;
 
+/** Reason phrase and body of the legacy container's answer to an oversized POST, as the legacy oracle sends them. */
+const POST_SIZE_STATUS_TEXT = 'Post Size exceeds the maximum limit.';
+const POST_SIZE_PAGE = `<html><head><title>Error</title></head><body>${POST_SIZE_STATUS_TEXT}</body></html>`;
+
 function sha256Hex(bytes: string | Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
@@ -215,8 +221,9 @@ describe('defaultSurfaceOf', () => {
 });
 
 describe('createService options', () => {
-  it('exposes the legacy post limit of 100 MB', () => {
+  it('exposes the 100 MiB body bound and the legacy container POST limit of 20 MiB + 1', () => {
     expect(LEGACY_POST_LIMIT_BYTES).toBe(104_857_600);
+    expect(LEGACY_MAX_POST_CONTENT_LENGTH).toBe(20_971_521);
   });
 
   it('rejects pool and schema together with a TypeError', async () => {
@@ -692,6 +699,41 @@ describe('legacy error mapping', () => {
     expect(res.body).toBe(LEGACY_ERROR_PAGE_HTML);
   });
 
+  it.each([
+    {
+      surface: 'API',
+      path: '/legacy-fixtures/cfml/api.cfm/timesheets/sheets',
+      contentType: LEGACY_JSON_CONTENT_TYPE,
+      read: (body: string): unknown => JSON.parse(body),
+      expected: { apiversion: 'v1', method: 'save', error: { code: 'server_error', message: 'Unhandled Exception' } },
+    },
+    {
+      surface: 'admin',
+      path: '/admin-actions/cusers/update',
+      contentType: LEGACY_HTML_CONTENT_TYPE,
+      read: (body: string): unknown => body,
+      expected: LEGACY_ERROR_PAGE_HTML,
+    },
+  ])('answers a DatabaseUnavailableError on the $surface surface with the legacy 503 and one ERROR line', async ({ path: url, contentType, read, expected }) => {
+    const { app, lines } = await build();
+    app.get(url, { config: { opt2: { public: true } } }, () => {
+      throw new DatabaseUnavailableError('ECONNREFUSED', refused());
+    });
+    const res = await app.inject({ method: 'GET', url: `${url}?method=save` });
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['content-type']).toBe(contentType);
+    expect(read(res.body)).toStrictEqual(expected);
+    const logged = lines.filter((line) => line.severity === 'ERROR' || line.severity === 'WARNING');
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+      severity: 'ERROR',
+      message: 'database unavailable',
+      error: { type: 'DatabaseUnavailableError', message: 'Database unavailable (ECONNREFUSED)' },
+    });
+    expect(validateLogRecord(logged[0]).errors).toStrictEqual([]);
+    expect(JSON.stringify(lines)).not.toMatch(/127\.0\.0\.1|26011/);
+  });
+
   it('answers a valid user token with the legacy 503 envelope while the JWKS endpoint refuses connections', async () => {
     const closed = createServer();
     await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
@@ -737,13 +779,49 @@ describe('legacy error mapping', () => {
     expect(res.json()).toMatchObject({ error: { code: 'invalid_request', message: 'Invalid parameters' } });
   });
 
+  const CLOSED_BODY = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['kind', 'account'],
+    properties: {
+      kind: { type: 'string' },
+      account: { type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string' } } },
+    },
+  } as const;
+  const CLOSED_VALID = { kind: 'create', account: { name: 'Pat' } };
+
+  /** A service echoing the body of a route whose schema, nested object included, declares `additionalProperties: false`. */
+  async function closedBodyRoute(): Promise<FastifyInstance> {
+    const { app } = await build();
+    app.post('/closed', { config: { opt2: { public: true } }, schema: { body: CLOSED_BODY } }, (request, reply) => reply.send({ body: request.body }));
+    return app;
+  }
+
+  it.each([
+    ['a top-level', { ...CLOSED_VALID, evil: 1 }],
+    ['a nested', { ...CLOSED_VALID, account: { ...CLOSED_VALID.account, Evil: 'x' } }],
+  ])('answers %s property an additionalProperties: false schema does not declare with invalidParameters', async (_label, payload) => {
+    const app = await closedBodyRoute();
+    const res = await app.inject({ method: 'POST', url: '/closed', payload });
+    expect(res.statusCode).toBe(400);
+    expect(res.headers['content-type']).toBe(LEGACY_JSON_CONTENT_TYPE);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Invalid parameters' } });
+  });
+
+  it('hands a body an additionalProperties: false schema admits to the handler unchanged', async () => {
+    const app = await closedBodyRoute();
+    const res = await app.inject({ method: 'POST', url: '/closed', payload: CLOSED_VALID });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toStrictEqual({ body: CLOSED_VALID });
+  });
+
   it('answers a Fastify client error with badRequest', async () => {
     const { app } = await build();
     app.post('/small', { bodyLimit: 8, config: { opt2: { public: true } } }, async () => 'never');
     const res = await app.inject({
       method: 'POST',
       url: '/small',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'no-subtype' },
       payload: '{"payload":"far too long"}',
     });
     expect(res.statusCode).toBe(400);
@@ -893,19 +971,20 @@ describe('body parsing and legacy params', () => {
   });
 
   it.each([
-    { sent: 'with its Content-Length', kind: 'file', count: 4, mib: 75, declared: true, pulled: [0, 0] },
-    { sent: 'chunked, as files', kind: 'file', count: 4, mib: 75, declared: false, pulled: [LEGACY_POST_LIMIT_BYTES, LEGACY_POST_LIMIT_BYTES + 4 * MIB] },
-    { sent: 'chunked, as fields', kind: 'field', count: 300, mib: 1, declared: false, pulled: [LEGACY_POST_LIMIT_BYTES, LEGACY_POST_LIMIT_BYTES + 4 * MIB] },
+    { sent: 'by PUT with its Content-Length', method: 'PUT', kind: 'file', count: 4, mib: 75, declared: true, pulled: [0, 0] },
+    { sent: 'chunked, as files', method: 'POST', kind: 'file', count: 4, mib: 75, declared: false, pulled: [LEGACY_POST_LIMIT_BYTES, LEGACY_POST_LIMIT_BYTES + 4 * MIB] },
+    { sent: 'chunked, as fields', method: 'POST', kind: 'field', count: 300, mib: 1, declared: false, pulled: [LEGACY_POST_LIMIT_BYTES, LEGACY_POST_LIMIT_BYTES + 4 * MIB] },
   ] as const)(
-    'answers a multipart body over the post limit sent $sent with badRequest, reading no further than the limit',
-    async ({ kind, count, mib, declared, pulled: [least, most] }) => {
-      const app = await echo();
+    'answers a multipart body over the body bound sent $sent with the Post Size page, reading no further than the bound',
+    async ({ method, kind, count, mib, declared, pulled: [least, most] }) => {
+      const { app } = await build();
+      app.route({ method, url: '/upload', config: { opt2: { public: true } }, handler: () => 'never' });
       const boundary = 'opt2boundary';
       const { body, length, pulled } = lazyMultipartBody(boundary, kind, count, mib);
       expect(length).toBeGreaterThan(LEGACY_POST_LIMIT_BYTES);
       const res = await app.inject({
-        method: 'POST',
-        url: '/echo',
+        method,
+        url: '/upload',
         headers: {
           'content-type': `multipart/form-data; boundary=${boundary}`,
           ...(declared ? { 'content-length': String(length) } : {}),
@@ -913,16 +992,17 @@ describe('body parsing and legacy params', () => {
         payload: body,
       });
       expect(res.statusCode).toBe(400);
+      expect(res.statusMessage).toBe(POST_SIZE_STATUS_TEXT);
       expect(res.headers.connection).toBe('close');
-      expect(res.body).toBe(legacyErrorResponse('badRequest').body);
+      expect(res.body).toBe(POST_SIZE_PAGE);
       expect(pulled()).toBeGreaterThanOrEqual(least);
       expect(pulled()).toBeLessThanOrEqual(most);
     },
   );
 
-  it('still spools every file of a multipart body just under the post limit, counting and hashing each in full', async () => {
+  it('still spools every file of a multipart body just under the body bound, counting and hashing each in full', async () => {
     const { app } = await build();
-    app.post('/sizes', { config: { opt2: { public: true } } }, (request) =>
+    app.put('/sizes', { config: { opt2: { public: true } } }, (request) =>
       Promise.all(
         multipartFilesOf(request).map(async ({ filename, size, sha256, stream }) => {
           const read = createHash('sha256');
@@ -939,7 +1019,7 @@ describe('body parsing and legacy params', () => {
     const { body, length } = lazyMultipartBody(boundary, 'file', 3, 33);
     expect(length).toBeLessThan(LEGACY_POST_LIMIT_BYTES);
     const res = await app.inject({
-      method: 'POST',
+      method: 'PUT',
       url: '/sizes',
       headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, 'content-length': String(length) },
       payload: body,
@@ -950,48 +1030,124 @@ describe('body parsing and legacy params', () => {
   });
 
   it.each([
-    {
-      outcome: 'a handled request',
-      status: 200,
-      body: (boundary: string): string | Readable =>
-        multipartBody(boundary, [
-          { name: 'a', value: 'one', filename: 'a.txt' },
-          { name: 'b', value: 'two', filename: 'b.txt' },
-        ]),
-    },
-    {
-      outcome: 'a multipart body over the post limit',
-      status: 400,
-      body: (boundary: string): string | Readable => lazyMultipartBody(boundary, 'file', 4, 75).body,
-    },
-  ])('deletes every spooled temporary file once it has answered $outcome', async ({ status, body }) => {
+    { outcome: 'a handled request', send: 'inject', fail: false, status: 200, spooled: 2, errors: [] },
+    { outcome: 'a handled request on a real socket', send: 'socket', fail: false, status: 200, spooled: 2, errors: [] },
+    { outcome: 'a handler error', send: 'inject', fail: true, status: 500, spooled: 2, errors: ['unhandled error'] },
+    { outcome: 'a multipart body over the post limit', send: 'over-limit', fail: false, status: 400, spooled: 2, errors: [] },
+    { outcome: 'a client abort mid-upload', send: 'abort', fail: false, status: undefined, spooled: 1, errors: ['unhandled error'] },
+  ] as const)('deletes every spooled temporary file once after $outcome, logging no failed delete', async ({ send, fail, status, spooled, errors }) => {
     const dir = await mkdtemp(path.join(tmpdir(), 'opt2-create-service-spool-'));
     vi.stubEnv('TMPDIR', dir);
     try {
-      const { app } = await build();
-      const during: boolean[] = [];
+      const { app, lines } = await build();
+      const errorMessages = (): unknown[] => lines.filter((line) => line.severity === 'ERROR').map((line) => line.message);
+      const values = ['one', 'two'];
+      // The spool directory while the files exist, and the plugin's own upload list, which must hold none of them.
+      const listings: string[][] = [];
+      const pluginUploads: Array<string[] | null> = [];
+      const snapshot = async (request: FastifyRequest): Promise<void> => {
+        listings.push(await readdir(dir));
+        pluginUploads.push(request.tmpUploads);
+      };
       app.post('/spool', { config: { opt2: { public: true } } }, async (request) => {
-        during.push(...(request.tmpUploads ?? []).map((file) => existsSync(file)));
-        return multipartFilesOf(request).length;
+        const read = await Promise.all(multipartFilesOf(request).map((file) => text(file.stream())));
+        await snapshot(request);
+        if (fail) throw new Error('handler failed');
+        return read;
       });
-      // Added after the multipart plugin's, so it runs once that plugin's cleanup has finished.
-      const responded = new Promise<string[]>((resolve) => {
-        app.addHook('onResponse', async (request) => resolve(request.tmpUploads ?? []));
+      // Runs ahead of the error handler, before the response cleanup.
+      app.addHook('onError', async (request) => {
+        await snapshot(request);
+      });
+      // Added after the service kit's, so it runs once the response cleanup has finished.
+      const responded = new Promise<number>((resolve) => {
+        app.addHook('onResponse', async (_request, reply) => resolve(reply.statusCode));
+      });
+      const boundary = 'opt2boundary';
+      const headers = { 'content-type': `multipart/form-data; boundary=${boundary}` };
+      const small = multipartBody(boundary, values.map((value) => ({ name: value, value, filename: `${value}.txt` })));
+      if (send === 'inject' || send === 'over-limit') {
+        const payload = send === 'inject' ? small : lazyMultipartBody(boundary, 'file', 4, 75).body;
+        const res = await app.inject({ method: 'POST', url: '/spool', headers, payload });
+        expect(res.statusCode).toBe(status);
+        if (status === 200) expect(res.json()).toStrictEqual(values);
+      } else {
+        await app.listen({ port: 0, host: '127.0.0.1' });
+        const { port } = app.server.address() as AddressInfo;
+        if (send === 'socket') {
+          const res = await fetch(`http://127.0.0.1:${String(port)}/spool`, { method: 'POST', headers, body: small });
+          expect(res.status).toBe(status);
+          expect(await res.json()).toStrictEqual(values);
+        } else {
+          const req = httpRequest({ host: '127.0.0.1', port, method: 'POST', path: '/spool', headers: { ...headers, 'content-length': String(8 * MIB) } });
+          req.on('error', () => undefined);
+          req.write(`--${boundary}\r\nContent-Disposition: form-data; name="one"; filename="one.bin"\r\n\r\n`);
+          req.write(Buffer.alloc(MIB, 'x'));
+          const spooling = await vi.waitFor(
+            async () => {
+              const now = await readdir(dir);
+              expect(now).toHaveLength(1);
+              return now;
+            },
+            { timeout: 5000 },
+          );
+          listings.push(spooling);
+          req.destroy();
+        }
+      }
+      const drained = async (): Promise<void> => {
+        expect(await readdir(dir)).toEqual([]);
+      };
+      if (send === 'abort') {
+        // The response never finishes, so onResponse never runs: the close starts the deletion, and the request ends with its error line.
+        await vi.waitFor(drained, { timeout: 5000 });
+        await vi.waitFor(() => expect(errorMessages()).toStrictEqual(errors), { timeout: 5000 });
+      } else {
+        expect(await responded).toBe(status);
+        await drained();
+      }
+      expect(listings[0]).toHaveLength(spooled);
+      expect(listings[0]?.every((name) => name.startsWith('opt2-upload-'))).toBe(true);
+      expect(pluginUploads.length).toBeGreaterThan(0);
+      expect(pluginUploads.every((list) => list === null)).toBe(true);
+      expect(errorMessages()).toStrictEqual(errors);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('logs a spooled file it cannot delete as one ERROR line and still writes the completion line', async () => {
+    const dir = await mkdtemp(`${tmpdir()}/opt2-create-service-spool-`);
+    vi.stubEnv('TMPDIR', dir);
+    try {
+      const { app, lines } = await build();
+      app.post('/spool', { config: { opt2: { public: true } } }, async () => {
+        // A directory in the spool file's place makes its delete fail.
+        const spooled = `${dir}/${(await readdir(dir))[0] ?? ''}`;
+        await rm(spooled);
+        await mkdir(spooled);
+        return 'handled';
+      });
+      const responded = new Promise<void>((resolve) => {
+        app.addHook('onResponse', (_request, _reply, done) => {
+          resolve();
+          done();
+        });
       });
       const boundary = 'opt2boundary';
       const res = await app.inject({
         method: 'POST',
         url: '/spool',
         headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
-        payload: body(boundary),
+        payload: multipartBody(boundary, [{ name: 'a', value: 'one', filename: 'a.txt' }]),
       });
-      expect(res.statusCode).toBe(status);
-      const after = await responded;
-      expect(after).toHaveLength(2);
-      expect(after.every((file) => path.dirname(file) === dir && path.basename(file).startsWith('opt2-upload-'))).toBe(true);
-      expect(during).toEqual(status === 200 ? [true, true] : []);
-      expect(after.filter((file) => existsSync(file))).toEqual([]);
-      expect(await readdir(dir)).toEqual([]);
+      expect(res.statusCode).toBe(200);
+      await responded;
+      const errors = lines.filter((line) => line.severity === 'ERROR');
+      expect(errors).toMatchObject([{ message: 'upload cleanup failed', error: { type: 'SystemError', message: 'rm ERR_FS_EISDIR' } }]);
+      expect(validateLogRecord(errors[0]).errors).toStrictEqual([]);
+      expect(completedLines(lines)).toMatchObject([{ route: '/spool', statusCode: 200 }]);
     } finally {
       vi.unstubAllEnvs();
       await rm(dir, { recursive: true, force: true });
@@ -1058,6 +1214,144 @@ describe('body parsing and legacy params', () => {
     expect(res.statusMessage).toBe('Queued');
     expect(res.headers['content-type']).toBe('text/csv');
     expect(res.body).toBe('a,b');
+  });
+});
+
+describe('legacy container POST size limit', () => {
+  /** An app whose s2-only `/sized`, `/internal/v1/sized` and 8-byte `/small` routes answer the byte length of the body they read. */
+  async function sized(): Promise<{ app: FastifyInstance; lines: LogLine[] }> {
+    const built = await build();
+    for (const [url, bodyLimit] of [['/sized'], ['/internal/v1/sized'], ['/small', 8]] as const) {
+      built.app.route({
+        method: ['GET', 'POST', 'PUT'],
+        url,
+        config: { opt2: { requires: ['s2'] } },
+        bodyLimit,
+        handler: (request) => ({ length: Buffer.isBuffer(request.body) ? request.body.length : 0 }),
+      });
+    }
+    return built;
+  }
+
+  /** Asserts the container's Post Size page: status, reason phrase, exact body and only the container's own headers. */
+  function expectPostSizePage(res: { statusCode: number; statusMessage: string; headers: Record<string, unknown>; body: string }): void {
+    expect(res.statusCode).toBe(400);
+    expect(res.statusMessage).toBe(POST_SIZE_STATUS_TEXT);
+    expect(res.body).toBe(POST_SIZE_PAGE);
+    expect(res.headers).toMatchObject({ 'content-type': LEGACY_HTML_CONTENT_TYPE, 'content-length': '95' });
+    expect(Object.keys(res.headers).filter((name) => !['connection', 'date'].includes(name)).sort()).toStrictEqual([
+      'content-length',
+      'content-type',
+    ]);
+  }
+
+  function outcomeLines(lines: LogLine[]): unknown[][] {
+    for (const line of lines) expect(validateLogRecord(line).errors).toStrictEqual([]);
+    return lines.map((line) => [line.severity, line.message, line.statusCode]);
+  }
+
+  it.each([LEGACY_MAX_POST_CONTENT_LENGTH + 1, 100 * MIB + 4096])(
+    'answers a POST declaring %i bytes with the Post Size page before auth, logging one WARNING and one INFO line',
+    async (length) => {
+      const { app, lines } = await sized();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/sized?siteid=tenant-a',
+        headers: { 'content-type': 'application/json', 'content-length': String(length) },
+        payload: '{}',
+      });
+      expectPostSizePage(res);
+      expect(outcomeLines(lines)).toStrictEqual([
+        ['WARNING', 'request rejected: FST_ERR_CTP_BODY_TOO_LARGE', 400],
+        ['INFO', 'request completed', 400],
+      ]);
+    },
+  );
+
+  it.each([
+    { label: 'a POST declaring the largest length the container accepts', method: 'POST', url: '/sized', size: LEGACY_MAX_POST_CONTENT_LENGTH, declared: true },
+    { label: 'a PUT over the POST limit', method: 'PUT', url: '/sized', size: 25 * MIB, declared: true },
+    { label: 'a GET over the POST limit', method: 'GET', url: '/sized', size: 25 * MIB, declared: true },
+    { label: 'a chunked POST over the POST limit', method: 'POST', url: '/sized', size: 25 * MIB, declared: false },
+    { label: 'a service-to-service POST over the POST limit', method: 'POST', url: '/internal/v1/sized', size: 25 * MIB, declared: true },
+  ] as const)('hands $label to the handler', async ({ method, url, size, declared }) => {
+    const { app } = await sized();
+    const bytes = Buffer.alloc(size, 'x');
+    const res = await app.inject({
+      method,
+      url,
+      headers: { ...AUTHENTICATED, 'content-type': 'application/octet-stream', ...(declared ? { 'content-length': String(size) } : {}) },
+      payload: declared ? bytes : Readable.from([bytes]),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toStrictEqual({ length: method === 'GET' ? 0 : size });
+  });
+
+  it.each([
+    { label: 'a PUT declaring more than the body bound', method: 'PUT', url: '/sized', declared: { 'content-length': String(LEGACY_POST_LIMIT_BYTES + 1) } },
+    { label: "a POST over its route's bodyLimit", method: 'POST', url: '/small', declared: {} },
+  ] as const)('answers the body-limit error of $label with the Post Size page and a WARNING line', async ({ method, url, declared }) => {
+    const { app, lines } = await sized();
+    const res = await app.inject({
+      method,
+      url,
+      headers: { ...AUTHENTICATED, 'content-type': 'application/octet-stream', ...declared },
+      payload: 'far too long',
+    });
+    expectPostSizePage(res);
+    expect(outcomeLines(lines)).toStrictEqual([
+      ['WARNING', 'request rejected: FST_ERR_CTP_BODY_TOO_LARGE', 400],
+      ['INFO', 'request completed', 400],
+    ]);
+  });
+
+  /** Writes `head` to `port`, then `body` once `100 Continue` arrives, and resolves to every byte answered up to `until`. */
+  function exchange(port: number, head: readonly string[], body: string, until: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let answered = '';
+      const socket = connect(port, '127.0.0.1', () => socket.write(`${head.join('\r\n')}\r\n\r\n`));
+      socket.setEncoding('latin1');
+      socket.on('data', (chunk: string) => {
+        answered += chunk;
+        if (answered.endsWith('100 Continue\r\n\r\n')) socket.write(body);
+        if (answered.endsWith(until)) socket.destroy();
+      });
+      socket.on('error', reject);
+      socket.on('close', () => resolve(answered));
+    });
+  }
+
+  it.each([
+    { label: 'an oversized POST with Expect', length: LEGACY_MAX_POST_CONTENT_LENGTH + 1, expects: true, interim: false, connection: 'close' },
+    { label: 'an oversized POST without Expect', length: LEGACY_MAX_POST_CONTENT_LENGTH + 1, expects: false, interim: false, connection: 'keep-alive' },
+    { label: 'an accepted POST with Expect', length: 2, expects: true, interim: true, connection: 'keep-alive' },
+  ])('answers $label over HTTP with Connection: $connection and an interim 100 only when it accepts', async ({ length, expects, interim, connection }) => {
+    const { app } = await sized();
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const head = [
+      'POST /sized HTTP/1.1',
+      'Host: localhost',
+      'Content-Type: application/octet-stream',
+      `Content-Length: ${String(length)}`,
+      `${INVOCATION_HEADER}: ${SERVICE_CREDENTIAL}`,
+      `Authorization: Bearer ${USER_TOKEN}`,
+      ...(expects ? ['Expect: 100-continue'] : []),
+    ];
+    const accepted = length <= LEGACY_MAX_POST_CONTENT_LENGTH;
+    const raw = await exchange((app.server.address() as AddressInfo).port, head, 'xx', accepted ? '{"length":2}' : POST_SIZE_PAGE);
+    expect(raw.startsWith('HTTP/1.1 100 Continue\r\n\r\n')).toBe(interim);
+    const final = raw.replace('HTTP/1.1 100 Continue\r\n\r\n', '');
+    expect(final.split('\r\n')[0]).toBe(accepted ? 'HTTP/1.1 200 OK' : `HTTP/1.1 400 ${POST_SIZE_STATUS_TEXT}`);
+    expect(final.toLowerCase()).toContain(`\r\nconnection: ${connection}\r\n`);
+    expect(final.endsWith(accepted ? '{"length":2}' : `\r\n\r\n${POST_SIZE_PAGE}`)).toBe(true);
+  });
+
+  it.each([
+    ['the Fastify body-limit error', new errorCodes.FST_ERR_CTP_BODY_TOO_LARGE(), true],
+    ['another Fastify client error', new errorCodes.FST_ERR_CTP_INVALID_MEDIA_TYPE(), false],
+    ['a plain object carrying the code', { code: 'FST_ERR_CTP_BODY_TOO_LARGE' }, false],
+  ])('isBodyTooLargeError recognises %s: %s', (_label, err, expected) => {
+    expect(isBodyTooLargeError(err)).toBe(expected);
   });
 });
 
@@ -1322,16 +1616,65 @@ describe('request log line', () => {
     expect(JSON.stringify(lines)).not.toContain('push-key-value');
   });
 
-  it('logs an unmatched request by its path, without tenant or user', async () => {
+  it('logs an unmatched request under UNMATCHED_ROUTE, without tenant or user', async () => {
     const { app, lines } = await build();
     await app.inject({ method: 'GET', url: '/nothing/here?key=push-key-value' });
     const completed = completedLines(lines);
     expect(completed).toHaveLength(1);
     expect(validateLogRecord(completed[0]).errors).toStrictEqual([]);
-    expect(completed[0]).toMatchObject({ route: '/nothing/here', statusCode: 404 });
+    expect(completed[0]).toMatchObject({ route: UNMATCHED_ROUTE, statusCode: 404 });
     expect(completed[0]).not.toHaveProperty('tenantId');
     expect(completed[0]).not.toHaveProperty('userId');
     expect(typeof completed[0]?.requestId).toBe('string');
+    expect(JSON.stringify(lines)).not.toContain('nothing/here');
+  });
+
+  // Session and secret values are assembled at run time, so no literal credential appears in source; the person is fictional.
+  const CFID = ['4017', '2291'].join('');
+  const CFTOKEN = ['c0a8f3e1', '9b2d', '4e6f'].join('-');
+  const PATH_SECRET = ['opt2', 'path', 'secret'].join('-');
+  /** A legacy session id, `MURA<hash>_<CFID>_<CFTOKEN>`, longer than Fastify's default 100-character parameter limit. */
+  const SESSION_ID = `MURA${'7E3A'.repeat(24)}_${CFID}_${CFTOKEN}`;
+
+  it.each([
+    { label: 'an unmatched path carrying a secret segment', url: `/opt2/stub/notes/${PATH_SECRET}`, status: 404, route: UNMATCHED_ROUTE, warnings: [], leaks: [PATH_SECRET] },
+    { label: 'a legacy session id parameter', url: `/x/${SESSION_ID}/state`, status: 200, route: '/x/:sid/state', warnings: [], leaks: [CFID, CFTOKEN] },
+    {
+      label: "a session id parameter over the router's limit",
+      url: `/x/${SESSION_ID}_${'0'.repeat(maxHeaderSize)}/state`,
+      status: 404,
+      route: UNMATCHED_ROUTE,
+      warnings: [],
+      leaks: [CFID, CFTOKEN],
+    },
+    {
+      label: 'a malformed escape',
+      url: `/x/${PATH_SECRET}%zz/state`,
+      status: 400,
+      route: UNMATCHED_ROUTE,
+      warnings: ['request rejected: FST_ERR_BAD_URL'],
+      leaks: [PATH_SECRET],
+    },
+    {
+      label: "an unmatched path carrying a person's name and email",
+      url: '/v1/users/Aaliyah/Okonkwo/aaliyah.okonkwo@example.com/profile',
+      status: 404,
+      route: UNMATCHED_ROUTE,
+      warnings: [],
+      leaks: ['Aaliyah', 'Okonkwo', 'aaliyah.okonkwo'],
+    },
+    { label: 'a matched route carrying a secret parameter', url: `/x/${PATH_SECRET}/state`, status: 200, route: '/x/:sid/state', warnings: [], leaks: [PATH_SECRET] },
+  ])('logs $label under $route, with no path text in any line', async ({ url, status, route, warnings, leaks }) => {
+    const { app, lines } = await build();
+    app.get('/x/:sid/state', { config: { opt2: { public: true } } }, () => ({ ok: true }));
+    const res = await app.inject({ method: 'GET', url });
+    expect(res.statusCode).toBe(status);
+    const outcomes = lines.filter((line) => line.severity === 'WARNING' || line.message === 'request completed');
+    expect(outcomes.map((line) => line.message)).toStrictEqual([...warnings, 'request completed']);
+    for (const line of outcomes) expect(line).toMatchObject({ route, httpMethod: 'GET', statusCode: status });
+    for (const line of lines) expect(validateLogRecord(line).errors).toStrictEqual([]);
+    const logged = JSON.stringify(lines);
+    for (const leak of leaks) expect(logged).not.toContain(leak);
   });
 
   const PRINCIPAL = { tenantId: TENANT_A_ID, userId: USER_ID };

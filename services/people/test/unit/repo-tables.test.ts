@@ -177,6 +177,7 @@ describe('people tables', () => {
       updated_at: now,
       identity_unreachable_since: null,
       claimed_by: null,
+      halted_at: null,
     };
     expect(Object.keys(row)).toEqual(ROSTER_OPERATION.columns.map((column) => column.name));
   });

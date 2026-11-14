@@ -52,7 +52,7 @@ import {
 } from '../helpers/rows.js';
 
 type Row = Record<string, unknown>;
-type Method = 'GET' | 'PUT';
+type Method = 'GET' | 'PUT' | 'POST' | 'DELETE';
 type AppContext = Awaited<ReturnType<typeof buildTestApp>>;
 type Reply = Awaited<ReturnType<AppContext['app']['inject']>>;
 /** NOT NULL columns without a default, per table, mapped to their `char(n)` length or null. */
@@ -510,7 +510,7 @@ describe.skipIf(!available)('identity tenant isolation', () => {
       expect(await storedRows(TENANT_A)).toEqual(before);
     });
 
-    it('tenant-b token cannot modify tenant-a groups or permissions by guessed id, and its own writes land in tenant-b', async () => {
+    it('a tenant-b group save and module grant naming a tenant-a group id leave tenant-a group, permission and changelog rows unchanged, the grant landing in tenant-b', async () => {
       const headers = await sessionHeaders(TENANT_B.siteId, B_SESSION.session_id, MEMBER_B.account.userid);
       const before = await storedRows(TENANT_A);
       const query = `siteid=${TENANT_B.siteId}`;
@@ -561,6 +561,23 @@ describe.skipIf(!available)('identity tenant isolation', () => {
       expect([admin.statusCode, api.statusCode]).toEqual([200, 200]);
       expect(admin.json()).toMatchObject({ isNew: false, group: { UserID: A_PRIVATE_GROUP.userid, SiteID: TENANT_A.siteId } });
       expect(api.json()).toMatchObject({ data: { userid: A_PRIVATE_GROUP.userid, siteid: TENANT_A.siteId } });
+    });
+
+    // Reproduced legacy weakness SEC-08: cUsers.addToGroup and removeFromGroup write any site's membership rows by id.
+    it('a tenant-b site-admin adding and removing a tenant-a membership by guessed ids writes the tenant-a membership row', async () => {
+      const headers = await sessionHeaders(TENANT_B.siteId, B_SESSION.session_id, MEMBER_B.account.userid);
+      const userId = SITE_ADMIN_A.account.userid;
+      const groupId = A_PRIVATE_GROUP.userid;
+      const url = `/v1/groups/${groupId}/members/${userId}?siteid=${TENANT_B.siteId}`;
+      const heldGroups = () => withTenant(created().app, TENANT_A.tenantId, (tx) => built().repository.membershipGroupIds(tx, userId));
+
+      const added = await send('POST', url, headers, csrfFields(B_SESSION.csrf_secret, `${userId}${groupId}addtogroup`));
+      const afterAdd = await heldGroups();
+      const removed = await send('DELETE', url, headers);
+
+      expect([added.json(), removed.json()]).toEqual([{ written: true }, { written: true }]);
+      expect(afterAdd).toContain(groupId);
+      expect(await heldGroups()).not.toContain(groupId);
     });
 
     it('POST /internal/v1/tokens for a tenant-b site with a tenant-a session yields no roles', async () => {

@@ -74,7 +74,7 @@ Every carried write that touches identity's columns (roster create and edit, Edi
 2. Identity `…/operations/{operationId}:prepare` validates the account part and returns legacy's validation errors unchanged; people then commits the person rows with their before-image; identity `…:commit` applies the account part; people marks the operation `done` and calls `…:finish`.
 3. Until `done` the user is closed to every other reader and writer (up to 10 s wait, then the legacy-shaped 503), and its outbox and changelog rows are published or projected only after `done`, both owners' changes together.
 4. A 503 leaves no change on either side: people restores its before-image and identity aborts or reverts. Once identity's commit is confirmed, people finishes and answers success.
-5. The `people-outbox-sweep` recovery hook resolves operations left open for over 30 s. One left without identity for 5 minutes becomes `halted`; an operator resolves it with `opt2-people resolve-operation <operationId>`.
+5. The `people-outbox-sweep` recovery hook resolves operations left open for over 30 s. One left without identity for 5 minutes becomes `halted`, its user staying closed, and records its `halted_at`; an operator resolves it with `opt2-people resolve-operation <operationId> --to rolled-back|done`. `GET /internal/v1/roster-operations/halted` lists every operation that ever halted with its current state, before and after resolution, and parity replay (`harness/src/golden/replay.ts`) records each once on the exceptions list as `EX-ROSTER-HALT-<operationId>`.
 
 ## Routes
 
@@ -84,7 +84,7 @@ Every route declares `config.opt2.requires` or `config.opt2.public`; anything el
 
 | Route key(s) | Path | Committed state |
 |---|---|---|
-| `api:` and `rest:` `user.*`, `address.*` | `/_api/{json,ajax,rest}/v1[/{siteid}[/…]]`, matched in any letter case | `legacy` |
+| `api:` and `rest:` `user.*`, `address.*` | `/_api/{json,ajax,rest}/v1[/{siteid}[/…]]`, also behind `/index.cfm` and the configured context, matched in any letter case | `legacy` |
 | `cfm:/core/modules/v1/favorites/ajax/*.cfm` | The three favourites templates | `legacy` |
 | `fixture:people/persons/{id}/archive@post` | `POST /legacy-fixtures/cfml/api.cfm/people/persons/{userId}/archive` | `target` in `v0002`; `legacy` in `v0001` and `v0003` |
 | `fixture:people/persons/{id}/archive@get` | `GET` on the same path | `legacy` |
@@ -124,6 +124,7 @@ The `/v2/` list routes answer only the page `nextn` selects. A caller holding `m
 | `POST /internal/v1/events/people.programs-sites.site.changed.v1`, `POST /internal/v1/events/people.identity.group.changed.v1` | Pub/Sub push | `service:pubsub-invoker` | Event deliveries ([Events](#events)) |
 | `POST /internal/v1/outbox/sweep` | Cloud Tasks | `service:tasks-invoker` | The `people-outbox-sweep` chain: creates the next task, publishes unpublished outbox rows, then recovers open roster operations |
 | `POST /internal/v1/task-queues/{queue}/pause`, `resume`, `ensure` | service | `platform.migration`, `platform.operator` | Queue control for the queues people creates tasks on |
+| `GET /internal/v1/roster-operations/halted` | service | `platform.migration`, `platform.operator` | Every roster operation of the registered tenants that recovery ever halted, oldest first, with its current state, halt time and the units it keeps closed while halted |
 | `GET /healthz` | service | public | Liveness |
 
 ## Not built here
@@ -143,7 +144,7 @@ Reproduced as Masa shows it ([`opt2/reports/pre-existing-defects.md`](../../opt2
 - The new-user form defaults to Member: a new person has `isPublic = 1` [core/mura/user/userBean.cfc:154].
 - Admin dates keep legacy's mask, which prints the day of the year (`10/302/2026`); `web/` formats people's stored timestamps with it.
 
-Open `preserve` entries ([`opt2/exceptions-list.md`](../../opt2/exceptions-list.md)): `EX-ROSTER-POOLMOVE`, a roster edit that would move a user to the other user pool, which the target refuses with 503 and no change; `EX-ADMIN-DEBUGPAGE`, an admin runtime error, which the target answers with the legacy error page at 503.
+Open `preserve` entries ([`opt2/exceptions-list.md`](../../opt2/exceptions-list.md)): `EX-ROSTER-POOLMOVE`, a roster edit that would move a user to the other user pool, which the target refuses with 503 and no change; `EX-ADMIN-DEBUGPAGE`, an admin runtime error, which the target answers with the legacy error page at 503; `EX-PEOPLE-TEXT-CODEPAGE`, user and address text outside Windows-1252, which legacy stores as `?` and people stores, and projects to legacy, exactly; `EX-PEOPLE-FEED-ORDER`, a JSON API user feed ordered by more than one item, a person column outside the built-in sorts or a findQuery `orderby`, which people refuses with 503. Halted: `EX-PEOPLE-FEED`, a JSON API address `findAll` or `findQuery`, an address `findMany` naming an id people holds no address for, or a user feed ordered by a column of identity's account, `tfiles` or a joined table, each answered with 503; the feed keys it names stay `legacy` in every version. Open `fix` proposals, not activated until the user accepts: `EX-PROFILE-ACCOUNT-KEYS` (SEC-09), Edit Profile keeping the account's type and pool where legacy applies a posted `type` and `isPublic`; `EX-USER-EDIT-SITE` (SEC-10), Edit User, Edit Address and JSON API `user` and `address` `findOne` answering a new blank record for an id outside the token site's tenant and user pools, where legacy shows the record. In every version they hold `admin:ceditprofile.update` and `admin:cusers.edituser` (with identity's `EX-SEC-GROUP-SITE`) as `legacy-write` entries, and the reads `EX-USER-EDIT-SITE` names stay `legacy`.
 
 ## Events
 

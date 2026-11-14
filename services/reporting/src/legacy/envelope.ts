@@ -17,7 +17,7 @@ import {
   type LegacyErrorSpec,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
-import { isUnstorableTextError, legacyParamsOf, type FastifyRequest } from '@opt2/platform/service-kit';
+import { isBodyTooLargeError, isUnstorableTextError, legacyParamsOf, type FastifyRequest } from '@opt2/platform/service-kit';
 import { ReportingDomainError } from '../domain/jobs.js';
 
 /** Module segment of every reporting fixture route and the first part of its envelope `method`. */
@@ -214,10 +214,11 @@ export function fixtureFile(meta: FixtureFileMeta): Omit<FixtureResponse, 'body'
 /**
  * Fixture error response for a thrown value, as api.cfm answers it; a value PostgreSQL cannot store is invalidParameters, and
  * anything but a fixture, domain or legacy API error is a 500 `server_error`, which the caller logs. Rethrows
- * `LegacyServiceUnavailableError` for service-kit's legacy 503.
+ * `LegacyServiceUnavailableError` and the body-limit error for service-kit's legacy 503 and Post Size page.
  */
 export function toFixtureError(err: unknown, ctx: FixtureContext): SerializedLegacyResponse {
   if (err instanceof LegacyServiceUnavailableError) throw err;
+  if (isBodyTooLargeError(err)) throw err;
   if (isUnstorableTextError(err)) return fixtureError('invalidParameters', ctx);
   if (err instanceof ReportingDomainError) return fixtureError(err.type, ctx, err.message);
   if (err instanceof LegacyApiError) {

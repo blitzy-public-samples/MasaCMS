@@ -628,6 +628,7 @@ describe.skipIf(!available)('identity account operations against PostgreSQL', ()
       expect(res.statusCode).toBe(200);
       const { writePosition } = res.json() as { writePosition: string };
       expect(writePosition).toMatch(/^\d+$/);
+      expect(res.json()).toMatchObject({ account: { UserID: user.userId, UserName: user.username, Type: 2 }, groupIds: [groupTwo] });
       const header = res.headers[WRITE_POSITION_HEADER_LC];
       expect(header).toEqual(expect.any(String));
       expect([...parseWritePosition(String(header))]).toEqual([['identity', writePosition]]);

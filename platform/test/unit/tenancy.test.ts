@@ -238,6 +238,7 @@ describe('tenancy subpath', () => {
         'OutsideTenantTransactionError',
         'TransactionEndedError',
         'TransactionRolledBackError',
+        'DatabaseUnavailableError',
         'withMetadata',
         'NON_TENANT_TABLES',
         'isNonTenantTable',

@@ -141,7 +141,10 @@ export function createIdentityDouble(registry: TenantDb): IdentityDouble {
     },
     async commit(userId, operationId) {
       called('commit');
-      return { operationId, userId, state: 'committed', writePosition: '1' };
+      // The double applies no prepared change: it answers the account and memberships its reads answer.
+      const account = accounts.get(charKey(userId));
+      if (account === undefined) throw new Error(`identity's double holds no account of committed user ${userId}`);
+      return { operationId, userId, state: 'committed', writePosition: '1', account, groupIds: [...(memberships.get(charKey(userId)) ?? [])] };
     },
     async abort() {
       called('abort');

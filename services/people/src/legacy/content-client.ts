@@ -15,17 +15,22 @@ const LOOKUP = {
 
 const HTTP_OK = 200;
 
+/** Options of one strategies-content call; `timeoutMs` bounds it instead of the service client's timeout. */
+export interface ContentCallOptions {
+  timeoutMs?: number;
+}
+
 /** People's calls into strategies-content. */
 export interface ContentClient {
   /** `lookupFileExtensions`: the extension of each listed photo file, keyed by the id as listed; empty ids make no call. */
-  photoFileExts(fileIds: readonly (string | null | undefined)[]): Promise<Map<string, string>>;
+  photoFileExts(fileIds: readonly (string | null | undefined)[], options?: ContentCallOptions): Promise<Map<string, string>>;
   /** The `photoFileExt` legacy `userDAO.read` joins: `''` for no photo id or an id that names no stored file. */
   photoFileExt(fileId: string | null | undefined): Promise<string>;
 }
 
 /** Creates people's strategies-content client over its service client. */
 export function createContentClient(client: ServiceClient): ContentClient {
-  async function photoFileExts(fileIds: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  async function photoFileExts(fileIds: readonly (string | null | undefined)[], options?: ContentCallOptions): Promise<Map<string, string>> {
     const extensions = new Map<string, string>();
     const ids = fileIds.filter((id): id is string => typeof id === 'string' && id !== '');
     const lookup: Schemas['FileLookupRequest'] = { fileIds: [...new Set(ids)] };
@@ -35,6 +40,7 @@ export function createContentClient(client: ServiceClient): ContentClient {
       method: LOOKUP.method,
       path: LOOKUP.path,
       json: lookup,
+      ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     });
     recordWritePositionsFrom(response.headers[WRITE_POSITION_HEADER_LC]);
     if (response.status !== HTTP_OK) {

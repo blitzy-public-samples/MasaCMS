@@ -85,6 +85,7 @@ const CUSERS = [Roles.s2, Roles.siteAdmin, moduleRole('0000000000000000000000000
 const PROFILE = [Roles.systemUser, Roles.member, Roles.s2, Roles.siteAdmin];
 const MIGRATION = [Roles.platformMigration];
 const QUEUE_CONTROL = [Roles.platformMigration, Roles.platformOperator];
+const HALTED_ROSTER_READ = [Roles.platformMigration, Roles.platformOperator];
 
 /** Every route people registers, as collectRouteMatrix reports it. */
 const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
@@ -113,6 +114,30 @@ const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
   { method: 'POST', url: '/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
   { method: 'PUT', url: '/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
   { method: 'GET', url: '/healthz', transport: 'service', public: true, siteCheck: true },
+  { method: 'DELETE', url: '/index.cfm/_api/ajax/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/index.cfm/_api/ajax/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/index.cfm/_api/ajax/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'PUT', url: '/index.cfm/_api/ajax/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'DELETE', url: '/index.cfm/_api/ajax/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/index.cfm/_api/ajax/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/index.cfm/_api/ajax/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'PUT', url: '/index.cfm/_api/ajax/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'DELETE', url: '/index.cfm/_api/json/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/index.cfm/_api/json/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/index.cfm/_api/json/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'PUT', url: '/index.cfm/_api/json/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'DELETE', url: '/index.cfm/_api/json/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/index.cfm/_api/json/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/index.cfm/_api/json/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'PUT', url: '/index.cfm/_api/json/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'DELETE', url: '/index.cfm/_api/rest/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/index.cfm/_api/rest/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/index.cfm/_api/rest/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'PUT', url: '/index.cfm/_api/rest/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'DELETE', url: '/index.cfm/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/index.cfm/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/index.cfm/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'PUT', url: '/index.cfm/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
   { method: 'POST', url: '/internal/v1/events/people.identity.group.changed.v1', transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE], siteCheck: true },
   { method: 'POST', url: '/internal/v1/events/people.programs-sites.site.changed.v1', transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE], siteCheck: true },
   { method: 'POST', url: '/internal/v1/migration/apply', transport: 'service', requires: MIGRATION, siteCheck: true },
@@ -123,6 +148,7 @@ const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
   { method: 'GET', url: '/internal/v1/migration/watermark', transport: 'service', requires: MIGRATION, siteCheck: true },
   { method: 'POST', url: '/internal/v1/migration/watermark', transport: 'service', requires: MIGRATION, siteCheck: true },
   { method: 'POST', url: '/internal/v1/outbox/sweep', transport: 'cloud-tasks', requires: [TASKS_INVOKER_ROLE], siteCheck: true },
+  { method: 'GET', url: '/internal/v1/roster-operations/halted', transport: 'service', requires: HALTED_ROSTER_READ, siteCheck: true },
   { method: 'POST', url: '/internal/v1/task-queues/:queue/ensure', transport: 'service', requires: QUEUE_CONTROL, siteCheck: true },
   { method: 'POST', url: '/internal/v1/task-queues/:queue/pause', transport: 'service', requires: QUEUE_CONTROL, siteCheck: true },
   { method: 'POST', url: '/internal/v1/task-queues/:queue/resume', transport: 'service', requires: QUEUE_CONTROL, siteCheck: true },
@@ -231,6 +257,7 @@ const ROSTER_OPERATION_COLUMNS = [
   'updated_at',
   'identity_unreachable_since',
   'claimed_by',
+  'halted_at',
 ] as const;
 
 /** Each user subject's own Masa `UserID`, so identity's contract accepts the account reads its requests cause. */
@@ -475,10 +502,12 @@ const control = (op: string): Probe => ({ method: 'POST', url: `/internal/v1/tas
 /** Requests an unknown API method or entity, which the JSON API answers 400 or 404 itself, never by an authorization check. */
 function jsonApiProbes(): Record<string, () => Probe> {
   const probes: Record<string, () => Probe> = {};
-  for (const family of ['ajax', 'json', 'rest']) {
-    for (const method of ['DELETE', 'GET', 'POST', 'PUT'] as const) {
-      probes[`${method} /_api/${family}/v1`] = () => ({ method, url: `/_api/${family}/v1?${ON_SITE_A}` });
-      probes[`${method} /_api/${family}/v1/*`] = () => ({ method, url: `/_api/${family}/v1/${SITE_A}/notanentity` });
+  for (const lead of ['', '/index.cfm']) {
+    for (const family of ['ajax', 'json', 'rest']) {
+      for (const method of ['DELETE', 'GET', 'POST', 'PUT'] as const) {
+        probes[`${method} ${lead}/_api/${family}/v1`] = () => ({ method, url: `${lead}/_api/${family}/v1?${ON_SITE_A}` });
+        probes[`${method} ${lead}/_api/${family}/v1/*`] = () => ({ method, url: `${lead}/_api/${family}/v1/${SITE_A}/notanentity` });
+      }
     }
   }
   return probes;
@@ -499,6 +528,7 @@ const PROBES: Readonly<Record<string, () => Probe | Promise<Probe>>> = {
   'GET /internal/v1/migration/watermark': () => get('/internal/v1/migration/watermark', false),
   'POST /internal/v1/migration/watermark': () => ({ method: 'POST', url: '/internal/v1/migration/watermark', payload: {} }),
   'POST /internal/v1/outbox/sweep': () => SWEEP_PROBE,
+  'GET /internal/v1/roster-operations/halted': () => get('/internal/v1/roster-operations/halted', false),
   'POST /internal/v1/task-queues/:queue/ensure': () => control('ensure'),
   'POST /internal/v1/task-queues/:queue/pause': () => control('pause'),
   'POST /internal/v1/task-queues/:queue/resume': () => control('resume'),

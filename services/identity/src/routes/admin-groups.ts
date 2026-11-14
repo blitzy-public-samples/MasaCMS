@@ -17,6 +17,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import { legacyParamsOf, sendLegacyResponse, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import { registeredTenants, registryEntryForTenant, tenantForRegisteredSite, withTenant, type TenantRegistryEntry } from '@opt2/platform/tenancy';
+import { groupIdsByName, readMembershipIds } from '../domain/account-reads.js';
 import {
   addToGroup,
   createGroup,
@@ -443,25 +444,6 @@ async function poolGroups(groups: GroupDeps, entry: TenantRegistryEntry | null, 
   return rows.map((row) => ({ UserID: row.userid, GroupName: row.groupname }));
 }
 
-/** SQL Server equality key of a `char(35)` id: case-insensitive, trailing spaces ignored. */
-function idKey(id: string): string {
-  return id.replace(/ +$/, '').toLowerCase();
-}
-
-/** The listing order of `order by tusers.groupname`: NULL names first, then names ignoring case, ties by id. */
-function byGroupName(a: { userid: string; groupname: string | null }, b: { userid: string; groupname: string | null }): number {
-  const left = a.groupname?.toLowerCase() ?? null;
-  const right = b.groupname?.toLowerCase() ?? null;
-  if (left !== right) {
-    if (left === null) return -1;
-    if (right === null) return 1;
-    return left < right ? -1 : 1;
-  }
-  const leftId = idKey(a.userid);
-  const rightId = idKey(b.userid);
-  return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
-}
-
 /**
  * `readMembershipIDs`: the stored groups `userId` belongs to, by group name; the membership rows live in the member's tenant and
  * the groups in their pools' tenants, so every registered tenant is read [legacy: core/mura/user/userDAO.cfc:632-644]. It waits
@@ -470,22 +452,16 @@ function byGroupName(a: { userid: string; groupname: string | null }, b: { useri
 export async function membershipIds(groups: Pick<GroupDeps, 'db' | 'repo' | 'sleep'>, userId: string): Promise<string[]> {
   const tenants = (await registeredTenants(groups.db)).map((entry) => entry.tenantId);
   const held = await readUnclosed(groups, async () => {
-    const value = new Map<string, string>();
+    const value: string[] = [];
     const closed: string[] = [];
     for (const tenantId of tenants) {
       const records = await withTenant(groups.db, tenantId, (tx) => groups.repo.readMembershipRecords(tx, [userId]));
       closed.push(...records.closed);
-      for (const { groupid } of records.rows) value.set(idKey(groupid), groupid);
+      value.push(...records.rows.map((row) => row.groupid));
     }
     return { value, closed };
   });
-  if (held.size === 0) return [];
-  const ids = [...held.values()];
-  const found = new Map<string, { userid: string; groupname: string | null }>();
-  for (const tenantId of tenants) {
-    for (const group of await withTenant(groups.db, tenantId, (tx) => groups.repo.findGroupsByIds(tx, ids))) found.set(idKey(group.userid), group);
-  }
-  return [...found.values()].sort(byGroupName).map((group) => group.userid);
+  return groupIdsByName(groups, held, tenants);
 }
 
 /** `readMembershipIDs` within the token site's user pools: memberships and groups are read only in the pool tenants the registry gives for `claims.tid`. */
@@ -493,17 +469,7 @@ export async function tokenMembershipIds(groups: GroupDeps, claims: UserClaims, 
   const entry = await registryEntryForTenant(groups.db, claims.tid);
   const pools = entry === null ? [] : [userPool(entry, 0), userPool(entry, 1)];
   const tenants = [...new Set(pools.flatMap((pool) => (pool === null ? [] : [pool.tenantId])))];
-  const held = new Map<string, string>();
-  for (const tenantId of tenants) {
-    for (const groupId of await withTenant(groups.db, tenantId, (tx) => groups.repo.membershipGroupIds(tx, userId))) held.set(idKey(groupId), groupId);
-  }
-  if (held.size === 0) return [];
-  const ids = [...held.values()];
-  const found = new Map<string, { userid: string; groupname: string | null }>();
-  for (const tenantId of tenants) {
-    for (const group of await withTenant(groups.db, tenantId, (tx) => groups.repo.findGroupsByIds(tx, ids))) found.set(idKey(group.userid), group);
-  }
-  return [...found.values()].sort(byGroupName).map((group) => group.userid);
+  return readMembershipIds(groups, userId, tenants);
 }
 
 /** Registers the cUsers group reads and writes; the auth hooks answer a `siteid` other than the token's site with 403. */

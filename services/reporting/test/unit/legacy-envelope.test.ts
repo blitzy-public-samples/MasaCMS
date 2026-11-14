@@ -314,10 +314,11 @@ describe('fixtureFile', () => {
 });
 
 describe('toFixtureError', () => {
-  it.each<[string, LegacyServiceUnavailableError]>([
+  it.each<[string, Error]>([
     ['the platform 503', new LegacyServiceUnavailableError()],
     ['a service-call outage', new ServiceUnavailableError('finance', new Error('ECONNREFUSED'))],
     ['a unit gate refusal', new UnitNotAuthoritativeError(['reporting.export_job'])],
+    ['the body-limit error', Object.assign(new Error('Request body is too large'), { code: 'FST_ERR_CTP_BODY_TOO_LARGE', statusCode: 413 })],
   ])('rethrows %s for service-kit', (_label, error) => {
     expect(thrownBy(() => toFixtureError(error, CTX))).toBe(error);
   });

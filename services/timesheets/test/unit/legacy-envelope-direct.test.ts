@@ -318,7 +318,8 @@ describe('toFixtureError', () => {
     new LegacyServiceUnavailableError(),
     new GateClosedError(['timesheets.timesheet_day']),
     new UnitNotAuthoritativeError(['timesheets.approval_action']),
-  ])('rethrows %s for the service-kit legacy 503', (err) => {
+    Object.assign(new Error('Request body is too large'), { code: 'FST_ERR_CTP_BODY_TOO_LARGE', statusCode: 413 }),
+  ])('rethrows %s for the service-kit legacy 503 or Post Size page', (err) => {
     expect(thrownBy(() => toFixtureError(err, CTX))).toBe(err);
   });
 });

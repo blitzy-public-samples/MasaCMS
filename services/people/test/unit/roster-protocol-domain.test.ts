@@ -67,6 +67,7 @@ const ACTOR = { userId: 'ACTOR-0000-0000-0000000000000000001', fname: 'Ada', lna
 const instant = (): Promise<void> => Promise.resolve();
 // Category ids fill the char(35) key, as Masa's UUIDs do, so stored values come back unpadded.
 const CAT = { one: cfUuid(), two: cfUuid(), three: cfUuid() };
+const PHOTO = cfUuid();
 
 describe('roster protocol constants', () => {
   it('names the closure and request waits and the units of both participants', () => {
@@ -125,7 +126,8 @@ function identityDouble(accounts: Map<string, AccountView>, behaviour: DoubleBeh
         states.set(operationId, 'committed');
         if (behaviour.commit === 'lost-reply') throw down();
       }
-      return { operationId, userId, state: 'committed', writePosition: '777' };
+      // The double applies no prepared change: it answers the stored account, or a create's new one, and its one membership.
+      return { operationId, userId, state: 'committed', writePosition: '777', account: accounts.get(userId) ?? accountView(userId), groupIds: ['GROUP-1'] };
     },
     async abort(_userId, operationId) {
       calls.push('abort');
@@ -418,6 +420,48 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
     expect(identity.commits[0]).toEqual({
       sessionEffects: { reloginSessionId: 'SESSION-1', person: { fname: 'Robin', lname: 'Lee', email: 'robin@example.com', company: 'Acme', subtype: 'Default' } },
     });
+  });
+
+  it("answers the user as committed: the people rows its commit read, with the account and memberships of identity's commit answer", async () => {
+    const { userId, addressId } = await seedUser();
+    const identity = identityDouble(accounts);
+    const result = await runRosterOperation(depsFor(identity.client), rosterInput('json-save', updateParams(userId, addressId)));
+    if (!result.ok || 'voided' in result) throw new Error('expected a committed save');
+    expect(result.committed).toMatchObject({
+      tenantId: A,
+      person: { userid: userId, fname: 'Robin', email: 'robin@example.com' },
+      account: accounts.get(userId),
+      groupIds: ['GROUP-1'],
+      categoryIds: [CAT.two],
+    });
+    expect(result.committed.addresses.map((row) => row.city)).toEqual(['Bergen']);
+    expect(identity.calls.slice(-2)).toEqual(['commit', 'finish']);
+  });
+
+  it.each<[string, RosterKind, Record<string, unknown>, string[][], string]>([
+    ['a JSON API save of a photo', 'json-save', { photofileid: PHOTO }, [[PHOTO]], 'png'],
+    ['a JSON API save without a photo', 'json-save', {}, [], ''],
+    ['an admin update of a photo', 'admin-update', { photofileid: PHOTO }, [], ''],
+    ['a profile update of a photo', 'profile-update', { photofileid: PHOTO }, [], ''],
+  ])("answers %s with the committed photo's extension, looked up under the intent before prepare", async (_label, kind, photo, lookedUp, photoFileExt) => {
+    const { userId, addressId } = await seedUser();
+    const identity = identityDouble(accounts);
+    const lookups: { ids: unknown[]; timeoutMs: number | undefined; identityCalls: string[]; state: RosterState | undefined }[] = [];
+    const photoFileExts: NonNullable<RosterDeps['photoFileExts']> = async (ids, options) => {
+      lookups.push({ ids: [...ids], timeoutMs: options?.timeoutMs, identityCalls: [...identity.calls], state: (await operationOf(userId))?.state });
+      return new Map([[PHOTO, 'png']]);
+    };
+    const input = rosterInput(kind, updateParams(userId, addressId, photo), { claims: claims({ sub: userId }) });
+    const result = await runRosterOperation(depsFor(identity.client, {}, { photoFileExts }), input);
+    if (!result.ok || 'voided' in result) throw new Error('expected a committed save');
+    expect(result.committed.photoFileExt).toBe(photoFileExt);
+    expect(lookups.map(({ ids }) => ids)).toEqual(lookedUp);
+    for (const lookup of lookups) {
+      expect(lookup).toMatchObject({ state: 'started', identityCalls: expect.not.arrayContaining(['prepare']) as unknown });
+      expect(lookup.timeoutMs).toBeGreaterThan(0);
+      expect(lookup.timeoutMs).toBeLessThanOrEqual(REQUEST_BUDGET_MS);
+    }
+    expect(identity.calls.slice(-2)).toEqual(['commit', 'finish']);
   });
 
   it('saves the session user\'s own profile without its account-level keys or memberships', async () => {
@@ -779,6 +823,7 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
     const verbOf = (path: string): string | undefined => (path.includes('/operations/') ? (/:([a-z]+)$/.exec(path)?.[1] ?? 'state') : undefined);
     const requests: ServiceRequest[] = [];
     const reply = <T>(status: number, body: unknown, headers: Record<string, string> = {}): Promise<ServiceResponse<T>> => Promise.resolve({ status, headers, body: body as T });
+    const record = { UserID: userId, SiteID: SITE, UserName: 'pat', Type: 2, Admin: 0, S2: 0, Perm: 0, InActive: 0, isPublic: 0, remoteID: null, PasswordCreated: null, LastLogin: null, tablist: null };
     const service: ServiceClient = {
       request<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
         requests.push(req);
@@ -789,7 +834,7 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
           case 'commit':
             // Identity commits, but the first reply never arrives.
             if (requests.filter((sent) => sent.path.endsWith(':commit')).length === 1) return Promise.reject(new ServiceUnavailableError('identity', new Error('reply lost')));
-            return reply<T>(200, { operationId: 'OP', userId, state: 'committed', writePosition: '9001' });
+            return reply<T>(200, { operationId: 'OP', userId, state: 'committed', writePosition: '9001', account: { ...record, UserName: 'robin' }, groupIds: ['GROUP-1'] });
           case 'state':
             return reply<T>(200, { ...operation, state: 'committed' });
           case 'finish':
@@ -798,7 +843,6 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
             break;
         }
         if (req.path.endsWith('/memberships')) return reply<T>(200, { privateGroups: [], publicGroups: [], groupIds: ['GROUP-1'] });
-        const record = { UserID: userId, SiteID: SITE, UserName: 'pat', Type: 2, Admin: 0, S2: 0, Perm: 0, InActive: 0, isPublic: 0, remoteID: null, PasswordCreated: null, LastLogin: null, tablist: null };
         return reply<T>(200, record);
       },
       close: () => Promise.resolve(),
@@ -806,7 +850,12 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
     const store = newRequestContext();
     const input = rosterInput('json-save', updateParams(userId, addressId), { sessionReloginId: 'SESSION-1' });
     const result = await runWithRequestContext(store, () => runRosterOperation(depsFor(createIdentityClient(service)), input));
-    expect(result).toMatchObject({ ok: true, userId });
+    // The replayed commit's answer is the committed account; people's rows come from its own commit.
+    expect(result).toMatchObject({
+      ok: true,
+      userId,
+      committed: { tenantId: A, person: { fname: 'Robin' }, account: { userId, username: 'robin' }, groupIds: ['GROUP-1'], categoryIds: [CAT.two] },
+    });
     const commits = requests.filter((sent) => sent.path.endsWith(':commit'));
     expect(commits).toHaveLength(2);
     expect(commits[1]?.json).toEqual(commits[0]?.json);
@@ -841,14 +890,56 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
     expect(await snapshot(userId)).toMatchObject(OLD);
   });
 
-  it('retries the intent once after an open operation another tenant holds, then answers the legacy 503', async () => {
+  it('retries the intent while an open operation another tenant holds outlasts the closed-user wait, then answers the legacy 503', async () => {
     const { userId, addressId } = await seedUser();
     await openOperation(userId, TENANT_B.tenantId);
     const identity = identityDouble(accounts);
-    const error = await rejection(runRosterOperation(depsFor(identity.client), rosterInput('admin-update', updateParams(userId, addressId))));
+    const slept: number[] = [];
+    const sleep = (ms: number): Promise<void> => {
+      slept.push(ms);
+      return Promise.resolve();
+    };
+    const error = await rejection(runRosterOperation(depsFor(identity.client, {}, { sleep }), rosterInput('admin-update', updateParams(userId, addressId))));
     expect(error).toBeInstanceOf(OperationBlockedError);
     expect(error).toMatchObject({ message: `An open roster operation keeps user ${userId} closed` });
+    expect(slept.reduce((sum, ms) => sum + ms, 0)).toBe(USER_CLOSED_WAIT_MS);
     expect(identity.calls).not.toContain('prepare');
+  });
+
+  it.each<[string, number]>([
+    ['once', 1],
+    ['twice', 2],
+    ['five times', 5],
+  ])('records the intent after losing the race for the user %s, within the closed-user wait', async (_label, losses) => {
+    const { userId, addressId } = await seedUser();
+    const identity = identityDouble(accounts);
+    const rivals: RosterOperationRow[] = [];
+    let holder: RosterOperationRow | undefined;
+    // Each of the first `losses` intents finds another save's intent committed just ahead of it; that save ends at the next poll.
+    const racing: PeopleRepository = {
+      ...repo,
+      async insertRosterOperation(...args) {
+        if (rivals.length < losses) {
+          holder = await openOperation(userId);
+          rivals.push(holder);
+        }
+        return repo.insertRosterOperation(...args);
+      },
+    };
+    const slept: number[] = [];
+    const sleep = async (ms: number): Promise<void> => {
+      slept.push(ms);
+      const ended = holder;
+      holder = undefined;
+      if (ended !== undefined) await inTenant((tx) => repo.setRosterOperationState(tx, ended.operation_id, { state: 'done' }));
+    };
+    const result = await runRosterOperation(depsFor(identity.client, {}, { repo: racing, sleep }), rosterInput('admin-update', updateParams(userId, addressId)));
+    expect(result).toMatchObject({ ok: true, userId });
+    expect(rivals).toHaveLength(losses);
+    expect(slept.reduce((sum, ms) => sum + ms, 0)).toBeLessThan(USER_CLOSED_WAIT_MS);
+    expect(identity.calls.filter((call) => call === 'prepare')).toHaveLength(1);
+    expect(await snapshot(userId)).toMatchObject(NEW);
+    expect(await inTenant((tx) => repo.findOpenRosterOperation(tx, userId))).toBeNull();
   });
 
   it.each<[string, () => Promise<RosterInput>, string]>([
@@ -893,7 +984,8 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
     const { userId, addressId } = await seedUser({ s2: 1 });
     const identity = identityDouble(accounts);
     const result = await runRosterOperation(depsFor(identity.client), rosterInput('admin-update', updateParams(userId, addressId, { action: 'Delete' })));
-    expect(result).toMatchObject({ ok: true, userId, values: { fname: 'Pat', s2: '1' } });
+    expect(result).toMatchObject({ ok: true, voided: true, userId, values: { fname: 'Pat', s2: '1' } });
+    expect(result).not.toHaveProperty('committed');
     expect(identity.calls).not.toContain('prepare');
     expect(await operationOf(userId)).toMatchObject({ state: 'rolled-back', error: 'voided' });
     expect(await snapshot(userId)).toMatchObject({ ...OLD, rowVersion: '1' });
@@ -1106,7 +1198,8 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
     expect(invalid).toMatchObject({ ok: false, errors: { shoesize: expect.any(String) } });
     expect(await stored()).toEqual([]);
 
-    expect(await runRosterOperation(depsFor(identityDouble(accounts).client), rosterInput('admin-update', extended('42')))).toMatchObject({ ok: true });
+    const saved = await runRosterOperation(depsFor(identityDouble(accounts).client), rosterInput('admin-update', extended('42')));
+    expect(saved).toMatchObject({ ok: true, committed: { extend: { data: { shoesize: '42' } } } });
     expect(await stored()).toEqual(['42']);
 
     const failing = identityDouble(accounts, { commit: 'error' });

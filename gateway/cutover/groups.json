@@ -474,12 +474,8 @@
       ],
       "writeEntries": [
         "admin:ceditprofile.edit",
-        "admin:ceditprofile.update",
         "admin:clogin.login",
         "admin:clogin.main",
-        "admin:cusers.addtogroup",
-        "admin:cusers.edituser",
-        "admin:cusers.removefromgroup",
         "admin:cusers.updateaddress",
         "admin:cusers.update{type=1}",
         "admin:cusers.update{type=2,action=add}",

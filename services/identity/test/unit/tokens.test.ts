@@ -356,15 +356,12 @@ describe('the token routes', () => {
     expect(keys[0]).toMatchObject({ kty: 'RSA', alg: 'RS256', use: 'sig' });
   });
 
-  it('mints the stored session token for the gateway under the published kid, ignoring claims the body names', async () => {
-    const res = await postToken(await headersFor('service:gateway'), {
-      sessionId: SESSION,
-      siteId: SITE,
-      tid: TENANT_B.tenantId,
-      roles: [Roles.s2],
-      sub: ADMIN_S2.account.userid,
-    });
+  it('mints the stored session token for the gateway under the published kid, refusing a body that names claims', async () => {
+    const gateway = await headersFor('service:gateway');
+    const claimed = await postToken(gateway, { sessionId: SESSION, siteId: SITE, tid: TENANT_B.tenantId, roles: [Roles.s2], sub: ADMIN_S2.account.userid });
+    const res = await postToken(gateway, { sessionId: SESSION, siteId: SITE });
 
+    expect([claimed.statusCode, claimed.json()]).toMatchObject([400, { error: { code: 'invalid_request', message: 'Invalid parameters' } }]);
     expect(res.statusCode).toBe(200);
     const minted = res.json<MintedToken>();
     expect(minted.claims).toMatchObject({

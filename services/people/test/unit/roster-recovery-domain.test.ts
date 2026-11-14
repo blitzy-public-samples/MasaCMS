@@ -82,7 +82,9 @@ function identityDouble(accounts: Map<string, AccountView>, behaviour: DoubleBeh
       if (behaviour.commit === 'error') throw down();
       identityStates.set(operationId, 'committed');
       if (behaviour.commit === 'lost-reply') throw down();
-      return { operationId, userId, state: 'committed', writePosition: '777' };
+      const account = accounts.get(userId);
+      if (account === undefined) throw new Error(`no account ${userId}`);
+      return { operationId, userId, state: 'committed', writePosition: '777', account, groupIds: ['GROUP-1'] };
     },
     async abort(_userId, operationId) {
       await enter('abort');

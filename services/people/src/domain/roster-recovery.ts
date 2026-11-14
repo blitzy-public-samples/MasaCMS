@@ -9,7 +9,7 @@ import type { PeopleEvents } from '../events/publish.js';
 import type { AccountOperationState, IdentityClient } from '../legacy/identity-client.js';
 import { RosterOperationClaimedError, type PeopleRepository, type RosterOperationStatePatch } from '../repo/repository.js';
 import { FINISH_PENDING_ERROR, type RosterOperationRow, type RosterState } from '../repo/tables.js';
-import { restoreBeforeImageInTx } from './roster-protocol.js';
+import { IDENTITY_OPERATION_UNITS, PEOPLE_OPERATION_UNITS, restoreBeforeImageInTx, type RosterKind } from './roster-protocol.js';
 
 /** Age, since its last write or claim renewal, past which a sweep claims and resolves an operation. */
 export const RECOVERY_THRESHOLD_MS = 30_000;
@@ -41,6 +41,23 @@ export interface ResolveOutcome {
   action: ResolveAction;
   identityState?: AccountOperationState;
 }
+
+/** An operation recovery halted, in its current `state`; `units` are the units it keeps closed for its user while halted. */
+export interface HaltedOperation {
+  operationId: string;
+  tenantId: string;
+  userId: string;
+  kind: RosterKind;
+  state: RosterState;
+  startedAt: Date;
+  updatedAt: Date;
+  haltedAt: Date;
+  identityUnreachableSince: Date | null;
+  units: readonly string[];
+}
+
+/** Units of both participants a roster operation keeps closed for its user until it ends. */
+const OPERATION_UNITS: readonly string[] = Object.freeze([...PEOPLE_OPERATION_UNITS, ...IDENTITY_OPERATION_UNITS]);
 
 /** Outcomes of one sweep's recovery. */
 export interface RecoveryCounts {
@@ -200,7 +217,7 @@ async function recordUnreachable(
   // A reply earlier in this run restarts the unreachable period.
   const since = replied ? now : (operation.identity_unreachable_since ?? now);
   if (operation.state !== 'done' && now.getTime() - since.getTime() > HALT_AFTER_MS) {
-    await writeState(deps, tenantId, claimed, { state: 'halted', identityUnreachableSince: since });
+    await writeState(deps, tenantId, claimed, { state: 'halted', identityUnreachableSince: since, haltedAt: now });
     const userId = unpadded(operation.user_id);
     deps.logger.error({ tenantId, userId }, `roster operation ${operationId} of user ${userId} halted: identity unreachable since ${since.toISOString()}`);
     return outcome(operation, 'halted', 'halted', identityState);
@@ -300,6 +317,32 @@ export async function recoverRosterOperations(deps: RecoveryDeps): Promise<Recov
     }
   }
   return counts;
+}
+
+/** Every operation of every registered tenant that recovery ever halted, resolved or not, oldest first. */
+export async function listHaltedOperations(deps: Pick<RecoveryDeps, 'db' | 'repo'>): Promise<HaltedOperation[]> {
+  // Case-folded as withTenant folds them, so one tenant is never listed twice.
+  const tenantIds = new Set((await registeredTenants(deps.db)).map((entry) => entry.tenantId.toLowerCase()));
+  const halted: HaltedOperation[] = [];
+  for (const tenantId of tenantIds) {
+    const rows = await withTenant(deps.db, tenantId, (tx) => deps.repo.listHaltedRosterOperations(tx));
+    for (const row of rows) {
+      halted.push({
+        operationId: row.operation_id,
+        tenantId,
+        userId: unpadded(row.user_id),
+        // Only the protocol writes `kind`, always one of its RosterKind values.
+        kind: row.kind as RosterKind,
+        state: row.state,
+        startedAt: row.started_at,
+        updatedAt: row.updated_at,
+        haltedAt: row.halted_at,
+        identityUnreachableSince: row.identity_unreachable_since,
+        units: OPERATION_UNITS,
+      });
+    }
+  }
+  return halted.sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime() || (a.operationId < b.operationId ? -1 : a.operationId > b.operationId ? 1 : 0));
 }
 
 /** The `roster-operations` recovery hook of the people outbox sweep; it fails, after trying every operation, when any failed. */

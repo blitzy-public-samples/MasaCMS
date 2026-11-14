@@ -812,7 +812,11 @@ export function createIdentityDouble(options: IdentityDoubleOptions = {}): Ident
       const { operation } = judged;
       // A committed or finished operation always holds its commit xid.
       const xid = judged.verdict === 'proceed' ? applyCommit(operation, call.body as AccountCommitRequest | undefined) : (operation.xid as string);
-      const result = { operationId: operation.operationId, userId: operation.userId, state: 'committed', writePosition: xid };
+      // The answer carries the account and memberships as stored, which the reads list.
+      const account = listedAccount(operation.userId);
+      if (account === undefined) throw new Error(`The identity double holds no account of committed user ${operation.userId}`);
+      const groupIds = [...groupIdsOf(operation.userId)];
+      const result = { operationId: operation.operationId, userId: operation.userId, state: 'committed', writePosition: xid, account: accountRecord(account), groupIds };
       return json(result, 200, { [WRITE_POSITION_HEADER_LC]: formatWritePosition({ [IDENTITY_SERVICE]: xid }) });
     },
 

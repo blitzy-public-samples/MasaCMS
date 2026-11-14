@@ -38,6 +38,7 @@ import {
   type LoginStateRow,
   type UserAccountRow,
 } from '../repo/tables.js';
+import { accountRecord, readMembershipIds } from './account-reads.js';
 import { buildLoginSnapshot, type MembershipGroup } from './roles.js';
 import { applyRelogin, locateSession } from './sessions.js';
 
@@ -452,11 +453,20 @@ function stepOutcome(settled: Settled, state: AccountOperationStep['state']): St
   return { outcome: 'stepped', step: { operationId: settled.row.operation_id, userId: settled.row.user_id, state } };
 }
 
-async function commitOutcome(db: TenantDb, settled: Settled): Promise<CommitOutcome> {
+/** The commit position with the account and memberships as stored; the operation keeps the user closed until finish, so they are the committed ones. */
+async function commitOutcome(deps: AccountOperationDeps, settled: Settled): Promise<CommitOutcome> {
   if (settled.verdict === 'conflict') return { outcome: 'conflict', operation: settled.operation };
+  const { db, repo } = deps;
   const { row } = settled;
   const writePosition = row.commit_xid ?? (await currentPosition(db));
-  return { outcome: 'committed', result: { operationId: row.operation_id, userId: row.user_id, state: 'committed', writePosition } };
+  // The account lives in the operation's tenant: prepare halts an update whose account another tenant holds.
+  const [stored] = await withTenant(db, row.tenant_id, (tx) => repo.readAccountRecords(tx, [row.user_id]));
+  if (stored === undefined) throw new Error(`Account ${row.user_id} of committed operation ${row.operation_id} is missing from its tenant`);
+  const groupIds = await readMembershipIds(deps, row.user_id);
+  return {
+    outcome: 'committed',
+    result: { operationId: row.operation_id, userId: row.user_id, state: 'committed', writePosition, account: accountRecord(stored), groupIds },
+  };
 }
 
 /** The pool site of the request site's private (`isPublic` 0) or public user pool; null for an unregistered site. */
@@ -821,7 +831,7 @@ export async function prepareAccountOperation(deps: AccountOperationDeps, input:
 /** Applies a prepared change in one identity transaction whose events stay held until finish [legacy: core/mura/user/userDAO.cfc:300-355,404-480,502-616,873-893]. */
 export async function commitAccountOperation(deps: AccountOperationDeps, operationId: string, input: CommitInput = {}): Promise<CommitOutcome> {
   const judged = judge(await locateOperation(deps, operationId), operationId, input, COMMIT);
-  if (judged.verdict !== 'proceed') return commitOutcome(deps.db, judged);
+  if (judged.verdict !== 'proceed') return commitOutcome(deps, judged);
   const { tenantId, row } = judged.located;
   const pending = parsePending(row);
   const originId = pending.memberships?.originId ?? null;
@@ -831,7 +841,7 @@ export async function commitAccountOperation(deps: AccountOperationDeps, operati
     patch: async (tx) => ({ commit_xid: await currentXid(tx), pending_change: JSON.stringify(recordedChange) }),
     apply: (tx, current, ctx) => applyCommit(deps, tx, current, pending, onlyGroupIds, ctx),
   });
-  return commitOutcome(deps.db, settled);
+  return commitOutcome(deps, settled);
 }
 
 /** Discards a prepared change, deletes a `pending` account and reopens the user; an operation never recorded only loses a stale registration. */
