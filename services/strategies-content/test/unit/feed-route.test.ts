@@ -3,13 +3,13 @@ import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { parse } from 'yaml';
 import { collectRouteMatrix } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
-import { createLogger } from '@opt2/platform/logging';
+import { createLogger, serializeError } from '@opt2/platform/logging';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
-import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { createService, fixedClock, loadEnv, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import { tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, pgAvailable, testVerifier, writeTestSecrets, type InjectResponse } from '@opt2/platform/testing';
 import { saveContent } from '../../src/domain/content.js';
@@ -75,6 +75,8 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
     },
   };
   const ids: Record<string, string> = {};
+  const logLines: Record<string, unknown>[] = [];
+  const errorSpies: MockInstance<FastifyRequest['log']['error']>[] = [];
 
   /** Sends a GET and holds a declared answer to its contract operation. */
   async function get(url: string, headers: Record<string, string> = {}, checkContract = true): Promise<InjectResponse> {
@@ -189,7 +191,12 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
       clock: fx.deps.clock,
       verifierOverride: testVerifier(SERVICE),
       pool: db,
-      logger: createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+      logger: createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: (line: string) => void logLines.push(JSON.parse(line) as Record<string, unknown>) } }),
+    });
+    // Captures log.error arguments as the route passes them, before the logger serializes.
+    app.addHook('onRequest', (request, _reply, done) => {
+      errorSpies.push(vi.spyOn(request.log, 'error'));
+      done();
     });
     registerFeedRoutes(app, ctx);
     await app.ready();
@@ -296,8 +303,11 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
     ['the root endpoint reads the url siteid', `/_api/feed/v1?feedid=${UNKNOWN_FEED}&siteid=tenant-a`, SITE_ID, 404],
     ['the legacy endpoint reads path element 4', `/tasks/feed/x/tenant-a/?feedid=${UNKNOWN_FEED}`, SITE_ID, 404],
     ['a token of another site is refused', `/_api/feed/v1/tenant-a/?feedid=${UNKNOWN_FEED}`, 'tenant-b', 403],
+    ['a token of another site is refused on the root endpoint', `/_api/feed/v1?feedid=${UNKNOWN_FEED}&siteid=tenant-a`, 'tenant-b', 403],
+    ['a token of another site is refused on the legacy root endpoint', `/tasks/feed?feedid=${UNKNOWN_FEED}&siteid=tenant-a`, 'tenant-b', 403],
+    ['a token of another site is refused on the legacy path endpoint', `/tasks/feed/x/tenant-a/?feedid=${UNKNOWN_FEED}`, 'tenant-b', 403],
   ])('site: %s', async (_label, url, site, status) => {
-    expect((await get(url, await as(site), status !== 403)).statusCode).toBe(status);
+    expect((await get(url, await as(site))).statusCode).toBe(status);
   });
 
   it('reads a stored feed only for a verified token', async () => {
@@ -415,8 +425,13 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
         },
       },
     };
+    logLines.length = 0;
+    errorSpies.length = 0;
     const res = await withDomain({ repository }, async () => get(`/_api/feed/v1/tenant-a/?feedid=${ids.rss20 ?? ''}`, await as(SITE_ID)));
     expect(res.statusCode).toBe(status);
     if (status === 500) expect(res.body).toBe(feedErrorPacket('unhandled', MOZILLA).body);
+    expect(errorSpies.flatMap((spy) => spy.mock.calls)).toEqual(status === 500 ? [[{ error: serializeError(error) }, 'unhandled feed error']] : []);
+    const unhandled = logLines.filter((line) => line.message === 'unhandled feed error').map(({ severity, error: logged }) => ({ severity, error: logged }));
+    expect(unhandled).toEqual(status === 500 ? [{ severity: 'ERROR', error: serializeError(error) }] : []);
   });
 });

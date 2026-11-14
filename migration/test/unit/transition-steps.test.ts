@@ -101,6 +101,8 @@ const groups = loadGroups(config.paths.groupsFile);
 const v1 = loadVersion(config.paths.cutoverDir, 'v0001');
 const v2 = loadVersion(config.paths.cutoverDir, 'v0002');
 const v3 = loadVersion(config.paths.cutoverDir, 'v0003');
+// Free text no redaction pattern masks, so it reaches a log only if interpolated there.
+const FREE_TEXT = ['Jane', 'Doe', 'salary', '91250'].join(' ');
 const SERVICE_URLS = Object.fromEntries(
   ['identity', 'people', 'programs-sites', 'strategies-content', 'communications', 'reporting', 'surveys', 'timesheets', 'finance', 'e-signature'].map(
     (s, i) => [s, `http://127.0.0.1:${String(26211 + i)}`],
@@ -454,6 +456,26 @@ describe('full run v0001 -> v0002', () => {
     expect(h.gateway.activate).toHaveBeenCalledTimes(1);
   });
 
+  it('logs only the queue and service of each recurring chain step 8 could not ensure, never the failure text', async () => {
+    const h = harness({ active: 'v0001' });
+    const record = await runAll(h, newRecord('v0001', 'v0002'), 7);
+    const answer = h.client.request.getMockImplementation();
+    h.client.request.mockImplementation(async (req) => {
+      if (req.path.endsWith('/ensure')) throw new Error(`queue control answered ${FREE_TEXT}`);
+      return answer!(req);
+    });
+    vi.mocked(h.ctx.logger.warn).mockClear();
+    await runTransitionStep(h.deps, record, 8);
+    const warnings = vi.mocked(h.ctx.logger.warn).mock.calls;
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toEqual([
+      expect.stringMatching(
+        new RegExp(`^Transition ${record.transitionId}: recurring chains not ensured, left to the periodic reconcile: [a-z0-9-]+ on [a-z0-9-]+(, [a-z0-9-]+ on [a-z0-9-]+)*$`),
+      ),
+    ]);
+    expect(JSON.stringify(warnings)).not.toContain(FREE_TEXT);
+  });
+
   it('transfers files and runs the start-up guard when content moves', async () => {
     const h = harness({ active: 'v0001' });
     const record = await runAll(h, newRecord('v0001', 'v0002'), 5);
@@ -494,7 +516,7 @@ describe('aborts', () => {
     expect((err as TransitionAbortedError).reason).toContain('/r/reconciliation/post-cutover.json');
     record = { ...record, progress: h.persisted.at(-1)! };
     h.calls.length = 0;
-    const cleaned = await abortTransition(h.deps, record, 'difference');
+    const cleaned = await abortTransition(h.deps, record);
     expect(h.gateway.activate).not.toHaveBeenCalled();
     const opens = h.calls.filter((c) => c[0] === 'gate');
     expect(opens.every((c) => c[2] === 'open' && c[4] === 'legacy')).toBe(true);
@@ -510,17 +532,25 @@ describe('aborts', () => {
     expect(h.status.tableVersion).toBe('v0001');
     // A gate another holder took is skipped; abort completes.
     h.owners.gate.mockRejectedValueOnce(new GateConflict('people', { error: 'gate-conflict', units: ['people.person_archive'] }));
-    await expect(abortTransition(h.deps, record, 'again')).resolves.toBeDefined();
+    await expect(abortTransition(h.deps, record)).resolves.toBeDefined();
     h.owners.gate.mockRejectedValueOnce(new Error('down'));
-    await expect(abortTransition(h.deps, record, 'again')).rejects.toThrow('down');
+    await expect(abortTransition(h.deps, record)).rejects.toThrow('down');
+  });
+
+  it('logs the abort as a fixed line naming the transition and its version, never the reason', async () => {
+    const h = harness({ active: 'v0001' });
+    const record = await runAll(h, newRecord('v0001', 'v0002'), 5);
+    vi.mocked(h.ctx.logger.warn).mockClear();
+    await abortTransition(h.deps, { ...record, abortReason: `difference in ${FREE_TEXT}` });
+    expect(vi.mocked(h.ctx.logger.warn).mock.calls).toEqual([[`Transition ${record.transitionId} to v0002 aborting`]]);
   });
 
   it('refuses to abort an activated transition and aborts before a plan with leases only', async () => {
     const h = harness({ active: 'v0001' });
     const record = await runAll(h, newRecord('v0001', 'v0002'), 7);
-    await expect(abortTransition(h.deps, record, 'x')).rejects.toThrow(/no longer abort/);
-    await expect(abortTransition(h.deps, { ...record, lastStep: 6 }, 'x')).rejects.toThrow(/already active/);
-    const fresh = await abortTransition(h.deps, newRecord('v0001', 'v0002'), 'precondition');
+    await expect(abortTransition(h.deps, record)).rejects.toThrow(/no longer abort/);
+    await expect(abortTransition(h.deps, { ...record, lastStep: 6 })).rejects.toThrow(/already active/);
+    const fresh = await abortTransition(h.deps, newRecord('v0001', 'v0002'));
     expect(fresh).toEqual(initialTransitionProgress());
     expect(h.scheduler.resumePaused).not.toHaveBeenCalled();
   });

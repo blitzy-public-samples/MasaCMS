@@ -15,6 +15,7 @@ import {
   assertBatchTenant,
   parseProgramTable,
   programTableName,
+  type BatchProgram,
   type Mapping,
 } from './mapping.js';
 import {
@@ -137,6 +138,8 @@ export interface MigrationHandlerOptions {
   emitStateEvents?(tx: TenantTx, change: AppliedChange, write: WriteContext): Promise<void>;
   /** Statuses of operations; ids it omits fall back to the `open_operation` registry. */
   operationStatus?(db: TenantDb, operationIds: string[]): Promise<Record<string, OperationStatus>>;
+  /** Site of a `Program_<id>` schema as `synthetic.program_site` maps it; required when a mapping takes its tenant from the program. */
+  programSiteId?(programId: number): string | null | undefined;
 }
 
 /** Answer of `POST /apply`; `applied` plus `skipped` is the batch's row count unless it is a duplicate. */
@@ -708,7 +711,8 @@ async function upsertWatermark(
 
 /**
  * Registers the migration endpoints of one owner under {@link MIGRATION_PATH_PREFIX}, each requiring `platform.migration`.
- * Throws when `registerWritePositionHeader(app)` has not run, no database is available, or a mapping or unit does not fit the repository.
+ * Throws when `registerWritePositionHeader(app)` has not run, no database is available, a mapping or unit does not fit the repository,
+ * or a mapping takes its tenant from `Program_<id>` without `options.programSiteId`.
  */
 export function registerMigrationHandlers(app: FastifyInstance, options: MigrationHandlerOptions): void {
   const { owner, repository } = options;
@@ -721,6 +725,10 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
   const ungated = units.find((unit) => !gated.has(unit));
   if (ungated !== undefined) throw new Error(`Unit ${ungated} has no table definition in repository ${repository.schema}`);
   const prepared = options.mappings.map((mapping) => prepareMapping(repository, unitSet, mapping));
+  const programSourced = options.mappings.find((mapping) => mapping.tenant?.kind === 'program');
+  if (programSourced !== undefined && options.programSiteId === undefined) {
+    throw new Error(`Mapping ${programSourced.legacyTable} -> ${programSourced.targetTable}: a Program_<id> tenant needs options.programSiteId`);
+  }
   const byLegacyTable = new Map<string, PreparedMapping[]>();
   const byTargetTable = new Map<string, PreparedMapping[]>();
   for (const entry of prepared) {
@@ -780,6 +788,11 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     if (legacyProgramId !== undefined && candidates.some((entry) => entry.mapping.fold === undefined)) {
       throw new InvalidRequestError(`${legacyTable} is not a per-program table`);
     }
+    const batchProgram: BatchProgram = { legacyProgramId, programSiteId: options.programSiteId };
+    // A program-sourced tenant does not depend on the rows, so a batch that writes none is held to it as well.
+    for (const entry of candidates) {
+      if (entry.mapping.tenant?.kind === 'program') assertBatchTenant(entry.mapping, {}, tenantId, batchProgram);
+    }
     const unmapped = body.units?.find((unit) => !candidates.some((entry) => entry.mapping.unit === unit));
     if (unmapped !== undefined) throw new InvalidRequestError(`${owner} maps ${legacyTable} to no unit ${unmapped}`);
     const allowed = body.units === undefined ? undefined : new Set(body.units);
@@ -815,7 +828,7 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
         let wrote = false;
         for (const entry of writable) {
           if (!entry.mapping.acceptsRow(values, input.discriminator)) continue;
-          assertBatchTenant(entry.mapping, values, tenantId);
+          assertBatchTenant(entry.mapping, values, tenantId, batchProgram);
           const target = entry.mapping.toTarget(values, { legacyProgramId });
           const change = await applyRow(tx, entry, input.op, target, ctx);
           if (change === null) continue;

@@ -58,6 +58,18 @@ export interface LocalSigningKeys {
   kid: string;
 }
 
+const localKeyIds = new WeakMap<CryptoKey | KeyObject, Promise<string>>();
+
+/** RFC 7638 SHA-256 thumbprint of `publicKey`, memoised per key object. */
+function localKeyId(publicKey: CryptoKey | KeyObject): Promise<string> {
+  let kid = localKeyIds.get(publicKey);
+  if (kid === undefined) {
+    kid = exportJWK(publicKey).then((jwk) => calculateJwkThumbprint(jwk));
+    localKeyIds.set(publicKey, kid);
+  }
+  return kid;
+}
+
 /** Loads the local key pair; a missing private key file is tolerated unless `requirePrivate` is set. */
 export async function loadLocalSigningKeys(
   stateDir: string,
@@ -74,7 +86,7 @@ export async function loadLocalSigningKeys(
   );
   const publicKey = await importSPKI(publicPem, 'RS256');
   const privateKey = privatePem === undefined ? undefined : await importPKCS8(privatePem, 'RS256');
-  const kid = await calculateJwkThumbprint(await exportJWK(publicKey));
+  const kid = await localKeyId(publicKey);
   return { privateKey, publicKey, kid };
 }
 
@@ -101,12 +113,12 @@ export async function signLocalServiceToken(opts: {
     .sign(privateKey);
 }
 
-/** Verifies a local service token for `audience`; token and claim-shape failures are a 401 `invalid-credential`. */
+/** Verifies a local service token for `audience` under the key's thumbprint `kid`; token, kid and claim-shape failures are a 401 `invalid-credential`. */
 export async function verifyLocalServiceToken(
   token: string,
   opts: { publicKey: CryptoKey | KeyObject; audience: string },
 ): Promise<ServiceIdentity> {
-  const { payload } = await jwtVerify(token, opts.publicKey, {
+  const { payload, protectedHeader } = await jwtVerify(token, opts.publicKey, {
     issuer: LOCAL_SERVICE_ISSUER,
     audience: opts.audience,
     algorithms: ['RS256'],
@@ -116,8 +128,10 @@ export async function verifyLocalServiceToken(
     }
     throw err;
   });
+  const kid = await localKeyId(opts.publicKey);
   const { sub, roles } = payload;
   if (
+    protectedHeader.kid !== kid ||
     typeof sub !== 'string' ||
     !sub.startsWith(SERVICE_SUBJECT_PREFIX) ||
     sub.length === SERVICE_SUBJECT_PREFIX.length ||

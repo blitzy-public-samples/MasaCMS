@@ -25,6 +25,8 @@ const NOW = '2026-06-30T08:15:00.000Z';
 const WINDOW_A = '6A1B2C3D-4E5F-4061-7283940516273849';
 const WINDOW_B = '7B2C3D4E-5F60-4172-8394051627384950';
 const INFO = { owner: 'people', tenantId: '9a7c1d52-1f4e-5d3a-8b6c-2e4f6a8b0c1d' };
+// Free text no redaction pattern masks, so it reaches a log only if interpolated there.
+const FREE_TEXT = ['Jane', 'Doe', 'salary', '91250'].join(' ');
 
 interface LogCall {
   level: string;
@@ -104,12 +106,14 @@ describe('createFaultRegistry: set, clear and active', () => {
     expect(registry.clear('projector-delay')).toBe(true);
     expect(registry.clear('projector-delay')).toBe(false);
     expect(registry.active().map((fault) => fault.name)).toEqual(['projector-crash', 'window-import-interrupted']);
+    registry.set('window-import-interrupted');
     expect(messages(logger)).toEqual([
-      'fault set projector-delay {"delayMs":3000}',
-      `fault set window-import-interrupted {"windowId":"${WINDOW_A}"}`,
-      'fault set projector-crash {"point":"after-legacy-commit","afterBatches":1}',
-      'fault set projector-delay {"delayMs":50}',
+      'fault set projector-delay delayMs=3000',
+      `fault set window-import-interrupted window ${WINDOW_A}`,
+      'fault set projector-crash point=after-legacy-commit afterBatches=1',
+      'fault set projector-delay delayMs=50',
       'fault cleared projector-delay',
+      'fault set window-import-interrupted every window',
     ]);
   });
 
@@ -131,12 +135,16 @@ describe('createFaultRegistry: set, clear and active', () => {
     ['projector-crash', { point: 'after-legacy-commit', afterBatches: 0 }, 'afterBatches'],
     ['window-import-interrupted', { windowId: '' }, 'windowId'],
     ['window-import-interrupted', { windowId: 7 }, 'windowId'],
+    ['window-import-interrupted', { windowId: WINDOW_A.toLowerCase() }, 'windowId'],
+    ['window-import-interrupted', { windowId: `${WINDOW_A} ${FREE_TEXT}` }, 'windowId'],
+    ['window-import-interrupted', { windowId: FREE_TEXT }, 'windowId'],
   ])('set %s with %j fails with FaultParamsError (400) naming %s', (name, params, path) => {
     const { registry, logger } = registryIn();
     const error = thrown(() => registry.set(name, params));
     expect(error).toBeInstanceOf(FaultParamsError);
     expect(error).toMatchObject({ fault: name, statusCode: 400 });
     expect((error as FaultParamsError).issues.some((issue) => issue.startsWith(`${path}:`))).toBe(true);
+    expect((error as FaultParamsError).message).not.toContain(FREE_TEXT);
     expect(registry.active()).toEqual([]);
     expect(logger.calls).toEqual([]);
   });

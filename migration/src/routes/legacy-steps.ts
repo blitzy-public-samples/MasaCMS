@@ -1,6 +1,7 @@
 /** `legacyStepRun`: one site-monitor step run on legacy through the bridge, inside a write window when its units need one. */
 import { serviceRole, type Opt2RouteConfig } from '@opt2/platform/auth';
 import { LegacyApiError, apiUnavailableResponse } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import { sendLegacyResponse, z, type FastifyInstance } from '@opt2/platform/service-kit';
 
 import type { components, paths } from '../generated/openapi.js';
@@ -55,7 +56,8 @@ export function registerLegacyStepRoutes(app: FastifyInstance, deps: LegacyStepR
       // with the legacy 503; only the deadline has its own status, which that handler cannot give. The body names no unit,
       // so an unknown unit can only come from the inventory and stays the handler's 500, not a 400.
       if (!(error instanceof LegacyStepDeadlineError)) throw error;
-      request.log.warn(error.message);
+      const window = error.windowId === undefined ? '' : ` in window ${error.windowId}`;
+      request.log.warn({ error: serializeError(error) }, `Legacy site-monitor step ${error.step}${window} did not complete before its deadline`);
       return sendLegacyResponse(reply, { ...apiUnavailableResponse(), status: 504 });
     }
   });

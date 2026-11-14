@@ -269,6 +269,17 @@ const idleDb: TenantDb = {
   end: () => Promise.resolve(),
 };
 
+/** `synthetic.program_site` of the test apps: each test binds the programs it applies to the site it applies them under. */
+const programSites = new Map<number, string>();
+
+/** Maps each of `programIds` to `site`. */
+function bindPrograms(site: string, ...programIds: number[]): void {
+  for (const programId of programIds) programSites.set(programId, site);
+}
+
+/** Handler options every test app shares. */
+const BASE_OPTIONS = { owner: OWNER, mappings: MAPPINGS, units: UNITS, programSiteId: (programId: number) => programSites.get(programId) };
+
 describe('registerMigrationHandlers registration', () => {
   const repository = createRepository({ owner: OWNER, schema: BASE, tables: TABLES });
   const apps: FastifyInstance[] = [];
@@ -286,7 +297,7 @@ describe('registerMigrationHandlers registration', () => {
 
   it('declares every migration endpoint under the prefix with platform.migration on the service transport', async () => {
     const app = await freshApp();
-    registerMigrationHandlers(app, { owner: OWNER, repository, mappings: MAPPINGS, units: UNITS, db: idleDb });
+    registerMigrationHandlers(app, { ...BASE_OPTIONS, repository, db: idleDb });
     const routes = recordedRoutes(app)
       .filter((route) => route.url.startsWith(MIGRATION_PATH_PREFIX) && route.method !== 'HEAD')
       .map((route) => [route.method, route.url, route.config]);
@@ -345,14 +356,20 @@ describe('registerMigrationHandlers registration', () => {
       true,
       'Mapping tItems -> mk.item: target column colour is missing or has another canonical type',
     ],
+    [
+      'for a mapping taking its tenant from Program_<id> without options.programSiteId',
+      { db: idleDb, programSiteId: undefined },
+      true,
+      'Mapping Scores -> mk.score: a Program_<id> tenant needs options.programSiteId',
+    ],
   ] as [string, Partial<MigrationHandlerOptions>, boolean, string][])('throws %s', async (_label, overrides, withHeader, message) => {
     const app = await freshApp(undefined, withHeader);
-    expect(() => registerMigrationHandlers(app, { owner: OWNER, repository, mappings: MAPPINGS, units: UNITS, ...overrides })).toThrow(message);
+    expect(() => registerMigrationHandlers(app, { ...BASE_OPTIONS, repository, ...overrides })).toThrow(message);
   });
 
   it('uses the createService pool when options.db is absent', async () => {
     const app = await freshApp(idleDb);
-    expect(() => registerMigrationHandlers(app, { owner: OWNER, repository, mappings: MAPPINGS, units: UNITS })).not.toThrow();
+    expect(() => registerMigrationHandlers(app, { ...BASE_OPTIONS, repository })).not.toThrow();
   });
 });
 
@@ -381,10 +398,8 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     app = await serviceApp(handle.app, logger);
     registerWritePositionHeader(app);
     registerMigrationHandlers(app, {
-      owner: OWNER,
+      ...BASE_OPTIONS,
       repository: repo,
-      mappings: MAPPINGS,
-      units: UNITS,
       exportObjects: (_tx, scope) => Promise.resolve(objectsOf(scope.unit, scope.tenantId)),
       emitStateEvents: (_tx, change, write) => {
         emitted.push(change);
@@ -566,6 +581,7 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
 
   it('answers a repeated batchId as a duplicate without applying its rows or its watermark', async () => {
     const site = freshSite();
+    bindPrograms(site, 21);
     const batch = (points: number, snapshotSeq: number): Record<string, unknown> => ({
       batchId: `${site}-repeat`,
       legacyTable: 'Program_21.Scores',
@@ -587,6 +603,7 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
 
   it('commits rows, batch record and watermark together and rolls all three back when a row is rejected', async () => {
     const site = freshSite();
+    bindPrograms(site, 22);
     const batch = (secondOp: RowOp): Record<string, unknown> => ({
       batchId: `${site}-atomic`,
       origin: 'legacy-window',
@@ -711,9 +728,10 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     ]);
   });
 
-  /** A one-row Scores batch of a fresh site for `Program_<programId>`, carrying a forward watermark. */
-  function scoresBatch(programId: number): Record<string, unknown> & { legacyTable: string; siteId: string } {
+  /** A one-row Scores batch of a fresh site for `Program_<programId>`, which it binds to that site, carrying a forward watermark. */
+  function scoresBatch(programId: number): Record<string, unknown> & { batchId: string; legacyTable: string; siteId: string } {
     const site = freshSite();
+    bindPrograms(site, programId);
     return {
       batchId: `${site}-units`,
       legacyTable: `Program_${programId}.Scores`,
@@ -746,8 +764,29 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     expect((await watermarks({ legacyTable: batch.legacyTable })).map((mark) => mark.snapshotSeq)).toEqual([27]);
   });
 
+  it.each([
+    ['maps to another site', 28, 'other', undefined],
+    ['maps to no site', 29, 'none', undefined],
+    ['maps to another site, with no unit to write', 30, 'other', []],
+  ] as [string, number, 'other' | 'none', string[] | undefined][])(
+    'rejects a Program_<id> batch whose program %s without recording its batch or watermark, so its corrected retry applies',
+    async (_label, programId, binding, units) => {
+      const batch = { ...scoresBatch(programId), ...(units === undefined ? {} : { units }) };
+      if (binding === 'other') bindPrograms(freshSite(), programId);
+      else programSites.delete(programId);
+      expectRejected(await post('/apply', { origin: 'backfill', ...batch }));
+      expect(await batches(batch.siteId)).toEqual([]);
+      expect(await stored(batch.siteId, 'score', 'score_id')).toEqual([]);
+      expect(await watermarks({ legacyTable: batch.legacyTable })).toEqual([]);
+      bindPrograms(batch.siteId, programId);
+      expect(await applied(batch)).toMatchObject({ batchId: batch.batchId, duplicate: false });
+      expect((await watermarks({ legacyTable: batch.legacyTable })).map((mark) => mark.snapshotSeq)).toEqual([programId]);
+    },
+  );
+
   it('folds Program_<id> tables into one target table and exports it whole or per program', async () => {
     const site = freshSite();
+    bindPrograms(site, 1, 2, 3);
     const scores = { siteId: site, columns: SCORE_LEGACY };
     await applied({ ...scores, batchId: `${site}-p1`, legacyTable: 'Program_1.Scores', rows: rowsOf(SCORE_LEGACY, [['upsert', { ScoreID: 's2', Points: 20 }], ['upsert', { ScoreID: 's1', Points: 10 }]]) });
     await applied({ ...scores, batchId: `${site}-p2`, legacyTable: '[Program_2].[Scores]', rows: rowsOf(SCORE_LEGACY, [['upsert', { ScoreID: 's1', Points: 30 }]]) });
@@ -818,6 +857,7 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
 
   it('filters a folded unit by legacy key across its programs, or within the one programId names', async () => {
     const site = freshSite();
+    bindPrograms(site, 1, 2);
     const scores = { siteId: site, columns: SCORE_LEGACY };
     await applied({ ...scores, batchId: `${site}-k1`, legacyTable: 'Program_1.Scores', rows: rowsOf(SCORE_LEGACY, [['upsert', { ScoreID: 's1', Points: 10 }], ['upsert', { ScoreID: 's2', Points: 20 }]]) });
     await applied({ ...scores, batchId: `${site}-k2`, legacyTable: 'Program_2.Scores', rows: rowsOf(SCORE_LEGACY, [['upsert', { ScoreID: 's1', Points: 30 }]]) });
@@ -940,6 +980,7 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     const dup = { Label: 'dup', Weight: 1 };
     const items = { legacyTable: 'tItems', siteId: site, columns: ITEM_LEGACY };
     const tags = { legacyTable: 'tTagMembers', siteId: site, columns: TAG_LEGACY };
+    bindPrograms(site, 4);
     await applied({ ...items, batchId: `${site}-c1`, rows: rowsOf(ITEM_LEGACY, [['upsert', v1]]) });
     await applied({ ...items, batchId: `${site}-c2`, rows: rowsOf(ITEM_LEGACY, [['upsert', v2]]) });
     await applied({ batchId: `${site}-c3`, legacyTable: 'tNoteArchive', siteId: site, columns: MEMO_LEGACY, rows: rowsOf(MEMO_LEGACY, [['upsert', memo]]) });
@@ -1234,9 +1275,12 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     ['a legacyProgramId beyond the range of the legacy_program_id column', { ...applyBase, legacyTable: 'Scores', legacyProgramId: 99999999999, columns: SCORE_LEGACY, rows: rowsOf(SCORE_LEGACY, [['upsert', { ScoreID: 's1', Points: 1 }]]) }],
     ['a Program_<id> name beyond the range of the legacy_program_id column', { ...applyBase, legacyTable: 'Program_99999999999.Scores', columns: SCORE_LEGACY, rows: rowsOf(SCORE_LEGACY, [['delete', { ScoreID: 's1', Points: 1 }]]) }],
     ['a Program_<id> name beyond the range of the legacy_program_id column and no rows', { ...applyBase, legacyTable: '[Program_2147483648].[Scores]', columns: SCORE_LEGACY, rows: [] }],
+    ['a per-program table named without its Program_<id> and no rows', { ...applyBase, legacyTable: 'Scores', columns: SCORE_LEGACY, rows: [] }],
     ['an upsert into a keyless table', { ...applyBase, legacyTable: 'tTagMembers', columns: TAG_LEGACY, rows: rowsOf(TAG_LEGACY, [['upsert', { Label: 'a', Weight: 1 }]]) }],
     ['an insert into a keyed table', { ...applyBase, rows: [{ op: 'insert', row: okItem }] }],
   ] as [string, Record<string, unknown>][])('rejects an apply with %s as invalidParameters and records no batch', async (_label, body) => {
+    // Bound to the batch site, so the range cases fail on the column, not on the program-site lookup.
+    bindPrograms(REJECTED_SITE, 99999999999, 2147483648);
     expectRejected(await post('/apply', body));
     expect(await batches(REJECTED_SITE)).toEqual([]);
   });

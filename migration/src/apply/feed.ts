@@ -1,13 +1,7 @@
 /** Forward change feed: snapshot-to-snapshot table diffs applied to the owners' legacy-authoritative units, and the feed restart after a rollback. */
 import { randomUUID } from 'node:crypto';
 
-import {
-  LEGACY_PROGRAM_ID_COLUMN,
-  encodeRow,
-  formatCanonicalTimestamp,
-  type CanonicalColumn,
-  type WatermarkRecord,
-} from '@opt2/platform/migration-kit';
+import { LEGACY_PROGRAM_ID_COLUMN, encodeRow, formatCanonicalTimestamp, type WatermarkRecord } from '@opt2/platform/migration-kit';
 
 import { ownerBySchema } from '../config.js';
 import type { MigrationContext } from '../context.js';
@@ -33,10 +27,8 @@ import {
   readLegacyUnitRows,
   readTargetUnitRows,
   reconcileUnits,
-  toUnitRow,
   writeReconciliationReport,
   type ReconcileResult,
-  type UnitTableShape,
 } from '../reconcile/index.js';
 import { latestSnapshot, requireSnapshot, takeSnapshot, type SnapshotRecord } from '../snapshot/index.js';
 import {
@@ -50,6 +42,7 @@ import {
   type OwnerBatcher,
   type TenantResolver,
 } from './batch.js';
+import { Acceptance, addTaken, hintOf, planTarget, type DiffSide, type TargetPlan } from './targets.js';
 
 /** Context members the feed reads: snapshots, both data sides through `legacy` and `owners`, the gateway's authority and the report target. */
 export type FeedContext = Pick<
@@ -170,33 +163,8 @@ export class FeedAuthorityError extends Error {
   }
 }
 
-type Discriminator = NonNullable<ApplyChange['discriminator']>;
 type Resolved = ReturnType<TenantResolver['resolve']>;
 
-/** How the owner tells one target's rows apart: a discriminator sent with each row, or a split column carried with its literal. */
-interface TargetHint {
-  readonly discriminator: Discriminator | undefined;
-  readonly carried: { readonly column: CanonicalColumn; readonly value: string } | undefined;
-  /** The split column of a column predicate, in lower case. */
-  readonly predicateColumn: string | undefined;
-}
-
-/** One target of a table with the lower-cased columns it writes and its apply hint. */
-interface TargetPlan {
-  readonly target: LegacyTableTarget;
-  readonly columns: ReadonlySet<string>;
-  readonly hint: TargetHint;
-}
-
-/** One side of a diff: the snapshot database and the resolver of its rows' tenants. */
-interface DiffSide {
-  readonly database: string;
-  readonly tenants: TenantResolver;
-}
-
-const CLASS_MAP_PREDICATE = /^\s*classMap\s+owner\s*=\s*(\S+)\s*$/i;
-const PREDICATE = /^\s*(owner\s+)?(\w+)\s*(?:=\s*(.+?)|in\s*\((.+)\))\s*$/i;
-const LITERAL = /^\s*(?:'((?:[^']|'')*)'|(-?\d+))\s*$/;
 const FEED_SNAPSHOT_KIND = 'feed';
 const REBASELINE_SNAPSHOT_KIND = 'rebaseline';
 /** Masa's file metadata table; the file store's objects follow its owner's watermark. */
@@ -210,48 +178,12 @@ function tableKey(name: string): string {
   return lower(qualifiedName(schema, table));
 }
 
-/** First literal of a predicate value list: quoted text, or an integer as a number. @throws Error for any other form. */
-function firstLiteral(predicate: string, list: string): Discriminator {
-  const literal = LITERAL.exec(list.split(',')[0] ?? '');
-  if (literal === null) throw new Error(`row predicate "${predicate}" has a value list the feed cannot read`);
-  return literal[1] === undefined ? Number(literal[2]) : literal[1].replaceAll("''", "'");
-}
-
-/** Discriminator (class-map owner or joined predicate's first literal) or carried split column of a target, as the window import derives them. */
-function hintOf(target: LegacyTableTarget, columns: readonly CanonicalColumn[]): TargetHint {
-  const predicate = target.rowPredicate;
-  if (predicate === null) return { discriminator: undefined, carried: undefined, predicateColumn: undefined };
-  const classOwner = CLASS_MAP_PREDICATE.exec(predicate)?.[1];
-  if (classOwner !== undefined) return { discriminator: classOwner, carried: undefined, predicateColumn: undefined };
-  const match = PREDICATE.exec(predicate);
-  const attr = match?.[2];
-  const list = match?.[3] ?? match?.[4];
-  if (match === null || attr === undefined || list === undefined) throw new Error(`row predicate "${predicate}" has a form the feed cannot read`);
-  const value = firstLiteral(predicate, list);
-  const column = match[1] === undefined ? columns.find((candidate) => lower(candidate.name) === lower(attr)) : undefined;
-  if (column === undefined) return { discriminator: value, carried: undefined, predicateColumn: undefined };
-  return { discriminator: undefined, carried: { column, value: String(value) }, predicateColumn: lower(column.name) };
-}
-
-/** Lower-cased columns one target writes: its owned columns (every shape column for `whole-table`), its key and its split column. */
-function targetColumns(target: LegacyTableTarget, shape: Pick<LegacyTableShape, 'columns'>, hint: TargetHint): Set<string> {
-  const owned = target.ownedColumns === 'whole-table' ? shape.columns.map((column) => column.name) : target.ownedColumns;
-  const columns = new Set([...owned, ...target.keyColumns].map(lower));
-  if (hint.predicateColumn !== undefined) columns.add(hint.predicateColumn);
-  return columns;
-}
-
 /** Union of the targets' written columns, always with the shape's key and, for folded tables, `legacy_program_id`. */
 function writableColumnsFor(targets: readonly TargetPlan[], shape: Pick<LegacyTableShape, 'keyColumns' | 'folded'>): string[] {
   const columns = new Set(shape.keyColumns.map(lower));
   if (shape.folded) columns.add(LEGACY_PROGRAM_ID_COLUMN);
   for (const plan of targets) for (const column of plan.columns) columns.add(column);
   return [...columns];
-}
-
-function planTarget(target: LegacyTableTarget, shape: Pick<LegacyTableShape, 'columns'>): TargetPlan {
-  const hint = hintOf(target, shape.columns);
-  return { target, hint, columns: targetColumns(target, shape, hint) };
 }
 
 function sameShape(a: LegacyTableShape, b: LegacyTableShape): boolean {
@@ -272,52 +204,6 @@ async function readySnapshot(ctx: Pick<MigrationContext, 'db'>, seq: number): Pr
   const snapshot = await requireSnapshot(ctx, seq);
   if (snapshot.state !== 'ready') throw new Error(`Snapshot ${String(seq)} is ${snapshot.state}, so the feed cannot read it`);
   return snapshot;
-}
-
-/** Which rows of a table each predicate target takes in each snapshot database, read once per run through reconciliation's row selection. */
-class Acceptance {
-  readonly #ctx: TableDiffContext;
-  readonly #table: string;
-  readonly #loaded = new Map<string, Promise<{ shape: UnitTableShape; keys: ReadonlySet<string> }>>();
-
-  constructor(ctx: TableDiffContext, table: string) {
-    this.#ctx = ctx;
-    this.#table = table;
-  }
-
-  /** True when `target` takes `row` of the database `side` reads. */
-  async accepts(target: LegacyTableTarget, side: DiffSide, row: CanonicalRow): Promise<boolean> {
-    if (target.rowPredicate === null) return true;
-    const { shape, keys } = await this.#load(target.unit, side);
-    return keys.has(toUnitRow(shape, row.row, row.legacyProgramId).key);
-  }
-
-  /** The plans among `plans` that take `row`. */
-  async filter(plans: readonly TargetPlan[], side: DiffSide, row: CanonicalRow): Promise<TargetPlan[]> {
-    const taken: TargetPlan[] = [];
-    for (const plan of plans) if (await this.accepts(plan.target, side, row)) taken.push(plan);
-    return taken;
-  }
-
-  #load(unit: string, side: DiffSide): Promise<{ shape: UnitTableShape; keys: ReadonlySet<string> }> {
-    const id = JSON.stringify([side.database, unit]);
-    let loaded = this.#loaded.get(id);
-    if (loaded === undefined) {
-      loaded = (async () => {
-        const shape = await describeUnitTable(this.#ctx, { unit, legacyTable: this.#table, database: side.database });
-        const rows = await readLegacyUnitRows(this.#ctx, shape, { database: side.database, tenants: side.tenants });
-        const keys = new Set<string>();
-        try {
-          for (const tenantId of rows.tenants) for await (const row of rows.rows(tenantId)) keys.add(row.key);
-        } finally {
-          await rows.dispose();
-        }
-        return { shape, keys };
-      })();
-      this.#loaded.set(id, loaded);
-    }
-    return loaded;
-  }
 }
 
 /** One owner's share of a table diff: the targets it may write, those it may not, its batcher and its counts. */
@@ -362,14 +248,8 @@ async function send(
   taken: readonly TargetPlan[],
   resolved: Resolved,
 ): Promise<void> {
-  const discriminators = [...new Set(taken.flatMap((plan) => (plan.hint.discriminator === undefined ? [] : [plan.hint.discriminator])))];
-  // A keyless row sent twice would be inserted or deleted twice by a target that needs no discriminator.
-  if (!run.keyed && discriminators.length > 1) {
-    throw new Error(`a keyless ${run.table} row is taken by ${share.result.owner} targets with different discriminators`);
-  }
-  for (const discriminator of discriminators.length === 0 ? [undefined] : discriminators) {
-    await share.batcher.add(resolved.tenantId, { op, row: row.encoding, ...(discriminator === undefined ? {} : { discriminator }) }, row.legacyProgramId);
-  }
+  const route = { table: run.table, keyed: run.keyed, owner: share.result.owner };
+  await addTaken(share.batcher, route, { op, row: row.encoding }, taken, resolved.tenantId, row.legacyProgramId);
   if (resolved.orphan) share.result.orphans += 1;
 }
 

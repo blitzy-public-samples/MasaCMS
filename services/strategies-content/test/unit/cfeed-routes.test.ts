@@ -266,7 +266,9 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
       ['a body that is not XML', { status: 200, body: 'no markup at all' }],
     ])('fails the page on %s, as cfhttp throwOnError and parseXML do', async (_label, answer) => {
       remote = answer;
-      expect((await preview()).response.statusCode).toBe(500);
+      const { response } = await preview();
+      expect(response.statusCode).toBe(500);
+      contract(response, 'GET', `/v1/sites/${SITE_ID}/feeds/${feedId}/import`);
     });
   });
 

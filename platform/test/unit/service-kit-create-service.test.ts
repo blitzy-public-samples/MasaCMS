@@ -31,6 +31,7 @@ import {
 } from '../../src/legacy-compat/index.js';
 import { REDACTED, createLogger, validateLogRecord, type Logger } from '../../src/logging/index.js';
 import { tenantIdForSite, type TenantDb } from '../../src/tenancy/index.js';
+import { mintUserToken } from '../../src/testing/index.js';
 import {
   MemorySpanExporter,
   SpanKind,
@@ -653,6 +654,36 @@ describe('legacy error mapping', () => {
     expect(res.statusMessage).toBe(LEGACY_ERROR_STATUS_TEXT);
     expect(res.headers['content-type']).toBe(LEGACY_HTML_CONTENT_TYPE);
     expect(res.body).toBe(LEGACY_ERROR_PAGE_HTML);
+  });
+
+  it('answers a valid user token with the legacy 503 envelope while the JWKS endpoint refuses connections', async () => {
+    const closed = createServer();
+    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
+    const { port } = closed.address() as AddressInfo;
+    await new Promise((resolve) => closed.close(resolve));
+    const { app, lines } = await build({
+      env: { ...ENV, OPT2_JWKS_URL: `http://127.0.0.1:${String(port)}/jwks` },
+      verifierOverride: { ...OVERRIDES, userVerifier: undefined },
+    });
+    app.get('/_api/json/v1/tenant-a/users', { config: { opt2: { requires: ['s2'] } } }, async () => 'never');
+    const token = await mintUserToken({ sub: USER_ID, site: 'tenant-a', roles: ['s2'] });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/_api/json/v1/tenant-a/users?method=findOne',
+      headers: { [INVOCATION_HEADER]: SERVICE_CREDENTIAL, authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['content-type']).toBe(LEGACY_JSON_CONTENT_TYPE);
+    expect(res.headers.etag).toBe(etag(res.body));
+    expect(res.json()).toStrictEqual({
+      apiversion: 'v1',
+      method: 'findOne',
+      error: { code: 'server_error', message: 'Unhandled Exception' },
+    });
+    const warning = lines.find((line) => line.message === 'service unavailable');
+    expect(warning).toMatchObject({ severity: 'WARNING', error: { type: 'KeySourceUnavailableError', message: 'connect ECONNREFUSED' } });
+    expect(lines.some((line) => line.message === 'unhandled error')).toBe(false);
+    expect(JSON.stringify(lines)).not.toContain(token);
   });
 
   it('answers a schema validation failure with invalidParameters', async () => {

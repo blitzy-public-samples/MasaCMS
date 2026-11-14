@@ -22,3 +22,8 @@ export const mappings: readonly Mapping[] = Object.freeze([
 
 /** Units of write authority the migration handlers gate, exactly `UNITS` in its order. */
 export const units: readonly string[] = UNITS;
+
+const PROGRAM_SITE_ROWS = { 1: 'tenant-a', 2: 'tenant-b' } as const;
+
+/** Masa site of each fixture `Program_<id>` schema, keyed by program id, as `synthetic.program_site` holds them. */
+export const PROGRAM_SITES: typeof PROGRAM_SITE_ROWS & Readonly<Record<number, string>> = Object.freeze(PROGRAM_SITE_ROWS);

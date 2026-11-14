@@ -17,7 +17,7 @@ import {
 import { createStoragePort, type StoragePort } from '@opt2/platform/storage';
 import { createPool, type TenantDb } from '@opt2/platform/tenancy';
 import { consumers } from './events/consumers.js';
-import { mappings, units } from './migration/mappings/index.js';
+import { PROGRAM_SITES, mappings, units } from './migration/mappings/index.js';
 import { createExportObjects } from './migration/objects.js';
 import { createFinanceRepository } from './repo/repository.js';
 import { OWNER, SCHEMA } from './repo/tables.js';
@@ -101,6 +101,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       units,
       db,
       exportObjects: createExportObjects({ storage, repository }),
+      programSiteId: (programId) => PROGRAM_SITES[programId],
     });
     registerConsumers(app, { service: OWNER, consumers, publisher, db });
     return app;

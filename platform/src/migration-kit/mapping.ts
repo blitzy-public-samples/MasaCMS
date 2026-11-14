@@ -424,9 +424,30 @@ export function resolveTenant(
   return { tenantId: tenantIdForSite(umbrella), siteId: umbrella, orphan: true };
 }
 
-/** Throws `MappingError` when a site-sourced row's site belongs to a tenant other than the batch tenant. */
-export function assertBatchTenant(mapping: Mapping, legacyValues: Readonly<Record<string, unknown>>, tenantId: string): void {
+/** The `Program_<id>` of an apply batch and the `synthetic.program_site` lookup its program-sourced rows are held to. */
+export interface BatchProgram {
+  legacyProgramId?: number | undefined;
+  programSiteId?: TenantLookups['programSiteId'];
+}
+
+/** Throws `MappingError` when a site-sourced row's site, or a program-sourced batch's `Program_<id>`, is not of the batch tenant. */
+export function assertBatchTenant(
+  mapping: Mapping,
+  legacyValues: Readonly<Record<string, unknown>>,
+  tenantId: string,
+  program: BatchProgram = {},
+): void {
   const source = mapping.tenant;
+  if (source?.kind === 'program') {
+    const { legacyProgramId } = program;
+    if (legacyProgramId === undefined) throw new MappingError(mapping.legacyTable, 'a program-sourced batch needs its Program_<id>');
+    const site = siteText(program.programSiteId?.(legacyProgramId));
+    if (site === null) throw new MappingError(mapping.legacyTable, `Program_${String(legacyProgramId)} maps to no site`);
+    if (tenantIdForSite(site) !== assertTenantId(tenantId)) {
+      throw new MappingError(mapping.legacyTable, `Program_${String(legacyProgramId)} belongs to a tenant other than the batch tenant`);
+    }
+    return;
+  }
   if (source?.kind !== 'site') return;
   const site = siteText(lookup(legacyValues, source.column));
   if (site === null) return;

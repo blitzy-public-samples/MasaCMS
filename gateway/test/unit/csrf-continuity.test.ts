@@ -749,14 +749,19 @@ describe('createCsrfContinuity on the committed inventory facts', () => {
     headers: Record<string, string>;
   }
 
+  /** The request for `call` with the route key the gateway computes for it. */
+  function committedRequest(call: LegacyCall): { req: SessionRequestInput; route: RouteKeyResult } {
+    const headers = { 'user-agent': USER_AGENT, ...call.headers };
+    const route = routeKeyForRequest({ method: call.method, path: call.path, query: call.query, form: call.form, headers }, { variants });
+    const req = request({ path: call.path, httpMethod: call.method, headers, query: call.query, params: { ...call.query, ...call.form } });
+    return { req, route };
+  }
+
   /** A harness over the committed facts, and the request with the route key the gateway computes for it. */
   function committedCall(call: LegacyCall): { h: Harness; req: SessionRequestInput; route: RouteKeyResult } {
     const h = harness();
     h.routes = committedRoutes;
-    const headers = { 'user-agent': USER_AGENT, ...call.headers };
-    const route = routeKeyForRequest({ method: call.method, path: call.path, query: call.query, form: call.form, headers }, { variants });
-    const req = request({ path: call.path, httpMethod: call.method, headers, query: call.query, params: { ...call.query, ...call.form } });
-    return { h, req, route };
+    return { h, ...committedRequest(call) };
   }
 
   const JSON_SAVE: LegacyCall = {
@@ -850,5 +855,110 @@ describe('createCsrfContinuity on the committed inventory facts', () => {
     expect(h.ops()).toEqual(['facts.get', 'sessions.resolveLegacyBound', 'jar.get']);
     expect(onlyCall(h, 'sessions.resolveLegacyBound')[1]).toMatchObject({ adopt: false });
     expect(handle?.claimedTokens).toEqual([]);
+  });
+
+  /** Identity's claims by token and the legacy session's used-token ledger, kept across one test's requests. */
+  interface Seam {
+    claims: Map<string, ClaimResult['state']>;
+    ledger: LegacyUsedToken[];
+  }
+
+  /** A harness over the committed facts whose identity and bridge doubles read and write `seam`. */
+  function seamHarness(seam: Seam): Harness {
+    const h: Harness = harness(true, {
+      identity: {
+        claim(input) {
+          h.calls.push(['identity.claim', input]);
+          const held = seam.claims.get(input.token);
+          if (held === undefined) seam.claims.set(input.token, 'pending-legacy');
+          return Promise.resolve({ state: held ?? 'pending-legacy' });
+        },
+        settle(input) {
+          h.calls.push(['identity.settle', input]);
+          const used = input.consumed.filter((token) => seam.claims.get(token) !== 'used');
+          const released = input.released.filter((token) => seam.claims.get(token) === 'pending-legacy');
+          for (const token of used) seam.claims.set(token, 'used');
+          for (const token of released) seam.claims.delete(token);
+          return Promise.resolve({ used: used.length, released: released.length });
+        },
+      },
+      bridge: {
+        markUsed(cookies, tokens, call) {
+          h.calls.push(['bridge.markUsed', cookies, tokens, call]);
+          const added = tokens.filter(({ token }) => !seam.ledger.some((entry) => entry.token === token));
+          seam.ledger.push(...added);
+          return Promise.resolve({ body: { applied: added.length, serverTime: WIRE_NOW }, setCookies: [] });
+        },
+        usedSince(cookies, since, call) {
+          h.calls.push(['bridge.usedSince', cookies, since, call]);
+          const tokens = seam.ledger.filter((entry) => entry.usedAt >= since);
+          return Promise.resolve({ body: { tokens, serverTime: WIRE_NOW }, setCookies: [] });
+        },
+      },
+    });
+    h.routes = committedRoutes;
+    return h;
+  }
+
+  /** Legacy's validating branch: consumes a token its ledger does not hold yet. */
+  function legacyValidates(seam: Seam, token: string): boolean {
+    if (seam.ledger.some((entry) => entry.token === token)) return false;
+    seam.ledger.push({ token, usedAt: WIRE_NOW });
+    return true;
+  }
+
+  /** Identity's target-side consume: an unclaimed token becomes used; a claimed one is refused. */
+  function consumeOnTarget(seam: Seam, token: string): boolean {
+    if (seam.claims.has(token)) return false;
+    seam.claims.set(token, 'used');
+    return true;
+  }
+
+  const APPROVALACTION: LegacyCall = {
+    method: 'POST',
+    path: '/admin/',
+    query: { muraAction: 'cArch.approvalaction' },
+    form: { csrf_token: TOKEN, csrf_token_expires: EXPIRES },
+    headers: {},
+  };
+
+  it.each<{ side: 'legacy' | 'target'; nextUse: (h: Harness, seam: Seam) => Promise<void> }>([
+    {
+      side: 'legacy',
+      async nextUse(h, seam) {
+        const { req, route } = committedRequest(PUBLIC_LOGIN);
+        expect(route.key).toBe('page:login');
+        const handle = await h.continuity.beforeLegacy(req, route, 'target-primary');
+        expect(handle?.claimedTokens).toEqual([TOKEN]);
+        expect(seam.claims.get(TOKEN)).toBe('pending-legacy');
+
+        expect(legacyValidates(seam, TOKEN)).toBe(true);
+        await h.continuity.afterLegacy(handle);
+        expect(onlyCall(h, 'identity.settle')).toStrictEqual([{ sessionId: SESSION_ID, consumed: [TOKEN], released: [] }]);
+      },
+    },
+    {
+      side: 'target',
+      async nextUse(_h, seam) {
+        expect(consumeOnTarget(seam, TOKEN)).toBe(true);
+      },
+    },
+  ])('neither claims nor consumes the approvalaction bypass token, so its next use on the $side side consumes it', async ({ nextUse }) => {
+    const seam: Seam = { claims: new Map(), ledger: [] };
+    const h = seamHarness(seam);
+    const { req, route } = committedRequest(APPROVALACTION);
+    expect(route.key).toBe('admin:carch.approvalaction');
+
+    const handle = await h.continuity.beforeLegacy(req, route, 'target-primary');
+    expect(handle?.claimedTokens).toEqual([]);
+    // Legacy's approvalaction short-circuits validateCSRFTokens, so its ledger stays as it was.
+    await h.continuity.afterLegacy(handle);
+
+    expect(h.ops()).toEqual(['facts.get', 'sessions.resolveLegacyBound', 'jar.get', 'bridge.usedSince']);
+    expect(seam.claims.has(TOKEN)).toBe(false);
+    expect(seam.ledger).toEqual([]);
+
+    await nextUse(h, seam);
+    expect(seam.claims.get(TOKEN)).toBe('used');
   });
 });

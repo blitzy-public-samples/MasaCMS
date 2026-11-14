@@ -1,4 +1,4 @@
-import { createSecretKey, randomBytes } from 'node:crypto';
+import { createPublicKey, createSecretKey, randomBytes, type KeyObject } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,6 +23,7 @@ import {
   AuthDenial,
   GOOGLE_SECURETOKEN_JWKS_URL,
   INVOCATION_HEADER,
+  KeySourceUnavailableError,
   LOCAL_SECRET_FILES,
   LOCAL_SERVICE_ISSUER,
   LOCAL_SERVICE_TOKEN_TTL_SECONDS,
@@ -70,7 +71,7 @@ import {
 } from '../../src/auth/index.js';
 // The Google-auth bound and the legacy error base are not re-exported by the auth surface.
 import { GOOGLE_AUTH_TIMEOUT_MS } from '../../src/auth/deadline.js';
-import { LegacyApiError } from '../../src/legacy-compat/index.js';
+import { LegacyApiError, LegacyServiceUnavailableError } from '../../src/legacy-compat/index.js';
 import {
   TENANT_A,
   TEST_PUSH_KEY,
@@ -570,13 +571,30 @@ describe('createUserTokenVerifier', () => {
     { failure: 'an invalid JWKS response', error: new errors.JWKSInvalid() },
     { failure: 'a generic JOSE failure', error: new errors.JOSEError() },
     { failure: 'a non-JOSE failure', error: new Error('connect ECONNREFUSED 127.0.0.1:443') },
-  ])('propagates $failure of the key source unchanged', async ({ error }) => {
+  ])('raises $failure of the key source as the legacy 503 KeySourceUnavailableError', async ({ error }) => {
     const verifier = createUserTokenVerifier({
       issuer: LOCAL_USER_TOKEN.issuer,
       audience: LOCAL_USER_TOKEN.audience,
       keySet: () => Promise.reject(error),
     });
-    await expect(verifier.verify(await userToken())).rejects.toBe(error);
+    const raised: unknown = await verifier.verify(await userToken()).catch((err: unknown) => err);
+    expect(raised).toBeInstanceOf(KeySourceUnavailableError);
+    expect(raised).toBeInstanceOf(LegacyServiceUnavailableError);
+    expect(raised).toMatchObject({ surface: 'auto', reason: 'key-source-unavailable', message: 'User-token key source unavailable' });
+    expect((raised as KeySourceUnavailableError).cause).toBe(error);
+  });
+
+  it.each([
+    { match: 'no key', error: new errors.JWKSNoMatchingKey() },
+    { match: 'several keys', error: new errors.JWKSMultipleMatchingKeys() },
+  ])('answers a token whose kid matches $match in the key set as invalidAccessToken', async ({ error }) => {
+    const verifier = createUserTokenVerifier({
+      issuer: LOCAL_USER_TOKEN.issuer,
+      audience: LOCAL_USER_TOKEN.audience,
+      keySet: () => Promise.reject(error),
+    });
+    const token = await userToken();
+    expect(await denialOf(() => verifier.verify(token))).toEqual(INVALID_ACCESS_TOKEN);
   });
 
   it('rejects a malformed token without fetching the remote key set', async () => {
@@ -703,10 +721,15 @@ describe('local service tokens', () => {
     expect((payload.exp ?? 0) - (payload.iat ?? 0)).toBe(60);
   });
 
-  it('verifies a service token to the calling workload and its roles', async () => {
+  it.each([
+    { form: 'CryptoKey', publicKey: () => Promise.resolve<CryptoKey | KeyObject>(issuerKey.publicKey) },
+    { form: 'KeyObject', publicKey: async () => createPublicKey(await exportSPKI(issuerKey.publicKey)) },
+  ])('verifies a service token to the calling workload and its roles under a $form public key', async ({
+    publicKey,
+  }) => {
     const token = await mintServiceToken({ caller: 'gateway', audience: 'people' });
     await expect(
-      verifyLocalServiceToken(token, { publicKey: issuerKey.publicKey, audience: 'people' }),
+      verifyLocalServiceToken(token, { publicKey: await publicKey(), audience: 'people' }),
     ).resolves.toEqual({ name: 'gateway', roles: ['service:gateway'] });
   });
 
@@ -724,6 +747,14 @@ describe('local service tokens', () => {
       token: () => signLocalServiceToken({ keys: localKeys, caller: 'gateway', audience: 'people', ttlSeconds: -60 }),
     },
     { problem: 'is signed by another key', token: () => signToken(serviceClaims(), foreignKey) },
+    {
+      problem: "carries a kid other than the key's thumbprint",
+      token: () => signToken(serviceClaims(), issuerKey, 'unknown-kid-123'),
+    },
+    {
+      problem: 'carries no kid',
+      token: () => new SignJWT(serviceClaims()).setProtectedHeader({ alg: 'RS256', typ: 'JWT' }).sign(issuerKey.privateKey),
+    },
     { problem: 'is not a JWT', token: () => Promise.resolve('not-a-jwt') },
     { problem: 'has no subject', token: () => signToken(serviceClaims({ sub: undefined }), issuerKey) },
     {
@@ -811,6 +842,12 @@ describe('local invocation credentials', () => {
     });
     const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
     expect(await denialOf(() => verifier.verify(headers[INVOCATION_HEADER] ?? ''))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it('refuses a local-key service token whose kid is not the key thumbprint as invalid-credential', async () => {
+    const token = await signToken(serviceClaims(), issuerKey, 'unknown-kid-123');
+    const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
+    expect(await denialOf(() => verifier.verify(`Bearer ${token}`))).toEqual(INVALID_CREDENTIAL);
   });
 
   it.each(MANAGED_INVOKER_NAMES)('refuses a %s service token on a service route as the wrong scheme', async (caller) => {
@@ -1645,6 +1682,10 @@ describe('createLocalCloudTasksTransport', () => {
     {
       problem: 'is signed by another key',
       token: async () => `Bearer ${await signToken(serviceClaims(TASKS_INVOKER_SUBJECT), foreignKey)}`,
+    },
+    {
+      problem: "carries a kid other than the local key's thumbprint",
+      token: async () => `Bearer ${await signToken(serviceClaims(TASKS_INVOKER_SUBJECT), issuerKey, 'unknown-kid-123')}`,
     },
     { problem: 'is a local user token', token: async () => `Bearer ${await userToken()}` },
     {

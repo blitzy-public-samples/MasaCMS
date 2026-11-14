@@ -301,6 +301,40 @@ describe('tenant rule', () => {
     expect(() => assertBatchTenant(mapping, { SiteID: null }, tenantA)).not.toThrow();
     expect(() => assertBatchTenant(mapping, { SiteID: 'tenant-b' }, tenantA)).toThrow(MappingError);
     expect(() => assertBatchTenant(defineMapping({ ...base, tenant: { kind: 'umbrella' } }), { SiteID: 'tenant-b' }, tenantA)).not.toThrow();
+    expect(() => assertBatchTenant(mapping, { SiteID: 'tenant-b' }, tenantA, { legacyProgramId: 2, programSiteId: () => 'tenant-a' })).toThrow(MappingError);
+    expect(() => assertBatchTenant(mapping, { SiteID: 'tenant-a' }, tenantA, { programSiteId: () => null })).not.toThrow();
+  });
+
+  describe('program sources', () => {
+    const folded = defineMapping({ ...base, legacyTable: 'timesheet', targetTable: 'timesheets.timesheet', fold: 'Program' });
+    const tenantA = tenantIdForSite('tenant-a');
+
+    it.each([
+      ['the batch tenant of its program site', { legacyProgramId: 1, programSiteId: lookups.programSiteId }, tenantA],
+      ['an upper-cased batch tenant of a padded program site', { legacyProgramId: 1, programSiteId: () => 'TENANT-A  ' }, tenantA.toUpperCase()],
+    ])('accepts a row under %s whatever its site column holds', (_label, program, tenantId) => {
+      expect(folded.tenant).toEqual({ kind: 'program' });
+      expect(() => assertBatchTenant(folded, { SiteID: 'tenant-b' }, tenantId, program)).not.toThrow();
+    });
+
+    it.each([
+      ['the tenant of another site', { legacyProgramId: 1, programSiteId: lookups.programSiteId }, tenantIdForSite('tenant-b')],
+      ['a program the lookup maps to no site', { legacyProgramId: 2, programSiteId: lookups.programSiteId }, tenantA],
+      ['a program the lookup maps to an empty site', { legacyProgramId: 1, programSiteId: () => '  ' }, tenantA],
+      ['no program-site lookup', { legacyProgramId: 1 }, tenantA],
+      ['no program id', { programSiteId: lookups.programSiteId }, tenantA],
+    ])('rejects a row under %s', (_label, program, tenantId) => {
+      expect(() => assertBatchTenant(folded, { SiteID: 'tenant-a' }, tenantId, program)).toThrow(MappingError);
+    });
+
+    it('rejects a program-sourced row without program context and names no row value', () => {
+      expect(() => assertBatchTenant(folded, { UserID: 'opt2-secret-row', SiteID: 'tenant-a' }, tenantA)).toThrow(
+        new MappingError('timesheet', 'a program-sourced batch needs its Program_<id>'),
+      );
+      expect(() => assertBatchTenant(folded, { UserID: 'opt2-secret-row' }, tenantIdForSite('tenant-b'), { legacyProgramId: 1, programSiteId: lookups.programSiteId })).toThrow(
+        new MappingError('timesheet', 'Program_1 belongs to a tenant other than the batch tenant'),
+      );
+    });
   });
 });
 

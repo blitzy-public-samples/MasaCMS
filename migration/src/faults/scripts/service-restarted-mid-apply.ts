@@ -1,22 +1,30 @@
 // Scripted fault service-restarted-mid-apply: restarts an owning service while a feed or backfill is sending it batches.
+import { serializeError } from '@opt2/platform/logging';
 import { z } from '@opt2/platform/service-kit';
 
 import { runBackfill, runFeed, type BackfillResult, type FeedResult } from '../../apply/index.js';
 import { createMigrationContext, type MigrationContext } from '../../context.js';
 import type { ApplyResult, DataOwner, OwnersClient } from '../../owners/index.js';
 import { getSnapshot, latestSnapshot } from '../../snapshot/index.js';
-import type { ProcessRestartResult } from '../process-control.js';
+import { ProcessControlError, type ProcessControlStep, type ProcessRestartResult } from '../process-control.js';
 import { fail, pass, skipped, type FaultAssertion, type FaultEnv, type FaultRunOutput, type FaultScript } from './types.js';
 
 const FAULT = 'service-restarted-mid-apply';
 const INTERRUPTED = 'apply-interrupted';
 const HEALTHY = 'owner-healthy';
+const RESTORED = 'owner-restored';
 const RERUN = 'rerun-idempotent';
+const RESTORE_STEP = 'restore-owner';
 const WORKLOAD_REASON = "run the deterministic legacy workload before this fault or pass {command:'backfill'}";
 const NO_APPLY_REASON = 'no apply reached the restarting owner';
 const NO_SNAPSHOT_REASON = 'no ready snapshot to backfill from';
+const NOT_RESTORED_REASON = 'the owner was not restored, so the apply was not re-run';
 
 const commandSchema = z.enum(['feed', 'backfill']);
+
+const stepSchema = z.enum(['stop', 'start', 'health']) satisfies z.ZodType<ProcessControlStep>;
+
+const pidSchema = z.number().int().positive();
 
 const paramsSchema = z
   .object({
@@ -31,17 +39,32 @@ const paramsSchema = z
 /** Parameters of {@link serviceRestartedMidApply}. */
 export type ServiceRestartParams = z.output<typeof paramsSchema>;
 
-/** What `run` hands to `resume`: the interrupted command and the snapshot whose batch ids a re-run repeats. */
-const stateSchema = z.object({ command: commandSchema, resumeSeq: z.number().int().min(0).optional() }).strict();
+/** Restart progress: whether it was triggered and the owner then answered `/healthz`, with the failed step and recorded pids when known. */
+const restartStateSchema = z
+  .object({
+    triggered: z.boolean(),
+    healthy: z.boolean(),
+    step: stepSchema.optional(),
+    oldPid: pidSchema.optional(),
+    newPid: pidSchema.optional(),
+  })
+  .strict();
+
+/** What `run` hands to `resume`: the interrupted command, the snapshot whose batch ids a re-run repeats, and the restart progress. */
+const stateSchema = z
+  .object({ command: commandSchema, resumeSeq: z.number().int().min(0).optional(), restart: restartStateSchema })
+  .strict();
 
 type Command = z.output<typeof commandSchema>;
+
+type RestartState = z.output<typeof restartStateSchema>;
 
 /** A command with its snapshot: a feed resumes on `snapshotSeq` when set, a backfill always loads it. */
 type Plan = { command: 'feed'; snapshotSeq: number | undefined } | { command: 'backfill'; snapshotSeq: number };
 
 type RunOutcome = { ok: true; result: FeedResult | BackfillResult } | { ok: false; error: unknown };
 
-type RestartOutcome = { ok: true; result: ProcessRestartResult } | { ok: false; error: string };
+type RestartOutcome = { ok: true; result: ProcessRestartResult } | { ok: false; error: unknown };
 
 /** Batches the restarting owner acknowledged, whether its restart started, and the first apply to it that failed afterwards. */
 interface RestartStats {
@@ -56,6 +79,20 @@ function messageOf(error: unknown): string {
 
 function isDataOwner(owners: readonly DataOwner[], name: string): name is DataOwner {
   return (owners as readonly string[]).includes(name);
+}
+
+/** Step of a failed restart or health wait, when process control names it. */
+function stepOf(error: unknown): ProcessControlStep | undefined {
+  return error instanceof ProcessControlError ? error.step : undefined;
+}
+
+/** Pid up.json records for `owner`, or undefined when its entry cannot be read. */
+function recordedPid(processControl: FaultEnv['processControl'], owner: DataOwner): number | undefined {
+  try {
+    return processControl.entry(owner).pid;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Why `owner` cannot be restarted from up.json, or undefined when its entry records the port the restart checks health on. */
@@ -131,25 +168,67 @@ function interruptedAssertion(stats: RestartStats, afterBatches: number, outcome
   return fail(INTERRUPTED, { acknowledged, failedAfterRestart, ...ended }, 'the run succeeded although an apply to the restarting owner failed');
 }
 
-/** `owner-healthy` once the started restart settled: `/healthz` answers 200 and up.json names the new pid. */
+/** `owner-healthy` once the started restart settled, with the progress `resume` restores from; `oldPid` was recorded at its start. */
 async function healthyAssertion(
   env: FaultEnv,
   owner: DataOwner,
-  restart: Promise<RestartOutcome>,
+  restart: { pending: Promise<RestartOutcome>; oldPid: number | undefined },
   timeoutMs: number,
-): Promise<FaultAssertion> {
-  const outcome = await restart;
-  if (!outcome.ok) return fail(HEALTHY, { error: outcome.error });
+): Promise<{ assertion: FaultAssertion; progress: RestartState }> {
+  const outcome = await restart.pending;
+  if (!outcome.ok) {
+    const step = stepOf(outcome.error);
+    const { oldPid } = restart;
+    // A pid other than the one stopped is the replacement the restart recorded before its health wait failed.
+    const recorded = recordedPid(env.processControl, owner);
+    const newPid = recorded === oldPid ? undefined : recorded;
+    return {
+      assertion: fail(HEALTHY, { step, oldPid, newPid, error: messageOf(outcome.error) }),
+      progress: { triggered: true, healthy: false, step, oldPid, newPid },
+    };
+  }
   const { oldPid, newPid } = outcome.result;
   try {
     const healthyMs = await env.processControl.waitHealthy(owner, { timeoutMs });
-    return pass(HEALTHY, { oldPid, pid: env.processControl.entry(owner).pid, healthyMs });
+    return {
+      assertion: pass(HEALTHY, { oldPid, pid: env.processControl.entry(owner).pid, healthyMs }),
+      progress: { triggered: true, healthy: true, oldPid, newPid },
+    };
   } catch (error) {
-    return fail(HEALTHY, { oldPid, newPid, error: messageOf(error) });
+    const step = stepOf(error);
+    return {
+      assertion: fail(HEALTHY, { step, oldPid, newPid, error: messageOf(error) }),
+      progress: { triggered: true, healthy: false, step, oldPid, newPid },
+    };
   }
 }
 
-/** Restarts an owner mid-apply, asserts the run failed and the owner came back healthy, then re-runs the command to convergence. */
+/** Confirms `owner` answers `/healthz`, restarting its recorded process when it does not; `owner-restored` fails when it stays down. */
+async function restoreOwner(env: FaultEnv, owner: DataOwner, timeoutMs: number): Promise<FaultAssertion> {
+  const { processControl, logger } = env;
+  try {
+    const healthyMs = await processControl.waitHealthy(owner, { timeoutMs });
+    return pass(RESTORED, { pid: recordedPid(processControl, owner), healthyMs, action: 'health-check' });
+  } catch (error) {
+    logger.warn({ error: serializeError(error) }, `fault ${FAULT}: ${owner} is not healthy before the re-run; restarting it`);
+  }
+  try {
+    const { newPid, healthyMs } = await processControl.restart(owner, { timeoutMs });
+    return pass(RESTORED, { pid: newPid, healthyMs, action: 'restart' });
+  } catch (error) {
+    logger.error({ error: serializeError(error) }, `fault ${FAULT}: restoring ${owner} failed; the apply is not re-run`);
+    return fail(RESTORED, { step: stepOf(error), error: messageOf(error) });
+  }
+}
+
+/** The owner `resume` restores first: one whose restart did not end healthy or, when `run` threw, a data owner up.json can restart. */
+function ownerToRestore(env: FaultEnv, owner: string, state: z.output<typeof stateSchema> | undefined): DataOwner | undefined {
+  if (!isDataOwner(env.ctx.config.dataOwners, owner)) return undefined;
+  if (state !== undefined) return state.restart.triggered && !state.restart.healthy ? owner : undefined;
+  return entryProblem(env.processControl, owner) === undefined ? owner : undefined;
+}
+
+/** Restarts an owner mid-apply, asserts the run failed and the owner came back healthy, then restores it and re-runs the command. */
 export const serviceRestartedMidApply: FaultScript<ServiceRestartParams> = {
   name: FAULT,
   reconciles: true,
@@ -171,13 +250,14 @@ export const serviceRestartedMidApply: FaultScript<ServiceRestartParams> = {
     if (plan === null) return refused(NO_SNAPSHOT_REASON);
 
     const seqBefore = (await latestSnapshot(ctx))?.seq;
-    const restart: { pending?: Promise<RestartOutcome> } = {};
+    const restart: { pending?: Promise<RestartOutcome>; oldPid?: number } = {};
     const wrapped = wrapOwners(ctx.owners, owner, afterBatches, () => {
       env.logger.warn(`fault ${FAULT} restarting ${owner} after ${String(afterBatches)} acknowledged batches`);
+      restart.oldPid = recordedPid(processControl, owner);
       // Not awaited, so the run keeps sending batches while the owner goes down.
       restart.pending = processControl.restart(owner, { timeoutMs }).then(
         (result): RestartOutcome => ({ ok: true, result }),
-        (error: unknown): RestartOutcome => ({ ok: false, error: messageOf(error) }),
+        (error: unknown): RestartOutcome => ({ ok: false, error }),
       );
     });
     // Every port is ctx's own, so this context owns nothing and is never closed.
@@ -201,11 +281,14 @@ export const serviceRestartedMidApply: FaultScript<ServiceRestartParams> = {
       outcome = { ok: false, error };
     }
     const assertions = [interruptedAssertion(wrapped.stats, afterBatches, outcome)];
-    assertions.push(
-      restart.pending === undefined
-        ? skipped(HEALTHY, 'restart not triggered')
-        : await healthyAssertion(env, owner, restart.pending, timeoutMs),
-    );
+    let progress: RestartState = { triggered: false, healthy: false };
+    if (restart.pending === undefined) {
+      assertions.push(skipped(HEALTHY, 'restart not triggered'));
+    } else {
+      const settled = await healthyAssertion(env, owner, { pending: restart.pending, oldPid: restart.oldPid }, timeoutMs);
+      assertions.push(settled.assertion);
+      progress = settled.progress;
+    }
 
     const seqAfter = (await latestSnapshot(ctx))?.seq;
     // A feed re-run repeats batch ids only on the feed snapshot the interrupted run took.
@@ -215,7 +298,7 @@ export const serviceRestartedMidApply: FaultScript<ServiceRestartParams> = {
     return {
       assertions,
       details: { ...details, acknowledged, failedAfterRestart, seqBefore, seqAfter },
-      state: { command, resumeSeq },
+      state: { command, resumeSeq, restart: progress },
     };
   },
 
@@ -223,13 +306,20 @@ export const serviceRestartedMidApply: FaultScript<ServiceRestartParams> = {
     if (output !== undefined && output.state === undefined) {
       return { steps: [], assertions: [skipped(RERUN, 'the fault was refused before any batch was sent')] };
     }
+    const state = output?.state === undefined ? undefined : stateSchema.parse(output.state);
     // Without output the run threw part-way, so the command is re-run as the parameters ask.
-    const { command, resumeSeq } =
-      output?.state === undefined ? { command: params.command, resumeSeq: params.snapshotSeq } : stateSchema.parse(output.state);
+    const { command, resumeSeq } = state ?? { command: params.command, resumeSeq: params.snapshotSeq };
+    const owner = ownerToRestore(env, params.owner, state);
+    const restored = owner === undefined ? undefined : await restoreOwner(env, owner, params.timeoutMs);
+    const steps = restored === undefined ? [] : [RESTORE_STEP];
+    const assertions = restored === undefined ? [] : [restored];
+    if (restored?.status === 'fail') {
+      return { steps, assertions: [...assertions, fail(RERUN, { command, owner }, NOT_RESTORED_REASON)] };
+    }
     const step = `rerun-${command}`;
     try {
       const plan = await planFor(env.ctx, command, resumeSeq);
-      if (plan === null) return { steps: [], assertions: [fail(RERUN, { command }, NO_SNAPSHOT_REASON)] };
+      if (plan === null) return { steps, assertions: [...assertions, fail(RERUN, { command }, NO_SNAPSHOT_REASON)] };
       const result = await runPlan(env.ctx, plan);
       const summary = {
         command,
@@ -238,9 +328,11 @@ export const serviceRestartedMidApply: FaultScript<ServiceRestartParams> = {
         reconciliation: result.reconciliation.result,
         reportPath: result.reconciliation.reportPath,
       };
-      return { steps: [step], assertions: [result.exitCode === 0 ? pass(RERUN, summary) : fail(RERUN, summary)], details: summary };
+      const rerun = result.exitCode === 0 ? pass(RERUN, summary) : fail(RERUN, summary);
+      return { steps: [...steps, step], assertions: [...assertions, rerun], details: summary };
     } catch (error) {
-      return { steps: [step], assertions: [fail(RERUN, { command, snapshotSeq: resumeSeq, error: messageOf(error) })] };
+      const rerun = fail(RERUN, { command, snapshotSeq: resumeSeq, error: messageOf(error) });
+      return { steps: [...steps, step], assertions: [...assertions, rerun] };
     }
   },
 };

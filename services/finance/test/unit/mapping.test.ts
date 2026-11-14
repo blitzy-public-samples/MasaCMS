@@ -26,6 +26,7 @@ import {
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, type TenantFixture } from '@opt2/platform/testing';
 import {
+  PROGRAM_SITES,
   financeAttachmentMapping,
   financeRecordMapping,
   financeRecordVersionMapping,
@@ -90,6 +91,12 @@ interface OwnedTarget {
 }
 
 const OWNERSHIP = JSON.parse(readFileSync(new URL('../../../../opt2/table-ownership.json', import.meta.url), 'utf8')) as Ownership;
+/** `synthetic.program_site` as `010_program_site.sql` seeds it, keyed by program id. */
+const PROGRAM_SITE_ROWS = Object.fromEntries(
+  [...readFileSync(new URL('../../../../legacy-fixtures/sql/010_program_site.sql', import.meta.url), 'utf8').matchAll(/\((\d+), N'([^']+)'\)/g)].map(
+    (match) => [Number(match[1]), match[2]],
+  ),
+);
 const OWNED_UNITS: ReadonlySet<string> = new Set(OWNERSHIP.units.filter((unit) => unit.owner === OWNER).map((unit) => unit.unit));
 const OWNED_TARGETS: readonly OwnedTarget[] = OWNERSHIP.tables.flatMap((table) =>
   (table.targets ?? [])
@@ -256,6 +263,12 @@ describe('row round trips', () => {
 });
 
 describe('Program_<id> fold', () => {
+  it('maps each fixture program to the site synthetic.program_site seeds', () => {
+    expect(PROGRAM_SITES).toEqual({ 1: 'tenant-a', 2: 'tenant-b' });
+    expect(PROGRAM_SITE_ROWS).toEqual(PROGRAM_SITES);
+    for (const { program, tenant } of PROGRAMS) expect(PROGRAM_SITES[program]).toBe(tenant.siteId);
+  });
+
   it.each(
     mappings.flatMap((mapping) =>
       PROGRAMS.map(({ program, tenant }) => ({ name: programTableName(program, mapping.legacyTable), program, site: tenant.siteId, mapping })),
@@ -446,6 +459,19 @@ describe('program bindings of migration applies', () => {
     t.db.clear();
 
     expect(await apply(body)).toStrictEqual({ status: 200, body: { batchId: body.batchId, duplicate: true, applied: 0, skipped: 0 } });
+    expect(t.db.writes()).toStrictEqual([]);
+  });
+
+  it.each([
+    ['Program_2 records under tenant-a', 2, TENANT_A],
+    ['Program_1 records under tenant-b', 1, TENANT_B],
+    ['records of Program_3, which synthetic.program_site does not map', 3, TENANT_A],
+  ] as const)('rejects %s as invalidParameters and writes nothing', async (_label, program, tenant) => {
+    const body = { ...recordBatch(`reject-${String(program)}`, tenant), legacyTable: programTableName(program, financeRecordMapping.legacyTable) };
+    const { status, body: answer } = await apply(body);
+
+    expect(status).toBe(400);
+    expect(answer).toMatchObject({ error: { code: 'invalid_request', message: 'Invalid parameters' } });
     expect(t.db.writes()).toStrictEqual([]);
   });
 });

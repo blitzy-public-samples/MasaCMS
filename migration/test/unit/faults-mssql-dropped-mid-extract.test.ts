@@ -1,6 +1,7 @@
 // Unit tests for the mssql-dropped-mid-extract fault script over a fake legacy port, feed and snapshot list.
 import { EventEmitter } from 'node:events';
 
+import { REDACTED } from '@opt2/platform/logging';
 import type { ConnectionPool, Request } from 'mssql';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -36,6 +37,9 @@ const SNAP_3 = 'muradb_opt2_snap_3';
 const SNAP_4 = 'muradb_opt2_snap_4';
 const MASTER = 'master';
 const LIVE = 'muradb';
+const ARCHIVE = 'muradb_archive';
+// Driver text no redaction pattern masks, so it reaches a log or report only if interpolated there.
+const RAW_DRIVER_TEXT = ['tenant', 'payroll', 'row', '4711'].join('-');
 const WORKLOAD_REASON =
   'the feed streamed fewer than afterRows snapshot rows; lower afterRows or run the deterministic legacy workload first';
 
@@ -167,6 +171,8 @@ describe('mssql-dropped-mid-extract fault script', () => {
         streamRows(after, 2);
         streamRows(after, 4);
         streamRows(before, 1);
+        expect(poolOf(SNAP_4).close).toHaveBeenCalledOnce();
+        expect(poolOf(SNAP_3).close).not.toHaveBeenCalled();
         throw new Error(`reading dbo.tcontent from database ${SNAP_4} failed`);
       });
 
@@ -174,8 +180,9 @@ describe('mssql-dropped-mid-extract fault script', () => {
 
       const snap3 = poolOf(SNAP_3);
       const snap4 = poolOf(SNAP_4);
-      expect(snap4.close).toHaveBeenCalledOnce();
-      expect(snap3.close).not.toHaveBeenCalled();
+      // Once when dropped, then each snapshot pool once more as the run closes the fault's pools.
+      expect(snap4.close).toHaveBeenCalledTimes(2);
+      expect(snap3.close).toHaveBeenCalledOnce();
       expect(snap4.requests.map((request) => request.cancel.mock.calls.length)).toStrictEqual([1, 0]);
       expect(snap3.requests.every((request) => request.cancel.mock.calls.length === 0)).toBe(true);
       expect(logger.warn).toHaveBeenCalledOnce();
@@ -201,7 +208,7 @@ describe('mssql-dropped-mid-extract fault script', () => {
       expect(createLegacyDb).toHaveBeenCalledExactlyOnceWith(ctx.env);
       expect(latestSnapshot).toHaveBeenNthCalledWith(1, ctx);
       expect(latestSnapshot).toHaveBeenNthCalledWith(2, ctx);
-      expect(base.close).toHaveBeenCalledOnce();
+      expect(base.close).not.toHaveBeenCalled();
       expect(faultLegacy).not.toBe(ctx.legacy);
       expect(createMigrationContext).toHaveBeenCalledExactlyOnceWith({
         env: ctx.env,
@@ -217,7 +224,7 @@ describe('mssql-dropped-mid-extract fault script', () => {
       });
     });
 
-    it('leaves non-snapshot pools unwrapped, keeps every other pool member and delegates live, transaction and close', async () => {
+    it('leaves non-snapshot pools unwrapped, keeps every other pool member, and closes each pool it opened once', async () => {
       const { env } = faultEnv();
       vi.mocked(latestSnapshot).mockResolvedValue(null);
       vi.mocked(runFeed).mockImplementationOnce(async (feedCtx) => {
@@ -241,10 +248,10 @@ describe('mssql-dropped-mid-extract fault script', () => {
 
       const output = await mssqlDroppedMidExtract.run(env, { afterRows: 5 });
 
-      expect(poolOf(MASTER).close).not.toHaveBeenCalled();
-      expect(poolOf(LIVE).close).not.toHaveBeenCalled();
+      // The feed's own close closed them, so the run's close finds nothing left open.
+      for (const name of [MASTER, LIVE, SNAP_3]) expect(poolOf(name).close).toHaveBeenCalledOnce();
       expect(poolOf(MASTER).requests[0]?.cancel).not.toHaveBeenCalled();
-      expect(base.close).toHaveBeenCalledTimes(2);
+      expect(base.close).not.toHaveBeenCalled();
       expect(output.assertions).toStrictEqual([
         { name: 'connection-dropped', status: 'fail', detail: { rowsSeen: 0, afterRows: 5 }, reason: WORKLOAD_REASON },
       ]);
@@ -262,8 +269,9 @@ describe('mssql-dropped-mid-extract fault script', () => {
 
       const output = await mssqlDroppedMidExtract.run(env, { afterRows: 500 });
 
-      expect(poolOf(SNAP_3).close).not.toHaveBeenCalled();
-      expect(poolOf(SNAP_4).close).not.toHaveBeenCalled();
+      expect(poolOf(SNAP_3).close).toHaveBeenCalledOnce();
+      expect(poolOf(SNAP_4).close).toHaveBeenCalledOnce();
+      expect(poolOf(SNAP_4).requests.every((request) => request.cancel.mock.calls.length === 0)).toBe(true);
       expect(output).toStrictEqual({
         assertions: [{ name: 'connection-dropped', status: 'fail', detail: { rowsSeen: 4, afterRows: 500 }, reason: WORKLOAD_REASON }],
         details: { afterRows: 500, rowsSeen: 4, droppedDatabase: undefined, seqBefore: 3, seqAfter: 4, error: undefined },
@@ -281,7 +289,7 @@ describe('mssql-dropped-mid-extract fault script', () => {
 
       const output = await mssqlDroppedMidExtract.run(env, { afterRows: 1 });
 
-      expect(poolOf(SNAP_4).close).toHaveBeenCalledOnce();
+      expect(poolOf(SNAP_4).close).toHaveBeenCalledTimes(2);
       expect(output.assertions).toStrictEqual([
         {
           name: 'connection-dropped',
@@ -314,16 +322,16 @@ describe('mssql-dropped-mid-extract fault script', () => {
         details: { afterRows: 500, rowsSeen: 0, droppedDatabase: undefined, seqBefore: 3, seqAfter: 3, error: message },
         state: { resumeSeq: undefined },
       });
-      expect(base.close).toHaveBeenCalledOnce();
+      expect(base.database).not.toHaveBeenCalled();
+      expect(base.live).not.toHaveBeenCalled();
     });
 
-    it('logs, never throws, when closing the dropped pool or the fault pools fails', async () => {
+    it('logs a failed drop-time close as a fixed message with the safe error, and passes once the run closes that pool', async () => {
       const { env, logger } = faultEnv();
       vi.mocked(latestSnapshot).mockResolvedValueOnce(null).mockResolvedValueOnce(snapshot(1));
-      base.close.mockRejectedValueOnce(new Error('pool already closed'));
       vi.mocked(runFeed).mockImplementationOnce(async (feedCtx) => {
         const pool = await feedCtx.legacy.database('muradb_opt2_snap_1');
-        poolOf('muradb_opt2_snap_1').close.mockRejectedValueOnce(new Error('Connection is closing'));
+        poolOf('muradb_opt2_snap_1').close.mockRejectedValueOnce(new Error(`Connection is closing: ${RAW_DRIVER_TEXT}`));
         streamRows(pool, 2);
         await new Promise((resolve) => setImmediate(resolve));
         throw new Error('reading dbo.tusers from database muradb_opt2_snap_1 failed');
@@ -331,22 +339,116 @@ describe('mssql-dropped-mid-extract fault script', () => {
 
       const output = await mssqlDroppedMidExtract.run(env, { afterRows: 2 });
 
+      expect(output.assertions).toHaveLength(1);
       expect(output.assertions[0]?.status).toBe('pass');
       expect(output.state).toStrictEqual({ resumeSeq: 1 });
-      const warnings = logger.warn.mock.calls.map(([line]) => String(line));
-      expect(warnings).toHaveLength(3);
-      expect(warnings[1]).toContain('Connection is closing');
-      expect(warnings[2]).toContain('pool already closed');
+      expect(poolOf('muradb_opt2_snap_1').close).toHaveBeenCalledTimes(2);
+      expect(logger.warn).toHaveBeenCalledTimes(2);
+      expect(logger.warn.mock.calls[1]).toStrictEqual([
+        { error: expect.objectContaining({ type: 'Error', message: REDACTED }) },
+        'fault mssql-dropped-mid-extract: closing the pool of muradb_opt2_snap_1 failed',
+      ]);
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(RAW_DRIVER_TEXT);
     });
 
-    it('propagates a failure to build the fault context without running the feed', async () => {
+    it('closes the pool of each database a transaction ran on', async () => {
       const { env } = faultEnv();
       vi.mocked(latestSnapshot).mockResolvedValue(null);
-      vi.mocked(createMigrationContext).mockRejectedValueOnce(new Error('legacy database is not SQL Server'));
+      const fn = vi.fn();
+      vi.mocked(runFeed).mockImplementationOnce(async (feedCtx) => {
+        await feedCtx.legacy.transaction(fn, { database: ARCHIVE });
+        await feedCtx.legacy.transaction(fn);
+        return feedResult(0);
+      });
 
-      await expect(mssqlDroppedMidExtract.run(env, { afterRows: 5 })).rejects.toThrow('legacy database is not SQL Server');
-      expect(runFeed).not.toHaveBeenCalled();
+      const output = await mssqlDroppedMidExtract.run(env, { afterRows: 5 });
+
+      expect(base.transaction.mock.calls).toStrictEqual([[fn, { database: ARCHIVE }], [fn, undefined]]);
+      expect(poolOf(ARCHIVE).close).toHaveBeenCalledOnce();
+      expect(poolOf(LIVE).close).toHaveBeenCalledOnce();
+      expect(output.assertions.map((assertion) => assertion.name)).toStrictEqual(['connection-dropped']);
     });
+
+    it('skips a pool whose connect failed and retries, at the run close, a pool the feed could not close', async () => {
+      const { env } = faultEnv();
+      vi.mocked(latestSnapshot).mockResolvedValue(null);
+      base.database.mockRejectedValueOnce(new Error('Login failed'));
+      vi.mocked(runFeed).mockImplementationOnce(async (feedCtx) => {
+        await expect(feedCtx.legacy.database(ARCHIVE)).rejects.toThrow('Login failed');
+        await feedCtx.legacy.database(MASTER);
+        poolOf(MASTER).close.mockRejectedValueOnce(new Error('Cannot close a pool while it is connecting'));
+        await expect(feedCtx.legacy.close()).rejects.toThrow('Cannot close a pool while it is connecting');
+        return feedResult(0);
+      });
+
+      const output = await mssqlDroppedMidExtract.run(env, { afterRows: 5 });
+
+      expect(poolOf(MASTER).close).toHaveBeenCalledTimes(2);
+      expect(poolOf(ARCHIVE).close).not.toHaveBeenCalled();
+      expect(output.assertions.map((assertion) => assertion.name)).toStrictEqual(['connection-dropped']);
+    });
+
+    it('fails fault-pools-closed with the open count and safe error, never the raw text, when a pool does not close', async () => {
+      const { env, logger } = faultEnv();
+      vi.mocked(latestSnapshot).mockResolvedValueOnce(snapshot(3)).mockResolvedValueOnce(snapshot(4));
+      vi.mocked(runFeed).mockImplementationOnce(async (feedCtx) => {
+        await feedCtx.legacy.live();
+        streamRows(await feedCtx.legacy.database(SNAP_4), 1);
+        poolOf(SNAP_4).close.mockRejectedValueOnce(new Error(`pool destroy failed: ${RAW_DRIVER_TEXT}`));
+        throw new Error(`reading dbo.tcontent from database ${SNAP_4} failed`);
+      });
+
+      const output = await mssqlDroppedMidExtract.run(env, { afterRows: 1 });
+
+      expect(poolOf(LIVE).close).toHaveBeenCalledOnce();
+      expect(poolOf(SNAP_4).close).toHaveBeenCalledTimes(2);
+      expect(output.assertions).toStrictEqual([
+        expect.objectContaining({ name: 'connection-dropped', status: 'pass' }),
+        {
+          name: 'fault-pools-closed',
+          status: 'fail',
+          detail: { openPools: 1, error: expect.objectContaining({ type: 'Error', message: REDACTED }) },
+          reason: "closing the fault's SQL Server pools failed",
+        },
+      ]);
+      expect(logger.warn).toHaveBeenLastCalledWith(
+        { error: expect.objectContaining({ type: 'Error', message: REDACTED }) },
+        'fault mssql-dropped-mid-extract: 1 of its SQL Server pools did not close; resume closes them again',
+      );
+      expect(JSON.stringify([output.assertions, logger.warn.mock.calls])).not.toContain(RAW_DRIVER_TEXT);
+    });
+
+    it.each<[string, boolean, boolean, string[], number]>([
+      ['before any pool opened', false, false, ['rerun-feed'], 0],
+      ['after opening a pool, which the run closes', true, false, ['rerun-feed'], 1],
+      ['after opening a pool the run cannot close, which resume closes', true, true, ['close-fault-pools', 'rerun-feed'], 2],
+    ])(
+      'propagates a failure to build the fault context %s, without running the feed',
+      async (_label, opensPool, closeFails, resumeSteps, closeCalls) => {
+        const { env, logger } = faultEnv();
+        vi.mocked(latestSnapshot).mockResolvedValue(null);
+        vi.mocked(createMigrationContext).mockImplementationOnce(async (options?: CreateContextOptions) => {
+          if (opensPool) await options?.legacy?.live();
+          if (closeFails) poolOf(LIVE).close.mockRejectedValueOnce(new Error(`pool destroy failed: ${RAW_DRIVER_TEXT}`));
+          throw new Error('legacy database is not SQL Server');
+        });
+
+        await expect(mssqlDroppedMidExtract.run(env, { afterRows: 5 })).rejects.toThrow('legacy database is not SQL Server');
+        expect(runFeed).not.toHaveBeenCalled();
+        expect(poolOf(LIVE).close).toHaveBeenCalledTimes(opensPool ? 1 : 0);
+
+        vi.mocked(runFeed).mockResolvedValueOnce(feedResult(0, 4));
+        const resumed = await mssqlDroppedMidExtract.resume(env, { afterRows: 5 });
+
+        expect(resumed.steps).toStrictEqual(resumeSteps);
+        expect(resumed.assertions).toStrictEqual([
+          ...(closeFails ? [{ name: 'fault-pools-closed-on-resume', status: 'pass', detail: { closedPools: 1 } }] : []),
+          { name: 'resumed-from-watermark', status: 'pass', detail: { snapshotSeq: 4, exitCode: 0 } },
+        ]);
+        expect(poolOf(LIVE).close).toHaveBeenCalledTimes(closeCalls);
+        expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(RAW_DRIVER_TEXT);
+      },
+    );
   });
 
   describe('resume', () => {
@@ -386,6 +488,68 @@ describe('mssql-dropped-mid-extract fault script', () => {
           },
         ],
       });
+    });
+
+    it.each<[string, Error | undefined, object, number]>([
+      ['passes once the retried close resolves', undefined, { name: 'fault-pools-closed-on-resume', status: 'pass', detail: { closedPools: 1 } }, 0],
+      [
+        'fails with the open count and safe error when the retried close rejects again',
+        new Error(`pool destroy failed again: ${RAW_DRIVER_TEXT}`),
+        {
+          name: 'fault-pools-closed-on-resume',
+          status: 'fail',
+          detail: { openPools: 1, error: expect.objectContaining({ type: 'Error', message: REDACTED }) },
+          reason: "closing the fault's SQL Server pools failed again",
+        },
+        1,
+      ],
+    ])('closes the pool run left open before the rerun feed, and %s', async (_label, retryError, expected, resumeWarnings) => {
+      const { env, ctx, logger } = faultEnv();
+      vi.mocked(latestSnapshot).mockResolvedValueOnce(snapshot(3)).mockResolvedValueOnce(snapshot(4));
+      vi.mocked(runFeed).mockImplementationOnce(async (feedCtx) => {
+        streamRows(await feedCtx.legacy.database(SNAP_4), 1);
+        poolOf(SNAP_4).close.mockRejectedValueOnce(new Error(`pool destroy failed: ${RAW_DRIVER_TEXT}`));
+        throw new Error(`reading dbo.tcontent from database ${SNAP_4} failed`);
+      });
+      const output = await mssqlDroppedMidExtract.run(env, { afterRows: 1 });
+      expect(output.assertions.map((assertion) => `${assertion.name}:${assertion.status}`)).toStrictEqual([
+        'connection-dropped:pass',
+        'fault-pools-closed:fail',
+      ]);
+      const warningsAfterRun = logger.warn.mock.calls.length;
+      if (retryError !== undefined) poolOf(SNAP_4).close.mockRejectedValueOnce(retryError);
+      vi.mocked(runFeed).mockResolvedValueOnce(feedResult(0, 4));
+
+      const resumed = await mssqlDroppedMidExtract.resume(env, { afterRows: 1 }, output);
+
+      expect(poolOf(SNAP_4).close).toHaveBeenCalledTimes(3);
+      expect(runFeed).toHaveBeenLastCalledWith(ctx, { snapshotSeq: 4 });
+      expect(resumed).toStrictEqual({
+        steps: ['close-fault-pools', 'rerun-feed'],
+        assertions: [expected, { name: 'resumed-from-watermark', status: 'pass', detail: { snapshotSeq: 4, exitCode: 0 } }],
+      });
+      expect(logger.warn.mock.calls.slice(warningsAfterRun)).toStrictEqual(
+        resumeWarnings === 0
+          ? []
+          : [[{ error: expect.objectContaining({ type: 'Error', message: REDACTED }) }, 'fault mssql-dropped-mid-extract: 1 of its SQL Server pools still did not close']],
+      );
+      expect(JSON.stringify([resumed, logger.warn.mock.calls])).not.toContain(RAW_DRIVER_TEXT);
+    });
+
+    it('retries a pool run left open on the first resume only', async () => {
+      const { env } = faultEnv();
+      vi.mocked(latestSnapshot).mockResolvedValue(null);
+      vi.mocked(runFeed).mockImplementationOnce(async (feedCtx) => {
+        await feedCtx.legacy.live();
+        poolOf(LIVE).close.mockRejectedValueOnce(new Error('pool destroy failed'));
+        return feedResult(0);
+      });
+      await mssqlDroppedMidExtract.run(env, { afterRows: 5 });
+      vi.mocked(runFeed).mockResolvedValue(feedResult(0, 4));
+
+      expect((await mssqlDroppedMidExtract.resume(env, { afterRows: 5 })).steps).toStrictEqual(['close-fault-pools', 'rerun-feed']);
+      expect((await mssqlDroppedMidExtract.resume(env, { afterRows: 5 })).steps).toStrictEqual(['rerun-feed']);
+      expect(poolOf(LIVE).close).toHaveBeenCalledTimes(2);
     });
 
     it('fails, never rethrows, when the rerun throws', async () => {

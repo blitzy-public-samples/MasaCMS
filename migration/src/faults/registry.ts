@@ -29,6 +29,9 @@ const MIGRATION_SERVICE = 'migration';
 
 type FaultOperation = Extract<keyof operations, 'faultSet' | 'faultClear'>;
 
+/** A write window's id, as the contract's CfId declares it. */
+const CF_ID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
+
 /** Parameter schemas per fault; an omitted `delayMs` takes the configured default. */
 function paramSchemas(defaultDelayMs: number) {
   return {
@@ -36,7 +39,7 @@ function paramSchemas(defaultDelayMs: number) {
     'projector-crash': z
       .object({ point: z.literal('after-legacy-commit'), afterBatches: z.number().int().min(1).default(1) })
       .strict(),
-    'window-import-interrupted': z.object({ windowId: z.string().min(1).optional() }).strict(),
+    'window-import-interrupted': z.object({ windowId: z.string().regex(CF_ID).optional() }).strict(),
   } as const satisfies Record<RegistryFaultName, z.ZodType>;
 }
 
@@ -126,6 +129,18 @@ function registryName(name: string): RegistryFaultName {
   return found;
 }
 
+/** Log text of an armed fault's parameters, from its numbers, literals and validated window id alone. */
+function paramsText(fault: ActiveFault): string {
+  switch (fault.name) {
+    case PROJECTOR_DELAY:
+      return `delayMs=${String(fault.params.delayMs)}`;
+    case PROJECTOR_CRASH:
+      return `point=${fault.params.point} afterBatches=${String(fault.params.afterBatches)}`;
+    case WINDOW_IMPORT_INTERRUPTED:
+      return fault.params.windowId === undefined ? 'every window' : `window ${fault.params.windowId}`;
+  }
+}
+
 /** Resolves once the logger's buffered lines are written. */
 function flushed(logger: MigrationContext['logger']): Promise<void> {
   return new Promise((resolve) => {
@@ -195,7 +210,7 @@ export function createFaultRegistry(
       const entry = { name: fault, params: parsed.data, since: ctx.clock.now().toISOString() } as ActiveFault;
       faults.set(fault, entry);
       if (fault === PROJECTOR_CRASH) resetCrashCount();
-      ctx.logger.info(`fault set ${fault} ${JSON.stringify(entry.params)}`);
+      ctx.logger.info(`fault set ${fault} ${paramsText(entry)}`);
       return entry;
     },
     clear(name: string): boolean {

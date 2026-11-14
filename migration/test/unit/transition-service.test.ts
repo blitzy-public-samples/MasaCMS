@@ -1,11 +1,12 @@
 // Unit tests of the transition service over a throwaway `migration` schema, with the step engine mocked.
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { LegacyApiError, cfUuid } from '@opt2/platform/legacy-compat';
+import { REDACTED } from '@opt2/platform/logging';
 import { systemClock } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { assertResponseMatchesOpenApi, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
@@ -45,6 +46,8 @@ const CONFIG = loadConfig();
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 const pg = await pgAvailable();
+// Free text no redaction pattern masks, so it reaches a log only if interpolated there.
+const FREE_TEXT = ['Jane', 'Doe', 'salary', '91250'].join(' ');
 
 const PLAN: TransitionPlan = {
   from: 'v0001',
@@ -258,7 +261,7 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     const message = makeError().message;
     expect(view).toMatchObject({ state: 'aborted', step, error: { step, message, state: 'aborted' } });
     expect(m.abortTransition).toHaveBeenCalledTimes(1);
-    expect(m.abortTransition.mock.calls[0]?.[2]).toBe(message);
+    expect(m.abortTransition.mock.calls[0]?.[1]).toMatchObject({ abortReason: message });
     expect(await row(transitionId)).toMatchObject({ state: 'aborted', step, error: { step, message } });
     await svc.stop();
     const { entry } = logEntry(transitionId);
@@ -279,11 +282,11 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     await svc.stop();
     const r = await row(transitionId);
     expect(r).toMatchObject({ state: 'aborting', step: 5, closed_gates: [{ owner: 'people', unit: 'people.person', prior: 'legacy' }] });
-    expect(logs.some((l) => l.level === 'error' && String(l.args[0]).includes('undo failed'))).toBe(true);
+    expect(logs.some((l) => l.level === 'error' && String(l.args.at(-1)).includes('undo failed'))).toBe(true);
 
     const seen: unknown[] = [];
-    m.abortTransition.mockImplementationOnce(async (_deps: StepDeps, record: TransitionRecord, reason: string) => {
-      seen.push(structuredClone({ lastStep: record.lastStep, closedGates: record.progress.closedGates, reason }));
+    m.abortTransition.mockImplementationOnce(async (_deps: StepDeps, record: TransitionRecord) => {
+      seen.push(structuredClone({ lastStep: record.lastStep, closedGates: record.progress.closedGates, reason: record.abortReason }));
       return { ...record.progress, closedGates: [] };
     });
     const next = service();
@@ -305,7 +308,7 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     });
     const svc = service();
     const { transitionId } = await svc.start({ to: 'v0002' });
-    for (let i = 0; i < 200 && !logs.some((l) => String(l.args[0]).includes('runs again on resume')); i += 1) await delay(10);
+    for (let i = 0; i < 200 && !logs.some((l) => String(l.args.at(-1)).includes('runs again on resume')); i += 1) await delay(10);
     const stuck = await svc.get(transitionId);
     contract(stuck);
     expect(stuck).toMatchObject({ state: 'running', step: 7, error: { step: 7, message: 'gateway timeout', name: 'activate' } });
@@ -318,6 +321,84 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     const { entry } = logEntry(transitionId);
     expect((entry?.steps as { step: number; result: string }[]).filter((s) => s.step === 7).map((s) => s.result)).toEqual(['error', 'ok']);
     await svc.stop();
+  });
+
+  it.each<[string, () => void, string, (id: string) => string, string, string]>([
+    [
+      'a step failure that aborts',
+      () => behaviour.set(3, () => Promise.reject(new Error(`owner answered ${FREE_TEXT}`))),
+      'warn',
+      (id) => `Transition ${id} step 3 failed, so it aborts`,
+      'Error',
+      REDACTED,
+    ],
+    [
+      'a step failure after activation',
+      () => behaviour.set(7, () => Promise.reject(new Error(`gateway answered ${FREE_TEXT}`))),
+      'error',
+      (id) => `Transition ${id} step 7 failed and runs again on resume`,
+      'Error',
+      REDACTED,
+    ],
+    [
+      'a refusal after activation',
+      () => behaviour.set(8, () => Promise.reject(new TransitionAbortedError(8, `cannot hand off ${FREE_TEXT}`))),
+      'error',
+      (id) => `Transition ${id} to v0002 failed`,
+      'TransitionAbortedError',
+      REDACTED,
+    ],
+    [
+      'an undo that fails',
+      () => {
+        behaviour.set(5, () => Promise.reject(new TransitionAbortedError(5, 'gates held by another holder')));
+        m.abortTransition.mockRejectedValueOnce(new Error(`owner answered ${FREE_TEXT}`));
+      },
+      'error',
+      (id) => `Transition ${id} undo failed; it stays aborting with its gates closed until resumed`,
+      'Error',
+      REDACTED,
+    ],
+    [
+      'a refused undo',
+      () => {
+        behaviour.set(6, () => {
+          active = 'v0002';
+          return Promise.reject(new TransitionAbortedError(6, 'difference'));
+        });
+        m.abortTransition.mockRejectedValueOnce(new Error(`cannot abort: ${FREE_TEXT}`));
+      },
+      'error',
+      (id) => `Transition ${id} to v0002 failed`,
+      'Error',
+      REDACTED,
+    ],
+    [
+      'a report mirror that fails',
+      () => writeFileSync(path.join(reportsDir, 'transitions.json'), `{"transitions": ${FREE_TEXT}`),
+      'error',
+      (id) => `Recording transition ${id} in transitions.json failed`,
+      'SyntaxError',
+      REDACTED,
+    ],
+    [
+      'a loop that stops when its record cannot be stored',
+      () => behaviour.set(3, () => Promise.reject(new Error(`\u0000 ${FREE_TEXT}`))),
+      'error',
+      (id) => `Transition ${id} stopped and continues from its persisted state on resume`,
+      // node-postgres names its server errors `error`.
+      'error',
+      'PostgreSQL error 22P05',
+    ],
+  ])('logs %s as a fixed line with the safe error, never the error text', async (_label, arrange, level, lineOf, type, message) => {
+    arrange();
+    const svc = service();
+    const { transitionId } = await svc.start({ to: 'v0002' });
+    const line = lineOf(transitionId);
+    for (let i = 0; i < 400 && !logs.some((l) => l.args.at(-1) === line); i += 1) await delay(10);
+    await svc.stop();
+    expect(logs.find((l) => l.args.at(-1) === line)).toEqual({ level, args: [{ error: expect.objectContaining({ type, message }) }, line] });
+    expect(JSON.stringify(logs)).not.toContain(FREE_TEXT);
   });
 
   it('marks a refusal after activation, or a refused undo, as failed', async () => {

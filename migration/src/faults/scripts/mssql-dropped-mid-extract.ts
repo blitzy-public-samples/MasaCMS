@@ -1,6 +1,7 @@
 // Scripted fault mssql-dropped-mid-extract: a feed run loses its SQL Server connection while streaming snapshot rows; a rerun resumes from the owners' watermarks.
 import type { ConnectionPool, Request } from 'mssql';
 
+import { serializeError } from '@opt2/platform/logging';
 import { z } from '@opt2/platform/service-kit';
 
 import { runFeed } from '../../apply/index.js';
@@ -12,7 +13,10 @@ import { fail, pass, type FaultAssertion, type FaultEnv, type FaultScript } from
 const FAULT = 'mssql-dropped-mid-extract';
 const DROPPED = 'connection-dropped';
 const RESUMED = 'resumed-from-watermark';
+const POOLS_CLOSED = 'fault-pools-closed';
+const POOLS_CLOSED_ON_RESUME = 'fault-pools-closed-on-resume';
 const RERUN_FEED = 'rerun-feed';
+const CLOSE_FAULT_POOLS = 'close-fault-pools';
 
 const paramsSchema = z.object({ afterRows: z.number().int().min(1).default(500) }).strict();
 
@@ -26,22 +30,63 @@ interface DropStats {
   droppedDatabase?: string;
 }
 
+/** Pools a close left open, and the first close rejection; `error` is set whenever `open` is not empty. */
+interface PoolClosure {
+  open: ConnectionPool[];
+  error?: unknown;
+}
+
+/** The fault's legacy port, its drop counters, and the close that reports which of its pools stayed open. */
+interface DroppingLegacyDb {
+  legacy: LegacyDb;
+  stats: DropStats;
+  closePools(): Promise<PoolClosure>;
+}
+
+/** Pools of the fault's legacy port whose close failed in `run`, kept for `resume` by the env both receive. */
+const unclosedPools = new WeakMap<FaultEnv, ConnectionPool[]>();
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Closes each of `pools` and returns those whose close rejected; never rejects. */
+async function closeEach(pools: readonly ConnectionPool[]): Promise<PoolClosure> {
+  const outcomes = await Promise.allSettled(pools.map(async (pool) => pool.close()));
+  const open = pools.filter((_pool, index) => outcomes[index]?.status === 'rejected');
+  const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+  return rejected === undefined ? { open } : { open, error: rejected.reason };
+}
+
 /** Legacy port over its own pools whose snapshot pools drop their connection once `afterRows` rows have streamed from them in total. */
-function createDroppingLegacyDb(env: FaultEnv, afterRows: number): { legacy: LegacyDb; stats: DropStats } {
+function createDroppingLegacyDb(env: FaultEnv, afterRows: number): DroppingLegacyDb {
   const base = createLegacyDb(env.ctx.env);
   const stats: DropStats = { rowsSeen: 0, dropped: false };
   const wrappers = new WeakMap<ConnectionPool, ConnectionPool>();
+  // The base port caches one connect per database name, so this holds each pool it opened for this port.
+  const opened = new Set<Promise<ConnectionPool>>();
+  const track = (connecting: Promise<ConnectionPool>): Promise<ConnectionPool> => {
+    opened.add(connecting);
+    return connecting;
+  };
+
+  /** Closes every pool opened so far; one whose close rejected stays tracked for the next close. */
+  const closePools = async (): Promise<PoolClosure> => {
+    const pending = [...opened];
+    opened.clear();
+    // A failed connect left no pool to close.
+    const pools = (await Promise.allSettled(pending)).flatMap((outcome) => (outcome.status === 'fulfilled' ? [outcome.value] : []));
+    const closure = await closeEach([...new Set(pools)]);
+    for (const pool of closure.open) opened.add(Promise.resolve(pool));
+    return closure;
+  };
 
   const drop = (pool: ConnectionPool, request: Request, database: string): void => {
     stats.dropped = true;
     stats.droppedDatabase = database;
     env.logger.warn(`fault ${FAULT} dropping the connection to ${database} after ${String(stats.rowsSeen)} streamed rows`);
     pool.close().catch((error: unknown) => {
-      env.logger.warn(`fault ${FAULT}: closing the pool of ${database} failed: ${messageOf(error)}`);
+      env.logger.warn({ error: serializeError(error) }, `fault ${FAULT}: closing the pool of ${database} failed`);
     });
     // close() lets the in-use connection finish its query before destroying it, so the streaming read is cancelled too
     // and fails mid-table, as it does when the connection is lost.
@@ -69,9 +114,9 @@ function createDroppingLegacyDb(env: FaultEnv, afterRows: number): { legacy: Leg
   };
 
   const legacy: LegacyDb = {
-    live: () => base.live(),
+    live: () => track(base.live()),
     async database(name: string): Promise<ConnectionPool> {
-      const pool = await base.database(name);
+      const pool = await track(base.database(name));
       if (!name.includes(SNAPSHOT_DB_INFIX)) return pool;
       let wrapped = wrappers.get(pool);
       if (wrapped === undefined) {
@@ -80,19 +125,38 @@ function createDroppingLegacyDb(env: FaultEnv, afterRows: number): { legacy: Leg
       }
       return wrapped;
     },
-    transaction: (fn, options) => base.transaction(fn, options),
-    close: () => base.close(),
+    async transaction(fn, options) {
+      // The base transaction reuses the cached pool of that name, so it runs on the pool tracked here.
+      await track(base.database(options?.database ?? env.ctx.env.MURA_DATABASE));
+      return base.transaction(fn, options);
+    },
+    async close(): Promise<void> {
+      const { open, error } = await closePools();
+      if (open.length > 0) throw error;
+    },
   };
-  return { legacy, stats };
+  return { legacy, stats, closePools };
 }
 
-/** Closes the fault's pools, one of which the fault already closed; a close failure is logged, never thrown. */
-async function closeFaultPools(env: FaultEnv, legacy: LegacyDb): Promise<void> {
-  try {
-    await legacy.close();
-  } catch (error) {
-    env.logger.warn(`fault ${FAULT}: closing its SQL Server pools failed: ${messageOf(error)}`);
+/** Closes the fault's pools; pools whose close rejected are kept for `resume` and returned as a failed assertion. */
+async function closeFaultPools(env: FaultEnv, fault: DroppingLegacyDb): Promise<FaultAssertion | undefined> {
+  const { open, error } = await fault.closePools();
+  if (open.length === 0) return undefined;
+  unclosedPools.set(env, [...(unclosedPools.get(env) ?? []), ...open]);
+  env.logger.warn({ error: serializeError(error) }, `fault ${FAULT}: ${String(open.length)} of its SQL Server pools did not close; resume closes them again`);
+  return fail(POOLS_CLOSED, { openPools: open.length, error: serializeError(error) }, "closing the fault's SQL Server pools failed");
+}
+
+/** Closes the pools `run` left open; passes once none is still open. */
+async function closeUnclosedPools(env: FaultEnv, pools: readonly ConnectionPool[]): Promise<FaultAssertion> {
+  const { open, error } = await closeEach(pools);
+  if (open.length === 0) {
+    unclosedPools.delete(env);
+    return pass(POOLS_CLOSED_ON_RESUME, { closedPools: pools.length });
   }
+  unclosedPools.set(env, open);
+  env.logger.warn({ error: serializeError(error) }, `fault ${FAULT}: ${String(open.length)} of its SQL Server pools still did not close`);
+  return fail(POOLS_CLOSED_ON_RESUME, { openPools: open.length, error: serializeError(error) }, "closing the fault's SQL Server pools failed again");
 }
 
 /** Whether the faulted feed failed because, and only after, its connection was dropped. */
@@ -120,26 +184,29 @@ export const mssqlDroppedMidExtract: FaultScript<MssqlDroppedParams> = {
     const { ctx } = env;
     const seqBefore = (await latestSnapshot(ctx))?.seq;
     const fault = createDroppingLegacyDb(env, afterRows);
-    // Every other port is borrowed from ctx, so the derived context owns nothing to close; only the fault's pools are closed.
-    const faultCtx = await createMigrationContext({
-      env: ctx.env,
-      clock: ctx.clock,
-      logger: ctx.logger,
-      db: ctx.db,
-      legacy: fault.legacy,
-      bridge: ctx.bridge,
-      catalog: ctx.catalog,
-      owners: ctx.owners,
-      gateway: ctx.gateway,
-      client: ctx.client,
-    });
     let failure: { error: unknown } | undefined;
+    let poolsClosed: FaultAssertion | undefined;
     try {
-      await runFeed(faultCtx);
-    } catch (error) {
-      failure = { error };
+      // Every other port is borrowed from ctx, so the derived context owns nothing to close; only the fault's pools are closed.
+      const faultCtx = await createMigrationContext({
+        env: ctx.env,
+        clock: ctx.clock,
+        logger: ctx.logger,
+        db: ctx.db,
+        legacy: fault.legacy,
+        bridge: ctx.bridge,
+        catalog: ctx.catalog,
+        owners: ctx.owners,
+        gateway: ctx.gateway,
+        client: ctx.client,
+      });
+      try {
+        await runFeed(faultCtx);
+      } catch (error) {
+        failure = { error };
+      }
     } finally {
-      await closeFaultPools(env, fault.legacy);
+      poolsClosed = await closeFaultPools(env, fault);
     }
 
     // The feed takes its snapshot before it extracts, so a new ready snapshot is the one the rerun resumes on.
@@ -147,25 +214,35 @@ export const mssqlDroppedMidExtract: FaultScript<MssqlDroppedParams> = {
     const resumeSeq = seqAfter !== seqBefore ? seqAfter : undefined;
     const error = failure === undefined ? undefined : messageOf(failure.error);
     const { rowsSeen, droppedDatabase } = fault.stats;
+    const dropped = droppedAssertion(fault.stats, afterRows, error);
     return {
-      assertions: [droppedAssertion(fault.stats, afterRows, error)],
+      assertions: poolsClosed === undefined ? [dropped] : [dropped, poolsClosed],
       details: { afterRows, rowsSeen, droppedDatabase, seqBefore, seqAfter, error },
       state: { resumeSeq },
     };
   },
   async resume(env, _params, output) {
+    const steps: string[] = [];
+    const assertions: FaultAssertion[] = [];
+    const unclosed = unclosedPools.get(env);
+    if (unclosed !== undefined) {
+      steps.push(CLOSE_FAULT_POOLS);
+      assertions.push(await closeUnclosedPools(env, unclosed));
+    }
     const recorded = output?.state?.resumeSeq;
     const snapshotSeq = typeof recorded === 'number' ? recorded : undefined;
+    steps.push(RERUN_FEED);
     try {
       const result = await runFeed(env.ctx, snapshotSeq === undefined ? {} : { snapshotSeq });
       const detail = { snapshotSeq: result.snapshotSeq, exitCode: result.exitCode };
-      const assertion =
+      assertions.push(
         result.exitCode === 0
           ? pass(RESUMED, detail)
-          : fail(RESUMED, { ...detail, reconciliation: result.reconciliation }, 'the rerun feed did not reconcile to zero difference');
-      return { steps: [RERUN_FEED], assertions: [assertion] };
+          : fail(RESUMED, { ...detail, reconciliation: result.reconciliation }, 'the rerun feed did not reconcile to zero difference'),
+      );
     } catch (error) {
-      return { steps: [RERUN_FEED], assertions: [fail(RESUMED, { snapshotSeq, error: messageOf(error) })] };
+      assertions.push(fail(RESUMED, { snapshotSeq, error: messageOf(error) }));
     }
+    return { steps, assertions };
   },
 };

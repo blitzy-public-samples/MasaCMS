@@ -1,11 +1,10 @@
 /** CSRF arbitration between legacy and target requests: the legacy token formula, single use across sides, the pending-legacy wait, the legacy ledger relay and the arbitration routes. */
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LegacyServiceUnavailableError, apiUnavailableResponse, cfHash, generateCsrfToken } from '@opt2/platform/legacy-compat';
 import type { Clock, CsrfConsumeRequest, CsrfConsumeResponse, ServiceResponse } from '@opt2/platform/service-kit';
-import { withMetadata, withTenant, type QueryConfig, type QueryResultRow, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
-import { TENANT_A, createThrowawaySchema, fixedClock, mintUserToken, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { withTenant, type QueryResultRow } from '@opt2/platform/tenancy';
+import { TENANT_A, fixedClock, mintUserToken } from '@opt2/platform/testing';
 import {
   CSRF_USED_TTL_HOURS,
   PENDING_LEGACY_WAIT_MS,
@@ -19,7 +18,7 @@ import {
 } from '../../src/domain/csrf.js';
 import { applyLogin, ensureSession } from '../../src/domain/sessions.js';
 import { createBridgeRelay } from '../../src/legacy/bridge-relay.js';
-import { createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
+import type { IdentityRepository } from '../../src/repo/repository.js';
 import { CSRF_CLAIM, type SessionRow } from '../../src/repo/tables.js';
 import { buildTestApp, createClientRecorder, headersFor, type ClientRecorder, type TestApp } from '../helpers/app.js';
 import { createMemoryIdentityRepo, createRecordingDb, type MemoryIdentityRepo, type RecordingDb } from '../helpers/memory-repo.js';
@@ -254,19 +253,35 @@ describe('single use across legacy and target requests', () => {
     expect(await legacyLedger(seeded)).toEqual([{ token: request.token, usedAt: NOW }]);
   });
 
-  it('takes no claim for the approvalaction bypass, so the token stays usable on the target', async () => {
+  // gateway/test/unit/csrf-continuity.test.ts drives the bypass selector; a bypassed request reaches identity with no claim or settle.
+  it.each<[string, (seeded: Seeded, request: CsrfConsumeRequest) => Promise<void>]>([
+    [
+      'target',
+      async ({ deps, repo, client }, request) => {
+        expect(await consumeToken(deps, request)).toEqual({ valid: true });
+        expect(claimStates(repo)).toEqual([[request.token, 'used']]);
+        expect(relays(client)).toHaveLength(1);
+        expect(await claimForLegacy(deps, { sessionId: SESSION_ID, token: request.token })).toEqual({ state: 'used' });
+      },
+    ],
+    [
+      'legacy',
+      async (seeded, request) => {
+        const { deps, client } = seeded;
+        expect(await claimForLegacy(deps, { sessionId: SESSION_ID, token: request.token })).toEqual({ state: 'pending-legacy' });
+        expect(await settleLegacy(deps, { sessionId: SESSION_ID, consumed: [request.token], released: [] })).toEqual({ used: 1, released: 0 });
+        expect(await legacyLedger(seeded)).toEqual([{ token: request.token, usedAt: NOW }]);
+        expect(await consumeToken(deps, request)).toEqual({ valid: false });
+        expect(relays(client)).toEqual([]);
+      },
+    ],
+  ])('keeps the token of an approvalaction bypass, which identity never sees, usable once on the %s side', async (_side, nextUse) => {
     const seeded = await seedSession();
-    const { deps, repo, client, secret } = seeded;
-    const request = consumeRequest(secret, 'approvalaction');
+    const request = consumeRequest(seeded.secret, 'approvalaction');
 
-    // The bypassed legacy request takes no claim and adds no ledger entry for the gateway to settle.
-    expect(await settleLegacy(deps, { sessionId: SESSION_ID, consumed: [], released: [] })).toEqual({ used: 0, released: 0 });
-    expect(claimStates(repo)).toEqual([]);
+    expect(claimStates(seeded.repo)).toEqual([]);
     expect(await legacyLedger(seeded)).toEqual([]);
-    expect(relays(client)).toEqual([]);
-
-    expect(await consumeToken(deps, request)).toEqual({ valid: true });
-    expect(relays(client)).toHaveLength(1);
+    await nextUse(seeded, request);
   });
 
   it('refuses tokens an adopted legacy session had already used', async () => {
@@ -474,69 +489,3 @@ describe('arbitration routes', () => {
     expect(res.body).toBe(apiUnavailableResponse().body);
   });
 });
-
-/** `db` whose tenant transactions record the error of every failed statement in `failures`. */
-function failureRecordingDb(db: TenantDb, failures: unknown[]): TenantDb {
-  const observed = (tx: TenantTx): TenantTx => ({
-    kind: tx.kind,
-    tenantId: tx.tenantId,
-    schema: tx.schema,
-    onCommit: (cb, onError) => tx.onCommit(cb, onError),
-    async query<R extends QueryResultRow = QueryResultRow>(text: string | QueryConfig, values?: unknown[]) {
-      try {
-        return await tx.query<R>(text, values);
-      } catch (err) {
-        failures.push(err);
-        throw err;
-      }
-    },
-  });
-  return {
-    schema: db.schema,
-    withTenant: (tenantId, fn, options) => db.withTenant(tenantId, (tx) => fn(observed(tx)), options),
-    withMetadata: (fn, options) => db.withMetadata(fn, options),
-    end: () => db.end(),
-  };
-}
-
-// pgAvailable rejects on missing PG_* settings, and without them there is no server to probe.
-const pgReady = process.env.PG_HOST === undefined ? false : await pgAvailable();
-
-describe.skipIf(!pgReady)('claim uniqueness in PostgreSQL', () => {
-  const SECRET = 'K0000000-0000-0000-0000000000000001';
-  const failures: unknown[] = [];
-  let handle: ThrowawaySchema;
-
-  beforeAll(async () => {
-    handle = await createThrowawaySchema({ service: 'identity', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
-    const repo = createIdentityRepository({ clock: CLOCK, schema: handle.schema });
-    await withMetadata(handle.app, (tx) =>
-      tx.query(`INSERT INTO ${handle.schema}.tenant_registry (site_id, tenant_id, aggregate_version, updated_at) VALUES ($1, $2, 1, $3)`, [
-        TENANT_A.siteId,
-        TENANT_A.tenantId,
-        NOW,
-      ]),
-    );
-    await withTenant(handle.app, TENANT_A.tenantId, (tx) =>
-      repo.insertSession(tx, { session_id: SESSION_ID, csrf_secret: SECRET, mode: 'target-primary', state: 'active' }),
-    );
-  });
-
-  afterAll(async () => {
-    await handle?.drop();
-  });
-
-  it('lets exactly one of two concurrent target consumes win the csrf_claim primary key', async () => {
-    const db = failureRecordingDb(handle.app, failures);
-    const client = createClientRecorder();
-    // Each consume has its own repository, so the only state the two share is the database.
-    const depsOf = (): CsrfDeps => ({ db, repo: createIdentityRepository({ clock: CLOCK, schema: handle.schema }), bridge: createBridgeRelay(client), clock: CLOCK });
-    const request = consumeRequest(SECRET);
-
-    const results = await Promise.all([consumeToken(depsOf(), request), consumeToken(depsOf(), request)]);
-
-    expect(results.filter((result) => result.valid)).toHaveLength(1);
-    expect(failures).toEqual([expect.objectContaining({ code: '23505', table: 'csrf_claim', constraint: 'csrf_claim_pkey' })]);
-  });
-});
-

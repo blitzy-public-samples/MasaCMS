@@ -1898,6 +1898,9 @@ paths:
           $ref: '#/components/responses/FeedBadRequest'
         '401':
           $ref: '#/components/responses/FeedUnauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The site the request resolves differs from the user token's site.
         '404':
           $ref: '#/components/responses/NotFoundPage'
           description: The site 404 page for an unknown feed.
@@ -1928,6 +1931,9 @@ paths:
           $ref: '#/components/responses/FeedBadRequest'
         '401':
           $ref: '#/components/responses/FeedUnauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The site the request resolves differs from the user token's site.
         '404':
           $ref: '#/components/responses/NotFoundPage'
           description: The site 404 page for an unknown feed.
@@ -1956,6 +1962,9 @@ paths:
           $ref: '#/components/responses/FeedBadRequest'
         '401':
           $ref: '#/components/responses/FeedUnauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The site the request resolves differs from the user token's site.
         '404':
           $ref: '#/components/responses/NotFoundPage'
           description: The site 404 page for an unknown feed.
@@ -1986,6 +1995,9 @@ paths:
           $ref: '#/components/responses/FeedBadRequest'
         '401':
           $ref: '#/components/responses/FeedUnauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The site the request resolves differs from the user token's site.
         '404':
           $ref: '#/components/responses/NotFoundPage'
           description: The site 404 page for an unknown feed.
@@ -3427,6 +3439,9 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/AdminNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Legacy 500 `server_error` for a remote feed that answers non-2xx or with a body that is not XML, as cfhttp `throwOnError` and `parseXML` fail.
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/approval-chains:
@@ -3638,6 +3653,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Legacy 500 `server_error` for an upload legacy fails with a ColdFusion exception, such as a `formzip` that is missing, not a file, a malformed archive or one without `form.json`, or an exported form missing `body`, `responseMessage` or `responseSendTo`.
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/raw/carch/approvalaction:
@@ -8258,7 +8276,7 @@ components:
             $ref: '#/components/schemas/SiteMonitorStepTask'
   responses:
     LegacyOk:
-      description: The legacy JSON API envelope; a write also reports its commit position.
+      description: The legacy JSON API envelope; a write also reports its commit position. `findCalendarItems` with `format=fullcalendar` returns the bare event array.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -8275,7 +8293,9 @@ components:
       content:
         application/json;charset=utf-8:
           schema:
-            $ref: '#/components/schemas/LegacyEnvelope'
+            anyOf:
+              - $ref: '#/components/schemas/LegacyEnvelope'
+              - $ref: '#/components/schemas/FullCalendarEvents'
         application/x-shunter+json;charset=utf-8:
           schema:
             $ref: '#/components/schemas/LegacyEnvelope'
@@ -8652,6 +8672,32 @@ components:
           $ref: '#/components/schemas/JsonApiData'
         layout:
           description: The shunter layout, copied from `data.layout` when `data.shunter` is true.
+    FullCalendarEvents:
+      type: array
+      description: '`findCalendarItems` events in FullCalendar format, sent without the envelope (contentCalendarUtilityBean.cfc `fullCalendarFormat`).'
+      items:
+        type: object
+        required: [allday, end, id, start, title, url]
+        additionalProperties: false
+        properties:
+          allday:
+            type: boolean
+            description: True when the item starts at hour 0.
+          end:
+            type: string
+            description: '`displaystop`: `yyyy-mm-dd` at 00:00 or 23:59, else ISO 8601 with the server offset; empty when null.'
+          id:
+            type: string
+            description: The content id.
+          start:
+            type: string
+            description: '`displaystart`, formatted as `end` is.'
+          title:
+            type: string
+            description: The menu title.
+          url:
+            type: string
+            description: The item's complete URL.
     LegacyError:
       type: object
       description: Legacy JSON API error envelope; types map to status and code as authorization 401, invalidAccessToken and accessTokenExpired 401 invalid_token, disabled, invalidParameters, invalidEntityCall, invalidMethodCall, badRequest and invalidTokens 400 invalid_request, server_error 500.

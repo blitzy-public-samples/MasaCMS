@@ -1,5 +1,6 @@
 // User-token verification (identity's local signer and Identity Platform) and the token-site check of @opt2/platform/auth.
 import { createRemoteJWKSet, errors, jwtVerify, type JWTVerifyGetKey } from 'jose';
+import { LegacyServiceUnavailableError } from '../legacy-compat/index.js';
 import { AuthDenial, userClaimsSchema, type UserClaims } from './claims.js';
 
 /** Issuer, audience, lifetime and algorithm of the user tokens identity's local signer mints. */
@@ -32,18 +33,40 @@ export type UserTokenVerifierOptions = { issuer: string; audience: string } & (
   | { keySet: JWTVerifyGetKey }
 );
 
-/** Verifies a bearer user token and returns its claims; a rejected token throws `AuthDenial`. */
+/** Verifies a bearer user token and returns its claims; a rejected token throws `AuthDenial`, an unreadable key source `KeySourceUnavailableError`. */
 export interface UserTokenVerifier {
   verify(token: string): Promise<UserClaims>;
 }
 
-// jose wraps JWKS endpoint failures (timeout, non-200 or unparsable response, malformed set) as JOSE errors;
-// they are not faults of the presented token, so they propagate like a refused connection instead of a 401.
+/** The user-token key source could not be read; renders as the legacy 503. */
+export class KeySourceUnavailableError extends LegacyServiceUnavailableError {
+  override readonly name: string = 'KeySourceUnavailableError';
+
+  constructor(override readonly cause: unknown) {
+    super('User-token key source unavailable', 'auto', 'key-source-unavailable');
+  }
+}
+
+// JOSE codes of JWKS endpoint failures (timeout, non-200 or unparsable response, malformed set), not of the token.
 const KEY_SOURCE_FAILURES: ReadonlySet<string> = new Set(['ERR_JWKS_TIMEOUT', 'ERR_JOSE_GENERIC', 'ERR_JWKS_INVALID']);
+
+/** `keys` raising its own failures, a refused connection included, as KeySourceUnavailableError; token faults pass unchanged. */
+function failClosedKeys(keys: JWTVerifyGetKey): JWTVerifyGetKey {
+  return async (protectedHeader, token) => {
+    try {
+      return await keys(protectedHeader, token);
+    } catch (err) {
+      if (err instanceof errors.JOSEError && !KEY_SOURCE_FAILURES.has(err.code)) {
+        throw err;
+      }
+      throw new KeySourceUnavailableError(err);
+    }
+  };
+}
 
 /** Creates a verifier checking the RS256 signature, `iss`, `aud`, `exp` and the claim shape; the anonymous principal yields `sub` ''. */
 export function createUserTokenVerifier(opts: UserTokenVerifierOptions): UserTokenVerifier {
-  const keys: JWTVerifyGetKey = 'keySet' in opts ? opts.keySet : createRemoteJWKSet(new URL(opts.jwksUrl));
+  const keys = failClosedKeys('keySet' in opts ? opts.keySet : createRemoteJWKSet(new URL(opts.jwksUrl)));
   const verifyOptions = { issuer: opts.issuer, audience: opts.audience, algorithms: ['RS256'] };
 
   return {
@@ -52,7 +75,7 @@ export function createUserTokenVerifier(opts: UserTokenVerifierOptions): UserTok
       try {
         ({ payload } = await jwtVerify(token, keys, verifyOptions));
       } catch (err) {
-        if (err instanceof errors.JOSEError && !KEY_SOURCE_FAILURES.has(err.code)) {
+        if (err instanceof errors.JOSEError) {
           throw err.code === 'ERR_JWT_EXPIRED' ? AuthDenial.expiredToken() : AuthDenial.invalidToken();
         }
         throw err;

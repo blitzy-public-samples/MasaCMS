@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
-import { createLogger } from '@opt2/platform/logging';
+import { REDACTED, createLogger } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,6 +19,8 @@ const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', impor
 };
 const PATH = '/internal/v1/legacy-steps';
 const WINDOW_ID = '6A1B2C3D-4E5F-4061-7283940516273849';
+// Free text no redaction pattern masks, so it reaches a log only if interpolated there.
+const FREE_TEXT = ['Jane', 'Doe', 'salary', '91250'].join(' ');
 const STEP = {
   step: 'purgeDisplayWindow',
   theTime: '2026-06-30 12:00:00.000',
@@ -30,6 +32,7 @@ const SERVER_TIME = '2026-06-30T12:00:00.123Z';
 const UNAVAILABLE_ENVELOPE = { apiversion: 'v1', method: 'invalid', error: { message: 'Unhandled Exception', code: 'server_error' } };
 
 const runLegacyStep = vi.fn<(input: LegacyStepInput) => Promise<LegacyStepResult>>();
+const logLines: string[] = [];
 let app: FastifyInstance;
 
 beforeAll(async () => {
@@ -46,7 +49,16 @@ beforeAll(async () => {
       TZ: 'UTC',
     }),
     verifierOverride: testVerifier('migration'),
-    logger: createLogger({ service: 'migration', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+    logger: createLogger({
+      service: 'migration',
+      version: '1.0.0',
+      env: 'local',
+      destination: {
+        write: (line: string) => {
+          logLines.push(line);
+        },
+      },
+    }),
   });
   registerLegacyStepRoutes(app, { windows: { runLegacyStep } });
   await app.ready();
@@ -141,15 +153,35 @@ describe('answers', () => {
     expect(res.json()).toEqual(UNAVAILABLE_ENVELOPE);
   });
 
-  it('answers a passed deadline with the 504 server_error envelope and its ETag', async () => {
-    runLegacyStep.mockRejectedValue(new LegacyStepDeadlineError('purgeDisplayWindow', undefined, undefined, undefined));
+  it.each<[string, Record<string, unknown>, string | undefined, string | undefined, string]>([
+    ['a step without a site or window', STEP, undefined, undefined, 'Legacy site-monitor step purgeDisplayWindow did not complete before its deadline'],
+    [
+      'a site step in a window, whose site id never reaches the log',
+      { ...STEP, step: 'trackBounces', siteId: 'tenant-a' },
+      `tenant-a\n    at injected (${FREE_TEXT})`,
+      WINDOW_ID,
+      `Legacy site-monitor step trackBounces in window ${WINDOW_ID} did not complete before its deadline`,
+    ],
+  ])(
+    'answers a passed deadline of %s with the 504 server_error envelope and its ETag, logging a fixed line',
+    async (_label, body, siteId, windowId, line) => {
+      const step = body.step as LegacyStepInput['step'];
+      runLegacyStep.mockRejectedValue(new LegacyStepDeadlineError(step, siteId, windowId, new Error(`bridge timed out for ${FREE_TEXT}`)));
+      logLines.length = 0;
 
-    const res = await post(STEP);
+      const res = await post(body);
 
-    expect(res.statusCode).toBe(504);
-    expect(res.json()).toEqual(UNAVAILABLE_ENVELOPE);
-    expect(res.headers.etag).toMatch(/^[0-9A-F]+$/);
-  });
+      expect(res.statusCode).toBe(504);
+      expect(res.json()).toEqual(UNAVAILABLE_ENVELOPE);
+      expect(res.headers.etag).toMatch(/^[0-9A-F]+$/);
+      const records = logLines.map((text) => JSON.parse(text) as { severity: string; message: string; error?: unknown });
+      expect(records.filter((record) => record.message === line)).toEqual([
+        expect.objectContaining({ severity: 'WARNING', error: expect.objectContaining({ type: 'LegacyStepDeadlineError', message: REDACTED }) }),
+      ]);
+      expect(logLines.join('')).not.toContain(FREE_TEXT);
+      expect(logLines.join('')).not.toContain('tenant-a');
+    },
+  );
 
   it('lets any other failure reach the error handler as the 500', async () => {
     runLegacyStep.mockRejectedValue(new Error('inventory records no site-monitor step'));

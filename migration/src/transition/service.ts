@@ -2,6 +2,7 @@
 import path from 'node:path';
 
 import { LegacyApiError, cfUuid } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import type { MetadataTx } from '@opt2/platform/tenancy';
 
 import { resolveReportsDir } from '../config.js';
@@ -327,7 +328,7 @@ export function createTransitionService(ctx: MigrationContext, options: Transiti
       reportTarget ??= resolveReportTarget({ reportsDir: resolveReportsDir(ctx.config, ctx.env), sourceShaFile: ctx.config.paths.sourcePin });
       await upsertLogEntry(reportTarget, REPORT_FILE, 'transitionId', toLogEntry(record), { clock: ctx.clock });
     } catch (error) {
-      ctx.logger.error(`Recording transition ${record.transitionId} in ${REPORT_FILE} failed: ${messageOf(error)}`);
+      ctx.logger.error({ error: serializeError(error) }, `Recording transition ${record.transitionId} in ${REPORT_FILE} failed`);
     }
   }
 
@@ -389,13 +390,13 @@ export function createTransitionService(ctx: MigrationContext, options: Transiti
     if (detail !== undefined) open.detail = detail;
   }
 
-  /** Ends the transition as failed; nothing is undone, so what it still holds stays closed for an operator. */
-  async function fail(record: TransitionRecord, reason: string): Promise<void> {
+  /** Ends the transition as failed with `reason` persisted and `cause` logged; nothing is undone, so what it still holds stays closed for an operator. */
+  async function fail(record: TransitionRecord, reason: string, cause: unknown): Promise<void> {
     record.state = 'failed';
     record.abortReason = reason;
     record.finishedAt = now();
     await persistRecord(record);
-    ctx.logger.error(`Transition ${record.transitionId} to ${record.to} failed: ${reason}`);
+    ctx.logger.error({ error: serializeError(cause) }, `Transition ${record.transitionId} to ${record.to} failed`);
   }
 
   /** Retrying the undo cannot succeed: a refusal, or the proposed version is active, so the transition can no longer abort. */
@@ -414,14 +415,16 @@ export function createTransitionService(ctx: MigrationContext, options: Transiti
     const reason = record.abortReason ?? `Transition ${record.transitionId} was aborting`;
     let progress: TransitionProgress;
     try {
-      progress = await abortTransition(stepDeps(record), record, reason);
+      progress = await abortTransition(stepDeps(record), record);
     } catch (error) {
-      const message = messageOf(error);
       if (await abortRefused(record, error)) {
-        await fail(record, `${reason}; the abort was refused: ${message}`);
+        await fail(record, `${reason}; the abort was refused: ${messageOf(error)}`, error);
         return;
       }
-      ctx.logger.error(`Transition ${record.transitionId} undo failed; it stays aborting with its gates closed until resumed: ${message}`);
+      ctx.logger.error(
+        { error: serializeError(error) },
+        `Transition ${record.transitionId} undo failed; it stays aborting with its gates closed until resumed`,
+      );
       return;
     }
     record.progress = progress;
@@ -444,18 +447,19 @@ export function createTransitionService(ctx: MigrationContext, options: Transiti
     const message = messageOf(error);
     const refusal = isRefusal(error);
     if (step < ACTIVATE_STEP || (refusal && step === ACTIVATE_STEP)) {
+      ctx.logger.warn({ error: serializeError(error) }, `Transition ${record.transitionId} step ${String(step)} failed, so it aborts`);
       closeStep(record, 'aborted', message);
       await abort(record, message);
       return;
     }
     closeStep(record, 'error', message);
     if (refusal) {
-      await fail(record, message);
+      await fail(record, message, error);
       return;
     }
     // Activation may have happened, so the transition goes forward: steps 7 and 8 run again on resume.
     await persistRecord(record);
-    ctx.logger.error(`Transition ${record.transitionId} step ${String(step)} failed and runs again on resume: ${message}`);
+    ctx.logger.error({ error: serializeError(error) }, `Transition ${record.transitionId} step ${String(step)} failed and runs again on resume`);
   }
 
   /** Runs the steps after `lastStep`, persisting before and after each, or continues the undo of an aborting transition. */
@@ -496,7 +500,7 @@ export function createTransitionService(ctx: MigrationContext, options: Transiti
       try {
         await drive(record);
       } catch (error) {
-        ctx.logger.error(`Transition ${id} stopped and continues from its persisted state on resume: ${messageOf(error)}`);
+        ctx.logger.error({ error: serializeError(error) }, `Transition ${id} stopped and continues from its persisted state on resume`);
       } finally {
         loops.delete(id);
       }

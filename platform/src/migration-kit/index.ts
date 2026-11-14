@@ -93,6 +93,7 @@ export type {
   Mapping,
   TenantLookups,
   ResolvedTenant,
+  BatchProgram,
 } from './mapping.js';
 export {
   GATE_WAIT_MS,

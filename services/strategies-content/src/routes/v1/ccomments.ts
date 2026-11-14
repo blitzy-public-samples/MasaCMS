@@ -1,4 +1,5 @@
 /** ccomments admin routes: comment moderation grid and actions (ccomments.cfc:86-360). */
+import { serializeError } from '@opt2/platform/logging';
 import { legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import { listPoolCategories } from '../../domain/categories.js';
 import {
@@ -86,7 +87,7 @@ function callOptions(request: FastifyRequest): CommentCallOptions {
     apiRequest: false,
     requestId: request.id,
     onSwallowedError: (error, operation) => {
-      request.log.warn({ error }, `ccomments ${operation}: error swallowed as legacy swallows it`);
+      request.log.warn({ error: serializeError(error) }, `ccomments ${operation}: error swallowed as legacy swallows it`);
     },
   };
 }

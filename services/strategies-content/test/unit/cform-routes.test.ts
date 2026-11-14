@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { crc32, createDeflateRaw, deflateRawSync, inflateRawSync } from 'node:zlib';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { Roles, moduleRole } from '@opt2/platform/auth';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import {
@@ -16,7 +17,7 @@ import {
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
-import { TENANT_A, TENANT_B } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/context.js';
 import { acfStructKeyOrder, type AdminRenderResult } from '../../src/legacy/admin-render.js';
 import { createContentRepository } from '../../src/repo/repository.js';
@@ -33,6 +34,7 @@ interface Recorded {
 }
 
 const recorded = JSON.parse(readFileSync(new URL('../fixtures/legacy-cform-recorded.json', import.meta.url), 'utf8')) as Recorded;
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const SITE = TENANT_A.siteId;
 const USER = 'U0000001-AAAA-BBBB-CCCCDDDDEEEEFFFF';
@@ -430,7 +432,9 @@ describe('routes/v1/cform', () => {
       ['a form without formzip', [...csrf, { name: 'title', value: 'x' }]],
       ['a formzip field that is not a file', [...csrf, { name: 'title', value: 'x' }, { name: 'formzip', value: 'C:\\form.zip' }]],
     ] as const)('fails with the legacy 500 for %s', async (_name, parts) => {
-      expect((await post(parts)).statusCode).toBe(500);
+      const response = await post(parts);
+      expect(response.statusCode).toBe(500);
+      assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: IMPORT_URL, status: response.statusCode, contentType: response.headers['content-type'], body: response.body });
     });
 
     it.each([

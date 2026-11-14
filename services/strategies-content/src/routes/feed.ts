@@ -10,6 +10,7 @@ import {
   cfToNumber,
   fallbackSiteId,
 } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import { sendLegacyResponse, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import { poolTenantFor, tenantForRegisteredSite, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { actorFromClaims, type Actor, type DomainDeps } from '../domain/context.js';
@@ -350,7 +351,7 @@ async function serveFeed(ctx: FeedRouteContext, prefix: string, request: Fastify
   } catch (err) {
     // processRequest's catch (Any): every error but this service's own fail-closed and credential conditions.
     if (err instanceof LegacyServiceUnavailableError || err instanceof AuthDenial) throw err;
-    request.log.error({ error: err }, 'unhandled feed error');
+    request.log.error({ error: serializeError(err) }, 'unhandled feed error');
     res = packet(feedErrorPacket('unhandled', userAgent));
   }
   return sendLegacyResponse(reply, res);

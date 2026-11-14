@@ -29,7 +29,6 @@ import {
   createApplyTenantResolver,
   createBatchSender,
   createOwnerBatcher,
-  fanOut,
   type ApplyChange,
   type BatchDirection,
   type BatchSender,
@@ -37,6 +36,7 @@ import {
   type OwnerBatchStats,
   type TenantResolver,
 } from './batch.js';
+import { Acceptance, addTaken, planTarget, type DiffSide, type TargetPlan } from './targets.js';
 
 /** Context members the backfill reads: the snapshot, both data sides, the gateway's authority and the report target. */
 export type BackfillContext = Pick<
@@ -84,13 +84,22 @@ export class BackfillAuthorityError extends Error {
 
 const AFTER_BACKFILL = 'after-backfill';
 
-/** What every table of one run shares. */
+/** What every table of one run shares; `side` is the snapshot database that row acceptance reads. */
 interface TableRun {
   readonly ctx: BackfillContext;
   readonly snapshot: SnapshotRecord;
   readonly tenants: TenantResolver;
+  readonly side: DiffSide;
   readonly sender: BatchSender;
   readonly batchSize: number;
+}
+
+/** Each owner's planned targets of one table and the acceptance cache that selects their rows in the snapshot. */
+interface TableRouting {
+  readonly table: string;
+  readonly keyed: boolean;
+  readonly plans: ReadonlyMap<DataOwner, readonly TargetPlan[]>;
+  readonly acceptance: Acceptance;
 }
 
 function sorted(values: Iterable<string>): string[] {
@@ -177,6 +186,32 @@ function batchersFor(
   );
 }
 
+/** Routing of `table`: every owner's targets planned over the snapshot's shape. @throws Error for a row predicate the backfill cannot read. */
+function routingFor(run: TableRun, table: MigratableTable, shape: LegacyTableShape): TableRouting {
+  const plans = new Map<DataOwner, TargetPlan[]>();
+  for (const target of run.ctx.catalog.unitsForLegacyTable(table.name)) {
+    plans.set(target.owner, [...(plans.get(target.owner) ?? []), planTarget(target, shape, 'backfill')]);
+  }
+  return { table: table.name, keyed: shape.keyed, plans, acceptance: new Acceptance(run.ctx, table.name) };
+}
+
+/** Adds `changes` of `row` to the batcher of each owner whose targets take the real row, with the discriminators those targets need. */
+async function route(
+  run: TableRun,
+  routing: TableRouting,
+  batchers: ReadonlyMap<DataOwner, OwnerBatcher>,
+  row: CanonicalRow,
+  tenantId: string,
+  changes: readonly ApplyChange[],
+): Promise<void> {
+  for (const [owner, batcher] of batchers) {
+    const taken = await routing.acceptance.filter(routing.plans.get(owner) ?? [], run.side, row);
+    if (taken.length === 0) continue;
+    const target = { table: routing.table, keyed: routing.keyed, owner };
+    for (const change of changes) await addTaken(batcher, target, change, taken, tenantId, row.legacyProgramId);
+  }
+}
+
 async function finishAll(batchers: ReadonlyMap<DataOwner, OwnerBatcher>): Promise<OwnerBatchStats[]> {
   const stats: OwnerBatchStats[] = [];
   for (const batcher of batchers.values()) stats.push(await batcher.finish());
@@ -195,22 +230,51 @@ function patchChanges(shape: LegacyTableShape, row: CanonicalRow, deferred: read
   ];
 }
 
-/** Loads one table into every owner of it; with deferred columns, loads them null first and patches them in a second pass. */
-async function backfillTable(run: TableRun, table: MigratableTable, deferredNames: ReadonlySet<string>): Promise<BackfillTableResult> {
+/** A table loaded with its deferred columns nulled, waiting for its patch pass. */
+interface PendingPatch {
+  readonly table: MigratableTable;
+  readonly shape: LegacyTableShape;
+  readonly routing: TableRouting;
+  readonly deferred: readonly string[];
+  readonly result: BackfillTableResult;
+}
+
+/** Outcome of a table's load pass; `patch` is null for a table without deferred columns, which is then complete. */
+interface LoadedTable {
+  readonly result: BackfillTableResult;
+  readonly patch: PendingPatch | null;
+}
+
+/** The `forward` watermark at the snapshot, stamped when the table's last pass starts. */
+function forwardWatermark(run: TableRun, table: MigratableTable): WatermarkRecord {
+  return {
+    legacyTable: table.name,
+    direction: 'forward',
+    snapshotSeq: run.snapshot.seq,
+    backupLsn: run.snapshot.checkpointLsn,
+    finishedAt: formatCanonicalTimestamp(run.ctx.clock.now()),
+  };
+}
+
+/** Totals the batches of a table whose last pass has run, and logs it. */
+function completeTable(run: TableRun, result: BackfillTableResult): void {
+  result.batches = result.perOwner.reduce((sum, stats) => sum + stats.batches, 0);
+  run.ctx.logger.info(
+    `backfill of snapshot ${String(run.snapshot.seq)} applied ${result.table}: ${String(result.rows)} rows, ` +
+      `${String(result.batches)} batches, ${String(result.orphans)} orphans`,
+  );
+}
+
+/** Load pass of one table into the owners whose targets take its rows; deferred columns load null and the watermark waits for the patch. */
+async function loadTable(run: TableRun, table: MigratableTable, deferredNames: ReadonlySet<string>): Promise<LoadedTable> {
   const { ctx, snapshot, tenants } = run;
   const source = { table, database: snapshot.databaseName };
   const shape = await describeLegacyTable(ctx, source);
+  const routing = routingFor(run, table, shape);
   const deferred = shape.columns.filter((column) => deferredNames.has(column.name.toLowerCase())).map((column) => column.name);
-  const watermark: WatermarkRecord = {
-    legacyTable: table.name,
-    direction: 'forward',
-    snapshotSeq: snapshot.seq,
-    backupLsn: snapshot.checkpointLsn,
-    finishedAt: formatCanonicalTimestamp(ctx.clock.now()),
-  };
   const op: ApplyChange['op'] = shape.keyed ? 'upsert' : 'insert';
 
-  const load = batchersFor(run, table, shape, 'backfill', deferred.length === 0 ? watermark : null);
+  const load = batchersFor(run, table, shape, 'backfill', deferred.length === 0 ? forwardWatermark(run, table) : null);
   let rows = 0;
   let orphans = 0;
   for await (const row of streamLegacyTable(ctx, source)) {
@@ -218,34 +282,35 @@ async function backfillTable(run: TableRun, table: MigratableTable, deferredName
     rows += 1;
     if (resolved.orphan) orphans += 1;
     const encoding = deferred.length === 0 ? row.encoding : encodeRow(shape.columns, withNulls(row.row, deferred));
-    await fanOut(load, resolved.tenantId, { op, row: encoding }, row.legacyProgramId);
+    await route(run, routing, load, row, resolved.tenantId, [{ op, row: encoding }]);
   }
-  const perOwner = await finishAll(load);
-
-  if (deferred.length > 0) {
-    const patch = batchersFor(run, table, shape, 'backfill-patch', watermark);
-    for await (const row of streamLegacyTable(ctx, source)) {
-      if (deferred.every((name) => (row.row[name] ?? null) === null)) continue;
-      const { tenantId } = tenants.resolve(table.name, row.row);
-      for (const change of patchChanges(shape, row, deferred)) await fanOut(patch, tenantId, change, row.legacyProgramId);
-    }
-    perOwner.push(...(await finishAll(patch)));
-  }
-
-  const batches = perOwner.reduce((sum, stats) => sum + stats.batches, 0);
-  ctx.logger.info(
-    `backfill of snapshot ${String(snapshot.seq)} applied ${table.name}: ${String(rows)} rows, ` +
-      `${String(batches)} batches, ${String(orphans)} orphans`,
-  );
-  return {
+  const result: BackfillTableResult = {
     table: table.name,
     owners: [...ctx.catalog.ownersForLegacyTable(table.name)],
     rows,
-    batches,
+    batches: 0,
     orphans,
     deferredColumns: deferred,
-    perOwner,
+    perOwner: await finishAll(load),
   };
+  if (deferred.length === 0) {
+    completeTable(run, result);
+    return { result, patch: null };
+  }
+  return { result, patch: { table, shape, routing, deferred, result } };
+}
+
+/** Patch pass of one loaded table: restores its deferred columns, the last patch batch per owner carrying the `forward` watermark. */
+async function patchTable(run: TableRun, pending: PendingPatch): Promise<void> {
+  const { table, shape, routing, deferred, result } = pending;
+  const patch = batchersFor(run, table, shape, 'backfill-patch', forwardWatermark(run, table));
+  for await (const row of streamLegacyTable(run.ctx, { table, database: run.snapshot.databaseName })) {
+    if (deferred.every((name) => (row.row[name] ?? null) === null)) continue;
+    const { tenantId } = run.tenants.resolve(table.name, row.row);
+    await route(run, routing, patch, row, tenantId, patchChanges(shape, row, deferred));
+  }
+  result.perOwner.push(...(await finishAll(patch)));
+  completeTable(run, result);
 }
 
 /** Why the snapshot's files cannot move, or null when its manifest is complete. */
@@ -277,8 +342,9 @@ async function backfillFiles(ctx: BackfillContext, snapshot: SnapshotRecord): Pr
 }
 
 /**
- * Backfills the owners from snapshot `snapshotSeq` table by table in dependency order, transfers its files and writes the
- * `after-backfill` reconciliation; batch ids repeat on a re-run, and the first failed batch fails the command.
+ * Backfills the owners from snapshot `snapshotSeq`: loads every table in dependency order, then patches the deferred columns of
+ * each table that has them in the same order, transfers its files and writes the `after-backfill` reconciliation; batch ids
+ * repeat on a re-run, and the first failed batch fails the command.
  * @throws SnapshotError when the snapshot is not ready; BackfillAuthorityError before any batch when a unit is target-authoritative.
  */
 export async function runBackfill(ctx: BackfillContext, options: BackfillOptions): Promise<BackfillResult> {
@@ -300,18 +366,24 @@ export async function runBackfill(ctx: BackfillContext, options: BackfillOptions
   });
   const ordered = inDependencyOrder(ctx.catalog, tables, order);
   const deferred = deferredByTable(ctx.catalog, order);
+  const tenants = await createApplyTenantResolver(ctx, { database });
   const run: TableRun = {
     ctx,
     snapshot,
-    tenants: await createApplyTenantResolver(ctx, { database }),
+    tenants,
+    side: { database, tenants },
     sender: createBatchSender({ owners: ctx.owners }),
     batchSize: batchSizeOf(ctx.config),
   };
 
   const results: BackfillTableResult[] = [];
+  const pending: PendingPatch[] = [];
   for (const table of ordered) {
-    results.push(await backfillTable(run, table, deferred.get(tableLookupKey(table.name)) ?? new Set<string>()));
+    const loaded = await loadTable(run, table, deferred.get(tableLookupKey(table.name)) ?? new Set<string>());
+    results.push(loaded.result);
+    if (loaded.patch !== null) pending.push(loaded.patch);
   }
+  for (const patch of pending) await patchTable(run, patch);
   const files = await backfillFiles(ctx, snapshot);
 
   const report = await reconcileUnits(ctx, { point: AFTER_BACKFILL, units, database, snapshotSeq: snapshot.seq });

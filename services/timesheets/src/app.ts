@@ -15,7 +15,7 @@ import {
 } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { createConsumers } from './events/consumers.js';
-import { mappings, units } from './migration/mappings/index.js';
+import { PROGRAM_SITES, mappings, units } from './migration/mappings/index.js';
 import { createTimesheetsRepository } from './repo/repository.js';
 import { TIMESHEETS_SCHEMA } from './repo/tables.js';
 import { registerRoutes } from './routes/index.js';
@@ -72,7 +72,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // Precedes the routes, so its onSend hook covers the root-level export read too; registerMigrationHandlers requires it.
   registerWritePositionHeader(app);
   registerRoutes(app, { db, repository, clock });
-  registerMigrationHandlers(app, { owner: SERVICE_NAME, repository, mappings, units, db });
+  registerMigrationHandlers(app, { owner: SERVICE_NAME, repository, mappings, units, db, programSiteId: (programId) => PROGRAM_SITES[programId] });
   registerConsumers(app, { service: SERVICE_NAME, consumers: createConsumers({ repository }), publisher, db });
   return app;
 }

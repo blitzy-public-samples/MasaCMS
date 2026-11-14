@@ -827,7 +827,7 @@ async function handOffAndReopen(run: StepRun): Promise<void> {
   if (failed.length > 0) {
     ctx.logger.warn(
       `Transition ${holderId}: recurring chains not ensured, left to the periodic reconcile: ` +
-        failed.map((result) => `${result.queue} on ${result.service} (${result.error ?? 'not ensured'})`).join(', '),
+        failed.map((result) => `${result.queue} on ${result.service}`).join(', '),
     );
   }
   progress.rebaselineRequired = [...plan.toLegacy];
@@ -890,14 +890,14 @@ async function resetGates(run: Pick<StepRun, 'ctx' | 'progress' | 'persist' | 'h
  * and returns the cleaned progress; each undo is idempotent and persisted, so a failed abort can be resumed.
  * @throws Error once step 7 has completed or the proposed version is already active.
  */
-export async function abortTransition(deps: StepDeps, record: TransitionRecord, reason: string): Promise<TransitionProgress> {
+export async function abortTransition(deps: StepDeps, record: TransitionRecord): Promise<TransitionProgress> {
   const { ctx } = deps;
   const holderId = record.transitionId;
   if (record.lastStep >= 7) throw new Error(`Transition ${holderId} activated ${record.to}; it can no longer abort`);
   const progress = copyProgress(record.progress);
   const run = { ctx, progress, holderId, persist: () => deps.persist(progress) };
   const { plan } = record;
-  ctx.logger.warn(`Transition ${holderId} to ${record.to} aborting: ${reason}`);
+  ctx.logger.warn(`Transition ${holderId} to ${record.to} aborting`);
   if (plan !== undefined && (await ctx.gateway.status()).tableVersion === plan.to) {
     throw new Error(`Transition ${holderId} cannot abort: ${plan.to} is already active`);
   }

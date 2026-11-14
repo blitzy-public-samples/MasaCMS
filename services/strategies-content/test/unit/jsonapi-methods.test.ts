@@ -431,6 +431,8 @@ describe.skipIf(!(await pgAvailable()))('JSON API public methods', () => {
     it('returns fullcalendar events as unenveloped JSON', async () => {
       const result = await on('findCalendarItems', { url: { calendarid: CALENDAR, format: 'fullcalendar' } });
       expect(result.data).toBeUndefined();
+      // Legacy sends JSON-text results as is (jsonApiUtility.cfc:891-897).
+      assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: `/_api/json/v1/${SITE_ID}`, status: 200, contentType: 'application/json; charset=utf-8', body: result.rawJson });
       const events = JSON.parse(result.rawJson ?? '') as Struct[];
       expect(events.map((event) => Object.keys(event))).toEqual([
         ['allday', 'end', 'id', 'start', 'title', 'url'],
