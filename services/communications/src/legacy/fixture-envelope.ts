@@ -293,10 +293,11 @@ export function fixtureHandler<R extends FastifyRequest = FastifyRequest>(
   fn: FixtureRouteFn<R>,
 ): (request: R, reply: FastifyReply) => Promise<FastifyReply> {
   return async (request, reply) => {
-    // legacyParamsOf merges query, then the form or JSON-object body, as api.cfm merges url, form and JSON.
+    // legacyParamsOf merges query, then the form or JSON-object body, as api.cfm merges url, form and JSON; JSON simple
+    // values arrive as CFML toString text.
     const ctx: FixtureContext = {
       method: typeof method === 'string' ? method : method(request),
-      params: legacyParamsOf(request),
+      params: legacyParamsOf(request, { jsonScalars: 'cfml' }),
     };
     try {
       return await fn(request, reply, ctx);

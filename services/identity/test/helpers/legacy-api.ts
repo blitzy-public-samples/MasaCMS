@@ -240,11 +240,12 @@ function envelopeWithout(body: string, omit: readonly string[]): unknown {
   return envelope;
 }
 
-/** Asserts that `res` answers as the oracle did: status, content type, parsed body less `omit`, ETag rule and `WWW-Authenticate`. */
+/** Asserts that `res` answers as the oracle did: status, content type, parsed body less `omit`, top-level key order, ETag rule and `WWW-Authenticate`. */
 export function expectOracleAnswer(res: Answer, answer: OracleAnswer, body = res.body, omit: readonly string[] = []): void {
   expect(res.statusCode).toBe(answer.status);
   expect(res.headers['content-type']).toBe(answer.contentType);
   expect(envelopeWithout(body, omit)).toEqual(envelopeWithout(answer.body, omit));
+  if (answer.body.startsWith('{')) expect(Object.keys(JSON.parse(body) as object)).toEqual(Object.keys(JSON.parse(answer.body) as object));
   expect(res.headers.etag).toBe(answer.hasEtag ? etag(res.body) : undefined);
   expect(res.headers['www-authenticate']).toBe(answer.wwwAuthenticate);
   if (answer.deletedCookies !== undefined) expect(cookiesWithoutExpiry(res)).toEqual(answer.deletedCookies);

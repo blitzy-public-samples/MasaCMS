@@ -114,7 +114,7 @@ export type NestNode = SiteManagerRow &
     verdict: NodePerm;
     /** `contentManager.getKidsCount(contentid, siteid, false)`. */
     kidsCount: number;
-    /** `getNest(contentid, session.siteid, sortby, sortdirection)` rows; read only for an open section. */
+    /** The first `nextN` `getNest(contentid, session.siteid, sortby, sortdirection)` rows; read only for an open section. */
     kids?: readonly NestNode[];
   };
 
@@ -155,7 +155,7 @@ export interface SiteManagerModel {
   extendAttributes: readonly ExtendAttributeListRow[];
   /** `containsBean('marketingManager')`: only the MXP plugin, which runs on legacy alone, registers it. */
   hasMarketingManager: boolean;
-  /** `getNest(topid, session.siteid, sortBy, sortDirection)` rows, sorted as requested or as rsTop sorts. */
+  /** The `nextN` `getNest(topid, session.siteid, sortBy, sortDirection)` rows from `startRow`, sorted as requested or as rsTop sorts. */
   nest: readonly NestNode[];
   customIcons?: CustomIconLookup;
 }
@@ -175,7 +175,7 @@ export interface SiteSectionModel {
   /** `permUtility.setRestriction(getCrumbList(section)).restrict`. */
   restricted: boolean;
   tabAssignments: string;
-  /** `getNest(section, session.siteid, sortBy, sortDirection)` rows. */
+  /** The `nextN` `getNest(section, session.siteid, sortBy, sortDirection)` rows from `startRow`. */
   nest: readonly NestNode[];
   customIcons?: CustomIconLookup;
 }
@@ -451,7 +451,7 @@ export interface NestAttributes {
   siteId: string;
   restricted: boolean;
   nextN: number;
-  /** As printed in the row links; the window starts at it on level 1 only. */
+  /** As printed in the row links; level 1 rejects one legacy cannot window. */
   startRow: string;
   sortBy: string;
   isSectionRequest: boolean;
@@ -705,12 +705,12 @@ function isSortable(attrs: NestAttributes): boolean {
   return !attrs.isSectionRequest && attrs.nestLevel === 1 && cfEq(attrs.sortBy, 'orderno');
 }
 
-/** `<cf_dsp_nest>` (dsp_nest.cfm), writing into the caller's buffer; `nodes` is the parent's full getNest result. */
+/** `<cf_dsp_nest>` (dsp_nest.cfm), writing into the caller's buffer; `nodes` is the getNest window the level shows. */
 function writeNest(out: CfOut, nodes: readonly NestNode[], attrs: NestAttributes, scope: NestScope): void {
   const startRow = attrs.nestLevel === 1 ? cfToNumber(attrs.startRow) : 1;
   if (!Number.isInteger(startRow) || startRow < 1) throw new RangeError(`cfoutput startrow ${attrs.startRow} is not a row`);
   out.t('\n\n<ul', isSortable(attrs) ? " id='sortableKids'" : '', ' class="mura-section">\n');
-  for (const row of nodes.slice(startRow - 1, startRow - 1 + attrs.nextN)) {
+  for (const row of nodes) {
     out.ws().ws();
     const restricted = attrs.restricted || truthy(row.restricted);
     let verdict: NodePerm = row.verdict;

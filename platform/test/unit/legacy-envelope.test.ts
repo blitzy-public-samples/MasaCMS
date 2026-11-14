@@ -221,6 +221,124 @@ describe('serializeResponse ETag', () => {
   });
 });
 
+// Expected orders are ACF 2023 bins of the upper-cased keys (APIVERSION 0, A 1, B 2, DATA 5, LAYOUT 7, METHOD 9, ERROR 10,
+// TITLE 10, PARAMS 11, ID 11, __PROTO__ 13) or bodies captured from the legacy oracle.
+describe('serializeResponse ACF key order', () => {
+  const ERROR = { code: 'invalid_request', message: 'Invalid parameters' };
+
+  it.each<{ label: string; response: LegacyEnvelope; opts?: SerializeResponseOptions; body: string }>([
+    {
+      label: 'a success envelope',
+      response: envelope(),
+      body: '{"apiversion":"v1","data":{"id":"a1","title":"Home"},"method":"findOne"}',
+    },
+    {
+      label: 'a success envelope with params kept',
+      response: envelope(),
+      opts: { suppressAPIParams: false },
+      body: '{"apiversion":"v1","data":{"id":"a1","title":"Home"},"method":"findOne","params":{"siteid":"default"}}',
+    },
+    {
+      label: 'an error envelope',
+      response: buildEnvelope({ method: 'save', params: { siteid: 'default' }, error: ERROR }),
+      body: '{"apiversion":"v1","method":"save","error":{"code":"invalid_request","message":"Invalid parameters"}}',
+    },
+    {
+      label: 'an error envelope with params kept',
+      response: buildEnvelope({ method: 'save', params: { siteid: 'default' }, error: ERROR }),
+      opts: { suppressAPIParams: false },
+      body: '{"apiversion":"v1","method":"save","error":{"code":"invalid_request","message":"Invalid parameters"},"params":{"siteid":"default"}}',
+    },
+    {
+      label: 'flattened data',
+      response: envelope(),
+      opts: { useDataNamespace: 'false' },
+      body: '{"apiversion":"v1","method":"findOne","title":"Home","id":"a1"}',
+    },
+    {
+      label: 'flattened data with params kept, ID chained after PARAMS in its bin',
+      response: envelope(),
+      opts: { useDataNamespace: 'false', suppressAPIParams: false },
+      body: '{"apiversion":"v1","method":"findOne","title":"Home","params":{"siteid":"default"},"id":"a1"}',
+    },
+    {
+      label: 'flattened data overwriting Method ignoring case',
+      response: buildEnvelope({ method: 'findOne', params: {}, data: { Method: 'x', b: '2', a: '1' } }),
+      opts: { useDataNamespace: 'false' },
+      body: '{"apiversion":"v1","a":"1","b":"2","method":"x"}',
+    },
+    {
+      label: 'flattened csrf tokens (legacy generateCSRFTokens?useDataNamespace=false)',
+      response: buildEnvelope({ method: 'generateCSRFTokens', params: {}, data: { csrf_token: 'T', csrf_token_expires: 'E' } }),
+      opts: { useDataNamespace: 'false' },
+      body: '{"apiversion":"v1","csrf_token":"T","method":"generateCSRFTokens","csrf_token_expires":"E"}',
+    },
+    {
+      label: 'a shunter layout',
+      response: buildEnvelope({ method: 'findOne', data: { shunter: true, layout: 'two-col', id: 'a1' } }),
+      body: '{"apiversion":"v1","data":{"shunter":true,"layout":"two-col","id":"a1"},"layout":"two-col","method":"findOne"}',
+    },
+  ])('orders $label as ACF iterates the response struct', ({ response, opts, body }) => {
+    const result = serializeResponse(response, { ...opts, keyOrder: 'acf' });
+    expect(result.body).toBe(body);
+    expect(result.headers['ETag']).toBe(etag(body));
+  });
+
+  // Data and flattened key orders captured from the legacy oracle: group/properties (one table resize) and findCurrentUser (three).
+  it.each<{ label: string; data: readonly string[]; flattened: readonly string[] }>([
+    {
+      label: 'group/properties',
+      data: ['displayname', 'properties', 'historical', 'links', 'dynamic', 'primarykey', 'public', 'bundleable', 'orderby', 'entityname', 'scaffold'],
+      flattened: [
+        'apiversion', 'displayname', 'properties', 'historical', 'links', 'dynamic', 'primarykey', 'method', 'public', 'bundleable', 'orderby',
+        'entityname', 'scaffold',
+      ],
+    },
+    {
+      label: 'findCurrentUser',
+      data: [
+        'mobilephone', 'lname', 'email', 'contactform', 'lastupdate', 'keepprivate', 'userid', 'username', 'id', 'lastupdatebyid', 'type', 'subtype',
+        'categoryid', 'fname', 'company', 'tablist', 'newfile', 'ispublic', 'imservice', 'isnew', 'jobtitle', 'website', 'lastlogin', 'tags', 's2',
+        'membershipids', 'links', 'notes', 'created', 'groupname', 'perm', 'description', 'addressid', 'memberships', 'imname', 'passwordcreated',
+        'photofileid', 'interests', 'isloggedin', 'siteid', 'primaryaddressid', 'subscribe', 'remoteid', 'groupid', 'inactive', 'photofileext',
+        'lastupdateby', 'entityname',
+      ],
+      flattened: [
+        'apiversion', 'mobilephone', 'lname', 'email', 'contactform', 'lastupdate', 'keepprivate', 'userid', 'username', 'id', 'type',
+        'lastupdatebyid', 'subtype', 'categoryid', 'fname', 'company', 'tablist', 'newfile', 'ispublic', 'method', 'imservice', 'isnew', 'jobtitle',
+        'website', 'lastlogin', 'tags', 's2', 'membershipids', 'links', 'notes', 'created', 'groupname', 'perm', 'description', 'addressid',
+        'memberships', 'imname', 'passwordcreated', 'photofileid', 'interests', 'isloggedin', 'siteid', 'primaryaddressid', 'subscribe', 'remoteid',
+        'groupid', 'inactive', 'photofileext', 'lastupdateby', 'entityname',
+      ],
+    },
+  ])('flattens $label data across table resizes in the legacy order', ({ data, flattened }) => {
+    const values = Object.fromEntries(data.map((key) => [key, 'x']));
+    const response = buildEnvelope({ method: 'm', params: { siteid: 'default' }, data: values });
+
+    const nested = serializeResponse(response, { keyOrder: 'acf' });
+    const flat = serializeResponse(response, { keyOrder: 'acf', useDataNamespace: false });
+
+    expect(Object.keys(JSON.parse(nested.body) as object)).toEqual(['apiversion', 'data', 'method']);
+    expect(Object.keys(JSON.parse(flat.body) as object)).toEqual(flattened);
+    expect(flat.headers['ETag']).toBe(etag(flat.body));
+  });
+
+  it('passes the key order through serializeSaveResult', () => {
+    const result = serializeSaveResult({ method: 'save', params: { siteid: 'default' }, data: { id: 'a1', errors: {} } }, { keyOrder: 'acf' });
+    expect(result.status).toBe(200);
+    expect(result.body).toBe('{"apiversion":"v1","data":{"id":"a1","errors":{}},"method":"save"}');
+  });
+
+  it.each<{ opts: SerializeResponseOptions; body: string }>([
+    { opts: {}, body: NESTED_BODY },
+    { opts: { suppressAPIParams: false }, body: '{"apiversion":"v1","method":"findOne","params":{"siteid":"default"},"data":{"id":"a1","title":"Home"}}' },
+    { opts: { useDataNamespace: false }, body: FLAT_BODY },
+  ])('keeps insertion order by default and for keyOrder insertion with $opts', ({ opts, body }) => {
+    expect(serializeResponse(envelope(), opts).body).toBe(body);
+    expect(serializeResponse(envelope(), { ...opts, keyOrder: 'insertion' }).body).toBe(body);
+  });
+});
+
 describe('serializeSaveResult', () => {
   it.each<{ label: string; data: unknown; status: number }>([
     { label: 'a non-empty errors struct', data: { id: 'a1', errors: { username: 'Required' } }, status: 403 },

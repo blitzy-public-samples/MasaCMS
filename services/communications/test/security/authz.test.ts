@@ -52,6 +52,7 @@ import {
   createFakeTaskPort,
   createRecordingDb,
   headersFor,
+  removeTestStateDir,
   testEnv,
   type TestApp,
 } from '../helpers/app.js';
@@ -725,9 +726,12 @@ describe('deny by default at start-up', () => {
     ['declares the service transport on a task path', '/internal/v1/tasks/y', { transport: 'service', requires: [SENDER] }],
   ])('fails start-up of the buildApp instance when a route %s', async (_label, url, opt2) => {
     let app: FastifyInstance | undefined;
+    let stateDir: string | undefined;
     try {
+      const env = await testEnv();
+      stateDir = env.OPT2_STATE_DIR;
       const built = await buildApp({
-        env: await testEnv(),
+        env,
         clock: TEST_CLOCK,
         verifierOverride: testVerifier(),
         db: createRecordingDb({}, { clock: TEST_CLOCK }),
@@ -745,6 +749,7 @@ describe('deny by default at start-up', () => {
       await expect(startUp).rejects.toBeInstanceOf(UndeclaredRouteError);
     } finally {
       await app?.close().catch(() => undefined);
+      if (stateDir !== undefined) removeTestStateDir(stateDir);
     }
   });
 });

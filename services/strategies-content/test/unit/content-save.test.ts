@@ -155,10 +155,26 @@ describe.skipIf(!(await pgAvailable()))('domain/content saves', () => {
     expect(duplicate.errors).toEqual({ titleconflict: "The 'Title' that you entered is already in use." });
   });
 
-  it('refuses an import of an unknown remote item whose posted date matches the empty one', async () => {
-    const refused = await save({ parentid: HOME, type: 'Page', title: 'Imported', mode: 'import', remoteid: 'R-1', remotepubdate: '' });
+  it.each(['import', 'IMPORT', 'Import'])('refuses an import (mode=%s) of an unknown remote item whose posted date matches the empty one', async (mode) => {
+    const refused = await save({ parentid: HOME, type: 'Page', title: 'Imported', mode, remoteid: 'R-1', remotepubdate: '' });
     expect(refused.refused).toBe(true);
     expect(await content('title = $1', ['Imported'])).toHaveLength(0);
+  });
+
+  it.each([
+    ['import', 'R-2'],
+    ['IMPORT', 'R-3'],
+    ['Import', 'R-4'],
+  ])('saves an import (mode=%s) of stored remote item %s as its next version', async (mode, remoteid) => {
+    const stored = await save({ parentid: HOME, type: 'Page', title: `Remote ${remoteid}`, approved: 1, remoteid });
+    const imported = await save({ parentid: HOME, type: 'Page', title: `Reimported ${remoteid}`, approved: 1, mode, remoteid, remotepubdate: '' });
+    expect(imported).toMatchObject({ errors: {}, refused: false });
+    expect(imported.bean.contentId()).toBe(stored.bean.contentId());
+    expect((await fx.rows('source_map', 'contenthistid = $1', [imported.bean.contentHistId()]))[0]).toMatchObject({ sourceid: stored.bean.contentHistId() });
+    expect((await content('remoteid = $1', [remoteid])).map((r) => [r.contentid, r.title, r.active])).toEqual([
+      [stored.bean.contentId(), `Remote ${remoteid}`, 0],
+      [stored.bean.contentId(), `Reimported ${remoteid}`, 1],
+    ]);
   });
 
   it('writes tags, region objects, related content and category assignments, and carries them to later versions', async () => {

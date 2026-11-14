@@ -27,6 +27,7 @@ import type { DataOwner, LegacyTableTarget, OwnersClient, UnitCatalog } from '..
 import {
   buildReport,
   createTenantResolver,
+  createUnitRowFilter,
   describeUnitTable,
   readLegacyUnitRows,
   readTargetUnitRows,
@@ -56,6 +57,7 @@ vi.mock('../../src/snapshot/index.js', async (importOriginal) => ({
 vi.mock('../../src/reconcile/index.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/reconcile/index.js')>()),
   createTenantResolver: vi.fn(),
+  createUnitRowFilter: vi.fn(),
   describeUnitTable: vi.fn(),
   readLegacyUnitRows: vi.fn(),
   readTargetUnitRows: vi.fn(),
@@ -518,6 +520,10 @@ function installFakes(): void {
     return Promise.resolve(ready[0] ?? null);
   });
   vi.mocked(createTenantResolver).mockImplementation(() => Promise.resolve(resolver));
+  vi.mocked(createUnitRowFilter).mockImplementation((_deps, options) => {
+    const { rowPredicate } = targetOf(options.unit, options.legacyTable);
+    return Promise.resolve({ prepare: () => Promise.resolve(), accepts: (row) => Promise.resolve(takes(rowPredicate, row as Row)) });
+  });
   vi.mocked(describeUnitTable).mockImplementation((_deps, options) => {
     const target = targetOf(options.unit, options.legacyTable);
     const { spec } = tableIn(options.database, options.legacyTable);
@@ -705,6 +711,41 @@ describe('runFeed', () => {
     expect(watermarkOf('people', 'tusers')).toEqual(forward('tusers', 1));
     expect(result.tables[0]?.owners[1]).toMatchObject({ owner: 'people', inserts: 3, batches: 2 });
     expect(info).toHaveBeenCalledWith('feed to snapshot 1: tusers: identity not-writable, people +3 ~0 -0 in 2 batches');
+  });
+
+  it("prepares acceptance for each chunk of batchRows changes with that chunk's rows on their sides before judging any of them", async () => {
+    const events: [string, string, (string | null)[] | string | null][] = [];
+    vi.mocked(createUnitRowFilter).mockImplementation((_deps, options) => {
+      const { rowPredicate } = targetOf(options.unit, options.legacyTable);
+      const log = options.unit === 'people.person' ? events : [];
+      return Promise.resolve({
+        prepare: (rows) => {
+          log.push(['prepare', options.database, rows.map((row) => valueOf(row as Row, 'UserID'))]);
+          return Promise.resolve();
+        },
+        accepts: (row) => {
+          log.push(['accepts', options.database, valueOf(row as Row, 'UserID')]);
+          return Promise.resolve(takes(rowPredicate, row as Row));
+        },
+      });
+    });
+    seed(
+      { tusers: [user('U1', 'tenant-a', '2')] },
+      { tusers: [user('U1', 'tenant-a', '2', { Fname: 'Renamed' }), user('U2', 'tenant-a', '2'), user('U3', 'tenant-b', '2')] },
+    );
+
+    const result = await runFeed(contextFor());
+
+    expect(events).toEqual([
+      ['prepare', 'snap_0', ['U1']],
+      ['prepare', 'snap_1', ['U1', 'U2']],
+      ['accepts', 'snap_0', 'U1'],
+      ['accepts', 'snap_1', 'U1'],
+      ['accepts', 'snap_1', 'U2'],
+      ['prepare', 'snap_1', ['U3']],
+      ['accepts', 'snap_1', 'U3'],
+    ]);
+    expect(result.tables[0]?.owners[1]).toMatchObject({ owner: 'people', status: 'applied', updates: 1, inserts: 2 });
   });
 
   it('raises FeedBaselineMissingError for an owner without a forward watermark before any snapshot is taken', async () => {

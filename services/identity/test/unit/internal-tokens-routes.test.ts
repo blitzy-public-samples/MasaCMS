@@ -197,15 +197,18 @@ beforeAll(async () => {
     await repo.insertAccount(tx, { userid: USER, username: 'ghost-user', type: 2, s2: 0, perm: 0, inactive: 0, ispublic: 0, siteid: GHOST, remoteid: '', tablist: '' });
     await repo.writeCredential(tx, USER, { password: stored, passwordcreated: new Date(2026, 5, 1, 9, 15, 0) });
     await repo.upsertPersonContact(tx, { user_id: USER, site_id: GHOST, subtype: 'Default', aggregate_version: 1, fname: 'Ghost', lname: 'User', email: 'ghost@example.test', company: '' });
-    await repo.insertOAuthClient(tx, {
-      clientid: CLIENT, clientsecret: CLIENT_SECRET, siteid: 'default', granttype: 'client_credentials', userid: USER, name: 'cc', created: NOW,
-      lastupdate: NOW, description: null, redirecturl: null, lastupdatebidy: null, lastupdateby: null,
-    });
     await repo.insertToken(tx, {
       token: ACCESS_TOKEN, granttype: 'client_credentials', clientid: CLIENT, userid: USER, accesscode: null, data: null,
       expires: new Date(NOW.getTime() + 3_600_000),
     });
   });
+  // The token endpoint finds a client only in the requested site's tenant.
+  await withGatedTenant(db, tenantIdForSite(GHOST), (tx) =>
+    repo.insertOAuthClient(tx, {
+      clientid: CLIENT, clientsecret: CLIENT_SECRET, siteid: GHOST, granttype: 'client_credentials', userid: USER, name: 'cc', created: NOW,
+      lastupdate: NOW, description: null, redirecturl: null, lastupdatebidy: null, lastupdateby: null,
+    }),
+  );
   await applyLogin({ db, repo, clock: CLOCK }, { sessionId: 'S-S2', snapshot: S2_SNAPSHOT, mode: 'target-primary', siteId: 'default' });
   online = await buildApp(db, repo, '');
 });

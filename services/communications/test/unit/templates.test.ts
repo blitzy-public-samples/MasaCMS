@@ -240,6 +240,20 @@ describe('template store', () => {
       expect(ctx.db.rows('changelog').map((row) => row.actor_user_id)).toStrictEqual([USER_ID, USER_ID]);
     });
 
+    it.each<[unknown, string]>([
+      [true, 'YES'],
+      [false, 'NO'],
+      [15, '15'],
+    ])('stores a JSON %j name as CFML toString text %s, as the fixture does', async (name, text) => {
+      const payload = { name, subject: 's', bodyText: 'b' };
+      const fixture = await post(FIXTURE_TEMPLATES, payload);
+      const v1 = await post(V1_TEMPLATES, payload);
+
+      expect([fixture.statusCode, v1.statusCode]).toStrictEqual([200, 200]);
+      expect([dataOf(fixture.json()).name, dataOf(v1.json()).name]).toStrictEqual([text, text]);
+      expect(ctx.db.rows('message_template').map((row) => row.name)).toStrictEqual([text, text]);
+    });
+
     it('lists the same page as the fixture list, answering {data}', async () => {
       await post(V1_TEMPLATES, VALID);
       await post(V1_TEMPLATES, { ...VALID, name: 'Other tenant' }, TENANT_B);
@@ -308,6 +322,22 @@ describe('template store', () => {
 
       const page = await db.withTenant(TENANT_A.tenantId, (tx) => listTemplates(tx, { siteId: TENANT_A.siteId }));
       expect(page).toStrictEqual({ list: [row], pageIndex: 1, itemsPerPage: 50, totalItems: 1 });
+    });
+
+    it.each<[unknown, string]>([
+      [true, 'YES'],
+      [false, 'NO'],
+      [1e20, '1E+020'],
+      [1.5, '1.5'],
+    ])('stores a typed %j name as CFML toString text %s', async (name, text) => {
+      const db = createRecordingDb({}, { clock });
+      db.setGate(MESSAGE_TEMPLATE.unit, 'open');
+      const deps = { repository: createCommunicationsRepository({ clock }), clock };
+      const input: TemplateInput = { name, subject: 'Hello', bodyText: 'Hi' };
+
+      const row = await db.withTenant(TENANT_A.tenantId, (tx) => createTemplate(tx, deps, { siteId: TENANT_A.siteId, userId: USER_ID, input }));
+
+      expect(row.name).toBe(text);
     });
   });
 });

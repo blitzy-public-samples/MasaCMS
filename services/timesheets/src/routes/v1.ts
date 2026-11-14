@@ -2,12 +2,21 @@
 /** `/v1/timesheets` routes of the OPT-2 timesheets screens and the sheet-status read, answered as plain JSON. */
 import { Readable } from 'node:stream';
 import { AuthDenial, Roles, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
-import { LEGACY_ERROR_MAP, LegacyApiError, buildEnvelope, cfDateTimeFormat, errorSpec, type LegacyErrorSpec } from '@opt2/platform/legacy-compat';
+import {
+  LEGACY_ERROR_MAP,
+  LegacyApiError,
+  buildEnvelope,
+  cfDateTimeFormat,
+  errorSpec,
+  serializeResponse,
+  type LegacyErrorSpec,
+} from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import {
   csrfPreHandler,
   recordOutcomeReason,
+  sendLegacyResponse,
   type Clock,
   type FastifyPluginAsync,
   type FastifyReply,
@@ -138,12 +147,12 @@ function methodOf(request: FastifyRequest): string {
 }
 
 /**
- * Sends the v1 error body of `spec` at its status: the legacy error envelope of `method`, `code` before `message`.
+ * Sends the v1 error body of `spec` at its status with the legacy content type and ETag: the error envelope of `method`, `code` before `message`.
  * @param reason The fixed outcome reason recorded for the request's log lines, never request input.
  */
 function sendError(reply: FastifyReply, method: string, { status, code, message }: LegacyErrorSpec, reason: string): FastifyReply {
   recordOutcomeReason(reply.request, reason);
-  return reply.code(status).send(buildEnvelope({ method, error: { code, message } }));
+  return sendLegacyResponse(reply, serializeResponse(buildEnvelope({ method, error: { code, message } }), { statusCode: status }));
 }
 
 /** Whether `error` is Fastify's schema validation failure of the request, which Fastify types with its string `code`. */
@@ -301,7 +310,7 @@ export const timesheetsV1Plugin: FastifyPluginAsync<V1RouteDeps> = async (app, {
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof TransitionRejectedError) {
       recordOutcomeReason(request, fixtureOutcomeReason(error));
-      return reply.code(error.statusCode).send(error.toEnvelope({ method: methodOf(request) }));
+      return sendLegacyResponse(reply, serializeResponse(error.toEnvelope({ method: methodOf(request) }), { statusCode: error.statusCode }));
     }
     if (error instanceof AuthDenial) {
       if (error.wwwAuthenticate !== undefined) reply.header('WWW-Authenticate', error.wwwAuthenticate);

@@ -442,6 +442,16 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
     expect((await storedDay(dayId)).actions.map(({ comment }) => comment)).toEqual([null]);
   });
 
+  it.each<[unknown, string]>([
+    [true, 'YES'],
+    [false, 'NO'],
+    [15, '15'],
+  ])('stores a JSON %j comment as CFML toString text %s', async (comment, text) => {
+    const dayId = await seedTenantBDay('DRAFT');
+    expect((await act(dayId, 'submit', EMPLOYEE, { comment })).statusCode).toBe(200);
+    expect((await storedDay(dayId)).actions.map((action) => action.comment)).toEqual([text]);
+  });
+
   it.each<[string, (dayId: string) => Promise<Injected>, number, string, string]>([
     ['path: an unknown action', (id) => act(id, 'approve', EMPLOYEE), 404, 'timesheets.days.approve', 'Not Found'],
     ['csrf: a write without a token', (id) => act(id, 'submit', EMPLOYEE, undefined, false), 400, 'timesheets.days.submit', 'Invalid CSRF tokens'],

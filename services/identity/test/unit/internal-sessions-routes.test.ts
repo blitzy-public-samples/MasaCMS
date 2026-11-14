@@ -170,6 +170,12 @@ function nextSessionId(): string {
   return `masacms_1000_${String(sessionSeq).padStart(8, '0')}`;
 }
 
+/** A fresh session id in ACF's `<appname>_<CFID>_<CFTOKEN>` form, assembled from low-entropy parts. */
+function nextCfSessionId(): string {
+  sessionSeq += 1;
+  return `MURA${'C'.repeat(64)}_${String(sessionSeq).padStart(4, '0')}_${'b'.repeat(16)}-D0000000-0000-0000-0000000000000001`;
+}
+
 describe('route declarations', () => {
   it('match the contract operations', () => {
     const declared = collectRouteMatrix(app).routes.filter((route) => route.url.startsWith('/internal/v1/sessions'));
@@ -354,5 +360,30 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
     await withTenant(db, SYSTEM_TENANT_ID, (tx) => repo.mergeSessionAdminState(tx, sid, { siteid: 'tenant-b' }));
 
     expect((await gateway('admin-site', sid)).json()).toEqual({ siteId: '' });
+  });
+
+  it.each<['state' | 'admin-site' | 'snapshot' | 'end', (sid: string) => unknown]>([
+    ['state', () => ({ state: 'active', epoch: 1, userId: USER, siteId: SITE })],
+    ['admin-site', () => ({ siteId: '' })],
+    [
+      'snapshot',
+      (sid) => ({
+        sessionId: sid,
+        epoch: 1,
+        loginSnapshot: { user: userStructOf(LOGIN_SNAPSHOT), roles: ROLES },
+        csrfSecretKey: LEGACY_SECRET,
+        usedTokens: [],
+      }),
+    ],
+    ['end', () => ({ ended: true, epoch: 2 })],
+  ])('serves %s of an adopted session keyed by a 126-character ColdFusion session id', async (op, expected) => {
+    const sid = nextCfSessionId();
+    expect(sid).toHaveLength(126);
+    await send('POST', ADOPT, await headersFor('gateway'), adoptBody(sid, LEGACY_USER, { roles: ROLES }));
+
+    const res = await gateway(op, sid);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(expected(sid));
   });
 });

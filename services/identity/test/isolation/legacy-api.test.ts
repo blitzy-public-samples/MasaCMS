@@ -858,6 +858,19 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
     expect(unknown.statusCode).toBe(401);
   });
 
+  it.each([
+    ['nested', '', '{"apiversion":"v1","data":{"csrf_token":"<t>","csrf_token_expires":"<e>"},"method":"generateCSRFTokens"}'],
+    ['flattened', '&useDataNamespace=false', '{"apiversion":"v1","csrf_token":"<t>","method":"generateCSRFTokens","csrf_token_expires":"<e>"}'],
+  ])('answers generateCSRFTokens %s in the key order of the legacy body bytes', async (_label, query, shape) => {
+    const caller = await inSession(SITE_EDITOR, SITE, `Editor;${SITE};0`);
+    const expected = issueTokens({ csrfSecret: SECRET }, { context: 'x', clock: CLOCK });
+
+    const res = await send(app, 'GET', `${API}/generateCSRFTokens?context=x${query}`, await headersFor(caller));
+
+    expect(res.body).toBe(shape.replace('<t>', expected.token).replace('<e>', expected.expires));
+    expect(res.headers.etag).toBe(etag(res.body));
+  });
+
   it("adds the session's login-time memberships, membership ids and login flag to people's current user", async () => {
     const caller = await inSession(USERS_EDITOR, SITE, `Admin;${SITE};0,S2IsPrivate;${SITE}`, `${ADMIN_GROUP},${USERS_EDITOR.sub}`);
     people.calls.length = 0;

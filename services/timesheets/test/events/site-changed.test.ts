@@ -22,7 +22,8 @@ import {
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
-import { buildTestApp, createTimesheetsSchema, describeWithPg, type TestApp } from '../helpers/app.js';
+import { buildTestApp, createTimesheetsSchema, type TestApp } from '../helpers/app.js';
+import { describeWithPg } from '../helpers/pg.js';
 
 type RegistryRow = {
   site_id: string;

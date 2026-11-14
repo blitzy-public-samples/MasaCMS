@@ -22,7 +22,7 @@ import {
   type StatsRow,
 } from '../repo/content-queries.js';
 import type { ContentRepository } from '../repo/repository.js';
-import type { FileRow } from '../repo/tables.js';
+import type { ChangesetRow, FileRow } from '../repo/tables.js';
 import { writeContextFor, type Actor, type DomainDeps } from './context.js';
 import { getNodePerm, loadMemberships, sitePools, type NodeVerdict, type UserMemberships } from './permissions.js';
 import { withPoolTenant } from './pools.js';
@@ -293,12 +293,16 @@ export interface HistoryModel extends VersionScreenModel {
   items: HistRow[];
   /** The getHist row count. */
   historyTotal: number;
+  /** Each item's `getParentID()`, which the nav bean reads from the version, keyed by its contenthistid. */
+  parents: Map<string, string | null>;
 }
 
 /** carch.audit [carch.cfc:464-469] and audit.cfm: the screen data and the versions the audit trail lists. */
 export interface AuditModel extends VersionScreenModel {
   /** The version `contenthistid`, then each `getSource()` while one is found. */
   trail: ContentVersionRow[];
+  /** audit.cfm's `changesetBean.loadBy(changesetID)` of each trail version in a change set, keyed by that id; unknown ids are absent. */
+  changesets: Map<string, ChangesetRow>;
 }
 
 /** The screen reads shared by the history and audit screens, in one tenant transaction. */
@@ -352,17 +356,31 @@ export async function getHistory(deps: DomainDeps, actor: Actor, item: ItemRef):
   const model = await withTenant(deps.db, actor.tenantId, async (tx) => {
     const screen = await screenReads(tx, deps.repository, item);
     const page = await deps.repository.content.historyPage(tx, 'hist', beanItem(screen.contentBean), { limit: HISTORY_MAX_PAGE });
-    return { ...screen, items: page.rows, historyTotal: page.total };
+    const parents = await deps.repository.content.versionParents(tx, { contentHistIds: page.rows.map((row) => row.contenthistid ?? '') });
+    return { ...screen, items: page.rows, historyTotal: page.total, parents };
   });
   return finishScreen(deps, actor, model);
 }
 
-/** The carch.audit screen: the item's screen data and the audit trail of `contentHistId`. */
+/** The change sets of the trail versions that name one, keyed by the version's `changesetid`. */
+async function trailChangesets(tx: TenantTx, repo: ContentRepository, trail: readonly ContentVersionRow[]): Promise<Map<string, ChangesetRow>> {
+  const found = new Map<string, ChangesetRow>();
+  for (const changesetId of new Set(trail.map((version) => version.changesetid ?? '').filter((id) => id !== ''))) {
+    const row = await repo.changesets.findChangeset(tx, { changesetId });
+    if (row !== null) {
+      found.set(changesetId, row);
+    }
+  }
+  return found;
+}
+
+/** The carch.audit screen: the item's screen data, the audit trail of `contentHistId` and the trail's change sets. */
 export async function getAudit(deps: DomainDeps, actor: Actor, args: ItemRef & { contentHistId: string }): Promise<AuditModel> {
-  const model = await withTenant(deps.db, actor.tenantId, async (tx) => ({
-    ...(await screenReads(tx, deps.repository, args)),
-    trail: await versionTrail(tx, deps.repository, args.contentHistId),
-  }));
+  const model = await withTenant(deps.db, actor.tenantId, async (tx) => {
+    const screen = await screenReads(tx, deps.repository, args);
+    const trail = await versionTrail(tx, deps.repository, args.contentHistId);
+    return { ...screen, trail, changesets: await trailChangesets(tx, deps.repository, trail) };
+  });
   return finishScreen(deps, actor, model);
 }
 
@@ -411,14 +429,19 @@ export interface TreePage<R> {
   recordCount: number;
 }
 
-/** The rows `window` selects from `rows`. */
-function windowOf<R>(rows: R[], window: RowWindow): TreePage<R> {
+/** The 0-based first row of `window` and its row cap, negative for every row. */
+function windowBounds(window: RowWindow): { from: number; maxRows: number } {
   const startRow = window.startRow ?? 1;
   const maxRows = window.maxRows ?? -1;
   if (!Number.isInteger(startRow) || startRow < 1 || !Number.isInteger(maxRows)) {
     throw new RangeError('startRow must be a positive integer and maxRows an integer');
   }
-  const from = startRow - 1;
+  return { from: startRow - 1, maxRows };
+}
+
+/** The rows `window` selects from `rows`. */
+function windowOf<R>(rows: R[], window: RowWindow): TreePage<R> {
+  const { from, maxRows } = windowBounds(window);
   return { rows: maxRows < 0 ? rows.slice(from) : rows.slice(from, from + maxRows), recordCount: rows.length };
 }
 
@@ -446,17 +469,20 @@ export interface NestArgs extends RowWindow {
   sortDirection?: string;
 }
 
-/** contentManager.getNest [contentManager.cfc:246-256]: the active children of `parentId` for the Site Manager tree. */
+/** contentManager.getNest [contentManager.cfc:246-256]: the active children of `parentId` for the Site Manager tree, windowed in SQL. */
 export async function getNest(deps: DomainDeps, actor: Actor, args: NestArgs): Promise<TreePage<NestRow>> {
-  const rows = await withTenant(deps.db, actor.tenantId, (tx) =>
-    deps.repository.content.nest(tx, {
-      parentId: args.parentId,
-      siteId: args.siteId,
-      sortBy: args.sortBy ?? 'orderno',
-      sortDirection: args.sortDirection ?? 'asc',
-    }),
-  );
-  return windowOf(await withPooledFiles(deps, actor, rows), args);
+  const { from, maxRows } = windowBounds(args);
+  const query = { parentId: args.parentId, siteId: args.siteId, sortBy: args.sortBy ?? 'orderno', sortDirection: args.sortDirection ?? 'asc' };
+  // A bound past Number.MAX_SAFE_INTEGER selects the rows that bound does, and would not bind as a bigint.
+  const offset = Math.min(from, Number.MAX_SAFE_INTEGER);
+  const limit = maxRows < 0 ? undefined : Math.min(maxRows, Number.MAX_SAFE_INTEGER);
+  const page = await withTenant(deps.db, actor.tenantId, async (tx) => {
+    const rows = await deps.repository.content.nest(tx, { ...query, offset, limit });
+    // A page short of its cap ends the query, unless it is empty after row one.
+    const ended = (limit === undefined || rows.length < limit) && (rows.length > 0 || from === 0);
+    return { rows, recordCount: ended ? from + rows.length : await deps.repository.content.nestCount(tx, query) };
+  });
+  return { rows: await withPooledFiles(deps, actor, page.rows), recordCount: page.recordCount };
 }
 
 /** contentManager.getPageCount [contentManager.cfc:806-813]: `rsPageCount.counter`, the site's active pages, folders, files, calendars and galleries. */

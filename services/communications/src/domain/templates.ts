@@ -1,6 +1,6 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Template store as the fixture `communications.cfc` answers it: create with the fixture's checks, and the paged site list. */
-import { LegacyApiError, javaTrim } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, cfNumberString, javaTrim } from '@opt2/platform/legacy-compat';
 import type { WriteContext } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { fixturePage, type FixtureListResult } from '../legacy/fixture-envelope.js';
@@ -45,13 +45,20 @@ export function param(params: Readonly<Record<string, unknown>>, name: string): 
   return key === undefined ? undefined : params[key];
 }
 
-/** The fixture's textParam(): '' when absent or null, a simple value as text; objects and arrays answer `invalidParameters`. */
+/** CFML toString of a simple value: strings as is, booleans YES/NO, numbers as ACF prints them. */
+export function simpleText(value: string | number | boolean): string {
+  if (typeof value === 'number') return cfNumberString(value);
+  if (typeof value === 'boolean') return value ? 'YES' : 'NO';
+  return value;
+}
+
+/** The fixture's textParam(): '' when absent or null, a simple value as CFML toString text; objects and arrays answer `invalidParameters`. */
 export function textParam(params: Readonly<Record<string, unknown>>, name: string): string {
   const value = param(params, name) ?? '';
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
     throw new LegacyApiError('invalidParameters');
   }
-  return String(value);
+  return simpleText(value);
 }
 
 /** Stores a template of `siteId` (the token's `site`) after the fixture's checks; returns the row or throws `invalidParameters`. */

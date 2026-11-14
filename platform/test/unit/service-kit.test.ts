@@ -1,4 +1,5 @@
 // The clock suite, plus the service-kit cases that the env, context and create-service suites do not already cover.
+import { maxHeaderSize } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -223,7 +224,8 @@ describe('createService', () => {
     expect(completed[0]?.latencyMs).toEqual(expect.any(Number));
   });
 
-  const LONG_ID = 'A'.repeat(600);
+  // One character past the router's parameter cap, the HTTP parser's header limit.
+  const LONG_ID = 'A'.repeat(maxHeaderSize + 1);
   const MASA_HEADERS = { generator: 'Masa CMS 7.6.1', 'strict-transport-security': 'max-age=1200' };
   const NO_MASA_HEADERS = { generator: undefined, 'strict-transport-security': undefined };
   type ConstraintStrategy = Parameters<FastifyInstance['addConstraintStrategy']>[0];

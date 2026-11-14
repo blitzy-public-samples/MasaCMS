@@ -8,7 +8,7 @@ import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, type InjectResponse }
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/context.js';
 import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
-import { registerChainRoutes } from '../../src/routes/v1/cchain.js';
+import { CCHAIN_PENDING_PREVIEW_EXCEPTION, CCHAIN_SITE_SETTINGS_REASON, registerChainRoutes } from '../../src/routes/v1/cchain.js';
 import { TEST_CLOCK, buildContentApp, serviceHeaders, userHeaders, type ContentTestApp } from '../helpers/app.js';
 
 type Json = Record<string, unknown>;
@@ -27,6 +27,15 @@ const GROUP_2 = 'A1B2C3D4-0002-4A5B-8C7D9E0F1A2B3C4D';
 const REQUEST_ID = 'B9B8C7D6-0001-4A5B-8C7D9E0F1A2B3C4D';
 const HIST_ID = 'C9B8C7D6-0001-4A5B-8C7D9E0F1A2B3C4D';
 const CONTENT_ID = 'D9B8C7D6-0001-4A5B-8C7D9E0F1A2B3C4D';
+const CHANGESET = 'E9B8C7D6-0001-4A5B-8C7D9E0F1A2B3C4D';
+const COMPONENTS = '00000000000000000000000000000000003';
+const FORMS = '00000000000000000000000000000000004';
+const ROOT_PARENT = '00000000000000000000000000000000END';
+const REQUESTS = /FROM "content"\."approval_request" WHERE/i;
+const VERSIONS = /tapprovalrequests\.status AS approvalstatus/i;
+const CHANGESETS = /FROM "content"\."changeset" WHERE/i;
+const CRUMBS = /tapprovalassignments\.chainid/i;
+const SUBTYPES = /FROM "content"\."extend_subtype"/i;
 const CHAINS_URL = `/v1/sites/${SITE_A}/approval-chains`;
 const CHAIN_URL = `${CHAINS_URL}/${CHAIN}`;
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' } as const;
@@ -37,6 +46,8 @@ const ADMIN_ROLES: readonly Role[] = [Roles.systemUser, Roles.siteAdmin];
 let t: ContentTestApp;
 let csrfValid = true;
 const consumed: CsrfConsumeRequest[] = [];
+/** The errors the routes raised, as the error handler receives them. */
+const routeErrors: Error[] = [];
 
 function adminHeaders(roles: readonly Role[] = ADMIN_ROLES, site = SITE_A, s2?: boolean): Promise<Record<string, string>> {
   return userHeaders({ sub: USER_ID, site, roles, ...(s2 === undefined ? {} : { s2 }) });
@@ -67,6 +78,80 @@ function groupRow(groupId: string, name: string): Json {
   return { tenant_id: TENANT_A.tenantId, group_id: groupId, group_name: name, site_id: SITE_A, is_public: 0, deleted: false };
 }
 
+/** A pending `content.approval_request` row of the chain, created at `hour` on the business date. */
+function requestRow(requestid: string, groupid: string, contenthistid: string, hour: number): Json {
+  return { tenant_id: TENANT_A.tenantId, requestid, contenthistid, chainid: CHAIN, siteid: SITE_A, userid: USER_ID, groupid, status: 'Pending', created: new Date(2026, 5, 30, hour, 0, 0, 0) };
+}
+
+/** A version as the contentDAO read returns it. */
+function versionRow(contenthistid: string, contentid: string, type: string, extra: Json = {}): Json {
+  return {
+    contentid,
+    contenthistid,
+    siteid: SITE_A,
+    moduleid: '00000000000000000000000000000000000',
+    parentid: '00000000000000000000000000000000001',
+    title: 'T',
+    menutitle: 'M',
+    type,
+    subtype: 'Default',
+    filename: null,
+    fileid: null,
+    changesetid: null,
+    summary: null,
+    lastupdate: null,
+    lastupdateby: 'Admin User',
+    lastupdatebyid: USER_ID,
+    path: null,
+    ...extra,
+  };
+}
+
+/** A `buildCrumblist` row, every column NULL unless given; `path` only orders the read. */
+function crumbRow(contentid: string, type: string, extra: Json = {}): Json {
+  const nulls = Object.fromEntries(
+    'title,menutitle,urltitle,filename,parentid,target,targetparams,restricted,restrictgroups,template,childtemplate,inheritobjects,metadesc,metakeywords,sortby,sortdirection,moduleid,fileext,chainid,exemptid,path'
+      .split(',')
+      .map((column) => [column, null]),
+  );
+  return { ...nulls, contenthistid: `CH-${contentid}`, contentid, type, subtype: 'Default', siteid: SITE_A, ...extra };
+}
+
+/** One `crumbArray` entry as the route answers it: every crumb key, NULL as '', with its icon. */
+function wireCrumb(contentid: string, type: string, extra: Json): Json {
+  const empty = Object.fromEntries(
+    'filename,title,menutitle,urltitle,target,parentid,restricted,restrictgroups,template,targetprams,metadesc,metakeywords,sortby,sortdirection,inheritobjects,fileext,chainid,exemptid,moduleid'
+      .split(',')
+      .map((key) => [key, '']),
+  );
+  return { ...empty, type, subtype: 'Default', contentid, siteid: SITE_A, contenthistid: `CH-${contentid}`, ...extra };
+}
+
+/** The crumb rows the content tree holds: the component and form modules and their nodes. */
+const CRUMB_ROWS: readonly Json[] = [
+  crumbRow(CONTENT_ID, 'Component', { title: 'Footer', menutitle: 'Footer', moduleid: COMPONENTS, parentid: COMPONENTS, restricted: 0, path: `${COMPONENTS},${CONTENT_ID}` }),
+  crumbRow(COMPONENTS, 'Module', { title: 'Components', menutitle: 'Components', moduleid: COMPONENTS, parentid: ROOT_PARENT, path: COMPONENTS }),
+  crumbRow(FORMS, 'Folder', { subtype: 'Forms', title: 'Forms', menutitle: 'Forms', parentid: ROOT_PARENT, restricted: 1, path: FORMS }),
+  crumbRow('FORM-1', 'Form', { title: 'Contact', moduleid: FORMS, parentid: FORMS, path: `${FORMS},FORM-1` }),
+  crumbRow('FORM-2', 'Form', { title: 'Survey', menutitle: '', moduleid: FORMS, parentid: FORMS }),
+];
+
+/** The id forms an `= ANY(…::bpchar[])` statement binds last. */
+function lastArray(params: readonly unknown[]): string[] {
+  return (params.filter(Array.isArray).at(-1) ?? []) as string[];
+}
+
+/** Answers the chain, its memberships and groups, and the requests, versions and crumbs the binds select, deepest crumb first. */
+function seedPending(memberships: readonly Json[], requests: readonly Json[], versions: readonly Json[]): void {
+  t.db.respond(/FROM "content"\."approval_chain"/i, [chainRow()]);
+  t.db.respond(/FROM "content"\."approval_membership"/i, memberships);
+  t.db.respond(/FROM "content"\."group_projection"/i, [groupRow(GROUP_1, 'Admin'), groupRow(GROUP_2, 'Editors')]);
+  t.db.respond(REQUESTS, (params) => requests.filter((row) => lastArray(params).includes(String(row.groupid))));
+  t.db.respond(VERSIONS, (params) => versions.filter((row) => lastArray(params).includes(String(row.contenthistid))));
+  const depth = (row: Json): number => (typeof row.path === 'string' ? row.path.length : -1);
+  t.db.respond(CRUMBS, (params) => CRUMB_ROWS.filter((row) => lastArray(params).includes(String(row.contentid))).sort((a, b) => depth(b) - depth(a)));
+}
+
 /** Sends a request and holds the answer to its contract operation. */
 async function call(method: Method, url: string, headers: Record<string, string>, payload?: string): Promise<InjectResponse> {
   const res = await t.app.inject({ method, url, headers: payload === undefined ? headers : { ...headers, ...FORM }, ...(payload === undefined ? {} : { payload }) });
@@ -89,6 +174,9 @@ beforeAll(async () => {
         clock: TEST_CLOCK,
         actorFor: async (request) => actorFromClaims(request.opt2Auth.user, 'Admin User'),
       } satisfies Pick<ContentRouteContext, 'domain' | 'clock' | 'actorFor'>;
+      app.addHook('onError', async (_request, _reply, error) => {
+        routeErrors.push(error);
+      });
       return registerChainRoutes(app, ctx as ContentRouteContext);
     },
   });
@@ -107,6 +195,7 @@ afterAll(async () => {
 beforeEach(() => {
   t.db.reset();
   consumed.length = 0;
+  routeErrors.length = 0;
   csrfValid = true;
   // PostgreSQL returns every column of an inserted row, the defaulted ones as NULL.
   t.db.respond(/^INSERT INTO "content"\."approval_membership"/i, (p) => [
@@ -209,18 +298,31 @@ describe('screen models', () => {
     expect(rc).toMatchObject({ chain: { chainID: CHAIN, isNew: true, errors: {} }, memberships: [], availableGroups: [] });
   });
 
-  it('cchain.pending answers each member with its pending versions', async () => {
-    t.db.respond(/FROM "content"\."approval_chain"/i, [chainRow()]);
-    t.db.respond(/FROM "content"\."approval_membership"/i, [membershipRow()]);
-    t.db.respond(/FROM "content"\."group_projection"/i, [groupRow(GROUP_1, 'Admin')]);
-    t.db.respond(/FROM "content"\."approval_request"/i, [
-      { tenant_id: TENANT_A.tenantId, requestid: REQUEST_ID, contenthistid: HIST_ID, chainid: CHAIN, siteid: SITE_A, userid: USER_ID, groupid: GROUP_1, status: 'Pending', created: new Date(2026, 5, 30, 8, 0, 0, 0) },
-    ]);
-    t.db.respond(/FROM "content"\."content"/i, [
-      { contentid: CONTENT_ID, contenthistid: HIST_ID, siteid: SITE_A, moduleid: '00000000000000000000000000000000000', parentid: '00000000000000000000000000000000001', title: 'T', menutitle: 'M', type: 'Page', subtype: 'Default', filename: 't', fileid: null, changesetid: null, summary: null, lastupdate: null, lastupdateby: 'Admin User', lastupdatebyid: USER_ID },
-    ]);
-    const { rc } = (await call('GET', `${CHAIN_URL}/pending`, await adminHeaders())).json() as { rc: Json };
+  it('cchain.pending answers each member with its pending versions, change sets and icon-bearing crumbs, without preview URLs', async () => {
+    seedPending(
+      [membershipRow(), { ...membershipRow(), membershipid: 'M2', groupid: GROUP_2, orderno: 2 }],
+      [
+        requestRow(REQUEST_ID, GROUP_1, HIST_ID, 8),
+        // tapprovalrequests.groupid = :groupid compares case-insensitively.
+        requestRow('R2', GROUP_2.toLowerCase(), 'H-FORM-1', 9),
+        requestRow('R3', GROUP_1, 'H-MISSING', 10),
+        requestRow('R4', GROUP_1, 'H-FORM-2', 11),
+      ],
+      [
+        versionRow(HIST_ID, CONTENT_ID, 'Component', { moduleid: COMPONENTS, parentid: COMPONENTS, path: `${COMPONENTS},${CONTENT_ID}`, changesetid: CHANGESET }),
+        versionRow('H-FORM-1', 'FORM-1', 'Form', { moduleid: FORMS, parentid: FORMS, path: `${FORMS},FORM-1` }),
+        versionRow('H-FORM-2', 'FORM-2', 'Form', { moduleid: FORMS, parentid: FORMS, path: null }),
+      ],
+    );
+    t.db.respond(CHANGESETS, (params) => (lastArray(params).includes(CHANGESET) ? [{ tenant_id: TENANT_A.tenantId, changesetid: CHANGESET, name: 'Summer', publishdate: new Date(2026, 6, 15, 9, 0, 0, 0) }] : []));
+    t.db.respond(SUBTYPES, [{ tenant_id: TENANT_A.tenantId, subtypeid: 'S1', siteid: SITE_A, type: 'Folder', subtype: 'Forms', iconclass: 'icon-inbox' }]);
+    const res = await call('GET', `${CHAIN_URL}/pending`, await adminHeaders());
+    expect(res.statusCode, res.body).toBe(200);
+    const { rc } = res.json() as { rc: Json };
     expect(rc.chain).toMatchObject({ chainID: CHAIN, name: 'Chain A', isNew: false });
+    const component = wireCrumb(CONTENT_ID, 'Component', { title: 'Footer', menutitle: 'Footer', moduleid: COMPONENTS, parentid: COMPONENTS, restricted: 0, icon: 'mi-align-justify' });
+    const components = wireCrumb(COMPONENTS, 'Module', { title: 'Components', menutitle: 'Components', moduleid: COMPONENTS, parentid: ROOT_PARENT, icon: 'mi-cog' });
+    const forms = wireCrumb(FORMS, 'Folder', { subtype: 'Forms', title: 'Forms', menutitle: 'Forms', parentid: ROOT_PARENT, restricted: 1, icon: 'mi-inbox' });
     expect(rc.members).toEqual([
       expect.objectContaining({
         groupID: GROUP_1,
@@ -230,17 +332,83 @@ describe('screen models', () => {
             requestID: REQUEST_ID,
             contentHistID: HIST_ID,
             contentID: CONTENT_ID,
-            type: 'Page',
+            type: 'Component',
             created: '2026-06-30T08:00:00.000',
             lastUpdate: '',
             lastUpdateBy: 'Admin User',
+            changesetID: CHANGESET,
+            changesetName: 'Summer',
+            changesetPublishDate: '2026-07-15T09:00:00.000',
+            crumbArray: [{ ...component, parentarray: [CONTENT_ID, COMPONENTS] }, components],
+          }),
+          // The parent walk of a version without a stored path falls back to the title.
+          expect.objectContaining({
+            requestID: 'R4',
+            contentID: 'FORM-2',
             changesetID: '',
             changesetName: '',
             changesetPublishDate: '',
+            crumbArray: [{ ...wireCrumb('FORM-2', 'Form', { title: 'Survey', menutitle: 'Survey', moduleid: FORMS, parentid: FORMS, icon: 'mi-toggle-on' }), parentarray: ['FORM-2', FORMS] }, forms],
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        groupID: GROUP_2,
+        groupName: 'Editors',
+        requests: [
+          // A stored path keeps an empty menu title.
+          expect.objectContaining({
+            requestID: 'R2',
+            contentID: 'FORM-1',
+            crumbArray: [{ ...wireCrumb('FORM-1', 'Form', { title: 'Contact', moduleid: FORMS, parentid: FORMS, icon: 'mi-toggle-on' }), parentarray: ['FORM-1', FORMS] }, forms],
           }),
         ],
       }),
     ]);
+    const rows = (rc.members as Array<{ requests: Json[] }>).flatMap((member) => member.requests);
+    expect(rows.filter((row) => Object.keys(row).some((key) => key.toLowerCase() === 'previewurl'))).toEqual([]);
+    expect(t.db.statements.filter((statement) => SUBTYPES.test(statement.sql)).map((statement) => statement.params)).toEqual([[TENANT_A.tenantId, SITE_A]]);
+  });
+
+  it.each(['Page', 'folder', 'CALENDAR', 'Gallery', 'Link', 'File'])(
+    'cchain.pending holding a %s request answers the legacy-shaped 503 naming its exceptions entry, consuming and writing nothing',
+    async (type) => {
+      seedPending(
+        [membershipRow()],
+        [requestRow(REQUEST_ID, GROUP_1, HIST_ID, 8), requestRow('R2', GROUP_1, 'H-PREVIEW', 9)],
+        [
+          versionRow(HIST_ID, CONTENT_ID, 'Component', { moduleid: COMPONENTS, parentid: COMPONENTS, path: `${COMPONENTS},${CONTENT_ID}` }),
+          versionRow('H-PREVIEW', 'PREVIEW', type, { path: `${COMPONENTS},PREVIEW` }),
+        ],
+      );
+      const res = await call('GET', `${CHAIN_URL}/pending`, await adminHeaders());
+      expect(res.statusCode, res.body).toBe(503);
+      expect(routeErrors).toEqual([expect.objectContaining({ reason: CCHAIN_SITE_SETTINGS_REASON, message: expect.stringContaining(`(${CCHAIN_PENDING_PREVIEW_EXCEPTION})`) })]);
+      expect([CCHAIN_PENDING_PREVIEW_EXCEPTION, CCHAIN_SITE_SETTINGS_REASON]).toEqual(['EX-CCHAIN-PENDING-PREVIEW', 'cchain-site-settings']);
+      expect(consumed).toEqual([]);
+      expect(writes()).toEqual([]);
+      expect(t.db.statements.some((statement) => SUBTYPES.test(statement.sql))).toBe(false);
+    },
+  );
+
+  it('cchain.pending reads requests, versions, change sets and crumbs with as many statements for eight requests as for one', async () => {
+    const countFor = async (n: number): Promise<number> => {
+      t.db.reset();
+      const ids = Array.from({ length: n }, (_, i) => `C${i}`);
+      seedPending(
+        [membershipRow(), { ...membershipRow(), membershipid: 'M2', groupid: GROUP_2, orderno: 2 }],
+        ids.map((id, i) => requestRow(`R${id}`, i % 2 === 0 ? GROUP_1 : GROUP_2, `H${id}`, i)),
+        ids.map((id) => versionRow(`H${id}`, id, 'Component', { moduleid: COMPONENTS, parentid: COMPONENTS, path: `${COMPONENTS},${id}`, changesetid: `CS-${id}` })),
+      );
+      t.db.respond(CHANGESETS, (params) => lastArray(params).map((changesetid) => ({ tenant_id: TENANT_A.tenantId, changesetid, name: changesetid, publishdate: null })));
+      const res = await call('GET', `${CHAIN_URL}/pending`, await adminHeaders());
+      expect(res.statusCode, res.body).toBe(200);
+      const members = (res.json() as { rc: { members: Array<{ requests: Json[] }> } }).rc.members;
+      expect(members.map((member) => member.requests.length)).toEqual([Math.ceil(n / 2), Math.floor(n / 2)]);
+      expect(members.flatMap((member) => member.requests).every((row) => row.changesetName === row.changesetID)).toBe(true);
+      return t.db.statements.length;
+    };
+    expect(await countFor(8)).toBe(await countFor(1));
   });
 
   it('cchain.pending without a chain id answers the new chain and no members', async () => {

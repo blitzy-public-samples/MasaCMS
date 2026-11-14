@@ -2534,6 +2534,7 @@ async function findCurrentUserMethod(call: ApiCall): Promise<SerializedLegacyRes
   return serializeResponse(buildEnvelope({ method, params: paramsWithoutMethod(call.params), data: user }), {
     useDataNamespace: call.params.usedatanamespace,
     serializer: createApiSerializer(numberHints(data)),
+    keyOrder: 'acf',
   });
 }
 
@@ -2584,6 +2585,7 @@ function envelopeAnswer(call: ApiCall, data: unknown): SerializedLegacyResponse 
   return serializeResponse(buildEnvelope({ method: call.method ?? 'undefined', params: paramsWithoutMethod(call.params), data }), {
     useDataNamespace: call.params.usedatanamespace,
     serializer: groupSerializer(),
+    keyOrder: 'acf',
   });
 }
 
@@ -2646,7 +2648,7 @@ async function groupAnswer(call: ApiCall, operation: GroupOperation): Promise<Se
   // The entity route answers 403 when the result carries errors.
   return serializeSaveResult(
     { method: operation, params: call.params, data },
-    { useDataNamespace: call.params.usedatanamespace, serializer: groupSerializer() },
+    { useDataNamespace: call.params.usedatanamespace, serializer: groupSerializer(), keyOrder: 'acf' },
   );
 }
 

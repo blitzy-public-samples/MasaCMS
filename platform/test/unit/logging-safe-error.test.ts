@@ -238,6 +238,15 @@ describe('isSafeErrorText', () => {
     ['gRPC status 4', false],
     ['The operation was aborted due to timeout for Ada', false],
     ['this operation was aborted', false],
+    ['people: invalid environment (PG_PORT, LOG_LEVEL)', true],
+    ['invalid environment (OPT2_SERVICE_URLS)', true],
+    ['people: invalid environment', true],
+    ['people: invalid environment (PG_PORT) for Ada', false],
+    ['people: invalid environment\n  PG_HOST: Ada', false],
+    ['People: invalid environment (PG_PORT)', false],
+    ['people: invalid environment (pg_port)', false],
+    ['people: invalid environment (PG_PORT,LOG_LEVEL)', false],
+    ['people: invalid environment ()', false],
   ])('judges %j as %s', (text, safe) => {
     expect(isSafeErrorText(text)).toBe(safe);
   });

@@ -735,9 +735,6 @@ describe('subjects', () => {
   });
 });
 
-const mismatches: string[] = [];
-let cellsRun = 0;
-
 describe.each(Object.entries(EXPECTED))('%s', (key, row) => {
   const cells = SUBJECTS.map((subject) => {
     const record = RECORDS[subject.name];
@@ -745,15 +742,22 @@ describe.each(Object.entries(EXPECTED))('%s', (key, row) => {
   });
 
   it.each(cells)('$title', async ({ subject }) => {
-    cellsRun += 1;
     const mismatch = await cellMismatch(key, row, subject);
-    if (mismatch !== undefined) mismatches.push(mismatch);
     expect(mismatch).toBeUndefined();
   });
 });
 
 describe('route admission', () => {
-  it('runs every route × subject cell with zero unexpected allows and zero unexpected denies', () => {
+  it('runs every route × subject cell with zero unexpected allows and zero unexpected denies', async () => {
+    const mismatches: string[] = [];
+    let cellsRun = 0;
+    for (const [key, row] of Object.entries(EXPECTED)) {
+      for (const subject of SUBJECTS) {
+        cellsRun += 1;
+        const mismatch = await cellMismatch(key, row, subject);
+        if (mismatch !== undefined) mismatches.push(mismatch);
+      }
+    }
     expect(cellsRun).toBe(Object.keys(EXPECTED).length * SUBJECTS.length);
     expect(mismatches).toEqual([]);
   });

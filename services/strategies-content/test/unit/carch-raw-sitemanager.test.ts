@@ -56,6 +56,7 @@ const TOKEN = { 'x-csrf_token': 'T0KEN', 'x-csrf_token_expires': '26063023595900
 const EDITOR_ROLES = [moduleRole(SITE_MANAGER)];
 const HTML = 'text/html;charset=UTF-8';
 const JSON_UTF8 = 'application/json;charset=utf-8';
+const NEST_COUNT = /^SELECT count\(\*\)::integer AS total FROM \(SELECT 1 FROM "content"\."content" tcontent /;
 
 /** A stored content version of tenant-a, active and approved unless overridden. */
 function version(contentid: string, contenthistid: string, extra: Json = {}): Json {
@@ -114,6 +115,17 @@ function bound(params: readonly unknown[], id: unknown): boolean {
 /** The active versions whose `column` is one of the statement's parameters. */
 const activeBy = (column: string) => (params: readonly unknown[]): Json[] => versions.filter((row) => row.active === 1 && bound(params, row[column]));
 
+/** `rows` within the statement's bound `LIMIT` and `OFFSET`, all of them where it binds neither. */
+function paged(rows: Json[], params: readonly unknown[], sql: string): Json[] {
+  const valueOf = (clause: string): number | undefined => {
+    const at = new RegExp(` ${clause} \\$(\\d+)`).exec(sql)?.[1];
+    return at === undefined ? undefined : Number(params[Number(at) - 1]);
+  };
+  const offset = valueOf('OFFSET') ?? 0;
+  const limit = valueOf('LIMIT');
+  return rows.slice(offset, limit === undefined ? undefined : offset + limit);
+}
+
 /** Answers the content, crumb, tree, stats and subtype reads from `versions` and `stats`. */
 function seedWorld(): void {
   versions = [
@@ -129,9 +141,14 @@ function seedWorld(): void {
   );
   t.db.respond(/tapprovalassignments\.exemptid FROM /, activeBy('contentid'));
   t.db.respond(/ WHERE tcontent\.siteid = \$1 AND tcontent\.active = 1 AND tcontent\.contentid = ANY/, activeBy('contentid'));
-  t.db.respond(/ WHERE tcontent\.siteid = \$1 AND tcontent\.parentid = ANY/, (params) =>
-    activeBy('parentid')(params).map((row) => ({ ...row, haskids: versions.filter((kid) => kid.active === 1 && kid.parentid === row.contentid).length })),
+  t.db.respond(/ WHERE tcontent\.siteid = \$1 AND tcontent\.parentid = ANY/, (params, sql) =>
+    paged(
+      activeBy('parentid')(params).map((row) => ({ ...row, haskids: versions.filter((kid) => kid.active === 1 && kid.parentid === row.contentid).length })),
+      params,
+      sql,
+    ),
   );
+  t.db.respond(NEST_COUNT, (params) => [{ total: activeBy('parentid')(params).length }]);
   t.db.respond(/^SELECT count\(tcontent\.parentid\)::integer AS kids /, (params) => [{ kids: activeBy('parentid')(params).length }]);
   t.db.respond(/FROM "content"\."content_stats" s WHERE /, (params) => stats.filter((row) => bound(params, row.contentid)));
   t.db.respond(/tcontent\.approved = 0 AND tcontent\.changesetid IS NULL ORDER BY /, (params) =>
@@ -517,6 +534,29 @@ describe('loadsitemanager', () => {
     expect(res.body).toContain(KID);
     expect(effectsOf(out)).toEqual({ mura: { flatViewArgs: { [SITE]: { tab: 0 } } } });
     expect(calls.some((call) => call.method === 'POST' && call.path === '/v1/sessions/current/admin-state')).toBe(false);
+  });
+
+  it('reads a later page as a SQL LIMIT/OFFSET window and looks up kids and verdicts of its printed rows alone', async () => {
+    const [second, third, fourth, fifth] = [2, 3, 4, 5].map((n) => `A1000000-001${n}-4A5B-8C7D9E0F1A2B3C4D`) as [string, string, string, string];
+    for (const [i, contentid] of [second, third, fourth, fifth].entries()) {
+      versions.push(version(contentid, contentid.replace('A1', 'B1'), { title: `Child ${i + 2}`, menutitle: `Child ${i + 2}`, filename: `child-${i + 2}`, orderno: i + 2 }));
+    }
+    identity.adminState = { siteid: SITE, openSectionList: PAGE, mura: { nextN: 2 } };
+    t.db.respond(/FROM "content"\."membership_projection"/, [{ group_id: GROUP }]);
+    t.db.respond(/FROM "content"\."group_projection"/, [{ tenant_id: TENANT_A.tenantId, group_id: GROUP, group_name: 'Editors', site_id: SITE, is_public: 0, deleted: false }]);
+    const { res } = await raw('loadsitemanager', { topid: HOME, moduleid: SITE_MANAGER, sortby: 'orderno', sortdirection: 'asc', startrow: '3' }, { roles: EDITOR_ROLES });
+    expect(res.statusCode, res.body).toBe(200);
+    expect([third, fourth].map((id) => res.body.includes(id))).toEqual([true, true]);
+    expect([PAGE, second, fifth].map((id) => res.body.includes(id))).toEqual([false, false, false]);
+    const nests = t.db.statements.filter((s) => /^SELECT tcontent\.contenthistid, .* WHERE tcontent\.siteid = \$1 AND tcontent\.parentid = ANY/.test(s.sql));
+    expect(nests).toHaveLength(1);
+    const [, limit, offset] = / ORDER BY .*, min\(tcontent\.tcontent_id\) ASC, .* LIMIT \$(\d+) OFFSET \$(\d+)$/.exec(nests[0]?.sql ?? '') ?? [];
+    expect([nests[0]?.params[Number(limit) - 1], nests[0]?.params[Number(offset) - 1]]).toEqual([2, 2]);
+    expect(ran(NEST_COUNT)).toBe(true);
+    const lookedUp = (pattern: RegExp): boolean[] =>
+      [PAGE, second, third, fourth, fifth].map((id) => t.db.statements.some((s) => pattern.test(s.sql) && bound(s.params, id)));
+    expect(lookedUp(/^SELECT count\(tcontent\.parentid\)::integer AS kids /)).toEqual([false, false, true, true, false]);
+    expect(lookedUp(/FROM "content"\."permission_projection"/)).toEqual([false, false, true, true, false]);
   });
 
   it('reads the module and its top from the session when the request names neither, offering the extended sort fields', async () => {

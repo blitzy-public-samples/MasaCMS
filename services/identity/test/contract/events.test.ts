@@ -114,6 +114,7 @@ const USERS_MODULE = '00000000000000000000000000000000008';
 const EDITOR_GROUP = EDITOR.groups[0]?.userid ?? '';
 const ADMIN_GROUP = SITE_ADMIN_A.groups[0]?.userid ?? '';
 const NEW_GROUP = cfId('A', 801);
+const RENAMED_GROUP = cfId('A', 803);
 const NEW_USER = cfId('E', 802);
 const OPERATION_ID = cfId('F', 802);
 
@@ -279,10 +280,14 @@ describe('envelopes the routes write', () => {
   });
 
   it('a cUsers group update writes the next group version', async () => {
-    await send('s2', 'PUT', `/v1/groups/${NEW_GROUP}`, `groupname=Events%20Renamed&ispublic=0&siteid=${SITE_A}&${csrfFields('s2', NEW_GROUP)}`);
+    await send('site-admin', 'POST', '/v1/groups', `userid=${RENAMED_GROUP}&groupname=Events&ispublic=0&siteid=${SITE_A}&${csrfFields('site-admin', RENAMED_GROUP)}`);
+    expect(writtenEnvelopes(t)).toEqual([expect.objectContaining({ aggregateId: RENAMED_GROUP, aggregateVersion: 1 })]);
+    t.resetEffects();
+
+    await send('s2', 'PUT', `/v1/groups/${RENAMED_GROUP}`, `groupname=Events%20Renamed&ispublic=0&siteid=${SITE_A}&${csrfFields('s2', RENAMED_GROUP)}`);
 
     expect(writtenEnvelopes(t)).toEqual([
-      expect.objectContaining({ aggregateId: NEW_GROUP, aggregateVersion: 2, payload: expect.objectContaining({ groupName: 'Events Renamed' }) }),
+      expect.objectContaining({ aggregateId: RENAMED_GROUP, aggregateVersion: 2, payload: expect.objectContaining({ groupName: 'Events Renamed' }) }),
     ]);
   });
 

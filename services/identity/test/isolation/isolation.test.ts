@@ -31,7 +31,7 @@ import {
 } from '@opt2/platform/testing';
 import { PERSON_CHANGED_TOPIC, PERSON_CONTACT_SUBSCRIPTION, type PersonChangedPayload } from '../../src/events/person-contact.js';
 import { createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
-import { IDENTITY_UNITS, OWNED_TABLES, type GroupAccountRow } from '../../src/repo/tables.js';
+import { IDENTITY_UNITS, OWNED_TABLES, type GroupAccountRow, type IdentityTableDefinition } from '../../src/repo/tables.js';
 import { TEST_CLOCK, buildTestApp, headersFor } from '../helpers/app.js';
 import {
   MEMBER_B,
@@ -62,7 +62,7 @@ const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta
 const ALL_PLATFORM_GROUPS = Object.keys(PLATFORM_TABLE_GROUPS) as PlatformTableGroup[];
 const PLATFORM_TENANT_TABLES = ALL_PLATFORM_GROUPS.flatMap((group) => PLATFORM_TABLE_GROUPS[group].tenantOwned);
 const TABLES = OWNED_TABLES.map(({ table }) => table);
-const DEFINITIONS = new Map(OWNED_TABLES.map((definition) => [definition.table, definition]));
+const DEFINITIONS: ReadonlyMap<string, IdentityTableDefinition> = new Map(OWNED_TABLES.map((definition) => [definition.table, definition]));
 const USERS_MODULE = '00000000000000000000000000000000008';
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 const SITE_ADMIN_ROLES = ROLE_SET.find(({ name }) => name === 'site-admin')?.roles ?? [];

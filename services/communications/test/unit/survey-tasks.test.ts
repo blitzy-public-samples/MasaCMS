@@ -1,6 +1,6 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Seam 2 task plans of the fixture schedules as task-port inputs, and their creation once per task name. */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 // createLogger and createCommunicationsRepository are the real ones, which no test helper provides, so the stamps checked are production's.
 import { createLogger } from '@opt2/platform/logging';
 import { QUEUES, TASK_NAME_PATTERN, targetUrl, type CreateTaskInput, type CreateTaskResult, type TaskPort } from '@opt2/platform/tasks';
@@ -11,7 +11,7 @@ import { SURVEY_SCHEDULED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { SURVEY_SCHEDULED_TOPIC } from '../../src/events/survey-scheduled.js';
 import { createCommunicationsRepository } from '../../src/repo/repository.js';
 import type { ScheduledTaskRow } from '../../src/repo/tables.js';
-import { buildTestApp, createFakeTaskPort, testEnv, type TestApp } from '../helpers/app.js';
+import { buildTestApp, removeTestStateDir, testEnv, type TestApp } from '../helpers/app.js';
 import { SAMPLE_IDS, envelopeFor, surveyScheduledPayload } from '../helpers/payloads.js';
 
 type Version = 1 | 2;
@@ -27,31 +27,29 @@ const RUN_TIMES: Readonly<Record<Version, readonly Date[]>> = {
   2: [new Date(2026, 6, 2, 9, 0, 0, 0), new Date(2026, 6, 2, 11, 0, 0, 0), new Date(2026, 6, 3, 9, 0, 0, 0)],
 };
 
-const serviceUrls = (await testEnv()).OPT2_SERVICE_URLS;
+const env = await testEnv();
+const serviceUrls = env.OPT2_SERVICE_URLS;
+
+afterAll(() => {
+  removeTestStateDir(env.OPT2_STATE_DIR);
+});
 
 /** CF-format id standing in for the stored row of the plan's task at `index`. */
 function rowId(index: number): string {
   return `E5F6A7B8-0005-4000-${String(index).padStart(16, '0')}`;
 }
 
-/** The port inputs of schedule `version` as `enqueueScheduledTasks` builds them, each task with its stand-in row id. */
-function portInputs(version: Version): CreateTaskInput[] {
+/** The port inputs of schedule `version` as `enqueueScheduledTasks` builds them, the task at `index` with row id `idOf(index)`. */
+function portInputs(version: Version, idOf: (index: number) => string = rowId): CreateTaskInput[] {
   return planSurveyTasks(surveyScheduledPayload(version), { now: businessClock().now() }).map((task, index) => ({
     queue: task.queue,
     name: task.portName,
     scheduleTime: task.scheduleTime,
-    url: taskTarget({ queue: task.queue, surveyId: task.surveyId, scheduledTaskId: rowId(index) }, serviceUrls).url,
-    body: taskPayload(task, rowId(index)),
+    url: taskTarget({ queue: task.queue, surveyId: task.surveyId, scheduledTaskId: idOf(index) }, serviceUrls).url,
+    body: taskPayload(task, idOf(index)),
     deadlineS: task.deadlineS,
     tenantId: TENANT_ID,
   }));
-}
-
-/** Creates each input on `port` in order and returns the results. */
-async function createAll(port: TaskPort, inputs: readonly CreateTaskInput[]): Promise<CreateTaskResult[]> {
-  const results: CreateTaskResult[] = [];
-  for (const input of inputs) results.push(await port.create(input));
-  return results;
 }
 
 describe('fixture schedules as port inputs', () => {
@@ -93,17 +91,6 @@ describe('fixture schedules as port inputs', () => {
   });
 });
 
-describe('task creation', () => {
-  it('creates each planned task once by name', async () => {
-    const port = createFakeTaskPort();
-    const inputs = VERSIONS.flatMap(portInputs);
-
-    expect(await createAll(port, inputs)).toStrictEqual(inputs.map(({ name }) => ({ name, created: true })));
-    expect(await createAll(port, inputs)).toStrictEqual(inputs.map(({ name }) => ({ name, created: false })));
-    expect(port.live()).toStrictEqual(inputs);
-  });
-});
-
 describe('enqueueScheduledTasks', () => {
   let t: TestApp | undefined;
 
@@ -112,10 +99,10 @@ describe('enqueueScheduledTasks', () => {
     t = undefined;
   });
 
-  it('counts an existing task name as created and stamps the same enqueue time on a repeat', async () => {
+  it.each(VERSIONS)('version %i: creates each stored task once by name as its row repeats, counting a repeat as created', async (version) => {
     const built = await buildTestApp();
     t = built;
-    const payload = surveyScheduledPayload(1);
+    const payload = surveyScheduledPayload(version);
     const taskCount = 1 + payload.reminders.length;
     // Failed creates leave every row of the delivered schedule unstamped, as recovery would find them.
     built.taskPort.failCreate(taskCount);
@@ -125,8 +112,10 @@ describe('enqueueScheduledTasks', () => {
     const rows = built.db.rows('scheduled_task') as unknown as ScheduledTaskRow[];
     const stamps = (): Record<string, unknown> =>
       Object.fromEntries(built.db.rows('scheduled_task').map((row) => [String(row.queue_task_name), row.enqueued_at]));
-    expect(rows).toHaveLength(taskCount);
+    const surveyTasks = (): CreateTaskInput[] => ['surveys-launch', 'communications-reminders'].flatMap((queue) => built.taskPort.byQueue(queue));
+    expect(rows.map(({ queue_task_name }) => queue_task_name)).toStrictEqual(portInputs(version).map(({ name }) => name));
     expect(Object.values(stamps())).toStrictEqual(rows.map(() => null));
+    expect(surveyTasks()).toStrictEqual([]);
 
     const results: CreateTaskResult[] = [];
     const errors: unknown[] = [];
@@ -158,15 +147,24 @@ describe('enqueueScheduledTasks', () => {
       serviceUrls: built.env.OPT2_SERVICE_URLS,
     };
 
-    await enqueueScheduledTasks(deps, TENANT_ID, rows, { siteId: SITE_ID });
+    // Each row twice in one call, then every row again in a second call.
+    await enqueueScheduledTasks(deps, TENANT_ID, rows.flatMap((row) => [row, row]), { siteId: SITE_ID });
     const first = stamps();
     await enqueueScheduledTasks(deps, TENANT_ID, rows, { siteId: SITE_ID });
 
-    expect(results.map(({ created }) => created)).toStrictEqual([...rows.map(() => true), ...rows.map(() => false)]);
+    expect(results).toStrictEqual([
+      ...rows.flatMap(({ queue_task_name: name }) => [{ name, created: true }, { name, created: false }]),
+      ...rows.map(({ queue_task_name: name }) => ({ name, created: false })),
+    ]);
+    expect(surveyTasks()).toStrictEqual(
+      portInputs(version, (index) => {
+        const row = rows[index];
+        if (row === undefined) throw new TypeError(`no stored row for planned task ${String(index)}`);
+        return row.scheduled_task_id;
+      }),
+    );
     expect(first).toStrictEqual(Object.fromEntries(rows.map((row) => [row.queue_task_name, built.clock.now()])));
     expect(stamps()).toStrictEqual(first);
-    const surveyTasks = [...built.taskPort.byQueue('surveys-launch'), ...built.taskPort.byQueue('communications-reminders')];
-    expect(surveyTasks.map(({ name }) => name)).toStrictEqual(rows.map((row) => row.queue_task_name));
     expect(errors).toStrictEqual([]);
   });
 });

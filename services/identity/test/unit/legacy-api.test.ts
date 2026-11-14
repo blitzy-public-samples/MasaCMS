@@ -285,6 +285,16 @@ describe('JSON API over an in-memory registry', () => {
     });
   });
 
+  it('flattens findCurrentUser for useDataNamespace=false in ACF key order', async () => {
+    people.answer = { status: 200, headers: {}, body: { data: { userid: 'U1', fname: '', isnew: 1 } } };
+
+    const res = await send(app, 'GET', `${API}/findCurrentUser?useDataNamespace=false`, await headersFor());
+
+    // Bins of the upper-cased keys: APIVERSION 0, MEMBERSHIPIDS 0, ISLOGGEDIN 6, USERID 8, METHOD 9, MEMBERSHIPS 10, ISNEW 13, FNAME 15.
+    expect(res.body).toBe('{"apiversion":"v1","membershipids":[],"isloggedin":false,"userid":"U1","method":"findCurrentUser","memberships":[],"isnew":1,"fname":""}');
+    expect(res.headers.etag).toBe(etag(res.body));
+  });
+
   it("fails closed with the legacy 503 on findCurrentUser's ishuman field, which renders a CFML display object", async () => {
     people.answer = { status: 200, headers: {}, body: { data: { userid: 'U1' } } };
 

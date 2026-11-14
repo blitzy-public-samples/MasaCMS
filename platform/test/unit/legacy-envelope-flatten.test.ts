@@ -33,6 +33,14 @@ describe('serializeResponse data flattening', () => {
     expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
   });
 
+  it('keeps an own __proto__ key as data in ACF key order (bins ID 11, __PROTO__ 13)', () => {
+    const data: unknown = JSON.parse('{"__proto__":"yes","id":"1"}');
+
+    const result = serializeResponse(buildEnvelope({ method: 'findOne', data }), { useDataNamespace: 'false', keyOrder: 'acf' });
+
+    expect(result.body).toBe('{"apiversion":"v1","method":"findOne","id":"1","__proto__":"yes"}');
+  });
+
   it('overwrites a top-level key ignoring case in place and appends new keys in data order', () => {
     const result = serializeResponse(buildEnvelope({ method: 'findOne', data: { Method: 'x', b: '2', a: '1' } }), {
       useDataNamespace: 'false',

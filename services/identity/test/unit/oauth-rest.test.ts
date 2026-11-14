@@ -150,15 +150,18 @@ describe.skipIf(!available)('authenticateRestRequest against PostgreSQL', () => 
   let sessions: SessionDeps;
   let seq = 0;
   const users = { ghost: '', site: '' };
-  const clients = { ccGhost: '', ccSite: '', ccNoUser: '', password: '', bearer: '', basicGhost: '', basicSite: '', basicNoUser: '', code: '' };
+  const clients = {
+    ccGhost: '', ccSite: '', ccNoUser: '', password: '', bearer: '', basicGhost: '', basicSite: '', basicNoUser: '', code: '',
+    ccGhostOnDefault: '', passwordOnDefault: '', ccOnSiteA: '', basicOnSiteA: '',
+  };
 
   function nextId(prefix: string): string {
     seq += 1;
     return `${prefix}0000000-0000-0000-${String(seq).padStart(16, '0')}`;
   }
 
-  function gated<T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> {
-    return withGatedTenant(handle.app, tenantIdForSite(DEFAULT), fn);
+  function gated<T>(fn: (tx: TenantTx) => Promise<T>, siteId = DEFAULT): Promise<T> {
+    return withGatedTenant(handle.app, tenantIdForSite(siteId), fn);
   }
 
   async function registerSite(site: string): Promise<void> {
@@ -182,23 +185,29 @@ describe.skipIf(!available)('authenticateRestRequest against PostgreSQL', () => 
     return userId;
   }
 
-  async function seedClient(granttype: string, clientsecret: string, userid: string | null, redirecturl: string | null = null): Promise<string> {
+  /** A client of `siteId`, stored in that site's tenant, the only one the token endpoint reads for a request of the site. */
+  async function seedClient(siteId: string, granttype: string, clientsecret: string, userid: string | null, redirecturl: string | null = null): Promise<string> {
     const clientid = nextId('C');
-    await gated((tx) =>
-      repo.insertOAuthClient(tx, {
-        clientid, clientsecret, siteid: DEFAULT, granttype, userid, name: granttype, created: NOW, lastupdate: NOW,
-        description: null, redirecturl, lastupdatebidy: null, lastupdateby: null,
-      }),
+    await gated(
+      (tx) =>
+        repo.insertOAuthClient(tx, {
+          clientid, clientsecret, siteid: siteId, granttype, userid, name: granttype, created: NOW, lastupdate: NOW,
+          description: null, redirecturl, lastupdatebidy: null, lastupdateby: null,
+        }),
+      siteId,
     );
     return clientid;
   }
 
-  async function seedToken(token: string, granttype: string, clientid: string, userid: string, opts: { data?: string; accesscode?: string; expiresInMs?: number } = {}): Promise<void> {
-    await gated((tx) =>
-      repo.insertToken(tx, {
-        token, granttype, clientid, userid, accesscode: opts.accesscode ?? null, data: opts.data ?? null,
-        expires: new Date(NOW.getTime() + (opts.expiresInMs ?? HOUR_MS)),
-      }),
+  /** A token in the tenant of `opts.siteId`, DEFAULT when absent; token lookups read only registered tenants, a grant's reuse only the client's. */
+  async function seedToken(token: string, granttype: string, clientid: string, userid: string, opts: { data?: string; accesscode?: string; expiresInMs?: number; siteId?: string } = {}): Promise<void> {
+    await gated(
+      (tx) =>
+        repo.insertToken(tx, {
+          token, granttype, clientid, userid, accesscode: opts.accesscode ?? null, data: opts.data ?? null,
+          expires: new Date(NOW.getTime() + (opts.expiresInMs ?? HOUR_MS)),
+        }),
+      opts.siteId,
     );
   }
 
@@ -231,15 +240,19 @@ describe.skipIf(!available)('authenticateRestRequest against PostgreSQL', () => 
     const stored = await bcrypt.hash(PASSWORD, (await bcrypt.genSalt(4)).replace(/^\$2b\$/, '$2a$'));
     users.ghost = await seedUser('ghost-user', GHOST, stored);
     users.site = await seedUser('site-user', DEFAULT, stored);
-    clients.ccGhost = await seedClient('client_credentials', 'cc-secret', users.ghost);
-    clients.ccSite = await seedClient('client_credentials', 'cc-secret', users.site);
-    clients.ccNoUser = await seedClient('client_credentials', 'cc-secret', null);
-    clients.password = await seedClient('password', 'pw-secret', users.ghost);
-    clients.bearer = await seedClient('password', 'pw-secret', users.ghost);
-    clients.basicGhost = await seedClient('basic', 'basic-secret', users.ghost);
-    clients.basicSite = await seedClient('basic', 'basic-secret', users.site);
-    clients.basicNoUser = await seedClient('basic', 'basic-secret', null);
-    clients.code = await seedClient('authorization_code', 'ac-secret', users.ghost, 'https://ok.example.test/cb\r\nhttps://other.example.test/cb');
+    clients.ccGhost = await seedClient(GHOST, 'client_credentials', 'cc-secret', users.ghost);
+    clients.ccSite = await seedClient(DEFAULT, 'client_credentials', 'cc-secret', users.site);
+    clients.ccNoUser = await seedClient(GHOST, 'client_credentials', 'cc-secret', null);
+    clients.password = await seedClient(GHOST, 'password', 'pw-secret', users.ghost);
+    clients.bearer = await seedClient(DEFAULT, 'password', 'pw-secret', users.ghost);
+    clients.basicGhost = await seedClient(GHOST, 'basic', 'basic-secret', users.ghost);
+    clients.basicSite = await seedClient(GHOST, 'basic', 'basic-secret', users.site);
+    clients.basicNoUser = await seedClient(GHOST, 'basic', 'basic-secret', null);
+    clients.code = await seedClient(GHOST, 'authorization_code', 'ac-secret', users.ghost, 'https://ok.example.test/cb\r\nhttps://other.example.test/cb');
+    clients.ccGhostOnDefault = await seedClient(DEFAULT, 'client_credentials', 'cc-secret', users.ghost);
+    clients.passwordOnDefault = await seedClient(DEFAULT, 'password', 'pw-secret', users.ghost);
+    clients.ccOnSiteA = await seedClient(SITE_A, 'client_credentials', 'cc-secret', users.ghost);
+    clients.basicOnSiteA = await seedClient(SITE_A, 'basic', 'basic-secret', users.ghost);
     await seedToken('T-JSON', 'password', clients.bearer, STORED_USER, { data: STORED_SESSION });
     await seedToken('T-RAW-GHOST', 'password', clients.bearer, users.ghost);
     await seedToken('T-RAW-SITE', 'password', clients.bearer, users.site);
@@ -251,6 +264,7 @@ describe.skipIf(!available)('authenticateRestRequest against PostgreSQL', () => 
     await seedToken('T-ARRAY', 'password', clients.bearer, users.ghost, { data: '[1]' });
     await seedToken('RT-GHOST', 'refresh_token', clients.ccGhost, users.ghost);
     await seedToken('RT-EXP', 'refresh_token', clients.ccGhost, users.ghost, { expiresInMs: -HOUR_MS });
+    await seedToken('RT-REUSABLE', 'refresh_token', clients.ccGhost, users.ghost, { siteId: GHOST });
     await seedToken('T-CODE-JSON', 'authorization_code', clients.code, users.ghost, { data: STORED_SESSION, accesscode: 'CODE-JSON' });
     await seedToken('T-CODE-RAW', 'authorization_code', clients.code, users.ghost, { accesscode: 'CODE-RAW' });
   });
@@ -360,7 +374,7 @@ describe.skipIf(!available)('authenticateRestRequest against PostgreSQL', () => 
       const body = okJson(await grant('/_api/rest/v1/ghost/oauth2', { client_id: clients.ccGhost, client_secret: 'cc-secret', grant_type: 'client_credentials' }));
 
       expect(Object.keys(body)).toEqual(['access_token', 'expires_in', 'token_type', 'expires_at', 'refresh_token', 'info']);
-      expect(body).toMatchObject({ token_type: 'Bearer', expires_in: 3600, refresh_token: 'RT-GHOST' });
+      expect(body).toMatchObject({ token_type: 'Bearer', expires_in: 3600, refresh_token: 'RT-REUSABLE' });
       expect(body.access_token).toMatch(/^000[0-9A-F]{64}$/);
       expect(body.info).toEqual({
         subtype: 'Default', passwordcreated: '2026-06-01T09:15:00', membershipids: users.ghost, lname: 'User', siteid: GHOST, email: 'ghost@example.test',
@@ -431,11 +445,35 @@ describe.skipIf(!available)('authenticateRestRequest against PostgreSQL', () => 
     });
 
     it.each([
-      ['a password grant, whose lookup raises', { client_id: 'password', grant_type: 'password', username: 'ghost-user', password: PASSWORD }, '/_api/rest/v1/default/oauth2'],
+      ['a password grant, whose lookup raises', { client_id: 'passwordOnDefault', grant_type: 'password', username: 'ghost-user', password: PASSWORD }, '/_api/rest/v1/default/oauth2'],
       ['a client_credentials login of a registered-site user', { client_id: 'ccSite', client_secret: 'cc-secret', grant_type: 'client_credentials' }, '/_api/rest/v1/default/oauth2'],
-      ['the envelope of a registered site', { client_id: 'ccGhost', client_secret: 'cc-secret', grant_type: 'client_credentials' }, '/_api/rest/v1/default/oauth'],
+      ['the envelope of a registered site', { client_id: 'ccGhostOnDefault', client_secret: 'cc-secret', grant_type: 'client_credentials' }, '/_api/rest/v1/default/oauth'],
     ] as const)('answers %s with the unhandled-exception 500 legacy raises in REST mode', async (_label, params, path) => {
       expectError(await grant(path, { ...params, client_id: clients[params.client_id] }, DEFAULT), 500, BODY.unhandled);
+    });
+
+    it.each(
+      (
+        [
+          ['another registered site', DEFAULT],
+          ['a site identity does not register', GHOST],
+          ['an unknown site', 'nosuchsite'],
+        ] as const
+      ).flatMap(([siteLabel, site]) => (['oauth', 'oauth2', 'content'] as const).map((resource) => [resource, siteLabel, site] as const)),
+    )('refuses valid credentials of a tenant-a client on %s of %s as an unknown client (jsonApiUtility.cfc:558; beanORM.cfc:766-767)', async (resource, _siteLabel, site) => {
+      const credentials =
+        resource === 'content'
+          ? { headers: basic(clients.basicOnSiteA, 'basic-secret') }
+          : { params: { client_id: clients.ccOnSiteA, client_secret: 'cc-secret', grant_type: 'client_credentials' } };
+
+      expectError(await call(`/_api/rest/v1/${site}/${resource}`, { siteId: site, ...credentials }), 401, BODY.authorization, WWW_AUTHENTICATE.bearerInvalidClientCredentials);
+    });
+
+    it('finds a client on its own site named in upper case: the token on an unregistered site, the REST-mode 500 on a registered one', async () => {
+      const params = { client_secret: 'cc-secret', grant_type: 'client_credentials' };
+
+      okJson(await grant('/_api/rest/v1/GHOST/oauth2', { ...params, client_id: clients.ccGhost }, GHOST.toUpperCase()));
+      expectError(await grant('/_api/rest/v1/TENANT-A/oauth', { ...params, client_id: clients.ccOnSiteA }, SITE_A.toUpperCase()), 500, BODY.unhandled);
     });
 
     it('logs a basic client`s user in on a non-oauth path and drops the client credentials', async () => {

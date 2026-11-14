@@ -234,6 +234,38 @@
         "replay": "opt2/reports/parity.json#GS-ID-11"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-CCHAIN-PENDING-PREVIEW",
+      "scenario": "GS-CO-09",
+      "routeKey": "admin:cchain.pending",
+      "appliesTo": [],
+      "difference": "Legacy `cChain.pending` prints `item.getURL(complete=1, queryString=\"previewid=<contenthistid>\")` as the Preview action of every pending row whose type is Page, Folder, Calendar, Gallery, Link or File (admin/core/views/cchain/pending.cfm:134-149). The complete URL is `createHREF` over the site's `getWebPath`: the scheme from `tsettings.useSSL` or the request's HTTPS, the domain from `request.muraPreviewDomain`, the request host `cgi.server_name` unless `EnforcePrimaryDomain`, or `tsettings.domain`, then configBean's server port and context, and the URL stem from the renderer's `siteIDInURLs` and `indexFileInURLs` (core/mura/content/contentManager.cfc:2742-2749; core/mura/content/contentRendererUtility.cfc:1563-1660; core/mura/settings/settingsBean.cfc:1298-1300,1395-1414,1435-1463; core/mura/content/contentRenderer.cfc:2495-2503). strategies-content holds none of these values, so it answers the legacy-shaped 503 naming this entry for a chain with such a pending row; a list of only other types is served.",
+      "decision": "preserve",
+      "reason": "Whether a chain has pending rows of those types is stored data, so no request-decidable variant can keep the case on legacy, and halting `admin:cchain.pending` would send every pending list there. The target fails closed until a verified site-URL source supplies the complete URL, and the entry then closes.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-09.json",
+        "replay": "opt2/reports/parity.json#GS-CO-09"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-CARCH-VERSION-PREVIEW",
+      "scenario": "GS-CO-04",
+      "routeKey": "admin:carch.hist",
+      "appliesTo": [
+        "admin:carch.audit"
+      ],
+      "difference": "Legacy `cArch.hist` and `cArch.audit` print `rc.contentBean.getURL(complete=1, queryString=\"previewid=<contenthistid>\")` as the Preview action of every version row whose type is Page, Folder, Calendar, Gallery, Link or File; a Variation row prints `rc.contentBean.getRemoteURL()` with the `previewid` query instead, and other types print no Preview action (admin/core/views/carch/hist.cfm:177-182; admin/core/views/carch/audit.cfm:177-182). The complete URL is `createHREF` over the site's `getWebPath`: the scheme from `tsettings.useSSL` or the request's HTTPS, the domain from `request.muraPreviewDomain`, the request host `cgi.server_name` unless `EnforcePrimaryDomain`, or `tsettings.domain`, then configBean's server port and context, and the URL stem from the renderer's `siteIDInURLs` and `indexFileInURLs` (core/mura/content/contentManager.cfc:2742-2749; core/mura/content/contentRendererUtility.cfc:1563-1660; core/mura/settings/settingsBean.cfc:1298-1300,1395-1414,1435-1463; core/mura/content/contentRenderer.cfc:2495-2503; core/mura/configBean.cfc:329,742-748). The oracle prints its configured port, as in `http://localhost:8080/?previewid=<contenthistid>` for the default site's home page. strategies-content holds none of these values, so it answers the legacy-shaped 503 naming this entry for a history or audit trail with such a version; a list of only other types is served, its rows carrying no preview URL.",
+      "decision": "preserve",
+      "reason": "Whether a node's versions are of those types is stored data, so no request-decidable variant can keep the case on legacy, and halting `admin:carch.hist` and `admin:carch.audit` would send every history and audit trail there. The target fails closed until a verified site-URL source supplies the complete URL, and the entry then closes.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-04.json",
+        "replay": "opt2/reports/parity.json#GS-CO-04"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }
   ]
 }

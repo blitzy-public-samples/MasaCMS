@@ -193,9 +193,7 @@ export async function startService(name: ServiceName, opts: { extraEnv?: Record<
 /** Polls `name` until it answers healthy; throws with the URL and the last answer after `timeoutMs`. */
 export async function waitHealthy(name: ServiceName, opts: { timeoutMs?: number; intervalMs?: number } = {}): Promise<void> {
   const { timeoutMs = DEFAULT_HEALTH_TIMEOUT_MS, intervalMs = DEFAULT_HEALTH_INTERVAL_MS } = opts;
-  // web is the Next.js app without the service-kit health route: any non-5xx answer on its root means it serves.
-  const isWeb = name === 'web';
-  const url = serviceUrl(name) + (isWeb ? '/' : HEALTH_PATH);
+  const url = serviceUrl(name) + HEALTH_PATH;
   const deadline = performance.now() + timeoutMs;
   let last = 'no answer';
   for (;;) {
@@ -204,7 +202,7 @@ export async function waitHealthy(name: ServiceName, opts: { timeoutMs?: number;
     try {
       const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(Math.ceil(remaining)) });
       await response.body?.cancel();
-      if (isWeb ? response.status < 500 : response.status === 200) return;
+      if (response.status === 200) return;
       last = `HTTP ${response.status}`;
     } catch (err) {
       // The deadline cuts off the final poll; an earlier HTTP answer says more about why the service is unhealthy.

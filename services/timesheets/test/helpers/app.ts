@@ -4,7 +4,6 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe } from 'vitest';
 import { INVOCATION_HEADER, LOCAL_USER_TOKEN } from '@opt2/platform/auth';
 import { INBOX_TABLE, type EventPublisher } from '@opt2/platform/events';
 import { CSRF_HEADER_EXPIRES, CSRF_HEADER_TOKEN, cfUuid } from '@opt2/platform/legacy-compat';
@@ -46,7 +45,6 @@ import {
   createCapturingPublisher,
   createThrowawaySchema,
   mintServiceToken,
-  pgAvailable,
   pushKeyQuery,
   seedRegistry,
   testVerifier,
@@ -248,6 +246,7 @@ interface CatalogColumn {
   readonly kind: ColumnKind;
   readonly array: boolean;
   readonly length?: number;
+  readonly precision?: number;
   readonly scale?: number;
   readonly notNull: boolean;
   readonly fallback?: ColumnFallback;
@@ -266,7 +265,7 @@ interface CatalogTable {
   tenantOwned: boolean;
 }
 
-const COLUMN_TYPES: readonly (readonly [RegExp, (match: RegExpExecArray) => Pick<CatalogColumn, 'kind' | 'array' | 'length' | 'scale'>])[] = [
+const COLUMN_TYPES: readonly (readonly [RegExp, (match: RegExpExecArray) => Pick<CatalogColumn, 'kind' | 'array' | 'length' | 'precision' | 'scale'>])[] = [
   [/^uuid\[\]/i, () => ({ kind: 'uuid', array: true })],
   [/^uuid/i, () => ({ kind: 'uuid', array: false })],
   [/^text\[\]/i, () => ({ kind: 'text', array: true })],
@@ -276,7 +275,7 @@ const COLUMN_TYPES: readonly (readonly [RegExp, (match: RegExpExecArray) => Pick
   [/^bigint/i, () => ({ kind: 'int8', array: false })],
   [/^integer/i, () => ({ kind: 'int4', array: false })],
   [/^xid8/i, () => ({ kind: 'xid8', array: false })],
-  [/^numeric\((\d+),(\d+)\)/i, (m) => ({ kind: 'numeric', array: false, scale: Number(m[2]) })],
+  [/^numeric\((\d+),(\d+)\)/i, (m) => ({ kind: 'numeric', array: false, precision: Number(m[1]), scale: Number(m[2]) })],
   [/^timestamp\(3\) without time zone/i, () => ({ kind: 'timestamp', array: false })],
   [/^jsonb/i, () => ({ kind: 'jsonb', array: false })],
   [/^boolean/i, () => ({ kind: 'bool', array: false })],
@@ -421,8 +420,17 @@ class Bpchar {
 }
 
 const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const TIMESTAMP_TEXT = /^\s*(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?\s*(?:Z|[+-]\d{2}(?::?\d{2})?)?\s*$/i;
-const DECIMAL_TEXT = /^\s*([+-])?(\d*)(?:\.(\d*))?\s*$/;
+const TIMESTAMP_TEXT = /^\s*(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d*))?)?)?\s*(?:Z|[+-]\d{2}(?::?\d{2})?)?\s*$/i;
+const USECS_PER_DAY = 86_400_000_000;
+const NUMERIC_SPACE = /^[ \t\n\v\f\r]*$/;
+const NUMERIC_SPECIAL = /^[ \t\n\v\f\r]*(?:(nan)|[+-]?inf(?:inity)?)[ \t\n\v\f\r]*$/i;
+const NON_DECIMAL_TEXT = /^[ \t\n\v\f\r]*([+-]?)(0x(?:_?[\da-f])+|0o(?:_?[0-7])+|0b(?:_?[01])+)(.*)$/is;
+const DECIMAL_TEXT = /^[ \t\n\v\f\r]*([+-]?)(?=\.?\d)(\d+(?:_\d+)*)?(?:\.(\d+(?:_\d+)*)?)?(?:e([+-]?\d+(?:_\d+)*))?(.*)$/is;
+/** numeric_in's limits: exponent magnitude, display scale, decimal digits before the point, and typmod precision. */
+const NUMERIC_MAX_EXPONENT = 1_073_741_823;
+const NUMERIC_MAX_DSCALE = 16_383;
+const NUMERIC_MAX_WHOLE_DIGITS = 131_072;
+const NUMERIC_MAX_PRECISION = 1000;
 const INT4_MIN = -2_147_483_648;
 const INT4_MAX = 2_147_483_647;
 
@@ -453,13 +461,31 @@ function toDate(value: unknown): Date {
     if (Number.isNaN(value.getTime())) throw pgError('22007', 'invalid input syntax for type timestamp: "Invalid Date"');
     return new Date(value.getTime());
   }
-  const match = TIMESTAMP_TEXT.exec(describeValue(value));
-  if (match === null) throw pgError('22007', `invalid input syntax for type timestamp: "${describeValue(value)}"`);
-  const [, y, mo, d, h = '0', mi = '0', s = '0', fraction = ''] = match;
-  const ms = Math.round(Number(`0.${fraction || '0'}`) * 1000);
-  const date = new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s), ms);
-  if (date.getDate() !== Number(d)) throw pgError('22008', `date/time field value out of range: "${describeValue(value)}"`);
+  const input = describeValue(value);
+  const match = TIMESTAMP_TEXT.exec(input);
+  if (match === null) throw pgError('22007', `invalid input syntax for type timestamp: "${input}"`);
+  const [y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0] = match.slice(1, 7).map((part) => Number(part ?? '0'));
+  const us = rint(Number(`0.${match[7] ?? ''}`) * 1e6);
+  if (y < 1 || mo < 1 || mo > 12 || d < 1 || d > daysInMonth(y, mo) || mi > 59 || s > 60 || ((h * 60 + mi) * 60 + s) * 1e6 + us > USECS_PER_DAY) {
+    throw pgError('22008', `date/time field value out of range: "${input}"`);
+  }
+  // timestamp(3) rounds microseconds since 2000-01-01 half away from zero, so earlier times round a half down.
+  const date = new Date(2000, 0, 1);
+  date.setFullYear(y, mo - 1, d);
+  date.setHours(h, mi, s, Math.floor((us + (y < 2000 ? 499 : 500)) / 1000));
   return date;
+}
+
+/** `x` rounded half to even, as C's rint rounds. */
+function rint(x: number): number {
+  const floor = Math.floor(x);
+  const rest = x - floor;
+  return rest > 0.5 || (rest === 0.5 && floor % 2 !== 0) ? floor + 1 : floor;
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28;
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
 }
 
 function toBigInt(value: unknown): bigint {
@@ -490,16 +516,52 @@ function toUuid(value: unknown): string {
   return canonical;
 }
 
-/** `value` as a decimal string with exactly `scale` fraction digits, rounded half away from zero as numeric(p,s) stores it. */
-function fixedScale(value: unknown, scale: number): string {
-  const match = DECIMAL_TEXT.exec(typeof value === 'number' ? value.toFixed(Math.min(scale + 6, 100)) : describeValue(value));
-  if (match === null || (match[2] === '' && (match[3] ?? '') === '')) throw pgError('22P02', `invalid input syntax for type numeric: "${describeValue(value)}"`);
-  const [, sign = '', whole = '', fraction = ''] = match;
-  const digits = BigInt(`${whole || '0'}${fraction.padEnd(scale + 1, '0').slice(0, scale + 1)}`);
-  const rounded = (digits + 5n) / 10n;
+/** SQLSTATE 22003 for a value numeric(`precision`,`scale`) cannot hold, with PostgreSQL's detail. */
+function numericFieldOverflow(precision: number, scale: number, infinite: boolean): PgError {
+  const whole = precision - scale;
+  const limit = infinite ? 'cannot hold an infinite value' : `must round to an absolute value less than ${whole === 0 ? '1' : `10^${whole}`}`;
+  return Object.assign(pgError('22003', 'numeric field overflow'), { detail: `A field with precision ${precision}, scale ${scale} ${limit}.` });
+}
+
+/** Sign, significant digits and the power of ten of their last digit in finite numeric input `input`; raises what numeric_in raises before the typmod. */
+function numericDigits(input: string): { negative: boolean; digits: string; exponent: number } {
+  const invalid = (): PgError => pgError('22P02', `invalid input syntax for type numeric: "${input}"`);
+  const nonDecimal = NON_DECIMAL_TEXT.exec(input);
+  if (nonDecimal !== null) {
+    const [, sign, literal = '', rest = ''] = nonDecimal;
+    if (!NUMERIC_SPACE.test(rest)) throw invalid();
+    return { negative: sign === '-', digits: BigInt(literal.replace(/_/g, '')).toString().replace(/^0+/, ''), exponent: 0 };
+  }
+  const decimal = DECIMAL_TEXT.exec(input);
+  if (decimal === null) throw invalid();
+  const [, sign, whole = '', fractionText = '', exponentText = '0', rest = ''] = decimal;
+  const exponent = Number(exponentText.replace(/_/g, ''));
+  if (Math.abs(exponent) > NUMERIC_MAX_EXPONENT) throw pgError('22003', 'value overflows numeric format');
+  if (!NUMERIC_SPACE.test(rest)) throw invalid();
+  const fraction = fractionText.replace(/_/g, '');
+  const digits = (whole.replace(/_/g, '') + fraction).replace(/^0+/, '');
+  if (fraction.length - exponent > NUMERIC_MAX_DSCALE || (digits !== '' && digits.length + exponent - fraction.length > NUMERIC_MAX_WHOLE_DIGITS)) {
+    throw pgError('22003', 'value overflows numeric format');
+  }
+  return { negative: sign === '-', digits, exponent: exponent - fraction.length };
+}
+
+/** `value`, as node-pg sends it, stored as numeric(`precision`,`scale`): exactly `scale` fraction digits, rounded half away from zero. */
+function fixedScale(value: unknown, precision: number, scale: number): string {
+  const input = describeValue(value);
+  const special = NUMERIC_SPECIAL.exec(input);
+  if (special !== null) {
+    if (special[1] !== undefined) return 'NaN';
+    throw numericFieldOverflow(precision, scale, true);
+  }
+  const { negative, digits, exponent } = numericDigits(input);
+  const cut = digits === '' ? 0 : digits.length + exponent + scale;
+  const kept = cut > 0 ? digits.slice(0, cut).padEnd(cut, '0') : '';
+  const rounded = kept.length > precision ? null : BigInt(kept || '0') + (cut >= 0 && digits.charAt(cut) >= '5' ? 1n : 0n);
+  if (rounded === null || rounded >= 10n ** BigInt(precision)) throw numericFieldOverflow(precision, scale, false);
   const text = rounded.toString().padStart(scale + 1, '0');
   const body = scale === 0 ? text : `${text.slice(0, -scale)}.${text.slice(-scale)}`;
-  return sign === '-' && rounded !== 0n ? `-${body}` : body;
+  return negative && rounded !== 0n ? `-${body}` : body;
 }
 
 /** The stored (pg output) form of `value` written to `column`, raising the SQLSTATE PostgreSQL raises for a value the type rejects. */
@@ -530,7 +592,7 @@ function coerceScalar(column: CatalogColumn, value: unknown): unknown {
     case 'xid8':
       return toBigInt(value).toString();
     case 'numeric':
-      return fixedScale(value, column.scale ?? 0);
+      return fixedScale(value, column.precision ?? NUMERIC_MAX_PRECISION, column.scale ?? 0);
     case 'timestamp':
       return toDate(value);
     case 'bool':
@@ -2594,13 +2656,6 @@ export async function createTimesheetsSchema(opts: TimesheetsSchemaOptions = {})
   }
   return handle;
 }
-
-// pgAvailable rejects on missing settings, so a host without them skips instead of probing.
-const PG_CONFIGURED = ['PG_HOST', 'PG_USER', 'PG_PASSWORD', 'PG_DATABASE'].every((name) => Boolean(process.env[name]));
-const PG_AVAILABLE = PG_CONFIGURED && (await pgAvailable());
-
-/** `describe` when the `PG_*` server accepts connections, else skipped, so PostgreSQL suites report skipped without one. */
-export const describeWithPg = describe.skipIf(!PG_AVAILABLE);
 
 /** A subject {@link headersFor} accepts: a platform RoleSubject, the name of one in ROLE_SET, or a user's roles with optional site and `sub`. */
 export type HeadersSubject = RoleSubject | string | { readonly roles: readonly string[]; readonly site?: string; readonly sub?: string };

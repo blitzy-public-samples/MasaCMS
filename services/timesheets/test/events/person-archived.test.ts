@@ -27,8 +27,9 @@ import { PERSON_ARCHIVED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { PERSON_ARCHIVED_TOPIC } from '../../src/events/person-archived.js';
 import type { PersonArchivedPayload } from '../../src/generated/events/people.person.archived.v1.js';
 import { BLACKOUT, TIMESHEET, TIMESHEET_DAY, type BlackoutRow, type TimesheetDayRow } from '../../src/repo/tables.js';
-import { buildTestApp, createTimesheetsSchema, describeWithPg, type TestApp } from '../helpers/app.js';
+import { buildTestApp, createTimesheetsSchema, type TestApp } from '../helpers/app.js';
 import { EFFECTIVE_FROM, SHARED_PERSON_ID, TENANT_SEEDS, seedSheet, type SeededSheet, type TenantSeed } from '../helpers/days.js';
+import { describeWithPg } from '../helpers/pg.js';
 
 type ArchiveEnvelope = EventEnvelope<PersonArchivedPayload>;
 

@@ -3,6 +3,8 @@ import { cfEq, cfUuid } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { contentUrl } from '../legacy/content-urls.js';
+import { rowsById, type ContentVersionRow, type Crumb } from '../repo/content-queries.js';
+import type { ContentRepository } from '../repo/repository.js';
 import type {
   ApprovalAssignmentRow,
   ApprovalChainRow,
@@ -116,6 +118,8 @@ export interface PendingApprovalItem {
   lastupdatebyid: string;
   changesetname: string;
   changesetpublishdate: Date | null;
+  /** `getCrumbArray()`: the crumbs of the version's stored path, the node first. */
+  crumbs: Crumb[];
 }
 
 /** cchain.pending's data: the chain and, per membership in chain order, its pending versions. */
@@ -333,7 +337,7 @@ type PendingVersion = Pick<
   | 'lastupdatebyid'
 >;
 
-function pendingItemOf(request: ApprovalRequestRow, version: PendingVersion, changeset: ChangesetRow | null): PendingApprovalItem {
+function pendingItemOf(request: ApprovalRequestRow, version: PendingVersion, changeset: ChangesetRow | null, crumbs: Crumb[]): PendingApprovalItem {
   return {
     requestid: request.requestid,
     created: request.created,
@@ -355,7 +359,37 @@ function pendingItemOf(request: ApprovalRequestRow, version: PendingVersion, cha
     lastupdatebyid: version.lastupdatebyid ?? '',
     changesetname: changeset?.name ?? '',
     changesetpublishdate: changeset?.publishdate ?? null,
+    crumbs,
   };
+}
+
+/**
+ * contentManager.getCrumbList(contentID, siteID, path) of each version, keyed as `versions` is: one read per site for
+ * the stored paths, and the parent walk for a version without one.
+ */
+async function versionCrumbs(tx: TenantTx, repo: ContentRepository, versions: ReadonlyMap<string, ContentVersionRow>): Promise<Map<string, Crumb[]>> {
+  const pathsBySite = new Map<string, string[]>();
+  for (const version of versions.values()) {
+    const path = version.path ?? '';
+    if (path === '') continue;
+    const paths = pathsBySite.get(version.siteid ?? '');
+    if (paths === undefined) pathsBySite.set(version.siteid ?? '', [path]);
+    else paths.push(path);
+  }
+  const bySite = new Map<string, Map<string, Crumb[]>>();
+  for (const [siteId, paths] of pathsBySite) {
+    bySite.set(siteId, await repo.content.crumbPathsIn(tx, { siteId, paths }));
+  }
+  const crumbs = new Map<string, Crumb[]>();
+  for (const [key, version] of versions) {
+    const siteId = version.siteid ?? '';
+    const path = version.path ?? '';
+    crumbs.set(
+      key,
+      path === '' ? await repo.content.crumbPath(tx, { contentId: version.contentid ?? '', siteId, path }) : (bySite.get(siteId)?.get(path) ?? []),
+    );
+  }
+  return crumbs;
 }
 
 // ---- chain administration (cchain) ----
@@ -459,31 +493,35 @@ export async function deleteChain(deps: DomainDeps, actor: Actor, chainId: strin
   return removed === null ? null : chainValuesOf(removed);
 }
 
-/** cchain.pending: the chain and each membership's pending versions, oldest request first, with their change set. */
+/**
+ * cchain.pending: the chain and each membership's pending versions, oldest request first, with their change set and
+ * crumbs; every membership's requests, versions and change sets are read at once.
+ */
 export async function pendingApprovals(deps: DomainDeps, actor: Actor, chainId: string): Promise<PendingApprovals> {
   const chain = await readChain(deps, actor, chainId);
   const repo = deps.repository;
+  // `tapprovalrequests.groupid = NULL` matches no request.
+  const groupIds = [...new Set(chain.memberships.flatMap((membership) => (membership.groupid === '' ? [] : [membership.groupid])))];
   const groups = await withTenant(deps.db, actor.tenantId, async (tx) => {
-    const result: PendingApprovals['groups'] = [];
-    for (const membership of chain.memberships) {
-      const items: PendingApprovalItem[] = [];
-      // `tapprovalrequests.groupid = NULL` matches no request.
-      const requests =
-        membership.groupid === ''
+    const requests =
+      groupIds.length === 0 ? [] : await repo.approvals.requestsByStatus(tx, { status: PENDING_STATUS, chainId: chain.values.chainid, groupIds });
+    const versions = await repo.content.readVersionsIn(tx, { contentHistIds: requests.map((request) => request.contenthistid ?? '') });
+    const changesets = await repo.changesets.findChangesetsIn(
+      tx,
+      [...versions.values()].flatMap((version) => (version.changesetid === null || version.changesetid === '' ? [] : [version.changesetid])),
+    );
+    const crumbs = await versionCrumbs(tx, repo, versions);
+    const requestsOf = rowsById(requests, (request) => request.groupid);
+    return chain.memberships.map((membership) => ({
+      membership,
+      items: (membership.groupid === '' ? [] : requestsOf([membership.groupid])).flatMap((request) => {
+        const key = request.contenthistid ?? '';
+        const version = versions.get(key);
+        return version === undefined
           ? []
-          : await repo.approvals.requestsByStatus(tx, { status: PENDING_STATUS, chainId: chain.values.chainid, groupId: membership.groupid });
-      for (const request of requests) {
-        const [version] = await repo.content.readVersion(tx, { contentHistId: request.contenthistid ?? '' });
-        if (version === undefined) {
-          continue;
-        }
-        const changesetId = version.changesetid ?? '';
-        const changeset = changesetId === '' ? null : await repo.changesets.findChangeset(tx, { changesetId });
-        items.push(pendingItemOf(request, version, changeset));
-      }
-      result.push({ membership, items });
-    }
-    return result;
+          : [pendingItemOf(request, version, changesets.get(version.changesetid ?? '') ?? null, crumbs.get(key) ?? [])];
+      }),
+    }));
   });
   return { chain, groups };
 }

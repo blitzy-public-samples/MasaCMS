@@ -180,15 +180,23 @@ function comparePartitions(a: Partition, b: Partition): number {
   return (a.legacyProgramId ?? -1) - (b.legacyProgramId ?? -1);
 }
 
+/** Batches' worth of rows an owner batcher buffers across its partitions, besides the held batch. */
+export const BUFFERED_BATCHES = 4;
+
 /**
- * Creates a batcher that forms a batch whenever a partition reaches `batchSize`, holding the newest ready batch back so
- * that the final batch sent can carry the watermark and the owner writes it in that batch's transaction.
+ * Creates a batcher that forms a batch whenever a partition reaches `batchSize`, or from its least recently fed partition
+ * once more than `batchSize * BUFFERED_BATCHES` rows are buffered. It holds the newest ready batch back so that the final
+ * batch sent can carry the watermark and the owner writes it in that batch's transaction.
  */
 export function createOwnerBatcher(opts: OwnerBatcherOptions): OwnerBatcher {
   const { owner, legacyTable, direction, snapshotSeq, origin, batchSize, sender, watermark } = opts;
   const columns = [...opts.columns];
   const units = opts.units === undefined ? undefined : [...opts.units];
   const partitions = new Map<string, Partition>();
+  // Partitions holding rows, least recently fed first.
+  const buffered = new Set<Partition>();
+  const budget = batchSize * BUFFERED_BATCHES;
+  let bufferedRows = 0;
   const perTenant: Record<string, number> = {};
   let held: ReadyBatch | null = null;
   let batches = 0;
@@ -233,6 +241,15 @@ export function createOwnerBatcher(opts: OwnerBatcherOptions): OwnerBatcher {
     batches += 1;
   };
 
+  // Makes the partition's rows the held batch and sends the batch held before it.
+  const emit = async (partition: Partition): Promise<void> => {
+    buffered.delete(partition);
+    bufferedRows -= partition.rows.length;
+    const previous = held;
+    held = take(partition);
+    if (previous !== null) await send(previous, null);
+  };
+
   const assertOpen = (): void => {
     if (finished) throw new Error(`The ${owner} batcher of ${legacyTable} has finished`);
   };
@@ -244,10 +261,16 @@ export function createOwnerBatcher(opts: OwnerBatcherOptions): OwnerBatcher {
       partition.rows.push(change);
       changes += 1;
       perTenant[tenantId] = (perTenant[tenantId] ?? 0) + 1;
-      if (partition.rows.length < batchSize) return;
-      const previous = held;
-      held = take(partition);
-      if (previous !== null) await send(previous, null);
+      bufferedRows += 1;
+      buffered.delete(partition);
+      buffered.add(partition);
+      if (partition.rows.length >= batchSize) {
+        await emit(partition);
+        return;
+      }
+      if (bufferedRows <= budget) return;
+      const [oldest] = buffered;
+      if (oldest !== undefined) await emit(oldest);
     },
 
     async finish() {

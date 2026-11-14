@@ -2,6 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { open, rm } from 'node:fs/promises';
+import { maxHeaderSize } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parse as parseQuery } from 'node:querystring';
@@ -28,6 +29,7 @@ import {
   LEGACY_HTML_CONTENT_TYPE,
   LegacyApiError,
   LegacyServiceUnavailableError,
+  cfNumberString,
   isCfUuid,
   legacyErrorResponse,
   legacyHeaders,
@@ -254,10 +256,15 @@ function scopeValue(value: unknown): unknown {
   return Array.isArray(value) ? value.map(single).join(',') : single(value);
 }
 
-/** One deserialized JSON value: simple values as strings, null as '', objects and arrays as they are. */
-function jsonValue(value: unknown): unknown {
+/** One deserialized JSON value: simple values as text in the `scalars` form, null as '', objects and arrays as they are. */
+function jsonValue(value: unknown, scalars: LegacyParamsOptions['jsonScalars']): unknown {
   if (value === null) return '';
-  return typeof value === 'object' ? value : String(value);
+  if (typeof value === 'object') return value;
+  if (scalars === 'cfml') {
+    if (typeof value === 'boolean') return value ? 'YES' : 'NO';
+    if (typeof value === 'number') return cfNumberString(value);
+  }
+  return String(value);
 }
 
 function isJsonRequest(request: FastifyRequest): boolean {
@@ -278,8 +285,14 @@ export function defaultSurfaceOf(request: FastifyRequest): LegacySurface {
   return path === '/admin' || ADMIN_PREFIXES.some((prefix) => path.startsWith(prefix)) ? 'admin' : 'api';
 }
 
+/** Options of {@link legacyParamsOf}. */
+export interface LegacyParamsOptions {
+  /** 'string' (default): JSON body booleans and numbers as `String(value)`; 'cfml': as CFML toString renders them (YES/NO, ACF numbers). */
+  jsonScalars?: 'string' | 'cfml';
+}
+
 /** Query then body params as legacy merges url, form and a JSON body: later keys win ignoring case, keeping their spelling. */
-export function legacyParamsOf(request: FastifyRequest): Record<string, unknown> {
+export function legacyParamsOf(request: FastifyRequest, options: LegacyParamsOptions = {}): Record<string, unknown> {
   const params: Record<string, unknown> = {};
   const spelling = new Map<string, string>();
   const put = (key: string, value: unknown): void => {
@@ -294,7 +307,7 @@ export function legacyParamsOf(request: FastifyRequest): Record<string, unknown>
   }
   if (isPlainObject(request.body)) {
     const json = isJsonRequest(request);
-    for (const [key, value] of Object.entries(request.body)) put(key, json ? jsonValue(value) : scopeValue(value));
+    for (const [key, value] of Object.entries(request.body)) put(key, json ? jsonValue(value, options.jsonScalars) : scopeValue(value));
   }
   return params;
 }
@@ -494,7 +507,8 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     return503OnClosing: false,
     // Routes answer only the methods they register; a route serving HEAD declares it.
     exposeHeadRoutes: false,
-    routerOptions: { ignoreTrailingSlash: true },
+    // Legacy caps no path parameter, so only the request line the HTTP parser admits bounds one; ColdFusion session ids exceed Fastify's 100.
+    routerOptions: { ignoreTrailingSlash: true, maxParamLength: maxHeaderSize },
     // Merged onto Fastify's Ajv defaults; admits multi-type schemas without strict-mode warnings.
     ajv: { customOptions: { allowUnionTypes: true } },
     // Without it the router answers a malformed escape or an over-long parameter with its own body, echoing the path.

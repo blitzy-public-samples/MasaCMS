@@ -1,7 +1,7 @@
 /** Provider contract of identity: the composition root's routes, the JSON API route keys and every operation's responses, legacy error shapes included, against contracts/openapi.yaml. */
 import { readFileSync } from 'node:fs';
 import { jwtVerify, createLocalJWKSet, type JSONWebKeySet } from 'jose';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix, transportForPath, type RouteMatrixEntry } from '@opt2/platform/auth';
 import { subscriptionName } from '@opt2/platform/events';
@@ -34,7 +34,7 @@ import { USER_CLOSED_WAIT_MS } from '../../src/domain/account-operations.js';
 import { PERSON_CHANGED_TOPIC, PERSON_CONTACT_SUBSCRIPTION, type PersonChangedPayload } from '../../src/events/person-contact.js';
 import { USER_ACCOUNT } from '../../src/repo/tables.js';
 import { SWEEP_QUEUE, buildTestApp, type TestApp } from '../helpers/app.js';
-import type { RecordingDb } from '../helpers/memory-repo.js';
+import type { MemoryIdentityRepo, RecordingDb } from '../helpers/memory-repo.js';
 import { ADMIN_S2, ALL_ACTORS, EDITOR, MEMBER_B, SITE_ADMIN_A, sessionRow } from '../helpers/rows.js';
 import {
   NOW,
@@ -72,10 +72,11 @@ interface ContractOperation {
   op: Operation;
 }
 
-/** An app under test with its recording database and, on the composition root, its capturing publisher. */
+/** An app under test with its recording database and, on the composed routes, its memory repository or, on the composition root, its capturing publisher. */
 interface Harness {
   app: App;
   db: RecordingDb;
+  repo?: MemoryIdentityRepo;
   publisher?: CapturingPublisher;
   close(): Promise<void>;
 }
@@ -94,6 +95,8 @@ interface Case {
   headers?: () => Promise<Headers>;
   payload?: string | Record<string, unknown>;
   push?: { subscription: string; envelope: () => TenantlessEnvelope };
+  /** Cases sent and checked first on the same harness, leaving the state this case reads. */
+  given?: readonly Case[];
   /** Prepares the harness's database before the request, for answers PostgreSQL computes that the recording database cannot. */
   setup?: (db: RecordingDb) => void;
   status: number;
@@ -163,9 +166,10 @@ const BLOCKED_UNTIL = '2026-06-30T12:08:00.123';
 const EDITOR_PHOTO = cfId('9', 1);
 const CONTACTS = ALL_ACTORS.map(({ contact }) => (contact === EDITOR.contact ? { ...contact, photofileid: EDITOR_PHOTO } : contact));
 
-/** Active Type=2 accounts stored in `tenantId` under pool site `siteId`: the pool a count reads. */
-function activePoolAccounts(tenantId: string, siteId: string): number {
-  return t.repo.rows(USER_ACCOUNT.table, tenantId).filter((row) => row.type === 2 && row.siteid === siteId && row.opt2_state === 'active').length;
+/** Active Type=2 accounts `harness` stores in `tenantId` under pool site `siteId`: the pool a count reads. */
+function activePoolAccounts(harness: Harness, tenantId: string, siteId: string): number {
+  if (harness.repo === undefined) throw new TypeError('Pool counts read the memory repository of the composed routes');
+  return harness.repo.rows(USER_ACCOUNT.table, tenantId).filter((row) => row.type === 2 && row.siteid === siteId && row.opt2_state === 'active').length;
 }
 
 function session(name: string): SubjectSession {
@@ -371,6 +375,76 @@ const NATIVE_GROUP_FIELDS: Readonly<Record<string, string>> = {
 const NATIVE_GROUP_POST = multipartPost(NATIVE_GROUP_FIELDS);
 const NATIVE_GROUP_URL = `/v1/groups?userid=${NATIVE_GROUP}`;
 
+/** Cases of their own operations that other cases name in `given`. */
+const ADD_MEMBER: Case = {
+  name: 'adds a member with a valid token',
+  method: 'POST',
+  url: `/v1/groups/${EDITOR_GROUP}/members/${SITE_ADMIN_A.account.userid}`,
+  headers: () => withCsrfHeaders('s2', `${SITE_ADMIN_A.account.userid}${EDITOR_GROUP}addtogroup`),
+  status: 200,
+  verify: (body) => expect(body).toEqual({ written: true }),
+};
+const SAVE_CLIENT: Case = {
+  name: 'saves a client with a valid token',
+  method: 'PUT',
+  url: `/v1/oauth-clients/${NEW_CLIENT}`,
+  headers: () => withCsrfHeaders('s2', NEW_CLIENT),
+  payload: { siteid: SITE_A, name: 'Gates client', granttype: 'client_credentials' },
+  status: 200,
+  verify: (body) => expect(record(body)).toMatchObject({ written: true, client: { clientid: NEW_CLIENT } }),
+};
+const CLAIM_TOKEN: Case = {
+  name: 'takes a pending-legacy claim for a validating legacy request',
+  method: 'POST',
+  url: '/internal/v1/csrf/claims',
+  as: 'service:gateway',
+  payload: { sessionId: 'S-system-user', ...csrfFor(session('system-user'), 'contract.claim'), context: 'contract.claim' },
+  status: 200,
+  verify: (body) => expect(body).toEqual({ state: 'pending-legacy' }),
+};
+const PREPARE_CREATE: Case = {
+  name: 'prepares a roster create',
+  method: 'POST',
+  url: operationUrl(NEW_USER, OPERATION_ID, 'prepare'),
+  headers: relay('people', 's2'),
+  payload: PREPARE_BODY,
+  status: 200,
+  verify: (body) => expect(record(body).state).toBe('prepared'),
+};
+const PREPARE_SECOND_CREATE: Case = {
+  name: 'prepares a second roster create, which a revert undoes',
+  method: 'POST',
+  url: operationUrl(REVERTED_USER, REVERTED_OPERATION, 'prepare'),
+  headers: relay('people', 's2'),
+  payload: { ...PREPARE_BODY, account: { ...PREPARE_BODY.account, UserName: 'gates_reverted_user' } },
+  status: 200,
+};
+const PREPARE_UPDATE: Case = {
+  name: 'prepares a roster update of an existing user',
+  method: 'POST',
+  url: operationUrl(EDITOR.account.userid, ABORTED_OPERATION, 'prepare'),
+  headers: relay('people', 's2'),
+  payload: { ...PREPARE_BODY, kind: 'update', account: { ...PREPARE_BODY.account, UserName: EDITOR.account.username } },
+  status: 200,
+};
+const COMMIT_CREATE: Case = {
+  name: 'commits the prepared create',
+  method: 'POST',
+  url: operationUrl(NEW_USER, OPERATION_ID, 'commit'),
+  headers: relay('people', 's2'),
+  given: [PREPARE_CREATE],
+  status: 200,
+  verify: (body) => expect(record(body).state).toBe('committed'),
+};
+const COMMIT_SECOND_CREATE: Case = {
+  name: 'commits the second create',
+  method: 'POST',
+  url: operationUrl(REVERTED_USER, REVERTED_OPERATION, 'commit'),
+  headers: relay('people', 's2'),
+  given: [PREPARE_SECOND_CREATE],
+  status: 200,
+};
+
 const CASES: Record<string, Case[]> = {
   ...JSON_API_CASES,
   getCurrentSession: [
@@ -575,14 +649,7 @@ const CASES: Record<string, Case[]> = {
     { name: 'refuses a malformed group id', method: 'GET', url: '/v1/groups/x/members.csv', as: 's2', status: 400 },
   ],
   addGroupMember: [
-    {
-      name: 'adds a member with a valid token',
-      method: 'POST',
-      url: `/v1/groups/${EDITOR_GROUP}/members/${SITE_ADMIN_A.account.userid}`,
-      headers: () => withCsrfHeaders('s2', `${SITE_ADMIN_A.account.userid}${EDITOR_GROUP}addtogroup`),
-      status: 200,
-      verify: (body) => expect(body).toEqual({ written: true }),
-    },
+    ADD_MEMBER,
     {
       name: 'writes nothing without a token',
       method: 'POST',
@@ -598,6 +665,7 @@ const CASES: Record<string, Case[]> = {
       method: 'DELETE',
       url: `/v1/groups/${EDITOR_GROUP}/members/${SITE_ADMIN_A.account.userid}`,
       as: 's2',
+      given: [ADD_MEMBER],
       status: 200,
       verify: (body) => expect(body).toEqual({ written: true }),
     },
@@ -649,15 +717,7 @@ const CASES: Record<string, Case[]> = {
     { name: 'refuses a malformed client id', method: 'GET', url: '/v1/oauth-clients/nope', as: 's2', status: 400 },
   ],
   saveOAuthClient: [
-    {
-      name: 'saves a client with a valid token',
-      method: 'PUT',
-      url: `/v1/oauth-clients/${NEW_CLIENT}`,
-      headers: () => withCsrfHeaders('s2', NEW_CLIENT),
-      payload: { siteid: SITE_A, name: 'Gates client', granttype: 'client_credentials' },
-      status: 200,
-      verify: (body) => expect(record(body)).toMatchObject({ written: true, client: { clientid: NEW_CLIENT } }),
-    },
+    SAVE_CLIENT,
     { name: 'refuses an unknown grant type', method: 'PUT', url: `/v1/oauth-clients/${NEW_CLIENT}`, as: 's2', payload: { siteid: SITE_A, granttype: 'nope' }, status: 400 },
   ],
   deleteOAuthClient: [
@@ -667,6 +727,7 @@ const CASES: Record<string, Case[]> = {
       url: `/v1/oauth-clients/${NEW_CLIENT}`,
       // The save consumed the token issued at the clock's instant for this context.
       headers: () => withCsrfHeaders('s2', NEW_CLIENT, 1_000),
+      given: [SAVE_CLIENT],
       status: 200,
       verify: (body) => expect(body).toEqual({ written: true }),
     },
@@ -690,10 +751,11 @@ const CASES: Record<string, Case[]> = {
       as: 'service:gateway',
       payload: { sessionId: 'S-s2', siteId: SITE_A },
       status: 200,
-      verify: async (body) => {
+      verify: async (body, _res, harness) => {
         const minted = record(body) as { token: string; claims: { sid: string; site: string; roles: string[] } };
         expect(minted.claims).toMatchObject({ sid: 'S-s2', site: SITE_A });
         expect(minted.claims.roles).toContain(Roles.s2);
+        const jwks = (await harness.app.inject({ method: 'GET', url: '/.well-known/jwks.json' })).json<JSONWebKeySet>();
         const verified = jwtVerify(minted.token, createLocalJWKSet(jwks), { issuer: 'opt2-local-identity', audience: 'opt2-local', currentDate: NOW });
         await expect(verified).resolves.toBeDefined();
       },
@@ -801,15 +863,7 @@ const CASES: Record<string, Case[]> = {
     { name: 'refuses a body without a context', method: 'POST', url: '/internal/v1/csrf/consume', headers: relay('people', 'editor'), payload: { sessionId: 'S-editor', token: 'T', expires: 'E' }, status: 400 },
   ],
   claimCsrfToken: [
-    {
-      name: 'takes a pending-legacy claim for a validating legacy request',
-      method: 'POST',
-      url: '/internal/v1/csrf/claims',
-      as: 'service:gateway',
-      payload: { sessionId: 'S-system-user', ...csrfFor(session('system-user'), 'contract.claim'), context: 'contract.claim' },
-      status: 200,
-      verify: (body) => expect(body).toEqual({ state: 'pending-legacy' }),
-    },
+    CLAIM_TOKEN,
     { name: 'refuses a claim without an expiry', method: 'POST', url: '/internal/v1/csrf/claims', as: 'service:gateway', payload: { sessionId: 'S-x', token: 'T', context: 'c' }, status: 400 },
   ],
   settleCsrfClaims: [
@@ -819,6 +873,7 @@ const CASES: Record<string, Case[]> = {
       url: '/internal/v1/csrf/claims:settle',
       as: 'service:gateway',
       payload: { sessionId: 'S-system-user', consumed: [csrfFor(session('system-user'), 'contract.claim').token], released: [] },
+      given: [CLAIM_TOKEN],
       status: 200,
       verify: (body) => expect(body).toEqual({ used: 1, released: 0 }),
     },
@@ -836,39 +891,18 @@ const CASES: Record<string, Case[]> = {
     { name: 'refuses a caller other than people', method: 'GET', url: operationUrl(NEW_USER, UNKNOWN_ID), as: 'service:gateway', status: 403 },
   ],
   prepareAccountOperation: [
-    {
-      name: 'prepares a roster create',
-      method: 'POST',
-      url: operationUrl(NEW_USER, OPERATION_ID, 'prepare'),
-      headers: relay('people', 's2'),
-      payload: PREPARE_BODY,
-      status: 200,
-      verify: (body) => expect(record(body).state).toBe('prepared'),
-    },
+    PREPARE_CREATE,
     {
       name: 'answers a repeated prepare of the operation for another user with 409',
       method: 'POST',
       url: operationUrl(cfId('E', 906), OPERATION_ID, 'prepare'),
       headers: relay('people', 's2'),
       payload: { ...PREPARE_BODY, account: { ...PREPARE_BODY.account, UserName: 'gates_other_user' } },
+      given: [PREPARE_CREATE],
       status: 409,
     },
-    {
-      name: 'prepares a second roster create, which a revert undoes',
-      method: 'POST',
-      url: operationUrl(REVERTED_USER, REVERTED_OPERATION, 'prepare'),
-      headers: relay('people', 's2'),
-      payload: { ...PREPARE_BODY, account: { ...PREPARE_BODY.account, UserName: 'gates_reverted_user' } },
-      status: 200,
-    },
-    {
-      name: 'prepares a roster update of an existing user',
-      method: 'POST',
-      url: operationUrl(EDITOR.account.userid, ABORTED_OPERATION, 'prepare'),
-      headers: relay('people', 's2'),
-      payload: { ...PREPARE_BODY, kind: 'update', account: { ...PREPARE_BODY.account, UserName: EDITOR.account.username } },
-      status: 200,
-    },
+    PREPARE_SECOND_CREATE,
+    PREPARE_UPDATE,
     {
       name: "answers a username already in the pool with legacy's validation errors",
       method: 'POST',
@@ -887,21 +921,8 @@ const CASES: Record<string, Case[]> = {
     },
   ],
   commitAccountOperation: [
-    {
-      name: 'commits the prepared create',
-      method: 'POST',
-      url: operationUrl(NEW_USER, OPERATION_ID, 'commit'),
-      headers: relay('people', 's2'),
-      status: 200,
-      verify: (body) => expect(record(body).state).toBe('committed'),
-    },
-    {
-      name: 'commits the second create',
-      method: 'POST',
-      url: operationUrl(REVERTED_USER, REVERTED_OPERATION, 'commit'),
-      headers: relay('people', 's2'),
-      status: 200,
-    },
+    COMMIT_CREATE,
+    COMMIT_SECOND_CREATE,
     { name: 'answers a commit of an unknown operation with 409', method: 'POST', url: operationUrl(NEW_USER, UNKNOWN_ID, 'commit'), headers: relay('people', 's2'), status: 409 },
   ],
   finishAccountOperation: [
@@ -910,6 +931,7 @@ const CASES: Record<string, Case[]> = {
       method: 'POST',
       url: operationUrl(NEW_USER, OPERATION_ID, 'finish'),
       headers: relay('people', 's2'),
+      given: [COMMIT_CREATE],
       status: 200,
       verify: (body) => expect(record(body).state).toBe('finished'),
     },
@@ -920,6 +942,7 @@ const CASES: Record<string, Case[]> = {
       method: 'POST',
       url: operationUrl(EDITOR.account.userid, ABORTED_OPERATION, 'abort'),
       headers: relay('people', 's2'),
+      given: [PREPARE_UPDATE],
       status: 200,
       verify: (body) => expect(record(body)).toMatchObject({ operationId: ABORTED_OPERATION, state: 'aborted' }),
     },
@@ -930,6 +953,7 @@ const CASES: Record<string, Case[]> = {
       method: 'POST',
       url: operationUrl(REVERTED_USER, REVERTED_OPERATION, 'revert'),
       headers: relay('people', 's2'),
+      given: [COMMIT_SECOND_CREATE],
       status: 200,
       verify: (body) => expect(record(body)).toMatchObject({ operationId: REVERTED_OPERATION, userId: REVERTED_USER }),
     },
@@ -990,7 +1014,7 @@ const CASES: Record<string, Case[]> = {
       headers: relay('people', 'editor'),
       payload: { scope: 'pool', publicPool: false },
       status: 200,
-      verify: (body) => expect(body).toEqual({ count: activePoolAccounts(TENANT_A.tenantId, SITE_A) }),
+      verify: (body, _res, harness) => expect(body).toEqual({ count: activePoolAccounts(harness, TENANT_A.tenantId, SITE_A) }),
     },
     { name: 'refuses an all-sites count for a user token without the s2 claim', method: 'POST', url: '/internal/v1/accounts:count', headers: relay('people', 'editor'), payload: { scope: 'all-sites' }, status: 403 },
     { name: 'refuses a pool count without publicPool', method: 'POST', url: '/internal/v1/accounts:count', headers: relay('people', 'editor'), payload: { scope: 'pool' }, status: 400 },
@@ -1531,24 +1555,16 @@ async function rootHarness(): Promise<RootHarness> {
   return { app: built.app, db: built.db, publisher: built.publisher, close: () => built.app.close() };
 }
 
-let t: IdentityTestApp;
-let root: RootHarness;
-let jwks: JSONWebKeySet;
+/** The composed routes over the cases' seed, the editor's photo stored with strategies-content. */
+async function composedHarness(): Promise<IdentityTestApp> {
+  const built = await buildIdentityApp(defaultSeed({ sessions: EXTRA_SESSIONS, strikes: [BLOCKED_STRIKE], personContacts: CONTACTS }));
+  built.content.files.set(EDITOR_PHOTO, 'jpg');
+  return built;
+}
 
-beforeAll(async () => {
-  t = await buildIdentityApp(defaultSeed({ sessions: EXTRA_SESSIONS, strikes: [BLOCKED_STRIKE], personContacts: CONTACTS }));
-  t.content.files.set(EDITOR_PHOTO, 'jpg');
-  jwks = (await t.app.inject({ method: 'GET', url: '/.well-known/jwks.json' })).json<JSONWebKeySet>();
-  root = await rootHarness();
-});
-
-afterAll(async () => {
-  await t?.close();
-  await root?.close();
-});
-
-/** Prepares `harness` for `c`, sends it, asserts its status, validates the response against the operation it addresses, then runs its checks. */
+/** Sends `c`'s `given` cases, prepares `harness` for `c`, sends it, asserts its status, validates the response against the operation it addresses, then runs its checks. */
 async function sendCase(harness: Harness, c: Case): Promise<void> {
+  for (const prior of c.given ?? []) await sendCase(harness, prior);
   c.setup?.(harness.db);
   const headers = { ...(c.as === undefined ? {} : await credentialsFor(subjectNamed(c.as))), ...(c.headers === undefined ? {} : await c.headers()) };
   const res =
@@ -1606,6 +1622,16 @@ describe('toOpenApiPath', () => {
 });
 
 describe('registered routes of the composition root', () => {
+  let root: RootHarness;
+
+  beforeAll(async () => {
+    root = await rootHarness();
+  });
+
+  afterAll(async () => {
+    await root?.close();
+  });
+
   it('are exactly the contract operations', () => {
     expect(diffRouteSets(servedRoutes(root.app), OPERATIONS)).toEqual({ undeclared: [], unregistered: [] });
   });
@@ -1699,6 +1725,13 @@ describe('JSON API route keys', () => {
 });
 
 describe('responses', () => {
+  let harness: Harness | undefined;
+
+  afterEach(async () => {
+    await harness?.close();
+    harness = undefined;
+  });
+
   it('cover every contract operation exactly once', () => {
     const covered = [...Object.keys(CASES), ...Object.keys(ROOT_CASES)].sort();
     expect(covered).toEqual(OPERATIONS.map(({ operationId }) => operationId).sort());
@@ -1707,24 +1740,26 @@ describe('responses', () => {
   for (const operation of OPERATIONS) {
     for (const c of CASES[operation.operationId] ?? []) {
       it(`${operation.operationId}: ${c.name}`, async () => {
-        await sendCase(t, c);
+        harness = await composedHarness();
+        await sendCase(harness, c);
       });
     }
   }
 });
 
 describe('responses of the composition root', () => {
-  beforeEach(() => {
-    // clear() also drops responders, so the registry answer is installed again.
-    root.db.clear();
-    root.db.respond(REGISTRY_SQL, registryAnswer);
-    root.publisher.clear();
+  let harness: Harness | undefined;
+
+  afterEach(async () => {
+    await harness?.close();
+    harness = undefined;
   });
 
   for (const operation of OPERATIONS) {
     for (const c of ROOT_CASES[operation.operationId] ?? []) {
       it(`${operation.operationId}: ${c.name}`, async () => {
-        await sendCase(root, c);
+        harness = await rootHarness();
+        await sendCase(harness, c);
       });
     }
   }

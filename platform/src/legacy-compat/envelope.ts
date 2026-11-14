@@ -1,6 +1,7 @@
 // Port of the Masa JSON API response envelope and serializeResponse (jsonApiUtility.cfc:894, 1310-1323, 1471-1514, 1620-1639).
 import { createApiSerializer, cfIsBoolean, cfToBoolean, type LegacyJsonSerializer } from './serializer.js';
 import { etag, LEGACY_JSON_CONTENT_TYPE, LEGACY_SHUNTER_CONTENT_TYPE } from './headers.js';
+import { acfKeyOrder, type StructOp } from './acf-struct.js';
 
 /** Legacy JSON API response struct; flattening merges data keys into the top level, hence the index signature. */
 export interface LegacyEnvelope {
@@ -21,6 +22,8 @@ export interface SerializeResponseOptions {
   useDataNamespace?: unknown;
   useDataNamespaceForAPI?: boolean;
   serializer?: LegacyJsonSerializer;
+  /** Top-level key order: 'acf' as ACF iterates Masa's unordered response struct; 'insertion' (default) as the fixture envelope's ordered struct does. */
+  keyOrder?: 'insertion' | 'acf';
 }
 
 /** Status, headers and exact body of a serialized legacy JSON API response. */
@@ -67,6 +70,18 @@ function setNoCase(obj: Record<string, unknown>, key: string, value: unknown): v
   for (const k of duplicates) delete obj[k];
   // Defined, not assigned, so a `__proto__` key stays a data key as structAppend copies it.
   Object.defineProperty(obj, found, { value, writable: true, enumerable: true, configurable: true });
+}
+
+/** `struct` with its keys in the order ACF iterates the struct `ops` built. */
+function inAcfOrder(struct: Record<string, unknown>, ops: readonly StructOp[]): Record<string, unknown> {
+  const rank = new Map(acfKeyOrder(ops).map((name, i) => [name.toUpperCase(), i]));
+  // A stable sort: no key is dropped, and one whose upper case the model never saw goes last.
+  const at = (key: string): number => rank.get(key.toUpperCase()) ?? rank.size;
+  const ordered: Record<string, unknown> = {};
+  for (const key of Object.keys(struct).sort((a, b) => at(a) - at(b))) {
+    Object.defineProperty(ordered, key, { value: struct[key], writable: true, enumerable: true, configurable: true });
+  }
+  return ordered;
 }
 
 /** CFML isDefined on a struct member: present and not null. */
@@ -137,20 +152,30 @@ export function serializeResponse(
     useDataNamespace,
     useDataNamespaceForAPI = true,
     serializer = createApiSerializer(),
+    keyOrder = 'insertion',
   } = opts;
   const headers: Record<string, string> = { 'Content-Type': LEGACY_JSON_CONTENT_TYPE };
   const status = mura404 ? 404 : statusCode;
   const copy: Record<string, unknown> = { ...response };
+  // The struct writes and deletes legacy makes, in order, from which ACF's key order follows.
+  const ops: StructOp[] = Object.keys(copy).map((key): StructOp => ['set', key]);
 
-  if (suppressAPIParams && isDefinedNoCase(copy, 'params')) deleteNoCase(copy, 'params');
+  if (suppressAPIParams && isDefinedNoCase(copy, 'params')) {
+    deleteNoCase(copy, 'params');
+    ops.push(['delete', 'params']);
+  }
 
   const data = getNoCase(copy, 'data');
   if (isStruct(data)) {
     const flatten = cfIsBoolean(useDataNamespace) ? !cfToBoolean(useDataNamespace) : !useDataNamespaceForAPI;
     if (flatten) {
       // structAppend overwrites by default, so data keys replace top-level keys of the same name.
-      for (const key of Object.keys(data)) setNoCase(copy, key, data[key]);
+      for (const key of Object.keys(data)) {
+        setNoCase(copy, key, data[key]);
+        ops.push(['set', key]);
+      }
       deleteNoCase(copy, 'data');
+      ops.push(['delete', 'data']);
     }
   }
 
@@ -161,11 +186,12 @@ export function serializeResponse(
     if (cfIsBoolean(shunter) && cfToBoolean(shunter) && isDefinedNoCase(shunterData, 'layout')) {
       headers['Content-Type'] = LEGACY_SHUNTER_CONTENT_TYPE;
       setNoCase(copy, 'layout', getNoCase(shunterData, 'layout'));
+      ops.push(['set', 'layout']);
     }
   }
 
   // Legacy serializes twice (lines 1506-1510); both passes are identical, so one pass gives body and ETag.
-  const body = serializer.serialize(copy);
+  const body = serializer.serialize(keyOrder === 'acf' ? inAcfOrder(copy, ops) : copy);
   headers['ETag'] = etag(body);
   return { status, headers, body };
 }

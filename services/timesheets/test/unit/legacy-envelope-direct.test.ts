@@ -163,6 +163,12 @@ describe('fixtureContext', () => {
       { comment: 'Looks right', asOf: '2026-07-08', count: 2, note: null },
       { siteid: 'tenant-a', comment: 'Looks right', asOf: '2026-07-08', count: '2', note: '' },
     ],
+    [
+      'a JSON object body, booleans and numbers as CFML toString text',
+      'application/json',
+      { comment: true, approved: false, hours: 1e20, rate: 1.5 },
+      { ...query, comment: 'YES', approved: 'NO', hours: '1E+020', rate: '1.5' },
+    ],
     ['a form body, repeated keys joined', 'application/x-www-form-urlencoded', { comment: ['a', 'b'] }, { ...query, comment: 'a,b' }],
     ['a JSON array body, ignored', 'application/json', ['x'], query],
   ])('pairs the api.cfm method with url then %s, later keys winning ignoring case', (_label, contentType, body, params) => {

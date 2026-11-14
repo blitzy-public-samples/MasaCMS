@@ -48,6 +48,7 @@ export {
   sendLegacyResponse,
   LEGACY_POST_LIMIT_BYTES,
   type CreateServiceOptions,
+  type LegacyParamsOptions,
   type Opt2Runtime,
   type Opt2RequestScope,
   type LegacySurface,

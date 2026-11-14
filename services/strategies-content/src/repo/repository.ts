@@ -11,7 +11,7 @@ import {
 } from '@opt2/platform/migration-kit';
 import type { QueryResultRow, TenantTx } from '@opt2/platform/tenancy';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
-import { LEGACY_ADMIN_SENTINEL_ID, cfEq, cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
+import { LEGACY_ADMIN_SENTINEL_ID, LegacyServiceUnavailableError, cfEq, cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
 import * as contentQueries from './content-queries.js';
 import { ContentQueryError, SqlParams, firstById, type SortDirection } from './content-queries.js';
 import * as feedQueries from './feed-queries.js';
@@ -776,6 +776,8 @@ export interface ApprovalRequestFilter {
   siteId?: string;
   chainId?: string;
   groupId?: string;
+  /** Requests of any of these groups (`groupid IN`). */
+  groupIds?: readonly string[];
 }
 
 /** One form submission as dataCollectionManager.update writes it: the questions, then the packet. */
@@ -1239,6 +1241,14 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     );
   }
 
+  /** Holds the tenant's exclusive content edit lock of `kind` over `ids` until `tx` ends; ids are keyed as SQL Server compares them. */
+  function editLock(tx: TenantTx, kind: 'item' | 'site', ids: readonly string[]): Promise<void> {
+    const key = ids.map((id) => id.toLowerCase().replace(/ +$/u, '')).join(':');
+    return platform.read(tx, [], async () => {
+      await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`${schema}.${CONTENT.table}:${tx.tenantId}:${kind}:${key}`]);
+    });
+  }
+
   const content = {
     ...contentQueries,
 
@@ -1259,6 +1269,16 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     /** contentDAO.archiveActive: sets `active = 0` on the active versions of an item. */
     archiveActive(tx: TenantTx, args: { contentId: string; siteId: string }, ctx?: WriteContext): Promise<ContentRow[]> {
       return updateVersions(tx, { contentId: args.contentId, active: 1, siteId: args.siteId }, { active: 0 }, ctx);
+    },
+
+    /** contentManager.add's `editingContent` cflock of one item, held until `tx` ends. */
+    lockItem(tx: TenantTx, args: { contentId: string; siteId: string }): Promise<void> {
+      return editLock(tx, 'item', [args.siteId, args.contentId]);
+    },
+
+    /** contentManager.deleteAll's site-wide `editingContent` cflock, held until `tx` ends. */
+    lockSite(tx: TenantTx, args: { siteId: string }): Promise<void> {
+      return editLock(tx, 'site', [args.siteId]);
     },
 
     /** Makes version `contentHistId` the active one. */
@@ -2806,6 +2826,20 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       return rows[0] ?? null;
     },
 
+    /** `findChangeset` by id for several ids with one query: each id's first change set, keyed by the id. */
+    async findChangesetsIn(tx: TenantTx, changesetIds: readonly string[]): Promise<Map<string, ChangesetRow>> {
+      const ids = [...new Set(changesetIds)];
+      if (ids.length === 0) return new Map();
+      const p = new SqlParams(1);
+      const rows = await select<ChangesetRow>(
+        tx,
+        [CHANGESET],
+        `SELECT * FROM ${name(CHANGESET)} WHERE tenant_id = $1 AND ${idIn(p, 'changesetid', ids)} ORDER BY changesetid`,
+        [tx.tenantId, ...p.values],
+      );
+      return firstById(rows, ids, (row) => row.changesetid);
+    },
+
     /** changesetManager.getQuery; its tag filter reads from `fromt tchangesettagassign`, which fails, so a tag filter fails here too. */
     async changesetQuery(tx: TenantTx, args: ChangesetQueryArgs): Promise<ChangesetListRow[]> {
       const built = changesetListSelect(tx, args);
@@ -3214,6 +3248,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       if (filter.siteId !== undefined) filters.push(`siteid = ${p.add(filter.siteId)}`);
       if (filter.chainId !== undefined) filters.push(idEq(p, 'chainid', filter.chainId));
       if (filter.groupId !== undefined) filters.push(idEq(p, 'groupid', filter.groupId));
+      if (filter.groupIds !== undefined) filters.push(idIn(p, 'groupid', filter.groupIds));
       return select<ApprovalRequestRow>(
         tx,
         [APPROVAL_REQUEST],
@@ -3604,6 +3639,34 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
         { contentid: args.contentId, isapproved: 0, email: args.email, siteid: args.siteId },
         ctx,
       );
+    },
+
+    /** contentManager.add's cftry around setApprovalQue: the insert in a savepoint, null after a failure other than a gate or authority error. */
+    async insertSubmissionApprovalBestEffort(
+      tx: TenantTx,
+      args: { contentId: string; email: string | null; siteId: string },
+      ctx?: WriteContext,
+    ): Promise<PublicSubmissionApprovalRow | null> {
+      // Taken before the savepoint, so a rollback to it keeps the gate lock and gate errors fail the caller.
+      await platform.read(tx, [], async () => {
+        if (!isMigrationAuthority(ctx?.authority)) {
+          await acquireWriteGates(tx, unitsOf(PUBLIC_SUBMISSION_APPROVAL));
+        }
+      });
+      const savepoint = 'submission_approval';
+      await tx.query(`SAVEPOINT ${savepoint}`);
+      try {
+        const row = await approvalQueues.insertSubmissionApproval(tx, args, ctx);
+        await tx.query(`RELEASE SAVEPOINT ${savepoint}`);
+        return row;
+      } catch (err) {
+        await tx.query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+        await tx.query(`RELEASE SAVEPOINT ${savepoint}`);
+        if (err instanceof LegacyServiceUnavailableError) {
+          throw err;
+        }
+        return null;
+      }
     },
 
     /** contentUtility.checkApprovalQue's select, which compares `contentid` with the version's content history id. */

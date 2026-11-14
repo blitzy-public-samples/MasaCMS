@@ -14,12 +14,12 @@ import {
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
-import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/context.js';
 import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
-import { carchRawActions, registerCarchRoutes } from '../../src/routes/v1/carch.js';
+import { CARCH_SITE_SETTINGS_REASON, CARCH_VERSION_PREVIEW_EXCEPTION, carchRawActions, registerCarchRoutes } from '../../src/routes/v1/carch.js';
 import { TEST_CLOCK, buildContentApp, userHeaders, type ContentTestApp } from '../helpers/app.js';
 
 type Json = Record<string, unknown>;
@@ -52,6 +52,10 @@ const FORM = { 'content-type': 'application/x-www-form-urlencoded' } as const;
 const TOKEN = { 'x-csrf_token': 'T0KEN', 'x-csrf_token_expires': '260630235959000' } as const;
 const UPDATED_AT = new Date(2026, 5, 2, 14, 5, 6, 7);
 const ENTERED = new Date(2026, 5, 3, 9, 0, 0, 0);
+/** UPDATED_AT as the contract's LocalTimestamp: the stored wall clock, without an offset. */
+const UPDATED_AT_TEXT = '2026-06-02T14:05:06.007';
+/** ENTERED as ColdFusion prints a query timestamp. */
+const ENTERED_TEXT = '2026-06-03 09:00:00.0';
 
 const TOP = /^SELECT tcontent\.contenthistid, tcontent\.contentid, tcontent\.moduleid, .* WHERE tcontent\.siteid = \$1 AND tcontent\.active = 1 AND tcontent\.contentid = ANY/;
 const CRUMBS = /LEFT JOIN "content"\."approval_assignment" tapprovalassignments/;
@@ -92,6 +96,8 @@ let ctx: ContentRouteContext;
 const calls: ServiceRequest[] = [];
 const saved: Json[] = [];
 const consumed: CsrfConsumeRequest[] = [];
+/** The errors the routes raised, as the error handler receives them. */
+const routeErrors: Error[] = [];
 const identity = { state: {} as Json | undefined, status: 200, saveStatus: 200, csrfValid: true, user: { userID: USER_ID } as Json };
 
 /** identity's admin session store, CSRF consume and session struct; any other service call fails the test. */
@@ -215,6 +221,9 @@ beforeAll(async () => {
         clock: TEST_CLOCK,
         actorFor: async (request: FastifyRequest) => actorFromClaims(request.opt2Auth.user, 'Admin User'),
       } as Pick<ContentRouteContext, 'domain' | 'clock' | 'actorFor'> as ContentRouteContext;
+      app.addHook('onError', async (_request, _reply, error) => {
+        routeErrors.push(error);
+      });
       // ./raw.ts's flow for the entries whose render context these tests read: the gate on the request's siteid, then the entry.
       for (const action of ['loaddiff', 'draftpromptdata'] as const) {
         app.route({
@@ -243,6 +252,7 @@ beforeEach(() => {
   calls.length = 0;
   saved.length = 0;
   consumed.length = 0;
+  routeErrors.length = 0;
   Object.assign(identity, { state: {}, status: 200, saveStatus: 200, csrfValid: true, user: { userID: USER_ID } });
 });
 
@@ -449,7 +459,7 @@ describe('carch.list', () => {
     expect(res.headers['x-opt2-session-effects']).toBeUndefined();
     const { rc } = res.json() as { rc: Json };
     expect(rc.topid).toBe(NODE);
-    expect(rc.rsTop).toEqual([expect.objectContaining({ contentid: NODE, lastupdate: UPDATED_AT.toISOString() })]);
+    expect(rc.rsTop).toEqual([expect.objectContaining({ contentid: NODE, lastupdate: UPDATED_AT_TEXT })]);
     expect(paramsOfFirst(TOP)).toEqual([SITE, [NODE, NODE.toLowerCase()]]);
     expect(rc).toMatchObject({
       siteConfig: { customTagGroups: '', scaffolding: false, dataCollection: true, hasLockableNodes: false },
@@ -571,11 +581,81 @@ describe('carch.search', () => {
 });
 
 describe('carch.draft', () => {
-  it('lists the session user’s drafts of the site', async () => {
-    t.db.respond(DRAFTS, [{ contenthistid: HIST, contentid: NODE, siteid: SITE, menutitle: 'About', lastupdate: UPDATED_AT, module: 'Site Manager' }]);
-    const rc = await rcOf(`/v1/sites/${SITE}/content/drafts`);
-    expect(rc.rsList).toEqual([expect.objectContaining({ contenthistid: HIST, lastupdate: UPDATED_AT.toISOString() })]);
+  const DRAFTS_URL = `/v1/sites/${SITE}/content/drafts`;
+  const GROUP = 'F1B2C3D4-0001-4A5B-8C7D9E0F1A2B3C4D';
+  const MEMBERSHIPS = /FROM "content"\."membership_projection"/;
+  const GROUPS = /FROM "content"\."group_projection"/;
+  const GRANTS = /FROM "content"\."permission_projection"/;
+  const EDITOR_ROLES = [Roles.systemUser, m('000')] as const;
+  const statementsOf = (pattern: RegExp) => t.db.statements.filter((statement) => pattern.test(statement.sql));
+
+  /** A getDraftList row of the session user. */
+  const draftRow = (contentid: string, overrides: Json = {}): Json => ({
+    contenthistid: HIST, contentid, siteid: SITE, moduleid: SITE_TREE, parentid: CHILD, type: 'Page', subtype: 'Landing', menutitle: 'About',
+    lastupdate: UPDATED_AT, module: 'Site Manager', ...overrides,
+  });
+
+  /** The crumb walk's rows: NODE of a custom-icon subtype under its restricted Folder, and a component under its module. */
+  const crumbRows = [
+    crumb(NODE, { parentid: CHILD, subtype: 'Landing' }),
+    crumb(CHILD, { type: 'Folder', menutitle: 'Home', restricted: 1 }),
+    crumb(GRANDCHILD, { type: 'Component', moduleid: COMPONENTS, parentid: COMPONENTS, menutitle: 'Footer' }),
+  ];
+  const crumbIds = (): unknown[] => statementsOf(CRUMBS).map((statement) => (statement.params[0] as string[])[0]);
+  const nodeCrumbdata = [
+    expect.objectContaining({ contentid: NODE, type: 'Page', subtype: 'Landing', restricted: 0, parentarray: [NODE, CHILD], iconclass: 'mi-star' }),
+    expect.objectContaining({ contentid: CHILD, type: 'Folder', menutitle: 'Home', restricted: 1, iconclass: 'mi-folder-open-o' }),
+  ];
+
+  /** The crumb reads, the site's Page/Landing icon and the session user's membership of the private-pool group `Editors`. */
+  function respondCrumbsAndGroups(grants: ReadonlyArray<readonly [string, string]>): void {
+    t.db.respond(CRUMBS, (params) => crumbRows.filter((row) => (params[0] as string[]).includes(String(row.contentid))));
+    t.db.respond(SUBTYPES, [{ siteid: SITE, type: 'Page', subtype: 'Landing', iconclass: 'icon-star' }]);
+    t.db.respond(MEMBERSHIPS, [{ group_id: GROUP }]);
+    t.db.respond(GROUPS, [{ tenant_id: TENANT_A.tenantId, group_id: GROUP, group_name: 'Editors', site_id: SITE, is_public: 0, deleted: false }]);
+    t.db.respond(GRANTS, grants.map(([contentId, type]) => ({ tenant_id: TENANT_A.tenantId, group_id: GROUP, site_id: SITE, content_id: contentId, type })));
+  }
+
+  it('reads the session user’s drafts of the site, and no crumbs, groups or icons when there are none', async () => {
+    const rc = await rcOf(DRAFTS_URL);
+    expect(rc.rsList).toEqual([]);
     expect(JSON.stringify(paramsOfFirst(DRAFTS))).toContain(USER_ID);
+    expect([ran(CRUMBS), ran(MEMBERSHIPS), ran(SUBTYPES)]).toEqual([false, false, false]);
+  });
+
+  it.each([
+    ['S2', [Roles.s2], [], 'editor'],
+    ['an Author grant of a held group on the node', EDITOR_ROLES, [[NODE, 'Author']], 'author'],
+    ['an Editor grant on the restricted parent', EDITOR_ROLES, [[CHILD, 'Editor']], 'editor'],
+    ['a Read grant only', EDITOR_ROLES, [[NODE, 'Read']], 'read'],
+    ['no grant', EDITOR_ROLES, [], 'none'],
+    ['a Deny on the node above an Editor grant on its parent', EDITOR_ROLES, [[NODE, 'Deny'], [CHILD, 'Editor']], 'none'],
+  ] as const)('gives a draft its crumbdata with icon classes and its node verdict for %s, read in the token tenant', async (_name, roles, grants, verdict) => {
+    t.db.respond(DRAFTS, [draftRow(NODE)]);
+    respondCrumbsAndGroups(grants);
+    const res = await call('GET', DRAFTS_URL, { roles });
+    expect(res.statusCode, res.body).toBe(200);
+    expect((res.json() as { rc: Json }).rc.rsList).toEqual([{ ...draftRow(NODE), lastupdate: UPDATED_AT_TEXT, verdict, crumbdata: nodeCrumbdata }]);
+    expect(statementsOf(CRUMBS).map((statement) => [statement.tenantId, statement.params])).toEqual([
+      [TENANT_A.tenantId, [[NODE, NODE.toLowerCase()], SITE]],
+      [TENANT_A.tenantId, [[CHILD, CHILD.toLowerCase()], SITE]],
+    ]);
+  });
+
+  it('keeps every draft and its columns in list order, reading crumbs per draft and memberships and icons once', async () => {
+    const component = draftRow(GRANDCHILD, { type: 'Component', subtype: 'Default', moduleid: COMPONENTS, parentid: COMPONENTS, menutitle: 'Footer', module: 'Components' });
+    t.db.respond(DRAFTS, [component, draftRow(NODE)]);
+    respondCrumbsAndGroups([[NODE, 'Author']]);
+    const res = await call('GET', DRAFTS_URL, { roles: EDITOR_ROLES });
+    expect(res.statusCode, res.body).toBe(200);
+    expect((res.json() as { rc: Json }).rc.rsList).toEqual([
+      { ...component, lastupdate: UPDATED_AT_TEXT, verdict: 'none', crumbdata: [expect.objectContaining({ contentid: GRANDCHILD, iconclass: 'mi-align-justify' })] },
+      { ...draftRow(NODE), lastupdate: UPDATED_AT_TEXT, verdict: 'author', crumbdata: nodeCrumbdata },
+    ]);
+    expect(crumbIds()).toEqual([GRANDCHILD, COMPONENTS, NODE, CHILD]);
+    expect(new Set(statementsOf(CRUMBS).map((statement) => statement.tenantId))).toEqual(new Set([TENANT_A.tenantId]));
+    expect(statementsOf(MEMBERSHIPS).map((statement) => statement.tenantId)).toEqual([TENANT_UMBRELLA.tenantId, TENANT_A.tenantId]);
+    expect(statementsOf(SUBTYPES).map((statement) => [statement.tenantId, statement.params])).toEqual([[TENANT_A.tenantId, expect.arrayContaining([SITE])]]);
   });
 });
 
@@ -603,7 +683,7 @@ describe('carch.edit and carch.editLive', () => {
     t.db.respond(BY_TITLE, [versionRow({ type: 'Form', moduleid: FORMS, parentid: FORMS, title: 'Contact Us' })]);
     const rc = await rcOf(`${EDIT_URL}?title=${encodeURIComponent('Contact Us')}&type=Form`);
     const bean = rc.contentBean as Json;
-    expect(bean).toMatchObject({ isNew: 0, Contentid: NODE, ContentHistID: HIST, type: 'Form', Title: 'Contact Us', LastUpdate: UPDATED_AT.toISOString() });
+    expect(bean).toMatchObject({ isNew: 0, Contentid: NODE, ContentHistID: HIST, type: 'Form', Title: 'Contact Us', LastUpdate: UPDATED_AT_TEXT });
     expect(bean.editUrl).toBe(editUrl({ hist: HIST, id: NODE, type: 'Form', topid: FORMS, parentid: FORMS, moduleid: FORMS }));
     expect(paramsOfFirst(BY_TITLE)).toEqual(expect.arrayContaining(['Contact Us', 'Form']));
   });
@@ -642,31 +722,191 @@ describe('carch.edit and carch.editLive', () => {
 });
 
 describe('carch.hist and carch.audit', () => {
-  it('lists the node’s versions with the active bean, crumbs, verdict and stats', async () => {
+  const HISTORY_URL = `/v1/sites/${SITE}/content/${NODE}/history`;
+  const auditUrl = (contentId: string, contentHistId: string): string => `/v1/sites/${SITE}/content/${contentId}/versions/${contentHistId}/audit`;
+  const VERSION_PARENTS = /^SELECT contenthistid, parentid FROM "content"\."content" WHERE contenthistid = ANY/;
+  const CHANGESET_READ = /^SELECT \* FROM "content"\."changeset" WHERE tenant_id = \$1 AND /;
+  const CHANGESET = 'F1B2C3D4-0001-4A5B-8C7D9E0F1A2B3C4D';
+  const OTHER_PARENT = 'A1B2C3D4-0009-4A5B-8C7D9E0F1A2B3C4D';
+  /** Each screen's URL for content `contentId`. */
+  const SCREENS = [
+    ['carch.hist', (contentId: string) => `/v1/sites/${SITE}/content/${contentId}/history`],
+    ['carch.audit', (contentId: string) => auditUrl(contentId, HIST)],
+  ] as const;
+  /** Each screen's URL and a responder listing `rows` as its versions. */
+  const VERSION_LISTS = [
+    [
+      'carch.hist',
+      HISTORY_URL,
+      (rows: Json[]): void => {
+        t.db.respond(HISTORY_TOTAL, [{ total: rows.length }]);
+        t.db.respond(HISTORY_ROWS, rows);
+      },
+    ],
+    ['carch.audit', auditUrl(NODE, HIST), (rows: Json[]): void => t.db.respond(VERSION, rows)],
+  ] as const;
+  /** The rows of `rc.items` carrying a preview URL under any spelling. */
+  const withPreviewUrl = (rc: Json): Json[] => (rc.items as Json[]).filter((item) => Object.keys(item).some((key) => key.toLowerCase() === 'previewurl'));
+
+  it('lists the node’s versions with the active bean and its stats, crumbs, verdict, flags and parents, without preview links', async () => {
     t.db.respond(ACTIVE, [versionRow()]);
     t.db.respond(ITEM_COUNT, [{ menutitle: 'About', title: 'About', filename: 'about', lastupdate: UPDATED_AT, type: 'Page' }]);
     t.db.respond(CRUMBS, [crumb(NODE)]);
     t.db.respond(STATS, [{ contentid: NODE, siteid: SITE, views: 3, comments: 0, lockid: '', locktype: '' }]);
     t.db.respond(HISTORY_TOTAL, [{ total: 2 }]);
-    t.db.respond(HISTORY_ROWS, [{ contenthistid: HIST, active: 1 }, { contenthistid: OLDER_HIST, active: 0 }]);
-    const rc = await rcOf(`/v1/sites/${SITE}/content/${NODE}/history`);
+    t.db.respond(HISTORY_ROWS, [{ contenthistid: HIST, active: 1, type: 'Component' }, { contenthistid: OLDER_HIST, active: 0, type: 'Variation' }]);
+    t.db.respond(VERSION_PARENTS, [{ contenthistid: HIST, parentid: OTHER_PARENT }, { contenthistid: OLDER_HIST, parentid: null }]);
+    const rc = await rcOf(HISTORY_URL);
     expect(rc).toMatchObject({
       contentid: NODE,
-      contentBean: { contenthistid: HIST, isNew: 0, lastupdate: UPDATED_AT.toISOString() },
+      contentBean: { contenthistid: HIST, isNew: 0, lastupdate: UPDATED_AT_TEXT, stats: { views: 3 } },
       rsCount: [expect.objectContaining({ menutitle: 'About' })],
       crumbdata: [expect.objectContaining({ contentid: NODE })],
       perm: 'editor',
       stats: { views: 3 },
-      items: [{ contenthistid: HIST, active: 1 }, { contenthistid: OLDER_HIST, active: 0 }],
+      deletable: true,
+      hasLockableNodes: false,
+      hasChangesets: true,
+      purgeDrafts: true,
+      siteLocking: 'none',
       historyTotal: 2,
+    });
+    expect(rc.items).toEqual([
+      { contenthistid: HIST, active: 1, type: 'Component', parentid: OTHER_PARENT },
+      { contenthistid: OLDER_HIST, active: 0, type: 'Variation', parentid: '' },
+    ]);
+    expect(paramsOfFirst(VERSION_PARENTS)).toEqual([[HIST, HIST.toLowerCase(), OLDER_HIST, OLDER_HIST.toLowerCase()]]);
+  });
+
+  it('halts a history whose later version alone is a Page with the legacy 503 naming its exceptions entry', async () => {
+    t.db.respond(HISTORY_TOTAL, [{ total: 2 }]);
+    t.db.respond(HISTORY_ROWS, [versionRow({ type: 'Component' }), versionRow({ contenthistid: OLDER_HIST, type: 'Page' })]);
+    const res = await call('GET', HISTORY_URL);
+    expect(res.statusCode, res.body).toBe(503);
+    expect(routeErrors).toEqual([expect.objectContaining({ reason: CARCH_SITE_SETTINGS_REASON, message: expect.stringContaining(`(${CARCH_VERSION_PREVIEW_EXCEPTION})`) })]);
+  });
+
+  describe.each(VERSION_LISTS)('%s preview links', (screen, url, listVersions) => {
+    it.each(['Page', 'folder', 'CALENDAR', 'Gallery', 'Link', 'File'])(
+      'halts a list holding a %s version with the legacy 503 naming its exceptions entry, emitting no model',
+      async (type) => {
+        listVersions([versionRow({ type })]);
+        const res = await call('GET', url);
+        expect(res.statusCode, res.body).toBe(503);
+        expect(res.body).not.toContain(HIST);
+        expect(routeErrors).toEqual([
+          expect.objectContaining({ reason: CARCH_SITE_SETTINGS_REASON, message: `${screen.replace('carch', 'cArch')} prints preview URLs built from site settings this service does not hold (${CARCH_VERSION_PREVIEW_EXCEPTION})` }),
+        ]);
+        expect([CARCH_VERSION_PREVIEW_EXCEPTION, CARCH_SITE_SETTINGS_REASON]).toEqual(['EX-CARCH-VERSION-PREVIEW', 'carch-site-settings']);
+        expect(ran(WRITE)).toBe(false);
+      },
+    );
+
+    it.each(['Component', 'Form', 'Module', 'Variation', 'variation', ''])('serves a %j version without a preview URL', async (type) => {
+      listVersions([versionRow({ type })]);
+      const rc = await rcOf(url);
+      expect(rc.items).toEqual([expect.objectContaining({ contenthistid: HIST, type })]);
+      expect(withPreviewUrl(rc)).toEqual([]);
+    });
+
+    it('fails as legacy does on an ajax request, whose rc.deletable parentid read precedes a Page version’s preview', async () => {
+      listVersions([versionRow({ type: 'Page' })]);
+      expect((await call('GET', `${url}?ajaxrequest=true`)).statusCode).toBe(500);
+      expect(routeErrors).toEqual([expect.objectContaining({ message: 'Element PARENTID is undefined in RC.' })]);
     });
   });
 
-  it('lists one version’s audit trail as copies of the version rows', async () => {
-    t.db.respond(VERSION, [versionRow({ contenthistid: OLDER_HIST, active: 0 })]);
-    const rc = await rcOf(`/v1/sites/${SITE}/content/${NODE}/versions/${OLDER_HIST}/audit`);
-    expect(rc).toMatchObject({ contenthistid: OLDER_HIST, contentBean: { isNew: 1, active: 1, siteid: SITE }, perm: 'none', stats: {}, rsCount: [], crumbdata: [] });
-    expect(rc.items).toEqual([expect.objectContaining({ contenthistid: OLDER_HIST, active: 0 })]);
+  it('reads no parents for a node without versions', async () => {
+    const rc = await rcOf(HISTORY_URL);
+    expect([rc.items, ran(VERSION_PARENTS)]).toEqual([[], false]);
+  });
+
+  describe.each(SCREENS)('%s rc.deletable', (_screen, urlOf) => {
+    it.each([
+      ['a node under another parent', NODE, `?parentid=${OTHER_PARENT}`, true, {}, true],
+      ['a top-level node under site locking none', NODE, `?parentid=${LEGACY_ADMIN_SENTINEL_ID}`, true, {}, true],
+      ['the home page', LEGACY_ADMIN_SENTINEL_ID, '', true, {}, false],
+      ['a node whose bean isLocked is 1', NODE, '', true, { islocked: 1 }, false],
+      ['a node the user holds no editor verdict on', NODE, '', false, {}, false],
+    ] as const)('is computed for %s', async (_name, contentId, query, editor, bean, deletable) => {
+      t.db.respond(ACTIVE, [versionRow({ contentid: contentId, ...bean })]);
+      if (editor) t.db.respond(CRUMBS, [crumb(contentId)]);
+      const rc = await rcOf(`${urlOf(contentId)}${query}`);
+      expect([rc.perm, rc.deletable]).toEqual([editor ? 'editor' : 'none', deletable]);
+    });
+
+    it('fails as legacy does after the screen reads on an ajax request, whose rc has no parentid', async () => {
+      expect([(await call('GET', `${urlOf(NODE)}?ajaxrequest=true`)).statusCode, ran(STATS)]).toEqual([500, true]);
+    });
+
+    it('takes the flags from the site settings and configBean, never from request parameters', async () => {
+      const domain = ctx.domain;
+      ctx.domain = { ...domain, config: { ...domain.config, purgeDrafts: false } };
+      try {
+        t.db.respond(CRUMBS, [crumb(NODE)]);
+        const rc = await rcOf(`${urlOf(NODE)}?deletable=0&hasLockableNodes=1&hasChangesets=0&purgeDrafts=1&siteLocking=all`);
+        expect(rc).toMatchObject({ deletable: true, hasLockableNodes: false, hasChangesets: true, purgeDrafts: false, siteLocking: 'none' });
+      } finally {
+        ctx.domain = domain;
+      }
+    });
+  });
+
+  it.each(['UTC', 'America/New_York', 'Asia/Kolkata'])('prints each stored date as its wall clock under TZ=%s', async (zone) => {
+    const before = process.env.TZ;
+    process.env.TZ = zone;
+    try {
+      const stored = new Date(2026, 5, 2, 14, 5, 6, 7);
+      t.db.respond(ACTIVE, [versionRow({ lastupdate: stored })]);
+      t.db.respond(HISTORY_TOTAL, [{ total: 1 }]);
+      t.db.respond(HISTORY_ROWS, [{ contenthistid: HIST, active: 1, lastupdate: stored, changesetpublishdate: stored }]);
+      const rc = await rcOf(HISTORY_URL);
+      expect([(rc.contentBean as Json).lastupdate, rc.items]).toEqual([UPDATED_AT_TEXT, [expect.objectContaining({ lastupdate: UPDATED_AT_TEXT, changesetpublishdate: UPDATED_AT_TEXT })]]);
+    } finally {
+      if (before === undefined) delete process.env.TZ;
+      else process.env.TZ = before;
+    }
+  });
+
+  it('lists one version’s audit trail as copies of the version rows under the new bean', async () => {
+    t.db.respond(VERSION, [versionRow({ contenthistid: OLDER_HIST, active: 0, approvalstatus: 'Pending', type: 'Component' })]);
+    const rc = await rcOf(auditUrl(NODE, OLDER_HIST));
+    expect(rc).toMatchObject({
+      contenthistid: OLDER_HIST,
+      contentBean: { isNew: 1, active: 1, siteid: SITE, stats: {} },
+      perm: 'none',
+      stats: {},
+      rsCount: [],
+      crumbdata: [],
+      deletable: false,
+      hasLockableNodes: false,
+      hasChangesets: true,
+      purgeDrafts: true,
+      siteLocking: 'none',
+    });
+    expect(rc.items).toEqual([
+      expect.objectContaining({
+        contenthistid: OLDER_HIST,
+        active: 0,
+        approvalstatus: 'Pending',
+        changesetname: '',
+        changesetpublishdate: '',
+      }),
+    ]);
+    expect(ran(CHANGESET_READ)).toBe(false);
+  });
+
+  it.each([
+    ['a stored change set', [{ changesetid: CHANGESET, siteid: SITE, name: 'Spring', publishdate: UPDATED_AT }], 'Spring', UPDATED_AT_TEXT],
+    ['a change set without a name or publish date', [{ changesetid: CHANGESET, siteid: SITE, name: null, publishdate: null }], '', ''],
+    ['a change set no longer stored', [], '', ''],
+  ] as const)('names the change set of a trail version in %s', async (_name, changesets, changesetname, changesetpublishdate) => {
+    t.db.respond(ACTIVE, [versionRow()]);
+    t.db.respond(VERSION, [versionRow({ contenthistid: OLDER_HIST, active: 0, approved: 0, changesetid: CHANGESET, type: 'Component' })]);
+    t.db.respond(CHANGESET_READ, changesets);
+    const rc = await rcOf(auditUrl(NODE, OLDER_HIST));
+    expect(rc.items).toEqual([expect.objectContaining({ contenthistid: OLDER_HIST, changesetid: CHANGESET, changesetname, changesetpublishdate })]);
+    expect(paramsOfFirst(CHANGESET_READ)).toEqual([TENANT_A.tenantId, [CHANGESET, CHANGESET.toLowerCase()]]);
   });
 });
 
@@ -736,13 +976,13 @@ describe('carch.datamanager', () => {
       filterBy: '',
       sortBy: 'Entered',
       sortDirection: 'desc',
-      date1: ENTERED.toISOString(),
-      date2: ENTERED.toISOString(),
+      date1: ENTERED_TEXT,
+      date2: ENTERED_TEXT,
       crumbData: [expect.objectContaining({ contentid: NODE })],
       perm: 'editor',
       hasLockableNodes: false,
       useLayoutManager: false,
-      rsDataInfo: { firstentered: ENTERED.toISOString(), lastentered: ENTERED.toISOString(), countentered: 1 },
+      rsDataInfo: { firstentered: ENTERED_TEXT, lastentered: ENTERED_TEXT, countentered: 1 },
       rsData: [],
       scheme: 'http',
       domain: `${SITE}.opt2.test`,
@@ -766,8 +1006,8 @@ describe('carch.datamanager', () => {
     t.db.respond(RESPONSES, [packet(), packet({ responseid: 'R2', data: '<not wddx' })]);
     const rc = await rcOf(`${RESPONSES_URL}?minute1=0&hour1=0&minute2=59&hour2=23&date1=bad&date2=bad`);
     expect(rc.rsData).toEqual([
-      { responseID: RESPONSE, entered: ENTERED.toISOString(), data: expect.anything() },
-      { responseID: 'R2', entered: ENTERED.toISOString(), data: null },
+      { responseID: RESPONSE, entered: ENTERED_TEXT, data: expect.anything() },
+      { responseID: 'R2', entered: ENTERED_TEXT, data: null },
     ]);
   });
 
@@ -777,8 +1017,8 @@ describe('carch.datamanager', () => {
   });
 
   it.each([
-    ['a stored response', [packet()], [{ responseID: RESPONSE, entered: ENTERED.toISOString(), data: expect.anything() }]],
-    ['an unreadable packet', [packet({ data: 'x' })], [{ responseID: RESPONSE, entered: ENTERED.toISOString(), data: null }]],
+    ['a stored response', [packet()], [{ responseID: RESPONSE, entered: ENTERED_TEXT, data: expect.anything() }]],
+    ['an unreadable packet', [packet({ data: 'x' })], [{ responseID: RESPONSE, entered: ENTERED_TEXT, data: null }]],
     ['a missing response', [], []],
   ] as const)('edits %s', async (_name, rows, rsData) => {
     t.db.respond(READ_RESPONSE, rows);
@@ -872,7 +1112,7 @@ describe('selectmedia, imagedetails, selectfields and variationtargeting', () =>
     expect((rc.images as Json[]).map((image) => image.fileid)).toEqual([FILE_PNG]);
   });
 
-  it('offers the feed fields, the site’s content attributes sorted case-sensitively, and any requested field not among them', async () => {
+  it('offers the feed fields and the site’s content attributes sorted case-sensitively, less the requested fields', async () => {
     t.db.respond(SUBTYPES, [
       { subtypeid: 'S1', siteid: SITE, type: 'Page', subtype: 'Default', basetable: 'tcontent', adminonly: 0, isactive: 1 },
       { subtypeid: 'S2', siteid: SITE, type: 'Page', subtype: 'Admin', basetable: 'tcontent', adminonly: 1, isactive: 1 },
@@ -887,8 +1127,28 @@ describe('selectmedia, imagedetails, selectfields and variationtargeting', () =>
     ]);
     const rc = await rcOf(`/v1/sites/${SITE}/feeds/display-fields?displayList=${encodeURIComponent('title,Custom')}`);
     expect(rc.displayList).toBe('title,Custom');
-    expect(rc.availableList).toBe('Date,Title,Image,Summary,Body,ReadMore,Credits,Comments,Tags,Rating,Alpha,zeta,Custom');
+    expect(rc.availableDisplayList).toBe('Date,Image,Summary,Body,ReadMore,Credits,Comments,Tags,Rating,Alpha,zeta');
+    expect(rc).not.toHaveProperty('availableList');
     expect(paramsOfFirst(SETS)).toEqual([TENANT_A.tenantId, ['S1', 's1']]);
+  });
+
+  it.each<[string, Record<string, string>, string, string]>([
+    ['no displayList', {}, 'Date,Title,Image,Summary,Credits,Tags', 'Body,ReadMore,Comments,Rating'],
+    ['a differently cased displayList', { displayList: 'title,Custom' }, 'title,Custom', 'Date,Image,Summary,Body,ReadMore,Credits,Comments,Tags,Rating'],
+    ['an untrimmed displayList', { displayList: 'Title ,,date,<b>x"y,Summary' }, 'Title ,,date,<b>x"y,Summary', 'Title,Image,Body,ReadMore,Credits,Comments,Tags,Rating'],
+    ['a repeated field', { displayList: 'Date,Date,Title' }, 'Date,Date,Title', 'Image,Summary,Body,ReadMore,Credits,Comments,Tags,Rating'],
+    ['request inputs of the model names', { displaylist: 'title', AvailableDisplayList: 'bogus' }, 'title', 'Date,Image,Summary,Body,ReadMore,Credits,Comments,Tags,Rating'],
+  ])('models the selectfields lists of %s as legacy does', async (_name, query, displayList, availableDisplayList) => {
+    const rc = await rcOf(`/v1/sites/${SITE}/feeds/display-fields?${new URLSearchParams(query).toString()}`);
+    const valuesOf = (name: string): unknown[] => Object.keys(rc).filter((key) => key.toLowerCase() === name.toLowerCase()).map((key) => rc[key]);
+    expect([valuesOf('displayList'), valuesOf('availableDisplayList'), valuesOf('availableList')]).toEqual([[displayList], [availableDisplayList], []]);
+  });
+
+  it('halts the selectfields lists of an empty displayList with the legacy 503, reading and writing nothing', async () => {
+    const res = await call('GET', `/v1/sites/${SITE}/feeds/display-fields?displayList=`);
+    expect(res.statusCode, res.body).toBe(503);
+    expect(ran(SUBTYPES)).toBe(false);
+    expect(ran(WRITE)).toBe(false);
   });
 
   it('reads the variation node of remoteid with the request values set over it, then the targeting of the posted contentid', async () => {
@@ -907,10 +1167,13 @@ describe('selectmedia, imagedetails, selectfields and variationtargeting', () =>
   });
 
   it('saves the initialization JS of a stored variation node without saving the node', async () => {
-    t.db.respond(BY_REMOTE_ID, [versionRow({ type: 'Variation', remoteid: 'r1' })]);
-    const body = await writeOf(`/v1/sites/${SITE}/variation-targeting`, { remoteid: 'r1', contentid: NODE, initjs: 'start()' });
-    expect(body).toMatchObject({ saved: true, errors: {}, redirect: null, data: { useLayoutManager: false, contentBean: { contentid: NODE, isNew: 0 }, variationTargeting: { contentid: NODE, initjs: 'start()' } } });
-    expect(ran(/^INSERT INTO "content"\."variation_targeting"/)).toBe(true);
+    t.db.respond(BY_REMOTE_ID, [versionRow({ type: 'Variation', remoteid: 'r1', remoteurl: 'http://stored.example/' })]);
+    const form = { siteid: SITE, remoteurl: 'http://remote.example/', remoteid: 'r1', title: 'Remote', parentid: VARIATIONS, moduleid: VARIATIONS, type: 'Variation', contentid: NODE, saveTargeting: 'true', initjs: 'start()' };
+    const body = await writeOf(`/v1/sites/${SITE}/variation-targeting`, form);
+    expect(body).toMatchObject({ saved: true, errors: {}, redirect: null, data: { contentid: NODE, type: 'Variation', remoteurl: 'http://remote.example/', active: 1, isNew: 0 } });
+    expect(Object.keys(body.data ?? {}).filter((key) => /^(contentbean|variationtargeting)$/i.test(key))).toEqual([]);
+    const targetings = t.db.statements.filter((statement) => /^INSERT INTO "content"\."variation_targeting" \(/.test(statement.sql)).map((statement) => boundRow(statement.sql, statement.params));
+    expect(targetings.at(-1)).toMatchObject({ contentid: NODE, siteid: SITE, initjs: 'start()' });
     expect(ran(/^INSERT INTO "content"\."content" /)).toBe(false);
     expect(consumed).toEqual([]);
   });
@@ -924,11 +1187,12 @@ describe('selectmedia, imagedetails, selectfields and variationtargeting', () =>
     t.db.respond(VERSION, (params) => rows.filter((row) => JSON.stringify(params).includes(String(row.contenthistid))));
     const form = { remoteid: 'r2', title: 'Remote', parentid: VARIATIONS, moduleid: VARIATIONS, type: 'Variation', remoteurl: 'http://remote.example/', initjs: 'go()' };
     const body = await writeOf(`/v1/sites/${SITE}/variation-targeting`, form);
-    const node = body.data?.contentBean as Json;
+    const node = body.data as Json;
     const contentId = String(node.Contentid);
     expect(isCfUuid(contentId)).toBe(true);
-    expect(body).toMatchObject({ saved: true, errors: {}, redirect: null, data: { useLayoutManager: false, variationTargeting: { contentid: contentId, initjs: 'go()' } } });
-    expect(node).toMatchObject({ isNew: 0, Title: 'Remote', remoteID: 'r2', type: 'Variation' });
+    expect(body).toMatchObject({ saved: true, errors: {}, redirect: null });
+    expect(node).toMatchObject({ isNew: 0, Title: 'Remote', remoteID: 'r2', type: 'Variation', remoteURL: 'http://remote.example/', Active: 1 });
+    expect(Object.keys(node).filter((key) => /^(contentbean|variationtargeting)$/i.test(key))).toEqual([]);
     expect(rows).toEqual([expect.objectContaining({ contentid: contentId, type: 'Variation', remoteid: 'r2', siteid: SITE })]);
     const targetings = t.db.statements.filter((statement) => /^INSERT INTO "content"\."variation_targeting" \(/.test(statement.sql)).map((statement) => boundRow(statement.sql, statement.params));
     expect(targetings.at(-1)).toMatchObject({ contentid: contentId, siteid: SITE, initjs: 'go()' });

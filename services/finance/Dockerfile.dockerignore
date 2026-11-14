@@ -1,0 +1,23 @@
+# SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
+# Build context of `docker build -f services/finance/Dockerfile .`: BuildKit reads this file instead of the root .dockerignore.
+# The root .dockerignore entries, repeated because this file replaces it.
+.git
+.gitignore
+.gitmodules
+installation.txt
+license.txt
+README.md
+Mura_CMS_contribution_agreement.pdf
+docker-compose.yml
+docker-offline.yml
+stack-review.yml
+buddy.yml
+travis.yml
+# Host install and build output: the image installs, generates and compiles its own.
+**/node_modules
+**/dist
+**/coverage
+**/.next
+**/src/generated
+**/next-env.d.ts
+**/*.tsbuildinfo

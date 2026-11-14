@@ -232,6 +232,13 @@ export async function loadClient(deps: OAuthDeps, clientId: string, siteId = '')
   return firstInTenants(deps, siteId === '' ? [] : [tenantIdForSite(siteId)], (tx) => deps.repo.findOAuthClient(tx, clientId));
 }
 
+/** The client `clientId` of the API site `siteId`, read in that site's tenant alone, as the site-scoped `loadBy(clientid=…)` finds it; an empty site loads unscoped; null when absent [legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:558; core/mura/cfobject.cfc:138-149; core/mura/bean/beanORM.cfc:766-767]. */
+export async function loadSiteClient(deps: OAuthDeps, clientId: string, siteId: string): Promise<OAuthClientRow | null> {
+  if (siteId === '') return loadClient(deps, clientId);
+  if (clientId === '') return null;
+  return withTenant(deps.db, tenantIdForSite(siteId), (tx) => deps.repo.findOAuthClient(tx, clientId));
+}
+
 /** A new bean as init leaves it: created, lastupdate and lastupdateby set, granttype at its `basic` default [legacy: core/mura/bean/beanORM.cfc:101-123]. */
 function newClient(clientid: string, siteid: string, now: Date, actor: OAuthActor): OAuthClient {
   return {

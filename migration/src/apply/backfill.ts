@@ -36,7 +36,7 @@ import {
   type OwnerBatchStats,
   type TenantResolver,
 } from './batch.js';
-import { Acceptance, addTaken, planTarget, type DiffSide, type TargetPlan } from './targets.js';
+import { Acceptance, addTaken, chunksOf, planTarget, type DiffSide, type TargetPlan } from './targets.js';
 
 /** Context members the backfill reads: the snapshot, both data sides, the gateway's authority and the report target. */
 export type BackfillContext = Pick<
@@ -195,6 +195,12 @@ function routingFor(run: TableRun, table: MigratableTable, shape: LegacyTableSha
   return { table: table.name, keyed: shape.keyed, plans, acceptance: new Acceptance(run.ctx, table.name) };
 }
 
+/** Reads the ownership joins every target of the table needs to judge `rows`, one chunk of rows at a time. */
+function prepareRows(run: TableRun, routing: TableRouting, rows: readonly CanonicalRow[]): Promise<void> {
+  const targets = [...routing.plans.values()].flatMap((plans) => plans.map((plan) => plan.target));
+  return routing.acceptance.prepare(targets, rows.map((row) => [run.side, row] as const));
+}
+
 /** Adds `changes` of `row` to the batcher of each owner whose targets take the real row, with the discriminators those targets need. */
 async function route(
   run: TableRun,
@@ -277,12 +283,15 @@ async function loadTable(run: TableRun, table: MigratableTable, deferredNames: R
   const load = batchersFor(run, table, shape, 'backfill', deferred.length === 0 ? forwardWatermark(run, table) : null);
   let rows = 0;
   let orphans = 0;
-  for await (const row of streamLegacyTable(ctx, source)) {
-    const resolved = tenants.resolve(table.name, row.row);
-    rows += 1;
-    if (resolved.orphan) orphans += 1;
-    const encoding = deferred.length === 0 ? row.encoding : encodeRow(shape.columns, withNulls(row.row, deferred));
-    await route(run, routing, load, row, resolved.tenantId, [{ op, row: encoding }]);
+  for await (const chunk of chunksOf(streamLegacyTable(ctx, source), run.batchSize)) {
+    await prepareRows(run, routing, chunk);
+    for (const row of chunk) {
+      const resolved = tenants.resolve(table.name, row.row);
+      rows += 1;
+      if (resolved.orphan) orphans += 1;
+      const encoding = deferred.length === 0 ? row.encoding : encodeRow(shape.columns, withNulls(row.row, deferred));
+      await route(run, routing, load, row, resolved.tenantId, [{ op, row: encoding }]);
+    }
   }
   const result: BackfillTableResult = {
     table: table.name,
@@ -304,10 +313,13 @@ async function loadTable(run: TableRun, table: MigratableTable, deferredNames: R
 async function patchTable(run: TableRun, pending: PendingPatch): Promise<void> {
   const { table, shape, routing, deferred, result } = pending;
   const patch = batchersFor(run, table, shape, 'backfill-patch', forwardWatermark(run, table));
-  for await (const row of streamLegacyTable(run.ctx, { table, database: run.snapshot.databaseName })) {
-    if (deferred.every((name) => (row.row[name] ?? null) === null)) continue;
-    const { tenantId } = run.tenants.resolve(table.name, row.row);
-    await route(run, routing, patch, row, tenantId, patchChanges(shape, row, deferred));
+  for await (const chunk of chunksOf(streamLegacyTable(run.ctx, { table, database: run.snapshot.databaseName }), run.batchSize)) {
+    const patched = chunk.filter((row) => !deferred.every((name) => (row.row[name] ?? null) === null));
+    await prepareRows(run, routing, patched);
+    for (const row of patched) {
+      const { tenantId } = run.tenants.resolve(table.name, row.row);
+      await route(run, routing, patch, row, tenantId, patchChanges(shape, row, deferred));
+    }
   }
   result.perOwner.push(...(await finishAll(patch)));
   completeTable(run, result);

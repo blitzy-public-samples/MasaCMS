@@ -14,6 +14,7 @@ Web has no database and no state of its own: every read and write goes through t
 | `app/admin-actions/[circuit]/[action]/route.ts` | `redirect` mode: the write, then the legacy redirect or the re-rendered form |
 | `app/admin-raw/[circuit]/[action]/route.ts` | `fragment`, `json` and `download` modes |
 | `app/opt2/admin/[module]/[screen]/route.ts`, `app/opt2/admin-actions/[module]/[action]/route.ts` | SYNTHETIC module screens and their posts |
+| `app/healthz/route.ts` | Liveness route: unauthenticated 200 `{"status":"ok"}`, like the service-kit `/healthz` |
 | `src/shell/` | `admin/common/layouts/template.cfm`, `compact.cfm` and their includes (`nav.cfm`, `header.cfm`, `dsp_secondary_menu.cfm`, `dialog.cfm`) |
 | `src/screens/<circuit>/`, `src/screens/opt2/<module>/` | Reproduced views |
 | `src/lib/` | Markup primitives (`html.ts`), legacy URLs (`urls.ts`), legacy responses (`responses.ts`), environment and Masa settings (`env.ts`), dates, telemetry, resource bundles, auth, the gateway client |
@@ -137,6 +138,7 @@ npm test              # runs generate, then vitest with coverage (>= 90% stateme
 
 - `npm run generate` writes `src/generated/clients/<service>.ts` from each `../services/<service>/contracts/openapi.yaml` (`generate:clients`) and `src/generated/resource-bundles/` from the legacy `.properties` files (`generate:rb`).
 - The container image is the Cloud Run artefact, built in CI only, from the repository root: `docker build -f web/Dockerfile .`. It listens on `8080`.
+- `GET /healthz` (`app/healthz/route.ts`) is the unauthenticated liveness route: 200 `{"status":"ok"}`, the answer the service-kit health route gives in the Fastify packages. `next start` serves it on `PORT`, so the container image answers it on `8080`.
 - `harness/repro/up.sh` starts web with the rest of the stack; set `NEXT_TELEMETRY_DISABLED=1` when running it by hand.
 
 ## Environment

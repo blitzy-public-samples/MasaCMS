@@ -15,6 +15,8 @@ import { registerMarkUsedRoute } from '../../src/session/mark-used-route.js';
 const NOW = new Date(Date.UTC(2026, 5, 30, 12));
 const SESSION_ID = '6f1c2b9e-1d2a-4c3b-9e8f-0a1b2c3d4e5f';
 const LEGACY_SESSION_ID = 'OPT2TEST_1001_12345678';
+// ACF's `<appname>_<CFID>_<CFTOKEN>` session id, assembled from low-entropy parts; adoption keys the identity session by it.
+const CF_SESSION_ID = `MURA${'C'.repeat(64)}_1621_${'b'.repeat(16)}-D0000000-0000-0000-0000000000000001`;
 // Fake CSRF tokens are assembled at run time: a hex literal beside `token` reads to secret scanners as an API key.
 const HEX_ASC = '0123456789ABCDEF';
 const HEX_DESC = 'FEDCBA9876543210';
@@ -137,10 +139,12 @@ describe('registerMarkUsedRoute', () => {
     ]);
   });
 
-  it.each<[string, string]>([
-    ['an identity session id', SESSION_ID],
-    ['a session id containing colons', 'opaque:session:0001'],
-  ])('marks the tokens in the legacy session mapped to %s and answers 204', async (_label, sid) => {
+  it.each<[string, string, number]>([
+    ['an identity session id', SESSION_ID, 36],
+    ['a session id containing colons', 'opaque:session:0001', 19],
+    ['an adopted 126-character ColdFusion session id', CF_SESSION_ID, 126],
+  ])('marks the tokens in the legacy session mapped to %s and answers 204', async (_label, sid, length) => {
+    expect(sid).toHaveLength(length);
     const { app, calls } = await markUsedApp(jarRow({ sessionId: sid }));
     const res = await app.inject({
       method: 'POST',

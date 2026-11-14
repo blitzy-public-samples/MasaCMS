@@ -1,5 +1,5 @@
 // Route adapters of admin/core/controllers/cchain.cfc and its views over the approvals domain.
-import { cfDateFormat, cfNumberString, cfTimeFormat } from '@opt2/platform/legacy-compat';
+import { LegacyServiceUnavailableError, cfDateFormat, cfNumberString, cfTimeFormat } from '@opt2/platform/legacy-compat';
 import { legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import {
   availableGroups,
@@ -14,8 +14,11 @@ import {
   type AvailableGroup,
   type PendingApprovalItem,
 } from '../../domain/approvals.js';
-import type { LegacyErrors } from '../../domain/context.js';
+import type { Actor, LegacyErrors } from '../../domain/context.js';
 import type { components } from '../../generated/openapi.js';
+import { buildCustomIconLookup, iconClass, type CustomIconLookup } from '../../legacy/admin-markup.js';
+import type { Crumb } from '../../repo/content-queries.js';
+import type { ExtendSubtypeRow } from '../../repo/tables.js';
 import type { ContentRouteContext } from '../index.js';
 import { adminCsrf, adminRedirect, circuitRouteConfig, csrfRejected, requireCircuitAccess, type AdminRedirect, type AdminWriteResult } from './access.js';
 
@@ -32,6 +35,13 @@ interface ChainParams extends SiteParams {
 
 const CHAINS_PATH = '/v1/sites/:siteid/approval-chains';
 const CHAIN_PATH = `${CHAINS_PATH}/:chainid`;
+
+/** The exceptions-list entry of a pending list holding a row whose preview URL pending.cfm prints. */
+export const CCHAIN_PENDING_PREVIEW_EXCEPTION = 'EX-CCHAIN-PENDING-PREVIEW';
+/** LegacyServiceUnavailableError reason of a view needing site URL settings this service does not hold. */
+export const CCHAIN_SITE_SETTINGS_REASON = 'cchain-site-settings';
+/** The types whose pending row prints `getURL(complete=1)` (pending.cfm's `cfcase` list, matched case-insensitively). */
+const PREVIEW_TYPES: readonly string[] = ['page', 'folder', 'calendar', 'gallery', 'link', 'file'];
 
 /** `rc[key]` ignoring case where CFML `isSimpleValue` holds; absent reads as `before()`'s '' default (cchain.cfc:90-97). */
 function rcText(rc: Readonly<Struct>, key: string): string {
@@ -95,8 +105,26 @@ function availableGroupRow(group: AvailableGroup): Struct {
   return { userID: group.groupid, groupName: group.groupname, siteID: group.siteid, isPublic: group.ispublic };
 }
 
-/** One `getPendingContentIterator()` row under its legacy column names. */
-function pendingRow(item: PendingApprovalItem): Struct {
+/** One `getCrumbArray()` crumb as CFML holds it, SQL NULL read as '', with `renderIcon`'s class as `icon`. */
+function crumbStruct(crumb: Crumb, icons: CustomIconLookup): Struct {
+  return { ...Object.fromEntries(Object.entries(crumb).map(([key, value]) => [key, value ?? ''])), icon: iconClass(icons, crumb) };
+}
+
+/** extendManager's custom icon lookup over the subtypes of each of `siteIds`. */
+async function customIconsOf(ctx: ContentRouteContext, actor: Actor, siteIds: readonly string[]): Promise<CustomIconLookup> {
+  const sites = [...new Set(siteIds)];
+  if (sites.length === 0) return buildCustomIconLookup([]);
+  const rows = await ctx.domain.db.withTenant(actor.tenantId, async (tx) => {
+    const found: ExtendSubtypeRow[] = [];
+    for (const siteId of sites) found.push(...(await ctx.domain.repository.extend.subtypes(tx, { siteId })));
+    return found;
+  });
+  return buildCustomIconLookup(rows);
+}
+
+/** One `getPendingContentIterator()` row under its legacy column names, with its crumbs. */
+function pendingRow(item: PendingApprovalItem, icons: CustomIconLookup): Struct {
+  // No previewURL: the pending handler answers only rows whose type pending.cfm prints no preview for.
   return {
     requestID: item.requestid,
     created: localTimestamp(item.created),
@@ -118,6 +146,7 @@ function pendingRow(item: PendingApprovalItem): Struct {
     lastUpdateByID: item.lastupdatebyid,
     changesetName: item.changesetname,
     changesetPublishDate: localTimestamp(item.changesetpublishdate),
+    crumbArray: item.crumbs.map((crumb) => crumbStruct(crumb, icons)),
   };
 }
 
@@ -153,20 +182,28 @@ export async function registerChainRoutes(app: FastifyInstance, ctx: ContentRout
     };
   });
 
-  // crumbArray (renderIcon applied) and previewURL are not in the domain read, and the service holds no site URL
-  // settings to build getURL(complete=1) from, so a member with requests fails closed in web rather than render guesses.
   // hasChangesets is left to web's programs-sites site, the verified source of tsettings.
   /** cchain.pending (pending.cfm): the chain and, per membership in order, its pending versions oldest request first. */
   app.get<{ Params: ChainParams; Reply: AdminViewModel }>(`${CHAIN_PATH}/pending`, { config }, async (request) => {
     const { siteid, chainid } = request.params;
     const actor = await requireCircuitAccess(request, ctx, 'cchain', siteid);
     const { chain, groups } = await pendingApprovals(ctx.domain, actor, chainid);
+    const items = groups.flatMap((group) => group.items);
+    // A preview row's getURL(complete=1) reads tsettings and configBean URL values this service does not hold.
+    if (items.some((item) => PREVIEW_TYPES.includes(item.type.toLowerCase()))) {
+      throw new LegacyServiceUnavailableError(
+        `cChain.pending prints preview URLs built from site settings this service does not hold (${CCHAIN_PENDING_PREVIEW_EXCEPTION})`,
+        'auto',
+        CCHAIN_SITE_SETTINGS_REASON,
+      );
+    }
+    const icons = await customIconsOf(ctx, actor, items.flatMap((item) => item.crumbs.map((crumb) => crumb.siteid ?? '')));
     return {
       rc: {
         siteid,
         chainid,
         chain: chainBean(chain),
-        members: groups.map(({ membership, items }) => ({ ...membershipRow(membership), requests: items.map(pendingRow) })),
+        members: groups.map(({ membership, items: rows }) => ({ ...membershipRow(membership), requests: rows.map((item) => pendingRow(item, icons)) })),
       },
     };
   });

@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
-import { cfUuid } from '@opt2/platform/legacy-compat';
+import { cfUuid, etag } from '@opt2/platform/legacy-compat';
 import { createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import {
@@ -866,6 +866,24 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
       const res = await call(method, url, { roles: null, invocationRoles: [role] });
       expect([res.status, JSON.stringify(res.body)]).toEqual([403, v1Error(envelopeMethod, 'invalid_request', 'Insufficient Account Permissions')]);
       expect(consumeCalls).toEqual([]);
+    });
+  });
+
+  describe('error headers', () => {
+    it.each<[string, () => Promise<Answer>, number]>([
+      ['a page outside the query schema', () => call('GET', `${SHEETS}?pageIndex=0`), 400],
+      ['an asOf that is not a date', () => call('GET', `${SHEETS}?asOf=2026-02-30`), 400],
+      ['an unknown day', () => act(MISSING_ID, 'submit', EMPLOYEE), 404],
+      ['an illegal transition', async () => act((await seedTenantBDay('SUBMITTED')).dayId, 'submit', EMPLOYEE), 409],
+      ['a role that may not take the action', async () => act((await seedTenantBDay('DRAFT')).dayId, 'submit', PRIMARY), 403],
+      ['a write without a CSRF token', async () => act((await seedTenantBDay('DRAFT')).dayId, 'submit', EMPLOYEE, undefined, {}), 400],
+      ['a workload credential without a user token', () => call('GET', SHEETS, { roles: null, invocationRoles: [Roles.timesheetsEmployee] }), 403],
+    ])('answers %s with the legacy content type, ETag, Generator and HSTS headers', async (_case, send, status) => {
+      const res = await send();
+      expect([res.status, res.headers]).toMatchObject([
+        status,
+        { 'content-type': 'application/json;charset=utf-8', etag: etag(res.text), generator: 'Masa CMS 7.6.1', 'strict-transport-security': 'max-age=1200' },
+      ]);
     });
   });
 

@@ -1,4 +1,5 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
+/** SMTP contract of the mail transport: its 10 s timeout against a loopback relay that accepts and never greets. */
 import { type AddressInfo, type Server, type Socket, createServer } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createSmtpTransport } from '../../src/domain/mail-transport.js';

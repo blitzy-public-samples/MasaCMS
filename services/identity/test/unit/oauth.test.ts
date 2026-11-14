@@ -21,6 +21,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, loadEnv, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
+import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, fixedClock, mintServiceToken, mintUserToken, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
 import { DEFAULT_LOGIN_SETTINGS, type LoginSettings } from '../../src/domain/login.js';
 import {
@@ -36,6 +37,7 @@ import {
   isValidRedirectURI,
   listClients,
   loadClient,
+  loadSiteClient,
   saveClient,
   tokenInfo,
   type OAuthDeps,
@@ -149,11 +151,18 @@ const T_NOT_JSON = tokenOf('T-NOT-JSON', PASSWORD_CLIENT, { granttype: 'password
 const T_EXPIRED = tokenOf('T-EXPIRED', CC_CLIENT, { expires: at(-HOUR_MS) });
 const RT_VALID = tokenOf('RT-VALID', CC_CLIENT, { granttype: 'refresh_token', expires: at(DAY_MS) });
 const RT_EXPIRED = tokenOf('RT-EXPIRED', CC_CLIENT, { granttype: 'refresh_token', expires: at(-HOUR_MS) });
+/** The refresh token a REST grant of {@link CC_CLIENT} reuses, stored in the REST site's tenant with the client. */
+const RT_REUSABLE = tokenOf('RT-REUSABLE', CC_CLIENT, { tenant_id: tenantIdForSite(GHOST), granttype: 'refresh_token', expires: at(DAY_MS) });
+
+/** `client` as a client of the REST site, stored in that site's tenant, the only one its token endpoint reads. */
+function restSiteClient(client: ClientRow): ClientRow {
+  return { ...client, tenant_id: tenantIdForSite(GHOST), siteid: GHOST };
+}
 
 const REST_SEED: IdentitySeed = {
   ...REST_ACCOUNT_SEED,
-  oauthClients: [CC_CLIENT, BASIC_CLIENT, CODE_CLIENT, PASSWORD_CLIENT],
-  oauthTokens: [T_JSON, T_RAW, T_NOT_JSON, T_EXPIRED, RT_VALID, RT_EXPIRED],
+  oauthClients: [CC_CLIENT, BASIC_CLIENT, CODE_CLIENT, PASSWORD_CLIENT].map(restSiteClient),
+  oauthTokens: [T_JSON, T_RAW, T_NOT_JSON, T_EXPIRED, RT_VALID, RT_EXPIRED, RT_REUSABLE],
 };
 
 /** The `tenant_registry` row of a site whose every pool is the site itself. */
@@ -453,6 +462,24 @@ describe('OAuth client domain (cwebservice.cfc:100-124, beanORM.cfc)', () => {
     expect(await loadClient(deps.oauth, '')).toBeNull();
   });
 
+  it('loads a client of the API site from that site`s tenant alone, in any case of the site id, and unscoped for an empty site (jsonApiUtility.cfc:558; beanORM.cfc:766-767)', async () => {
+    const inA = oauthClientRow({ clientid: cfId('D', 1) });
+    const inB = oauthClientRow({ clientid: cfId('D', 2), tenant_id: TENANT_B.tenantId, siteid: TENANT_B.siteId });
+    const { db, deps } = harness({ oauthClients: [inA, inB] });
+
+    expect(await loadSiteClient(deps.oauth, inA.clientid, TENANT_A.siteId)).toEqual(inA);
+    expect(await loadSiteClient(deps.oauth, inA.clientid, TENANT_A.siteId.toUpperCase())).toEqual(inA);
+    expect(await loadSiteClient(deps.oauth, inB.clientid, TENANT_B.siteId)).toEqual(inB);
+    expect(await loadSiteClient(deps.oauth, inB.clientid, TENANT_A.siteId)).toBeNull();
+    expect(await loadSiteClient(deps.oauth, inA.clientid, TENANT_B.siteId)).toBeNull();
+    expect(await loadSiteClient(deps.oauth, inA.clientid, GHOST)).toBeNull();
+    expect(await loadSiteClient(deps.oauth, '', TENANT_A.siteId)).toBeNull();
+    expect(db.statements().filter((statement) => REGISTRY_SQL.test(statement.sql))).toEqual([]);
+    expect(await loadSiteClient(deps.oauth, inA.clientid, '')).toEqual(inA);
+    expect(await loadSiteClient(deps.oauth, inB.clientid, '')).toBeNull();
+    expect(db.statements().some((statement) => REGISTRY_SQL.test(statement.sql))).toBe(true);
+  });
+
   it('saves a new client with a generated secret, the init dates and the actor as last updater (oauthClientBean.cfc:16-22)', async () => {
     const h = harness({});
 
@@ -726,7 +753,7 @@ describe('authenticateRestRequest (jsonApiUtility.cfc:422-835)', () => {
 
     const body = tokenAnswer(outcome);
     expect(Object.keys(body)).toEqual(['access_token', 'expires_in', 'token_type', 'expires_at', 'refresh_token', 'info']);
-    expect(body).toMatchObject({ expires_in: 3600, token_type: 'Bearer', expires_at: expiresAt({ expires: at(HOUR_MS) }), refresh_token: 'RT-VALID' });
+    expect(body).toMatchObject({ expires_in: 3600, token_type: 'Bearer', expires_at: expiresAt({ expires: at(HOUR_MS) }), refresh_token: 'RT-REUSABLE' });
     expect(body.access_token).toMatch(GENERATED_TOKEN);
     expect(body.info).toMatchObject({ userid: REST_USER.userid, username: 'rest_user', siteid: GHOST });
   });
@@ -736,7 +763,7 @@ describe('authenticateRestRequest (jsonApiUtility.cfc:422-835)', () => {
 
     const body = tokenAnswer(outcome);
     expect(Object.keys(body)).toEqual(['apiversion', 'data', 'method']);
-    expect(body).toMatchObject({ apiversion: 'v1', method: 'getOAuthToken', data: { token_type: 'Bearer', expires_in: 3600, refresh_token: 'RT-VALID' } });
+    expect(body).toMatchObject({ apiversion: 'v1', method: 'getOAuthToken', data: { token_type: 'Bearer', expires_in: 3600, refresh_token: 'RT-REUSABLE' } });
   });
 
   it('deletes an expired refresh token and answers the unhandled-exception 500 (754-762,1390-1400)', async () => {
@@ -764,7 +791,7 @@ describe('authenticateRestRequest (jsonApiUtility.cfc:422-835)', () => {
 
   it('continues anonymous for a basic client whose user is a group, which loginByUserID never logs in (userBean.cfc:768-771)', async () => {
     const group = groupRow({ siteid: GHOST });
-    const client = oauthClientRow({ clientid: cfId('C', 5), granttype: 'basic', clientsecret: 'basic-secret', userid: group.userid });
+    const client = restSiteClient(oauthClientRow({ clientid: cfId('C', 5), granttype: 'basic', clientsecret: 'basic-secret', userid: group.userid }));
     h = harness({ ...REST_SEED, groups: [group], oauthClients: [...(REST_SEED.oauthClients ?? []), client] });
 
     const outcome = continued(await restCall(rest(CONTENT_PATH, { headers: basic(client.clientid, 'basic-secret') })));

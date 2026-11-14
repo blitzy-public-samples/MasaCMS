@@ -1,10 +1,13 @@
-/** `repo/content-queries` clause builders, version, object and assignment reads, crumbs and the content tree over a throwaway `content` schema. */
+/** `repo/content-queries` clause builders, version, object and assignment reads, crumbs, the content tree and getNest's SQL window over a throwaway `content` schema. */
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { UnitReadBlockedError, closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
-import { TENANT_A, TENANT_B, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { getNest } from '../../src/domain/content-tree.js';
+import { CONTENT_CONFIG_DEFAULTS, actorFromClaims, type Actor, type DomainDeps } from '../../src/domain/context.js';
+import { createContentRepository } from '../../src/repo/repository.js';
 import {
   ContentQueryError,
   ROOT_PARENT_ID,
@@ -30,6 +33,7 @@ import {
   menuTypeClause,
   mobileClause,
   nest,
+  nestCount,
   pageCount,
   readActive,
   readActiveByFilename,
@@ -44,8 +48,10 @@ import {
   stats,
   tags,
   timespanInterval,
+  versionParents,
   type ChangesetPreview,
   type KidsArgs,
+  type NestRow,
   type SqlFragment,
 } from '../../src/repo/content-queries.js';
 import { CONTENT_UNITS, UNIT_OF } from '../../src/repo/tables.js';
@@ -544,6 +550,14 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries versions and tree'
     expect(row?.releasedate).toEqual(new Date(2026, 5, 10, 9, 0, 0));
   });
 
+  it('versionParents reads the parent of each listed version by id in any case, skipping unknown and empty ids', async () => {
+    const lower = BETA_H.toLowerCase();
+    expect(await inA((tx) => versionParents(tx, { contentHistIds: [lower, HOME_H, cfId(0xfff), ''] }))).toEqual(
+      new Map([[lower, FOLDER], [HOME_H, ROOT_PARENT_ID]]),
+    );
+    expect(await inA((tx) => versionParents(tx, { contentHistIds: [''] }))).toEqual(new Map());
+  });
+
   it.each<[string, (tx: TenantTx) => Promise<{ contenthistid: string | null }[]>, string[]]>([
     ['readVersion of an empty id', (tx) => readVersion(tx, { contentHistId: '' }), []],
     ['readVersion of a draft', (tx) => readVersion(tx, { contentHistId: BETA_DRAFT_H }), [BETA_DRAFT_H]],
@@ -851,6 +865,103 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries versions and tree'
     expect(histIds(rows).sort()).toEqual([ALPHA_H, BETA_H, GAMMA_H, FUTURE_H, HIDDEN_H, COMP_H].sort());
   });
 
+  describe('nest pages in SQL', () => {
+    const TIES = cfId(0x200);
+    const PAIR = cfId(0x220);
+    const SPLIT = cfId(0x230);
+    const N = { ONE: cfId(0x201), TWO: cfId(0x202), THREE: cfId(0x203), FOUR: cfId(0x204), FIVE: cfId(0x205), SIX: cfId(0x206), KID: cfId(0x207), FILE: cfId(0x208), DUPE: cfId(0x221), TWIN: cfId(0x231), LONE: cfId(0x232) };
+    const QUERY = { parentId: TIES, siteId: TENANT_B.siteId };
+    const reader: Actor = { ...actorFromClaims(undefined, 'Tree Reader'), siteId: TENANT_B.siteId, tenantId: TENANT_B.tenantId };
+    let deps: DomainDeps;
+    // Explicit tcontent_ids run against insertion order, so only the tie-breaker orders equal ordernos.
+    const tie = (contentid: string, tcontentId: number, orderno: number, menutitle: string, row: Row = {}): Row =>
+      page({ contentid, contenthistid: contentid, tcontent_id: tcontentId, parentid: TIES, siteid: TENANT_B.siteId, title: menutitle, menutitle, orderno, ...row });
+
+    beforeAll(async () => {
+      await inB(async (tx) => {
+        await insert(tx, 'content', [
+          tie(N.ONE, 9005, 2, 'Odd one'),
+          tie(N.TWO, 9004, 1, 'Even two'),
+          tie(N.THREE, 9003, 2, 'Odd three'),
+          tie(N.THREE, 9007, 2, 'Odd three before', { contenthistid: cfId(0x213), active: 0 }),
+          tie(N.FOUR, 9002, 1, 'Even four'),
+          tie(N.FIVE, 9001, 2, 'Odd five'),
+          tie(N.SIX, 9006, 3, 'Even six', { fileid: N.FILE }),
+          tie(N.KID, 9008, 1, 'Kid', { parentid: N.ONE }),
+          // Physical row pairs of one active version, which legacy's GROUP BY collapses.
+          tie(N.DUPE, 9010, 1, 'Dupe', { parentid: PAIR }),
+          tie(N.DUPE, 9009, 1, 'Dupe', { parentid: PAIR }),
+          tie(N.TWIN, 9013, 1, 'Twin', { parentid: SPLIT }),
+          tie(N.LONE, 9012, 1, 'Lone', { parentid: SPLIT }),
+          tie(N.TWIN, 9011, 1, 'Twin', { parentid: SPLIT }),
+        ]);
+        await insert(tx, 'file', [{ fileid: N.FILE, contentid: N.SIX, siteid: TENANT_B.siteId, filename: 'six.png', filesize: 6, contenttype: 'image', contentsubtype: 'png', fileext: 'png' }]);
+        await insert(tx, 'file_metadata', [
+          { metaid: cfId(0x20a), fileid: N.FILE, contenthistid: N.SIX, contentid: N.SIX, siteid: TENANT_B.siteId, alttext: 'b alt' },
+          { metaid: cfId(0x20b), fileid: N.FILE, contenthistid: N.SIX, contentid: N.SIX, siteid: TENANT_B.siteId, alttext: 'a alt' },
+        ]);
+      });
+      deps = { db: handle.app, repository: createContentRepository({ clock: fixedClock(TODAY), schema: handle.schema }), clock: fixedClock(TODAY), config: CONTENT_CONFIG_DEFAULTS };
+    });
+
+    const TIED = [[N.FOUR, null], [N.TWO, null], [N.FIVE, null], [N.THREE, null], [N.ONE, null], [N.SIX, 'a alt'], [N.SIX, 'b alt']];
+    it.each<[string, Partial<Parameters<typeof nest>[1]>, (string | null)[][], number[] | undefined]>([
+      ['orderno ties with aggregation', {}, TIED, [0, 0, 0, 0, 1, 0, 0]],
+      ['orderno ties without aggregation', { aggregation: false }, TIED, undefined],
+      ['a menu title search', { searchString: 'ODD' }, [[N.FIVE, null], [N.THREE, null], [N.ONE, null]], [0, 0, 1]],
+    ])('nest pages of %s concatenate to the unbounded read, which nestCount counts', async (_label, args, expected, haskids) => {
+      const query = { ...QUERY, ...args };
+      const all = await inB((tx) => nest(tx, query));
+      expect(all.map((row) => [row.contenthistid, row.filealttext])).toEqual(expected);
+      expect(all.map((row) => row.haskids)).toEqual(haskids ?? expected.map(() => undefined));
+      expect(await inB((tx) => nestCount(tx, query))).toBe(expected.length);
+      for (const size of [1, 2, 3]) {
+        const pages: NestRow[] = [];
+        for (let offset = 0; offset < all.length; offset += size) pages.push(...(await inB((tx) => nest(tx, { ...query, offset, limit: size }))));
+        expect(pages).toEqual(all);
+      }
+      expect(await inB((tx) => nest(tx, { ...query, offset: all.length, limit: 2 }))).toEqual([]);
+    });
+
+    it.each<[string, string, string[], string[]]>([
+      ['alone', PAIR, [N.DUPE], [N.DUPE, N.DUPE]],
+      ['around a tied sibling, by their least tcontent_id', SPLIT, [N.TWIN, N.LONE], [N.TWIN, N.LONE, N.TWIN]],
+    ])('nest groups physical rows sharing every grouped value into one row %s, and reads each without aggregation', async (_label, parentId, grouped, flat) => {
+      const query = { parentId, siteId: TENANT_B.siteId };
+      const rows = await inB((tx) => nest(tx, query));
+      expect(histIds(rows)).toEqual(grouped);
+      expect(await inB((tx) => nestCount(tx, query))).toBe(grouped.length);
+      expect(await getNest(deps, reader, { ...query, startRow: 1, maxRows: 1 })).toEqual({ rows: rows.slice(0, 1), recordCount: rows.length });
+      const unaggregated = { ...query, aggregation: false };
+      expect(histIds(await inB((tx) => nest(tx, unaggregated)))).toEqual(flat);
+      expect(await inB((tx) => nestCount(tx, unaggregated))).toBe(flat.length);
+    });
+
+    it.each<[number | undefined, number | undefined]>([
+      [undefined, undefined],
+      [3, 2],
+      [6, 5],
+      [8, 2],
+      [1, 0],
+      [4, -1],
+      [20, undefined],
+      [2 ** 60, 2 ** 60],
+    ])('getNest reads startRow %s and maxRows %s as a SQL page with the whole count', async (startRow, maxRows) => {
+      const all = await inB((tx) => nest(tx, QUERY));
+      const from = (startRow ?? 1) - 1;
+      const rows = maxRows === undefined || maxRows < 0 ? all.slice(from) : all.slice(from, from + maxRows);
+      expect(await getNest(deps, reader, { ...QUERY, startRow, maxRows })).toEqual({ rows, recordCount: TIED.length });
+    });
+
+    it.each<[number, number]>([
+      [0, 1],
+      [1.5, 1],
+      [1, 2.5],
+    ])('getNest rejects startRow %s and maxRows %s as windowOf does', async (startRow, maxRows) => {
+      await expect(getNest(deps, reader, { ...QUERY, startRow, maxRows })).rejects.toThrow(new RangeError('startRow must be a positive integer and maxRows an integer'));
+    });
+  });
+
   it('reads live sections, counts and item summaries of a site', async () => {
     expect(await inA((tx) => sections(tx, { siteId: SITE }))).toEqual([
       { contentid: FOLDER, menutitle: '', type: 'Folder', siteid: SITE, path: `${HOME},${FOLDER}` },
@@ -878,6 +989,7 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries versions and tree'
     expect(await inB((tx) => readActive(tx, { siteId: SITE, contentId: BETA }))).toEqual([]);
     expect(await inB((tx) => kids(tx, KIDS))).toEqual([]);
     expect(await inB((tx) => crumbPath(tx, { contentId: CHILD, siteId: SITE }))).toEqual([]);
+    expect(await inB((tx) => versionParents(tx, { contentHistIds: [BETA_H] }))).toEqual(new Map());
   });
 
   describe('during a legacy write window', () => {
@@ -903,6 +1015,7 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries versions and tree'
 
     it.each<[string, (tx: TenantTx) => Promise<unknown>]>([
       ['readVersion', (tx) => readVersion(tx, { contentHistId: BETA_H })],
+      ['versionParents', (tx) => versionParents(tx, { contentHistIds: [BETA_H] })],
       ['readActive', (tx) => readActive(tx, { siteId: SITE, contentId: BETA })],
       ['histIdFromContentId', (tx) => histIdFromContentId(tx, { contentId: BETA, siteId: SITE })],
       ['contentObjects', (tx) => contentObjects(tx, { contentHistId: BETA_H, siteId: SITE })],
@@ -915,6 +1028,7 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries versions and tree'
       ['crumbPath', (tx) => crumbPath(tx, { contentId: CHILD, siteId: SITE })],
       ['kids', (tx) => kids(tx, KIDS)],
       ['nest', (tx) => nest(tx, { parentId: FOLDER, siteId: SITE })],
+      ['nestCount', (tx) => nestCount(tx, { parentId: FOLDER, siteId: SITE })],
       ['kidsCount', (tx) => kidsCount(tx, { siteId: SITE, parentId: FOLDER, today: TODAY })],
     ])('%s waits out the executing phase and fails with UnitReadBlockedError', async (_label, read) => {
       await expect(withGatedTenant(handle.app, TENANT_A.tenantId, read, { budgetMs: 200 })).rejects.toBeInstanceOf(UnitReadBlockedError);

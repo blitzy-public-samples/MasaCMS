@@ -1,6 +1,4 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
-import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MAILPIT_CONFIRM_ATTEMPTS,
@@ -46,10 +44,29 @@ const pending: Reply = (init) =>
     init?.signal?.addEventListener('abort', () => reject(init.signal?.reason as DOMException), { once: true });
   });
 
+/** Fakes setTimeout and performance.now, and makes each AbortSignal.timeout signal abort on that clock; returns the spy. */
+function controlledClock() {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+  return vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')), ms);
+    return controller.signal;
+  });
+}
+
+/** Runs `confirm` while the controlled clock fires every timer; resolves to its answer and the clock time it took. */
+async function onClock(confirm: () => Promise<string | null>): Promise<{ id: string | null; ms: number }> {
+  const started = performance.now();
+  const settled = confirm().then((id) => ({ id, ms: performance.now() - started }));
+  await vi.runAllTimersAsync();
+  return settled;
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 describe('constants', () => {
@@ -166,14 +183,17 @@ describe('createMailpitDeliveryStatus', () => {
   });
 
   it('counts a fetch still pending at its deadline as a miss', async () => {
+    const timeout = controlledClock();
     const urls = scriptFetch(pending, found('MP-2'));
     const { sleep, delays: waits } = fakeSleep();
-    const started = performance.now();
 
-    await expect(createMailpitDeliveryStatus({ baseUrl: BASE, sleep }).confirm(MESSAGE_ID)).resolves.toBe('MP-2');
-    expect(performance.now() - started).toBeGreaterThanOrEqual(MAILPIT_LOOKUP_TIMEOUT_MS - 5);
+    await expect(onClock(() => createMailpitDeliveryStatus({ baseUrl: BASE, sleep }).confirm(MESSAGE_ID))).resolves.toEqual({
+      id: 'MP-2',
+      ms: MAILPIT_LOOKUP_TIMEOUT_MS,
+    });
     expect(urls).toEqual([SEARCH_URL, SEARCH_URL]);
     expect(waits).toEqual([500]);
+    expect(timeout.mock.calls).toEqual([[MAILPIT_LOOKUP_TIMEOUT_MS], [MAILPIT_LOOKUP_TIMEOUT_MS]]);
   });
 });
 
@@ -213,52 +233,80 @@ describe('createMailpitDeliveryStatus budget on a virtual monotonic clock', () =
   });
 });
 
-describe('createMailpitDeliveryStatus against a stalled Mailpit', () => {
+describe('createMailpitDeliveryStatus against a stalled Mailpit on a controlled clock', () => {
   /** A late hit sends either the whole reply or only its body `lateMs` after the request. */
   type Behaviour = 'no-headers' | 'partial-body' | 'hit' | { lateMs: number; part: 'reply' | 'body' };
-  const SEARCH_PATH = SEARCH_URL.slice(BASE.length);
   const JSON_TYPE = { 'content-type': 'application/json' };
-  const servers: Server[] = [];
+  const utf8 = new TextEncoder();
+  let timeout: ReturnType<typeof controlledClock>;
 
-  /** Starts a 127.0.0.1 Mailpit stand-in answering request n by `behaviours[n]`, repeating the last. */
-  async function startMailpit(...behaviours: Behaviour[]): Promise<{ origin: string; paths: string[] }> {
-    const paths: string[] = [];
-    const server = createServer((req, res) => {
-      paths.push(req.url ?? '');
-      const behaviour = behaviours[Math.min(paths.length, behaviours.length) - 1];
-      const hit = JSON.stringify({ messages: [{ ID: `MP-${paths.length}` }] });
-      if (behaviour === 'no-headers') return;
-      if (typeof behaviour === 'object') {
-        if (behaviour.part === 'body') res.writeHead(200, JSON_TYPE).write(hit.slice(0, 1));
-        setTimeout(() => {
-          if (behaviour.part === 'reply') res.writeHead(200, JSON_TYPE).end(hit);
-          else res.end(hit.slice(1));
-        }, behaviour.lateMs);
-        return;
-      }
-      res.writeHead(200, JSON_TYPE);
-      if (behaviour === 'partial-body') res.write('{"messages":[');
-      else res.end(hit);
-    });
-    servers.push(server);
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    return { origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, paths };
-  }
-
-  afterEach(async () => {
-    for (const server of servers.splice(0)) {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
+  beforeEach(() => {
+    timeout = controlledClock();
   });
 
+  /** A 200 whose body sends `head` now and `tail` with its end `lateMs` later; an abort first errors it with the signal's reason, as undici does. */
+  function streamed(signal: AbortSignal, head: string, tail?: { text: string; lateMs: number }): Response {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(utf8.encode(head));
+        const timer =
+          tail &&
+          setTimeout(() => {
+            controller.enqueue(utf8.encode(tail.text));
+            controller.close();
+          }, tail.lateMs);
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            controller.error(signal.reason);
+          },
+          { once: true },
+        );
+      },
+    });
+    return new Response(body, { status: 200, headers: JSON_TYPE });
+  }
+
+  /** Scripts fetch as a Mailpit stand-in answering request n by `behaviours[n]`, repeating the last; returns the requested URLs. */
+  function standIn(...behaviours: Behaviour[]): string[] {
+    const replies = behaviours.map(
+      (behaviour): Reply =>
+        (init) => {
+          const signal = init!.signal!;
+          const hit = JSON.stringify({ messages: [{ ID: `MP-${urls.length}` }] });
+          if (behaviour === 'no-headers') return pending(init);
+          if (behaviour === 'partial-body') return streamed(signal, '{"messages":[');
+          if (behaviour === 'hit') return new Response(hit, { status: 200, headers: JSON_TYPE });
+          if (behaviour.part === 'body') return streamed(signal, hit.slice(0, 1), { text: hit.slice(1), lateMs: behaviour.lateMs });
+          return new Promise<Response>((resolve, reject) => {
+            const timer = setTimeout(() => resolve(new Response(hit, { status: 200, headers: JSON_TYPE })), behaviour.lateMs);
+            signal.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(timer);
+                reject(signal.reason as DOMException);
+              },
+              { once: true },
+            );
+          });
+        },
+    );
+    const urls = scriptFetch(...replies.slice(0, -1), replies.at(-1)!);
+    return urls;
+  }
+
   it.each<Behaviour>(['no-headers', 'partial-body'])('treats a %s stall as a miss and finds the third reply', async (stall) => {
-    const { origin, paths } = await startMailpit(stall, stall, 'hit');
+    const urls = standIn(stall, stall, 'hit');
     const { sleep, delays: waits } = fakeSleep();
 
-    await expect(createMailpitDeliveryStatus({ baseUrl: origin, sleep }).confirm(MESSAGE_ID)).resolves.toBe('MP-3');
-    expect(paths).toEqual([SEARCH_PATH, SEARCH_PATH, SEARCH_PATH]);
+    await expect(onClock(() => createMailpitDeliveryStatus({ baseUrl: BASE, sleep }).confirm(MESSAGE_ID))).resolves.toEqual({
+      id: 'MP-3',
+      ms: 2 * MAILPIT_LOOKUP_TIMEOUT_MS,
+    });
+    expect(urls).toEqual([SEARCH_URL, SEARCH_URL, SEARCH_URL]);
     expect(waits).toEqual([500, 500]);
+    expect(timeout.mock.calls).toEqual([[MAILPIT_LOOKUP_TIMEOUT_MS], [MAILPIT_LOOKUP_TIMEOUT_MS], [MAILPIT_LOOKUP_TIMEOUT_MS]]);
   });
 
   it.each<[number, 'reply' | 'body']>([
@@ -266,32 +314,28 @@ describe('createMailpitDeliveryStatus against a stalled Mailpit', () => {
     [1000, 'reply'],
     [1000, 'body'],
   ])('finds a hit whose %i ms late %s arrives within the first lookup', async (lateMs, part) => {
-    const timeout = vi.spyOn(AbortSignal, 'timeout');
-    const { origin, paths } = await startMailpit({ lateMs, part });
+    const urls = standIn({ lateMs, part });
     const { sleep, delays: waits } = fakeSleep();
-    const started = performance.now();
 
-    await expect(createMailpitDeliveryStatus({ baseUrl: origin, sleep }).confirm(MESSAGE_ID)).resolves.toBe('MP-1');
-    expect(performance.now() - started).toBeGreaterThanOrEqual(lateMs - 5);
-    expect(paths).toEqual([SEARCH_PATH]);
+    await expect(onClock(() => createMailpitDeliveryStatus({ baseUrl: BASE, sleep }).confirm(MESSAGE_ID))).resolves.toEqual({ id: 'MP-1', ms: lateMs });
+    expect(urls).toEqual([SEARCH_URL]);
     expect(waits).toEqual([]);
     expect(timeout.mock.calls).toEqual([[MAILPIT_LOOKUP_TIMEOUT_MS]]);
   });
 
   it('stops stalled lookups once less than a whole second of the budget remains', async () => {
-    const timeout = vi.spyOn(AbortSignal, 'timeout');
-    const stalls = Array.from({ length: 10 }, (_, i): Behaviour => (i % 2 === 0 ? 'no-headers' : 'partial-body'));
-    const { origin, paths } = await startMailpit(...stalls);
+    const urls = standIn(...Array.from({ length: 10 }, (_, i): Behaviour => (i % 2 === 0 ? 'no-headers' : 'partial-body')));
     const { sleep, delays: waits } = fakeSleep();
-    const started = performance.now();
 
-    await expect(createMailpitDeliveryStatus({ baseUrl: origin, sleep }).confirm(MESSAGE_ID)).resolves.toBeNull();
+    await expect(onClock(() => createMailpitDeliveryStatus({ baseUrl: BASE, sleep }).confirm(MESSAGE_ID))).resolves.toEqual({
+      id: null,
+      ms: MAILPIT_CONFIRM_BUDGET_MS,
+    });
     const limits = timeout.mock.calls.map(([ms]) => ms);
-    expect(performance.now() - started).toBeGreaterThan(MAILPIT_CONFIRM_BUDGET_MS - 1000);
-    expect(paths.length).toBeLessThan(MAILPIT_CONFIRM_ATTEMPTS);
-    expect(paths).toEqual(limits.map(() => SEARCH_PATH));
+    expect(limits).toEqual(Array.from({ length: 5 }, () => MAILPIT_LOOKUP_TIMEOUT_MS));
+    expect(urls.length).toBeLessThan(MAILPIT_CONFIRM_ATTEMPTS);
+    expect(urls).toEqual(limits.map(() => SEARCH_URL));
     expect(waits).toEqual(limits.map(() => MAILPIT_CONFIRM_INTERVAL_MS));
-    expect(limits.every((ms) => ms === 1000 || ms === MAILPIT_LOOKUP_TIMEOUT_MS)).toBe(true);
     expect(limits.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(MAILPIT_CONFIRM_BUDGET_MS);
   });
 });

@@ -174,15 +174,21 @@ function managerRow(r: Text): SiteManagerRow {
   };
 }
 
-function nestNode(r: RecordedNest): NestNode {
+function nestNode(r: RecordedNest, nextN: number): NestNode {
   return {
     ...managerRow(r),
     restricted: int(r['restricted']),
     islocked: int(r['islocked']),
     verdict: r.verdict,
     kidsCount: Number(r.kidscount),
-    ...(r.kids === undefined ? {} : { kids: r.kids.map(nestNode) }),
+    ...(r.kids === undefined ? {} : { kids: nestWindow(r.kids, '1', nextN) }),
   };
+}
+
+/** A recorded getNest result as the route reads it: the `nextN` rows from `startRow`, open sections' from row 1. */
+function nestWindow(rows: readonly RecordedNest[], startRow: string, nextN: number): NestNode[] {
+  const from = Number(startRow) - 1;
+  return rows.slice(from, from + nextN).map((r) => nestNode(r, nextN));
 }
 
 function crumb(c: Text): ZoomCrumb {
@@ -218,7 +224,7 @@ function managerModel(rec: Recorded): SiteManagerModel {
     tabAssignments: rec.tabAssignments ?? '',
     extendAttributes: rec.rsExtend ?? [],
     hasMarketingManager: rec.marketing === true,
-    nest: m.nest.map(nestNode),
+    nest: nestWindow(m.nest, rec.request['startrow'] ?? '1', Number(rec.session.nextN)),
     customIcons: buildCustomIconLookup(rec.icons ?? []),
   };
 }
@@ -235,7 +241,7 @@ function sectionModel(rec: Recorded): SiteSectionModel {
     perm: m.perm,
     restricted: truthyFlag(m.restricted),
     tabAssignments: rec.tabAssignments ?? '',
-    nest: m.nest.map(nestNode),
+    nest: nestWindow(m.nest, rec.request['startrow'] ?? '1', Number(rec.session.nextN)),
     customIcons: buildCustomIconLookup(rec.icons ?? []),
   };
 }

@@ -42,7 +42,7 @@ import {
   type OwnerBatcher,
   type TenantResolver,
 } from './batch.js';
-import { Acceptance, addTaken, hintOf, planTarget, type DiffSide, type TargetPlan } from './targets.js';
+import { Acceptance, addTaken, chunksOf, hintOf, planTarget, type DiffSide, type TargetPlan } from './targets.js';
 
 /** Context members the feed reads: snapshots, both data sides through `legacy` and `owners`, the gateway's authority and the report target. */
 export type FeedContext = Pick<
@@ -214,7 +214,7 @@ interface OwnerShare {
   readonly result: OwnerDiffResult;
 }
 
-/** The two sides of one table diff and the acceptance cache both read through. */
+/** The two sides of one table diff and the acceptance that judges their rows. */
 interface DiffRun {
   readonly table: string;
   readonly keyed: boolean;
@@ -327,13 +327,26 @@ async function applyMultisetChange(share: OwnerShare, run: DiffRun, change: Mult
   }
 }
 
+/** Rows of a keyed change with the side each is judged on. */
+function keyedRows(run: DiffRun, change: KeyedChange): (readonly [DiffSide, CanonicalRow])[] {
+  if (change.op === 'insert') return [[run.after, change.after]];
+  if (change.op === 'delete') return [[run.before, change.before]];
+  return [
+    [run.before, change.before],
+    [run.after, change.after],
+  ];
+}
+
 /** Base snapshot of `owner`: the caller's, else the sequence of its `forward` watermark; null when it has none. */
 async function baseOf(ctx: Pick<TableDiffContext, 'owners'>, options: ApplyTableDiffOptions, owner: DataOwner): Promise<number | null> {
   if (options.baseByOwner?.has(owner) === true) return options.baseByOwner.get(owner) ?? null;
   return (await ctx.owners.watermark(owner, options.table.name, 'forward'))?.snapshotSeq ?? null;
 }
 
-/** Streams the table once from base snapshot `base` and once from `to`, and applies each change to every owner of the group. */
+/**
+ * Streams the table once from base snapshot `base` and once from `to`, and applies each change to every owner of the group,
+ * `batchSize` changes at a time after preparing their acceptance.
+ */
 async function diffGroup(
   ctx: TableDiffContext,
   options: ApplyTableDiffOptions,
@@ -373,6 +386,7 @@ async function diffGroup(
     }),
   }));
 
+  const targets = [...new Set(shares.flatMap((share) => [...share.writable, ...share.readOnly].map((plan) => plan.target)))];
   const before = streamLegacyTable(ctx, { table, database: from.databaseName });
   const after = streamLegacyTable(ctx, { table, database: to.databaseName });
   if (shape.keyed) {
@@ -380,12 +394,14 @@ async function diffGroup(
       shares.flatMap((share) => share.writable),
       shape,
     );
-    for await (const change of diffKeyedStreams(before, after, { columns: shape.columns, writableColumns })) {
-      for (const share of shares) await applyKeyedChange(share, run, change);
+    for await (const changes of chunksOf(diffKeyedStreams(before, after, { columns: shape.columns, writableColumns }), options.batchSize)) {
+      await run.acceptance.prepare(targets, changes.flatMap((change) => keyedRows(run, change)));
+      for (const change of changes) for (const share of shares) await applyKeyedChange(share, run, change);
     }
   } else {
-    for await (const change of diffMultisetStreams(before, after)) {
-      for (const share of shares) await applyMultisetChange(share, run, change);
+    for await (const changes of chunksOf(diffMultisetStreams(before, after), options.batchSize)) {
+      await run.acceptance.prepare(targets, changes.map((change) => [change.added > 0 ? run.after : run.before, change.row] as const));
+      for (const change of changes) for (const share of shares) await applyMultisetChange(share, run, change);
     }
   }
   for (const share of shares) share.result.batches = (await share.batcher.finish()).batches;

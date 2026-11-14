@@ -2,14 +2,14 @@
 import { cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
 import { sha256Hex, withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import { contentFileKey, type ContentFileVariant, type StoragePort } from '@opt2/platform/storage';
-import { poolTenantFor, registryEntryForTenant, withTenant, type TenantTx } from '@opt2/platform/tenancy';
-import { CONTENT_FILES_BUCKET } from '../migration/objects.js';
+import { poolTenantFor, registryEntryForTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { CONTENT_FILES_BUCKET, type StoreObjectDeps } from '../migration/objects.js';
 import { StagedObjectMissingError, recoverStagedObjects, settleStagedObject, stageObject } from '../migration/staged-objects.js';
-import { claimStagedObject, deleteStagedObject, lockFileObjectKey } from '../repo/files.js';
+import { claimStagedObject, deleteStagedObject, lockFileObjectKey, type StagedObjectEntry } from '../repo/files.js';
 import type { ContentFilesDeletion, ContentRepository, Patch } from '../repo/repository.js';
-import { FILE, type FileMetadataRow, type FileObjectRow, type FileRow } from '../repo/tables.js';
+import { FILE, FILE_METADATA, type FileMetadataRow, type FileObjectRow, type FileRow } from '../repo/tables.js';
 import { writeContextFor, type Actor, type DomainDeps } from './context.js';
-import { UnregisteredTenantError, withGatedPoolTenant, withPoolTenant } from './pools.js';
+import { UnregisteredTenantError, poolTenantTx, withGatedPoolTenant, withPoolTenant } from './pools.js';
 
 /** Upload extensions whose renditions Masa writes with ColdFusion's image engine (fileDAO.cfc:159-179); those uploads stay legacy-written. */
 export const IMAGE_UPLOAD_EXTS = ['png', 'gif', 'jpg', 'jpeg', 'flv'] as const;
@@ -113,12 +113,21 @@ export type StoredUpload =
   | { kind: 'stored'; fileid: string; filename: string; file: FileRow; object: FileObjectRow }
   | { kind: 'rejected'; fileid: string; filename: string };
 
+/** An upload made inside the caller's open transaction of the token tenant. */
+export interface UploadInTx {
+  /** The caller's transaction; the upload's rows commit or roll back with it. */
+  tx: TenantTx;
+  /** Receives the upload's staged intent, which the caller settles once `tx` has ended. */
+  staged?: StagedObjectEntry[];
+}
+
 /**
- * fileBean.save → fileManager.create → fileDAO.create for a non-image upload: in one gated transaction of the site's
- * file pool tenant, the `content.file` row (siteid = the site's filePoolID), the bytes in `content-files`, then their object row.
+ * fileBean.save → fileManager.create → fileDAO.create for a non-image upload: in the site's file pool tenant, the
+ * `content.file` row (siteid = the site's filePoolID), the bytes in `content-files`, then their object row; in one gated
+ * transaction of its own, or in `inTx`'s transaction.
  * @throws ImageUploadHaltedError for an image extension; UnregisteredTenantError when the token tenant has no file pool.
  */
-export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: StoreUploadArgs): Promise<StoredUpload> {
+export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: StoreUploadArgs, inTx?: UploadInTx): Promise<StoredUpload> {
   const serverExt = uploadExt(args.file.fileName);
   if (isImageUploadExt(serverExt)) throw new ImageUploadHaltedError(serverExt);
 
@@ -130,7 +139,7 @@ export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: St
 
   // The pool is resolved once, before the bytes are written, so the key's tenant prefix and the row's tenant cannot
   // differ; withGatedPoolTenant would resolve it again inside the transaction.
-  const entry = await registryEntryForTenant(deps.db, actor.tenantId);
+  const entry = await registryEntryForTenant(inTx?.tx ?? deps.db, actor.tenantId);
   const poolTenantId = entry?.filePoolTenant ?? null;
   if (entry === null || poolTenantId === null) throw new UnregisteredTenantError(actor.tenantId);
 
@@ -152,7 +161,7 @@ export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: St
     content_type: mime,
   });
 
-  return withGatedTenant<StoredUpload>(deps.db, poolTenantId, async (tx) => {
+  const publish = async (tx: TenantTx): Promise<StoredUpload> => {
     await lockFileObjectKey(tx, objectKey);
     if (!(await claimStagedObject(tx, staged.stage_id))) throw new StagedObjectMissingError(staged.stage_id);
     const now = deps.clock.now();
@@ -202,14 +211,28 @@ export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: St
     );
     await deleteStagedObject(tx, staged.stage_id);
     return { kind: 'stored', fileid: file.fileid, filename: file.filename ?? '', file, object };
-  }).catch(async (err: unknown) => {
-    try {
-      await settleStagedObject(deps, staged);
-    } catch {
-      // The durable intent remains for recovery; preserve the upload error.
-    }
+  };
+
+  if (inTx !== undefined) {
+    // Settling takes the object key lock this transaction holds, so the caller settles the intent after it ends.
+    inTx.staged?.push(staged);
+    return publish(await poolTenantTx(inTx.tx, poolTenantId, [FILE.unit]));
+  }
+  return withGatedTenant<StoredUpload>(deps.db, poolTenantId, publish).catch(async (err: unknown) => {
+    await settleStagedUploads(deps, [staged]);
     throw err;
   });
+}
+
+/** Settles intents staged by uploads whose transactions have ended; one that cannot be settled now is left for recoverStagedObjects. */
+export async function settleStagedUploads(deps: StoreObjectDeps, staged: readonly StagedObjectEntry[]): Promise<void> {
+  for (const entry of staged) {
+    try {
+      await settleStagedObject(deps, entry);
+    } catch {
+      // The durable intent remains for recovery; preserve the caller's outcome.
+    }
+  }
 }
 
 /** multiFileUpload's `update tfiles set contentID`: links a stored file to its new item; `tx` is the file pool tenant's. */
@@ -413,8 +436,8 @@ export function deleteFileMetaDataEntity(
 }
 
 /**
- * `saveFileMetaData` in a gated transaction of the content tenant `tenantId`, with `tenantId`'s file pool tenant as `fileTx`
- * when that is another tenant.
+ * `saveFileMetaData` in one gated transaction of the content tenant `tenantId`, acting as `tenantId`'s file pool tenant
+ * for `fileTx` when that is another tenant.
  * @throws UnregisteredTenantError when `tenantId` has no registry entry.
  */
 export async function saveFileMetaDataEntity(
@@ -425,11 +448,9 @@ export async function saveFileMetaDataEntity(
 ): Promise<FileMetadataRow> {
   const poolTenantId = await poolTenantFor(deps.db, tenantId, 'file');
   if (poolTenantId === null) throw new UnregisteredTenantError(tenantId);
-  return withGatedTenant(deps.db, tenantId, (tx) =>
-    poolTenantId === tenantId
-      ? saveFileMetaData(tx, deps.repository, args, { write })
-      : // A plain transaction: a gate race in it propagates to the outer retry, which re-runs both writes together.
-        withTenant(deps.db, poolTenantId, (fileTx) => saveFileMetaData(tx, deps.repository, args, { fileTx, write })),
+  const units = args.setAsDefault ? [FILE_METADATA.unit, FILE.unit] : [FILE_METADATA.unit];
+  return withGatedTenant(deps.db, tenantId, async (tx) =>
+    saveFileMetaData(tx, deps.repository, args, { fileTx: await poolTenantTx(tx, poolTenantId, units), write }),
   );
 }
 

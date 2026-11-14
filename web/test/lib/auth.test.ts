@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, t
 import {
   AuthDenial,
   INVOCATION_HEADER,
+  KeySourceUnavailableError,
   LOCAL_SECRET_FILES,
   LOCAL_USER_TOKEN,
   Roles,
@@ -253,12 +254,14 @@ describe('authenticateRequest', () => {
     expect(verify).not.toHaveBeenCalled();
   });
 
-  it('propagates a key-source failure unchanged', async () => {
+  it('propagates the platform key-source failure unchanged', async () => {
     const failure = new TypeError('fetch failed');
     fetchSpy.mockRejectedValue(failure);
     const headers = new Headers(await gatewayWith(`Bearer ${await userToken()}`));
+    const error = await authenticateRequest(headers, PATH).catch((caught: unknown) => caught);
 
-    await expect(authenticateRequest(headers, PATH)).rejects.toBe(failure);
+    expect(error).toBeInstanceOf(KeySourceUnavailableError);
+    expect((error as KeySourceUnavailableError).cause).toBe(failure);
   });
 });
 

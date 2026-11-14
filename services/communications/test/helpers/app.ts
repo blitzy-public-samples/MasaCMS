@@ -3,6 +3,7 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { afterAll } from 'vitest';
 import { LOCAL_USER_TOKEN } from '@opt2/platform/auth';
 import { apiUnavailableResponse } from '@opt2/platform/legacy-compat';
 import type { GatePhase, GateState } from '@opt2/platform/migration-kit';
@@ -72,15 +73,9 @@ const DEFAULT_MAILPIT_API_URL = 'http://127.0.0.1:8025';
 
 const ownedStateDirs = new Set<string>();
 
-// Test workers may exit without closing their apps; a state directory testEnv created is then removed at exit, best effort.
-process.once('exit', () => {
-  for (const dir of ownedStateDirs) {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // A leftover temporary directory never fails the run.
-    }
-  }
+// Registered on the importing test file, so a state directory its tests left behind is removed once the file finishes.
+afterAll(() => {
+  for (const dir of ownedStateDirs) removeTestStateDir(dir);
 });
 
 /** Removes a state directory {@link testEnv} created; a directory it did not create is left alone. */

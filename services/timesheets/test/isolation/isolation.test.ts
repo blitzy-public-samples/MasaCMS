@@ -25,7 +25,7 @@ import { PERSON_ARCHIVED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { PERSON_ARCHIVED_TOPIC } from '../../src/events/person-archived.js';
 import { createTimesheetsRepository, type TimesheetsRepository } from '../../src/repo/repository.js';
 import { APPROVAL_ACTION, BLACKOUT, TIMESHEET, TIMESHEET_DAY, tables } from '../../src/repo/tables.js';
-import { BUSINESS_DATE, TEST_CLOCK, buildTestApp, createTimesheetsSchema, describeWithPg, headersFor, type TestApp } from '../helpers/app.js';
+import { BUSINESS_DATE, TEST_CLOCK, buildTestApp, createTimesheetsSchema, headersFor, type TestApp } from '../helpers/app.js';
 import {
   EFFECTIVE_FROM,
   SHARED_PERSON_ID,
@@ -37,6 +37,7 @@ import {
   timesheetRow,
   type TenantSeed,
 } from '../helpers/days.js';
+import { describeWithPg } from '../helpers/pg.js';
 
 type Row = Record<string, unknown>;
 

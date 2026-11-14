@@ -1,6 +1,6 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Messages as the fixture `communications.cfc` serves them: compose and queue, send over SMTP, confirm through Mailpit, list and detail. */
-import { LegacyApiError, cfDateTimeFormat, cfNumberString, javaTrim } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, cfDateTimeFormat, javaTrim } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
@@ -10,7 +10,7 @@ import type { DeliveryStatusRow, MessageRow, MessageSource, MessageState } from 
 import { recordStatus, type DomainDeps, type MailDeps } from './delivery.js';
 import type { OutgoingMail } from './mail-transport.js';
 import { isValidEmail } from './sender-address.js';
-import { param, textParam } from './templates.js';
+import { param, simpleText, textParam } from './templates.js';
 
 /** Send-message params under the fixture's names, read ignoring case as CFML struct keys resolve; values as received. */
 export interface MessageInput {
@@ -133,13 +133,6 @@ function variablesParam(input: MessageInput): Readonly<Record<string, string | n
     throw new LegacyApiError('invalidParameters');
   }
   return value as Record<string, string | number | boolean>;
-}
-
-/** CFML toString of a simple value: strings as is, booleans YES/NO, numbers as ACF prints them. */
-function simpleText(value: string | number | boolean): string {
-  if (typeof value === 'number') return cfNumberString(value);
-  if (typeof value === 'boolean') return value ? 'YES' : 'NO';
-  return value;
 }
 
 /** Replaces each `{{key}}` whose key equals a `values` key case-sensitively, in one pass; other placeholders stay as written. */

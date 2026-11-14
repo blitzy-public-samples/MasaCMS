@@ -28,8 +28,7 @@ import type { DataOwner, LegacyTableTarget, OwnersClient, UnitCatalog } from '..
 import {
   buildReport,
   createTenantResolver,
-  describeUnitTable,
-  readLegacyUnitRows,
+  createUnitRowFilter,
   reconcileUnits,
   reportTargetFor,
   resolvePoint,
@@ -55,8 +54,7 @@ vi.mock('../../src/snapshot/index.js', async (importOriginal) => ({
 vi.mock('../../src/reconcile/index.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/reconcile/index.js')>()),
   createTenantResolver: vi.fn(),
-  describeUnitTable: vi.fn(),
-  readLegacyUnitRows: vi.fn(),
+  createUnitRowFilter: vi.fn(),
   reconcileUnits: vi.fn(),
   reportTargetFor: vi.fn(),
   writeReconciliationReport: vi.fn(),
@@ -463,38 +461,9 @@ function installFakes(): void {
     Promise.resolve({ order: world.order, entries: [], deferred: world.deferred, relaxed: [], cycles: [], parentOf: () => null }),
   );
   vi.mocked(createTenantResolver).mockImplementation(() => Promise.resolve(resolver));
-  vi.mocked(describeUnitTable).mockImplementation((_deps, options) => {
-    const target = targetOf(options.unit, options.legacyTable);
-    const { spec } = tableIn(options.database, options.legacyTable);
-    const owned = target.ownedColumns === 'whole-table' ? null : new Set([...target.ownedColumns, ...target.keyColumns].map(lower));
-    const folded = spec.programIds !== undefined;
-    return Promise.resolve({
-      unit: options.unit,
-      owner: target.owner,
-      legacyTable: options.legacyTable,
-      keyed: target.keyColumns.length > 0,
-      keyColumns: folded ? [...target.keyColumns, LEGACY_PROGRAM_ID_COLUMN] : [...target.keyColumns],
-      columns: spec.columns.filter((column) => owned === null || owned.has(lower(column.name))),
-      excludedColumns: [],
-      folded,
-    });
-  });
-  vi.mocked(readLegacyUnitRows).mockImplementation((_deps, shape, options) => {
-    const { rowPredicate } = targetOf(shape.unit, shape.legacyTable);
-    const byTenant = new Map<string, CanonicalRow[]>();
-    for (const row of tableIn(options.database, shape.legacyTable).rows) {
-      if (!takes(options.database, rowPredicate, row)) continue;
-      const { tenantId } = options.tenants.resolve(shape.legacyTable, row);
-      byTenant.set(tenantId, [...(byTenant.get(tenantId) ?? []), canonicalRow(shape, row)]);
-    }
-    const tenants = [...byTenant.keys()].sort();
-    return Promise.resolve({
-      tenants,
-      counts: new Map(tenants.map((tenantId) => [tenantId, byTenant.get(tenantId)?.length ?? 0])),
-      rows: (tenantId: string) => (byTenant.get(tenantId) ?? []).sort(compareCanonicalRows),
-      orphans: new Map(),
-      dispose: () => Promise.resolve(),
-    });
+  vi.mocked(createUnitRowFilter).mockImplementation((_deps, options) => {
+    const { rowPredicate } = targetOf(options.unit, options.legacyTable);
+    return Promise.resolve({ prepare: () => Promise.resolve(), accepts: (row) => Promise.resolve(takes(options.database, rowPredicate, row as Row)) });
   });
   vi.mocked(reconcileUnits).mockImplementation((ctx, options) =>
     Promise.resolve({

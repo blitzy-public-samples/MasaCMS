@@ -1043,6 +1043,8 @@ interface TxState {
   readonly db: Database;
   readonly work: Map<Table, TableWork>;
   readonly statements: StatementRecord[];
+  /** SQL Server DDL is transactional: a rollback drops the objects the transaction created. */
+  readonly undo: (() => void)[];
 }
 
 interface TableWork {
@@ -1220,6 +1222,11 @@ function mergeTx(tx: TxState): boolean {
   }
   for (const [table, set] of merged) table.data = set;
   return merged.length > 0;
+}
+
+/** Drops the objects an uncommitted transaction created, newest first. */
+function undoTx(tx: TxState): void {
+  for (const step of tx.undo.splice(0).reverse()) step();
 }
 
 
@@ -2353,8 +2360,80 @@ function resolveColumn(scope: Scope, parts: readonly string[]): TV {
   throw new SqlFault(4104, `The multi-part identifier "${parts.join('.')}" could not be bound.`);
 }
 
+/** Error 147, for an aggregate outside a grouped select list. */
+function aggregateOutsideGroupFault(): SqlFault {
+  return new SqlFault(
+    147,
+    'An aggregate may not appear in the WHERE clause unless it is in a subquery contained in a HAVING clause or a select list, and the column being aggregated is an outer reference.',
+  );
+}
+
+/** Error 116, for a scalar subquery whose select list is not one expression. */
+function subqueryColumnsFault(): SqlFault {
+  return new SqlFault(116, 'Only one expression can be specified in the select list when the subquery is not introduced with EXISTS.');
+}
+
+/** Resolves every column, alias and variable `e` names without reading a value, as SQL Server binds names before any row is read. */
+function bindExpr(ctx: Exec, e: Expr, scope: Scope): void {
+  switch (e.k) {
+    case 'lit':
+    case 'null':
+    case 'global':
+      return;
+    case 'var':
+      readVariable(ctx, e.name);
+      return;
+    case 'col':
+      resolveColumn(scope, e.parts);
+      return;
+    case 'fn': {
+      if (!AGGREGATES.has(e.name)) {
+        for (const arg of e.args) bindExpr(ctx, arg, scope);
+        return;
+      }
+      if (scope.group === undefined) throw aggregateOutsideGroupFault();
+      const rowScope: Scope = { sources: scope.sources, row: [], outer: scope.outer };
+      for (const arg of e.args) bindExpr(ctx, arg, rowScope);
+      return;
+    }
+    case 'cast':
+      bindExpr(ctx, e.expr, scope);
+      if (e.style !== undefined) bindExpr(ctx, e.style, scope);
+      return;
+    case 'case':
+      if (e.operand !== undefined) bindExpr(ctx, e.operand, scope);
+      for (const w of e.whens) {
+        bindExpr(ctx, w.when, scope);
+        bindExpr(ctx, w.then, scope);
+      }
+      if (e.otherwise !== undefined) bindExpr(ctx, e.otherwise, scope);
+      return;
+    case 'arith':
+    case 'cmp':
+    case 'and':
+    case 'or':
+      bindExpr(ctx, e.left, scope);
+      bindExpr(ctx, e.right, scope);
+      return;
+    case 'neg':
+    case 'not':
+    case 'isnull':
+    case 'collate':
+      bindExpr(ctx, e.expr, scope);
+      return;
+    case 'in':
+      bindExpr(ctx, e.expr, scope);
+      for (const item of e.list) bindExpr(ctx, item, scope);
+      return;
+    case 'subquery':
+      if (bindSelect(ctx, e.select, scope).specs.length !== 1) throw subqueryColumnsFault();
+      return;
+  }
+}
+
 /** Type of an expression's result, for result sets without rows and CASE branches not taken. */
 function typeOfExpr(ctx: Exec, e: Expr, scope: Scope): SqlType {
+  bindExpr(ctx, e, scope);
   if (e.k === 'cast') return e.type;
   if (e.k === 'lit') return e.value.type;
   try {
@@ -2396,12 +2475,7 @@ function objectIdOf(ctx: Exec, name: string, type: string | null): number | null
 
 function aggregate(ctx: Exec, e: { readonly name: string; readonly args: readonly Expr[]; readonly star: boolean }, scope: Scope): TV {
   const group = scope.group;
-  if (group === undefined) {
-    throw new SqlFault(
-      147,
-      'An aggregate may not appear in the WHERE clause unless it is in a subquery contained in a HAVING clause or a select list, and the column being aggregated is an outer reference.',
-    );
-  }
+  if (group === undefined) throw aggregateOutsideGroupFault();
   if (!e.star) requireArgs(e, 1, 1);
   const arg = e.args[0];
   const rowScope = (row: readonly (readonly Stored[])[]): Scope => ({ sources: scope.sources, row, outer: scope.outer });
@@ -2591,9 +2665,7 @@ function negate(value: TV): TV {
 
 function scalarSubquery(ctx: Exec, select: SelectStmt, scope: Scope): TV {
   const result = runSelect(ctx, select, scope);
-  if (result.columns.length !== 1) {
-    throw new SqlFault(116, 'Only one expression can be specified in the select list when the subquery is not introduced with EXISTS.');
-  }
+  if (result.columns.length !== 1) throw subqueryColumnsFault();
   if (result.rows.length > 1) {
     throw new SqlFault(512, 'Subquery returned more than 1 value. This is not permitted when the subquery follows =, !=, <, <= , >, >= or when the subquery is used as an expression.');
   }
@@ -3004,15 +3076,18 @@ function tableColumns(def: TableDef): OutColumn[] {
   return def.columns.map((column) => col(column.name, column.type, column.nullable));
 }
 
-function sourceFor(ctx: Exec, ref: TableRef, outer: Scope | undefined): Source {
+/** A FROM source; with `bindOnly` its arguments are bound and it has no rows, as binding reads no value. */
+function sourceFor(ctx: Exec, ref: TableRef, outer: Scope | undefined, bindOnly = false): Source {
   const { db, schema, name } = locate(ctx, ref.parts);
   const alias = (ref.alias ?? name).toLowerCase();
-  const args = ref.args === null ? null : ref.args.map((arg) => evalScalar(ctx, arg, outer ?? EMPTY_SCOPE));
+  if (bindOnly) for (const arg of ref.args ?? []) bindExpr(ctx, arg, outer ?? EMPTY_SCOPE);
+  const args = ref.args === null ? null : ref.args.map((arg) => (bindOnly ? tv(INT, null) : evalScalar(ctx, arg, outer ?? EMPTY_SCOPE)));
   const system = systemSource(ctx, db, schema, name, alias, args);
-  if (system !== undefined) return system;
+  if (system !== undefined) return bindOnly ? { ...system, rows: [] } : system;
   if (args !== null) throw new Unmodelled(`the table-valued function ${ref.parts.join('.')}`);
   const table = db.tables.get(tableKey(schema, name));
   if (table === undefined) throw new SqlFault(208, `Invalid object name '${ref.parts.join('.')}'.`);
+  if (bindOnly) return { alias, columns: tableColumns(table.def), rows: [] };
   return { alias, columns: tableColumns(table.def), rows: scanRows(table.def, rowSetFor(ctx, table)).map((row) => row.values) };
 }
 
@@ -3045,37 +3120,61 @@ function cellOf(ctx: Exec, spec: OutputSpec, scope: Scope): TV {
   return tv(spec.column.type, scope.row[spec.source]?.[spec.index] ?? null);
 }
 
-function runSelect(ctx: Exec, s: SelectStmt, outer?: Scope): SelectResult {
+/** Binds every name a SELECT references, as SQL Server does before reading any row; returns its output. */
+function bindSelect(ctx: Exec, s: SelectStmt, outer: Scope | undefined): { specs: readonly OutputSpec[]; grouped: boolean } {
   const sources: Source[] = [];
-  let combos: (readonly Stored[])[][] = [[]];
+  const addSource = (ref: TableRef): readonly Source[] => {
+    const source = sourceFor(ctx, ref, outer, true);
+    if (sources.some((existing) => existing.alias === source.alias)) {
+      throw new SqlFault(1011, `The correlation name '${source.alias}' is specified multiple times in a FROM clause.`);
+    }
+    sources.push(source);
+    return [...sources];
+  };
   if (s.from !== null) {
-    const refs = [s.from.first, ...s.from.joins.map((join) => join.ref)];
-    refs.forEach((ref, index) => {
-      const source = sourceFor(ctx, ref, outer);
-      if (sources.some((existing) => existing.alias === source.alias)) {
-        throw new SqlFault(1011, `The correlation name '${source.alias}' is specified multiple times in a FROM clause.`);
-      }
-      sources.push(source);
-      if (index === 0) {
-        combos = source.rows.map((row) => [row]);
-        return;
-      }
-      const on = (s.from as FromClause).joins[index - 1]?.on as Expr;
-      const reach = [...sources];
-      const joined: (readonly Stored[])[][] = [];
-      for (const combo of combos) {
-        for (const row of source.rows) {
-          const candidate = [...combo, row];
-          if (evalBool(ctx, on, { sources: reach, row: candidate, outer }) === true) joined.push(candidate);
-        }
-      }
-      combos = joined;
-    });
+    addSource(s.from.first);
+    for (const join of s.from.joins) bindExpr(ctx, join.on, { sources: addSource(join.ref), row: [], outer });
   }
-  const where = s.where;
-  const filtered = where === null ? combos : combos.filter((row) => evalBool(ctx, where, { sources, row, outer }) === true);
+  if (s.where !== null) bindExpr(ctx, s.where, { sources, row: [], outer });
   const specs = outputSpecs(s.items, sources);
   const grouped = s.items.some((item) => item.kind === 'expr' && hasAggregate(item.expr));
+  const scope: Scope = grouped ? { sources, row: [], group: [], outer } : { sources, row: [], outer };
+  for (const spec of specs) if (spec.kind === 'expr') bindExpr(ctx, spec.expr, scope);
+  if (s.orderBy.length > 0) {
+    // Binding reads names only, so each select-list alias stands for an untyped NULL.
+    const aliases = new Map<string, TV>();
+    for (const spec of specs) {
+      const name = (spec.kind === 'column' ? spec.column.name : spec.name).toLowerCase();
+      if (name !== '') aliases.set(name, tv(INT, null));
+    }
+    for (const item of s.orderBy) bindExpr(ctx, item.expr, { ...scope, aliases });
+  }
+  if (s.top !== null) bindExpr(ctx, s.top, outer ?? EMPTY_SCOPE);
+  return { specs, grouped };
+}
+
+function runSelect(ctx: Exec, s: SelectStmt, outer?: Scope): SelectResult {
+  const { specs, grouped } = bindSelect(ctx, s, outer);
+  const sources = s.from === null ? [] : [s.from.first, ...s.from.joins.map((join) => join.ref)].map((ref) => sourceFor(ctx, ref, outer));
+  let combos: (readonly Stored[])[][] = [[]];
+  sources.forEach((source, index) => {
+    if (index === 0) {
+      combos = source.rows.map((row) => [row]);
+      return;
+    }
+    const on = (s.from as FromClause).joins[index - 1]?.on as Expr;
+    const reach = sources.slice(0, index + 1);
+    const joined: (readonly Stored[])[][] = [];
+    for (const combo of combos) {
+      for (const row of source.rows) {
+        const candidate = [...combo, row];
+        if (evalBool(ctx, on, { sources: reach, row: candidate, outer }) === true) joined.push(candidate);
+      }
+    }
+    combos = joined;
+  });
+  const where = s.where;
+  const filtered = where === null ? combos : combos.filter((row) => evalBool(ctx, where, { sources, row, outer }) === true);
   const scopes: Scope[] = grouped
     ? [{ sources, row: filtered[0] ?? [], group: filtered, outer }]
     : filtered.map((row) => ({ sources, row, outer }));
@@ -3127,6 +3226,7 @@ function execSelect(ctx: Exec, s: SelectStmt): void {
     if (!s.items.every((item) => item.kind === 'assign') || s.from !== null) {
       throw new Unmodelled('SELECT variable assignment combined with a FROM clause or result columns');
     }
+    for (const item of s.items) bindExpr(ctx, item.expr, EMPTY_SCOPE);
     for (const item of s.items) if (item.kind === 'assign') writeVariable(ctx, item.name, evalScalar(ctx, item.expr, EMPTY_SCOPE));
     ctx.rowcount = 1;
     return;
@@ -3140,7 +3240,7 @@ function execSelect(ctx: Exec, s: SelectStmt): void {
 function withWrite<T>(ctx: Exec, db: Database, run: (tx: TxState) => T): T {
   if (db.readOnly) throw readOnlyFault(db);
   if (ctx.session.tx !== null) return run(ctx.session.tx);
-  const tx: TxState = { id: null, db: ctx.session.db, work: new Map(), statements: [] };
+  const tx: TxState = { id: null, db: ctx.session.db, work: new Map(), statements: [], undo: [] };
   ctx.implicit = tx;
   try {
     const result = run(tx);
@@ -3233,6 +3333,7 @@ function execInsert(ctx: Exec, s: Extract<Stmt, { k: 'insert' }>): void {
       `Explicit value must be specified for identity column in table '${def.name}' either when IDENTITY_INSERT is set to ON or when a replication user is inserting into a NOT FOR REPLICATION identity column.`,
     );
   }
+  for (const exprs of s.rows) for (const expr of exprs) bindExpr(ctx, expr, EMPTY_SCOPE);
   withWrite(ctx, db, (tx) => {
     const rows = s.rows.map((exprs) => {
       if (exprs.length !== targets.length) {
@@ -3269,8 +3370,8 @@ function checkMovedKeys(def: TableDef, work: TableWork, changes: readonly (reado
   }
 }
 
-function tableScope(def: TableDef, row: StoredRow): Scope {
-  return { sources: [{ alias: def.name.toLowerCase(), columns: tableColumns(def), rows: [] }], row: [row.values] };
+function tableScope(def: TableDef, row?: StoredRow): Scope {
+  return { sources: [{ alias: def.name.toLowerCase(), columns: tableColumns(def), rows: [] }], row: row === undefined ? [] : [row.values] };
 }
 
 function execUpdate(ctx: Exec, s: Extract<Stmt, { k: 'update' }>): void {
@@ -3284,6 +3385,9 @@ function execUpdate(ctx: Exec, s: Extract<Stmt, { k: 'update' }>): void {
     if (column.identity) throw new SqlFault(8102, `Cannot update identity column '${column.name}'.`);
     seen.add(index);
   }
+  const bound = tableScope(def);
+  if (s.where !== null) bindExpr(ctx, s.where, bound);
+  for (const { expr } of sets) bindExpr(ctx, expr, bound);
   withWrite(ctx, db, (tx) => {
     const work = workOf(tx, table);
     const changes: (readonly [StoredRow, StoredRow])[] = [];
@@ -3304,6 +3408,8 @@ function execUpdate(ctx: Exec, s: Extract<Stmt, { k: 'update' }>): void {
 function execDelete(ctx: Exec, s: Extract<Stmt, { k: 'delete' }>): void {
   const { db, table } = resolveTable(ctx, s.table);
   const def = table.def;
+  if (s.top !== null) bindExpr(ctx, s.top, EMPTY_SCOPE);
+  if (s.where !== null) bindExpr(ctx, s.where, tableScope(def));
   const top = s.top === null ? null : evalScalar(ctx, s.top, EMPTY_SCOPE);
   const limit = top === null ? Number.POSITIVE_INFINITY : top.v === null ? 0 : Number(intOf(top, BIGINT));
   if (limit < 0) throw new SqlFault(1014, 'A TOP or FETCH clause contains an invalid value.');
@@ -3337,6 +3443,14 @@ function execIdentityInsert(ctx: Exec, s: Extract<Stmt, { k: 'identityInsert' }>
   ctx.rowcount = 0;
 }
 
+/** Has the session's open transaction remove `created` from the map `entries` returns at rollback, if it still holds it. */
+function dropOnRollback<V>(ctx: Exec, entries: () => Map<string, V>, key: string, created: V): void {
+  ctx.session.tx?.undo.push(() => {
+    const map = entries();
+    if (map.get(key) === created) map.delete(key);
+  });
+}
+
 function execCreateTable(ctx: Exec, s: Extract<Stmt, { k: 'createTable' }>): void {
   const { db, schema, name } = locate(ctx, s.table);
   const inline = s.columns.filter((column) => column.primaryKey).map((column) => column.name);
@@ -3351,7 +3465,8 @@ function execCreateTable(ctx: Exec, s: Extract<Stmt, { k: 'createTable' }>): voi
     return { name: column.name, type: column.type, nullable: column.nullable, identity: column.identity, defaultValue: value === undefined ? undefined : () => value };
   });
   const pkName = primaryKey.length === 0 ? null : (s.pk?.name ?? `PK__${name}`);
-  ctx.server.createTable(db, { schema, name, columns, primaryKey, pkName });
+  const created = ctx.server.createTable(db, { schema, name, columns, primaryKey, pkName });
+  dropOnRollback(ctx, () => db.tables, tableKey(created.def.schema, created.def.name), created);
 }
 
 function pathOf(ctx: Exec, e: Expr): string {
@@ -3405,6 +3520,8 @@ function execStatement(ctx: Exec, s: Stmt): void {
     case 'delete':
       return execDelete(ctx, s);
     case 'declare':
+      // A variable is not in scope in the initialisers of its own DECLARE.
+      for (const variable of s.vars) if (variable.init !== null) bindExpr(ctx, variable.init, EMPTY_SCOPE);
       for (const variable of s.vars) {
         const key = variableKey(variable.name);
         if (ctx.vars.has(key) || ctx.params.has(key)) {
@@ -3415,12 +3532,14 @@ function execStatement(ctx: Exec, s: Stmt): void {
       }
       return;
     case 'setVar':
+      bindExpr(ctx, s.expr, EMPTY_SCOPE);
       writeVariable(ctx, s.name, evalScalar(ctx, s.expr, EMPTY_SCOPE));
       ctx.rowcount = 1;
       return;
     case 'identityInsert':
       return execIdentityInsert(ctx, s);
     case 'if':
+      bindExpr(ctx, s.cond, EMPTY_SCOPE);
       if (evalBool(ctx, s.cond, EMPTY_SCOPE) === true) execStatement(ctx, s.then);
       else if (s.otherwise !== null) execStatement(ctx, s.otherwise);
       return;
@@ -3447,6 +3566,7 @@ function execStatement(ctx: Exec, s: Stmt): void {
       throw caught;
     }
     case 'exec': {
+      bindExpr(ctx, s.expr, EMPTY_SCOPE);
       const text = textArg(ctx, s.expr, EMPTY_SCOPE);
       if (text === null) return;
       const batch = ctx.server.parse(text);
@@ -3455,10 +3575,12 @@ function execStatement(ctx: Exec, s: Stmt): void {
       ctx.rowcount = nested.rowcount;
       return;
     }
-    case 'createSchema':
+    case 'createSchema': {
       if (ctx.batch[0] !== s) throw new SqlFault(111, "'CREATE SCHEMA' must be the first statement in a query batch.");
-      ctx.server.createSchema(ctx.session.db, s.name);
+      const db = ctx.session.db;
+      dropOnRollback(ctx, () => db.schemas, s.name.toLowerCase(), ctx.server.createSchema(db, s.name));
       return;
+    }
     case 'createTable':
       return execCreateTable(ctx, s);
     case 'backup': {
@@ -3619,7 +3741,7 @@ class FakeServer {
 
   /** Closes a connection; an open transaction on it is rolled back, as the server does on disconnect. */
   discard(session: Session): void {
-    session.tx = null;
+    this.rollback(session);
     session.killed = true;
     this.#sessions.delete(session);
   }
@@ -3673,7 +3795,7 @@ class FakeServer {
     if (session.killed) throw new SessionKilled('The connection was closed by the server');
     if (session.tx !== null) throw new Unmodelled('a nested transaction');
     this.#txId += 1;
-    session.tx = { id: this.#txId, db: session.db, work: new Map(), statements: [] };
+    session.tx = { id: this.#txId, db: session.db, work: new Map(), statements: [], undo: [] };
     return this.#txId;
   }
 
@@ -3682,12 +3804,20 @@ class FakeServer {
     const tx = session.tx;
     if (tx === null) throw new SqlFault(3902, 'The COMMIT TRANSACTION request has no corresponding BEGIN TRANSACTION.');
     session.tx = null;
-    if (mergeTx(tx)) this.#lsn += 1n;
+    try {
+      if (mergeTx(tx)) this.#lsn += 1n;
+    } catch (error) {
+      undoTx(tx);
+      throw error;
+    }
     this.commits.push({ txId: tx.id as number, database: tx.db.name, statements: [...tx.statements] });
   }
 
+  /** Ends the session's transaction without committing it, dropping the objects it created. */
   rollback(session: Session): void {
+    const tx = session.tx;
     session.tx = null;
+    if (tx !== null) undoTx(tx);
   }
 
   commitImplicit(tx: TxState): void {
@@ -3732,11 +3862,13 @@ class FakeServer {
     return db;
   }
 
-  createSchema(db: Database, name: string): void {
+  createSchema(db: Database, name: string): SchemaDef {
     if (db.readOnly) throw readOnlyFault(db);
     if (schemaOf(db, name) !== undefined) throw new SqlFault(2714, `There is already an object named '${name}' in the database.`);
-    db.schemas.set(name.toLowerCase(), { name, id: db.nextSchemaId });
+    const schema: SchemaDef = { name, id: db.nextSchemaId };
+    db.schemas.set(name.toLowerCase(), schema);
     db.nextSchemaId += 1;
+    return schema;
   }
 
   createTable(db: Database, table: TableSpec): Table {

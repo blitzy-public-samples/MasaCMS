@@ -102,9 +102,9 @@ function v1Handler<R extends FastifyRequest, B>(
   fn: (request: R, identity: VerifiedIdentity, params: RequestParams) => Promise<B>,
 ): (request: R, reply: FastifyReply) => Promise<FastifyReply> {
   return async (request, reply) => {
-    // The query plus the form or JSON-object body as CFML scope values, the same input the fixture routes give the domain;
-    // a raw body may be absent or not an object.
-    const params = legacyParamsOf(request);
+    // The query plus the form or JSON-object body as CFML scope values, JSON simple values as toString text: the same input
+    // the fixture routes give the domain. A raw body may be absent or not an object.
+    const params = legacyParamsOf(request, { jsonScalars: 'cfml' });
     try {
       const body = await fn(request, identityOf(request), params);
       return reply.code(200).send(body);

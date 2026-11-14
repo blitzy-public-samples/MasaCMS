@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
-import { createServer, type IncomingMessage } from 'node:http';
+import { createServer, maxHeaderSize, type IncomingMessage } from 'node:http';
 import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -52,6 +52,7 @@ import {
   recordOutcomeReason,
   sendLegacyResponse,
   type CreateServiceOptions,
+  type LegacyParamsOptions,
 } from '../../src/service-kit/create-service.js';
 import { loadEnv, type BaseEnv } from '../../src/service-kit/env.js';
 
@@ -478,6 +479,38 @@ describe('legacy fixture paths', () => {
   });
 });
 
+describe('path parameters', () => {
+  // ACF's `<appname>_<CFID>_<CFTOKEN>` session id, assembled from low-entropy parts.
+  const CF_SESSION_ID = `MURA${'C'.repeat(64)}_1621_${'b'.repeat(16)}-D0000000-0000-0000-0000000000000001`;
+  const LONG_ID = 'x'.repeat(300);
+  const LONGEST_ID = 'x'.repeat(maxHeaderSize);
+  const PLAIN = '/internal/v1/sessions/:sid/state';
+  const PATTERN = '/internal/v1/sessions/:sid(.+)::end';
+
+  it.each([
+    { label: 'a ColdFusion session id', sid: CF_SESSION_ID, length: 126, route: PLAIN, url: `/internal/v1/sessions/${CF_SESSION_ID}/state` },
+    { label: 'a ColdFusion session id', sid: CF_SESSION_ID, length: 126, route: PATTERN, url: `/internal/v1/sessions/${CF_SESSION_ID}:end` },
+    { label: 'a long id', sid: LONG_ID, length: 300, route: PLAIN, url: `/internal/v1/sessions/${LONG_ID}/state` },
+    { label: 'a long id', sid: LONG_ID, length: 300, route: PATTERN, url: `/internal/v1/sessions/${LONG_ID}:end` },
+    { label: 'an id at the header limit', sid: LONGEST_ID, length: maxHeaderSize, route: PLAIN, url: `/internal/v1/sessions/${LONGEST_ID}/state` },
+    { label: 'an id at the header limit', sid: LONGEST_ID, length: maxHeaderSize, route: PATTERN, url: `/internal/v1/sessions/${LONGEST_ID}:end` },
+  ])('routes $label of $length characters to $route with the parameter intact', async ({ sid, length, route, url }) => {
+    expect(sid).toHaveLength(length);
+    const { app } = await build();
+    for (const declared of [PLAIN, PATTERN]) {
+      app.get<{ Params: { sid: string } }>(declared, { config: { opt2: { public: true } } }, async (request) => ({
+        route: request.routeOptions.url,
+        sid: request.params.sid,
+      }));
+    }
+
+    const res = await app.inject({ method: 'GET', url });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toStrictEqual({ route, sid });
+  });
+});
+
 describe('legacy error mapping', () => {
   async function failing(error: unknown, url = '/fail'): Promise<FastifyInstance> {
     const { app } = await build();
@@ -716,12 +749,12 @@ describe('legacy error mapping', () => {
 });
 
 describe('body parsing and legacy params', () => {
-  async function echo(): Promise<FastifyInstance> {
+  async function echo(options?: LegacyParamsOptions): Promise<FastifyInstance> {
     const { app } = await build();
     app.post('/echo', { config: { opt2: { public: true } } }, async (request) => ({
       bodyIsUndefined: request.body === undefined,
       isBuffer: Buffer.isBuffer(request.body),
-      params: legacyParamsOf(request),
+      params: legacyParamsOf(request, options),
       files: await Promise.all(multipartFilesOf(request).map(async ({ stream, ...file }) => ({ ...file, data: await text(stream()) }))),
     }));
     return app;
@@ -761,6 +794,28 @@ describe('body parsing and legacy params', () => {
       arr: [1, 2],
     });
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it.each<[string, unknown]>([
+    ['true', 'YES'],
+    ['false', 'NO'],
+    ['15', '15'],
+    ['1.50e1', '15'],
+    ['1.5', '1.5'],
+    ['1e20', '1E+020'],
+    ['null', ''],
+    ['{"a":true,"n":1e20}', { a: true, n: 1e20 }],
+    ['[true,15]', [true, 15]],
+    ['"true"', 'true'],
+  ])('renders a JSON body %s as CFML toString does under jsonScalars cfml, leaving query values as sent', async (json, expected) => {
+    const app = await echo({ jsonScalars: 'cfml' });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/echo?q=true&n=1e20',
+      headers: { 'content-type': 'application/json' },
+      payload: `{"v":${json}}`,
+    });
+    expect(res.json<{ params: unknown }>().params).toStrictEqual({ q: 'true', n: '1e20', v: expected });
   });
 
   it('joins repeated form keys with commas and lets the body override the query ignoring case', async () => {

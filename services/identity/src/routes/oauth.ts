@@ -34,6 +34,7 @@ import {
   isExpired,
   isValidRedirectURI,
   loadClient,
+  loadSiteClient,
   tokenInfo,
   type OAuthDeps,
   type OAuthToken,
@@ -228,7 +229,7 @@ function missingCredentials(run: RestRun): never {
 /** A client id: the token endpoint on an oauth path, else a Basic client login [legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:557-833]. */
 async function clientRequest(run: RestRun, isBasicAuth: boolean): Promise<SerializedLegacyResponse | undefined> {
   const { deps, input, pathInfo } = run;
-  const client = await loadClient(deps.oauth, paramText(run.params, 'client_id'), input.siteId);
+  const client = await loadSiteClient(deps.oauth, paramText(run.params, 'client_id'), input.siteId);
   if (client === null) return refuse(run, WWW_AUTHENTICATE.bearerInvalidClientCredentials);
   if (onOAuthPath(pathInfo, OAUTH_SEGMENTS)) return tokenGrant(run, client, onOAuthPath(pathInfo, OAUTH2_SEGMENTS));
   return basicClient(run, client, isBasicAuth);

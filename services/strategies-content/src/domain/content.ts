@@ -28,7 +28,8 @@ import { poolTenantFor, type TenantTx } from '@opt2/platform/tenancy';
 import { contentImageUrl, contentUrl, formatFilename, getUrlStem, isCfUrl, materializedPath, uniqueFilename, uniqueTitle, uniqueUrlTitle } from '../legacy/content-urls.js';
 import type { CategoryAssignmentRow, ContentVersionRow, Crumb } from '../repo/content-queries.js';
 import type { CategoryAssignmentInput, ContentObjectInput, ContentTagInput, ExtendDataInput, RelatedItemInput, VersionInput } from '../repo/repository.js';
-import type { CategoryRow, ContentRow, ExtendAttributeRow } from '../repo/tables.js';
+import type { StagedObjectEntry } from '../repo/files.js';
+import { UNIT_OF, type CategoryRow, type ContentRow, type ExtendAttributeRow } from '../repo/tables.js';
 import { PENDING_STATUS, cancelRequest, loadRequest, requiresApproval, saveRequest, type ApprovalMemberships, type ApprovalRequestValues } from './approval-requests.js';
 import { listPoolCategories, keepCategories, setCategoryAssignments } from './categories.js';
 import { newChangesetBean, readChangesetInTx, saveChangesetInTx } from './changeset-store.js';
@@ -40,12 +41,14 @@ import {
   requestHasRestrictedFiles,
   saveFileMetaData,
   setFileContentId,
+  settleStagedUploads,
   storeUploadedFile,
   type FileMetaDataValues,
+  type UploadInTx,
   type UploadedFile,
 } from './files.js';
 import { allowContentAction, getNodePerm, loadMemberships } from './permissions.js';
-import { UnregisteredTenantError } from './pools.js';
+import { UnregisteredTenantError, poolTenantTx } from './pools.js';
 import { StartupPredicateViolationError, applyFileBody, assertStartupSafe } from './startup-guard.js';
 import { createTrashCounter, deleteMarkerAssignments, deleteMarkers, deletedParentId, takeOut, throwIn, trashObjectSubType, trashObjectType, type DeleteMarkers, type TrashRequestCounter } from './trash.js';
 import { WddxDate, WddxNumber, cfStruct, wddxNumber, type WddxQuery, type WddxStruct, type WddxValue } from './wddx.js';
@@ -227,6 +230,8 @@ export interface SaveContentOptions {
   /** contentBean `approvingChainRequest`, set by approval-chain activation. */
   approvingChainRequest?: boolean;
   requestId?: string;
+  /** Receives the intents the save's uploads stage; whoever opened the transaction settles them after it ends. */
+  stagedUploads?: StagedObjectEntry[];
 }
 
 /** contentManager.add's outcome: the saved (or refused, or invalid) bean, its errors and the mail it would send. */
@@ -973,17 +978,17 @@ function crumbsOf(scope: WriteScope, bean: LegacyContentBean): Promise<Crumb[]> 
   return scope.deps.repository.content.crumbPath(scope.tx, { contentId: bean.contentId(), siteId, path: bean.text('path') });
 }
 
-/** Runs `fn` in the transaction holding the site's `content.file` rows: the write's own, or one of the file pool tenant. */
-async function inFilePool<T>(scope: WriteScope, fn: (fileTx: TenantTx) => Promise<T>): Promise<T> {
+/** Runs `fn` with the write's transaction as the site's file pool tenant, which holds its `content.file` rows; `units` are the gates `fn` writes. */
+async function inFilePool<T>(scope: WriteScope, units: readonly string[], fn: (fileTx: TenantTx) => Promise<T>): Promise<T> {
   const pool = await poolTenantFor(scope.tx, scope.tx.tenantId, 'file');
   if (pool === null) throw new UnregisteredTenantError(scope.tx.tenantId);
-  return pool === scope.tx.tenantId ? fn(scope.tx) : withGatedTenant(scope.deps.db, pool, fn);
+  return fn(await poolTenantTx(scope.tx, pool, units));
 }
 
 /** fileManager.deleteIfNotUsed of each file of `fileIds` outside versions `baseIds`. */
 async function deleteFilesIfNotUsed(scope: WriteScope, fileIds: readonly string[], baseIds: readonly string[]): Promise<void> {
   for (const fileId of fileIds.filter((id) => id !== '')) {
-    await inFilePool(scope, (fileTx) => deleteIfNotUsed(scope.tx, scope.deps.repository, [fileId], baseIds, { fileTx, write: scope.write }));
+    await inFilePool(scope, [UNIT_OF.file], (fileTx) => deleteIfNotUsed(scope.tx, scope.deps.repository, [fileId], baseIds, { fileTx, write: scope.write }));
   }
 }
 
@@ -1299,6 +1304,11 @@ function newFilePart(opts: SaveContentOptions): UploadedFile | undefined {
   return opts.files?.find((file) => cfEq(file.fieldName, 'newfile') && file.fileName !== '');
 }
 
+/** contentManager.add's `editingContent` cflock on item `contentId`, held until the transaction ends; an item without an id yet has no other writer. */
+async function lockItem(scope: WriteScope, siteId: string, contentId: string): Promise<void> {
+  if (contentId !== '') await scope.deps.repository.content.lockItem(scope.tx, { contentId, siteId });
+}
+
 /** The version state contentManager.add carries between its steps. */
 interface SaveState {
   scope: WriteScope;
@@ -1327,8 +1337,8 @@ interface SaveState {
 }
 
 /**
- * contentManager.add [contentManager.cfc:950-1761] inside `tx`, in legacy's order. Plugin events, cache purges, log lines
- * and cflocks are not reproduced: the unit gates and the transaction give the single-writer guarantee.
+ * contentManager.add [contentManager.cfc:950-1761] inside `tx`, in legacy's order, under the item's `editingContent` lock
+ * until `tx` ends. Plugin events, cache purges and log lines are not reproduced.
  */
 export async function saveContentInTx(
   tx: TenantTx,
@@ -1346,10 +1356,12 @@ export async function saveContentInTx(
   const siteId = dataText(data, 'siteid');
   const upload = newFilePart(opts);
   if (upload !== undefined && dataText(data, 'newfile') === '') data.set('newfile', upload.fileName);
+  // Taken before the source is read, so a save that waited reads what the lock holder committed.
+  await lockItem(scope, siteId, dataText(data, 'contentid'));
 
   let bean: LegacyContentBean;
   let refused = false;
-  if (dataText(data, 'mode') === 'import' && dataText(data, 'remoteid') !== '') {
+  if (cfEq(dataText(data, 'mode'), 'import') && dataText(data, 'remoteid') !== '') {
     bean = await readBean(scope, { siteId, remoteId: dataText(data, 'remoteid') });
     // Legacy compares the posted date with the bean it just failed to find, whose remotePubDate is ''.
     if (bean.isNew === 1 && given(data, 'remotepubdate') && cfEq(dataText(data, 'remotepubdate'), bean.text('remotepubdate'))) refused = true;
@@ -1382,6 +1394,8 @@ export async function saveContentInTx(
     written: [],
   };
   bean.set(data, actor);
+  // The item a version or remote id resolved to, under the id the version insert carries.
+  await lockItem(scope, siteId, bean.text('contentid'));
   await applyStatus(scope, bean);
   if (given(data, 'relatedcontentid')) await applyRelatedContentId(scope, bean, dataText(data, 'relatedcontentid'));
   if (opts.approvingChainRequest === true) bean.put('approvingChainRequest', true);
@@ -1846,6 +1860,12 @@ function uploadDeps(scope: WriteScope): ContentDeps & { storage: StoragePort } {
   return { ...scope.deps, storage };
 }
 
+/** The save's transaction for its uploads, with the list their staged intents go to. */
+function uploadTx(state: SaveState): UploadInTx {
+  const staged = state.opts.stagedUploads;
+  return staged === undefined ? { tx: state.scope.tx } : { tx: state.scope.tx, staged };
+}
+
 /** The posted part of form field `field`, matched as CFML matches form keys. */
 function postedPart(opts: SaveContentOptions, field: string): UploadedFile | undefined {
   return opts.files?.find((file) => cfEq(file.fieldName, field) && file.fileName !== '');
@@ -1891,12 +1911,17 @@ async function persistFiles(state: SaveState): Promise<void> {
     const part = postedPart(state.opts, 'newfile');
     // fileBean.save would fetch a non-posted `newfile` value as a URL; only posted parts reach the target.
     if (part === undefined) throw new Error('newfile names no posted file part; remote file imports stay on legacy');
-    const stored = await storeUploadedFile(uploadDeps(scope), scope.actor, {
-      file: part,
-      contentId: bean.contentId(),
-      moduleId: bean.text('moduleid'),
-      ...(state.opts.requestId === undefined ? {} : { requestId: state.opts.requestId }),
-    });
+    const stored = await storeUploadedFile(
+      uploadDeps(scope),
+      scope.actor,
+      {
+        file: part,
+        contentId: bean.contentId(),
+        moduleId: bean.text('moduleid'),
+        ...(state.opts.requestId === undefined ? {} : { requestId: state.opts.requestId }),
+      },
+      uploadTx(state),
+    );
     bean.setValue('fileid', stored.fileid);
     if (bean.isNew === 0 && given(data, 'unlockfilewithnew') && cfBool(data.get('unlockfilewithnew'))) {
       await repo.stats.clearLock(scope.tx, { contentId: bean.contentId(), siteId: bean.text('siteid') }, scope.write);
@@ -1996,12 +2021,17 @@ async function saveExtendedData(state: SaveState, baseId: string): Promise<void>
       const part = postedPart(state.opts, field);
       // fileManager.emulateUpload would fetch a non-posted value as a URL or path; only posted parts reach the target.
       if (part === undefined) throw new Error(`${field} names no posted file part; remote file imports stay on legacy`);
-      const stored = await storeUploadedFile(uploadDeps(scope), scope.actor, {
-        file: part,
-        contentId: baseId,
-        moduleId,
-        ...(state.opts.requestId === undefined ? {} : { requestId: state.opts.requestId }),
-      });
+      const stored = await storeUploadedFile(
+        uploadDeps(scope),
+        scope.actor,
+        {
+          file: part,
+          contentId: baseId,
+          moduleId,
+          ...(state.opts.requestId === undefined ? {} : { requestId: state.opts.requestId }),
+        },
+        uploadTx(state),
+      );
       fileId = stored.fileid;
     }
     if (fileId !== '') fileRows.push({ attributeid: row.attributeid, siteid: siteId, attributevalue: fileId, stringvalue: fileId, remoteid: remoteId });
@@ -2199,11 +2229,8 @@ async function writeVersion(state: SaveState): Promise<void> {
     await persistExpiryAssignments(state);
     // REMINDER_UPDATES_UNBUILT: tcontenteventreminders is a decision-list table with no target table.
     if (isNew && given(state.data, 'email') && given(state.data, 'approvalqueue') && cfBool(state.data.get('approvalqueue'))) {
-      try {
-        await repo.approvalQueues.insertSubmissionApproval(scope.tx, { contentId: bean.contentId(), email: dataText(state.data, 'email'), siteId: bean.text('siteid') }, scope.write);
-      } catch {
-        // contentManager.cfc:1276-1280 swallows every setApprovalQue failure.
-      }
+      // contentManager.cfc:1276-1280 swallows every setApprovalQue failure.
+      await repo.approvalQueues.insertSubmissionApprovalBestEffort(scope.tx, { contentId: bean.contentId(), email: dataText(state.data, 'email'), siteId: bean.text('siteid') }, scope.write);
     }
     // checkApprovalQue looks its queue rows up by the new version id, which no row holds, and its mail argument names
     // the undefined `rsemail` either way, so its cftry always ends without a write.
@@ -2367,7 +2394,8 @@ async function persistFileMetaData(state: SaveState, saved: LegacyContentBean): 
   for (const [property, entry] of Object.entries(assign)) {
     const values = isPlainObject(entry) ? entry : {};
     const fileId = saved.text(property);
-    await inFilePool(scope, (fileTx) =>
+    const setAsDefault = cfBool(member(values, 'setasdefault') ?? false);
+    await inFilePool(scope, setAsDefault ? [UNIT_OF.file_metadata, UNIT_OF.file] : [UNIT_OF.file_metadata], (fileTx) =>
       saveFileMetaData(
         scope.tx,
         scope.deps.repository,
@@ -2377,7 +2405,7 @@ async function persistFileMetaData(state: SaveState, saved: LegacyContentBean): 
           siteId: saved.text('siteid'),
           fileId,
           values: fileMetaValues(values),
-          setAsDefault: cfBool(member(values, 'setasdefault') ?? false),
+          setAsDefault,
         },
         { fileTx, write: scope.write },
       ),
@@ -2397,7 +2425,7 @@ async function deleteVersionInTx(scope: WriteScope, contentHistId: string, siteI
       .filter((row) => (row.fileid ?? '') !== '' && sqlKey(row.contenthistid) !== sqlKey(contentHistId))
       .map((row) => row.fileid ?? '');
     // listFind: exact match within the `^` list.
-    if (!others.includes(fileId)) await inFilePool(scope, (fileTx) => deleteFileVersion(fileTx, repo, fileId, scope.write));
+    if (!others.includes(fileId)) await inFilePool(scope, [UNIT_OF.file], (fileTx) => deleteFileVersion(fileTx, repo, fileId, scope.write));
   }
   const removed = await repo.content.deleteVersion(scope.tx, { contentHistId, siteId }, scope.write);
   await deleteFilesIfNotUsed(scope, removed.extendFileIds, [contentHistId]);
@@ -2512,6 +2540,17 @@ function settle<T extends { afterCommitError?: Error }>(result: T): T {
   return result;
 }
 
+/** Runs `run`, which opens the save's transaction, with `opts` collecting its upload intents; settles them once it has ended. */
+async function settlingUploads<T>(deps: ContentDeps, opts: SaveContentOptions, run: (opts: SaveContentOptions) => Promise<T>): Promise<T> {
+  const stagedUploads: StagedObjectEntry[] = [];
+  try {
+    return await run({ ...opts, stagedUploads });
+  } finally {
+    // An attempt rolled back, or re-run after a gate race, leaves its intent; a committed one has already removed it.
+    if (stagedUploads.length > 0 && deps.storage !== undefined) await settleStagedUploads({ ...deps, storage: deps.storage }, stagedUploads);
+  }
+}
+
 /** contentManager.add in one gated transaction of the token's tenant; an error legacy raises after its commit is raised after this one's. */
 export async function saveContent(
   deps: ContentDeps,
@@ -2521,7 +2560,9 @@ export async function saveContent(
   opts: SaveContentOptions = {},
 ): Promise<SaveContentResult> {
   const prepared = await preparedOptions(deps, actor, opts);
-  return settle(await withGatedTenant(deps.db, actor.tenantId, (tx) => saveContentInTx(tx, deps, actor, site, input, prepared)));
+  return settle(
+    await settlingUploads(deps, prepared, (saveOpts) => withGatedTenant(deps.db, actor.tenantId, (tx) => saveContentInTx(tx, deps, actor, site, input, saveOpts))),
+  );
 }
 
 /** A save as a draft (`approved = 0`). */
@@ -2626,7 +2667,7 @@ export function deleteHistAll(
       const fileId = row.fileid ?? '';
       const keep = cfEq(row.approvalstatus ?? '', PENDING_STATUS) || row.active === 1 || (row.approved === 0 && (row.changesetid ?? '') !== '');
       if (keep || fileId === '' || kept.includes(fileId)) continue;
-      await inFilePool(scope, (fileTx) => deleteFileVersion(fileTx, repo, fileId, scope.write));
+      await inFilePool(scope, [UNIT_OF.file], (fileTx) => deleteFileVersion(fileTx, repo, fileId, scope.write));
       kept.push(fileId);
       deletedFiles.push(fileId);
       deletedVersions.push(row.contenthistid ?? '');
@@ -2769,7 +2810,7 @@ async function deleteAllInTx(scope: WriteScope, args: DeleteAllArgs, markers: De
       scope.write,
     );
     if (current.text('fileid') !== '' || cfEq(current.text('type'), 'Form')) {
-      await inFilePool(scope, (fileTx) => deleteAllFiles(scope.tx, repo, current.contentId(), { fileTx, write: scope.write }));
+      await inFilePool(scope, [UNIT_OF.file], (fileTx) => deleteAllFiles(scope.tx, repo, current.contentId(), { fileTx, write: scope.write }));
     }
     const removed = await repo.content.deleteContent(
       scope.tx,
@@ -2783,8 +2824,8 @@ async function deleteAllInTx(scope: WriteScope, args: DeleteAllArgs, markers: De
 }
 
 /**
- * contentManager.deleteAll (contentManager.cfc:1763-1872) in one gated transaction: the active children first, each
- * unlocked item thrown in the trash under one delete id and counter, then its files and rows.
+ * contentManager.deleteAll (contentManager.cfc:1763-1872) in one gated transaction under the site's `editingContent` lock:
+ * the active children first, each unlocked item thrown in the trash under one delete id and counter, then its files and rows.
  */
 export async function deleteAll(
   deps: ContentDeps,
@@ -2796,8 +2837,9 @@ export async function deleteAll(
   if (cfEq(args.contentId, HOME_ID)) return { aborted: true };
   const pool = await listPoolCategories(deps, actor);
   const memberships = opts.memberships ?? (await loadMemberships(deps, actor));
-  return withGatedTenant(deps.db, actor.tenantId, (tx) => {
+  return withGatedTenant(deps.db, actor.tenantId, async (tx) => {
     const scope = scopeOf(tx, deps, actor, site, { ...opts, memberships });
+    await deps.repository.content.lockSite(tx, { siteId: args.siteId });
     return deleteAllInTx(scope, args, deleteMarkers(scope.now, args.markers), createTrashCounter(), pool);
   });
 }
@@ -2951,16 +2993,17 @@ export async function saveQuickEdit(
   if (fields === undefined) return null;
   const args: Record<string, unknown> = { approved: 1 };
   for (const field of fields) args[field] = rcValue(rc, field);
-  const prepared = await preparedOptions(deps, actor, opts);
-  const result = await withGatedTenant(deps.db, actor.tenantId, async (tx) => {
-    const scope = scopeOf(tx, deps, actor, site, prepared);
-    const bean = await readBean(scope, { siteId, contentId });
-    const drafts = await deps.repository.content.draftHist(tx, { contentId: bean.contentId(), siteId: bean.text('siteid') });
-    if (perm !== 'editor' || drafts.length > 0) return null;
-    bean.set(args, actor);
-    await applyStatus(scope, bean);
-    return saveContentInTx(tx, deps, actor, site, bean, prepared);
-  });
+  const result = await settlingUploads(deps, await preparedOptions(deps, actor, opts), (prepared) =>
+    withGatedTenant(deps.db, actor.tenantId, async (tx) => {
+      const scope = scopeOf(tx, deps, actor, site, prepared);
+      const bean = await readBean(scope, { siteId, contentId });
+      const drafts = await deps.repository.content.draftHist(tx, { contentId: bean.contentId(), siteId: bean.text('siteid') });
+      if (perm !== 'editor' || drafts.length > 0) return null;
+      bean.set(args, actor);
+      await applyStatus(scope, bean);
+      return saveContentInTx(tx, deps, actor, site, bean, prepared);
+    }),
+  );
   return result === null ? null : settle(result);
 }
 
@@ -3005,22 +3048,23 @@ export async function updateObjectParams(
   opts: SaveContentOptions = {},
 ): Promise<LegacyContentBean | null> {
   const rc = dataOf(input);
-  const prepared = await preparedOptions(deps, actor, opts);
-  const outcome = await withGatedTenant(deps.db, actor.tenantId, async (tx) => {
-    const scope = scopeOf(tx, deps, actor, site, prepared);
-    const version = await readBean(scope, { siteId: cfText(rcValue(rc, 'siteid')), contentHistId: cfText(rcValue(rc, 'contentHistID')) });
-    if (version.isNew === 1) return null;
-    const crumbs = await deps.repository.content.crumbPath(tx, { contentId: version.contentId(), siteId: dataText(rc, 'siteid') });
-    const perm = await getNodePerm(deps, actor, crumbs);
-    if (rc.has('changesetid')) version.setValue('changesetID', rc.get('changesetid'));
-    if (rc.has('removepreviouschangeset')) version.setValue('removePreviousChangeset', rc.get('removepreviouschangeset'));
-    if (perm === 'author') version.setValue('approved', 0);
-    else if (perm === 'editor') version.setValue('approved', rcValue(rc, 'approved'));
-    else return null;
-    if (!isJson(rcValue(rc, 'params'))) return { bean: version, result: undefined };
-    await addDisplayObject(scope, version, rc);
-    return { bean: version, result: await saveContentInTx(tx, deps, actor, site, version, prepared) };
-  });
+  const outcome = await settlingUploads(deps, await preparedOptions(deps, actor, opts), (prepared) =>
+    withGatedTenant(deps.db, actor.tenantId, async (tx) => {
+      const scope = scopeOf(tx, deps, actor, site, prepared);
+      const version = await readBean(scope, { siteId: cfText(rcValue(rc, 'siteid')), contentHistId: cfText(rcValue(rc, 'contentHistID')) });
+      if (version.isNew === 1) return null;
+      const crumbs = await deps.repository.content.crumbPath(tx, { contentId: version.contentId(), siteId: dataText(rc, 'siteid') });
+      const perm = await getNodePerm(deps, actor, crumbs);
+      if (rc.has('changesetid')) version.setValue('changesetID', rc.get('changesetid'));
+      if (rc.has('removepreviouschangeset')) version.setValue('removePreviousChangeset', rc.get('removepreviouschangeset'));
+      if (perm === 'author') version.setValue('approved', 0);
+      else if (perm === 'editor') version.setValue('approved', rcValue(rc, 'approved'));
+      else return null;
+      if (!isJson(rcValue(rc, 'params'))) return { bean: version, result: undefined };
+      await addDisplayObject(scope, version, rc);
+      return { bean: version, result: await saveContentInTx(tx, deps, actor, site, version, prepared) };
+    }),
+  );
   if (outcome === null) return null;
   if (outcome.result === undefined) return outcome.bean;
   return settle(outcome.result).bean;
@@ -3105,18 +3149,19 @@ export async function multiFileUpload(
 
   let response: MultiFileUploadItem;
   if (stored.kind === 'stored') {
-    const prepared = await preparedOptions(deps, actor, opts);
     const result = settle(
-      await withGatedTenant(deps.db, actor.tenantId, async (tx) => {
-        const saved = await saveContentInTx(tx, deps, actor, site, new Map(item), prepared);
-        if (saved.afterCommitError !== undefined) return { ...saved, meta: null };
-        const scope = scopeOf(tx, deps, actor, site, prepared);
-        await inFilePool(scope, (fileTx) => setFileContentId(fileTx, deps.repository, stored.fileid, saved.bean.contentId(), scope.write));
-        const bean = await readBean(scope, { siteId: args.siteId, contentHistId: saved.bean.contentHistId() });
-        const metas = await deps.repository.files.listFileMetadata(tx, { siteId: bean.text('siteid'), fileId: stored.fileid, contentHistId: bean.contentHistId() });
-        const meta = metas.find((row) => sqlKey(row.contentid) === sqlKey(bean.contentId())) ?? stored.file;
-        return { ...saved, bean, meta };
-      }),
+      await settlingUploads(deps, await preparedOptions(deps, actor, opts), (prepared) =>
+        withGatedTenant(deps.db, actor.tenantId, async (tx) => {
+          const saved = await saveContentInTx(tx, deps, actor, site, new Map(item), prepared);
+          if (saved.afterCommitError !== undefined) return { ...saved, meta: null };
+          const scope = scopeOf(tx, deps, actor, site, prepared);
+          await inFilePool(scope, [UNIT_OF.file], (fileTx) => setFileContentId(fileTx, deps.repository, stored.fileid, saved.bean.contentId(), scope.write));
+          const bean = await readBean(scope, { siteId: args.siteId, contentHistId: saved.bean.contentHistId() });
+          const metas = await deps.repository.files.listFileMetadata(tx, { siteId: bean.text('siteid'), fileId: stored.fileid, contentHistId: bean.contentHistId() });
+          const meta = metas.find((row) => sqlKey(row.contentid) === sqlKey(bean.contentId())) ?? stored.file;
+          return { ...saved, bean, meta };
+        }),
+      ),
     );
     const bean = result.bean;
     const imageRow = { type: bean.text('type'), fileid: stored.fileid, fileext: stored.file.fileext };

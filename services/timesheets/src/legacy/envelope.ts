@@ -73,7 +73,7 @@ export class FixtureApiError extends Error {
 /** Envelope `method` and merged request params of one fixture request. */
 export interface FixtureContext {
   method: string;
-  // legacyParamsOf's contract: JSON object and array body values arrive unconverted, so values are not all strings.
+  // JSON simple values arrive as CFML toString text (YES/NO, ACF numbers); JSON objects and arrays unconverted.
   params: Record<string, unknown>;
 }
 
@@ -98,7 +98,7 @@ export function fixtureMethod(resource: string, action?: string): string {
 
 /** Envelope `method` and params, merged as api.cfm merges url, form and a JSON object body, of a timesheets fixture request. */
 export function fixtureContext(request: FastifyRequest, resource: string, action?: string): FixtureContext {
-  return { method: fixtureMethod(resource, action), params: legacyParamsOf(request) };
+  return { method: fixtureMethod(resource, action), params: legacyParamsOf(request, { jsonScalars: 'cfml' }) };
 }
 
 /** The param under `name` ignoring case, as CFML struct keys resolve. */

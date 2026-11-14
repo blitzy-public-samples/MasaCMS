@@ -21,6 +21,7 @@ import { ownerByName, type MigrationConfig } from '../config.js';
 import type { MigrationContext } from '../context.js';
 import type { RowSource } from '../diff/index.js';
 import {
+  MAX_SCOPE_PARAMETERS,
   TableNotFoundError,
   describeLegacyTable,
   findColumn,
@@ -103,6 +104,28 @@ export interface LegacyObjectsOptions {
   snapshotSeq?: number | null;
   /** Database whose `tsettings` and `tfiles` own the objects. */
   database: string;
+}
+
+/** Comparison-form index key to the distinct comparison-form values it carries; undefined when it carries none. */
+export interface ValueLookup {
+  get(at: string): readonly string[] | undefined;
+}
+
+/** Column `carried` of `table` in `database`, indexed by `indexColumns`. */
+export interface IndexSpec {
+  readonly database: string;
+  readonly table: string;
+  readonly indexColumns: readonly [string, ...string[]];
+  readonly carried: string;
+}
+
+/** Lookup a row selector reads one join through. */
+export type LookupSource = (spec: IndexSpec) => Promise<ValueLookup>;
+
+/** One unit's ownership of a split table's rows, judged row by row; `prepare` fetches the join keys of a batch at once. */
+export interface UnitRowFilter {
+  prepare(rows: readonly Readonly<Record<string, CanonicalValue>>[]): Promise<void>;
+  accepts(row: Readonly<Record<string, CanonicalValue>>): Promise<boolean>;
 }
 
 type Values = Readonly<Record<string, CanonicalValue>>;
@@ -289,22 +312,30 @@ function chainHops(table: string, chain: string): Hop[] {
   });
 }
 
+/** Memo key of an index spec, its names compared as SQL Server resolves them. */
+function indexId(spec: IndexSpec): string {
+  return JSON.stringify([spec.database, tableKey(spec.table), spec.indexColumns.map((name) => name.toLowerCase()), spec.carried.toLowerCase()]);
+}
+
+/** Index key and carried value of a row under `spec`; undefined when either holds a null. */
+function indexEntry(spec: IndexSpec, row: Readonly<Record<string, unknown>>): readonly [string, string] | undefined {
+  const at = indexKey(spec.indexColumns.map((name) => valueOf(row, name)));
+  const value = norm(valueOf(row, spec.carried));
+  return at === undefined || value === undefined ? undefined : [at, value];
+}
+
 /** Distinct comparison-form values of `carried` in `table` of `database`, indexed by `indexColumns`; streamed once per run. */
-function valueIndex(
-  deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog'>,
-  memo: IndexMemo,
-  spec: { database: string; table: string; indexColumns: readonly string[]; carried: string },
-): Promise<ValueIndex> {
-  const key = JSON.stringify([spec.database, tableKey(spec.table), spec.indexColumns.map((name) => name.toLowerCase()), spec.carried.toLowerCase()]);
+function valueIndex(deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog'>, memo: IndexMemo, spec: IndexSpec): Promise<ValueIndex> {
+  const key = indexId(spec);
   const known = memo.get(key);
   if (known !== undefined) return known;
   const building = (async (): Promise<ValueIndex> => {
     const index = new Map<string, string[]>();
     const columns = [...new Set([...spec.indexColumns, spec.carried])];
     for await (const source of streamLegacyTable(deps, { table: spec.table, database: spec.database, columns })) {
-      const at = indexKey(spec.indexColumns.map((name) => valueOf(source.row, name)));
-      const value = norm(valueOf(source.row, spec.carried));
-      if (at === undefined || value === undefined) continue;
+      const entry = indexEntry(spec, source.row);
+      if (entry === undefined) continue;
+      const [at, value] = entry;
       const values = index.get(at);
       if (values === undefined) index.set(at, [value]);
       else if (!values.includes(value)) values.push(value);
@@ -542,17 +573,11 @@ function literalsOf(list: string): string[] | undefined {
 }
 
 /** Values of `attr` that the join chain `hops` reaches from a row, in comparison form. */
-async function chainValues(
-  deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog'>,
-  memo: IndexMemo,
-  database: string,
-  hops: readonly Hop[],
-  attr: string,
-): Promise<(row: Values) => string[]> {
-  const steps: ValueIndex[] = [];
+async function chainValues(source: LookupSource, database: string, hops: readonly Hop[], attr: string): Promise<(row: Values) => string[]> {
+  const steps: ValueLookup[] = [];
   for (const [position, hop] of hops.entries()) {
     const carried = hops[position + 1]?.fromColumn ?? attr;
-    steps.push(await valueIndex(deps, memo, { database, table: hop.toTable, indexColumns: [hop.toColumn], carried }));
+    steps.push(await source({ database, table: hop.toTable, indexColumns: [hop.toColumn], carried }));
   }
   const start = hops[0]?.fromColumn;
   if (start === undefined) throw new Error('an ownership join chain needs at least one join');
@@ -581,13 +606,7 @@ function typeCode(value: unknown): string | undefined {
 }
 
 /** Selector of `classMap owner = <owner>`; a row whose class or deciding value is unmapped belongs to no unit. */
-async function classMapSelector(
-  deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog'>,
-  memo: IndexMemo,
-  database: string,
-  facts: TableFacts,
-  owner: string,
-): Promise<RowSelector> {
+async function classMapSelector(source: LookupSource, database: string, facts: TableFacts, owner: string): Promise<RowSelector> {
   const classColumn = facts.splitBy;
   if (classColumn === undefined || facts.classMap.length === 0) throw new Error(`legacy table ${facts.name} declares no class map`);
   const rules = facts.classMap.filter((rule) => rule.owner === owner || (rule.owner === undefined && Object.values(rule.owners).includes(owner)));
@@ -595,8 +614,8 @@ async function classMapSelector(
   for (const by of ruleBy) {
     if (by !== STORED_TYPE && by !== OWNING_USER_TYPE && by !== BASE_TABLE) throw new Error(`class map rule "${by}" of ${facts.name} cannot be evaluated`);
   }
-  const index = (table: string, indexColumns: string[], carried: string): Promise<ValueIndex> =>
-    valueIndex(deps, memo, { database, table, indexColumns, carried });
+  const index = (table: string, indexColumns: IndexSpec['indexColumns'], carried: string): Promise<ValueLookup> =>
+    source({ database, table, indexColumns, carried });
   const users = ruleBy.has(OWNING_USER_TYPE) ? await index(USERS.table, [USERS.id], USERS.type) : undefined;
   const trashedUsers = ruleBy.has(OWNING_USER_TYPE) ? await index(TRASH.table, [TRASH.id], TRASH.type) : undefined;
   const subtypes = ruleBy.has(BASE_TABLE) ? await index(SUBTYPES.table, [SUBTYPES.site, SUBTYPES.type, SUBTYPES.subType], SUBTYPES.baseTable) : undefined;
@@ -630,15 +649,15 @@ async function classMapSelector(
  */
 async function rowSelectorFor(
   deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog' | 'config'>,
-  memo: IndexMemo,
+  source: LookupSource,
   database: string,
-  shape: UnitTableShape,
+  shape: Pick<UnitTableShape, 'legacyTable'>,
   predicate: string | null,
 ): Promise<RowSelector> {
   if (predicate === null) return ALL_ROWS;
   const facts = factsFor(deps, shape.legacyTable);
   const classOwner = CLASS_MAP_PREDICATE.exec(predicate)?.[1];
-  if (classOwner !== undefined) return classMapSelector(deps, memo, database, facts, classOwner);
+  if (classOwner !== undefined) return classMapSelector(source, database, facts, classOwner);
   const match = PREDICATE.exec(predicate);
   const attr = match?.[2];
   const literals = literalsOf(match?.[3] ?? match?.[4] ?? '');
@@ -656,10 +675,101 @@ async function rowSelectorFor(
   );
   if (chains.length === 0) throw new Error(`row predicate "${predicate}" of ${shape.legacyTable} names no ownership join to evaluate it`);
   const reached: ((row: Values) => string[])[] = [];
-  for (const hops of chains) reached.push(await chainValues(deps, memo, database, hops, attr));
+  for (const hops of chains) reached.push(await chainValues(source, database, hops, attr));
   return {
     columns: [...new Set(chains.flatMap((hops) => hops[0]?.fromColumn ?? []))],
     accepts: (row) => reached.some((values) => values(row).some((value) => accepted.has(value))),
+  };
+}
+
+/** Keys of one index spec fetched since the last clear, with their values, and the keys asked for but not yet fetched. */
+interface FetchedLookup {
+  readonly spec: IndexSpec;
+  readonly found: Map<string, readonly string[]>;
+  readonly missing: Set<string>;
+}
+
+/** Join lookups that read only the keys row selectors ask for, held until {@link JoinLookups.clear}. */
+export class JoinLookups {
+  readonly #deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog'>;
+  readonly #lookups = new Map<string, FetchedLookup>();
+
+  constructor(deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog'>) {
+    this.#deps = deps;
+  }
+
+  /** Lookup of a spec over its fetched keys; a key not fetched answers undefined and is recorded as missing. */
+  readonly source: LookupSource = (spec) => {
+    const id = indexId(spec);
+    let lookup = this.#lookups.get(id);
+    if (lookup === undefined) {
+      lookup = { spec, found: new Map(), missing: new Set() };
+      this.#lookups.set(id, lookup);
+    }
+    const { found, missing } = lookup;
+    return Promise.resolve({
+      get(at) {
+        const values = found.get(at);
+        if (values === undefined) missing.add(at);
+        return values === undefined || values.length === 0 ? undefined : values;
+      },
+    });
+  };
+
+  /** Reads every missing key, scoped on its first index column; false when no key was missing. */
+  async fetchMissing(): Promise<boolean> {
+    let fetched = false;
+    for (const { spec, found, missing } of this.#lookups.values()) {
+      if (missing.size === 0) continue;
+      fetched = true;
+      const wanted = new Map<string, string[]>([...missing].map((at) => [at, []]));
+      missing.clear();
+      const firsts = [...new Set([...wanted.keys()].map((at) => at.split(INDEX_SEPARATOR)[0] ?? ''))];
+      const columns = [...new Set([...spec.indexColumns, spec.carried])];
+      for (let start = 0; start < firsts.length; start += MAX_SCOPE_PARAMETERS) {
+        const scope = { [spec.indexColumns[0]]: firsts.slice(start, start + MAX_SCOPE_PARAMETERS) };
+        // The scope may match more rows under the column's collation; only rows whose full index key is wanted count.
+        for await (const source of streamLegacyTable(this.#deps, { table: spec.table, database: spec.database, columns, scope })) {
+          const entry = indexEntry(spec, source.row);
+          const values = entry === undefined ? undefined : wanted.get(entry[0]);
+          if (entry === undefined || values === undefined || values.includes(entry[1])) continue;
+          values.push(entry[1]);
+        }
+      }
+      for (const [at, values] of wanted) found.set(at, values);
+    }
+    return fetched;
+  }
+
+  /** Drops every fetched and missing key. */
+  clear(): void {
+    for (const { found, missing } of this.#lookups.values()) {
+      found.clear();
+      missing.clear();
+    }
+  }
+}
+
+/** Row filter of `unit`'s predicate on `legacyTable` in `database`, judging ownership as {@link readLegacyUnitRows} does. */
+export async function createUnitRowFilter(
+  deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog' | 'config'>,
+  options: { unit: string; legacyTable: string; database: string; lookups: JoinLookups },
+): Promise<UnitRowFilter> {
+  const { unit, legacyTable, database, lookups } = options;
+  const target = unitTarget(deps.catalog, unit, legacyTable);
+  const selector = await rowSelectorFor(deps, lookups.source, database, { legacyTable }, target.rowPredicate);
+  // Each pass reaches one join hop further; it ends once every key the rows reach has been fetched.
+  const prepare = async (rows: readonly Values[]): Promise<void> => {
+    do {
+      for (const row of rows) selector.accepts(row);
+    } while (await lookups.fetchMissing());
+  };
+  return {
+    prepare,
+    async accepts(row) {
+      await prepare([row]);
+      return selector.accepts(row);
+    },
   };
 }
 
@@ -676,7 +786,8 @@ export async function readLegacyUnitRows(
 ): Promise<LegacyUnitRows> {
   const { database, tenants } = options;
   const target = unitTarget(deps.catalog, shape.unit, shape.legacyTable);
-  const selector = await rowSelectorFor(deps, indexesOf(tenants), database, shape, target.rowPredicate);
+  const memo = indexesOf(tenants);
+  const selector = await rowSelectorFor(deps, (spec) => valueIndex(deps, memo, spec), database, shape, target.rowPredicate);
   const tenantColumns = tenantColumnsOf(tenantSourceOf(factsFor(deps, shape.legacyTable)));
   const encoded = shape.columns.flatMap((column) => (shape.folded && column.name === LEGACY_PROGRAM_ID_COLUMN ? [] : [column.name]));
   const columns = [...new Set([...encoded, ...selector.columns, ...tenantColumns])];

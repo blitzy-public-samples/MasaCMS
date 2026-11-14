@@ -1,5 +1,6 @@
 /** carch admin routes: Site Manager page data, content writes and raw responses. */
 import { existsSync, readFileSync } from 'node:fs';
+import { AuthDenial } from '@opt2/platform/auth';
 import {
   LEGACY_ADMIN_SENTINEL_ID,
   LegacyServiceUnavailableError,
@@ -14,6 +15,7 @@ import {
   cfToNumber,
   cfDateAdd,
   cfDateTimeFormat,
+  cfTimestampText,
   cfUuid,
   esapiUrlEncode,
   type CsrfTokens,
@@ -29,7 +31,7 @@ import {
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
-import { poolTenantFor, registryEntries, registryEntryForTenant, tenantIdForSite, type TenantTx } from '@opt2/platform/tenancy';
+import { poolTenantFor, registryEntries, registryEntryForTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { loadRequest, requiresApproval } from '../../domain/approval-requests.js';
 import { approvalAction } from '../../domain/approvals.js';
 import { readChangeset } from '../../domain/changesets.js';
@@ -86,7 +88,7 @@ import {
 import { FeedBean, feedContent, listFeeds } from '../../domain/feeds.js';
 import type { UploadedFile } from '../../domain/files.js';
 import { getModulePerm, getNodePerm, getPerm, loadMemberships, setRestriction, type UserMemberships } from '../../domain/permissions.js';
-import { withPoolTenant } from '../../domain/pools.js';
+import { contentPoolSites, withPoolTenant } from '../../domain/pools.js';
 import { PRIVATE_SEARCH_RECORDS_PER_PAGE, privateSearch } from '../../domain/search.js';
 import { readVariationTargeting, saveVariationTargetingInTx } from '../../domain/variations.js';
 import {
@@ -167,7 +169,7 @@ import {
   type StatusModalUser,
   type UpdateResponseModel,
 } from '../../legacy/admin-render.js';
-import { buildCustomIconLookup, getNextN, type AdminSessionState, type CustomIconLookup, type NodePerm } from '../../legacy/admin-markup.js';
+import { buildCustomIconLookup, getNextN, iconClass, type AdminSessionState, type CustomIconLookup, type NodePerm } from '../../legacy/admin-markup.js';
 import { muraJsonEncode } from '../../legacy/cfjson.js';
 import { contentUrl, imageUrl } from '../../legacy/content-urls.js';
 import type { ContentRouteContext } from '../index.js';
@@ -710,9 +712,9 @@ function located(location: string): CarchRawResult {
   return { status: 302, contentType: ADMIN_VIEW_CONTENT_TYPE, body: '', redirect: location, headers: { location } };
 }
 
-/** A query or bean value as the page model carries it: dates as ISO text, everything else unchanged. */
+/** A query or bean value as the page model carries it: dates as the contract's LocalTimestamp, everything else unchanged. */
 function modelValue(value: unknown): unknown {
-  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Date) return cfDateTimeFormat(value, 'yyyy-mm-dd HH:nn:ss.lll').replace(' ', 'T');
   if (Array.isArray(value)) return value.map(modelValue);
   if (typeof value === 'object' && value !== null) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, modelValue(v)]));
   return value;
@@ -940,12 +942,12 @@ async function formResponsesModel(request: FastifyRequest, ctx: ContentRouteCont
   const locale = state.locale ?? 'en_US';
   const action = rcText(rc, 'action');
   const listing = await responseList(ctx.domain, actor, rc, bean, rsDataInfo, locale);
-  const view: Rc = { ...listing.rc };
+  const view: Rc = queryCells(listing.rc);
   if (cfEq(action, 'display')) rcSet(view, 'fieldnames', await getFullFieldList(ctx.domain, actor, contentId));
-  let rsData: unknown = listing.rows?.map((row) => ({ responseID: row.responseid, entered: row.entered, data: safeValues(row) })) ?? [];
+  let rsData: unknown = listing.rows?.map((row) => queryCells({ responseID: row.responseid, entered: row.entered, data: safeValues(row) })) ?? [];
   if (cfEq(action, 'edit')) {
     const row = await readResponse(ctx.domain, actor, rcText(rc, 'responseid'));
-    rsData = row === null ? [] : [{ responseID: row.responseid, entered: row.entered, data: safeValues(row) }];
+    rsData = row === null ? [] : [queryCells({ responseID: row.responseid, entered: row.entered, data: safeValues(row) })];
   }
   const stats = await inTenant(ctx, actor, (tx) => ctx.domain.repository.stats.readStats(tx, { contentId, siteId }));
   const site = await siteOf(ctx, actor);
@@ -956,10 +958,15 @@ async function formResponsesModel(request: FastifyRequest, ctx: ContentRouteCont
     perm: await getNodePerm(ctx.domain, actor, crumbData),
     hasLockableNodes: SITE_FLAGS.hasLockableNodes,
     useLayoutManager: false,
-    rsDataInfo,
+    rsDataInfo: queryCells(rsDataInfo),
     rsData,
     ...attachmentLink(site),
   };
+}
+
+/** A struct's top-level dates as ColdFusion prints a query timestamp (`yyyy-mm-dd HH:nn:ss.S`), as the data manager prints them raw. */
+function queryCells(row: object): Rc {
+  return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value instanceof Date ? cfTimestampText(value) : value]));
 }
 
 /** A packet's deserialised values, or null where `wddx2cfml` fails, as the data manager view treats it. */
@@ -971,15 +978,70 @@ function safeValues(row: Parameters<typeof responseValues>[0]): unknown {
   }
 }
 
-/** The rc values the history and audit screens read: the screen model's beans and rows under their legacy names. */
-function versionScreenRc(model: Awaited<ReturnType<typeof getHistory>> | Awaited<ReturnType<typeof getAudit>>): Rc {
+/** The getDraftList rows draft.cfm reads, each with its `getCrumbList(contentid, rc.siteid)` crumbdata, their icon classes and its node verdict. */
+async function draftRows(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor, siteId: string): Promise<Rc[]> {
+  const drafts = await getDraftList(ctx.domain, actor, { siteId });
+  if (drafts.length === 0) return [];
+  const memberships = await membershipsOf(request, ctx, actor);
+  const customIcons = await customIconsOf(ctx, actor, siteId);
+  const rows: Rc[] = [];
+  for (const row of drafts) {
+    const crumbs = await getCrumbList(ctx.domain, actor, { contentId: row.contentid ?? '', siteId });
+    rows.push({
+      ...row,
+      verdict: await getNodePerm(ctx.domain, actor, crumbs, memberships),
+      crumbdata: crumbs.map((crumb) => ({ ...crumb, iconclass: iconClass(customIcons, crumb) })),
+    });
+  }
+  return rows;
+}
+
+/** The history and audit screens' rc: the screen model under legacy names, the site and configBean flags, and `rc.deletable` (hist.cfm:96). */
+function versionScreenRc(
+  rc: Rc,
+  model: Awaited<ReturnType<typeof getHistory>> | Awaited<ReturnType<typeof getAudit>>,
+  site: ContentSaveSite,
+  purgeDrafts: boolean,
+): Rc {
+  if (!rcHas(rc, 'parentid')) throw new UndefinedLegacyElementError('Element PARENTID is undefined in RC.');
+  const contentBean = beanValues(model.contentBean);
+  const stats = model.stats ?? {};
+  const underRoot = cfEq(rcText(rc, 'parentid'), LEGACY_ADMIN_SENTINEL_ID);
+  const deletable =
+    ((!underRoot && !cfEq(site.locking, 'all')) || (underRoot && cfEq(site.locking, 'none'))) &&
+    cfEq(model.perm, 'editor') &&
+    !cfEq(rcText(rc, 'contentid'), LEGACY_ADMIN_SENTINEL_ID) &&
+    !cfEq(rcText(contentBean, 'islocked'), '1');
   return {
-    contentBean: beanValues(model.contentBean),
+    contentBean: { ...contentBean, stats },
     rsCount: model.rsCount,
     crumbdata: model.crumbs,
     perm: model.perm,
-    stats: model.stats ?? {},
+    stats,
+    deletable,
+    hasLockableNodes: SITE_FLAGS.hasLockableNodes,
+    hasChangesets: SITE_FLAGS.hasChangesets,
+    purgeDrafts,
+    siteLocking: site.locking,
   };
+}
+
+/** The exceptions-list entry of a history or audit list holding a version whose preview URL hist.cfm and audit.cfm print. */
+export const CARCH_VERSION_PREVIEW_EXCEPTION = 'EX-CARCH-VERSION-PREVIEW';
+/** LegacyServiceUnavailableError reason of a version screen needing site URL settings this service does not hold. */
+export const CARCH_SITE_SETTINGS_REASON = 'carch-site-settings';
+/** The version types whose row prints `rc.contentBean.getURL(complete=1)` (the views' `cfcase` list less Variation, matched case-insensitively). */
+const VERSION_PREVIEW_TYPES: readonly string[] = ['page', 'folder', 'calendar', 'gallery', 'link', 'file'];
+
+/** Halts `action` with the contract's 503 when any version prints a preview URL read from tsettings and configBean URL values this service does not hold. */
+function haltVersionPreviews(action: string, versions: readonly { type: string | null }[]): void {
+  if (versions.some((version) => VERSION_PREVIEW_TYPES.includes((version.type ?? '').toLowerCase()))) {
+    throw new LegacyServiceUnavailableError(
+      `${action} prints preview URLs built from site settings this service does not hold (${CARCH_VERSION_PREVIEW_EXCEPTION})`,
+      'auto',
+      CARCH_SITE_SETTINGS_REASON,
+    );
+  }
 }
 
 /** Registers the carch page and write operations the contract lists; raw responses are registered by `./raw.ts`. */
@@ -1017,7 +1079,7 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
   app.get<Site>('/v1/sites/:siteid/content/drafts', { config }, async (request) => {
     const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
     const { rc } = await carchContext(pageParams(request, { siteid: request.params.siteid }), actor, () => storedSession(request));
-    return viewModel({ ...rc, rsList: await getDraftList(ctx.domain, actor, { siteId: rcText(rc, 'siteid') }) });
+    return viewModel({ ...rc, rsList: await draftRows(request, ctx, actor, rcText(rc, 'siteid')) });
   });
 
   /** carch.edit and carch.editLive: the edit screen model, or the node editLive opens. */
@@ -1031,7 +1093,12 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
     const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
     const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
     const model = await getHistory(ctx.domain, actor, { contentId: request.params.contentid, siteId: rcText(rc, 'siteid') });
-    return viewModel({ ...rc, ...versionScreenRc(model), items: model.items, historyTotal: model.historyTotal });
+    const site = await siteOf(ctx, actor);
+    // rc.deletable's parentid read (hist.cfm:96) fails before the version rows print their previews (hist.cfm:177-182).
+    const screen = versionScreenRc(rc, model, site, ctx.domain.config.purgeDrafts);
+    haltVersionPreviews('cArch.hist', model.items);
+    const items = model.items.map((item) => ({ ...item, parentid: model.parents.get(item.contenthistid ?? '') ?? '' }));
+    return viewModel({ ...rc, ...screen, items, historyTotal: model.historyTotal });
   });
 
   /** carch.audit (carch.cfc:464-467): one version's audit trail. */
@@ -1042,7 +1109,14 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
       const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
       const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
       const model = await getAudit(ctx.domain, actor, { contentId: request.params.contentid, siteId: rcText(rc, 'siteid'), contentHistId: request.params.contenthistid });
-      return viewModel({ ...rc, ...versionScreenRc(model), items: model.trail.map((version) => ({ ...version })) });
+      const site = await siteOf(ctx, actor);
+      const screen = versionScreenRc(rc, model, site, ctx.domain.config.purgeDrafts);
+      haltVersionPreviews('cArch.audit', model.trail);
+      const items = model.trail.map((version) => {
+        const changeset = model.changesets.get(version.changesetid ?? '');
+        return { ...version, changesetname: changeset?.name ?? '', changesetpublishdate: changeset?.publishdate ?? '' };
+      });
+      return viewModel({ ...rc, ...screen, items });
     },
   );
 
@@ -1180,16 +1254,25 @@ function registerCarchMediaRoutes(app: FastifyInstance, ctx: ContentRouteContext
     return viewModel({ ...rc, images });
   });
 
-  /** carch.selectfields (selectfields.cfm): a collection's selected and available display fields. */
+  /** carch.selectfields (selectfields.cfm:97-98): the url-built collection's getDisplayList() and getAvailableDisplayList() (feedBean.cfc:706-764). */
   app.get<Site>('/v1/sites/:siteid/feeds/display-fields', { config }, async (request) => {
     const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
     const url = paramsOf(request);
     const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
     const displayList = rcHas(url, 'displayList') ? rcText(url, 'displayList') : FEED_DISPLAY_DEFAULT;
+    // A page operation answers the contract's JSON 503.
+    if (displayList === '') throw new CarchHaltedError('selectfields', "an empty displayList is the site content renderer's defaultCollectionDisplayList, CFML on the legacy web root", 'auto');
     const extended = await contentAttributeNames(ctx, actor, rcText(rc, 'siteid'));
-    const available = [...cfListToArray(FEED_DISPLAY_FIELDS), ...extended];
-    for (const field of cfListToArray(displayList)) if (!available.some((name) => cfEq(name, field))) available.push(field);
-    return viewModel({ ...rc, displayList, availableList: available.join(',') });
+    const available = cfListToArray([FEED_DISPLAY_FIELDS, ...extended].join(','));
+    // listFindNoCase then listDeleteAt: each item drops the first field equal to it ignoring case, untrimmed.
+    for (const field of cfListToArray(displayList)) {
+      const found = available.findIndex((name) => name.toLowerCase() === field.toLowerCase());
+      if (found >= 0) available.splice(found, 1);
+    }
+    const model = { ...rc };
+    rcSet(model, 'displayList', displayList);
+    rcSet(model, 'availableDisplayList', available.join(','));
+    return viewModel(model);
   });
 
   /** carch.variationtargeting (variationtargeting.cfm:1-4): the variation node of `remoteid` with the request's values. */
@@ -1203,7 +1286,7 @@ function registerCarchMediaRoutes(app: FastifyInstance, ctx: ContentRouteContext
     return viewModel({ ...rc, contentBean: { ...values, variationTargeting: targeting } });
   });
 
-  /** carch.variationtargeting's save (variationtargeting.cfm:5-10): the new node, then its targeting's initialization JS. */
+  /** carch.variationtargeting's save (variationtargeting.cfm:5-10): the new node, then its targeting's initialization JS; `data` is the node. */
   app.post<Site>('/v1/sites/:siteid/variation-targeting', { config }, async (request): Promise<AdminWriteResult> => {
     const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
     const { rc } = await carchContext(pageParams(request, request.params), actor, () => storedSession(request));
@@ -1219,10 +1302,10 @@ function registerCarchMediaRoutes(app: FastifyInstance, ctx: ContentRouteContext
       errors = saved.errors;
       node = { ...Object.fromEntries(saved.bean.entries()), isNew: 0 };
     }
-    const targeting = await withGatedTenant(ctx.domain.db, actor.tenantId, (tx) =>
+    await withGatedTenant(ctx.domain.db, actor.tenantId, (tx) =>
       saveVariationTargetingInTx(tx, ctx.domain.repository, { contentid: contentId, siteid: siteId, initjs: rcRequired(rc, 'initjs') }, actor),
     );
-    return { saved: Object.keys(errors).length === 0, errors, redirect: null, data: modelValue({ contentBean: node, variationTargeting: targeting, useLayoutManager: false }) as Record<string, unknown> };
+    return { saved: Object.keys(errors).length === 0, errors, redirect: null, data: modelValue(node) as Record<string, unknown> };
   });
 }
 
@@ -1531,12 +1614,12 @@ interface NestScope {
 }
 
 /**
- * dsp_nest.cfm's rows under `parentId` through the last row its `startRow`/`nextN` window shows, each with its verdict,
- * child count and, for an open section with children, the rows of the level below.
+ * The rows dsp_nest.cfm shows under `parentId`, its `nextN` from `startRow`, each with its verdict, child count and,
+ * for an open section with children, the rows of the level below.
  */
 async function nestNodes(scope: NestScope, parentId: string, sort: { sortBy: string; sortDirection: string }, startRow: number, ancestors: ReadonlySet<string> = new Set()): Promise<NestNode[]> {
   const { ctx, actor, siteId } = scope;
-  const page = await getNest(ctx.domain, actor, { parentId, siteId, sortBy: sort.sortBy, sortDirection: sort.sortDirection, startRow: 1, maxRows: startRow - 1 + scope.nextN });
+  const page = await getNest(ctx.domain, actor, { parentId, siteId, sortBy: sort.sortBy, sortDirection: sort.sortDirection, startRow, maxRows: scope.nextN });
   const level = new Set([...ancestors, parentId.toLowerCase()]);
   const nodes: NestNode[] = [];
   for (const row of page.rows) {
@@ -2176,10 +2259,12 @@ async function relatedContentSetsOf(ctx: ContentRouteContext, actor: Actor, acti
   return sets;
 }
 
-/** contentManager.getCrumbList(contentid, siteid) in the tenant holding `siteId`. */
+/** contentManager.getCrumbList(contentid, siteid) for the token's site or a registered content-pool site in its tenant; AuthDenial 403 for any other site. */
 async function crumbsAt(ctx: ContentRouteContext, actor: Actor, contentId: string, siteId: string): Promise<Crumb[]> {
   if (cfEq(siteId, actor.siteId)) return getCrumbList(ctx.domain, actor, { contentId, siteId });
-  return ctx.domain.db.withTenant(tenantIdForSite(siteId), (tx) => ctx.domain.repository.content.crumbPath(tx, { contentId, siteId }));
+  const site = (await contentPoolSites(ctx.domain.db, actor.tenantId)).find((pooled) => cfEq(pooled.siteId, siteId));
+  if (site === undefined) throw AuthDenial.forbidden('site-mismatch');
+  return ctx.domain.db.withTenant(site.tenantId, (tx) => ctx.domain.repository.content.crumbPath(tx, { contentId, siteId: site.siteId }));
 }
 
 /** contentGateway.getRelatedContent over the site's content pool: links of this tenant's version, rows of each pool tenant, merged. */

@@ -1,7 +1,7 @@
 /** carch raw panels and carch.update of routes/v1/carch.ts over the recording pool: quick edit, related content, object classes, extended attributes, status modal and update outcomes. */
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { Roles, moduleRole } from '@opt2/platform/auth';
+import { AuthDenial, Roles, moduleRole } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import {
   CSRF_CONSUME_PATH,
@@ -487,14 +487,36 @@ describe('related content', () => {
       expect(printedSets(unknown.body)).toEqual([RS_FIRST, RS_SECOND, SITE_TREE, RS_PAGE, RS_BASE]);
     });
 
-    it('reads a related row of another site with the crumbs of that site’s tenant', async () => {
+    it('reads a related row of a content-pool site with the crumbs of that site’s tenant', async () => {
+      const entry = registryEntry({ content_pool_ids: [SITE, TENANT_B.siteId], content_pool_tenants: [TENANT_A.tenantId, TENANT_B.tenantId] });
+      db.respond(REGISTRY_ENTRY, (params) => [entry].filter((row) => row.tenant_id === params[0]));
       seedContent([home(), version(), version({ contentid: REMOTE, contenthistid: OTHER_HIST, siteid: TENANT_B.siteId, menutitle: 'Remote', path: REMOTE })]);
       seedSets();
-      db.respond(RELATED, matching([related(REMOTE, RS_FIRST, { siteid: TENANT_B.siteId })], 'tcr.relatedcontentsetid'));
+      db.respond(RELATED_LINKS, [{ relatedid: REMOTE, contentid: NODE, relatedcontentsetid: RS_FIRST, orderno: 1 }]);
+      db.respond(RELATED, () => (db.statements.at(-1)?.tenantId === TENANT_B.tenantId ? [related(REMOTE, RS_FIRST, { siteid: TENANT_B.siteId })] : []));
       const res = await raw('loadselectedrelatedcontent', { query: { contenthistid: NODE_HIST, type: 'Page', subtype: 'News', relatedcontentsetid: RS_FIRST } });
+      expect(res.statusCode, res.body).toBe(200);
       expect(printedItems(res.body)).toEqual([REMOTE]);
       const remoteCrumbs = ran(CRUMBS).filter((statement) => flat(statement.params).includes(REMOTE));
       expect(remoteCrumbs.map((statement) => statement.tenantId)).toEqual([TENANT_B.tenantId]);
+    });
+
+    it.each([
+      ['a related set row', { relatedcontentsetid: RS_FIRST }],
+      [
+        'a client row of the ad-hoc set',
+        { relatedcontentsetid: 'custom', relateditems: JSON.stringify([{ contentid: REMOTE, siteid: TENANT_B.siteId, type: 'Page', subtype: 'Default', url: '', title: 'Remote' }]) },
+      ],
+    ] as const)('answers 403 for %s of a site outside the registered content pool, reading nothing in its tenant', async (_label, query) => {
+      seedContent([home(), version(), version({ contentid: REMOTE, contenthistid: OTHER_HIST, siteid: TENANT_B.siteId, menutitle: 'Remote', path: REMOTE })]);
+      seedSets();
+      db.respond(RELATED, matching([related(REMOTE, RS_FIRST, { siteid: TENANT_B.siteId })], 'tcr.relatedcontentsetid'));
+      const res = await raw('loadselectedrelatedcontent', { query: { contenthistid: NODE_HIST, type: 'Page', subtype: 'News', ...query } });
+      expect(res.statusCode, res.body).toBe(403);
+      expect(thrown).toBeInstanceOf(AuthDenial);
+      expect((thrown as AuthDenial).reason).toBe('site-mismatch');
+      expect(ran(CRUMBS).filter((statement) => flat(statement.params).includes(REMOTE))).toEqual([]);
+      expect(db.statements.filter((statement) => statement.tenantId === TENANT_B.tenantId)).toEqual([]);
     });
 
     it('merges each content-pool tenant’s rows of the version’s links', async () => {
@@ -517,6 +539,8 @@ describe('related content', () => {
     });
 
     it('prints the ad-hoc set from the client’s rows and the listed ids that exist, reading no set rows', async () => {
+      const entry = registryEntry({ content_pool_ids: [SITE, TENANT_B.siteId], content_pool_tenants: [TENANT_A.tenantId, TENANT_B.tenantId] });
+      db.respond(REGISTRY_ENTRY, (params) => [entry].filter((row) => row.tenant_id === params[0]));
       seedContent([
         home(),
         version(),
@@ -533,6 +557,7 @@ describe('related content', () => {
       expect(printedSets(custom.body)).toEqual(['custom']);
       expect(printedItems(custom.body)).toEqual([OTHER, REMOTE]);
       expect(custom.body).toContain(`data-contentid="${REMOTE}" data-content-type="3/"`);
+      expect(ran(CRUMBS).filter((statement) => flat(statement.params).includes(REMOTE)).map((statement) => statement.tenantId)).toEqual([TENANT_B.tenantId]);
       const listed = await raw('loadselectedrelatedcontent', { query: { contenthistid: NODE_HIST, type: 'Page', subtype: 'News', relatedcontentsetid: 'calendar', relateditems: `${OTHER},${REMOTE}` } });
       expect(printedItems(listed.body)).toEqual([OTHER]);
       expect(ran(RELATED)).toEqual([]);

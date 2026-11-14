@@ -4,7 +4,7 @@ import type { CanonicalColumn } from '@opt2/platform/migration-kit';
 import type { MigrationContext } from '../context.js';
 import type { CanonicalRow, LegacyTableShape } from '../extract/index.js';
 import type { DataOwner, LegacyTableTarget } from '../owners/index.js';
-import { describeUnitTable, readLegacyUnitRows, toUnitRow, type UnitTableShape } from '../reconcile/index.js';
+import { JoinLookups, createUnitRowFilter, type UnitRowFilter } from '../reconcile/index.js';
 import type { ApplyChange, OwnerBatcher, TenantResolver } from './batch.js';
 
 /** Context members {@link Acceptance} reads. */
@@ -86,22 +86,36 @@ export function planTarget(target: LegacyTableTarget, shape: Pick<LegacyTableSha
   return { target, hint, columns: targetColumns(target, shape, hint) };
 }
 
-/** Which rows of a table each predicate target takes in each snapshot database, read once per run through reconciliation's row selection. */
+/** Which rows of a table each predicate target takes in each snapshot database, judged row by row through reconciliation's row selection. */
 export class Acceptance {
   readonly #ctx: AcceptanceContext;
   readonly #table: string;
-  readonly #loaded = new Map<string, Promise<{ shape: UnitTableShape; keys: ReadonlySet<string> }>>();
+  readonly #lookups: JoinLookups;
+  readonly #filters = new Map<string, Promise<UnitRowFilter>>();
 
   constructor(ctx: AcceptanceContext, table: string) {
     this.#ctx = ctx;
     this.#table = table;
+    this.#lookups = new JoinLookups(ctx);
+  }
+
+  /** Replaces the previous chunk's join keys with those the predicate `targets` need to judge `rows`. */
+  async prepare(targets: readonly LegacyTableTarget[], rows: readonly (readonly [DiffSide, CanonicalRow])[]): Promise<void> {
+    this.#lookups.clear();
+    const sides = [...new Set(rows.map(([side]) => side))];
+    for (const target of targets) {
+      if (target.rowPredicate === null) continue;
+      for (const side of sides) {
+        const filter = await this.#filter(target.unit, side);
+        await filter.prepare(rows.flatMap(([rowSide, row]) => (rowSide === side ? [row.row] : [])));
+      }
+    }
   }
 
   /** True when `target` takes `row` of the database `side` reads. */
   async accepts(target: LegacyTableTarget, side: DiffSide, row: CanonicalRow): Promise<boolean> {
     if (target.rowPredicate === null) return true;
-    const { shape, keys } = await this.#load(target.unit, side);
-    return keys.has(toUnitRow(shape, row.row, row.legacyProgramId).key);
+    return (await this.#filter(target.unit, side)).accepts(row.row);
   }
 
   /** The plans among `plans` that take `row`. */
@@ -111,25 +125,28 @@ export class Acceptance {
     return taken;
   }
 
-  #load(unit: string, side: DiffSide): Promise<{ shape: UnitTableShape; keys: ReadonlySet<string> }> {
+  #filter(unit: string, side: DiffSide): Promise<UnitRowFilter> {
     const id = JSON.stringify([side.database, unit]);
-    let loaded = this.#loaded.get(id);
-    if (loaded === undefined) {
-      loaded = (async () => {
-        const shape = await describeUnitTable(this.#ctx, { unit, legacyTable: this.#table, database: side.database });
-        const rows = await readLegacyUnitRows(this.#ctx, shape, { database: side.database, tenants: side.tenants });
-        const keys = new Set<string>();
-        try {
-          for (const tenantId of rows.tenants) for await (const row of rows.rows(tenantId)) keys.add(row.key);
-        } finally {
-          await rows.dispose();
-        }
-        return { shape, keys };
-      })();
-      this.#loaded.set(id, loaded);
+    let filter = this.#filters.get(id);
+    if (filter === undefined) {
+      filter = createUnitRowFilter(this.#ctx, { unit, legacyTable: this.#table, database: side.database, lookups: this.#lookups });
+      this.#filters.set(id, filter);
     }
-    return loaded;
+    return filter;
   }
+}
+
+/** Consecutive runs of at most `size` items of `items`. */
+export async function* chunksOf<T>(items: AsyncIterable<T>, size: number): AsyncGenerator<T[], void, undefined> {
+  let chunk: T[] = [];
+  for await (const item of items) {
+    chunk.push(item);
+    if (chunk.length >= size) {
+      yield chunk;
+      chunk = [];
+    }
+  }
+  if (chunk.length > 0) yield chunk;
 }
 
 /**

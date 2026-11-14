@@ -3,8 +3,10 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { SAFE_ERROR_TEXT } from '../logging/safe-error.js';
 
 const SERVICE_NAME = /^[a-z][a-z0-9-]*$/;
+const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
 const HOST_PORT = /^(?:\[[0-9a-fA-F:.]+\]|[^\s:/[\]]+):(\d{1,5})$/;
 const PORT_NUMBER = z.coerce.number<string>().int().min(1).max(65535);
 const CLOUD_SQL_INSTANCE = /^[^:]+:[^:]+:[^:]+$/;
@@ -209,10 +211,18 @@ export function envModeIssues(env: BaseEnv): string[] {
 export class EnvValidationError extends Error {
   override readonly name = 'EnvValidationError';
   readonly issues: string[];
+  readonly #safeText: string;
 
   constructor(issues: string[], service?: string) {
     super([`${service === undefined ? '' : `${service}: `}invalid environment`, ...issues.map((i) => `  ${i}`)].join('\n'));
     this.issues = issues;
+    const names = [...new Set(issues.map((issue) => (issue.split(/[:.]/, 1)[0] ?? '').trim()).filter((name) => ENV_NAME.test(name)))];
+    this.#safeText = `${service === undefined ? '' : `${service}: `}invalid environment${names.length > 0 ? ` (${names.join(', ')})` : ''}`;
+  }
+
+  /** The service and the names of the invalid variables, never their values or issue texts. */
+  get [SAFE_ERROR_TEXT](): string {
+    return this.#safeText;
   }
 }
 

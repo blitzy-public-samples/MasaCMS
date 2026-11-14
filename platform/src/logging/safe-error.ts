@@ -62,7 +62,7 @@ const ABORT_TEXT = [...ABORT_MESSAGES.values()].join('|');
 
 /** Every text `safeErrorMessage` produces besides REDACTED, plus the sanitized message of @opentelemetry/instrumentation-pg. */
 const SAFE_TEXT = new RegExp(
-  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|${GRPC_STATUS_TEXT}|${ABORT_TEXT})$`,
+  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|(?:[a-z][a-z0-9-]*: )?invalid environment(?: \([A-Z][A-Z0-9_]*(?:, [A-Z][A-Z0-9_]*)*\))?|${GRPC_STATUS_TEXT}|${ABORT_TEXT})$`,
 );
 
 /** Most causes `safeErrorMessage` follows past an error without identifiers; also ends a cyclic chain. */

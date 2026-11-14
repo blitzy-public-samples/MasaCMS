@@ -3,6 +3,8 @@ import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { REDACTED } from '../../src/logging/redact.js';
+import { isSafeErrorText, serializeError } from '../../src/logging/safe-error.js';
 import {
   EnvValidationError,
   baseEnvSchema,
@@ -336,5 +338,33 @@ describe('envModeIssues', () => {
       'PG_DATABASE: is required when OPT2_DB_AUTH=password',
       'PG_USER: is required when OPT2_DB_AUTH=password',
     ]);
+  });
+});
+
+describe('EnvValidationError safe text', () => {
+  // Assembled at run time, so no literal credential appears in source.
+  const SECRET = ['opt2', 'env', 'issue', 'secret'].join('-');
+
+  it.each<[string, () => EnvValidationError, string]>([
+    ['an invalid PG_PORT and LOG_LEVEL from loadEnv', () => rejectionOf({ ...localEnv, PG_PORT: 'notaport', LOG_LEVEL: 'verbose' }), 'people: invalid environment (PG_PORT, LOG_LEVEL)'],
+    ['a nested OPT2_SERVICE_URLS entry from loadEnv', () => rejectionOf({ ...localEnv, OPT2_SERVICE_URLS: '{"people":"not a url"}' }), 'people: invalid environment (OPT2_SERVICE_URLS)'],
+    ['an invalid service name from loadEnv', () => rejectionOf({ ...localEnv, OPT2_SERVICE_NAME: 'Bad Name' }), 'invalid environment (OPT2_SERVICE_NAME)'],
+    ['repeated names', () => new EnvValidationError(['PG_HOST: is required', 'PG_PORT: is required', 'PG_HOST: must be set'], 'people'), 'people: invalid environment (PG_HOST, PG_PORT)'],
+    ['issues without a variable name', () => new EnvValidationError([': custom', 'pg_host: is required'], 'people'), 'people: invalid environment'],
+    ['no service', () => new EnvValidationError(['TZ: is required']), 'invalid environment (TZ)'],
+    ['an issue text carrying a secret', () => new EnvValidationError([`PG_HOST: connect postgres://svc:${SECRET}@db refused`], 'people'), 'people: invalid environment (PG_HOST)'],
+    ['a service outside the service-name pattern', () => new EnvValidationError(['TZ: is required'], 'Bad Service'), REDACTED],
+  ])('serializes %s with its safe text above frame lines only', (_case, make, message) => {
+    const record = serializeError(make());
+    const { stack, ...fields } = record;
+
+    expect(fields).toStrictEqual({ type: 'EnvValidationError', message });
+    const [header, ...frames] = (stack ?? '').split('\n');
+    expect(header).toBe(`EnvValidationError: ${message}`);
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) expect(frame).toMatch(/^\s+at \S/);
+    expect(isSafeErrorText(message)).toBe(true);
+    expect(serializeError(record)).toStrictEqual(record);
+    expect(JSON.stringify(record)).not.toContain(SECRET);
   });
 });

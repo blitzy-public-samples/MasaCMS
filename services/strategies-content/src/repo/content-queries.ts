@@ -197,6 +197,23 @@ export function firstById<R>(rows: readonly R[], ids: readonly string[], idOf: (
   return found;
 }
 
+/** A lookup of `rows` by id: the rows whose id `idIn` matches one of `ids` (as `firstById` matches), in row order. */
+export function rowsById<R>(rows: readonly R[], idOf: (row: R) => string | null): (ids: readonly string[]) => R[] {
+  const bpchar = (value: string): string => value.replace(/ +$/, '');
+  const at = new Map<string, number[]>();
+  rows.forEach((row, index) => {
+    const stored = idOf(row);
+    if (stored === null) return;
+    const indexes = at.get(bpchar(stored));
+    if (indexes === undefined) at.set(bpchar(stored), [index]);
+    else indexes.push(index);
+  });
+  return (ids) => {
+    const indexes = new Set(idForms(ids).flatMap((form) => at.get(bpchar(form)) ?? []));
+    return [...indexes].sort((a, b) => a - b).map((index) => rows[index] as R);
+  };
+}
+
 
 /** A text column as SQL Server sorts it under a case-insensitive collation. */
 function textSort(expr: string): string {
@@ -618,6 +635,18 @@ export async function readVersion(tx: TenantTx, args: { contentHistId: string })
   return run(tx, `${versionSelect(tx.schema)} WHERE ${idEq(p, 'tcontent.contenthistid', args.contentHistId)}`, p.values);
 }
 
+/** `readVersion` of several ids with one query: each non-empty id's first row, keyed by the id. */
+export async function readVersionsIn(tx: TenantTx, args: { contentHistIds: readonly string[] }): Promise<Map<string, ContentVersionRow>> {
+  const ids = [...new Set(args.contentHistIds.filter((id) => id !== ''))];
+  if (ids.length === 0) {
+    return new Map();
+  }
+  await readable(tx, 'content', 'file', 'approval_request');
+  const p = new SqlParams();
+  const rows = await run<ContentVersionRow>(tx, `${versionSelect(tx.schema)} WHERE ${idIn(p, 'tcontent.contenthistid', ids)}`, p.values);
+  return firstById(rows, ids, (row) => row.contenthistid);
+}
+
 /** Shared arguments of the contentDAO active-version reads. */
 export interface ActiveVersionArgs {
   siteId: string;
@@ -717,6 +746,22 @@ export async function readActiveByFilename(
   const filename = args.filename === '' ? 'tcontent.filename IS NULL' : ciEq(p, 'tcontent.filename', args.filename.toLowerCase());
   const where = `${filename} AND ${ciLiterals('tcontent.type', ['Page', 'Folder', 'Calendar', 'Gallery', 'File', 'Link'])}`;
   return readActiveWhere(tx, p, where, args, VERSION_TYPES.filter((type) => type !== 'Module'));
+}
+
+/** The stored `parentid` of each of `contentHistIds`, as contentNavBean reads it from the version, keyed by the id; unknown ids are absent. */
+export async function versionParents(tx: TenantTx, args: { contentHistIds: readonly string[] }): Promise<Map<string, string | null>> {
+  const ids = [...new Set(args.contentHistIds.filter((id) => id !== ''))];
+  if (ids.length === 0) {
+    return new Map();
+  }
+  await readable(tx, 'content');
+  const p = new SqlParams();
+  const rows = await run<{ contenthistid: string | null; parentid: string | null }>(
+    tx,
+    `SELECT contenthistid, parentid FROM ${qualified(tx.schema, CONTENT.table)} WHERE ${idIn(p, 'contenthistid', ids)}`,
+    p.values,
+  );
+  return new Map([...firstById(rows, ids, (row) => row.contenthistid)].map(([id, row]) => [id, row.parentid]));
 }
 
 /** contentGateway.getContentIDFromContentHistID: the content id of a version, or '' when there is none. */
@@ -1104,6 +1149,41 @@ export async function crumbPath(tx: TenantTx, args: { contentId: string; siteId:
   return crumbs;
 }
 
+/**
+ * `crumbPath`'s stored-path read for several non-empty paths of one site with one query: each path's crumbs, keyed by
+ * the path; a path without ids has none.
+ */
+export async function crumbPathsIn(tx: TenantTx, args: { siteId: string; paths: readonly string[] }): Promise<Map<string, Crumb[]>> {
+  const paths = [...new Set(args.paths)];
+  const found = new Map<string, Crumb[]>();
+  if (paths.length === 0) {
+    return found;
+  }
+  await readable(tx, 'content', 'file', 'approval_assignment');
+  const ids = [...new Set(paths.flatMap(cfList))];
+  let rowsOf: (pathIds: readonly string[]) => CrumbQueryRow[] = () => [];
+  if (ids.length > 0) {
+    const p = new SqlParams();
+    const rows = await run<CrumbQueryRow>(
+      tx,
+      `${crumbSelect(tx.schema)} WHERE ${idIn(p, 'tcontent.contentid', ids)} AND tcontent.active = 1` +
+        ` AND tcontent.siteid = ${p.add(args.siteId)} ORDER BY ${orderKey('length(rtrim(tcontent.path))', 'desc')}`,
+      p.values,
+    );
+    rowsOf = rowsById(rows, (row) => row.contentid);
+  }
+  for (const path of paths) {
+    const rows = rowsOf(cfList(path));
+    const crumbs = rows.map((row) => toCrumb(row, false));
+    const [first] = crumbs;
+    if (first !== undefined) {
+      first.parentarray = rows.map((row) => row.contentid ?? '');
+    }
+    found.set(path, crumbs);
+  }
+  return found;
+}
+
 /** Arguments of `kids`, as `contentGateway.getKids` names them. */
 export interface KidsArgs {
   /** Defaults to the site tree module. */
@@ -1449,16 +1529,23 @@ export type NestRow = Pick<ContentRow, (typeof NEST_FIELDS)[number]> &
   };
 
 const NEST_TYPES = ['Page', 'Component', 'Link', 'Variation', 'File', 'Folder', 'Calendar', 'Form', 'Gallery', 'Module'];
+/** Sort-tie keys: tcontent_ID, SQL Server's clustered order (a group's least when aggregating), then alttext across one row's file metadata. */
+function nestTieBreak(aggregation: boolean): string {
+  return `${aggregation ? 'min(tcontent.tcontent_id)' : 'tcontent.tcontent_id'} ASC, ${orderKey('tcontentfilemetadata.alttext', 'asc')}`;
+}
 
-/**
- * contentGateway.getNest: the active children of `parentId` for the Site Manager tree, with the `haskids` aggregate
- * unless `aggregation` is false. Files join on the content's own site, so their columns are null where the site's
- * file pool is another tenant; the caller fills them with `fileJoinColumns` there.
- */
-export async function nest(
-  tx: TenantTx,
-  args: { parentId: string; siteId: string; sortBy?: string; sortDirection?: string; searchString?: string; aggregation?: boolean },
-): Promise<NestRow[]> {
+/** The arguments of contentGateway.getNest. */
+export interface NestQuery {
+  parentId: string;
+  siteId: string;
+  sortBy?: string;
+  sortDirection?: string;
+  searchString?: string;
+  aggregation?: boolean;
+}
+
+/** The getNest statement bound into `p`: select list, FROM … GROUP BY body (without the `haskids` join when `counting`) and total order. */
+async function nestStatement(tx: TenantTx, args: NestQuery, p: SqlParams, counting: boolean): Promise<{ select: string; from: string; order: string }> {
   const sortBy = args.sortBy ?? 'orderno';
   const direction = sortDirectionOf(args.sortDirection);
   const aggregation = args.aggregation !== false;
@@ -1467,14 +1554,13 @@ export async function nest(
   const sortCast = extended ? await extendedCastColumn(tx, { siteId: args.siteId, attribute: sortBy }) : 'stringvalue';
   const order = treeOrder(sortBy, direction, extended, sortCast, NEST_DEFAULT_ORDER);
   const t = tablesFor(tx.schema);
-  const p = new SqlParams();
   const grouped = [
     columns(CONTENT, 'tcontent', NEST_FIELDS),
     'tfiles.filesize, tfiles.fileext, tfiles.contenttype, tfiles.contentsubtype',
     'tcontentstats.lockid, tcontentstats.locktype, tcontentstats.rating, tcontentstats.totalvotes, tcontentstats.comments',
   ];
   const joins = [
-    aggregation ? `LEFT JOIN ${t.content} tcontent2 ON (tcontent.contentid = tcontent2.parentid)` : '',
+    aggregation && !counting ? `LEFT JOIN ${t.content} tcontent2 ON (tcontent.contentid = tcontent2.parentid)` : '',
     `LEFT JOIN ${t.file} tfiles ON (tcontent.fileid = tfiles.fileid AND tcontent.siteid = tfiles.siteid)`,
     `LEFT JOIN ${t.stats} tcontentstats ON (tcontent.contentid = tcontentstats.contentid AND tcontent.siteid = tcontentstats.siteid)`,
     `LEFT JOIN ${t.fileMetadata} tcontentfilemetadata ON (tcontent.fileid = tcontentfilemetadata.fileid` +
@@ -1488,15 +1574,38 @@ export async function nest(
   const groupBy = aggregation
     ? ` GROUP BY ${grouped.join(', ')}, tcontent.created, tfiles.filename, tcontentfilemetadata.alttext${extended ? ', qextendedsort.extendedsort' : ''}`
     : '';
-  return run(
-    tx,
-    `SELECT ${grouped.join(', ')}, tfiles.filename AS assocfilename, tcontentfilemetadata.alttext AS filealttext` +
-      `${aggregation ? ', count(tcontent2.parentid)::integer AS haskids' : ''}` +
+  return {
+    select:
+      `SELECT ${grouped.join(', ')}, tfiles.filename AS assocfilename, tcontentfilemetadata.alttext AS filealttext` +
+      `${aggregation ? ', count(tcontent2.parentid)::integer AS haskids' : ''}`,
+    from:
       ` FROM ${t.content} tcontent ${joins.filter((join) => join !== '').join(' ')}` +
       ` WHERE tcontent.siteid = ${p.add(args.siteId)} AND ${idEq(p, 'tcontent.parentid', args.parentId)}` +
-      ` AND tcontent.active = 1 AND ${ciLiterals('tcontent.type', NEST_TYPES)}${search}${groupBy} ORDER BY ${order}`,
-    p.values,
-  );
+      ` AND tcontent.active = 1 AND ${ciLiterals('tcontent.type', NEST_TYPES)}${search}${groupBy}`,
+    order: ` ORDER BY ${order}, ${nestTieBreak(aggregation)}`,
+  };
+}
+
+/**
+ * contentGateway.getNest: the active children of `parentId` for the Site Manager tree, with the `haskids` aggregate
+ * unless `aggregation` is false, the `limit` rows after the first `offset` when given. Files join on the content's
+ * own site, so their columns are null where the site's file pool is another tenant; the caller fills them with
+ * `fileJoinColumns` there.
+ */
+export async function nest(tx: TenantTx, args: NestQuery & { offset?: number; limit?: number }): Promise<NestRow[]> {
+  const p = new SqlParams();
+  const { select, from, order } = await nestStatement(tx, args, p, false);
+  const limit = args.limit === undefined ? '' : ` LIMIT ${p.add(args.limit)}`;
+  const offset = args.offset === undefined ? '' : ` OFFSET ${p.add(args.offset)}`;
+  return run(tx, `${select}${from}${order}${limit}${offset}`, p.values);
+}
+
+/** The number of rows `nest` reads for `args` without bounds; the `haskids` join adds rows to groups but no group. */
+export async function nestCount(tx: TenantTx, args: NestQuery): Promise<number> {
+  const p = new SqlParams();
+  const { from } = await nestStatement(tx, args, p, true);
+  const [row] = await run<{ total: number }>(tx, `SELECT count(*)::integer AS total FROM (SELECT 1${from}) q`, p.values);
+  return row?.total ?? 0;
 }
 
 // SQL Server returns rows of an unordered tcontent read in its clustered tcontent_ID order.

@@ -1,11 +1,16 @@
 /** Pooled and cross-site reads: pooled entities run in the registry's pool tenant, content-pool reads in one transaction per pool tenant. */
-import { withGatedTenant, type GateBudgetOptions } from '@opt2/platform/migration-kit';
+import { acquireWriteGates, withGatedTenant, type GateBudgetOptions } from '@opt2/platform/migration-kit';
 import {
+  TENANT_SETTING,
+  assertTenantId,
   poolTenantFor,
   registeredTenants,
   registryEntryForTenant,
   withTenant,
   type MetadataTx,
+  type QueryConfig,
+  type QueryResult,
+  type QueryResultRow,
   type TenantDb,
   type TenantRegistryEntry,
   type TenantTx,
@@ -61,6 +66,45 @@ export async function withGatedPoolTenant<T>(
 ): Promise<T> {
   const tenant = await poolTenant(db, tid, kind);
   return withGatedTenant(db, tenant, (tx) => fn(tx, tenant), opts);
+}
+
+const SET_TENANT_SQL = `SELECT set_config('${TENANT_SETTING}', $1, true)`;
+const poolViews = new WeakMap<TenantTx, Map<string, TenantTx>>();
+
+/** `tx` acting as tenant `tenantId`: each statement runs on `tx`'s connection with `app.tenant_id` switched to `tenantId` and back. */
+function poolView(tx: TenantTx, tenantId: string): TenantTx {
+  // A transaction's statements are issued one at a time, so none of `tx`'s own runs between the switch and the restore.
+  const query = async <R extends QueryResultRow = QueryResultRow>(text: string | QueryConfig, values?: unknown[]): Promise<QueryResult<R>> => {
+    // An aborted transaction refuses the switch and runs only a rollback, which needs no tenant.
+    await tx.query(SET_TENANT_SQL, [tenantId]).catch(() => undefined);
+    // A failed statement aborts the transaction; its rollback discards the switch.
+    const result = await tx.query<R>(text, values);
+    await tx.query(SET_TENANT_SQL, [tx.tenantId]);
+    return result;
+  };
+  const view: TenantTx = { kind: 'tenant', tenantId, schema: tx.schema, query, onCommit: (cb, onError) => tx.onCommit(cb, onError) };
+  return Object.freeze(view);
+}
+
+/**
+ * The open transaction `tx` as pool tenant `poolTenantId`, so pooled writes commit or roll back with `tx`; `tx` itself for
+ * its own tenant. The write gates of `units` are taken on `tx` first, keeping its gate-race semantics for the pooled writes.
+ */
+export async function poolTenantTx(tx: TenantTx, poolTenantId: string, units: readonly string[]): Promise<TenantTx> {
+  const tenantId = assertTenantId(poolTenantId);
+  if (tenantId === tx.tenantId) return tx;
+  await acquireWriteGates(tx, units);
+  let views = poolViews.get(tx);
+  if (views === undefined) {
+    views = new Map();
+    poolViews.set(tx, views);
+  }
+  let view = views.get(tenantId);
+  if (view === undefined) {
+    view = poolView(tx, tenantId);
+    views.set(tenantId, view);
+  }
+  return view;
 }
 
 /** The registry entry of `tid`. */
