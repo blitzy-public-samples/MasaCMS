@@ -1,855 +1,1033 @@
-/** In-process authorisation matrix of every people route: declarations, admitted subjects, transport and tenant boundaries, deny by default. */
-import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { parse } from 'yaml';
 import {
+  AuthDenial,
   INVOCATION_HEADER,
   PUBSUB_INVOKER_ROLE,
   Roles,
   TASKS_INVOKER_ROLE,
   UndeclaredRouteError,
   collectRouteMatrix,
+  hasAnyRole,
+  isServiceRole,
   moduleRole,
+  renderAuthDenial,
+  rolesForService,
+  serviceRole,
+  type DenialResponse,
   type Opt2RouteConfig,
-  type RouteMatrix,
   type RouteMatrixEntry,
-  type Transport,
 } from '@opt2/platform/auth';
-import { buildPushBody, encodeEnvelope, pushPath, type EventEnvelope } from '@opt2/platform/events';
 import { LEGACY_ERROR_MAP, cfUuid } from '@opt2/platform/legacy-compat';
-import { OUTBOX_SWEEP_PATH, QUEUE_CONTROL_PREFIX } from '@opt2/platform/tasks';
-import { createService, type FastifyInstance } from '@opt2/platform/service-kit';
-import { withTenant, type TenantDb } from '@opt2/platform/tenancy';
+import { createService } from '@opt2/platform/service-kit';
 import {
   ROLE_SET,
   TENANT_A,
   TENANT_B,
-  TENANT_UMBRELLA,
   TEST_PUSH_KEY,
   authHeadersFor,
+  fixtureForSite,
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
-  pgAvailable,
+  pushKeyQuery,
   pushTo,
   registryPayloads,
   subjectQueryFor,
   subjectSiteFor,
   testEnvelope,
   testVerifier,
-  writeTestSecrets,
   type InjectResponse,
+  type PushTarget,
   type RoleSubject,
+  type TenantlessEnvelope,
 } from '@opt2/platform/testing';
-import { createFaultHooks } from '../../src/domain/faults.js';
+import { SERVICE_NAME } from '../../src/app.js';
 import { GROUP_NAME_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
-import { createPeopleEvents } from '../../src/events/publish.js';
-import { GROUP_CHANGED_TOPIC, SITE_CHANGED_TOPIC, type GroupChangedPayload } from '../../src/events/topics.js';
-import { PEOPLE_MAPPINGS } from '../../src/migration/mappings/index.js';
-import { createPeopleRepository } from '../../src/repo/repository.js';
-import type { AddressRow, PersonRow } from '../../src/repo/tables.js';
-import { registerAdminDownloadRoutes } from '../../src/routes/admin-downloads.js';
-import { registerAdminProfileRoutes } from '../../src/routes/admin-profile.js';
-import { registerAdminUserRoutes } from '../../src/routes/admin-users.js';
-import { PEOPLE_SWEEP_QUEUE } from '../../src/tasks/port.js';
-import { accountFor, addressRow, personRow, seedPeople, type PeopleSeed } from '../helpers/fixtures.js';
-import { buildPeopleRouteApp, createIdentityDouble, peopleEnv, silentLogger, type PeopleRouteApp } from '../helpers/route-app.js';
+import { AdminDenial, CUSERS_ROUTE_REQUIRES, PROFILE_ROUTE_REQUIRES, requireCusersAccess, requireLoggedIn } from '../../src/routes/access.js';
+import { buildTestApp, testEnv, type TestApp } from '../helpers/app.js';
+import type { IdentityDouble } from '../helpers/identity-double.js';
+import {
+  ADMIN_S2,
+  DEFAULT_SITE,
+  EDITOR,
+  EDITOR_USER,
+  MEMBER_POOLED,
+  MODULE_008_ONLY,
+  MODULE_008_ONLY_PERSON,
+  MODULE_USER_A,
+  MODULE_USER_A_PERSON,
+  POOLED_MEMBER_PERSON,
+  S2_USER,
+  SITE_ADMIN_A,
+  SITE_ADMIN_A_PERSON,
+  SYSTEM_USER_A,
+  SYSTEM_USER_A_PERSON,
+  accountFor,
+  personRow,
+  type TestActor,
+} from '../helpers/fixtures.js';
 
-const SERVICE = 'people';
+type Headers = Record<string, string>;
+type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+
 const SITE_A = TENANT_A.siteId;
 const SITE_B = TENANT_B.siteId;
 const ON_SITE_A = `siteid=${SITE_A}`;
-const USERS_MODULE = moduleRole('00000000000000000000000000000000008');
-const SITE_MANAGER_MODULE = moduleRole('00000000000000000000000000000000000');
+const SWEEP_QUEUE = 'people-outbox-sweep';
+const FORM: Headers = Object.freeze({ 'content-type': 'application/x-www-form-urlencoded' });
+const CSRF_FIELDS = 'csrf_token=TOKEN&csrf_token_expires=260630130000000';
+const ADVANCED_SEARCH_FORM =
+  'param=1&paramField1=tusers.lname%5Evarchar&paramRelationship1=and&paramCriteria1=Target&paramCondition1=Contains';
+/** A user id no seeded person holds. */
+const STRANGER_ID = cfUuid();
 
-// Subject names of ROLE_SET, written out so every expectation below is literal.
-const SYNTHETIC = [
-  'timesheets.employee',
-  'timesheets.primary-approver',
-  'timesheets.secondary-approver',
-  'finance.preparer',
-  'finance.approver',
-  'esignature.signer',
-  'esignature.auditor',
-  'reporting.exporter',
-  'surveys.manager',
-  'communications.sender',
-] as const;
+const CUSERS = [Roles.s2, Roles.siteAdmin, moduleRole('00000000000000000000000000000000008')];
+const PROFILE = [Roles.systemUser, Roles.member, Roles.s2, Roles.siteAdmin];
+const MIGRATION = [Roles.platformMigration];
+const QUEUE_CONTROL = [Roles.platformMigration, Roles.platformOperator];
 
-const WORKLOADS = [
-  'service:identity',
-  'service:people',
-  'service:programs-sites',
-  'service:strategies-content',
-  'service:communications',
-  'service:reporting',
-  'service:surveys',
-  'service:timesheets',
-  'service:finance',
-  'service:e-signature',
-  'service:stub',
-  'service:gateway',
-  'service:web',
-  'service:migration',
-  'service:operator',
-  'service:pubsub-invoker',
-  'service:tasks-invoker',
-] as const;
-
-/** System users of tenant-a holding a module grant: both grants the cUsers gate takes in place of admin, or the Users grant alone. */
-const MODULE_SUBJECTS: readonly RoleSubject[] = Object.freeze([
-  Object.freeze({ name: 'users-module', kind: 'user', roles: Object.freeze([Roles.systemUser, USERS_MODULE, SITE_MANAGER_MODULE]) }),
-  Object.freeze({ name: 'users-module-only', kind: 'user', roles: Object.freeze([Roles.systemUser, USERS_MODULE]) }),
-] satisfies RoleSubject[]);
-
-const SUBJECTS: readonly RoleSubject[] = [...ROLE_SET, ...MODULE_SUBJECTS];
-
-const USERS: readonly string[] = [
-  'member',
-  'system-user',
-  'editor',
-  'site-admin',
-  's2',
-  ...SYNTHETIC,
-  'users-module',
-  'users-module-only',
-  'other-tenant',
+/** Every route people registers, as collectRouteMatrix reports it. */
+const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
+  { method: 'DELETE', url: '/_api/ajax/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/_api/ajax/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/_api/ajax/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'PUT', url: '/_api/ajax/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'DELETE', url: '/_api/ajax/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/_api/ajax/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/_api/ajax/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'PUT', url: '/_api/ajax/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'DELETE', url: '/_api/json/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/_api/json/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/_api/json/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'PUT', url: '/_api/json/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'DELETE', url: '/_api/json/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/_api/json/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/_api/json/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'PUT', url: '/_api/json/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'DELETE', url: '/_api/rest/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/_api/rest/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/_api/rest/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'PUT', url: '/_api/rest/v1', transport: 'service', public: true, siteCheck: false },
+  { method: 'DELETE', url: '/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'PUT', url: '/_api/rest/v1/*', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/healthz', transport: 'service', public: true, siteCheck: true },
+  { method: 'POST', url: '/internal/v1/events/people.identity.group.changed.v1', transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE], siteCheck: true },
+  { method: 'POST', url: '/internal/v1/events/people.programs-sites.site.changed.v1', transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE], siteCheck: true },
+  { method: 'POST', url: '/internal/v1/migration/apply', transport: 'service', requires: MIGRATION, siteCheck: true },
+  { method: 'GET', url: '/internal/v1/migration/changes', transport: 'service', requires: MIGRATION, siteCheck: true },
+  { method: 'GET', url: '/internal/v1/migration/export', transport: 'service', requires: MIGRATION, siteCheck: true },
+  { method: 'POST', url: '/internal/v1/migration/gate', transport: 'service', requires: MIGRATION, siteCheck: true },
+  { method: 'GET', url: '/internal/v1/migration/position', transport: 'service', requires: MIGRATION, siteCheck: true },
+  { method: 'GET', url: '/internal/v1/migration/watermark', transport: 'service', requires: MIGRATION, siteCheck: true },
+  { method: 'POST', url: '/internal/v1/migration/watermark', transport: 'service', requires: MIGRATION, siteCheck: true },
+  { method: 'POST', url: '/internal/v1/outbox/sweep', transport: 'cloud-tasks', requires: [TASKS_INVOKER_ROLE], siteCheck: true },
+  { method: 'POST', url: '/internal/v1/task-queues/:queue/ensure', transport: 'service', requires: QUEUE_CONTROL, siteCheck: true },
+  { method: 'POST', url: '/internal/v1/task-queues/:queue/pause', transport: 'service', requires: QUEUE_CONTROL, siteCheck: true },
+  { method: 'POST', url: '/internal/v1/task-queues/:queue/resume', transport: 'service', requires: QUEUE_CONTROL, siteCheck: true },
+  { method: 'GET', url: '/internal/v1/users/current', transport: 'service', requires: [serviceRole('identity')], siteCheck: true },
+  { method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive', transport: 'service', public: true, siteCheck: false },
+  { method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive', transport: 'service', public: true, siteCheck: false },
+  { method: 'GET', url: '/v1/profile', transport: 'service', requires: PROFILE, siteCheck: true },
+  { method: 'POST', url: '/v1/profile::update', transport: 'service', requires: PROFILE, siteCheck: false },
+  { method: 'GET', url: '/v1/users', transport: 'service', requires: CUSERS, siteCheck: false },
+  { method: 'POST', url: '/v1/users::update', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'GET', url: '/v1/users/address', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'POST', url: '/v1/users/addresses::update', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'GET', url: '/v1/users/advanced-search', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'POST', url: '/v1/users/advanced-search', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'GET', url: '/v1/users/advanced-search.csv', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'GET', url: '/v1/users/download', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'GET', url: '/v1/users/edit', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'GET', url: '/v1/users/groups', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'GET', url: '/v1/users/route', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'GET', url: '/v1/users/search', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'GET', url: '/v2/users', transport: 'service', requires: CUSERS, siteCheck: false },
+  { method: 'GET', url: '/v2/users/advanced-search', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'POST', url: '/v2/users/advanced-search', transport: 'service', requires: CUSERS, siteCheck: true },
+  { method: 'GET', url: '/v2/users/search', transport: 'service', requires: CUSERS, siteCheck: true },
 ];
 
-const EVERYONE: readonly string[] = ['anonymous', ...USERS, ...WORKLOADS];
+/**
+ * `siteCheck: false` routes that still hold a supplied `siteid` to the token's site, in the handler before any effect: the
+ * users lists, whose `siteid=all` only S2 may send.
+ */
+const HANDLER_SITE_BOUND: ReadonlySet<string> = new Set(['GET /v1/users', 'GET /v2/users']);
 
-const MINIMUM_SUBJECTS = ['anonymous', 'member', 'system-user', 'editor', 'site-admin', 's2', 'other-tenant'] as const;
-
-/** Without a user token a user-role route answers 401, whatever workload calls it. */
-const NO_USER: readonly string[] = ['anonymous', ...WORKLOADS];
-
-/** Subjects presenting no invocation credential on the service transport. */
-const NO_INVOCATION: readonly string[] = ['anonymous', 'service:pubsub-invoker', 'service:tasks-invoker'];
-
-/** The cUsers gate's admin or both-module callers, on their own site. */
-const CUSERS_ADMITTED: readonly string[] = ['site-admin', 's2', 'users-module'];
-
-/** EVERYONE without `excluded`. */
-function everyoneBut(...excluded: string[]): string[] {
-  return EVERYONE.filter((name) => !excluded.includes(name));
+function tenantOfSite(siteId: string): string {
+  if (siteId === DEFAULT_SITE.siteId) return DEFAULT_SITE.tenantId;
+  const fixture = fixtureForSite(siteId);
+  if (fixture === undefined) throw new TypeError(`No tenant fixture for site ${siteId}`);
+  return fixture.tenantId;
 }
 
-interface Declared {
-  transport: Transport;
-  requires?: readonly string[];
-  public?: true;
-  /** `false` where the handler runs the site check itself. */
-  siteCheck?: false;
-}
-
-/** One request; each subject's credentials are added when it is sent. */
-interface ProbeRequest {
-  method: 'GET' | 'POST';
-  url: string;
-  form?: Readonly<Record<string, string>>;
-  json?: unknown;
-}
-
-interface Expectation {
-  declared: Declared;
-  /** The tenant-a request `send` makes, where it is one fixed request. */
-  request?: ProbeRequest;
-  send: (subject: RoleSubject) => Promise<InjectResponse>;
-  /** Subjects admitted with a 2xx answer; every other subject is refused. */
-  allow: readonly string[];
-  /** Refused subjects answered 401; the rest are answered 403. */
-  deny401: readonly string[];
-}
-
-interface Effects {
-  transactions: number;
-  identityCalls: number;
-  serviceCalls: number;
-  published: number;
-}
-
-const NO_EFFECTS: Effects = Object.freeze({ transactions: 0, identityCalls: 0, serviceCalls: 0, published: 0 });
-
-interface ErrorBody {
-  code: string;
-  message: string;
-}
-
-function errorBody({ code, message }: ErrorBody): ErrorBody {
-  return { code, message };
-}
-
-/** Error bodies a refusal may carry: the legacy JSON API rows of the auth denials. */
-const DENIAL_ERRORS: Readonly<Record<401 | 403, readonly ErrorBody[]>> = {
-  401: [LEGACY_ERROR_MAP.authorization, LEGACY_ERROR_MAP.invalidAccessToken, LEGACY_ERROR_MAP.accessTokenExpired].map(errorBody),
-  403: [LEGACY_ERROR_MAP.authorization].map(errorBody),
+const DEFAULT_SITE_PAYLOAD = {
+  siteId: DEFAULT_SITE.siteId,
+  publicUserPoolId: DEFAULT_SITE.siteId,
+  privateUserPoolId: DEFAULT_SITE.siteId,
+  categoryPoolId: DEFAULT_SITE.siteId,
+  filePoolId: DEFAULT_SITE.siteId,
+  displayPoolId: DEFAULT_SITE.siteId,
+  contentPoolIds: [DEFAULT_SITE.siteId],
+  domains: ['localhost'],
 };
 
-/** Site whose user pool stores a user subject's person: tenant-a's public pool for the member, the token's site otherwise. */
-function personSiteOf(subject: RoleSubject): string {
-  return subject.name === Roles.member ? TENANT_UMBRELLA.siteId : subjectSiteFor(subject, SITE_A);
+/** `people.tenant_registry` rows of the fixture sites and the installed `default` site, as the site consumer stores them. */
+const REGISTRY_ROWS = [...registryPayloads(), DEFAULT_SITE_PAYLOAD].map((site) => {
+  const pool = (id: string | null | undefined): string | null => (id === undefined || id === null ? null : tenantOfSite(id));
+  const contentPoolIds = typeof site.contentPoolIds === 'string' ? [site.contentPoolIds] : (site.contentPoolIds ?? []);
+  return {
+    site_id: site.siteId,
+    tenant_id: tenantOfSite(site.siteId),
+    public_user_pool_id: site.publicUserPoolId,
+    private_user_pool_id: site.privateUserPoolId,
+    category_pool_id: site.categoryPoolId,
+    file_pool_id: site.filePoolId,
+    display_pool_id: site.displayPoolId,
+    content_pool_ids: contentPoolIds,
+    public_user_pool_tenant: pool(site.publicUserPoolId),
+    private_user_pool_tenant: pool(site.privateUserPoolId),
+    category_pool_tenant: pool(site.categoryPoolId),
+    file_pool_tenant: pool(site.filePoolId),
+    display_pool_tenant: pool(site.displayPoolId),
+    content_pool_tenants: contentPoolIds.map((id) => tenantOfSite(id)),
+    domains: site.domains,
+    aggregate_version: '1',
+    updated_at: new Date('2026-06-30T12:00:00'),
+  };
+});
+
+/** Answers the registry reads people makes: by site, by user-pool tenant, by tenant, and the pool-tenant projections. */
+function registryAnswer(text: string, values: readonly unknown[]): Record<string, unknown>[] {
+  const [first] = values;
+  let rows = REGISTRY_ROWS;
+  if (/WHERE lower\(site_id\) = lower\(\$1\)/.test(text)) {
+    rows = rows.filter((row) => row.site_id.toLowerCase() === String(first).toLowerCase());
+  } else if (/WHERE public_user_pool_tenant = \$1 OR private_user_pool_tenant = \$1/.test(text)) {
+    rows = rows.filter((row) => row.public_user_pool_tenant === first || row.private_user_pool_tenant === first);
+  } else if (/WHERE tenant_id = \$1/.test(text)) {
+    rows = rows.filter((row) => row.tenant_id === first);
+  }
+  const pooled = /SELECT (\w+) AS pool_tenant/.exec(text)?.[1];
+  return rows.map((row) => (pooled === undefined ? { ...row } : { ...row, pool_tenant: (row as Record<string, unknown>)[pooled] }));
 }
 
-/** The person each user subject's token names. */
-const PERSONS: ReadonlyMap<string, PersonRow> = new Map(
-  SUBJECTS.filter((subject) => subject.kind === 'user').map((subject) => {
-    const site = personSiteOf(subject);
-    const local = subject.name.replace(/[^a-z0-9]+/g, '_');
-    return [subject.name, Object.freeze(personRow({ siteid: site, fname: 'Probe', lname: subject.name, email: `${local}@${site}.opt2.test` }))];
-  }),
-);
+const ROSTER_OPERATION_COLUMNS = [
+  'tenant_id',
+  'operation_id',
+  'kind',
+  'user_id',
+  'payload',
+  'before_image',
+  'identity_xid',
+  'state',
+  'error',
+  'started_at',
+  'updated_at',
+  'identity_unreachable_since',
+  'claimed_by',
+] as const;
 
-/** A tenant-a system user no subject is, with a primary address, for the tenant-boundary reads. */
-const TARGET: PersonRow = Object.freeze(personRow({ siteid: SITE_A, fname: 'Tara', lname: 'Target', email: 'target@tenant-a.opt2.test' }));
-const TARGET_ADDRESS: AddressRow = Object.freeze(addressRow({ tenant_id: TARGET.tenant_id, userid: TARGET.userid, siteid: SITE_A, isprimary: 1 }));
+/** Each user subject's own Masa `UserID`, so identity's contract accepts the account reads its requests cause. */
+const SUBJECT_SUBS: ReadonlyMap<string, string> = new Map(ROLE_SET.filter((subject) => subject.kind === 'user').map((subject) => [subject.name, cfUuid()]));
 
-/** The persons and addresses keyed by the tenant that stores them. */
-function seedOf(persons: readonly PersonRow[], addresses: readonly AddressRow[]): PeopleSeed {
-  const tenants = [...new Set(persons.map((person) => person.tenant_id))];
-  return Object.fromEntries(
-    tenants.map((tenantId) => [
-      tenantId,
-      { persons: persons.filter((row) => row.tenant_id === tenantId), addresses: addresses.filter((row) => row.tenant_id === tenantId) },
-    ]),
-  );
+/** A person and account per user subject (the member pooled in umbrella), plus the fixture actors. */
+const PERSONS = [
+  ...[...SUBJECT_SUBS].map(([name, userid]) =>
+    personRow({ userid, siteid: name === Roles.member ? 'umbrella' : subjectSiteFor(subjectNamed(name), SITE_A) }),
+  ),
+  S2_USER,
+  EDITOR_USER,
+  SITE_ADMIN_A_PERSON,
+  MODULE_USER_A_PERSON,
+  MODULE_008_ONLY_PERSON,
+  SYSTEM_USER_A_PERSON,
+  POOLED_MEMBER_PERSON,
+];
+
+/** Answers person reads with the seeded person whose id and tenant the statement binds. */
+function personAnswer(_text: string, values: readonly unknown[]): Record<string, unknown>[] {
+  const bound = JSON.stringify(values).toUpperCase();
+  return PERSONS.filter((person) => bound.includes(person.userid.toUpperCase()) && values.includes(person.tenant_id)).map((person) => ({ ...person }));
+}
+
+let t: TestApp;
+let identity: IdentityDouble;
+
+beforeAll(async () => {
+  t = await buildTestApp({ env: testEnv({ LOG_LEVEL: 'error' }) });
+  identity = t.identity;
+  t.db.respond(/FROM "?people"?\."?tenant_registry"?\b/, registryAnswer);
+  t.db.respond(/FROM "?people"?\."?person"? /, personAnswer);
+  // The recording database answers other inserts with no row; a roster operation needs its stored row back to proceed.
+  t.db.respond(/^INSERT INTO "people"\."roster_operation"/, (_text, values) => [
+    Object.fromEntries(ROSTER_OPERATION_COLUMNS.map((column, index) => [column, values[index]])),
+  ]);
+  identity.seedAccounts(...PERSONS.map((person) => accountFor(person, person.siteid === 'umbrella' ? { isPublic: 1 } : {})));
+});
+
+afterAll(async () => {
+  await t.close();
+});
+
+/** Credentials a request presents: headers, and the push key the emulator carries in the query. */
+interface Credential {
+  headers: Headers;
+  query: string;
+}
+
+const NO_CREDENTIAL: Credential = Object.freeze({ headers: {}, query: '' });
+
+const credentialCache = new Map<string, { mintedAt: number; credential: Promise<Credential> }>();
+
+// User tokens live 300 s; re-minting after 120 s keeps a slow run from presenting an expired one.
+const CREDENTIAL_REUSE_MS = 120_000;
+
+function credentialOf(subject: RoleSubject): Promise<Credential> {
+  const hit = credentialCache.get(subject.name);
+  if (hit !== undefined && Date.now() - hit.mintedAt < CREDENTIAL_REUSE_MS) return hit.credential;
+  const sub = SUBJECT_SUBS.get(subject.name);
+  const credential = authHeadersFor(subject, { site: SITE_A, audience: SERVICE_NAME, ...(sub === undefined ? {} : { sub }) }).then((headers) => ({
+    headers,
+    query: new URLSearchParams(subjectQueryFor(subject)).toString(),
+  }));
+  credentialCache.set(subject.name, { mintedAt: Date.now(), credential });
+  return credential;
 }
 
 function subjectNamed(name: string): RoleSubject {
-  const subject = SUBJECTS.find((candidate) => candidate.name === name);
-  if (subject === undefined) throw new TypeError(`No subject ${name}`);
-  return subject;
+  const found = ROLE_SET.find((subject) => subject.name === name);
+  if (found === undefined) throw new TypeError(`ROLE_SET has no subject named ${name}`);
+  return found;
 }
 
-/** `subject`'s credentials, its user token naming its own person. */
-function credentialsOf(subject: RoleSubject): Promise<Record<string, string>> {
-  return authHeadersFor(subject, { audience: SERVICE, site: SITE_A, sub: PERSONS.get(subject.name)?.userid });
+/** A people actor's user token beside the gateway's invocation credential; `tid` replaces the tenant its site gives. */
+async function actorCredential(actor: TestActor, overrides: { tid?: string } = {}): Promise<Credential> {
+  const [userToken, gatewayToken] = await Promise.all([
+    mintUserToken({ sub: actor.sub, site: actor.site, roles: actor.roles, s2: actor.s2, ...(overrides.tid === undefined ? {} : { tid: overrides.tid }) }),
+    mintServiceToken({ caller: 'gateway', audience: SERVICE_NAME }),
+  ]);
+  return { headers: { authorization: `Bearer ${userToken}`, [INVOCATION_HEADER]: `Bearer ${gatewayToken}` }, query: '' };
 }
 
-function asCredentials(name: string): Promise<Record<string, string>> {
-  return credentialsOf(subjectNamed(name));
+interface Probe {
+  method: HttpMethod;
+  url: string;
+  payload?: string | Record<string, unknown>;
+  headers?: Headers;
+  /** The request names tenant-a in `siteid`, so a token of another site is held to the site check. */
+  site?: true;
 }
 
-/** The gateway's invocation credential addressed to `audience`. */
-async function gatewayInvocation(audience = SERVICE): Promise<Record<string, string>> {
-  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience })}` };
+/** A request's response and every effect it had: statements, writes, identity calls, publishes and created tasks. */
+interface ProbeResult {
+  res: InjectResponse;
+  statements: number;
+  writes: number;
+  identityCalls: string[];
+  published: number;
+  tasks: number;
 }
 
-/** A tenant-a site-admin user token in `Authorization`, with `claims` overriding its issuer, audience or expiry. */
-async function siteAdminToken(claims: { iss?: string; aud?: string; exp?: number } = {}): Promise<Record<string, string>> {
-  const token = await mintUserToken({ sub: PERSONS.get('site-admin')?.userid ?? 'site-admin', site: SITE_A, roles: [Roles.systemUser, Roles.siteAdmin], ...claims });
-  return { authorization: `Bearer ${token}` };
+function withQuery(url: string, query: string): string {
+  return query === '' ? url : `${url}${url.includes('?') ? '&' : '?'}${query}`;
 }
 
-let t: PeopleRouteApp;
-
-/** Sends `request` with `credentials` and the `query` additions. */
-function inject(request: ProbeRequest, credentials: Record<string, string>, query: Record<string, string> = {}): Promise<InjectResponse> {
-  const extra = new URLSearchParams(query).toString();
-  const url = extra === '' ? request.url : `${request.url}${request.url.includes('?') ? '&' : '?'}${extra}`;
-  if (request.form !== undefined) {
-    const headers = { ...credentials, 'content-type': 'application/x-www-form-urlencoded' };
-    return t.app.inject({ method: request.method, url, headers, payload: new URLSearchParams(request.form).toString() });
-  }
-  if (request.json !== undefined) return t.app.inject({ method: request.method, url, headers: credentials, payload: request.json as object });
-  return t.app.inject({ method: request.method, url, headers: credentials });
+function publishedCount(): number {
+  return t.publisher.published.length + t.publisher.raw.length;
 }
 
-/** Sends a fresh `request()` with each subject's credentials and query. */
-function probe(request: ProbeRequest | (() => ProbeRequest)): Expectation['send'] {
-  return async (subject) => inject(typeof request === 'function' ? request() : request, await credentialsOf(subject), subjectQueryFor(subject));
-}
-
-function mark(): Effects {
+/** Sends `request` with `credential` and records its effects; the recording database is emptied first. */
+async function probe(request: Probe, credential: Credential = NO_CREDENTIAL): Promise<ProbeResult> {
+  t.db.clear();
+  const identityBefore = identity.requests.length;
+  const publishedBefore = publishedCount();
+  const tasksBefore = t.taskPort.tasks.length;
+  const { method, url, payload, headers } = request;
+  const res = await t.app.inject({
+    method,
+    url: withQuery(url, credential.query),
+    headers: { ...headers, ...credential.headers },
+    ...(payload === undefined ? {} : { payload }),
+  });
   return {
-    transactions: t.db.transactions,
-    identityCalls: t.identity.calls.length,
-    serviceCalls: t.serviceCalls.length,
-    published: t.publisher.published.length + t.publisher.raw.length,
+    res,
+    statements: t.db.statements().length,
+    writes: t.db.writes().length,
+    identityCalls: identity.requests.slice(identityBefore).map((call) => `${call.method} ${call.path}`),
+    published: publishedCount() - publishedBefore,
+    tasks: t.taskPort.tasks.length - tasksBefore,
   };
 }
 
-function effectsSince(from: Effects): Effects {
-  const now = mark();
-  return {
-    transactions: now.transactions - from.transactions,
-    identityCalls: now.identityCalls - from.identityCalls,
-    serviceCalls: now.serviceCalls - from.serviceCalls,
-    published: now.published - from.published,
-  };
+interface ErrorEnvelope {
+  apiversion?: unknown;
+  method?: unknown;
+  error?: { code?: unknown; message?: unknown };
 }
 
-/** The `error` of a legacy envelope response, or undefined when the body is not one. */
-function errorOf(res: InjectResponse): ErrorBody | undefined {
-  let body: unknown;
+function errorEnvelope(res: InjectResponse): ErrorEnvelope | undefined {
   try {
-    body = JSON.parse(res.body) as unknown;
+    const body: unknown = JSON.parse(res.body);
+    return typeof body === 'object' && body !== null ? (body as ErrorEnvelope) : undefined;
   } catch {
     return undefined;
   }
-  if (typeof body !== 'object' || body === null) return undefined;
-  const { error } = body as { error?: unknown };
-  if (typeof error !== 'object' || error === null) return undefined;
-  const { code, message } = error as { code?: unknown; message?: unknown };
-  return typeof code === 'string' && typeof message === 'string' ? { code, message } : undefined;
 }
 
-/** Status, error and effects of one request. */
-async function outcomeOf(send: () => Promise<InjectResponse>): Promise<{ status: number; error: ErrorBody | undefined; effects: Effects }> {
-  const before = mark();
-  const res = await send();
-  return { status: res.statusCode, error: errorOf(res), effects: effectsSince(before) };
+const AUTH_DENIAL_ROWS = [LEGACY_ERROR_MAP.authorization, LEGACY_ERROR_MAP.invalidAccessToken, LEGACY_ERROR_MAP.accessTokenExpired];
+/** The `error` member of a JSON API authorization refusal. */
+const AUTHORIZATION_ERROR = Object.freeze({ message: LEGACY_ERROR_MAP.authorization.message, code: LEGACY_ERROR_MAP.authorization.code });
+
+/** Whether the request had no effect at all: no statement, identity call, publish or task. */
+function effectFree(result: ProbeResult): boolean {
+  return result.statements === 0 && result.writes === 0 && result.identityCalls.length === 0 && result.published === 0 && result.tasks === 0;
 }
 
-/** Whether `outcome` is a refusal at `status` with a legacy auth error that reached no data, identity or service. */
-function isCleanRefusal(outcome: { status: number; error: ErrorBody | undefined; effects: Effects }, status: 401 | 403): boolean {
-  return (
-    outcome.status === status &&
-    outcome.error !== undefined &&
-    DENIAL_ERRORS[status].some((allowed) => isDeepStrictEqual(allowed, outcome.error)) &&
-    isDeepStrictEqual(outcome.effects, NO_EFFECTS)
-  );
+/** Whether nothing was written, sent to identity, published or queued; a registry read may have happened. */
+function writeFree(result: ProbeResult): boolean {
+  return result.writes === 0 && result.identityCalls.length === 0 && result.published === 0 && result.tasks === 0;
 }
 
-/** Every way one probe sent as one subject departs from its expectation. */
-async function mismatchesOf(key: string, entry: Expectation, subject: RoleSubject): Promise<string[]> {
-  const before = mark();
-  const res = await entry.send(subject);
-  const at = `${key} as ${subject.name}`;
-  const admitted = res.statusCode !== 401 && res.statusCode !== 403;
-  const shouldAdmit = entry.allow.includes(subject.name);
-  if (admitted !== shouldAdmit) {
-    return [`${at}: expected ${shouldAdmit ? 'admission' : 'denial'}, got ${res.statusCode} ${res.body.slice(0, 200)}`];
-  }
-  if (admitted) return res.statusCode >= 200 && res.statusCode < 300 ? [] : [`${at}: admitted request answered ${res.statusCode} ${res.body.slice(0, 200)}`];
-
-  const problems: string[] = [];
-  const status = entry.deny401.includes(subject.name) ? 401 : 403;
-  if (res.statusCode !== status) problems.push(`${at}: expected ${status}, got ${res.statusCode}`);
-  const error = errorOf(res);
-  if (error === undefined || !DENIAL_ERRORS[res.statusCode as 401 | 403].some((allowed) => isDeepStrictEqual(allowed, error))) {
-    problems.push(`${at}: denial is not a legacy auth error: ${res.body.slice(0, 200)}`);
-  }
-  const effects = effectsSince(before);
-  if (!isDeepStrictEqual(effects, NO_EFFECTS)) problems.push(`${at}: denial left effects ${JSON.stringify(effects)}`);
-  return problems;
+/** A 401 or 403 in the legacy envelope with an auth denial's code and message, answered before any effect. */
+function isHookDenial(result: ProbeResult): boolean {
+  const { statusCode } = result.res;
+  if (statusCode !== 401 && statusCode !== 403) return false;
+  const body = errorEnvelope(result.res);
+  const matchesRow = AUTH_DENIAL_ROWS.some((row) => body?.error?.code === row.code && body.error.message === row.message);
+  return body?.apiversion === 'v1' && matchesRow && effectFree(result);
 }
 
-const CUSERS: Declared = { transport: 'service', requires: ['s2', 'site-admin', 'm:008'] };
-const PROFILE: Declared = { transport: 'service', requires: ['system-user', 'member', 's2', 'site-admin'] };
-const MIGRATION: Declared = { transport: 'service', requires: ['platform.migration'] };
-const QUEUE_CONTROL: Declared = { transport: 'service', requires: ['platform.migration', 'platform.operator'] };
+type DenialRequest = Parameters<typeof renderAuthDenial>[1];
 
-/** A cUsers read: admin or both module grants on the token's site. */
-function cusersRoute(request: ProbeRequest, declared: Declared = CUSERS): Expectation {
-  return { declared, request, send: probe(request), allow: CUSERS_ADMITTED, deny401: NO_USER };
+/** The response the platform renders `denial` with for `url`; renderAuthDenial reads only the request's query. */
+function denialResponse(denial: AuthDenial, url: string): DenialResponse {
+  const query = Object.fromEntries(new URL(url, 'http://people.test').searchParams);
+  return renderAuthDenial(denial, { query } as unknown as DenialRequest);
 }
 
-function migrationRoute(request: ProbeRequest | (() => ProbeRequest)): Expectation {
-  return { declared: MIGRATION, send: probe(request), allow: ['service:migration'], deny401: NO_INVOCATION };
+/** Whether `result` is exactly the platform's rendering of `denial`, with no effect. */
+function isDenialOf(result: ProbeResult, denial: AuthDenial, url: string): boolean {
+  const expected = denialResponse(denial, url);
+  return result.res.statusCode === expected.status && result.res.body === expected.body && effectFree(result);
 }
 
-function queueControlRoute(op: string): Expectation {
-  const request: ProbeRequest = { method: 'POST', url: `${QUEUE_CONTROL_PREFIX}/${PEOPLE_SWEEP_QUEUE}/${op}`, json: {} };
-  return { declared: QUEUE_CONTROL, send: probe(request), allow: ['service:migration', 'service:operator'], deny401: NO_INVOCATION };
+/** A compact description of a result for assertion messages. */
+function describeResult(result: ProbeResult): string {
+  const { res, statements, writes, identityCalls, published, tasks } = result;
+  return JSON.stringify({ status: res.statusCode, statements, writes, identityCalls, published, tasks, body: res.body.slice(0, 300) });
 }
 
-/** tenant-a's current registry state, which the seeded registry already holds. */
-function siteChangedEnvelope(): EventEnvelope {
-  const site = registryPayloads().find((payload) => payload.siteId === SITE_A);
-  if (site === undefined) throw new Error('no tenant-a registry fixture');
-  return testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId: TENANT_A.tenantId, aggregateId: site.siteId, payload: site });
-}
-
-/** A new private-pool group of tenant-a at version 1. */
-function groupChangedEnvelope(): EventEnvelope {
-  const groupId = cfUuid();
-  const payload: GroupChangedPayload = {
-    groupId,
-    siteId: SITE_A,
-    groupName: 'Probe Group',
-    type: 1,
-    isPublic: 0,
-    poolTenantId: TENANT_A.tenantId,
-    deleted: false,
-  };
-  return testEnvelope({ topic: GROUP_CHANGED_TOPIC, tenantId: TENANT_A.tenantId, aggregateId: groupId, aggregateType: 'group', payload });
-}
-
-/** The push of `envelope` to `subscription` without the push key. */
-function pushRequest(subscription: string, envelope: EventEnvelope): ProbeRequest {
-  return {
-    method: 'POST',
-    url: pushPath(subscription),
-    json: buildPushBody({ data: encodeEnvelope(envelope), messageId: randomUUID(), subscription }),
-  };
-}
-
-function pushRoute(subscription: string, envelope: () => EventEnvelope): Expectation {
-  return {
-    declared: { transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE] },
-    send: async (subject) =>
-      subject.name === PUBSUB_INVOKER_ROLE
-        ? pushTo(t.app, subscription, envelope())
-        : inject(pushRequest(subscription, envelope()), await credentialsOf(subject)),
-    allow: [PUBSUB_INVOKER_ROLE],
-    deny401: everyoneBut(PUBSUB_INVOKER_ROLE),
-  };
-}
-
-/** A tenant-less sweep delivery outside the slot chain, which the chain still answers. */
-const SWEEP: ProbeRequest = {
-  method: 'POST',
-  url: OUTBOX_SWEEP_PATH,
-  json: { queue: PEOPLE_SWEEP_QUEUE, name: `${PEOPLE_SWEEP_QUEUE}-authz-probe`, tenantId: null, payload: null },
-};
-
-/** A profile save of the session user with a CSRF pair; the posted `siteid` is legacy's pool site field, never a scope. */
-const PROFILE_FORM: Readonly<Record<string, string>> = Object.freeze({
-  csrf_token: 'TOKEN',
-  csrf_token_expires: '260630130000000',
-  siteid: SITE_A,
-  fname: 'Probe',
-  lname: 'Saved',
-  email: 'probe.saved@tenant-a.opt2.test',
-  jobtitle: 'Analyst',
-});
-
-/** An empty batch of the first people mapping without a split or program fold. */
-function applyRequest(): ProbeRequest {
-  const mapping = PEOPLE_MAPPINGS.find((candidate) => candidate.split === undefined && candidate.fold === undefined);
-  if (mapping === undefined) throw new Error('no unsplit people mapping');
-  return {
-    method: 'POST',
-    url: '/internal/v1/migration/apply',
-    json: { batchId: randomUUID(), origin: 'backfill', legacyTable: mapping.legacyTable, tenantId: TENANT_A.tenantId, columns: mapping.legacyColumns, rows: [] },
-  };
-}
-
-const PROFILE_READ: ProbeRequest = { method: 'GET', url: `/v1/profile?${ON_SITE_A}` };
-
-const ADVANCED_SEARCH_FORM: Readonly<Record<string, string>> = Object.freeze({
-  param: '1',
-  paramField1: 'tusers.lname^varchar',
-  paramRelationship1: 'and',
-  paramCriteria1: 'Target',
-  paramCondition1: 'Contains',
-});
-
-/** Identity's `findCurrentUser` read of tenant-a, with the JSON API's link bases. */
-const CURRENT_USER: ProbeRequest = {
-  method: 'GET',
-  url: `/internal/v1/users/current?${ON_SITE_A}&endpoint=${encodeURIComponent(`http://localhost:8080/index.cfm/_api/json/v1/${SITE_A}`)}&adminpath=${encodeURIComponent('http://localhost:8080/admin')}`,
-};
-
-/** Every registered route, keyed `<METHOD> <fastify url>`, with its declaration, tenant-a probe and admitted subjects. */
-const EXPECTED: Readonly<Record<string, Expectation>> = {
-  'GET /healthz': {
-    declared: { transport: 'service', public: true },
-    send: probe({ method: 'GET', url: '/healthz' }),
-    // A tasks-invoker token in Authorization is verified, and refused, as a user token.
-    allow: everyoneBut(TASKS_INVOKER_ROLE),
-    deny401: [TASKS_INVOKER_ROLE],
-  },
-  'POST /internal/v1/events/people.identity.group.changed.v1': pushRoute(GROUP_NAME_SUBSCRIPTION, groupChangedEnvelope),
-  'POST /internal/v1/events/people.programs-sites.site.changed.v1': pushRoute(SITE_CHANGED_SUBSCRIPTION, siteChangedEnvelope),
-  'POST /internal/v1/migration/apply': migrationRoute(applyRequest),
-  'GET /internal/v1/migration/changes': migrationRoute({ method: 'GET', url: `/internal/v1/migration/changes?tenantId=${TENANT_A.tenantId}&limit=1` }),
-  'GET /internal/v1/migration/export': migrationRoute({
-    method: 'GET',
-    url: `/internal/v1/migration/export?unit=people.person&tenantId=${TENANT_A.tenantId}&limit=1`,
-  }),
-  'POST /internal/v1/migration/gate': migrationRoute({ method: 'POST', url: '/internal/v1/migration/gate', json: { op: 'status' } }),
-  'GET /internal/v1/migration/position': migrationRoute({ method: 'GET', url: '/internal/v1/migration/position' }),
-  'GET /internal/v1/migration/watermark': migrationRoute({ method: 'GET', url: '/internal/v1/migration/watermark' }),
-  'POST /internal/v1/migration/watermark': migrationRoute({
-    method: 'POST',
-    url: '/internal/v1/migration/watermark',
-    json: { legacyTable: 'tusers', direction: 'forward', finishedAt: '2026-06-30T12:00:00.000' },
-  }),
-  'POST /internal/v1/outbox/sweep': {
-    declared: { transport: 'cloud-tasks', requires: [TASKS_INVOKER_ROLE] },
-    send: probe(SWEEP),
-    allow: [TASKS_INVOKER_ROLE],
-    deny401: everyoneBut(TASKS_INVOKER_ROLE),
-  },
-  'POST /internal/v1/task-queues/:queue/ensure': queueControlRoute('ensure'),
-  'POST /internal/v1/task-queues/:queue/pause': queueControlRoute('pause'),
-  'POST /internal/v1/task-queues/:queue/resume': queueControlRoute('resume'),
-  'GET /internal/v1/users/current': {
-    declared: { transport: 'service', requires: ['service:identity'] },
-    // Left out of the site-scoped probes: a user token reaches it only beside identity's credential, probed in the tenant boundary.
-    send: probe(CURRENT_USER),
-    allow: ['service:identity'],
-    deny401: NO_INVOCATION,
-  },
-  'GET /v1/profile': {
-    declared: PROFILE,
-    request: PROFILE_READ,
-    send: probe(PROFILE_READ),
-    // The tenant-b token is refused tenant-a's siteid.
-    allow: USERS.filter((name) => name !== 'other-tenant'),
-    deny401: NO_USER,
-  },
-  'POST /v1/profile::update': {
-    declared: { ...PROFILE, siteCheck: false },
-    send: probe({ method: 'POST', url: '/v1/profile:update', form: PROFILE_FORM }),
-    // Each user saves only its own person, so the posted siteid refuses no one.
-    allow: USERS,
-    deny401: NO_USER,
-  },
-  'GET /v1/users': cusersRoute({ method: 'GET', url: `/v1/users?${ON_SITE_A}&ispublic=0` }, { ...CUSERS, siteCheck: false }),
-  'GET /v1/users/address': cusersRoute({
-    method: 'GET',
-    url: `/v1/users/address?${ON_SITE_A}&userid=${TARGET.userid}&addressid=${TARGET_ADDRESS.addressid}`,
-  }),
-  'GET /v1/users/advanced-search': cusersRoute({ method: 'GET', url: `/v1/users/advanced-search?${ON_SITE_A}&ispublic=0` }),
-  'POST /v1/users/advanced-search': cusersRoute({ method: 'POST', url: `/v1/users/advanced-search?${ON_SITE_A}&ispublic=0`, form: ADVANCED_SEARCH_FORM }),
-  'GET /v1/users/advanced-search.csv': cusersRoute({ method: 'GET', url: `/v1/users/advanced-search.csv?${ON_SITE_A}&ispublic=0` }),
-  'GET /v1/users/download': cusersRoute({ method: 'GET', url: `/v1/users/download?${ON_SITE_A}&ispublic=0` }),
-  'GET /v1/users/edit': cusersRoute({ method: 'GET', url: `/v1/users/edit?${ON_SITE_A}&ispublic=0&userid=${TARGET.userid}` }),
-  'GET /v1/users/groups': cusersRoute({ method: 'GET', url: `/v1/users/groups?${ON_SITE_A}&ispublic=0` }),
-  'GET /v1/users/route': cusersRoute({ method: 'GET', url: `/v1/users/route?${ON_SITE_A}&ispublic=0` }),
-  'GET /v1/users/search': cusersRoute({ method: 'GET', url: `/v1/users/search?${ON_SITE_A}&ispublic=0&search=Target` }),
-  'GET /v2/users': cusersRoute({ method: 'GET', url: `/v2/users?${ON_SITE_A}&ispublic=0` }, { ...CUSERS, siteCheck: false }),
-  'GET /v2/users/advanced-search': cusersRoute({ method: 'GET', url: `/v2/users/advanced-search?${ON_SITE_A}&ispublic=0` }),
-  'POST /v2/users/advanced-search': cusersRoute({ method: 'POST', url: `/v2/users/advanced-search?${ON_SITE_A}&ispublic=0`, form: ADVANCED_SEARCH_FORM }),
-  'GET /v2/users/search': cusersRoute({ method: 'GET', url: `/v2/users/search?${ON_SITE_A}&ispublic=0&search=Target` }),
-};
-
-/** Whether `key` is a cUsers or profile route of the user transport, under `/v1` or `/v2`. */
-function isUserRoute(key: string): boolean {
-  return / \/v[12]\//.test(key);
-}
-
-/** `<METHOD> <url>` of a route. */
-function keyOf(route: Pick<RouteMatrixEntry, 'method' | 'url'>): string {
+function routeKey(route: Pick<RouteMatrixEntry, 'method' | 'url'>): string {
   return `${route.method} ${route.url}`;
 }
 
-/** A declaration in comparable form: `requires` sorted, defaults dropped; `withSiteCheck` false leaves the site check out. */
-function comparable(declared: Declared | RouteMatrixEntry, withSiteCheck = true): Record<string, unknown> {
-  return {
-    transport: declared.transport,
-    ...(declared.requires === undefined ? {} : { requires: [...declared.requires].sort() }),
-    ...(declared.public === true ? { public: true } : {}),
-    ...(withSiteCheck && declared.siteCheck === false ? { siteCheck: false } : {}),
-  };
+/** tenant-a's registry state, which the registry already holds. */
+function siteChangedEnvelope(): TenantlessEnvelope {
+  const site = registryPayloads().find((payload) => payload.siteId === SITE_A);
+  if (site === undefined) throw new Error('no tenant-a registry fixture');
+  return testEnvelope({ topic: 'programs-sites.site.changed.v1', tenantId: TENANT_A.tenantId, aggregateId: SITE_A, payload: site });
 }
 
-interface ContractOperation {
-  'x-opt2-transport'?: Transport;
-  'x-opt2-requires'?: string[];
-  'x-opt2-public'?: boolean;
-  'x-opt2-fastify-path'?: string;
+/** A new private-pool group of tenant-a at version 1. */
+function groupChangedEnvelope(): TenantlessEnvelope {
+  const groupId = cfUuid();
+  const payload = { groupId, siteId: SITE_A, groupName: 'Probe Group', type: 1, isPublic: 0, poolTenantId: TENANT_A.tenantId, deleted: false };
+  return testEnvelope({ topic: 'identity.group.changed.v1', tenantId: TENANT_A.tenantId, aggregateId: groupId, aggregateType: 'group', payload });
 }
 
-const HTTP_METHODS: ReadonlySet<string> = new Set(['get', 'post', 'put', 'delete', 'patch', 'options', 'head']);
-
-/** The contract's declaration of every operation, keyed by method and the Fastify path it is served under. */
-function contractDeclarations(): Map<string, Record<string, unknown>> {
-  const contract = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
-    paths: Record<string, Record<string, ContractOperation>>;
+/** The push delivery pushTo sends for `envelope`, without its push key, so each subject presents its own credential. */
+async function pushProbe(subscription: string, envelope: TenantlessEnvelope): Promise<Probe> {
+  let captured: Probe | undefined;
+  const recorder: PushTarget = {
+    inject: ((options: { url: string; payload: Record<string, unknown> }) => {
+      captured = { method: 'POST', url: options.url.split('?')[0] ?? options.url, payload: options.payload };
+      return Promise.resolve(undefined);
+    }) as unknown as PushTarget['inject'],
   };
-  const declarations = new Map<string, Record<string, unknown>>();
-  for (const [route, operations] of Object.entries(contract.paths)) {
-    for (const [method, operation] of Object.entries(operations)) {
-      if (!HTTP_METHODS.has(method)) continue;
-      const url = operation['x-opt2-fastify-path'] ?? route.replace(/\{([^}]+)\}/g, ':$1');
-      const declared: Declared = {
-        transport: operation['x-opt2-transport'] ?? 'service',
-        ...(operation['x-opt2-requires'] === undefined ? {} : { requires: operation['x-opt2-requires'] }),
-        ...(operation['x-opt2-public'] === true ? { public: true as const } : {}),
-      };
-      declarations.set(`${method.toUpperCase()} ${url}`, comparable(declared, false));
+  await pushTo(recorder, subscription, envelope);
+  if (captured === undefined) throw new Error(`pushTo sent no delivery to ${subscription}`);
+  return captured;
+}
+
+const SWEEP_PROBE: Probe = Object.freeze({
+  method: 'POST',
+  url: '/internal/v1/outbox/sweep',
+  payload: { queue: SWEEP_QUEUE, name: `${SWEEP_QUEUE}-authz-probe`, tenantId: null, payload: null },
+});
+
+const CURRENT_USER_URL =
+  `/internal/v1/users/current?${ON_SITE_A}` +
+  `&endpoint=${encodeURIComponent(`http://localhost:8080/index.cfm/_api/json/v1/${SITE_A}`)}` +
+  `&adminpath=${encodeURIComponent('http://localhost:8080/admin')}`;
+
+const PROFILE_READ: Probe = Object.freeze({ method: 'GET', url: `/v1/profile?${ON_SITE_A}`, site: true });
+
+const get = (url: string, site = true): Probe => ({ method: 'GET', url, ...(site ? { site: true } : {}) });
+const postForm = (url: string, payload: string, site = true): Probe => ({ method: 'POST', url, payload, headers: FORM, ...(site ? { site: true } : {}) });
+const control = (op: string): Probe => ({ method: 'POST', url: `/internal/v1/task-queues/${SWEEP_QUEUE}/${op}`, payload: {} });
+
+/** Requests an unknown API method or entity, which the JSON API answers 400 or 404 itself, never by an authorization check. */
+function jsonApiProbes(): Record<string, () => Probe> {
+  const probes: Record<string, () => Probe> = {};
+  for (const family of ['ajax', 'json', 'rest']) {
+    for (const method of ['DELETE', 'GET', 'POST', 'PUT'] as const) {
+      probes[`${method} /_api/${family}/v1`] = () => ({ method, url: `/_api/${family}/v1?${ON_SITE_A}` });
+      probes[`${method} /_api/${family}/v1/*`] = () => ({ method, url: `/_api/${family}/v1/${SITE_A}/notanentity` });
     }
   }
-  return declarations;
+  return probes;
 }
 
-const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
+/** One deterministic request per registered route; a fixture route names an unregistered site, which api.cfm refuses first. */
+const PROBES: Readonly<Record<string, () => Probe | Promise<Probe>>> = {
+  ...jsonApiProbes(),
+  'GET /healthz': () => get('/healthz', false),
+  'POST /internal/v1/events/people.identity.group.changed.v1': () => pushProbe(GROUP_NAME_SUBSCRIPTION, groupChangedEnvelope()),
+  'POST /internal/v1/events/people.programs-sites.site.changed.v1': () => pushProbe(SITE_CHANGED_SUBSCRIPTION, siteChangedEnvelope()),
+  // The migration probes send input the handlers' schemas refuse, answered 400 before any statement; the watermark read lists none.
+  'POST /internal/v1/migration/apply': () => ({ method: 'POST', url: '/internal/v1/migration/apply', payload: {} }),
+  'GET /internal/v1/migration/changes': () => get('/internal/v1/migration/changes?probe=1', false),
+  'GET /internal/v1/migration/export': () => get('/internal/v1/migration/export?probe=1', false),
+  'POST /internal/v1/migration/gate': () => ({ method: 'POST', url: '/internal/v1/migration/gate', payload: {} }),
+  'GET /internal/v1/migration/position': () => get('/internal/v1/migration/position?probe=1', false),
+  'GET /internal/v1/migration/watermark': () => get('/internal/v1/migration/watermark', false),
+  'POST /internal/v1/migration/watermark': () => ({ method: 'POST', url: '/internal/v1/migration/watermark', payload: {} }),
+  'POST /internal/v1/outbox/sweep': () => SWEEP_PROBE,
+  'POST /internal/v1/task-queues/:queue/ensure': () => control('ensure'),
+  'POST /internal/v1/task-queues/:queue/pause': () => control('pause'),
+  'POST /internal/v1/task-queues/:queue/resume': () => control('resume'),
+  'GET /internal/v1/users/current': () => get(CURRENT_USER_URL),
+  'GET /legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive': () =>
+    get(`/legacy-fixtures/cfml/api.cfm/people/persons/${STRANGER_ID}/archive?siteid=notasite`, false),
+  'POST /legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive': () =>
+    postForm(`/legacy-fixtures/cfml/api.cfm/people/persons/${STRANGER_ID}/archive?siteid=notasite`, 'effectiveFrom=2026-07-01', false),
+  'GET /v1/profile': () => PROFILE_READ,
+  // The withheld extended-data branch answers 503 before the CSRF check or any write.
+  'POST /v1/profile::update': () => postForm('/v1/profile:update', 'extendSetID=probe', false),
+  'GET /v1/users': () => get(`/v1/users?${ON_SITE_A}&ispublic=0`),
+  // The withheld roster delete answers 503 before the CSRF check or any write.
+  'POST /v1/users::update': () => postForm(`/v1/users:update?${ON_SITE_A}`, `userid=${STRANGER_ID}&type=2&action=Delete`),
+  'GET /v1/users/address': () => get(`/v1/users/address?${ON_SITE_A}&userid=${STRANGER_ID}&addressid=${STRANGER_ID}`),
+  // Without a CSRF pair the address save only skips its write.
+  'POST /v1/users/addresses::update': () => postForm(`/v1/users/addresses:update?${ON_SITE_A}`, `userid=${STRANGER_ID}&address1=Probe`),
+  'GET /v1/users/advanced-search': () => get(`/v1/users/advanced-search?${ON_SITE_A}&ispublic=0`),
+  'POST /v1/users/advanced-search': () => postForm(`/v1/users/advanced-search?${ON_SITE_A}&ispublic=0`, ADVANCED_SEARCH_FORM),
+  'GET /v1/users/advanced-search.csv': () => get(`/v1/users/advanced-search.csv?${ON_SITE_A}&ispublic=0`),
+  'GET /v1/users/download': () => get(`/v1/users/download?${ON_SITE_A}&ispublic=0`),
+  'GET /v1/users/edit': () => get(`/v1/users/edit?${ON_SITE_A}&ispublic=0&userid=${STRANGER_ID}`),
+  'GET /v1/users/groups': () => get(`/v1/users/groups?${ON_SITE_A}&ispublic=0`),
+  'GET /v1/users/route': () => get(`/v1/users/route?${ON_SITE_A}&ispublic=0`),
+  'GET /v1/users/search': () => get(`/v1/users/search?${ON_SITE_A}&ispublic=0&search=Target`),
+  'GET /v2/users': () => get(`/v2/users?${ON_SITE_A}&ispublic=0`),
+  'GET /v2/users/advanced-search': () => get(`/v2/users/advanced-search?${ON_SITE_A}&ispublic=0`),
+  'POST /v2/users/advanced-search': () => postForm(`/v2/users/advanced-search?${ON_SITE_A}&ispublic=0`, ADVANCED_SEARCH_FORM),
+  'GET /v2/users/search': () => get(`/v2/users/search?${ON_SITE_A}&ispublic=0&search=Target`),
+};
 
-describe.skipIf(!available)('people routes over PostgreSQL', () => {
-  let matrix: RouteMatrix;
+async function probeFor(key: string): Promise<Probe> {
+  const build = PROBES[key];
+  if (build === undefined) throw new TypeError(`No probe for ${key}`);
+  return build();
+}
 
-  beforeAll(async () => {
-    t = await buildPeopleRouteApp();
-    const persons = [...PERSONS.values(), TARGET];
-    await seedPeople(t.handle.app, seedOf(persons, [TARGET_ADDRESS]), { clock: t.clock });
-    t.identity.seedAccounts(
-      persons.map((person) => accountFor(person, { isPublic: person === PERSONS.get('member') ? 1 : 0, s2: person === PERSONS.get('s2') ? 1 : 0 })),
-    );
-    matrix = collectRouteMatrix(t.app);
-  });
+type Outcome = { kind: 'reached' } | { kind: 'denied'; status: 401 | 403 };
 
-  afterAll(async () => {
-    await t?.close();
-  });
+const REACHED: Outcome = Object.freeze({ kind: 'reached' });
+const DENIED_401: Outcome = Object.freeze({ kind: 'denied', status: 401 });
+const DENIED_403: Outcome = Object.freeze({ kind: 'denied', status: 403 });
 
-  describe('route declarations', () => {
-    it('lists every registered route exactly once in the expectations', () => {
-      const registered = matrix.routes.map(keyOf);
-      const expected = Object.keys(EXPECTED);
-      expect({
-        missing: registered.filter((key) => !expected.includes(key)),
-        extra: expected.filter((key) => !registered.includes(key)),
-        duplicated: registered.filter((key, index) => registered.indexOf(key) !== index),
-      }).toEqual({ missing: [], extra: [], duplicated: [] });
-    });
+/** What a subject's credential is on the wire: nothing, a user token beside the gateway's, a workload token, the push key or a tasks token. */
+type Presented = 'none' | 'user' | 'workload' | 'push-key' | 'tasks';
 
-    it('declares each route with its expected transport, roles, public flag and site check', () => {
-      const actual = Object.fromEntries(matrix.routes.map((route) => [keyOf(route), comparable(route)]));
-      const expected = Object.fromEntries(Object.entries(EXPECTED).map(([key, entry]) => [key, comparable(entry.declared)]));
-      expect(actual).toEqual(expected);
-    });
+function presentedBy(subject: RoleSubject): Presented {
+  if (subject.kind === 'anonymous') return 'none';
+  if (subject.kind === 'user') return 'user';
+  if (subject.caller === 'pubsub-invoker') return 'push-key';
+  if (subject.caller === 'tasks-invoker') return 'tasks';
+  return 'workload';
+}
 
-    it("declares each route as the contract's x-opt2-transport, x-opt2-requires and x-opt2-public do", () => {
-      const contract = contractDeclarations();
-      const actual = Object.fromEntries(matrix.routes.map((route) => [keyOf(route), comparable(route, false)]));
-      const declared = Object.fromEntries(matrix.routes.map((route) => [keyOf(route), contract.get(keyOf(route)) ?? 'not in the contract']));
-      expect(actual).toEqual(declared);
-    });
+const GATEWAY_ROLES = rolesForService('gateway');
 
-    it('probes ROLE_SET, with the minimum subjects and other-tenant minted for another tenant, plus the module-grant users', () => {
-      expect(SUBJECTS.map((subject) => subject.name).sort()).toEqual([...EVERYONE].sort());
-      expect(MINIMUM_SUBJECTS.filter((name) => !ROLE_SET.some((subject) => subject.name === name))).toEqual([]);
-      expect(subjectSiteFor(subjectNamed('other-tenant'), SITE_A)).toBe(SITE_B);
-    });
-
-    it('names only probed subjects, and never one both admitted and answered 401', () => {
-      const named = Object.values(EXPECTED).flatMap((entry) => [...entry.allow, ...entry.deny401]);
-      const overlapping = Object.entries(EXPECTED).flatMap(([key, entry]) =>
-        entry.allow.filter((name) => entry.deny401.includes(name)).map((name) => `${key}: ${name}`),
-      );
-      expect({ unknown: named.filter((name) => !EVERYONE.includes(name)), overlapping }).toEqual({ unknown: [], overlapping: [] });
-    });
-  });
-
-  describe('route admission', () => {
-    for (const [key, entry] of Object.entries(EXPECTED)) {
-      it(`admits exactly the expected subjects on ${key}, and denials leave no effect`, async () => {
-        const mismatches: string[] = [];
-        for (const subject of SUBJECTS) mismatches.push(...(await mismatchesOf(key, entry, subject)));
-        expect(mismatches).toEqual([]);
-      });
+/** The auth hooks' verdict for `subject` on `entry`, derived from the literal table only. */
+function expectedOutcome(entry: RouteMatrixEntry, request: Probe, subject: RoleSubject): Outcome {
+  const presented = presentedBy(subject);
+  if (entry.transport === 'pubsub-push') return presented === 'push-key' ? REACHED : DENIED_401;
+  if (entry.transport === 'cloud-tasks') return presented === 'tasks' ? REACHED : DENIED_401;
+  // The service transport verifies a bearer in Authorization as a user token, so a managed-delivery token fails, public routes included.
+  if (presented === 'tasks') return DENIED_401;
+  if (entry.requires !== undefined) {
+    const roles =
+      presented === 'user'
+        ? [...subject.roles.filter((role) => !isServiceRole(role)), ...GATEWAY_ROLES]
+        : presented === 'workload'
+          ? [...subject.roles]
+          : [];
+    if (!hasAnyRole(roles, entry.requires)) {
+      if (presented === 'none' || presented === 'push-key') return DENIED_401;
+      if (presented === 'workload' && entry.requires.some((role) => !isServiceRole(role))) return DENIED_401;
+      return DENIED_403;
     }
+  }
+  const siteBound = request.site === true && (entry.siteCheck || HANDLER_SITE_BOUND.has(routeKey(entry)));
+  if (presented === 'user' && siteBound && subjectSiteFor(subject, SITE_A) !== SITE_A) return DENIED_403;
+  return REACHED;
+}
+
+function observedOutcome(result: ProbeResult): Outcome {
+  if (!isHookDenial(result)) return REACHED;
+  return result.res.statusCode === 401 ? DENIED_401 : DENIED_403;
+}
+
+function sortedRoutes(routes: readonly RouteMatrixEntry[]): RouteMatrixEntry[] {
+  return routes
+    .map((route) => (route.requires === undefined ? { ...route } : { ...route, requires: [...route.requires].sort() }))
+    .sort((a, b) => a.url.localeCompare(b.url, 'en') || a.method.localeCompare(b.method, 'en'));
+}
+
+describe('declared routes', () => {
+  it('registers exactly the literal route table, with each transport, role list, public flag and site check', () => {
+    expect(sortedRoutes(collectRouteMatrix(t.app).routes)).toEqual(sortedRoutes(EXPECTED_ROUTES));
   });
 
-  describe('transport separation', () => {
-    const groupsUrl: ProbeRequest = { method: 'GET', url: `/v1/users/groups?${ON_SITE_A}&ispublic=0` };
-    const positionUrl: ProbeRequest = { method: 'GET', url: '/internal/v1/migration/position' };
-    const pauseUrl: ProbeRequest = { method: 'POST', url: `${QUEUE_CONTROL_PREFIX}/${PEOPLE_SWEEP_QUEUE}/pause`, json: {} };
-    const sitePush = (): ProbeRequest => pushRequest(SITE_CHANGED_SUBSCRIPTION, siteChangedEnvelope());
-    const groupPush = (): ProbeRequest => pushRequest(GROUP_NAME_SUBSCRIPTION, groupChangedEnvelope());
-    const withKey = { key: TEST_PUSH_KEY };
-    const tasksToken = async (audience = SERVICE) => ({ authorization: `Bearer ${await mintTasksInvokerToken({ audience })}` });
-
-    it.each<[string, () => ProbeRequest, () => Promise<Record<string, string>>, Record<string, string>]>([
-      ['an s2 user token on the site push', sitePush, () => asCredentials('s2'), {}],
-      ['an s2 user token beside the push key on the site push', sitePush, () => asCredentials('s2'), withKey],
-      ['a site-admin user token beside the push key on the group push', groupPush, () => asCredentials('site-admin'), withKey],
-      ['an s2 user token on the outbox sweep', () => SWEEP, () => asCredentials('s2'), {}],
-      ['a tasks-invoker token on a cUsers read', () => groupsUrl, () => tasksToken(), {}],
-      ['a tasks-invoker token beside the gateway credential on a cUsers read', () => groupsUrl, async () => ({ ...(await tasksToken()), ...(await gatewayInvocation()) }), {}],
-      ['a tasks-invoker token beside the gateway credential on the profile read', () => PROFILE_READ, async () => ({ ...(await tasksToken()), ...(await gatewayInvocation()) }), {}],
-      ['a tasks-invoker token on a migration read', () => positionUrl, () => tasksToken(), {}],
-      ['a tasks-invoker token on queue control', () => pauseUrl, () => tasksToken(), {}],
-      ['a tasks-invoker token beside the push key on the site push', sitePush, () => tasksToken(), withKey],
-      ['a tasks-invoker token addressed to another service on the outbox sweep', () => SWEEP, () => tasksToken('identity'), {}],
-      ['the push key on a cUsers read', () => groupsUrl, async () => ({}), withKey],
-      ['the push key beside the gateway credential on a cUsers read', () => groupsUrl, () => gatewayInvocation(), withKey],
-      ['the push key on the outbox sweep', () => SWEEP, async () => ({}), withKey],
-      ['a wrong push key on the site push', sitePush, async () => ({}), { key: `${TEST_PUSH_KEY}-wrong` }],
-      ['a wrong push key on the group push', groupPush, async () => ({}), { key: `${TEST_PUSH_KEY}-wrong` }],
-      ['a site-admin user token without an invocation credential on a cUsers read', () => groupsUrl, () => siteAdminToken(), {}],
-      ['a site-admin user token without an invocation credential on the profile read', () => PROFILE_READ, () => siteAdminToken(), {}],
-      ['a site-admin user token beside a gateway credential addressed to identity', () => groupsUrl, async () => ({ ...(await siteAdminToken()), ...(await gatewayInvocation('identity')) }), {}],
-      ['a site-admin user token of another issuer', () => groupsUrl, async () => ({ ...(await siteAdminToken({ iss: 'opt2-other-issuer' })), ...(await gatewayInvocation()) }), {}],
-      ['a site-admin user token for another audience', () => groupsUrl, async () => ({ ...(await siteAdminToken({ aud: 'opt2-other' })), ...(await gatewayInvocation()) }), {}],
-      [
-        'an expired site-admin user token',
-        () => groupsUrl,
-        async () => ({ ...(await siteAdminToken({ exp: Math.floor(Date.now() / 1000) - 60 })), ...(await gatewayInvocation()) }),
-        {},
-      ],
-      ['Basic credentials beside the gateway credential on a cUsers read', () => groupsUrl, async () => ({ authorization: 'Basic YWRtaW46YWRtaW4=', ...(await gatewayInvocation()) }), {}],
-      [
-        'the migration workload addressed to another service on a migration read',
-        () => positionUrl,
-        async () => ({ [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'migration', audience: 'identity', roles: [Roles.platformMigration] })}` }),
-        {},
-      ],
-    ])('refuses %s with 401 before any effect', async (_label, request, credentials, query) => {
-      const presented = await credentials();
-      const outcome = await outcomeOf(() => inject(request(), presented, query));
-      expect(isCleanRefusal(outcome, 401), JSON.stringify(outcome)).toBe(true);
-    });
+  it('has one probe per route of the table', () => {
+    expect(Object.keys(PROBES).sort()).toEqual(EXPECTED_ROUTES.map(routeKey).sort());
   });
 
-  describe('tenant boundary', () => {
-    const siteScoped = Object.entries(EXPECTED).flatMap(([key, entry]) =>
-      entry.request?.url.includes(ON_SITE_A) === true ? [[key, entry.request] as const] : [],
-    );
+  it('guards the cUsers and cEditProfile role lists the routes declare', () => {
+    expect([...CUSERS_ROUTE_REQUIRES]).toEqual(CUSERS);
+    expect([...PROFILE_ROUTE_REQUIRES]).toEqual(PROFILE);
+  });
 
-    it('probes every user route with a tenant-a siteid except the profile save, which never scopes by it', () => {
-      const userRoutes = Object.keys(EXPECTED).filter(isUserRoute);
-      expect(userRoutes.filter((key) => !siteScoped.some(([scoped]) => scoped === key))).toEqual(['POST /v1/profile::update']);
-    });
+  it('probes every user role, the synthetic roles, other-tenant and each workload of the matrix', () => {
+    const names = ROLE_SET.map((subject) => subject.name);
+    const required = [
+      'anonymous',
+      Roles.member,
+      Roles.systemUser,
+      'editor',
+      Roles.siteAdmin,
+      Roles.s2,
+      'other-tenant',
+      Roles.timesheetsEmployee,
+      Roles.timesheetsPrimaryApprover,
+      Roles.timesheetsSecondaryApprover,
+      Roles.financePreparer,
+      Roles.financeApprover,
+      Roles.esignatureSigner,
+      Roles.esignatureAuditor,
+      Roles.reportingExporter,
+      Roles.surveysManager,
+      Roles.communicationsSender,
+      serviceRole('gateway'),
+      serviceRole('identity'),
+      PUBSUB_INVOKER_ROLE,
+      TASKS_INVOKER_ROLE,
+    ];
+    expect(required.filter((name) => !names.includes(name))).toEqual([]);
+    const presentedRoles = ROLE_SET.flatMap((subject) => subject.roles);
+    expect([Roles.platformMigration, Roles.platformOperator].filter((role) => !presentedRoles.includes(role))).toEqual([]);
+    expect(subjectSiteFor(subjectNamed('other-tenant'), SITE_A)).toBe(SITE_B);
+  });
+});
 
-    it.each(siteScoped)('refuses tenant-a s2 and site-admin tokens sent with siteid=tenant-b on %s', async (_key, request) => {
-      const toSiteB: ProbeRequest = { ...request, url: request.url.replace(ON_SITE_A, `siteid=${SITE_B}`) };
-      for (const name of ['s2', 'site-admin']) {
-        const credentials = await asCredentials(name);
-        const outcome = await outcomeOf(() => inject(toSiteB, credentials));
-        expect(isCleanRefusal(outcome, 403), `${name}: ${JSON.stringify(outcome)}`).toBe(true);
+describe('route × subject matrix', () => {
+  for (const entry of EXPECTED_ROUTES) {
+    const key = routeKey(entry);
+    it(`${key} admits exactly the subjects its declaration admits, and refuses the others before any effect`, async () => {
+      const mismatches: Array<{ subject: string; expected: Outcome; observed: Outcome; result: string }> = [];
+      for (const subject of ROLE_SET) {
+        const request = await probeFor(key);
+        const result = await probe(request, await credentialOf(subject));
+        const expected = expectedOutcome(entry, request, subject);
+        const observed = observedOutcome(result);
+        if (JSON.stringify(expected) !== JSON.stringify(observed)) {
+          mismatches.push({ subject: subject.name, expected, observed, result: describeResult(result) });
+        }
       }
+      expect(mismatches).toEqual([]);
     });
+  }
+});
 
-    it.each<[string, ProbeRequest]>([
-      ['in the form body', { method: 'POST', url: '/v1/users/advanced-search?ispublic=0', form: { ...ADVANCED_SEARCH_FORM, siteid: SITE_B } }],
-      ['spelled SiteID', { method: 'GET', url: `/v1/users/groups?SiteID=${SITE_B}&ispublic=0` }],
-      ['spelled SiteID on the handler-checked users list', { method: 'GET', url: `/v1/users?SiteID=${SITE_B}&ispublic=0` }],
-      ['spelled SiteID on the handler-checked v2 users list', { method: 'GET', url: `/v2/users?SiteID=${SITE_B}&ispublic=0` }],
-    ])('refuses a tenant-b siteid %s to a tenant-a site-admin', async (_label, request) => {
-      const outcome = await outcomeOf(async () => inject(request, await asCredentials('site-admin')));
-      expect(isCleanRefusal(outcome, 403), JSON.stringify(outcome)).toBe(true);
-    });
+type GateRequest = Parameters<typeof requireCusersAccess>[0];
 
-    it.each<[string, string, string, number]>([
-      ['lists every site for S2 with siteid=all', 's2', `/v1/users?siteid=all&ispublic=0`, 200],
-      ['refuses siteid=all on the users list to a site-admin', 'site-admin', `/v1/users?siteid=all&ispublic=0`, 403],
-      ['lists a page of every site for S2 with siteid=all on v2', 's2', `/v2/users?siteid=all&ispublic=0`, 200],
-      ['refuses siteid=all on the v2 users list to a site-admin', 'site-admin', `/v2/users?siteid=all&ispublic=0`, 403],
-      ['refuses siteid=all on the group list to S2', 's2', `/v1/users/groups?siteid=all&ispublic=0`, 403],
-      ['refuses siteid=all on the users download to S2', 's2', `/v1/users/download?siteid=all&ispublic=0`, 403],
-    ])('%s', async (_label, name, url, status) => {
-      const outcome = await outcomeOf(async () => inject({ method: 'GET', url }, await asCredentials(name)));
-      if (status === 200) expect(outcome.status, JSON.stringify(outcome)).toBe(200);
-      else expect(isCleanRefusal(outcome, 403), JSON.stringify(outcome)).toBe(true);
-    });
+/** The parts of a request the admin gates read: the verified user, the headers and the query. */
+function gateRequest(user: { sub: string; roles: readonly string[] } | undefined, headers: Headers = {}, query: Headers = {}): GateRequest {
+  return { opt2Auth: { user, roles: user?.roles ?? [], transport: 'service' }, headers, query } as unknown as GateRequest;
+}
 
-    it.each<[string, string, (res: InjectResponse) => boolean]>([
-      ['the users list', '/v1/users?ispublic=0', (res) => (res.json() as { items: { UserID: string }[] }).items.some((row) => row.UserID === TARGET.userid)],
-      ['the search', '/v1/users/search?ispublic=0&search=Target', (res) => (res.json() as { items: { UserID: string }[] }).items.some((row) => row.UserID === TARGET.userid)],
-      ['the v2 users page', '/v2/users?ispublic=0', (res) => (res.json() as { items: { UserID: string }[] }).items.some((row) => row.UserID === TARGET.userid)],
-      ['the v2 search page', '/v2/users/search?ispublic=0&search=Target', (res) => (res.json() as { items: { UserID: string }[] }).items.some((row) => row.UserID === TARGET.userid)],
-      ['the advanced-search download', '/v1/users/advanced-search.csv?ispublic=0', (res) => res.body.includes(TARGET.email ?? '')],
-      ['the users download', '/v1/users/download?ispublic=0', (res) => res.body.includes(TARGET.email ?? '')],
-      [
-        'the Edit User read',
-        `/v1/users/edit?ispublic=0&userid=${TARGET.userid}`,
-        (res) => (res.json() as { isNew: boolean; user: { UserID: string } }).user.UserID === TARGET.userid,
-      ],
-      [
-        'the Edit Address read',
-        `/v1/users/address?userid=${TARGET.userid}&addressid=${TARGET_ADDRESS.addressid}`,
-        (res) => !(res.json() as { isNew: boolean }).isNew,
-      ],
-    ])("shows the tenant-a person in %s to tenant-a's site-admin and never to tenant-b's", async (_label, url, showsTarget) => {
-      const own = await inject({ method: 'GET', url }, await asCredentials('site-admin'));
-      const other = await inject({ method: 'GET', url }, await asCredentials('other-tenant'));
-      expect({ own: own.statusCode, other: other.statusCode }).toEqual({ own: 200, other: 200 });
-      expect({ own: showsTarget(own), other: showsTarget(other) }).toEqual({ own: true, other: false });
-    });
+/** The status and redirect of a gate's denial; fails when the gate admitted the caller. */
+function adminDenialOf(value: unknown): { status: number; redirect: unknown } {
+  expect(value).toBeInstanceOf(AdminDenial);
+  const denial = value as AdminDenial;
+  return { status: denial.statusCode, redirect: denial.redirect };
+}
 
-    /** `name`'s user token beside identity's invocation credential, as identity forwards it to the current-user read. */
-    async function identityForwarding(name: string): Promise<Record<string, string>> {
-      const { authorization = '' } = await asCredentials(name);
-      return { ...(await asCredentials('service:identity')), authorization };
+/** `actor` with its token minted for tenant-a, the site every gate probe names. */
+function onSiteA(actor: TestActor): TestActor {
+  return { ...actor, site: SITE_A };
+}
+
+describe('cUsers gate: the site Admin group, S2, or the Users and core module grants together', () => {
+  const routes = ['GET /v1/users', 'GET /v1/users/edit', 'POST /v1/users::update', 'GET /v1/users/download'];
+  // The roster delete is withheld, so its admitted callers get the legacy-shaped 503 instead of a write.
+  const admittedStatus = (key: string): number => (key.startsWith('POST') ? 503 : 200);
+
+  it.each(routes)('lets the site admin, S2 and the Users plus core module user through on %s', async (key) => {
+    for (const actor of [SITE_ADMIN_A, onSiteA(ADMIN_S2), MODULE_USER_A]) {
+      const result = await probe(await probeFor(key), await actorCredential(actor));
+      expect(result.res.statusCode, `${actor.sub}: ${describeResult(result)}`).toBe(admittedStatus(key));
     }
+  });
 
-    it("reads the forwarded token's own person on identity's tenant-a current-user read for tenant-a's site-admin", async () => {
-      const res = await inject(CURRENT_USER, await identityForwarding('site-admin'));
-      expect(res.statusCode, res.body).toBe(200);
-      expect((res.json() as { data: { userid: string; isnew: number } }).data).toMatchObject({ userid: PERSONS.get('site-admin')?.userid, isnew: 0 });
-    });
+  it.each(routes)('sends m:008 without m:000 back from the handler on %s, Referer or not, before any effect', async (key) => {
+    expect(hasAnyRole(MODULE_008_ONLY.roles, CUSERS_ROUTE_REQUIRES)).toBe(true);
+    const request = await probeFor(key);
+    const credential = await actorCredential(MODULE_008_ONLY);
+    const plain = await probe(request, credential);
+    const referred = await probe({ ...request, headers: { ...request.headers, referer: 'http://localhost:8080/admin/?muraAction=cDashboard.main' } }, credential);
+    for (const result of [plain, referred]) {
+      expect(isDenialOf(result, AuthDenial.forbidden(), request.url), describeResult(result)).toBe(true);
+    }
+  });
 
-    it("refuses identity's tenant-a current-user read forwarding tenant-b's site-admin token with 403 before any effect", async () => {
-      const credentials = await identityForwarding('other-tenant');
-      const outcome = await outcomeOf(() => inject(CURRENT_USER, credentials));
-      expect(isCleanRefusal(outcome, 403), JSON.stringify(outcome)).toBe(true);
-    });
+  it.each(routes)('refuses the editor and a plain system user at the hook on %s', async (key) => {
+    for (const actor of [onSiteA(EDITOR), SYSTEM_USER_A]) {
+      expect(hasAnyRole(actor.roles, CUSERS_ROUTE_REQUIRES)).toBe(false);
+      const request = await probeFor(key);
+      const result = await probe(request, await actorCredential(actor));
+      expect(isDenialOf(result, AuthDenial.forbidden(), request.url), describeResult(result)).toBe(true);
+    }
+  });
 
-    it("saves a tenant-b user's own profile, never the tenant-a person its post names", async () => {
-      const person = PERSONS.get('other-tenant');
-      if (person === undefined) throw new Error('no other-tenant person');
-      const form = { ...PROFILE_FORM, userid: TARGET.userid, siteid: SITE_A, fname: 'Crossed' };
-      const res = await inject({ method: 'POST', url: '/v1/profile:update', form }, await asCredentials('other-tenant'));
-      expect(res.statusCode, res.body).toBe(200);
-      const firstName = (tenantId: string, userId: string) =>
-        withTenant(t.handle.app, tenantId, async (tx) => (await t.repository.findPerson(tx, userId))?.fname ?? null);
-      expect({ own: await firstName(person.tenant_id, person.userid), target: await firstName(TARGET.tenant_id, TARGET.userid) }).toEqual({
-        own: 'Crossed',
-        target: TARGET.fname,
+  it("answers a logged-in caller it refuses with utility.backUp(): the Referer, else './'", () => {
+    const referer = 'http://localhost:8080/admin/?muraAction=cDashboard.main';
+    expect(adminDenialOf(requireCusersAccess(gateRequest(MODULE_008_ONLY, { referer })))).toEqual({ status: 403, redirect: { url: referer } });
+    expect(adminDenialOf(requireCusersAccess(gateRequest(MODULE_008_ONLY)))).toEqual({ status: 403, redirect: { url: './' } });
+  });
+
+  it('sends a caller who is not logged in to cLogin.main, keeping a simple compactDisplay', () => {
+    for (const user of [undefined, { sub: '', roles: [] }]) {
+      expect(adminDenialOf(requireCusersAccess(gateRequest(user, {}, { compactDisplay: 'true' })))).toEqual({
+        status: 401,
+        redirect: { action: 'cLogin.main', params: { compactDisplay: 'true' } },
       });
+    }
+  });
+
+  it('returns the claims of the Users plus core module user and of the site admin', () => {
+    for (const actor of [MODULE_USER_A, SITE_ADMIN_A]) {
+      expect(requireCusersAccess(gateRequest(actor))).not.toBeInstanceOf(AdminDenial);
+    }
+  });
+});
+
+describe('cEditProfile gate: any logged-in user, acting only on themselves', () => {
+  it.each([
+    ['a tenant-a system user', SYSTEM_USER_A],
+    ['a pooled public member', MEMBER_POOLED],
+  ])('lets %s read and post the profile', async (_label, actor) => {
+    const credential = await actorCredential(actor);
+    const read = await probe(PROFILE_READ, credential);
+    expect(read.res.statusCode, describeResult(read)).toBe(200);
+    const save = await probe(await probeFor('POST /v1/profile::update'), credential);
+    // The withheld extended-data branch answers 503 once the gate has let the caller through.
+    expect(save.res.statusCode, describeResult(save)).toBe(503);
+  });
+
+  it('refuses an anonymous caller at the hook with 401 before any effect', async () => {
+    const result = await probe(PROFILE_READ);
+    expect(isDenialOf(result, AuthDenial.unauthenticated('missing-credential'), PROFILE_READ.url), describeResult(result)).toBe(true);
+    const save = await probeFor('POST /v1/profile::update');
+    const saved = await probe(save);
+    expect(isDenialOf(saved, AuthDenial.unauthenticated('missing-credential'), save.url), describeResult(saved)).toBe(true);
+  });
+
+  it('sends the anonymous principal to cLogin.main', () => {
+    expect(adminDenialOf(requireLoggedIn(gateRequest({ sub: '', roles: [] })))).toEqual({
+      status: 401,
+      redirect: { action: 'cLogin.main', params: {} },
+    });
+  });
+
+  it('saves only the token subject, whatever userid and siteid the form posts', async () => {
+    const form = `userid=${STRANGER_ID}&siteid=${SITE_B}&fname=Changed&${CSRF_FIELDS}`;
+    const result = await probe(postForm('/v1/profile:update', form, false), await actorCredential(SYSTEM_USER_A));
+    expect(result.res.statusCode, describeResult(result)).toBe(200);
+    const accountCalls = result.identityCalls.filter((call) => call.includes('/accounts/'));
+    expect(accountCalls.length).toBeGreaterThan(0);
+    expect(accountCalls.filter((call) => !call.includes(SYSTEM_USER_A.sub))).toEqual([]);
+    expect(result.identityCalls.filter((call) => call.includes(STRANGER_ID))).toEqual([]);
+    const operation = t.db.writes().find((statement) => statement.text.startsWith('INSERT INTO "people"."roster_operation"'));
+    expect(operation?.values[ROSTER_OPERATION_COLUMNS.indexOf('user_id')]).toBe(SYSTEM_USER_A.sub);
+  });
+});
+
+describe('JSON API user and address: AllowAccess needs the Users module, AllowAction also takes the own record', () => {
+  const read = (entity: string, id: string): Probe => get(`/_api/json/v1/${SITE_A}/${entity}/${id}`, false);
+
+  function isFindOneRefusal(result: ProbeResult): boolean {
+    const body = JSON.stringify({ apiversion: 'v1', method: 'findOne', error: AUTHORIZATION_ERROR });
+    return result.res.statusCode === 401 && result.res.body === body && writeFree(result);
+  }
+
+  it.each(['user', 'address'])('refuses another %s record to anonymous and system-user callers with 401, never data', async (entity) => {
+    for (const credential of [NO_CREDENTIAL, await actorCredential(SYSTEM_USER_A)]) {
+      const result = await probe(read(entity, STRANGER_ID), credential);
+      expect(isFindOneRefusal(result), describeResult(result)).toBe(true);
+    }
+  });
+
+  it.each(['user', 'address'])('serves a %s record to the Users module grant alone, unlike cUsers', async (entity) => {
+    const result = await probe(read(entity, STRANGER_ID), await actorCredential(MODULE_008_ONLY));
+    expect(result.res.statusCode, describeResult(result)).toBe(200);
+    expect(writeFree(result)).toBe(true);
+  });
+
+  // Legacy AllowAccess lets an own id past its user, group and address clause, then still requires the Users module of a
+  // non-public entity (jsonApiUtility.cfc:1714-1736); self access exists only in AllowAction.
+  it('refuses a member without the Users module its own user record, as legacy AllowAccess does', async () => {
+    const result = await probe(read('user', MEMBER_POOLED.sub), await actorCredential(MEMBER_POOLED));
+    expect(isFindOneRefusal(result), describeResult(result)).toBe(true);
+  });
+
+  it('refuses an anonymous save without CSRF tokens with invalidTokens before any write', async () => {
+    const result = await probe(postForm(`/_api/json/v1/${SITE_A}/user`, 'fname=Probe', false));
+    const { code, message } = LEGACY_ERROR_MAP.invalidTokens;
+    expect(result.res.statusCode, describeResult(result)).toBe(400);
+    expect(errorEnvelope(result.res)).toEqual({ apiversion: 'v1', method: 'save', error: { message, code } });
+    expect(writeFree(result)).toBe(true);
+  });
+
+  it('refuses an anonymous save on the sessionless REST family with 401 and a Basic challenge before any write', async () => {
+    const result = await probe(postForm(`/_api/rest/v1/${SITE_A}/user`, 'fname=Probe', false));
+    expect(result.res.statusCode, describeResult(result)).toBe(401);
+    expect(result.res.headers['www-authenticate']).toBe('Basic');
+    expect(errorEnvelope(result.res)?.error).toEqual(AUTHORIZATION_ERROR);
+    expect(writeFree(result)).toBe(true);
+  });
+
+  it.each([
+    ['a member saving another user', 'user', MEMBER_POOLED],
+    ['a system user saving another user address', 'address', SYSTEM_USER_A],
+  ])('refuses %s with 401 after the CSRF check, before any write or identity prepare', async (_label, entity, actor) => {
+    const form = `userid=${STRANGER_ID}&addressid=${STRANGER_ID}&fname=Probe&address1=Probe&${CSRF_FIELDS}`;
+    const result = await probe(postForm(`/_api/json/v1/${SITE_A}/${entity}`, form, false), await actorCredential(actor));
+    expect(result.res.statusCode, describeResult(result)).toBe(401);
+    expect(errorEnvelope(result.res)?.error).toEqual(AUTHORIZATION_ERROR);
+    expect({ writes: result.writes, identityCalls: result.identityCalls, published: result.published }).toEqual({
+      writes: 0,
+      identityCalls: ['POST /internal/v1/csrf/consume'],
+      published: 0,
+    });
+  });
+
+  it("lets a member's save of its own user record past AllowAction into the roster operation", async () => {
+    const form = `userid=${MEMBER_POOLED.sub}&fname=Probe&${CSRF_FIELDS}`;
+    const result = await probe(postForm(`/_api/json/v1/${SITE_A}/user`, form, false), await actorCredential(MEMBER_POOLED));
+    expect(result.res.statusCode, describeResult(result)).not.toBe(401);
+    const operation = t.db.writes().find((statement) => statement.text.startsWith('INSERT INTO "people"."roster_operation"'));
+    expect(operation?.values[ROSTER_OPERATION_COLUMNS.indexOf('user_id')]).toBe(MEMBER_POOLED.sub);
+    const ownPrepare = (call: string): boolean => call.startsWith(`POST /internal/v1/accounts/${MEMBER_POOLED.sub}/operations/`) && call.endsWith(':prepare');
+    expect(result.identityCalls.some(ownPrepare), describeResult(result)).toBe(true);
+  });
+});
+
+describe('fixture archive gate: site, login, site admin, then the person', () => {
+  const archiveUrl = `/legacy-fixtures/cfml/api.cfm/people/persons/${STRANGER_ID}/archive?${ON_SITE_A}`;
+  const archive = (fields = ''): Probe => postForm(archiveUrl, `effectiveFrom=2026-07-01${fields}`, false);
+  // envelope.cfc orders code before message and keeps api.cfm's method.
+  const fixtureRefusal = (message: string): unknown => ({ apiversion: 'v1', method: 'people.persons.archive', error: { code: 'invalid_request', message } });
+
+  function archivedNothing(result: ProbeResult): boolean {
+    return result.writes === 0 && result.published === 0 && result.tasks === 0;
+  }
+
+  it('refuses an anonymous archive with the fixture authorization envelope', async () => {
+    const result = await probe(archive());
+    expect(result.res.statusCode, describeResult(result)).toBe(401);
+    expect(result.res.body).toBe(JSON.stringify(fixtureRefusal('Insufficient Account Permissions')));
+    expect(archivedNothing(result) && result.identityCalls.length === 0).toBe(true);
+  });
+
+  it('refuses a logged-in user outside the site Admin group with the fixture forbidden envelope', async () => {
+    const result = await probe(archive(`&${CSRF_FIELDS}`), await actorCredential(SYSTEM_USER_A));
+    expect(result.res.statusCode, describeResult(result)).toBe(403);
+    expect(result.res.body).toBe(JSON.stringify(fixtureRefusal('Insufficient Account Permissions')));
+    expect(archivedNothing(result) && result.identityCalls.length === 0).toBe(true);
+  });
+
+  it.each([
+    ['read', (): Probe => get(archiveUrl, false)],
+    ['archive', (): Probe => archive(`&${CSRF_FIELDS}`)],
+  ])('lets the site admin through to the person lookup on the %s, which finds no one', async (_label, request) => {
+    const result = await probe(request(), await actorCredential(SITE_ADMIN_A));
+    expect(result.res.statusCode, describeResult(result)).toBe(404);
+    expect(result.res.body).toBe(JSON.stringify(fixtureRefusal('Not Found')));
+    expect(archivedNothing(result)).toBe(true);
+  });
+});
+
+describe("site binding: a supplied siteid must be the token's site, never compared with its tenant", () => {
+  it.each([
+    ['the hook-checked user search', `/v1/users/search?siteid=${SITE_B}&ispublic=0&search=Target`],
+    ['the handler-checked users list', `/v1/users?siteid=${SITE_B}&ispublic=0`],
+    ['the handler-checked v2 users list', `/v2/users?siteid=${SITE_B}&ispublic=0`],
+    ['the profile read', `/v1/profile?siteid=${SITE_B}`],
+  ])('refuses tenant-b on %s to a tenant-a site admin with 403 before any effect', async (_label, url) => {
+    const result = await probe(get(url), await actorCredential(SITE_ADMIN_A));
+    expect(isDenialOf(result, AuthDenial.siteMismatch(), url), describeResult(result)).toBe(true);
+  });
+
+  it('refuses a tenant-b API site to a tenant-a site admin with 403 after the registry read, before any write', async () => {
+    const result = await probe(get(`/_api/json/v1/${SITE_B}/user/${STRANGER_ID}`, false), await actorCredential(SITE_ADMIN_A));
+    expect(result.res.statusCode, describeResult(result)).toBe(403);
+    expect(errorEnvelope(result.res)?.error).toEqual(AUTHORIZATION_ERROR);
+    expect(writeFree(result)).toBe(true);
+  });
+
+  it.each([
+    ['the hook-checked user search', `/v1/users/search?${ON_SITE_A}&ispublic=0&search=Target`],
+    ['the handler-checked users list', `/v1/users?${ON_SITE_A}&ispublic=0`],
+  ])("admits a tenant-a token whose tid is tenant-b's on %s with siteid=tenant-a", async (_label, url) => {
+    const result = await probe(get(url), await actorCredential(SITE_ADMIN_A, { tid: TENANT_B.tenantId }));
+    expect(result.res.statusCode, describeResult(result)).toBe(200);
+  });
+
+  it('lists siteid=all for S2 only', async () => {
+    const url = '/v1/users?siteid=all&ispublic=0';
+    const s2 = await probe(get(url), await actorCredential(onSiteA(ADMIN_S2)));
+    expect(s2.res.statusCode, describeResult(s2)).toBe(200);
+    const siteAdmin = await probe(get(url), await actorCredential(SITE_ADMIN_A));
+    expect(isDenialOf(siteAdmin, AuthDenial.siteMismatch(), url), describeResult(siteAdmin)).toBe(true);
+  });
+});
+
+describe('transport separation: each transport accepts only its own credential', () => {
+  const header = (name: string, token: string): Credential => ({ headers: { [name]: `Bearer ${token}` }, query: '' });
+  const pushKey = (key: string = TEST_PUSH_KEY): Credential => ({ headers: {}, query: pushKeyQuery(key) });
+  const tasksToken = async (): Promise<Credential> => header('authorization', await mintTasksInvokerToken({ audience: SERVICE_NAME }));
+  const workload = async (caller: string): Promise<Credential> => header(INVOCATION_HEADER, await mintServiceToken({ caller, audience: SERVICE_NAME }));
+  const s2User = (): Promise<Credential> => credentialOf(subjectNamed(Roles.s2));
+
+  function expectRefused(result: ProbeResult, status: 401 | 403): void {
+    expect(isHookDenial(result) && result.res.statusCode === status, describeResult(result)).toBe(true);
+  }
+
+  describe.each([
+    ['site', SITE_CHANGED_SUBSCRIPTION, siteChangedEnvelope],
+    ['group', GROUP_NAME_SUBSCRIPTION, groupChangedEnvelope],
+  ])('the %s push', (_label, subscription, envelope) => {
+    it('accepts the push key', async () => {
+      const result = await probe(await pushProbe(subscription, envelope()), pushKey());
+      expect(result.res.statusCode >= 200 && result.res.statusCode < 300, describeResult(result)).toBe(true);
+    });
+
+    it.each<[string, () => Promise<Credential>]>([
+      ['no key', () => Promise.resolve(NO_CREDENTIAL)],
+      ['a wrong key', () => Promise.resolve(pushKey(`${TEST_PUSH_KEY}-wrong`))],
+      ['a user token in Authorization', s2User],
+      ['a user token in Authorization beside the push key', async () => ({ ...(await s2User()), query: pushKeyQuery() })],
+      ['a service token in the invocation header', () => workload('gateway')],
+      ['a tasks-invoker token', tasksToken],
+    ])('refuses %s with 401 before any effect', async (_label, credential) => {
+      expectRefused(await probe(await pushProbe(subscription, envelope()), await credential()), 401);
+    });
+  });
+
+  it('accepts the tasks-invoker token on the outbox sweep', async () => {
+    const result = await probe(SWEEP_PROBE, await tasksToken());
+    expect(result.res.statusCode, describeResult(result)).toBe(200);
+  });
+
+  it.each<[string, () => Promise<Credential>]>([
+    ['an s2 user token', s2User],
+    ['a gateway invocation token', () => workload('gateway')],
+    ['the push key', () => Promise.resolve(pushKey())],
+    ['a tasks-invoker token addressed to identity', async () => header('authorization', await mintTasksInvokerToken({ audience: 'identity' }))],
+  ])('refuses %s on the outbox sweep with 401 before any effect', async (_label, credential) => {
+    expectRefused(await probe(SWEEP_PROBE, await credential()), 401);
+  });
+
+  it('admits the migration workload on every migration route', async () => {
+    const credential = await workload('migration');
+    for (const key of EXPECTED_ROUTES.map(routeKey).filter((candidate) => candidate.includes('/internal/v1/migration/'))) {
+      const result = await probe(await probeFor(key), credential);
+      expect(isHookDenial(result), `${key}: ${describeResult(result)}`).toBe(false);
+    }
+  });
+
+  it.each<[string, () => Promise<Credential>, 401 | 403]>([
+    ['the operator workload', () => workload('operator'), 403],
+    ['the gateway workload', () => workload('gateway'), 403],
+    ['an s2 user token beside the gateway credential', s2User, 403],
+    ['a tasks-invoker token', tasksToken, 401],
+    ['the migration workload addressed to identity', async () => header(INVOCATION_HEADER, await mintServiceToken({ caller: 'migration', audience: 'identity' })), 401],
+  ])('refuses %s on a migration route', async (_label, credential, status) => {
+    expectRefused(await probe(await probeFor('POST /internal/v1/migration/apply'), await credential()), status);
+  });
+
+  it.each(['migration', 'operator'])('lets the %s workload pause and resume the sweep queue', async (caller) => {
+    const credential = await workload(caller);
+    for (const op of ['pause', 'resume']) {
+      const result = await probe(control(op), credential);
+      expect(result.res.statusCode, describeResult(result)).toBe(200);
+    }
+  });
+
+  it.each<[string, () => Promise<Credential>, 401 | 403]>([
+    ['the gateway workload', () => workload('gateway'), 403],
+    ['an s2 user token beside the gateway credential', s2User, 403],
+    ['a site-admin user token beside the gateway credential', () => credentialOf(subjectNamed(Roles.siteAdmin)), 403],
+    ['a tasks-invoker token', tasksToken, 401],
+  ])('refuses %s on queue control', async (_label, credential, status) => {
+    expectRefused(await probe(control('pause'), await credential()), status);
+  });
+
+  const siteAdminToken = (claims: Partial<Parameters<typeof mintUserToken>[0]> = {}): Promise<string> =>
+    mintUserToken({ sub: SITE_ADMIN_A.sub, site: SITE_A, roles: SITE_ADMIN_A.roles, ...claims });
+  const besideGateway = async (userToken: string): Promise<Credential> => ({
+    headers: { authorization: `Bearer ${userToken}`, ...(await workload('gateway')).headers },
+    query: '',
+  });
+
+  describe.each(['GET /v1/users', 'GET /v1/users/groups', 'POST /v1/users::update', 'GET /v1/profile'])('the user route %s', (key) => {
+    it.each<[string, () => Promise<Credential>]>([
+      ['a tasks-invoker token in Authorization', tasksToken],
+      ['a tasks-invoker token beside the gateway credential', async () => ({ headers: { ...(await tasksToken()).headers, ...(await workload('gateway')).headers }, query: '' })],
+      ['the push key', () => Promise.resolve(pushKey())],
+      ['the push key beside the gateway credential', async () => ({ ...(await workload('gateway')), query: pushKeyQuery() })],
+      ['a user token without an invocation credential', async () => header('authorization', await siteAdminToken())],
+      ['a user token beside a gateway credential addressed to identity', async () => ({
+        headers: { authorization: `Bearer ${await siteAdminToken()}`, [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'identity' })}` },
+        query: '',
+      })],
+      ['a user token of another issuer', async () => besideGateway(await siteAdminToken({ iss: 'opt2-other-issuer' }))],
+      ['a user token for another audience', async () => besideGateway(await siteAdminToken({ aud: 'opt2-other' }))],
+      ['an expired user token', async () => besideGateway(await siteAdminToken({ exp: Math.floor(Date.now() / 1000) - 60 }))],
+      ['Basic credentials beside the gateway credential', async () => ({ headers: { authorization: 'Basic YWRtaW46YWRtaW4=', ...(await workload('gateway')).headers }, query: '' })],
+    ])('refuses %s with 401 before any effect', async (_label, credential) => {
+      expectRefused(await probe(await probeFor(key), await credential()), 401);
     });
   });
 });
 
 describe('deny by default at start-up', () => {
-  let stateDir: string;
-
-  beforeAll(async () => {
-    stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-people-authz-startup-'));
-    await writeTestSecrets(stateDir);
-  });
-
-  afterAll(async () => {
-    await rm(stateDir, { recursive: true, force: true });
-  });
-
-  /** A database no start-up path may open. */
-  const closedDb: TenantDb = {
-    schema: SERVICE,
-    withTenant: () => Promise.reject(new Error('start-up opened a tenant transaction')),
-    withMetadata: () => Promise.reject(new Error('start-up opened a metadata transaction')),
-    end: () => Promise.resolve(),
-  };
-
-  /** People's cUsers, download and profile routes on a bare service, which needs no database to start. */
-  async function peopleApp(): Promise<FastifyInstance> {
-    const app = await createService({ name: SERVICE, version: '1.0.0', env: peopleEnv(stateDir), verifierOverride: testVerifier(SERVICE), logger: silentLogger() });
-    const repository = createPeopleRepository();
-    const identity = createIdentityDouble(closedDb);
-    const clock = app.opt2.clock;
-    await registerAdminUserRoutes(app, { db: closedDb, repository, identity, clock });
-    await registerAdminDownloadRoutes(app, { search: { db: closedDb, repo: repository, identity }, searchCriteria: { read: () => Promise.resolve(undefined) } });
-    const roster = { db: closedDb, repo: repository, events: createPeopleEvents(repository), identity, clock, faults: createFaultHooks({}, {}) };
-    await registerAdminProfileRoutes(app, { roster });
-    return app;
-  }
-
-  it("starts with people's own routes, each declared", async () => {
-    const app = await peopleApp();
-    try {
-      await app.ready();
-      expect(collectRouteMatrix(app).routes.map(keyOf).sort()).toEqual(
-        Object.keys(EXPECTED)
-          .filter((key) => key === 'GET /healthz' || key === 'GET /internal/v1/users/current' || isUserRoute(key))
-          .sort(),
-      );
-    } finally {
-      await app.close();
-    }
-  });
-
-  it.each<[string, string, Opt2RouteConfig | undefined]>([
-    ['declares no config.opt2', '/v1/users/__undeclared', undefined],
-    ['declares neither requires nor public', '/v1/users/__unlisted', { transport: 'service' }],
-    ['declares both requires and public', '/v1/users/__both', { requires: [Roles.s2], public: true }],
-    ['declares an empty requires', '/v1/users/__empty', { requires: [] }],
-    ['is a public push route', '/internal/v1/events/people.programs-sites.site.removed.v1', { transport: 'pubsub-push', public: true }],
-    ['declares the service transport on a task path', '/internal/v1/tasks/people-probe', { transport: 'service', requires: [TASKS_INVOKER_ROLE] }],
-    ['declares the cloud-tasks transport on a user path', '/v1/users/__task', { transport: 'cloud-tasks', requires: [TASKS_INVOKER_ROLE] }],
-  ])('fails start-up when a route beside them %s', async (_label, url, opt2) => {
-    const app = await peopleApp();
+  it.each<[string, Opt2RouteConfig | undefined]>([
+    ['declares no config.opt2', undefined],
+    ['declares neither requires nor public', { transport: 'service' }],
+    ['declares both requires and public', { requires: [Roles.s2], public: true }],
+    ['declares an empty requires list', { requires: [] }],
+  ])('fails start-up for a route that %s', async (_label, opt2) => {
+    const app = await createService({ name: 'people-undeclared', version: '0.0.0', env: testEnv({ LOG_LEVEL: 'error' }, t.stateDir), verifierOverride: testVerifier() });
     try {
       const startUp = (async () => {
-        app.get(url, opt2 === undefined ? {} : { config: { opt2 } }, async () => ({}));
+        await app.register(async (scope) => {
+          scope.get('/undeclared', opt2 === undefined ? {} : { config: { opt2 } }, async () => ({}));
+        });
         await app.ready();
       })();
       await expect(startUp).rejects.toBeInstanceOf(UndeclaredRouteError);
