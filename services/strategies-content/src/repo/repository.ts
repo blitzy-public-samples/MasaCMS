@@ -1290,6 +1290,31 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       return rows[0]?.thebottom ?? null;
     },
 
+    /** contentManager.deleteAll `rs`: the content ids of the active versions under `parentId`, in the clustered scan order. */
+    async activeChildIds(tx: TenantTx, args: { parentId: string }): Promise<string[]> {
+      const p = new SqlParams(1);
+      const rows = await select<{ contentid: string | null }>(
+        tx,
+        [CONTENT],
+        `SELECT contentid FROM ${name(CONTENT)} WHERE tenant_id = $1 AND ${idEq(p, 'parentid', args.parentId)} AND active = 1 ORDER BY tcontent_id`,
+        [tx.tenantId, ...p.values],
+      );
+      return rows.map((row) => row.contentid ?? '');
+    },
+
+    /** contentDAO.createRelatedItems `rsCheck`: the active Link versions under `parentId` whose body is like `bodyLike`. */
+    activeLinksByBody(tx: TenantTx, args: { parentId: string; siteId: string; bodyLike: string }): Promise<Array<{ contenthistid: string; siteid: string | null }>> {
+      const p = new SqlParams(1);
+      return select<{ contenthistid: string; siteid: string | null }>(
+        tx,
+        [CONTENT],
+        `SELECT contenthistid, siteid FROM ${name(CONTENT)} WHERE tenant_id = $1 AND ${idEq(p, 'parentid', args.parentId)}` +
+          ` AND siteid = ${p.add(args.siteId)} AND active = 1 AND ${ciEq(p, 'type', 'Link')} AND ${ciLike(p, 'body', args.bodyLike)}` +
+          ' ORDER BY tcontent_id',
+        [tx.tenantId, ...p.values],
+      );
+    },
+
     /** contentManager.save: moves the inactive versions of a moved item under its new parent. */
     reparentInactive(tx: TenantTx, args: { contentId: string; siteId: string; parentId: string }, ctx?: WriteContext): Promise<ContentRow[]> {
       return updateVersions(tx, { contentId: args.contentId, active: 0, siteId: args.siteId }, { parentid: args.parentId }, ctx);
@@ -1460,6 +1485,30 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       ctx?: WriteContext,
     ): Promise<FilenameArchiveRow> {
       return platform.insert<FilenameArchiveRow>(tx, FILENAME_ARCHIVE.table, { ...row, archiveid: row.archiveid ?? cfUuid() }, ctx);
+    },
+
+    /** contentFilenameArchiveBean.loadBy(filename, siteid) then save: the first stored row of the filename takes `contentId`, else one is inserted. */
+    async saveFilenameArchive(
+      tx: TenantTx,
+      args: { filename: string; siteId: string; contentId: string },
+      ctx?: WriteContext,
+    ): Promise<FilenameArchiveRow> {
+      const [stored] = await lockRows<FilenameArchiveRow>(
+        tx,
+        FILENAME_ARCHIVE,
+        (p) => `${ciEq(p, 'filename', args.filename)} AND siteid = ${p.add(args.siteId)}`,
+        ctx,
+      );
+      if (stored !== undefined) {
+        const updated = await platform.update<FilenameArchiveRow>(tx, FILENAME_ARCHIVE.table, { archiveid: stored.archiveid }, { contentid: args.contentId }, ctx);
+        if (updated !== null) return updated;
+      }
+      return platform.insert<FilenameArchiveRow>(
+        tx,
+        FILENAME_ARCHIVE.table,
+        { archiveid: cfUuid(), filename: args.filename, siteid: args.siteId, contentid: args.contentId },
+        ctx,
+      );
     },
 
     /** Saves the remote pointer of an item (contentRemotePointerBean.save). */
@@ -3118,6 +3167,23 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       return rows[0] ?? null;
     },
 
+    /** contentManager.add `rsApprovalsCancel`: the requests of an item's versions in change set `changesetId`. */
+    requestsOfChangesetVersions(
+      tx: TenantTx,
+      args: { contentId: string; changesetId: string; siteId: string },
+    ): Promise<Array<{ contenthistid: string; requestid: string }>> {
+      const p = new SqlParams(1);
+      return select<{ contenthistid: string; requestid: string }>(
+        tx,
+        [CONTENT, APPROVAL_REQUEST],
+        `SELECT c.contenthistid, r.requestid FROM ${name(CONTENT)} c` +
+          ` INNER JOIN ${name(APPROVAL_REQUEST)} r ON (r.tenant_id = c.tenant_id AND c.contenthistid = r.contenthistid)` +
+          ` WHERE c.tenant_id = $1 AND ${idEq(p, 'c.contentid', args.contentId)} AND ${idEq(p, 'c.changesetid', args.changesetId)}` +
+          ` AND c.siteid = ${p.add(args.siteId)} ORDER BY c.tcontent_id, r.requestid`,
+        [tx.tenantId, ...p.values],
+      );
+    },
+
     /** approvalAction.loadBy(requestID, groupID): the earliest action of a request's group, or null. */
     async actionFor(tx: TenantTx, args: { requestId: string; groupId: string }): Promise<ApprovalActionRow | null> {
       const p = new SqlParams(1);
@@ -3309,6 +3375,11 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
         stored.push(await platform.insert<ExtendDataRow>(tx, EXTEND_DATA.table, { ...row, baseid: baseId }, ctx));
       }
       return stored;
+    },
+
+    /** extendManager.preserveExtendedData's inserts: appends rows to a base object without removing any, duplicates included. */
+    insertExtendData(tx: TenantTx, baseId: string, rows: readonly ExtendDataInput[], ctx?: WriteContext): Promise<ExtendDataRow[]> {
+      return insertEach<ExtendDataRow>(tx, EXTEND_DATA, rows.map((row) => ({ ...row, baseid: baseId })), ctx);
     },
 
     /** extendManager.deleteExtendedData; returns the File attribute values for the file manager's `deleteIfNotUsed`. */
