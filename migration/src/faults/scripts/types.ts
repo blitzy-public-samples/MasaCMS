@@ -16,7 +16,7 @@ export interface FaultEnv {
   logger: MigrationContext['logger'];
 }
 
-/** Outcome of one assertion; `skipped` never fails the fault. */
+/** Outcome of one assertion; a `skipped` one leaves the fault unmet unless another fails it. */
 export type FaultAssertionStatus = 'pass' | 'fail' | 'skipped';
 
 /** One checked expectation; `detail` is JSON-safe, and a `skipped` assertion carries `reason`. */

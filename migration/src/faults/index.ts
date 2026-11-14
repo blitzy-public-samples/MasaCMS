@@ -112,7 +112,7 @@ export interface FaultError {
 export interface FaultReportBlock {
   name: FaultName;
   params: unknown;
-  outcome: 'passed' | 'failed';
+  outcome: 'passed' | 'failed' | 'unmet';
   startedAt: string;
   finishedAt: string;
   tableVersion: string | null;
@@ -123,10 +123,10 @@ export interface FaultReportBlock {
   resumeError?: FaultError;
 }
 
-/** Outcome of {@link runFault}; `exitCode` is 0 only for a passed, zero-difference fault or an accepted toggle. */
+/** Outcome of {@link runFault}; `unmet` has a skipped assertion and no failure, and `exitCode` is 0 only for a passed, zero-difference fault or a toggled one. */
 export interface RunFaultResult {
   name: FaultName;
-  outcome: 'passed' | 'failed' | 'toggled';
+  outcome: 'passed' | 'failed' | 'unmet' | 'toggled';
   assertions: FaultAssertion[];
   /** The first failure, of `run`, `resume` or `reconcile`. */
   error?: FaultError;
@@ -166,8 +166,10 @@ function failure(ctx: MigrationContext, name: FaultName, phase: FaultPhase, erro
   return { phase, message: error instanceof Error ? `${error.name}: ${error.message}` : String(error) };
 }
 
-function hasFailedAssertion(assertions: readonly FaultAssertion[]): boolean {
-  return assertions.some((assertion) => assertion.status === 'fail');
+/** `failed` on an error or a failed assertion, else `unmet` when an assertion was skipped, else `success`. */
+function verdictOf<S extends 'passed' | 'toggled'>(assertions: readonly FaultAssertion[], errored: boolean, success: S): 'failed' | 'unmet' | S {
+  if (errored || assertions.some((assertion) => assertion.status === 'fail')) return 'failed';
+  return assertions.some((assertion) => assertion.status === 'skipped') ? 'unmet' : success;
 }
 
 /** The script of `name`, and `params` parsed by its schema. @throws FaultUsageError */
@@ -184,7 +186,7 @@ function resolveScript(scripts: FaultScriptTable, name: string, params: unknown)
   return { fault: name, script, parsed: result.data };
 }
 
-/** Runs a fault that has no reconciliation point; a throw or a failed assertion fails it. */
+/** Runs a fault that has no reconciliation point; a throw or a failed assertion fails it, and a skipped one leaves it unmet. */
 async function runToggle(ctx: MigrationContext, env: FaultEnv, fault: FaultName, script: FaultScript, params: unknown): Promise<RunFaultResult> {
   let output: FaultRunOutput;
   try {
@@ -192,8 +194,8 @@ async function runToggle(ctx: MigrationContext, env: FaultEnv, fault: FaultName,
   } catch (error) {
     return { name: fault, outcome: 'failed', assertions: [], error: failure(ctx, fault, 'run', error), exitCode: 1 };
   }
-  const failed = hasFailedAssertion(output.assertions);
-  return { name: fault, outcome: failed ? 'failed' : 'toggled', assertions: output.assertions, exitCode: failed ? 1 : 0 };
+  const outcome = verdictOf(output.assertions, false, 'toggled');
+  return { name: fault, outcome, assertions: output.assertions, exitCode: outcome === 'toggled' ? 0 : 1 };
 }
 
 /** Legacy database a fault point reads and the snapshot sequence it records. @throws ReconcileUsageError when a snapshot point has no ready snapshot */
@@ -297,7 +299,7 @@ async function runReconciling(
   }
 
   const assertions = [...(runOutput?.assertions ?? []), ...(resumeOutput?.assertions ?? [])];
-  const outcome = runError !== undefined || resumeError !== undefined || hasFailedAssertion(assertions) ? 'failed' : 'passed';
+  const outcome = verdictOf(assertions, runError !== undefined || resumeError !== undefined, 'passed');
   const details = {
     ...(runOutput?.details === undefined ? {} : { run: runOutput.details }),
     ...(resumeOutput?.details === undefined ? {} : { resume: resumeOutput.details }),

@@ -4,7 +4,7 @@ import { z } from '@opt2/platform/service-kit';
 
 import { runFeed } from '../../apply/index.js';
 import type { MigrationContext } from '../../context.js';
-import { currentAuthority, type CurrentAuthority } from '../../cutover/index.js';
+import { currentAuthority, loadVersion, type CurrentAuthority } from '../../cutover/index.js';
 import type { paths } from '../../generated/openapi.js';
 import { completeWindowViaService, openWindowViaService } from '../../windows/index.js';
 import { WindowCallError, type WindowOpenResponse, type WriteWindow } from '../../windows/via-service.js';
@@ -13,12 +13,15 @@ import { fail, pass, skipped, type FaultAssertion, type FaultEnv, type FaultResu
 const FAULT = 'window-import-interrupted';
 const ROUTE_KEY = `fault:${FAULT}`;
 const LEGACY_TABLE = 'tcontent';
+/** Route key of the gateway's anonymous JSON API read `GET /_api/json/v1/<site>/content/<id>`. */
+const CONTENT_READ_ROUTE = 'api:content.findone';
 const MIGRATION_SERVICE = 'migration';
 const WINDOW_PATH = '/internal/v1/windows/{windowId}' satisfies keyof paths;
 const POLL_MS = 1000;
 const HTTP_OK = 200;
 const HTTP_UNAVAILABLE = 503;
 
+const FAULT_CLEARED = 'fault-cleared';
 const IMPORT_PENDING = 'window-import-pending';
 const READ_NOT_SUPERSEDED = 'read-not-superseded';
 const RETRY_CLOSED = 'retry-closed';
@@ -77,6 +80,18 @@ function versionOf(authority: CurrentAuthority): string {
 function windowUnits(ctx: MigrationContext, params: WindowImportParams): string[] {
   const units = params.units ?? ctx.catalog.unitsForLegacyTable(LEGACY_TABLE).map((target) => target.unit);
   return [...new Set(units)];
+}
+
+/** Whether the active version routes the content read to the target; no version or no entry for it means legacy. @throws when the version file cannot be read */
+function readReachesTarget(ctx: MigrationContext, authority: CurrentAuthority): boolean {
+  if (authority.tableVersion === null) return false;
+  const { entries } = loadVersion(ctx.config.paths.cutoverDir, authority.tableVersion);
+  return entries.some((entry) => entry.route === CONTENT_READ_ROUTE && entry.state === 'target');
+}
+
+/** Skip reason of a read check whose content read routes to legacy. */
+function legacyReadReason(authority: CurrentAuthority): string {
+  return `the content read (${CONTENT_READ_ROUTE}) routes to legacy under ${versionOf(authority)}`;
 }
 
 /** Reads window `windowId` from the running migration service (`windowGet`). @throws WindowCallError on a non-200 answer */
@@ -164,9 +179,11 @@ async function run(env: FaultEnv, params: WindowImportParams): Promise<FaultRunO
 
   // From here every failure is an assertion, so `resume` always receives the window to complete.
   let authority: CurrentAuthority;
+  let readsTarget: boolean;
   try {
     // The window leases its units, so no transition can change their authority until it closes.
     authority = await currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths });
+    readsTarget = readReachesTarget(ctx, authority);
     await env.remote.set(FAULT, { windowId });
     const update = await pool
       .request()
@@ -194,10 +211,10 @@ async function run(env: FaultEnv, params: WindowImportParams): Promise<FaultRunO
   // The service imports only units whose gates the window closed, which are the target-authoritative ones; with none
   // there is no import to interrupt and legacy's write reaches the target through the forward feed, checked in `resume`.
   if (targetUnits.length === 0) {
-    const reason = `no unit of the window is target-authoritative under ${versionOf(authority)}`;
+    const cannotRun = (check: string): string => `the ${check} check cannot run under ${versionOf(authority)}: no unit of the window is target-authoritative`;
     return done([
-      skipped(IMPORT_PENDING, `${reason}: the window closes no gates and imports nothing`),
-      skipped(READ_NOT_SUPERSEDED, `${reason}, so reads route to legacy`),
+      skipped(IMPORT_PENDING, `${cannotRun('import-pending')}, so the window closes no gates and imports nothing`),
+      skipped(READ_NOT_SUPERSEDED, `${cannotRun('protected-read')}, so reads route to legacy`),
     ]);
   }
 
@@ -212,6 +229,7 @@ async function run(env: FaultEnv, params: WindowImportParams): Promise<FaultRunO
   } catch (error) {
     assertions.push(fail(IMPORT_PENDING, { windowId, error: messageOf(error) }, 'the window could not be read'));
   }
+  if (!readsTarget) return done([...assertions, skipped(READ_NOT_SUPERSEDED, legacyReadReason(authority))]);
   try {
     assertions.push(readVerdict(await readContent(ctx, siteId, contentId, readTimeoutMs), newCredits, oldCredits, readTimeoutMs));
   } catch (error) {
@@ -241,12 +259,14 @@ async function awaitClosed(env: FaultEnv, windowId: string, timeoutMs: number): 
   }
 }
 
-/** Forward-feeds the legacy-authoritative units and re-reads the target-authoritative ones, after the window closed. */
+/** Forward-feeds the legacy-authoritative units and re-reads the target-authoritative ones where the content read reaches the target, after the window closed. */
 async function propagation(env: FaultEnv, state: WindowState, timeoutMs: number): Promise<{ steps: string[]; assertions: FaultAssertion[] }> {
   const { ctx } = env;
   let authority: CurrentAuthority;
+  let readsTarget: boolean;
   try {
     authority = await currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths });
+    readsTarget = readReachesTarget(ctx, authority);
   } catch (error) {
     return { steps: [], assertions: [fail(FEED_PROPAGATED, { error: messageOf(error) }, 'the active cut-over version could not be read')] };
   }
@@ -262,7 +282,10 @@ async function propagation(env: FaultEnv, state: WindowState, timeoutMs: number)
     }
     steps.push('rerun-feed');
   }
-  if (state.units.some((unit) => authority.isTargetAuthoritative(unit))) {
+  const anyTarget = state.units.some((unit) => authority.isTargetAuthoritative(unit));
+  if (anyTarget && !readsTarget) {
+    assertions.push(skipped(TARGET_READ_CURRENT, legacyReadReason(authority)));
+  } else if (anyTarget) {
     try {
       const read = await readContent(ctx, state.siteId, state.contentId, timeoutMs);
       const detail = read.kind === 'waited' ? { read: 'waited', timeoutMs } : { status: read.status, credits: read.credits ?? null, newCredits: state.newCredits };
@@ -289,8 +312,9 @@ async function resume(env: FaultEnv, params: WindowImportParams, output?: FaultR
 
   try {
     await env.remote.clear(FAULT);
+    assertions.push(pass(FAULT_CLEARED));
   } catch (error) {
-    details.clearFaultError = messageOf(error);
+    assertions.push(fail(FAULT_CLEARED, { error: messageOf(error) }, 'the migration service did not confirm the fault was cleared'));
   }
   steps.push('clear-fault');
 

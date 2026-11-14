@@ -161,9 +161,9 @@ function codeList(values: readonly string[]): string {
   return values.length === 0 ? 'none' : [...values].sort().map(code).join(', ');
 }
 
-/** Started, finished and result of the transition steps `names`, which run in this order. */
+/** Started, finished and result of the transition steps `names`, which run in this order, each from its latest attempt. */
 function transitionCells(transition: TransitionLogEntry | undefined, names: readonly TransitionStepName[]): StepCells {
-  const logged = names.map((name) => transition?.steps.find((step) => step.name === name));
+  const logged = names.map((name) => transition?.steps.findLast((step) => step.name === name));
   const first = logged[0];
   if (first === undefined) return [NOT_RUN, NOT_RUN, NOT_RUN];
   const failure = logged.find((step) => step?.result !== undefined && step.result !== 'ok');
@@ -266,6 +266,19 @@ function transitionLine(transition: TransitionLogEntry | undefined): string {
   );
 }
 
+/** A paragraph listing, in log order, every step attempt a later attempt of the same step replaced; empty when none. */
+function supersededLines(transition: TransitionLogEntry | undefined): string[] {
+  const steps = transition?.steps ?? [];
+  const superseded = steps.filter((step, index) => steps.slice(index + 1).some((later) => later.name === step.name));
+  if (superseded.length === 0) return [];
+  const attempts = superseded.map(
+    (step) =>
+      `${code(step.name)} (step ${String(step.step)}) started ${step.startedAt}, finished ` +
+      `${step.finishedAt ?? UNFINISHED}: ${step.result ?? UNFINISHED}`,
+  );
+  return ['', `Superseded step attempts: ${attempts.join('; ')}.`];
+}
+
 function stepsSection(input: RollbackReportInput): string[] {
   const { transition, reconciliation } = input;
   const rehearsed = input.parityGeneratedAt;
@@ -303,6 +316,7 @@ function stepsSection(input: RollbackReportInput): string[] {
     ...steps.map(([label, cells], index) => row([String(index + 1), label, ...cells])),
     '',
     transitionLine(transition),
+    ...supersededLines(transition),
   ];
 }
 
