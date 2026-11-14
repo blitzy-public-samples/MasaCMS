@@ -332,6 +332,17 @@ export function assignments(deps: DomainDeps, actor: Actor, args: { changesetId:
   });
 }
 
+/** changesetBean.hasPendingApprovals: the count of the change set's versions whose approval request is not Approved. */
+export function pendingApprovalCount(deps: DomainDeps, actor: Actor, changesetId: string): Promise<number> {
+  return withTenant(deps.db, actor.tenantId, (tx) => deps.repository.changesets.hasPendingApprovals(tx, { changesetId }));
+}
+
+/** changesetManager.getTagCloud of cchangesets.loadtagarray: the tenant's change-set tags in cloud order, a NULL tag as ''. */
+export async function changesetTagCloud(deps: DomainDeps, actor: Actor): Promise<string[]> {
+  const rows = await withTenant(deps.db, actor.tenantId, (tx) => deps.repository.changesets.changesetTagCloud(tx));
+  return rows.map((row) => row.tag ?? '');
+}
+
 // ---- JSON API entity rows: changeset and changesetCategoryAssignment ----
 
 /** A stored tchangesets row as the changeset entity's beanFeed selects it; NULL columns stay null. */
@@ -526,22 +537,25 @@ export async function publish(
   return settle(await withGatedTenant(deps.db, publisher.tenantId, (tx) => publishInTx(tx, deps, publisher, site, changesetId)));
 }
 
+/** Site settings content saves read, or their provider, called only once a save needs them. */
+export type ContentSaveSiteSource = ContentSaveSite | (() => ContentSaveSite | Promise<ContentSaveSite>);
+
 /** changesetRollBack.rollback (changesetRollBackBean.cfc:8-31): re-activates the replaced version, else hides the first one. */
 async function rollbackItem(
   tx: TenantTx,
   deps: ContentDeps,
   actor: Actor,
-  site: ContentSaveSite,
+  siteOf: () => Promise<ContentSaveSite>,
   row: ChangesetRollbackRow,
 ): Promise<SaveContentResult | null> {
   const repo = deps.repository;
   const previousHistId = row.previoushistid ?? '';
   if ((await repo.content.readVersion(tx, { contentHistId: previousHistId })).length > 0) {
-    return approveVersion(tx, deps, actor, site, previousHistId, { approvalChainOverride: true });
+    return approveVersion(tx, deps, actor, await siteOf(), previousHistId, { approvalChainOverride: true });
   }
   const changesetHistId = row.changesethistid ?? '';
   if ((await repo.content.readVersion(tx, { contentHistId: changesetHistId })).length > 0) {
-    return approveVersion(tx, deps, actor, site, changesetHistId, { approvalChainOverride: true, display: 0 });
+    return approveVersion(tx, deps, actor, await siteOf(), changesetHistId, { approvalChainOverride: true, display: 0 });
   }
   return null;
 }
@@ -552,15 +566,20 @@ export interface ChangesetRollbackResult {
   notices: MailNotice[];
 }
 
-/** changesetBean.rollback in one gated transaction: a published change set rolls back its versions, then any is saved unpublished. */
-export async function rollback(deps: ContentDeps, actor: Actor, site: ContentSaveSite, changesetId: string): Promise<ChangesetRollbackResult> {
+/**
+ * changesetBean.rollback in one gated transaction: a published change set rolls back its versions, then any is saved
+ * unpublished. A `site` provider is called only for a version to re-save; when it throws, nothing is written.
+ */
+export async function rollback(deps: ContentDeps, actor: Actor, site: ContentSaveSiteSource, changesetId: string): Promise<ChangesetRollbackResult> {
+  let resolved: Promise<ContentSaveSite> | undefined;
+  const siteOf = (): Promise<ContentSaveSite> => (resolved ??= (async () => (typeof site === 'function' ? site() : site))());
   const outcome = await withGatedTenant(deps.db, actor.tenantId, async (tx): Promise<Outcome<ChangesetRollbackResult>> => {
     const repo = deps.repository;
     const changeset = await readChangesetInTx(tx, repo, { changesetId }, actor, deps.clock);
     const notices: MailNotice[] = [];
     if (changeset.published) {
       for (const row of await repo.changesets.rollbackRows(tx, { changesetId: changeset.changesetid, siteId: changeset.siteid })) {
-        const saved = await rollbackItem(tx, deps, actor, site, row);
+        const saved = await rollbackItem(tx, deps, actor, siteOf, row);
         notices.push(...(saved?.notices ?? []));
         if (saved?.afterCommitError !== undefined) return { value: { changeset, notices }, error: saved.afterCommitError };
       }
