@@ -22,7 +22,15 @@ import {
   type LegacyDescribeUser,
   type LegacyUsedToken,
 } from '../../src/session/bridge-client.js';
+import { TEST_BRIDGE_KEY, TEST_CLOCK, UNREACHABLE_URL } from '../helpers/env.js';
 import { sendBytes, sendJson, startHttpDouble, type HttpDouble, type RecordedRequest } from '../helpers/http-double.js';
+import {
+  parseWireTime,
+  startLegacyOrigin,
+  type CreatedSession,
+  type LegacyOrigin,
+  type LegacySession,
+} from '../helpers/legacy-origin.js';
 
 const SESSION_PAGE = '/gateway/legacy-bridge/cfml/session.cfm';
 const SITE_PAGE = '/gateway/legacy-bridge/cfml/site.cfm';
@@ -371,14 +379,29 @@ describe('createBridgeClient', () => {
     expect(double.requests).toHaveLength(1);
   });
 
-  it('fails closed when fetch rejects', async () => {
-    const refused = new TypeError('fetch failed', {
-      cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
-    });
+  const refused = new TypeError('fetch failed', {
+    cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+  });
 
-    const failure = await failureOf(client({ fetch: () => Promise.reject(refused) }).describe(COOKIES, CALL));
+  it.each<[string, typeof fetch]>([
+    ['rejects', () => Promise.reject(refused)],
+    [
+      'throws synchronously',
+      () => {
+        throw refused;
+      },
+    ],
+  ])('fails closed when fetch %s', async (_how, failingFetch) => {
+    const failure = await failureOf(client({ fetch: failingFetch }).describe(COOKIES, CALL));
 
     expect(failure.cause).toBe(refused);
+  });
+
+  it.each(OP_CASES)('session.$op fails closed when the legacy origin refuses connections', async (c) => {
+    const failure = await failureOf(c.invoke(client({ legacyOrigin: UNREACHABLE_URL })));
+
+    expect(failure.cause).toBeInstanceOf(TypeError);
+    expect(double.requests).toHaveLength(0);
   });
 
   it.each<[string, (res: ServerResponse) => void]>([
@@ -414,6 +437,244 @@ describe('createBridgeClient', () => {
     await expect(client({ hmacKey: '' }).end(COOKIES, CALL)).rejects.toBeInstanceOf(RangeError);
 
     expect(double.requests).toHaveLength(0);
+  });
+});
+
+const LEGACY_CSRF = 'OPT2-TEST-CSRF-LEGACY';
+const LEGACY_LEDGER: LegacyUsedToken[] = [
+  { token: 'LEGACY-TOKEN-0001', usedAt: '2026-06-30T11:50:00.000' },
+  { token: 'LEGACY-TOKEN-0002', usedAt: '2026-06-30T11:58:00.000' },
+];
+const LEGACY_SINCE = '2026-06-30T11:55:00.000';
+
+interface SessionState {
+  hydrations: number;
+  ended: boolean;
+  usedTokens: LegacyUsedToken[];
+}
+
+interface LegacyCase {
+  op: OpCase['op'];
+  method: 'GET' | 'POST';
+  sub: string;
+  /** JSON body the double receives; undefined when the op sends none. */
+  sent: unknown;
+  invoke: (bridge: BridgeClient, s: CreatedSession) => Promise<BridgeResult<unknown>>;
+  answer: (s: CreatedSession) => unknown;
+  after: SessionState;
+}
+
+function callOf(s: CreatedSession) {
+  return { legacySessionId: s.session.legacySessionId, userAgent: CALL.userAgent };
+}
+
+const LEGACY_CASES: LegacyCase[] = [
+  {
+    op: 'describe',
+    method: 'GET',
+    sub: '',
+    sent: undefined,
+    invoke: (bridge, s) => bridge.describe(s.cookies, callOf(s)),
+    answer: (s) => ({
+      sessionId: s.session.legacySessionId,
+      isLoggedIn: true,
+      user: USER,
+      memberships: MEMBERSHIPS,
+      membershipIds: MEMBERSHIP_IDS,
+      csrfSecretKey: LEGACY_CSRF,
+      usedTokens: LEGACY_LEDGER,
+      siteId: 'tenant-a',
+      serverTime: SERVER_TIME,
+    }),
+    after: { hydrations: 0, ended: false, usedTokens: LEGACY_LEDGER },
+  },
+  {
+    op: 'hydrate',
+    method: 'POST',
+    sub: USER.userID,
+    sent: HYDRATE,
+    invoke: (bridge, s) => bridge.hydrate(s.cookies, HYDRATE, callOf(s)),
+    answer: (s) => ({ sessionId: s.session.legacySessionId, hydrated: true, serverTime: SERVER_TIME }),
+    after: { hydrations: 1, ended: false, usedTokens: USED },
+  },
+  {
+    op: 'markUsed',
+    method: 'POST',
+    sub: '',
+    sent: { tokens: USED },
+    invoke: (bridge, s) => bridge.markUsed(s.cookies, USED, callOf(s)),
+    answer: () => ({ applied: 2, serverTime: SERVER_TIME }),
+    after: { hydrations: 0, ended: false, usedTokens: [...LEGACY_LEDGER, ...USED] },
+  },
+  {
+    op: 'usedSince',
+    method: 'GET',
+    sub: '',
+    sent: undefined,
+    invoke: (bridge, s) => bridge.usedSince(s.cookies, LEGACY_SINCE, callOf(s)),
+    answer: () => ({ tokens: LEGACY_LEDGER.slice(1), serverTime: SERVER_TIME }),
+    after: { hydrations: 0, ended: false, usedTokens: LEGACY_LEDGER },
+  },
+  {
+    op: 'end',
+    method: 'POST',
+    sub: '',
+    sent: undefined,
+    invoke: (bridge, s) => bridge.end(s.cookies, callOf(s)),
+    answer: () => ({ ended: true, serverTime: SERVER_TIME }),
+    after: { hydrations: 0, ended: true, usedTokens: [] },
+  },
+];
+
+function wireDate(text: string): Date {
+  const at = parseWireTime(text);
+  if (at === undefined) throw new Error(`invalid wire time ${text}`);
+  return at;
+}
+
+describe('createBridgeClient against the legacy origin double', () => {
+  let legacy: LegacyOrigin;
+
+  const bridge = (overrides: Partial<BridgeClientOptions> = {}): BridgeClient =>
+    createBridgeClient({ legacyOrigin: legacy.url, hmacKey: TEST_BRIDGE_KEY, clock: TEST_CLOCK, ...overrides });
+
+  // A logged-in tenant-a session as Masa's login left it, with a two-entry CSRF ledger.
+  const tenantSession = (): CreatedSession =>
+    legacy.createSession({
+      user: { ...USER },
+      isLoggedIn: true,
+      siteId: 'tenant-a',
+      memberships: MEMBERSHIPS,
+      membershipIds: MEMBERSHIP_IDS,
+      csrfSecretKey: LEGACY_CSRF,
+      used: new Map(LEGACY_LEDGER.map(({ token, usedAt }) => [token, wireDate(usedAt)])),
+    });
+
+  const stateOf = (session: LegacySession): SessionState => ({
+    hydrations: session.hydrations,
+    ended: session.ended,
+    usedTokens: legacy.usedTokens(session.legacySessionId),
+  });
+
+  const sessionNamed = (legacySessionId: string): LegacySession => {
+    const session = legacy.sessions.get(legacySessionId);
+    if (session === undefined) throw new Error(`no legacy session ${legacySessionId}`);
+    return session;
+  };
+
+  beforeAll(async () => {
+    legacy = await startLegacyOrigin();
+  });
+
+  beforeEach(() => {
+    legacy.clearRequests();
+  });
+
+  afterAll(async () => {
+    await legacy.close();
+  });
+
+  it.each(LEGACY_CASES)(
+    'session.$op is signed for the attached session with a TTL of at most 60 s and returns the bridge JSON',
+    async (c) => {
+      const s = tenantSession();
+
+      const result = await c.invoke(bridge(), s);
+
+      expect(legacy.bridgeCalls).toHaveLength(1);
+      const [call] = legacy.bridgeCalls;
+      expect(call).toMatchObject({ op: c.op, status: 200, legacySessionId: s.session.legacySessionId });
+      expect(result).toEqual({ body: call?.body, setCookies: [] });
+      expect(result.body).toEqual(c.answer(s));
+      expect(stateOf(s.session)).toEqual(c.after);
+
+      const req = call?.request;
+      expect(req?.method).toBe(c.method);
+      expect(req?.path).toBe(SESSION_PAGE);
+      expect(req?.query.op).toBe(c.op);
+      expect(req?.headers.cookie).toBe(legacy.sessionCookieHeader(s.session));
+      expect(req?.headers['user-agent']).toBe(CALL.userAgent);
+      const sent: unknown = req?.body.length === 0 ? undefined : JSON.parse(req?.body.toString('utf8') ?? '');
+      expect(sent).toEqual(c.sent);
+
+      const assertion = assertionOf(req);
+      const claims = claimsOf(assertion);
+      expect(claims).toMatchObject({
+        aud: 'legacy-bridge',
+        op: `session.${c.op}`,
+        sid: s.session.legacySessionId,
+        sub: c.sub,
+        siteId: '',
+      });
+      const ttl = claims.exp - TEST_CLOCK.now().getTime() / 1000;
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl).toBeLessThanOrEqual(60);
+      expect(verifyBridgeAssertion(assertion, TEST_BRIDGE_KEY, new MemoryNonceStore(), TEST_CLOCK.now())).toEqual({
+        ok: true,
+        payload: claims,
+      });
+      expect(call?.payload).toEqual(claims);
+    },
+  );
+
+  it('runs describe, hydrate, markUsed, usedSince and end on one session, each with a distinct nonce', async () => {
+    const s = tenantSession();
+    const client = bridge();
+
+    for (const c of LEGACY_CASES) await c.invoke(client, s);
+
+    expect(legacy.bridgeCalls.map(({ op, status }) => [op, status])).toEqual(LEGACY_CASES.map(({ op }) => [op, 200]));
+    const nonces = legacy.bridgeCalls.map(({ payload }) => payload?.nonce);
+    expect(nonces).toEqual(LEGACY_CASES.map(() => expect.stringMatching(/^[0-9a-f]{32}$/)));
+    expect(new Set(nonces).size).toBe(LEGACY_CASES.length);
+    expect(s.session).toMatchObject({ hydrations: 1, ended: true });
+  });
+
+  it('hydrate delivers the snapshot, CSRF secret and used tokens to the legacy session unchanged', async () => {
+    const s = tenantSession();
+
+    await bridge().hydrate(s.cookies, HYDRATE, callOf(s));
+
+    expect(JSON.parse(legacy.bridgeCalls[0]?.request.body.toString('utf8') ?? '')).toEqual(HYDRATE);
+    expect(s.session).toMatchObject({
+      // The double holds datetime user keys as Dates, as session.mura does.
+      user: { ...USER, lastlogin: wireDate(USER.lastlogin), passwordCreated: wireDate(USER.passwordCreated) },
+      isLoggedIn: true,
+      memberships: MEMBERSHIPS,
+      membershipIds: MEMBERSHIP_IDS,
+      csrfSecretKey: HYDRATE.csrfSecretKey,
+    });
+    expect(legacy.usedTokens(s.session.legacySessionId)).toEqual(HYDRATE.usedTokens);
+  });
+
+  it.each<[string, (client: BridgeClient) => Promise<BridgeResult<{ sessionId: string }>>]>([
+    ['describe', (client) => client.describe({}, { userAgent: CALL.userAgent })],
+    ['hydrate', (client) => client.hydrate({}, HYDRATE, { userAgent: CALL.userAgent })],
+  ])('session.%s without session cookies returns the new session cookies ColdFusion set verbatim', async (_op, invoke) => {
+    const result = await invoke(bridge());
+
+    const created = sessionNamed(result.body.sessionId);
+    expect(result.setCookies).toEqual([
+      `CFID=${created.cfid};path=/;HttpOnly;`,
+      `CFTOKEN=${created.cftoken};path=/;HttpOnly;`,
+      `JSESSIONID=${created.jsessionid};path=/;HttpOnly;`,
+    ]);
+    expect(legacy.bridgeCalls[0]?.request.headers.cookie).toBeUndefined();
+    expect(claimsOf(assertionOf(legacy.bridgeCalls[0]?.request)).sid).toBe('');
+  });
+
+  it.each<[string, Partial<BridgeClientOptions>, string | undefined, number, string | undefined]>([
+    ['the guard refuses an assertion signed with another key', { hmacKey: 'not-the-bridge-key' }, undefined, 403, undefined],
+    ['the assertion sid names another session', {}, 'OPT2TEST_9999_00000000', 409, 'sessionMismatch'],
+  ])('session.end fails closed and leaves the session untouched when %s', async (_case, overrides, sid, status, error) => {
+    const s = tenantSession();
+    const call = { ...callOf(s), ...(sid === undefined ? {} : { legacySessionId: sid }) };
+
+    const failure = await failureOf(bridge(overrides).end(s.cookies, call));
+
+    expect(failure.cause).toMatchObject({ code: `HTTP_${String(status)}`, status, error });
+    expect(legacy.bridgeCalls).toMatchObject([{ op: 'end', status }]);
+    expect(stateOf(s.session)).toEqual({ hydrations: 0, ended: false, usedTokens: LEGACY_LEDGER });
   });
 });
 
