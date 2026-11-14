@@ -2963,6 +2963,53 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
         page,
       );
     },
+
+    /** changesetBean.getFeed's rows before request params: the site's change sets (`siteID in (siteid)`) in primary-key order. */
+    siteChangesets(tx: TenantTx, args: { siteId: string }): Promise<ChangesetRow[]> {
+      const p = new SqlParams(1);
+      return select<ChangesetRow>(
+        tx,
+        [CHANGESET],
+        `SELECT * FROM ${name(CHANGESET)} WHERE tenant_id = $1 AND siteid = ${p.add(args.siteId)} ORDER BY changesetid`,
+        [tx.tenantId, ...p.values],
+      );
+    },
+
+    /** changesetCategoryAssignment loadBy and getFeed: the site's assignment rows, one id's when given, in primary-key order. */
+    siteCategoryAssignments(tx: TenantTx, args: { siteId: string; assignmentId?: string }): Promise<ChangesetCategoryAssignRow[]> {
+      const p = new SqlParams(1);
+      const filters = ['tenant_id = $1', `siteid = ${p.add(args.siteId)}`];
+      if (args.assignmentId !== undefined) filters.push(idEq(p, 'assignmentid', args.assignmentId));
+      return select<ChangesetCategoryAssignRow>(
+        tx,
+        [CHANGESET_CATEGORY_ASSIGN],
+        `SELECT * FROM ${name(CHANGESET_CATEGORY_ASSIGN)} WHERE ${filters.join(' AND ')} ORDER BY assignmentid`,
+        [tx.tenantId, ...p.values],
+      );
+    },
+
+    /** changesetCategoryAssignment beanORM.save: updates the row with the id (any site), else inserts it; '' binds NULL. */
+    async saveCategoryAssignment(
+      tx: TenantTx,
+      row: Omit<ChangesetCategoryAssignRow, 'tenant_id'>,
+      ctx?: WriteContext,
+    ): Promise<ChangesetCategoryAssignRow> {
+      const { assignmentid, ...columns } = ormStorage(row);
+      const [updated] = await updateWhere<ChangesetCategoryAssignRow>(
+        tx,
+        CHANGESET_CATEGORY_ASSIGN,
+        (p) => idEq(p, 'assignmentid', row.assignmentid),
+        columns,
+        ctx,
+      );
+      return updated ?? platform.insert<ChangesetCategoryAssignRow>(tx, CHANGESET_CATEGORY_ASSIGN.table, { ...columns, assignmentid }, ctx);
+    },
+
+    /** changesetCategoryAssignment beanORM.delete: removes the row with the id. */
+    async deleteCategoryAssignment(tx: TenantTx, args: { assignmentId: string }, ctx?: WriteContext): Promise<ChangesetCategoryAssignRow | null> {
+      const [removed] = await deleteWhere<ChangesetCategoryAssignRow>(tx, CHANGESET_CATEGORY_ASSIGN, (p) => idEq(p, 'assignmentid', args.assignmentId), ctx);
+      return removed ?? null;
+    },
   };
 
   // ---- approvals ----

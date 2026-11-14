@@ -18,7 +18,7 @@ import {
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { registeredTenants, withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import type { ChangesetAssignmentRow, ChangesetFeedArgs } from '../repo/repository.js';
-import type { ChangesetRollbackRow, ChangesetRow, ContentRow, TrashRow } from '../repo/tables.js';
+import type { ChangesetCategoryAssignRow, ChangesetRollbackRow, ChangesetRow, ContentRow, TrashRow } from '../repo/tables.js';
 import { loadRequest, saveRequest } from './approval-requests.js';
 import {
   deleteChangesetRowsInTx,
@@ -330,6 +330,125 @@ export function assignments(deps: DomainDeps, actor: Actor, args: { changesetId:
     const changeset = await readChangesetInTx(tx, repo, { changesetId: args.changesetId }, actor, deps.clock);
     return variation === undefined ? { changeset, site, component, form } : { changeset, site, component, form, variation };
   });
+}
+
+// ---- JSON API entity rows: changeset and changesetCategoryAssignment ----
+
+/** A stored tchangesets row as the changeset entity's beanFeed selects it; NULL columns stay null. */
+export type ChangesetColumns = Omit<ChangesetRow, 'tenant_id'>;
+
+/** A stored tchangesetcategoryassign row; NULL columns stay null. */
+export type ChangesetCategoryAssignmentColumns = Omit<ChangesetCategoryAssignRow, 'tenant_id'>;
+
+/** The row without its tenant column. */
+function withoutTenant<R extends { tenant_id: string }>({ tenant_id: _tenant, ...columns }: R): Omit<R, 'tenant_id'> {
+  return columns;
+}
+
+/** changesetBean.getFeed's rows of `siteId` in the actor's tenant, in primary-key order, before request params apply. */
+export async function listChangesetRows(deps: DomainDeps, actor: Actor, siteId: string): Promise<ChangesetColumns[]> {
+  const rows = await withTenant(deps.db, actor.tenantId, (tx) => deps.repository.changesets.siteChangesets(tx, { siteId }));
+  return rows.map(withoutTenant);
+}
+
+/** changesetBean.loadBy(changesetID) on a `$.getBean('changeset')`, which holds the request site: the site's stored change set, else a new bean of the site. */
+export function loadChangeset(deps: DomainDeps, actor: Actor, key: { changesetId: string; siteId: string }): Promise<ChangesetBean> {
+  return withTenant(deps.db, actor.tenantId, (tx) => readChangesetInTx(tx, deps.repository, key, actor, deps.clock));
+}
+
+/** The JSON API save's beans: the one saved (with its validation errors) and its reload by the saved id. */
+export interface ChangesetEntitySave {
+  saved: ChangesetBean;
+  reloaded: ChangesetBean;
+}
+
+/** The JSON API changeset save in one gated transaction: site-scoped loadBy(`loadId`), `set(values)`, save, then the reload by the saved id. */
+export function saveChangesetEntity(
+  deps: DomainDeps,
+  actor: Actor,
+  input: { loadId: string; siteId: string; values: ChangesetParams },
+): Promise<ChangesetEntitySave> {
+  return withGatedTenant(deps.db, actor.tenantId, async (tx) => {
+    const repo = deps.repository;
+    const read = await readChangesetInTx(tx, repo, { changesetId: input.loadId, siteId: input.siteId }, actor, deps.clock);
+    const saved = await saveChangesetInTx(tx, repo, setChangesetValues(read, input.values), actor);
+    const reloaded = await readChangesetInTx(tx, repo, { changesetId: saved.changesetid, siteId: input.siteId }, actor, deps.clock);
+    return { saved, reloaded };
+  });
+}
+
+/** changesetCategoryAssignment getFeed's rows of `siteId` in the actor's tenant, in primary-key order. */
+export async function listChangesetCategoryAssignments(
+  deps: DomainDeps,
+  actor: Actor,
+  siteId: string,
+): Promise<ChangesetCategoryAssignmentColumns[]> {
+  const rows = await withTenant(deps.db, actor.tenantId, (tx) => deps.repository.changesets.siteCategoryAssignments(tx, { siteId }));
+  return rows.map(withoutTenant);
+}
+
+/** changesetCategoryAssignment loadBy(assignmentid, siteid): the site's stored row, or null. */
+export async function findChangesetCategoryAssignment(
+  deps: DomainDeps,
+  actor: Actor,
+  key: { assignmentId: string; siteId: string },
+): Promise<ChangesetCategoryAssignmentColumns | null> {
+  const [row] = await withTenant(deps.db, actor.tenantId, (tx) =>
+    deps.repository.changesets.siteCategoryAssignments(tx, { siteId: key.siteId, assignmentId: key.assignmentId }),
+  );
+  return row === undefined ? null : withoutTenant(row);
+}
+
+/** The values a changesetCategoryAssignment `set(event)` applies after its load. */
+export type ChangesetCategoryAssignmentValues = Partial<Record<'assignmentid' | 'changesetid' | 'siteid' | 'categoryid', string>>;
+
+/** beanORM addQueryParam on a nullable column: '' and `null` bind NULL. */
+function nullableColumn(value: string | null): string | null {
+  return value === null || value === '' || cfEq(value, 'null') ? null : value;
+}
+
+/** The JSON API assignment save in one gated transaction: loadBy(`loadId`, `siteId`), `set(values)` (pre-trimmed), beanORM.save; returns the stored row. */
+export function saveChangesetCategoryAssignment(
+  deps: DomainDeps,
+  actor: Actor,
+  input: { loadId: string; siteId: string; values: ChangesetCategoryAssignmentValues },
+): Promise<ChangesetCategoryAssignmentColumns> {
+  return withGatedTenant(deps.db, actor.tenantId, async (tx) => {
+    const repo = deps.repository.changesets;
+    const [loaded] = await repo.siteCategoryAssignments(tx, { siteId: input.siteId, assignmentId: input.loadId });
+    // bean.set(query) trims every loaded value and reads NULL as ''.
+    const loadedText = (value: string | null | undefined): string => javaTrim(value ?? '');
+    const bean = {
+      assignmentid: loaded === undefined ? input.loadId : loadedText(loaded.assignmentid),
+      changesetid: loadedText(loaded?.changesetid),
+      siteid: loaded === undefined ? input.siteId : loadedText(loaded.siteid),
+      categoryid: loadedText(loaded?.categoryid),
+      ...input.values,
+    };
+    const stored = await repo.saveCategoryAssignment(
+      tx,
+      {
+        assignmentid: bean.assignmentid,
+        changesetid: nullableColumn(bean.changesetid),
+        siteid: nullableColumn(bean.siteid),
+        categoryid: nullableColumn(bean.categoryid),
+      },
+      writeContextFor(actor),
+    );
+    return withoutTenant(stored);
+  });
+}
+
+/** changesetCategoryAssignment beanORM.delete in one gated transaction: the row with the id, of any site; null when none. */
+export async function deleteChangesetCategoryAssignment(
+  deps: DomainDeps,
+  actor: Actor,
+  assignmentId: string,
+): Promise<ChangesetCategoryAssignmentColumns | null> {
+  const removed = await withGatedTenant(deps.db, actor.tenantId, (tx) =>
+    deps.repository.changesets.deleteCategoryAssignment(tx, { assignmentId }, writeContextFor(actor)),
+  );
+  return removed === null ? null : withoutTenant(removed);
 }
 
 /** cChangesets.removeitem after its CSRF check: detaches the version from the change set; returns the versions changed. */

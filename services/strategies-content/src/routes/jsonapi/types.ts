@@ -345,6 +345,8 @@ export interface BeanFeedOptions {
   propertyNames: readonly string[];
   /** The entity feed's default sortBy and sortDirection; a plain beanFeed has none. */
   defaultSort?: BeanFeedDefaultSort;
+  /** The entity feed's own setOrderBy list (e.g. changesetBean.getFeed's `name asc`); a request `sort` or `orderby` replaces it, `sortBy` never does. */
+  defaultOrderBy?: string;
   /** `ContentEntityConfig.hints`, which type numeric and date columns; every other column compares as varchar. */
   hints?: Readonly<Record<string, EntityPropertyHint>>;
   /** The entity's `hasMany` and `hasOne` relations, which `innerJoin` and `leftJoin` resolve against. */
@@ -730,6 +732,7 @@ class BeanFeed<R extends Readonly<Struct>> {
   ) {
     this.sortBy = options.defaultSort?.sortBy ?? '';
     this.sortDirection = options.defaultSort?.sortDirection ?? 'asc';
+    this.orderBy = cfListToArray(options.defaultOrderBy ?? '').map((text): OrderItem => ({ text, ownTable: false }));
     this.properties = new Set(options.propertyNames.map((name) => name.toLowerCase()));
     const columns = options.columns ?? [...new Set(rows.flatMap((row) => Object.keys(row)))];
     this.columns =
