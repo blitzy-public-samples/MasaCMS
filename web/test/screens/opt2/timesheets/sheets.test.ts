@@ -220,17 +220,42 @@ describe('timesheets sheet list', () => {
     expect(page).toEqual({ kind: 'redirect', location: to });
   });
 
-  it('fails closed when timesheets is unavailable, and fails on any other error status', async () => {
-    const down = fakeGatewayClient({ [SHEETS_ROUTE]: { status: 503, body: 'down' } });
-    const invalid = fakeGatewayClient({
-      [SHEETS_ROUTE]: { status: 400, body: { error: { code: 'invalid_request' } } },
+  it('renders the timesheets 400 message for a malformed asOf in place of the list, inside the shell', async () => {
+    const gateway = fakeGatewayClient({
+      [SHEETS_ROUTE]: { status: 400, body: { error: { message: 'Invalid parameters' } } },
     });
+    const ctx = makeScreenContext({ req: employeeRequest({ asOf: '2026-13-45' }), gateway });
 
-    await expect(loadSheets(makeScreenContext({ req: employeeRequest(), gateway: down }))).rejects.toBeInstanceOf(
-      GatewayUnavailableError,
+    const page = await renderScreenPage(sheetsScreen(), ctx);
+
+    if (page.kind !== 'document') throw new Error(`redirected to ${page.location}`);
+    expect(page.html).toContain(
+      '<div class="mura-header"><h1>Timesheets</h1></div>' +
+        '<div class="alert alert-error"><span>Invalid parameters</span></div>',
     );
-    await expect(loadSheets(makeScreenContext({ req: employeeRequest(), gateway: invalid }))).rejects.toThrow(
-      'listSheets answered HTTP 400',
+    expect(page.html).not.toContain('mura-table-grid');
+    expect(page.html).not.toContain('class="pagination"');
+    expect(page.html).toMatch(/<a class="active" href="\/opt2\/admin\/timesheets\/sheets\?siteid=tenant-a">/);
+    expect(timesheetsCalls(gateway)).toEqual([
+      {
+        method: 'GET',
+        path: '/v1/timesheets/sheets',
+        query: { asOf: '2026-13-45', pageIndex: '1', itemsPerPage: String(SHEETS_PER_PAGE) },
+      },
+    ]);
+  });
+
+  it.each([
+    { status: 503, error: GatewayUnavailableError },
+    { status: 500, error: Error },
+  ])('throws $error.name on a timesheets $status', async ({ status, error }) => {
+    const gateway = fakeGatewayClient({ [SHEETS_ROUTE]: { status, body: { error: { code: 'x' } } } });
+
+    const failure: unknown = await loadSheets(makeScreenContext({ req: employeeRequest(), gateway })).catch(
+      (thrown: unknown) => thrown,
     );
+
+    expect(failure).toBeInstanceOf(error);
+    expect((failure as Error).name).toBe(error.name);
   });
 });

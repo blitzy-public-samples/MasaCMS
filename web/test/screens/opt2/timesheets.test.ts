@@ -96,6 +96,18 @@ const listOf = (items: typeof timesheetSheets, total: number): FakeRouteTable =>
   [SHEETS_ROUTE]: { status: 200, body: { items, total } },
 });
 
+const STALE_SHEET_ID = '7E5A0001-0000-0000-00000000000000FF';
+const MALFORMED_AS_OF = '2026-13-45';
+const sheetRoute = (id: string): string => routeKey('GET', 'timesheets', `/v1/timesheets/sheets/${id}`);
+
+/** `route` answering timesheets' error envelope with `status` and `message`. */
+const refusing = (route: string, status: number, message: string): FakeRouteTable => ({
+  [route]: {
+    status,
+    body: { apiversion: 'v1', method: 'timesheets.sheets', error: { code: 'invalid_request', message } },
+  },
+});
+
 const PAGES: ReadonlyArray<{ name: string; heading: string; render: () => Promise<string> }> = [
   {
     name: 'sheet list',
@@ -131,6 +143,36 @@ const PAGES: ReadonlyArray<{ name: string; heading: string; render: () => Promis
     name: 'missing sheet',
     heading: 'Timesheet',
     render: () => screenPage('sheet', requestAs(Roles.timesheetsEmployee), timesheetsAnswersByRole.employee),
+  },
+  {
+    name: 'stale sheet',
+    heading: 'Timesheet',
+    render: () =>
+      screenPage(
+        'sheet',
+        requestAs(Roles.timesheetsEmployee, { timesheetid: STALE_SHEET_ID }),
+        refusing(sheetRoute(STALE_SHEET_ID), 404, 'Not Found'),
+      ),
+  },
+  {
+    name: 'malformed asOf sheet list',
+    heading: 'Timesheets',
+    render: () =>
+      screenPage(
+        'sheets',
+        requestAs(Roles.timesheetsEmployee, { asOf: MALFORMED_AS_OF }),
+        refusing(SHEETS_ROUTE, 400, 'Invalid parameters'),
+      ),
+  },
+  {
+    name: 'malformed asOf sheet detail',
+    heading: 'Timesheet',
+    render: () =>
+      screenPage(
+        'sheet',
+        requestAs(Roles.timesheetsEmployee, { asOf: MALFORMED_AS_OF, timesheetid: TIMESHEET_IDS.sheetReturned }),
+        refusing(sheetRoute(TIMESHEET_IDS.sheetReturned), 400, 'Invalid parameters'),
+      ),
   },
   {
     name: 'rejected day action',

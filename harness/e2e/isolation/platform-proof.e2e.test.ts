@@ -16,15 +16,17 @@ import {
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
-  STUB_EFFECT_UNIT,
   STUB_NOTE_TOPIC,
   defaultReplayExec,
   parseReplaySummary,
+  readStubProjection,
   runDlqCheck,
   stubDlqTarget,
   type ReplayRun,
+  type StubProjection,
+  type StubReader,
 } from '../../src/events/dlq.js';
-import { pollUntil, readOwnerExport, type PollBounds, type SeamDeps } from '../../src/events/seams.js';
+import { pollUntil, type PollBounds, type SeamDeps } from '../../src/events/seams.js';
 import {
   mintTraceparent,
   readCapturedLogLines,
@@ -82,9 +84,6 @@ const STATIC_PATH = '/admin/assets/js/admin.min.js';
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 /** `PositiveDigits` of the stub contract. */
 const POSITIVE_DIGITS = /^[1-9][0-9]*$/;
-/** Canonical text of a non-negative `i` value in a migration export row. */
-const CANONICAL_UNSIGNED = /^(0|[1-9][0-9]*)$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Statuses of a denial: no qualifying identity (401) or no qualifying role or site (403). */
 const DENIALS: readonly number[] = [401, 403];
 const LIST_PAGE_SIZE = '1000';
@@ -144,7 +143,7 @@ interface CreatedNote {
   trace: MintedTraceparent;
 }
 
-/** Projection columns a redelivery must leave unchanged, parsed from the export's canonical text. */
+/** Projection columns a redelivery must leave unchanged, under their `stub.note_projection` names. */
 interface ProjectionState {
   apply_count: number;
   aggregate_version: number;
@@ -380,38 +379,16 @@ function replayStubOutbox(since: string): Promise<ReplayRun> {
   return defaultReplayExec(bin, ['replay', '--since', since, '--tenant', TENANT_A.tenantId], stubEnv());
 }
 
-// The stub owns no legacy table, so opt2/table-ownership.json assigns it no unit and unitFor cannot name this one.
-/** Tenant-a `stub.note_projection` rows of `noteId`, through the stub's migration export. */
-async function projectionRows(noteId: string, invoker: Invoker): Promise<Record<string, unknown>[]> {
-  const { rows } = await readOwnerExport(
-    { service: 'stub', unit: STUB_EFFECT_UNIT, tenantId: TENANT_A.tenantId },
-    { invoker },
-  );
-  const wanted = noteId.toUpperCase();
-  return rows.filter((row) => typeof row.note_id === 'string' && row.note_id.toUpperCase() === wanted);
+/** The tenant-a system user reading the stub projection through the gateway. */
+function tenantAReader(): StubReader {
+  return { session: gatewayOf(tenantA), siteId: TENANT_A.siteId };
 }
 
-/** `column` of a `stub.note_projection` export row as a number; throws unless it is canonical integer text. */
-function integerColumn(row: Record<string, unknown>, column: 'apply_count' | 'aggregate_version'): number {
-  const value = row[column];
-  if (typeof value !== 'string' || !CANONICAL_UNSIGNED.test(value)) {
-    throw new Error(`stub.note_projection ${column} is not canonical integer text: ${JSON.stringify(value)}`);
-  }
-  return Number(value);
-}
-
-/** Parses the idempotency columns of a `stub.note_projection` export row; throws on a missing or malformed one. */
-function projectionState(row: Record<string, unknown> | undefined): ProjectionState {
-  if (row === undefined) throw new Error('no stub.note_projection row to read');
-  const eventId = row.last_event_id;
-  if (typeof eventId !== 'string' || !UUID.test(eventId)) {
-    throw new Error(`stub.note_projection last_event_id is not a UUID: ${JSON.stringify(eventId)}`);
-  }
-  return {
-    apply_count: integerColumn(row, 'apply_count'),
-    aggregate_version: integerColumn(row, 'aggregate_version'),
-    last_event_id: eventId.toLowerCase(),
-  };
+/** `projection` under its `stub.note_projection` column names; asserts it was read. */
+function projectionState(projection: StubProjection | null, what: string): ProjectionState {
+  expect(projection, `stub.note_projection ${what}`).not.toBeNull();
+  const { applyCount, aggregateVersion, lastEventId } = projection as StubProjection;
+  return { apply_count: applyCount, aggregate_version: aggregateVersion, last_event_id: lastEventId };
 }
 
 /** The stub's consume log records in trace `traceId`, in log order; event ids lower-cased. */
@@ -637,10 +614,11 @@ describe('platform proof on the stub', () => {
       const { noteId, rowVersion, createdAt, trace } = await createTenantANote('outbox-pubsub-idempotent-consumer');
 
       const invoker = await migrationInvoker();
-      const projected = await pollUntil(() => projectionRows(noteId, invoker), (rows) => rows.length === 1, {
+      const reader = tenantAReader();
+      const projected = await pollUntil(() => readStubProjection(reader, noteId), (projection) => projection !== null, {
         poll: DELIVERY_POLL,
       });
-      expect(projected.value, `stub.note_projection rows of ${noteId}`).toHaveLength(1);
+      const first = projectionState(projected.value, `of ${noteId}`);
       const delivered = await awaitConsumeRecords(trace.traceId, 1);
       const applied = delivered.filter(({ outcome }) => outcome === 'applied');
       const original = applied.length === 1 ? applied[0] : undefined;
@@ -654,7 +632,6 @@ describe('platform proof on the stub', () => {
         aggregate_version: rowVersion,
         last_event_id: originalEventId,
       };
-      const first = projectionState(projected.value[0]);
       expect(first, `projection after the first delivery: ${JSON.stringify(first)}`).toEqual(expected);
       const tenantAId = TENANT_A.tenantId.toLowerCase();
       const positionBefore = await stubPosition(invoker, originalEventId);
@@ -684,9 +661,7 @@ describe('platform proof on the stub', () => {
       const logged = describeConsumes(consumes);
       expect(consumes.every(({ eventId }) => eventId === originalEventId), `consumed event ids: ${logged}`).toBe(true);
       expect(consumeOutcomes.filter((outcome) => outcome === 'applied'), `consume outcomes: ${logged}`).toHaveLength(1);
-      const after = await projectionRows(noteId, invoker);
-      expect(after, `stub.note_projection rows of ${noteId} after the redelivery`).toHaveLength(1);
-      const redelivered = projectionState(after[0]);
+      const redelivered = projectionState(await readStubProjection(reader, noteId), `of ${noteId} after the redelivery`);
       expect(redelivered, `projection after the redelivery: ${JSON.stringify(redelivered)}`).toEqual(expected);
       const positionAfter = await stubPosition(invoker, originalEventId);
       const receiptsAfter = positionAfter.receipts;
@@ -714,9 +689,8 @@ describe('platform proof on the stub', () => {
   it('dlq-replay: dead-lettered message replays once', ({ task }) =>
     record('dlq-replay', task.name, async () => {
       const result = await runDlqCheck({
-        target: stubDlqTarget({ tenantId: TENANT_A.tenantId }),
+        target: stubDlqTarget({ tenantId: TENANT_A.tenantId, reader: tenantAReader() }),
         env: stubEnv(),
-        invoker: await migrationInvoker(),
       });
       expect(result.passed, result.evidence.failures.join('; ')).toBe(true);
       return { ...result.evidence };

@@ -182,6 +182,46 @@ describe('timesheets day-action', () => {
   });
 
   it.each([
+    {
+      back: 'sheet',
+      timesheetid: TIMESHEET_IDS.sheetReturned,
+      read: routeKey('GET', 'timesheets', `/v1/timesheets/sheets/${TIMESHEET_IDS.sheetReturned}`),
+      status: 404,
+      message: 'Not Found',
+      heading: 'Timesheet',
+    },
+    {
+      back: 'sheet list',
+      timesheetid: '',
+      read: routeKey('GET', 'timesheets', '/v1/timesheets/sheets'),
+      status: 400,
+      message: 'Invalid parameters',
+      heading: 'Timesheets',
+    },
+  ])('shows the write refusal, then the $back read refusal, when both are refused', async (testCase) => {
+    const { timesheetid, read, status, message, heading } = testCase;
+    const req = actionRequest(Roles.timesheetsEmployee, {
+      timesheetid,
+      dayid: TIMESHEET_IDS.dayBlackout,
+      dayaction: 'submit',
+    });
+    const routes = {
+      ...timesheetsAnswersByRole.employee,
+      [read]: { status, body: { error: { code: 'invalid_request', message } } },
+    };
+
+    const { result } = await submit(req, routes);
+
+    const model = fragmentModel(renderedBody(result));
+    expect(model.headings).toEqual([heading]);
+    expect(model.tables).toEqual([]);
+    expect(model.alerts).toEqual([
+      { text: dayActionBlackout.body.error.message, className: 'alert alert-error' },
+      { text: message, className: 'alert alert-error' },
+    ]);
+  });
+
+  it.each([
     { status: 401, error: GatewayDenialError },
     { status: 503, error: GatewayUnavailableError },
     { status: 500, error: Error },

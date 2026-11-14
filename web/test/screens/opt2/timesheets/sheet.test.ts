@@ -3,6 +3,7 @@
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Roles, type Role } from '@opt2/platform/auth';
+import { GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import type { Opt2ScreenDefinition } from '@/screens/registry';
@@ -240,9 +241,8 @@ describe('timesheets sheet detail', () => {
     expect(gateway.calls.filter(({ service }) => service === 'timesheets')).toEqual([]);
   });
 
-  it('answers a timesheets 403 with cMessage.noaccess and fails on a sheet outside the tenant', async () => {
+  it('answers a timesheets 403 with cMessage.noaccess', async () => {
     const denied = fakeGatewayClient({ [SHEET_ROUTE]: { status: 403, body: { error: { code: 'authorization' } } } });
-    const missing = fakeGatewayClient({ [SHEET_ROUTE]: { status: 404, body: { error: { message: 'Not Found' } } } });
 
     const page = await renderScreenPage(
       sheetScreen(),
@@ -250,8 +250,52 @@ describe('timesheets sheet detail', () => {
     );
 
     expect(page).toEqual({ kind: 'redirect', location: '/admin/?muraAction=cMessage.noaccess' });
-    await expect(
-      loadSheet(makeScreenContext({ req: sheetRequest(Roles.timesheetsEmployee), gateway: missing })),
-    ).rejects.toThrow('getSheet answered HTTP 404');
+  });
+
+  it.each([
+    { what: 'a stale sheet id', asOf: TIMESHEETS_AS_OF, status: 404, message: 'Not Found' },
+    { what: 'a malformed asOf', asOf: '2026-13-45', status: 400, message: 'Invalid parameters' },
+  ])('renders the timesheets $status message for $what in place of the sheet', async ({ asOf, status, message }) => {
+    const refusal = { apiversion: 'v1', method: 'timesheets.sheets', error: { code: 'invalid_request', message } };
+    const gateway = fakeGatewayClient({ [SHEET_ROUTE]: { status, body: refusal } });
+    const req = opt2RoleRequest(Roles.timesheetsEmployee, {
+      rc: { siteid: SITE, timesheetid: TIMESHEET_IDS.sheetReturned, asOf },
+    });
+
+    const page = await renderScreenPage(sheetScreen(), makeScreenContext({ req, gateway }));
+
+    if (page.kind !== 'document') throw new Error(`redirected to ${page.location}`);
+    const content = cheerio.load(page.html)('#mura-content').html() ?? '';
+    expect(fragmentModel(content)).toEqual({
+      title: '',
+      headings: ['Timesheet'],
+      labels: [],
+      controls: [],
+      buttons: [],
+      links: [{ href: `/opt2/admin/timesheets/sheets?siteid=${SITE}&asOf=${asOf}`, text: 'Timesheets' }],
+      tables: [],
+      alerts: [{ text: message, className: 'alert alert-error' }],
+    });
+    expect(page.html).toContain(`</a></div></div><div class="alert alert-error"><span>${message}</span></div>`);
+    expect(page.html).toMatch(/<a class="active" href="\/opt2\/admin\/timesheets\/sheets\?siteid=tenant-a">/);
+    expect(gateway.calls.filter(({ service }) => service === 'timesheets').map(({ query }) => query)).toEqual([
+      { asOf },
+    ]);
+    expect(gateway.calls.some(({ service, path }) => service === 'identity' && path === '/v1/csrf/tokens')).toBe(false);
+  });
+
+  it.each([
+    { status: 503, error: GatewayUnavailableError },
+    { status: 500, error: Error },
+  ])('throws $error.name on a timesheets $status', async ({ status, error }) => {
+    const gateway = fakeGatewayClient({ [SHEET_ROUTE]: { status, body: { error: { code: 'x' } } } });
+
+    const failure: unknown = await renderScreenPage(
+      sheetScreen(),
+      makeScreenContext({ req: sheetRequest(Roles.timesheetsEmployee), gateway }),
+    ).catch((thrown: unknown) => thrown);
+
+    expect(failure).toBeInstanceOf(error);
+    expect((failure as Error).name).toBe(error.name);
   });
 });

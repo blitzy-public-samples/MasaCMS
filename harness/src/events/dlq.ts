@@ -26,11 +26,14 @@ import {
 } from '@opt2/platform/events';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { localTimestamp } from '@opt2/platform/outbox';
-import { TENANT_A, pubsubEmulatorAvailable, testEnvelope, withoutTenant } from '@opt2/platform/testing';
+import { tenantIdForSite } from '@opt2/platform/tenancy';
+import { TENANT_A, fixtureForTenant, pubsubEmulatorAvailable, testEnvelope, withoutTenant } from '@opt2/platform/testing';
 
+import { adminLogin, loadSecretStore, originBaseUrl } from '../golden/session.js';
 import { defaultRunner } from '../lib/git.js';
+import { createHttpSession, type HttpSession } from '../lib/http.js';
 import { HARNESS_ROOT, repoPath, type EnvLike } from '../lib/paths.js';
-import { pollUntil, readOwnerExport, type SeamDeps } from './seams.js';
+import { pollUntil, type SeamDeps } from './seams.js';
 
 /** Topic of the stub's self-consumed note event. */
 export const STUB_NOTE_TOPIC = 'stub.note.created.v1';
@@ -40,6 +43,9 @@ export const STUB_DLQ_SUBSCRIPTION: string = subscriptionName('stub', STUB_NOTE_
 
 /** Unit whose rows record each applied stub note event. */
 export const STUB_EFFECT_UNIT = 'stub.note_projection';
+
+/** Gateway path of the stub's notes; a note's projection is `<path>/<noteId>/projection`. */
+export const STUB_NOTES_PATH = '/opt2/stub/notes';
 
 /** Reason the consumer gives a delivery without `tenantId`. */
 export const EXPECTED_DLQ_REASON: DeadLetterReason = 'missing-tenant';
@@ -69,18 +75,36 @@ export const EFFECT_SETTLE_MS = 5_000;
 // Same default project as the @opt2/platform/testing emulator helpers.
 const DEFAULT_PROJECT = 'opt2-local';
 const PULL_MAX_MESSAGES = 10;
+/** `PositiveDigits` of the stub contract. */
+const POSITIVE_DIGITS = /^[1-9][0-9]*$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** A consumer subscription to dead-letter into, its topic and tenant, and how the consumer's effect is counted. */
 export interface DlqTarget {
   subscription: string;
   topic: string;
   tenantId: string;
-  /** Unit the effect is read from through the owner's migration export. */
+  /** Unit the consumer's effect is written to. */
   effectUnit: string;
   /** A fresh valid envelope for `topic` in `tenantId`. */
   buildEnvelope(): EventEnvelope;
   /** Applications the consumer recorded for the aggregate. */
   effectCount(aggregateId: string, deps: SeamDeps): Promise<number>;
+}
+
+/** Who reads the stub's note projection through the gateway. */
+export interface StubReader {
+  /** Gateway session of a user holding a stub read role. */
+  session: HttpSession;
+  /** Sent as `siteid`; the gateway mints the user token for this site. */
+  siteId: string;
+}
+
+/** Idempotency columns of one `stub.note_projection` row. */
+export interface StubProjection {
+  applyCount: number;
+  aggregateVersion: number;
+  lastEventId: string;
 }
 
 /** Options of {@link stubDlqTarget}. */
@@ -89,6 +113,8 @@ export interface StubDlqTargetOptions {
   tenantId?: string;
   /** Clock of the payload's `created` time. */
   now?: () => number;
+  /** Must be of `tenantId`'s site; default the seeded system user of its fixture site, logged in through the gateway. */
+  reader?: StubReader;
 }
 
 /** Payload of `stub.note.created.v1`. */
@@ -195,17 +221,60 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// A projection row counts its `apply_count` applications; a row without one counts once.
-function applications(row: Record<string, unknown>): number {
-  const count = Number(row.apply_count);
-  return Number.isSafeInteger(count) && count > 0 ? count : 1;
+/** `value` as a safe positive integer when it is `PositiveDigits` text, else undefined. */
+function positiveDigits(value: unknown): number | undefined {
+  return typeof value === 'string' && POSITIVE_DIGITS.test(value) && Number.isSafeInteger(Number(value))
+    ? Number(value)
+    : undefined;
 }
 
-/** The stub's note subscription as a {@link DlqTarget}; the effect is the note's `stub.note_projection` applications. */
+/** The note's `stub.note_projection` row through the gateway; null on the legacy 404 (missing, other-tenant or not yet consumed). */
+export async function readStubProjection(reader: StubReader, noteId: string): Promise<StubProjection | null> {
+  const result = await reader.session.get(`${STUB_NOTES_PATH}/${encodeURIComponent(noteId)}/projection`, {
+    query: { siteid: reader.siteId },
+  });
+  if (result.status === 404) return null;
+  const answer = `(status ${result.status}): ${result.text}`;
+  if (result.status !== 200) throw new Error(`stub projection of ${noteId} not read ${answer}`);
+  let body: unknown;
+  try {
+    body = JSON.parse(result.text);
+  } catch (err) {
+    throw new Error(`stub projection of ${noteId} is not JSON ${answer}`, { cause: err });
+  }
+  const data = isRecord(body) && isRecord(body.data) ? body.data : {};
+  const applyCount = positiveDigits(data.applycount);
+  const aggregateVersion = positiveDigits(data.aggregateversion);
+  const lastEventId = data.lasteventid;
+  if (applyCount === undefined || aggregateVersion === undefined || typeof lastEventId !== 'string' || !UUID.test(lastEventId)) {
+    throw new Error(`stub projection of ${noteId} is malformed ${answer}`);
+  }
+  return { applyCount, aggregateVersion, lastEventId: lastEventId.toLowerCase() };
+}
+
+/** Gateway session of the seeded system user of `tenantId`'s fixture site. */
+async function defaultStubReader(tenantId: string, deps: SeamDeps): Promise<StubReader> {
+  const siteId = fixtureForTenant(tenantId)?.siteId;
+  if (siteId === undefined) throw new Error(`tenant ${tenantId} has no fixture site; pass a reader`);
+  const secrets = deps.secrets ?? loadSecretStore(deps.env);
+  const username = secrets.username(siteId, 'system-user');
+  const session = createHttpSession({ baseUrl: originBaseUrl('gateway', deps.env), fetch: deps.fetch });
+  const login = await adminLogin(session, { username, password: secrets.secret(`seed:${username}`) });
+  if (!login.ok) throw new Error(`admin login as ${username} through the gateway failed (status ${login.result.status})`);
+  return { session, siteId };
+}
+
+/** The stub's note subscription as a {@link DlqTarget}; the effect is the note projection's apply count, read through the gateway. */
 export function stubDlqTarget(options: StubDlqTargetOptions = {}): DlqTarget {
   const tenantId = options.tenantId ?? TENANT_A.tenantId;
   const now = options.now ?? Date.now;
+  const { reader } = options;
+  if (reader !== undefined && tenantIdForSite(reader.siteId) !== tenantId.toLowerCase()) {
+    throw new RangeError(`reader site ${reader.siteId} is not of tenant ${tenantId}`);
+  }
   let validator: TopicValidator<StubNotePayload> | undefined;
+  // Departs from Rule "WIP - Minimal Change 2" (no caching), which does not bind this refactor: one gateway login per target, not one per read.
+  let readerOnce: Promise<StubReader> | undefined;
   return {
     subscription: STUB_DLQ_SUBSCRIPTION,
     topic: STUB_NOTE_TOPIC,
@@ -226,11 +295,8 @@ export function stubDlqTarget(options: StubDlqTargetOptions = {}): DlqTarget {
       return testEnvelope({ topic: STUB_NOTE_TOPIC, tenantId, aggregateId: noteId, aggregateVersion: 1, payload });
     },
     async effectCount(aggregateId: string, deps: SeamDeps): Promise<number> {
-      const { rows } = await readOwnerExport({ service: 'stub', unit: STUB_EFFECT_UNIT, tenantId }, deps);
-      const noteId = aggregateId.toUpperCase();
-      return rows
-        .filter((row) => typeof row.note_id === 'string' && row.note_id.toUpperCase() === noteId)
-        .reduce((sum, row) => sum + applications(row), 0);
+      readerOnce ??= reader === undefined ? defaultStubReader(tenantId, deps) : Promise.resolve(reader);
+      return (await readStubProjection(await readerOnce, aggregateId))?.applyCount ?? 0;
     },
   };
 }

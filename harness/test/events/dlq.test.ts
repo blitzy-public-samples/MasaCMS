@@ -1,4 +1,4 @@
-// DLQ check against an in-memory Pub/Sub bus, stub consumer, owner export, replay bin and clock: no emulator, socket or child process.
+// DLQ check against an in-memory Pub/Sub bus, stub consumer, gateway projection route, replay bin and clock: no emulator, socket or child process.
 import { execFile, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -20,14 +20,8 @@ import {
   type EventEnvelope,
   type RawMessage,
 } from '@opt2/platform/events';
-import {
-  MIGRATION_PATH_PREFIX,
-  encodeKey,
-  encodeRow,
-  sha256Hex,
-  type CanonicalColumn,
-  type ExportResponse,
-} from '@opt2/platform/migration-kit';
+import { buildEnvelope, legacyErrorResponse, serializeResponse } from '@opt2/platform/legacy-compat';
+import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, pubsubEmulatorAvailable, testEnvelope, withoutTenant } from '@opt2/platform/testing';
 
 import {
@@ -38,11 +32,12 @@ import {
   REPLAY_EXEC_TIMEOUT_MS,
   REPLAY_IDLE_SECONDS,
   STUB_DLQ_SUBSCRIPTION,
-  STUB_EFFECT_UNIT,
+  STUB_NOTES_PATH,
   STUB_NOTE_TOPIC,
   defaultReplayExec,
   emulatorDlqPubSub,
   parseReplaySummary,
+  readStubProjection,
   replayArgs,
   runDlqCheck,
   stubDlqTarget,
@@ -52,8 +47,11 @@ import {
   type DlqPulledMessage,
   type DlqResult,
   type ReplayExec,
+  type StubReader,
 } from '../../src/events/dlq.js';
 import type { SeamDeps } from '../../src/events/seams.js';
+import { adminLogin, loadSecretStore, type LoginResult, type SecretStore } from '../../src/golden/session.js';
+import { createHttpSession, type HttpResult } from '../../src/lib/http.js';
 import { HARNESS_ROOT, type EnvLike } from '../../src/lib/paths.js';
 
 /** A streaming-pull receiver of the Pub/Sub client double. */
@@ -183,6 +181,12 @@ vi.mock(import('@opt2/platform/testing'), async (importOriginal) => {
   return { ...actual, pubsubEmulatorAvailable: vi.fn(async () => false) };
 });
 
+// The default reader's legacy login and secret store are scripted per test; everything else stays real.
+vi.mock(import('../../src/golden/session.js'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, adminLogin: vi.fn(), loadSecretStore: vi.fn() };
+});
+
 const TOPIC = STUB_NOTE_TOPIC;
 const SUBSCRIPTION = STUB_DLQ_SUBSCRIPTION;
 const DLQ_TOPIC = dlqTopicName(SUBSCRIPTION);
@@ -190,24 +194,22 @@ const REPLAY_SUBSCRIPTION = dlqReplaySubscriptionName(SUBSCRIPTION);
 const OBSERVER = /^opt2-dlq-check-[0-9a-f]{8}\.stub\.stub\.note\.created\.v1\.dlq$/;
 
 const PROJECT = 'opt2-dlq-unit';
-// No listener on this port; every export request goes to the fake fetch.
-const STUB_URL = 'http://127.0.0.1:8599';
-const EXPORT_PATH = `${MIGRATION_PATH_PREFIX}/export`;
-const CREDENTIAL_HEADER = 'x-serverless-authorization';
-const CREDENTIAL = 'Bearer FIXTURE-invocation-credential';
+// No listener on this port; every gateway request goes to the fake fetch.
+const GATEWAY_URL = 'http://127.0.0.1:8500';
+const PROJECTION_PATH = /^\/opt2\/stub\/notes\/([^/]+)\/projection$/;
+const PROJECTED_AT = '2026-06-30 08:00:01.000';
+const EVENT_ID = '09de93ab-5c1f-4b7e-9a2d-e516ce81f350';
 
 const CLOCK_START = Date.parse('2026-06-30T08:00:00');
 const POLL = { timeoutMs: 3_000, intervalMs: 1_000 };
 const LAND_TIMEOUT_MS = 250;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const PROJECTION_COLUMNS: CanonicalColumn[] = [
-  { name: 'note_id', type: 's' },
-  { name: 'title', type: 's' },
-  { name: 'aggregate_version', type: 'i' },
-  { name: 'apply_count', type: 'i' },
-  { name: 'last_event_id', type: 's' },
-];
+const SECRETS: SecretStore = {
+  username: (site, role) => `FIXTURE-${site}-${role}`,
+  secret: (name) => `FIXTURE-password-${name}`,
+  values: () => [],
+};
 
 type Row = Record<string, unknown>;
 
@@ -375,44 +377,54 @@ function fakePubSub(bus: FakeBus, failures: { deleteSubscription?: Error } = {})
 
 type FetchLike = NonNullable<SeamDeps['fetch']>;
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
+/** A serialized legacy response as the gateway relays it. */
+function legacyResponse({ status, headers, body }: { status: number; headers: Record<string, string>; body: string }): Response {
+  return new Response(body, { status, headers });
 }
 
-/** The stub's migration export of `stub.note_projection` from the bus's effect rows; 401 without the invocation credential. */
-function fakeExport(bus: FakeBus): { fetch: FetchLike; requests: URL[] } {
+/**
+ * The gateway's `GET /opt2/stub/notes/{noteId}/projection` over the bus's effect rows, whose counts are numbers. The
+ * user token is minted for `siteid` (`default` when absent), so the row is read in that site's tenant. Answers the
+ * stub's envelope, which quotes the counts as digits, or the legacy 404 envelope; any other request answers 500.
+ */
+function fakeGateway(bus: FakeBus): { fetch: FetchLike; requests: URL[] } {
   const requests: URL[] = [];
   const fetch: FetchLike = async (input, init) => {
     const url = new URL(input);
     requests.push(url);
-    if ((init.method ?? 'GET') !== 'GET' || `${url.origin}${url.pathname}` !== `${STUB_URL}${EXPORT_PATH}`) {
-      return new Response('not found', { status: 404 });
+    const noteId = PROJECTION_PATH.exec(url.pathname)?.[1];
+    if ((init.method ?? 'GET') !== 'GET' || url.origin !== GATEWAY_URL || noteId === undefined) {
+      return new Response(`unexpected ${init.method ?? 'GET'} ${url.href}`, { status: 500 });
     }
-    if ((init.headers as Record<string, string>)[CREDENTIAL_HEADER] !== CREDENTIAL) return jsonResponse({ error: 'unauthenticated' }, 401);
-    const unit = url.searchParams.get('unit') ?? '';
-    const tenantId = url.searchParams.get('tenantId') ?? '';
-    const rows = unit === STUB_EFFECT_UNIT ? bus.effectRows(tenantId) : [];
-    const page: ExportResponse = {
-      unit,
-      tenantId,
-      tables: [
-        {
-          unit: STUB_EFFECT_UNIT,
-          legacyTable: 'note_projection',
-          targetTable: STUB_EFFECT_UNIT,
-          keyless: false,
-          columns: PROJECTION_COLUMNS,
-          rows: rows.map((row) => {
-            const encoded = encodeRow(PROJECTION_COLUMNS, row);
-            return { key: encodeKey(PROJECTION_COLUMNS, ['note_id'], row), row: encoded, hash: sha256Hex(encoded) };
-          }),
-        },
-      ],
-      next: null,
+    const siteid = url.searchParams.get('siteid') ?? 'default';
+    const params = { siteid, noteId: decodeURIComponent(noteId) };
+    const row = bus.effectRows(tenantIdForSite(siteid)).find((effect) => effect.note_id === params.noteId);
+    if (row === undefined) {
+      return legacyResponse(legacyErrorResponse('invalidMethodCall', { method: 'findProjection', params, mura404: true }));
+    }
+    const data = {
+      noteId: row.note_id,
+      title: row.title,
+      body: '',
+      created: PROJECTED_AT,
+      aggregateVersion: row.aggregate_version,
+      applyCount: row.apply_count,
+      lastEventId: row.last_event_id,
+      projectedAt: PROJECTED_AT,
     };
-    return jsonResponse(page);
+    return legacyResponse(serializeResponse(buildEnvelope({ method: 'findProjection', params, data })));
   };
   return { fetch, requests };
+}
+
+/** A reader of `siteId` whose gateway session sends every request to `fetch`. */
+function readerOn(fetch: FetchLike, siteId: string = TENANT_A.siteId): StubReader {
+  return { session: createHttpSession({ baseUrl: GATEWAY_URL, fetch }), siteId };
+}
+
+/** `siteid` of each projection read, by note id. */
+function projectionReads(requests: readonly URL[]): [string | undefined, string | null][] {
+  return requests.map((url) => [PROJECTION_PATH.exec(url.pathname)?.[1], url.searchParams.get('siteid')]);
 }
 
 /** How the fake `opt2-events` bin behaves. */
@@ -487,27 +499,19 @@ afterEach(async () => {
   await rm(stateRoot, { recursive: true, force: true });
 });
 
-/** Placeholder invocation credential, recording each callee. */
-function fakeInvoker(callees: string[] = []): NonNullable<SeamDeps['invoker']> {
-  return {
-    async headersFor({ callee }) {
-      callees.push(callee);
-      return { [CREDENTIAL_HEADER]: CREDENTIAL };
-    },
-  };
-}
-
 interface DlqStack {
   bus: FakeBus;
   pubsub: ReturnType<typeof fakePubSub>;
   runner: ReturnType<typeof fakeReplayRunner>;
   clock: ReturnType<typeof fakeClock>;
   requests: URL[];
-  callees: string[];
   deps: DlqDeps;
 }
 
-/** The bus, its adapters and the check's deps; the env carries an empty emulator host so nothing probes a live one. */
+/**
+ * The bus, its adapters and the check's deps, whose stub target reads through a tenant-a reader on the fake gateway.
+ * The env names that gateway for a default reader, and an empty emulator host so nothing probes a live one.
+ */
 function dlqStack(
   options: { consumer?: ConsumerOptions; runner?: RunnerOptions; deleteSubscription?: Error } = {},
 ): DlqStack {
@@ -515,21 +519,24 @@ function dlqStack(
   const pubsub = fakePubSub(bus, { deleteSubscription: options.deleteSubscription });
   const runner = fakeReplayRunner(bus, options.runner);
   const clock = fakeClock();
-  const { fetch, requests } = fakeExport(bus);
-  const callees: string[] = [];
+  const { fetch, requests } = fakeGateway(bus);
   const deps: DlqDeps = {
+    target: stubDlqTarget({ now: clock.now, reader: readerOn(fetch) }),
     pubsub,
     exec: runner.exec,
     fetch,
-    invoker: fakeInvoker(callees),
-    serviceUrls: { stub: STUB_URL },
-    env: { OPT2_STATE_DIR: stateRoot, GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: '' },
+    env: { OPT2_STATE_DIR: stateRoot, OPT2_GATEWAY_URL: GATEWAY_URL, GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: '' },
     now: clock.now,
     sleep: clock.sleep,
     poll: POLL,
     landTimeoutMs: LAND_TIMEOUT_MS,
   };
-  return { bus, pubsub, runner, clock, requests, callees, deps };
+  return { bus, pubsub, runner, clock, requests, deps };
+}
+
+/** Scripts the default reader's admin login to answer `ok` with `status`. */
+function answerLogin(ok: boolean, status: number): void {
+  vi.mocked(adminLogin).mockResolvedValue({ ok, result: { status } as HttpResult } satisfies LoginResult);
 }
 
 function decoded(message: { data: Buffer }): Partial<EventEnvelope> {
@@ -575,28 +582,116 @@ describe('stubDlqTarget', () => {
   });
 
   it.each([
-    { label: 'its apply_count', applyCount: 3, expected: 3 },
-    { label: 'one application without an apply_count', applyCount: null, expected: 1 },
-  ])('counts the note projection row of its tenant as $label', async ({ applyCount, expected }) => {
-    const { bus, deps, requests, callees } = dlqStack();
-    const target = stubDlqTarget();
+    { label: 'its apply count', applyCount: 3, expected: 3 },
+    { label: 'no application while the gateway answers 404', applyCount: null, expected: 0 },
+  ])('counts its tenant note projection through the reader as $label', async ({ applyCount, expected }) => {
+    const { bus, deps, requests } = dlqStack();
+    const target = deps.target!;
     const noteId = target.buildEnvelope().aggregateId;
-    const row = (note: string, count: number | null): Row => ({
+    const row = (note: string, count: number): Row => ({
       note_id: note,
       title: 'note',
       aggregate_version: 1,
       apply_count: count,
-      last_event_id: 'event',
+      last_event_id: EVENT_ID,
     });
-    bus.seedEffect(TENANT_A.tenantId, row(noteId.toLowerCase(), applyCount));
+    if (applyCount !== null) bus.seedEffect(TENANT_A.tenantId, row(noteId, applyCount));
     bus.seedEffect(TENANT_A.tenantId, row('OTHER-NOTE', 7));
     bus.seedEffect(TENANT_B.tenantId, row(noteId, 5));
 
     await expect(target.effectCount(noteId, deps)).resolves.toBe(expected);
-    expect(requests.map((url) => [url.searchParams.get('unit'), url.searchParams.get('tenantId')])).toEqual([
-      [STUB_EFFECT_UNIT, TENANT_A.tenantId],
+    expect(projectionReads(requests)).toEqual([[noteId, TENANT_A.siteId]]);
+    expect(vi.mocked(adminLogin)).not.toHaveBeenCalled();
+  });
+
+  it('refuses a reader of another tenant', () => {
+    const reader = readerOn(fakeGateway(new FakeBus()).fetch, TENANT_B.siteId);
+    expect(() => stubDlqTarget({ tenantId: TENANT_A.tenantId, reader })).toThrow(
+      new RangeError(`reader site ${TENANT_B.siteId} is not of tenant ${TENANT_A.tenantId}`),
+    );
+    expect(stubDlqTarget({ tenantId: TENANT_B.tenantId.toUpperCase(), reader }).tenantId).toBe(TENANT_B.tenantId.toUpperCase());
+  });
+
+  it.each([
+    { label: 'the injected secret store', injected: true },
+    { label: 'the secret store of its env', injected: false },
+  ])('logs in once per target as the seeded system user of its fixture site from $label', async ({ injected }) => {
+    const { bus, deps, requests } = dlqStack();
+    answerLogin(true, 200);
+    vi.mocked(loadSecretStore).mockReturnValue(SECRETS);
+    const readDeps: SeamDeps = { ...deps, secrets: injected ? SECRETS : undefined };
+    const target = stubDlqTarget({ tenantId: TENANT_B.tenantId });
+    const noteId = target.buildEnvelope().aggregateId;
+    bus.seedEffect(TENANT_B.tenantId, { note_id: noteId, title: 'note', aggregate_version: 1, apply_count: 2, last_event_id: EVENT_ID });
+
+    await expect(target.effectCount(noteId, readDeps)).resolves.toBe(2);
+    await expect(target.effectCount('ABSENT-NOTE', readDeps)).resolves.toBe(0);
+    const username = SECRETS.username(TENANT_B.siteId, 'system-user');
+    expect(vi.mocked(adminLogin).mock.calls).toEqual([
+      [expect.objectContaining({ baseUrl: GATEWAY_URL }), { username, password: SECRETS.secret(`seed:${username}`) }],
     ]);
-    expect(callees).toEqual(['stub']);
+    expect(vi.mocked(loadSecretStore).mock.calls).toEqual(injected ? [] : [[deps.env]]);
+    expect(projectionReads(requests)).toEqual([
+      [noteId, TENANT_B.siteId],
+      ['ABSENT-NOTE', TENANT_B.siteId],
+    ]);
+
+    await stubDlqTarget({ tenantId: TENANT_B.tenantId }).effectCount(noteId, readDeps);
+    expect(vi.mocked(adminLogin)).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects every read of a default reader whose login fails, without reading', async () => {
+    const { deps, requests } = dlqStack();
+    answerLogin(false, 200);
+    const target = stubDlqTarget();
+    const username = SECRETS.username(TENANT_A.siteId, 'system-user');
+    const failure = `admin login as ${username} through the gateway failed (status 200)`;
+    await expect(target.effectCount('NOTE', { ...deps, secrets: SECRETS })).rejects.toThrow(failure);
+    await expect(target.effectCount('NOTE', { ...deps, secrets: SECRETS })).rejects.toThrow(failure);
+    expect(vi.mocked(adminLogin)).toHaveBeenCalledTimes(1);
+    expect(requests).toEqual([]);
+  });
+
+  it('asks for a reader when its tenant has no fixture site', async () => {
+    const { deps } = dlqStack();
+    const tenantId = tenantIdForSite('unseeded-site');
+    await expect(stubDlqTarget({ tenantId }).effectCount('NOTE', { ...deps, secrets: SECRETS })).rejects.toThrow(
+      `tenant ${tenantId} has no fixture site; pass a reader`,
+    );
+    expect(vi.mocked(adminLogin)).not.toHaveBeenCalled();
+  });
+});
+
+describe('readStubProjection', () => {
+  const NOTE_ID = 'NOTE ID/1';
+  const projection = (data: Row): string => JSON.stringify({ apiversion: 'v1', method: 'findProjection', data });
+  const valid = { noteid: 'N', applycount: '2', aggregateversion: '3', lasteventid: EVENT_ID.toUpperCase() };
+  const notFound = legacyErrorResponse('invalidMethodCall', { method: 'findProjection', mura404: true }).body;
+
+  it.each([
+    { label: 'a projection, digits parsed and the event id lower-cased', status: 200, body: projection(valid), read: { applyCount: 2, aggregateVersion: 3, lastEventId: EVENT_ID }, error: null },
+    { label: 'the legacy 404 envelope as null', status: 404, body: notFound, read: null, error: null },
+    { label: 'a 403 as an error', status: 403, body: '{"error":{"code":"invalid_request"}}', read: null, error: 'not read' },
+    { label: 'a 503 as an error', status: 503, body: 'unavailable', read: null, error: 'not read' },
+    { label: 'a non-JSON 200 as an error', status: 200, body: '<html>', read: null, error: 'is not JSON' },
+    { label: 'a 200 without data as an error', status: 200, body: '{"apiversion":"v1"}', read: null, error: 'is malformed' },
+    { label: 'a zero applycount as an error', status: 200, body: projection({ ...valid, applycount: '0' }), read: null, error: 'is malformed' },
+    { label: 'a numeric applycount as an error', status: 200, body: projection({ ...valid, applycount: 2 }), read: null, error: 'is malformed' },
+    { label: 'an unsafe applycount as an error', status: 200, body: projection({ ...valid, applycount: '9007199254740993' }), read: null, error: 'is malformed' },
+    { label: 'a zero-padded aggregateversion as an error', status: 200, body: projection({ ...valid, aggregateversion: '03' }), read: null, error: 'is malformed' },
+    { label: 'a lasteventid that is no UUID as an error', status: 200, body: projection({ ...valid, lasteventid: 'event-1' }), read: null, error: 'is malformed' },
+  ])('reads $label', async ({ status, body, read, error }) => {
+    const requests: URL[] = [];
+    const fetch: FetchLike = async (input) => {
+      requests.push(new URL(input));
+      return new Response(body, { status, headers: { 'content-type': 'application/json;charset=utf-8' } });
+    };
+    const pending = readStubProjection(readerOn(fetch), NOTE_ID);
+    if (error === null) await expect(pending).resolves.toEqual(read);
+    else await expect(pending).rejects.toThrow(`stub projection of ${NOTE_ID} ${error} (status ${status}): ${body}`);
+    expect(requests.map((url) => url.href)).toEqual([
+      `${GATEWAY_URL}${STUB_NOTES_PATH}/${encodeURIComponent(NOTE_ID)}/projection?siteid=${TENANT_A.siteId}`,
+    ]);
   });
 });
 
@@ -655,6 +750,19 @@ describe('runDlqCheck', () => {
     ]);
     expect(pubsub.closed).toBe(false);
     expect(clock.sleeps).toEqual([EFFECT_SETTLE_MS]);
+  });
+
+  it('passes on its default target, reading as the tenant-a system user logged in once through the gateway', async () => {
+    const { deps, requests } = dlqStack();
+    answerLogin(true, 200);
+    const result = await runDlqCheck({ ...deps, target: undefined, secrets: SECRETS });
+    expect(failuresOf(result)).toEqual([]);
+    expect(result.evidence.effect).toEqual({ before: 0, after: 1 });
+    const username = SECRETS.username(TENANT_A.siteId, 'system-user');
+    expect(vi.mocked(adminLogin).mock.calls).toEqual([
+      [expect.objectContaining({ baseUrl: GATEWAY_URL }), { username, password: SECRETS.secret(`seed:${username}`) }],
+    ]);
+    expect(projectionReads(requests)).toEqual(Array(5).fill([result.evidence.aggregateId, TENANT_A.siteId]));
   });
 
   it('fails when the consumer applies the tenant-less envelope instead of dead-lettering it', async () => {

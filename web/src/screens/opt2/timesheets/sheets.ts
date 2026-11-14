@@ -1,5 +1,4 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
-import { okBody } from '@/lib/gateway-client';
 import { attr, html, type SafeHtml } from '@/lib/html';
 import type { ShellView } from '@/shell/document';
 import type { Rc, ScreenContext } from '../../registry';
@@ -21,6 +20,7 @@ import {
   asOfOf,
   carriedParams,
   datePart,
+  readOf,
   yesNo,
   type TimesheetsSchemas,
 } from './common';
@@ -35,11 +35,10 @@ function headersOf(ctx: ScreenContext): readonly Label[] {
   return ['Period', 'Person', opt2Label(ctx, 'Due Date'), opt2Label(ctx, 'Status'), 'Overdue'];
 }
 
-/** One page of the tenant's sheets, as of the request's `asOf`. */
-export interface SheetsData {
-  readonly list: TimesheetsSchemas['TimesheetList'];
-  readonly pageIndex: number;
-}
+/** One page of the tenant's sheets as of the request's `asOf`, or the alert of the service's refusal. */
+export type SheetsData =
+  | { readonly list: TimesheetsSchemas['TimesheetList']; readonly pageIndex: number; readonly alert?: undefined }
+  | { readonly list?: undefined; readonly alert: SafeHtml };
 
 /** `rc.pageIndex` when it is a whole number from 1, else the first page. */
 function pageIndexOf(rc: Rc): number {
@@ -48,7 +47,7 @@ function pageIndexOf(rc: Rc): number {
 }
 
 /**
- * The requested page of sheets with their status and overdue flag.
+ * The requested page of sheets with their status and overdue flag, or the alert of a 400 or 404 answer.
  * @throws GatewayUnavailableError When timesheets is unavailable.
  * @throws GatewayDenialError When timesheets answers 401 or 403; any other non-2xx answer throws `Error`.
  */
@@ -58,7 +57,8 @@ export async function loadSheets(ctx: ScreenContext): Promise<SheetsData> {
   const response = await ctx.gateway.timesheets.call('get', '/v1/timesheets/sheets', {
     query: { asOf: asOfOf(rc), pageIndex, itemsPerPage: SHEETS_PER_PAGE },
   });
-  return { list: okBody(response, 'timesheets', 'listSheets'), pageIndex };
+  const read = readOf(response, 'listSheets');
+  return read.body === undefined ? { alert: read.alert } : { list: read.body, pageIndex };
 }
 
 /** The grid row of `sheet`, its period linking to the sheet detail. */
@@ -87,13 +87,15 @@ function pager(ctx: ScreenContext, params: Opt2Params, pageIndex: number, total:
   return html`<ul class="pagination">${previous}${current}${next}</ul>`;
 }
 
-/** The sheet list body, with `alert` under its header when given. */
+/** The sheet list body, with `alert` under its header when given; for a refused read, its alert instead of the list. */
 export function sheetsBody(ctx: ScreenContext, data: SheetsData, alert?: SafeHtml): SafeHtml {
+  const header = pageHeader('Timesheets');
+  if (data.list === undefined) return html`${header}${alert}${data.alert}`;
   const params = carriedParams(ctx.req.rc);
   const rows = data.list.items.map((sheet) => sheetRow(ctx, sheet, params));
   const table = gridTable(headersOf(ctx), rows, 'No timesheets.');
   const content = html`${table}${pager(ctx, params, data.pageIndex, data.list.total)}`;
-  return html`${pageHeader('Timesheets')}${alert}${block(content)}`;
+  return html`${header}${alert}${block(content)}`;
 }
 
 /** The sheet list inside the shell. */
