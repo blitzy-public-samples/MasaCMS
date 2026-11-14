@@ -58,7 +58,10 @@ export const ADMIN_JSON_CONTENT_TYPE = 'application/json;charset=utf-8';
 export interface AdminRenderResult {
   status: number;
   contentType: string;
-  body: string;
+  /** Markup or JSON text; bytes only for a binary download (cform.export's zip). */
+  body: string | Buffer;
+  /** Headers the view sets besides the content type, such as a download's `Content-disposition`. */
+  headers?: Readonly<Record<string, string>>;
   sessionEffects?: Partial<AdminSessionState>;
   /** `cflocation` target; `status` is 302 and `body` empty. */
   redirect?: string;
