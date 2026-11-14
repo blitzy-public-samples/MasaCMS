@@ -558,7 +558,7 @@ describe('export run task', () => {
     expect(job.json<{ data: { state: string } }>().data.state).toBe('done');
   });
 
-  it('answers a job past queued with its unchanged state, reading nothing', async () => {
+  it('answers a done job with its unchanged state, reading nothing', async () => {
     const wire = await queueRun(t, done);
     const before = t.client.requests.length;
     const res = await send(await tasksHeaders(), 'POST', runUrl(done.job_id), { payload: { ...wire } });

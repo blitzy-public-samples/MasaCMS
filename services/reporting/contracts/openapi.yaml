@@ -494,7 +494,7 @@ paths:
           $ref: '#/components/schemas/CfUuid'
     post:
       operationId: runExportTask
-      summary: Runs one export job through running to done or failed; a job already past queued is left unchanged.
+      summary: Runs one export job through running to done or failed; a running job an interrupted delivery left is reclaimed and run again, and a done or failed job is left unchanged.
       tags:
         - tasks
       x-opt2-transport: cloud-tasks

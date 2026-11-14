@@ -14,7 +14,7 @@ Contract: [`contracts/openapi.yaml`](contracts/openapi.yaml). Behaviour-to-code-
   - `done`, with the file downloadable;
   - `failed`, with `source-unavailable` (a `broken` source, or a producer that is unreachable or answers non-2xx) or `export-failed` (any other failure).
 
-  Before queuing, a create fails with `export-failed` any of the site's jobs whose run task is gone. The fixture does the same for jobs left without a runner thread.
+  Before queuing, a create fails with `export-failed`, oldest first, the site's `running` jobs whose run task is gone and its `queued` jobs created more than 30 seconds earlier that still have none (`UNSCHEDULED_RECOVERY_AGE_MS` in `src/domain/jobs.ts`); a younger queued job may belong to a create that has not yet scheduled its run. The fixture has no such grace: it enters each job in its live-runner map before inserting the row, and fails every queued or running job of the site absent from that map.
 - **Output.** A header row of the definition's column names, then one row per source row, every value a string. The file is named `export-<job_id>.<format>`:
   - XLSX: one sheet named `export`.
   - CSV: RFC 4180, UTF-8 without a BOM, every line ending in CRLF.
@@ -55,7 +55,7 @@ Exports are compared by content, never by bytes: XLSX by cell values per sheet, 
 | Unit | Legacy source | Notes |
 |---|---|---|
 | `reporting.export_definition` | `synthetic.export_definition` | One-to-one; `tenant_id` from `siteID` |
-| `reporting.export_job` | `synthetic.export_job` | One-to-one; `tenant_id` from `siteID`. The `output varbinary(max)` bytes become an object in bucket `reporting-exports`, keyed `<tenantId>/<job_id>.<format>`. The row keeps `object_key` and `output_sha256`, which equals the object's SHA-256 |
+| `reporting.export_job` | `synthetic.export_job` | One-to-one; `tenant_id` from `siteID`. The `output varbinary(max)` bytes become an object in bucket `reporting-exports`. A run stores its output at `<tenantId>/<job_id>.<claim>.<format>`, `<claim>` being the job's row version once the run claimed it; a migration apply stores the legacy bytes at output slot `<tenantId>/<job_id>.a.<format>` or `.b.<format>`, whichever the committed row does not name, unless the object the row names already holds them. The row keeps `object_key`, the key of its stored object, and `output_sha256`, which equals the object's SHA-256; read the key from `object_key`, never rebuild it |
 | `reporting.session_tracking` | Masa `tsessiontracking` [core/setup/db/mssql.sql:349-367], with `fname`, `lname` and `company` added by [core/mura/dbUpdates/6.1.1.cfm:2-5] | Mapping only, no routes. `tenant_id` from `siteID`, or the umbrella tenant when it names no site |
 
 `tsessiontracking` stays `legacy`-authoritative in every cut-over version. No carry entry writes it, so its group `grp:reporting.session_tracking` never moves, and only backfill and the change feed keep the target copy current. Its legacy writers are:
@@ -119,7 +119,7 @@ In the cloud the download URL is a v4 signed Cloud Storage URL. Locally it is a 
 |---|---|---|---|
 | `GET` | `/opt2/files/reporting-exports/{tenantId}/{objectName}` | public; the signature is the credential | Serves the local storage adapter's downloads |
 | `GET` | `/internal/v1/exports/{exportId}/source-scope` | `service:finance`, `service:timesheets` | Returns a job's stored scope. The producer checks it before serving the job's source read |
-| `POST` | `/internal/v1/tasks/exports/{exportId}/run` (`QUEUES['reporting-export-run'].targetPath`) | `service:tasks-invoker` only | Runs one job to `done` or `failed`; a job already past `queued` is left unchanged |
+| `POST` | `/internal/v1/tasks/exports/{exportId}/run` (`QUEUES['reporting-export-run'].targetPath`) | `service:tasks-invoker` only | Runs one job to `done` or `failed`. A `running` job, left by an interrupted delivery, is reclaimed: `started_at` restarts and the run takes a new claim, so the earlier delivery's finish is skipped and its object deleted. A `done` or `failed` job is answered with its state unchanged; a job the task's tenant does not hold answers 400 `badRequest`. The fixture's runner thread leaves any job past `queued` unchanged |
 | `POST` | `/internal/v1/task-queues/{queue}/{pause,resume,ensure}` | `platform.migration`, `platform.operator` | Queue control for `reporting-export-run`. `ensure` answers 400, because the queue is not a recurring chain |
 | `POST` | `/internal/v1/events/reporting.programs-sites.site.changed.v1` | `service:pubsub-invoker` (the local push key locally) | Push delivery into `reporting.tenant_registry` |
 | `GET`, `POST` | `/internal/v1/migration/{apply,export,changes,position,watermark,gate}` | `platform.migration` | Backfill, feed, reconciliation and unit gates. `export` also returns the `reporting-exports` object manifest |

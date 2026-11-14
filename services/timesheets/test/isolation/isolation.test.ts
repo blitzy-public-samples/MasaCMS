@@ -8,6 +8,7 @@ import {
   TENANT_A,
   TENANT_B,
   TENANT_UMBRELLA,
+  asOf,
   defineIsolationSuite,
   expectPlatformTables,
   isAck,
@@ -32,6 +33,7 @@ import {
   approvalActionRow,
   blackoutRow,
   dayRow,
+  seedSheet,
   timesheetRow,
   type TenantSeed,
 } from '../helpers/days.js';
@@ -225,15 +227,15 @@ describeWithPg('timesheets tenant isolation', () => {
   });
 
   describe('people.person.archived.v1 fan-out', () => {
-    /** An archive of the shared person by `origin`'s site, published under `origin`'s tenant. */
-    function archiveFrom(origin: TenantFixture) {
+    /** An archive of `personId` by `origin`'s site, published under `origin`'s tenant. */
+    function archiveFrom(origin: TenantFixture, personId: string) {
       return testEnvelope({
         topic: PERSON_ARCHIVED_TOPIC,
         tenantId: origin.tenantId,
-        aggregateId: SHARED_PERSON_ID,
+        aggregateId: personId,
         aggregateVersion: 1,
         payload: {
-          personId: SHARED_PERSON_ID,
+          personId,
           archiveId: cfUuid(),
           siteId: origin.siteId,
           effectiveFrom: ARCHIVE_EFFECTIVE_FROM,
@@ -250,13 +252,29 @@ describeWithPg('timesheets tenant isolation', () => {
       return countIn(tenant, `SELECT count(*)::int AS n FROM ${qualified(INBOX_TABLE)} WHERE event_id = $1`, [eventId]);
     }
 
-    /** Day ids of the shared person's blackouts in `tenant`. */
-    function blackedOutDays(tenant: TenantFixture): Promise<string[]> {
-      return columnIn(tenant, 'day_id', `SELECT day_id FROM ${qualified(BLACKOUT.table)} WHERE person_id = $1`, [SHARED_PERSON_ID]);
+    /** Day ids of `personId`'s blackouts in `tenant`. */
+    function blackedOutDays(tenant: TenantFixture, personId: string): Promise<string[]> {
+      return columnIn(tenant, 'day_id', `SELECT day_id FROM ${qualified(BLACKOUT.table)} WHERE person_id = $1`, [personId]);
     }
 
-    function openDayIds(seed: TenantSeed): string[] {
-      return seed.open.map((day) => day.day_id).sort();
+    /** Seeds a fresh person's sheet, shaped like the tenant seed sets, in every seeded tenant; returns the person and each tenant's sorted open-day ids. */
+    async function seedFreshPerson(): Promise<{ personId: string; tenants: Array<{ tenant: TenantFixture; openDays: string[] }> }> {
+      const personId = cfUuid();
+      const tenants: Array<{ tenant: TenantFixture; openDays: string[] }> = [];
+      for (const { tenant } of SEEDS) {
+        const { sheet, days } = seedSheet(tenant, {
+          personId,
+          states: ['DRAFT', 'DRAFT', 'SUBMITTED', 'RETURNED'],
+          workDates: ['2026-06-12', EFFECTIVE_FROM, '2026-06-16', '2026-06-17'],
+        });
+        await withTenant(built().handle.app, tenant.tenantId, async (tx) => {
+          await built().repository.insert(tx, TIMESHEET.table, sheet);
+          for (const day of days) await built().repository.insert(tx, TIMESHEET_DAY.table, day);
+        });
+        const openDays = days.filter((day) => asOf(day.work_date) >= EFFECTIVE_FROM).map((day) => day.day_id).sort();
+        tenants.push({ tenant, openDays });
+      }
+      return { personId, tenants };
     }
 
     /** Inbox and blackout row counts of every seeded tenant, keyed by tenant. */
@@ -272,30 +290,33 @@ describeWithPg('timesheets tenant isolation', () => {
     }
 
     it('umbrella archive fans out to umbrella and tenant-a only', async () => {
-      const envelope = archiveFrom(TENANT_UMBRELLA);
+      const { personId, tenants } = await seedFreshPerson();
+      const envelope = archiveFrom(TENANT_UMBRELLA, personId);
 
       const res = await push(envelope);
 
       expect(isAck(res), `push answered ${String(res.statusCode)}`).toBe(true);
-      for (const seed of SEEDS) {
-        const reached = seed.tenant !== TENANT_B;
-        expect(await receipts(seed.tenant, envelope.eventId), `receipts in tenant ${seed.tenant.key}`).toBe(reached ? 1 : 0);
-        expect(await blackedOutDays(seed.tenant), `blacked-out days in tenant ${seed.tenant.key}`).toEqual(reached ? openDayIds(seed) : []);
+      for (const { tenant, openDays } of tenants) {
+        const reached = tenant !== TENANT_B;
+        expect(await receipts(tenant, envelope.eventId), `receipts in tenant ${tenant.key}`).toBe(reached ? 1 : 0);
+        expect(await blackedOutDays(tenant, personId), `blacked-out days in tenant ${tenant.key}`).toEqual(reached ? openDays : []);
       }
     });
 
     it('tenant-b archive reaches only tenant-b', async () => {
+      const { personId, tenants } = await seedFreshPerson();
       const before = await rowCounts();
-      const envelope = archiveFrom(TENANT_B);
+      const envelope = archiveFrom(TENANT_B, personId);
 
       const res = await push(envelope);
       const after = await rowCounts();
 
       expect(isAck(res), `push answered ${String(res.statusCode)}`).toBe(true);
-      expect(await receipts(TENANT_B, envelope.eventId)).toBe(1);
-      expect(await receipts(TENANT_A, envelope.eventId)).toBe(0);
-      expect(await receipts(TENANT_UMBRELLA, envelope.eventId)).toBe(0);
-      expect(await blackedOutDays(TENANT_B)).toEqual(openDayIds(TENANT_SEEDS.b));
+      for (const { tenant, openDays } of tenants) {
+        const reached = tenant === TENANT_B;
+        expect(await receipts(tenant, envelope.eventId), `receipts in tenant ${tenant.key}`).toBe(reached ? 1 : 0);
+        expect(await blackedOutDays(tenant, personId), `blacked-out days in tenant ${tenant.key}`).toEqual(reached ? openDays : []);
+      }
       expect({ A: after.A, umbrella: after.umbrella }).toEqual({ A: before.A, umbrella: before.umbrella });
     });
 
@@ -304,7 +325,7 @@ describeWithPg('timesheets tenant isolation', () => {
       const before = await rowCounts();
       const earlier = publisher.raw.length;
 
-      const res = await push(withoutTenant(archiveFrom(TENANT_UMBRELLA)));
+      const res = await push(withoutTenant(archiveFrom(TENANT_UMBRELLA, SHARED_PERSON_ID)));
 
       expect(isAck(res), `push answered ${String(res.statusCode)}`).toBe(true);
       expect(publisher.raw.slice(earlier).map(({ topic, message }) => ({ topic, reason: message.attributes[DEAD_LETTER_REASON_ATTRIBUTE] }))).toEqual([

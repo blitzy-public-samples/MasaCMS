@@ -1,7 +1,7 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Attachment object manifest against a throwaway `finance` schema and the local storage adapter: entries describe the stored bytes. */
 import { createHash } from 'node:crypto';
-import { mkdtemp, open, rm } from 'node:fs/promises';
+import { link, mkdtemp, open, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,7 @@ let handle: ThrowawaySchema;
 let stateDir: string;
 let storage: LocalStorageAdapter;
 let exportObjects: ReturnType<typeof createExportObjects>;
+let staging: Promise<unknown> = Promise.resolve();
 
 /** Inserts one attachment row per id under `tenantId`, keyed `<tenantId>/<id>.pdf`, carrying the size and SHA-256 of `BYTES`; returns the keys. */
 async function insertAttachments(tenantId: string, ids: readonly string[]): Promise<string[]> {
@@ -67,6 +68,7 @@ describe.skipIf(!(await pgAvailable()))('finance attachment object manifest', ()
 
   afterAll(async () => {
     await handle?.drop();
+    await staging.catch(() => undefined);
     if (stateDir !== undefined) await rm(stateDir, { recursive: true, force: true });
   });
 
@@ -136,9 +138,11 @@ describe.skipIf(!(await pgAvailable()))('finance attachment object manifest', ()
     const tenantId = tenantIdForSite('objects-pages');
     const ids = Array.from({ length: MANIFEST_PAGE_SIZE + 1 }, (_, n) => attachmentId(MANIFEST_PAGE_SIZE + 1 - n));
     const keys = await insertAttachments(tenantId, ids);
-    for (let start = 0; start < keys.length; start += 50) {
-      await Promise.all(keys.slice(start, start + 50).map((key) => storage.put(ATTACHMENT_BUCKET, key, BYTES, { contentType: 'application/pdf' })));
-    }
+    const [first, ...rest] = keys as [string, ...string[]];
+    const objectFile = (key: string): string => path.join(stateDir, 'storage', ATTACHMENT_BUCKET, ...key.split('/'));
+    // One fsync instead of 1,001: every other key is a hard link of the first stored object.
+    staging = storage.put(ATTACHMENT_BUCKET, first, BYTES, { contentType: 'application/pdf' }).then(() => Promise.all(rest.map((key) => link(objectFile(first), objectFile(key)))));
+    await staging;
     const seen: string[] = [];
     const recording = (tx: TenantTx): TenantTx => ({
       ...tx,

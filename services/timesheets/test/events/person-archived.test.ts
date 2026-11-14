@@ -9,6 +9,7 @@ import {
   TENANT_B,
   TENANT_LIST,
   TENANT_UMBRELLA,
+  asOf,
   createCapturingPublisher,
   deliverDuplicate,
   deliverOutOfOrder,
@@ -51,6 +52,7 @@ const LOCAL_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.MS';
 const PERSON_ARCHIVED_REASON = 'person-archived';
 const GATE_HOLDER = 'person-archived-gate-test';
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
+const NEWER_EFFECTIVE_FROM = '2026-06-18';
 
 // Rewritten to the throwaway schema with the migrations; a fault row survives the rollback of the insert it fails.
 const FAULT_SQL = `
@@ -66,12 +68,13 @@ $$;
 CREATE TRIGGER blackout_fault BEFORE INSERT ON timesheets.blackout FOR EACH ROW EXECUTE FUNCTION timesheets.blackout_fault_check();
 `;
 
-/** A person.archived envelope of `personId` from `site`'s user pool, effective from local midnight of `effectiveFrom`. */
-function archiveEnvelope(site: TenantFixture, personId: string, effectiveFrom = EFFECTIVE_FROM): ArchiveEnvelope {
+/** A person.archived envelope of `personId` from `site`'s user pool at `aggregateVersion`, effective from local midnight of `effectiveFrom`. */
+function archiveEnvelope(site: TenantFixture, personId: string, effectiveFrom = EFFECTIVE_FROM, aggregateVersion = 1): ArchiveEnvelope {
   return testEnvelope({
     topic: PERSON_ARCHIVED_TOPIC,
     tenantId: site.tenantId,
     aggregateId: personId,
+    aggregateVersion,
     payload: {
       personId,
       archiveId: cfUuid(),
@@ -243,22 +246,55 @@ describeWithPg('timesheets person.archived consumer', () => {
     expect(publisher.raw).toStrictEqual([]);
   });
 
-  it('applies the archives of two persons delivered in reverse order, each once', async () => {
-    const sheets = [0, 1].map(() =>
-      seedSheet(TENANT_B, { personId: cfUuid(), states: ['DRAFT', 'SUBMITTED'], workDates: [EFFECTIVE_FROM, '2026-06-16'] }),
-    );
-    for (const sheet of sheets) await storeSheet(sheet);
-    const envelopes = sheets.map(({ sheet }) => archiveEnvelope(TENANT_B, sheet.person_id));
+  it('applies an older archive of the same person delivered after its newer version, losing neither effect', async () => {
+    const personId = cfUuid();
+    const destinations = [TENANT_UMBRELLA, TENANT_A];
+    expect(new Set(destinations.map((tenant) => tenant.tenantId))).toStrictEqual(userPoolFanoutExpectation(TENANT_UMBRELLA));
+    const sheetOf = (tenant: TenantFixture): SeededSheet =>
+      seedSheet(tenant, {
+        personId,
+        states: ['DRAFT', 'SUBMITTED', 'RETURNED', 'RESUBMITTED', 'DRAFT'],
+        workDates: ['2026-06-12', EFFECTIVE_FROM, '2026-06-16', NEWER_EFFECTIVE_FROM, '2026-06-19'],
+      });
+    const seeded = destinations.map((tenant) => ({ tenant, ...sheetOf(tenant) }));
+    for (const sheet of [...seeded, sheetOf(TENANT_B)]) await storeSheet(sheet);
+    const older = archiveEnvelope(TENANT_UMBRELLA, personId, EFFECTIVE_FROM, 1);
+    const newer = archiveEnvelope(TENANT_UMBRELLA, personId, NEWER_EFFECTIVE_FROM, 2);
+    const envelopes = [older, newer];
+    /** The person's blackouts, `tenant`'s blackout changelog and the receipt statuses of the older and newer archive. */
+    const effectsIn = async (tenant: TenantFixture) => ({
+      blackouts: await blackoutsOf(tenant, personId),
+      changes: await blackoutChanges(tenant),
+      receipts: [await receipts(tenant, older.eventId), await receipts(tenant, newer.eventId)],
+    });
+    const untouched = { blackouts: [], changes: [], receipts: [[], []] };
 
-    const responses = await deliverOutOfOrder(app, PERSON_ARCHIVED_SUBSCRIPTION, envelopes, [1, 0]);
+    const delivered = await deliverOutOfOrder(app, PERSON_ARCHIVED_SUBSCRIPTION, envelopes, [1, 0]);
 
-    expect(responses.map((res) => res.statusCode)).toStrictEqual([204, 204]);
-    for (const [index, { sheet, days }] of sheets.entries()) {
-      const envelope = envelopes[index] as ArchiveEnvelope;
-      const rows = await blackoutsOf(TENANT_B, sheet.person_id);
-      expect(rows.map((row) => [row.day_id, row.archive_id])).toStrictEqual(dayIds(days).map((dayId) => [dayId, envelope.payload.archiveId]));
-      expect(await receipts(TENANT_B, envelope.eventId)).toStrictEqual(['applied']);
+    expect(delivered.map((res) => res.statusCode)).toStrictEqual([204, 204]);
+    const settled = new Map<TenantFixture, Awaited<ReturnType<typeof effectsIn>>>();
+    for (const { tenant, days } of seeded) {
+      const [before, ...open] = days as [TimesheetDayRow, ...TimesheetDayRow[]];
+      const effects = await effectsIn(tenant);
+      expect(effects.blackouts.map(({ day_id, archive_id }) => ({ day_id, archive_id }))).toStrictEqual(
+        open
+          .map((day) => ({ day_id: day.day_id, archive_id: (asOf(day.work_date) < NEWER_EFFECTIVE_FROM ? older : newer).payload.archiveId }))
+          .sort((x, y) => (x.day_id < y.day_id ? -1 : 1)),
+      );
+      expect(effects.blackouts.map((row) => row.day_id)).not.toContain(before.day_id);
+      expect(effects.changes.map((change) => change.op)).toStrictEqual(open.map(() => 'insert'));
+      expect(effects.receipts).toStrictEqual([['applied'], ['applied']]);
+      settled.set(tenant, effects);
     }
+    expect(await effectsIn(TENANT_B)).toStrictEqual(untouched);
+    expect(publisher.raw).toStrictEqual([]);
+
+    const replayed = await deliverOutOfOrder(app, PERSON_ARCHIVED_SUBSCRIPTION, envelopes, [1, 0]);
+
+    expect(replayed.map((res) => res.statusCode)).toStrictEqual([204, 204]);
+    for (const [tenant, effects] of settled) expect(await effectsIn(tenant)).toStrictEqual(effects);
+    expect(await effectsIn(TENANT_B)).toStrictEqual(untouched);
+    expect(publisher.raw).toStrictEqual([]);
   });
 
   it.each<{ name: string; reason: DeadLetterReason; send: (envelope: ArchiveEnvelope) => TenantlessEnvelope }>([

@@ -1,11 +1,14 @@
 /** The cform routes of routes/v1/cform.ts through `app.inject`, against bodies recorded from Masa 7.6.1 on ACF 2023 (test/fixtures/legacy-cform-recorded.json). */
 import { readFileSync } from 'node:fs';
-import { crc32, inflateRawSync } from 'node:zlib';
+import { Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
+import { crc32, createDeflateRaw, deflateRawSync, inflateRawSync } from 'node:zlib';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Roles, moduleRole } from '@opt2/platform/auth';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import {
   CSRF_CONSUME_PATH,
+  LEGACY_POST_LIMIT_BYTES,
   legacyParamsOf,
   sendLegacyResponse,
   type FastifyInstance,
@@ -15,7 +18,7 @@ import {
 } from '@opt2/platform/service-kit';
 import { TENANT_A, TENANT_B } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/context.js';
-import { acfStructKeyOrder } from '../../src/legacy/admin-render.js';
+import { acfStructKeyOrder, type AdminRenderResult } from '../../src/legacy/admin-render.js';
 import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
@@ -109,8 +112,38 @@ function storedZip(entries: ReadonlyArray<readonly [string, string]>): Buffer {
   return Buffer.concat([...locals, directory, end]);
 }
 
-/** The single entry of an archive: name, flags, method and inflated bytes, read through its central directory. */
-function onlyEntry(zip: Buffer): { name: string; flags: number; method: number; data: Buffer } {
+/** A zip whose `count` central-directory entries all point at one form.json of `size` zero bytes, deflated from 1 MiB chunks. */
+async function zeroFormZip(size: number, count: number): Promise<Buffer> {
+  const chunk = Buffer.alloc(1024 * 1024);
+  function* zeros(): Generator<Buffer> {
+    for (let left = size; left > 0; left -= chunk.length) yield chunk.subarray(0, Math.min(left, chunk.length));
+  }
+  const deflated = await buffer(Readable.from(zeros()).pipe(createDeflateRaw({ level: 9 })));
+  const name = Buffer.from('form.json');
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(8, 8);
+  local.writeUInt32LE(deflated.length, 18);
+  local.writeUInt32LE(size, 22);
+  local.writeUInt16LE(name.length, 26);
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(8, 10);
+  central.writeUInt32LE(deflated.length, 20);
+  central.writeUInt32LE(size, 24);
+  central.writeUInt16LE(name.length, 28);
+  const directory = Buffer.concat(Array.from({ length: count }, () => [central, name]).flat());
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(count, 8);
+  end.writeUInt16LE(count, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(local.length + name.length + deflated.length, 16);
+  return Buffer.concat([local, name, deflated, directory, end]);
+}
+
+/** The single entry of an archive: name, flags, method, compressed and inflated bytes, read through its central directory. */
+function onlyEntry(zip: Buffer): { name: string; flags: number; method: number; compressed: Buffer; data: Buffer } {
   const end = zip.length - 22;
   expect(zip.readUInt32LE(end)).toBe(0x06054b50);
   expect(zip.readUInt16LE(end + 10)).toBe(1);
@@ -118,13 +151,15 @@ function onlyEntry(zip: Buffer): { name: string; flags: number; method: number; 
   const nameLength = zip.readUInt16LE(central + 28);
   const local = zip.readUInt32LE(central + 42);
   const start = local + 30 + zip.readUInt16LE(local + 26);
-  const data = inflateRawSync(zip.subarray(start, start + zip.readUInt32LE(central + 20)));
+  const compressed = zip.subarray(start, start + zip.readUInt32LE(central + 20));
+  const data = inflateRawSync(compressed);
   expect(crc32(data)).toBe(zip.readUInt32LE(central + 16));
   expect(data.length).toBe(zip.readUInt32LE(central + 24));
   return {
     name: zip.toString('utf8', central + 46, central + 46 + nameLength),
     flags: zip.readUInt16LE(central + 8),
     method: zip.readUInt16LE(central + 10),
+    compressed,
     data,
   };
 }
@@ -151,7 +186,7 @@ describe('routes/v1/cform', () => {
             config: circuitRouteConfig('cform'),
             handler: async (request, reply) => {
               const actor = await requireCircuitAccess(request, ctx, 'cform', String(legacyParamsOf(request).siteid ?? ''));
-              const out = await spec.run(request, ctx, actor);
+              const out: AdminRenderResult = await spec.run(request, ctx, actor);
               return sendLegacyResponse(reply, { status: out.status, headers: { 'content-type': out.contentType, ...out.headers }, body: out.body });
             },
           });
@@ -312,6 +347,16 @@ describe('routes/v1/cform', () => {
       expect(entry.data.toString('utf8')).toBe(`{${keys.map((key) => `${JSON.stringify(key)}:${JSON.stringify(values[key])}`).join(',')}}`);
     });
 
+    it.each([
+      ['a short', row.body],
+      ['a 1 MB', JSON.stringify({ pages: Array.from({ length: 40_000 }, (_, i) => ({ id: i, label: `Field ${String((i * 7919) % 10007)}` })) })],
+    ])('deflates %s form.json at level 9 as ZipOutputStream does', async (_size, body) => {
+      db.respond(/ FROM "content"\."content" tcontent LEFT JOIN /, [{ ...row, body }]);
+      const entry = onlyEntry((await raw('export', { query: { contentid: FORM_ID } })).rawPayload);
+      expect(JSON.parse(entry.data.toString('utf8'))).toMatchObject({ BODY: body });
+      expect(entry.compressed.equals(deflateRawSync(entry.data, { level: 9 }))).toBe(true);
+    });
+
     it('exports the new bean of an unknown form', async () => {
       const response = await raw('export', { query: { contentid: FORM_ID } });
       expect(response.headers['content-disposition']).toBe(`attachment;filename=_2026_30_06_${SITE}.zip`);
@@ -386,6 +431,21 @@ describe('routes/v1/cform', () => {
       ['a formzip field that is not a file', [...csrf, { name: 'title', value: 'x' }, { name: 'formzip', value: 'C:\\form.zip' }]],
     ] as const)('fails with the legacy 500 for %s', async (_name, parts) => {
       expect((await post(parts)).statusCode).toBe(500);
+    });
+
+    it.each([
+      ['a form.json inflating past the post limit', LEGACY_POST_LIMIT_BYTES + 1, 1],
+      ['form.json entries inflating past the post limit together', LEGACY_POST_LIMIT_BYTES / 2 + 1, 2],
+    ] as const)('fails with the legacy 500 for %s', async (_name, size, count) => {
+      expect((await post(upload(await zeroFormZip(size, count)))).statusCode).toBe(500);
+    });
+
+    it('reads form.json entries inflating to the post limit together', async () => {
+      const response = await post(upload(await zeroFormZip(LEGACY_POST_LIMIT_BYTES / 2, 2)));
+      expect([response.statusCode, response.json()]).toEqual([
+        200,
+        { saved: false, errors: {}, redirect: null, data: { errormessage: 'Upload did not contain an exported Masa CMS Form' } },
+      ]);
     });
 
     it('fails closed on the save, which needs site settings the service does not hold, after every legacy check passed', async () => {

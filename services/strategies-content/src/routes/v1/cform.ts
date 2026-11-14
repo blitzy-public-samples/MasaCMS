@@ -2,10 +2,12 @@
 import { readFile } from 'node:fs/promises';
 import { posix } from 'node:path';
 import { buffer } from 'node:stream/consumers';
-import { crc32, deflateRawSync, inflateRawSync } from 'node:zlib';
+import { promisify } from 'node:util';
+import { crc32, deflateRaw, inflateRaw } from 'node:zlib';
 import { LegacyServiceUnavailableError, cfDateFormat } from '@opt2/platform/legacy-compat';
 import {
   IDENTITY_SERVICE,
+  LEGACY_POST_LIMIT_BYTES,
   ServiceUnavailableError,
   legacyParamsOf,
   multipartFilesOf,
@@ -231,6 +233,8 @@ const DEFLATED = 8;
 const STORED = 0;
 /** The leading signatures of a zip archive: an entry, an empty archive, a spanned archive. */
 const ZIP_MAGIC = [LOCAL_SIGNATURE, END_SIGNATURE, DESCRIPTOR_SIGNATURE] as const;
+const deflateRawAsync = promisify(deflateRaw);
+const inflateRawAsync = promisify(inflateRaw);
 
 /** Java's DOS date and time of `at` in the process time zone; earlier than 1980 is 1980-01-01. */
 function dosDateTime(at: Date): { time: number; date: number } {
@@ -242,9 +246,9 @@ function dosDateTime(at: Date): { time: number; date: number } {
 }
 
 /** mura.Zip.AddFiles of one file: ZipOutputStream at level 9 writing `name` deflated, stamped `at`. */
-function zipOne(name: string, data: Buffer, at: Date): Buffer {
+async function zipOne(name: string, data: Buffer, at: Date): Promise<Buffer> {
   const nameBytes = Buffer.from(name, 'utf8');
-  const deflated = deflateRawSync(data, { level: 9 });
+  const deflated = await deflateRawAsync(data, { level: 9 });
   const crc = crc32(data);
   const { time, date } = dosDateTime(at);
   const local = Buffer.alloc(30);
@@ -288,10 +292,11 @@ function isZipArchive(bytes: Buffer): boolean {
 
 /**
  * The file mura.Zip.Extract leaves at `name` in the extraction folder: the last central-directory entry resolving to it.
- * Undefined when none does, when an entry name climbs out (isZipSafe refuses the archive) or when the archive cannot be
- * read, because Extract catches every failure and the following fileRead then finds no file.
+ * Undefined when none does, when an entry name climbs out (isZipSafe refuses the archive), or when the archive cannot be
+ * read or its matching entries together inflate past the post limit, because Extract catches every failure and the
+ * following fileRead then finds no file.
  */
-function extractedFile(zip: Buffer, name: string): Buffer | undefined {
+async function extractedFile(zip: Buffer, name: string): Promise<Buffer | undefined> {
   try {
     const end = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
     if (end < 0) return undefined;
@@ -311,13 +316,18 @@ function extractedFile(zip: Buffer, name: string): Buffer | undefined {
     }
     if (entries.some((entry) => /\.\.[/\\]/.test(entry.name))) return undefined;
     let found: Buffer | undefined;
+    let remaining = LEGACY_POST_LIMIT_BYTES;
     for (const entry of entries) {
       if (posix.normalize(entry.name.replaceAll('\\', '/')).replace(/^\/+/, '') !== name) continue;
       const start = entry.local + 30 + zip.readUInt16LE(entry.local + 26) + zip.readUInt16LE(entry.local + 28);
       const data = zip.subarray(start, start + entry.size);
       if (entry.method === STORED) found = data;
-      else if (entry.method === DEFLATED) found = inflateRawSync(data);
-      else return found;
+      else if (entry.method === DEFLATED) {
+        // maxOutputLength must be at least 1, so the length check enforces an exhausted budget.
+        found = await inflateRawAsync(data, { maxOutputLength: Math.max(remaining, 1) });
+        if (found.length > remaining) return undefined;
+        remaining -= found.length;
+      } else return found;
     }
     return found;
   } catch {
@@ -368,7 +378,7 @@ async function exportForm(request: FastifyRequest, ctx: ContentRouteContext, act
   return {
     status: 200,
     contentType: EXPORT_CONTENT_TYPE,
-    body: zipOne(EXPORT_ENTRY, Buffer.from(formJson, 'utf8'), now),
+    body: await zipOne(EXPORT_ENTRY, Buffer.from(formJson, 'utf8'), now),
     headers: { 'Content-disposition': `attachment;filename=${zipTitle}.zip` },
   };
 }
@@ -428,7 +438,7 @@ async function importForm(request: FastifyRequest, reply: FastifyReply, app: Fas
   if (csrfRejected(request)) return rerender({ alert: INVALID_TOKEN_ALERT });
   const zip = await uploadedZip(request);
   if (formField(request, 'title') === '') return rerender({ errormessage: TITLE_REQUIRED });
-  const file = extractedFile(zip, EXPORT_ENTRY);
+  const file = await extractedFile(zip, EXPORT_ENTRY);
   if (file === undefined) throw new CformRequestError(`The file ${EXPORT_ENTRY} does not exist.`);
   let exported: unknown;
   try {

@@ -124,6 +124,22 @@ function isAllowed(status: number): boolean {
   return status !== 401 && status !== 403;
 }
 
+/** Routes the matrix probes without the body or query their handler validates, so an admitted request answers 400. */
+const VALIDATION_PROBES: ReadonlySet<string> = new Set([
+  'POST /internal/v1/events/finance.programs-sites.site.changed.v1',
+  `POST ${MIGRATION_PREFIX}apply`,
+  `POST ${MIGRATION_PREFIX}gate`,
+  `POST ${MIGRATION_PREFIX}watermark`,
+  `GET ${MIGRATION_PREFIX}changes`,
+  `GET ${MIGRATION_PREFIX}export`,
+  `GET ${MIGRATION_PREFIX}objects`,
+]);
+
+/** Status an admitted matrix request answers. */
+function admittedStatus(route: Pick<RouteMatrixEntry, 'method' | 'url'>): number {
+  return VALIDATION_PROBES.has(keyOf(route)) ? 400 : 200;
+}
+
 /** A finance app over the shared seed, with its stored attachment and the signed URLs of both stored objects. */
 interface Harness {
   t: TestApp;
@@ -336,6 +352,13 @@ async function send(h: Harness, route: RouteMatrixEntry, subject: RoleSubject, o
   };
 }
 
+/** Whether an admitted request left its route's effects: none for a validation probe; rows, plus one object for an upload, for a finance write. */
+function hasAdmittedEffects(route: RouteMatrixEntry, outcome: Outcome): boolean {
+  if (VALIDATION_PROBES.has(keyOf(route))) return outcome.writes === 0 && outcome.objects === 0;
+  if (route.method !== 'POST' || !isFinanceRoute(route)) return true;
+  return outcome.writes > 0 && outcome.objects === (route.url.endsWith('/attachments') ? 1 : 0);
+}
+
 /** Whether `route`'s declaration admits `subject`, from its public flag, transport, `requires` and `siteCheck` alone. */
 function expectAllowed(route: RouteMatrixEntry, subject: RoleSubject): boolean {
   const kind = classOf(subject);
@@ -502,7 +525,19 @@ describe('authorisation matrix', () => {
   });
 
   it('admits every subject a route declares for it', () => {
-    const offending = cells.filter((cell) => cell.expected && !isAllowed(cell.status)).map(cellName);
+    expect([...VALIDATION_PROBES].filter((key) => !cells.some((cell) => cell.expected && keyOf(cell.route) === key))).toEqual([]);
+    const offending = cells
+      .filter((cell) => cell.expected && cell.status !== admittedStatus(cell.route))
+      .map((cell) => `${cellName(cell)}: expected ${admittedStatus(cell.route)}`);
+    expect(offending, offending.join('\n')).toEqual([]);
+  });
+
+  it('leaves the writes and objects of each admitted request', () => {
+    const probed = cells.filter((cell) => cell.expected && cell.status === admittedStatus(cell.route));
+    expect(probed.some((cell) => cell.route.method === 'POST' && isFinanceRoute(cell.route))).toBe(true);
+    const offending = probed
+      .filter((cell) => !hasAdmittedEffects(cell.route, cell))
+      .map((cell) => `${cellName(cell)}: ${cell.writes} writes, ${cell.objects} objects`);
     expect(offending, offending.join('\n')).toEqual([]);
   });
 
@@ -544,7 +579,9 @@ describe('authorisation matrix', () => {
   });
 
   it('runs allowed requests in the token tenant only', () => {
-    const probed = cells.filter((cell) => cell.expected && isAllowed(cell.status) && cell.subject.kind === 'user' && !isOtherTenant(cell.subject));
+    const probed = cells.filter(
+      (cell) => cell.expected && cell.status === admittedStatus(cell.route) && cell.subject.kind === 'user' && !isOtherTenant(cell.subject),
+    );
     expect(probed.some((cell) => cell.tenants.includes(TENANT_A.tenantId))).toBe(true);
     const offending = probed
       .filter((cell) => cell.tenants.some((tenant) => tenant !== TENANT_A.tenantId))
@@ -585,9 +622,12 @@ describe('fixture role sets', () => {
   it.each(ORACLE_CELLS)(
     'grants finance.preparer and finance.approver exactly the fixture role sets: $label as $role',
     async ({ key, action, role, grant }) => {
-      const outcome = await withApp((h) => send(h, routeByKey(key), financeSubject(role), action === undefined ? {} : { action }));
+      const route = routeByKey(key);
+      const outcome = await withApp((h) => send(h, route, financeSubject(role), action === undefined ? {} : { action }));
       if (grant) {
-        expect(isAllowed(outcome.status), `${outcome.status} ${outcome.body.toString('utf8').slice(0, 200)}`).toBe(true);
+        const detail = `${outcome.status}: ${outcome.writes} writes, ${outcome.objects} objects ${outcome.body.toString('utf8').slice(0, 200)}`;
+        expect(outcome.status, detail).toBe(admittedStatus(route));
+        expect(hasAdmittedEffects(route, outcome), detail).toBe(true);
       } else {
         expect({ status: outcome.status, writes: outcome.writes, objects: outcome.objects }).toEqual({ status: 403, writes: 0, objects: 0 });
       }
