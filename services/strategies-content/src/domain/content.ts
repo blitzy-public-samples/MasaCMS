@@ -342,7 +342,7 @@ function member(struct: Readonly<Record<string, unknown>>, key: string): unknown
 }
 
 /** bean.parseDateArg (bean.cfc:278-301): a date, the unparsable text, or '' for a non-date. */
-function parseDateArg(value: unknown): Date | string {
+export function parseDateArg(value: unknown): Date | string {
   if (value instanceof Date) return value;
   let text = cfText(value);
   if (/\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d/u.test(text)) text = text.replace('T', ' ');
@@ -2550,6 +2550,8 @@ export function publish(
 export interface ApproveVersionOptions extends SaveContentOptions {
   /** changesetManager.publish's `setApprovalChainOverride(true)`. */
   approvalChainOverride?: boolean;
+  /** changesetRollBack.rollback's `setDisplay(0)` of an item the change set published first. */
+  display?: number;
 }
 
 /** Activates version `contentHistId` in `tx` (`approved = 1`), as an approval-chain approval or a change-set publish saves it. */
@@ -2561,11 +2563,12 @@ export async function approveVersion(
   contentHistId: string,
   opts: ApproveVersionOptions = {},
 ): Promise<SaveContentResult> {
-  const { approvalChainOverride, ...saveOpts } = opts;
+  const { approvalChainOverride, display, ...saveOpts } = opts;
   const scope = scopeOf(tx, deps, actor, site, saveOpts);
   const version = await readBean(scope, { siteId: site.siteId, contentHistId });
   version.setValue('approved', 1);
   if (approvalChainOverride === true) version.setValue('approvalChainOverride', true);
+  if (display !== undefined) version.setValue('display', display);
   if (saveOpts.approvingChainRequest === true) version.setValue('approvingChainRequest', true);
   return saveContentInTx(tx, deps, actor, site, version, saveOpts);
 }
@@ -2581,6 +2584,21 @@ export function deleteVersion(
   opts: Pick<SaveContentOptions, 'requestId'> = {},
 ): Promise<void> {
   return withGatedTenant(deps.db, actor.tenantId, (tx) => deleteVersionInTx(scopeOf(tx, deps, actor, site, opts), args.contentHistId, args.siteId));
+}
+
+/**
+ * contentManager.delete of one version inside the caller's transaction `tx`, as an approval-chain activation deletes its
+ * source version and a change-set publish deletes the superseded version of an item with an approval request.
+ */
+export function deleteVersionInTransaction(
+  tx: TenantTx,
+  deps: ContentDeps,
+  actor: Actor,
+  site: ContentSaveSite,
+  args: { contentHistId: string; siteId: string },
+  opts: Pick<SaveContentOptions, 'requestId'> = {},
+): Promise<void> {
+  return deleteVersionInTx(scopeOf(tx, deps, actor, site, opts), args.contentHistId, args.siteId);
 }
 
 /**

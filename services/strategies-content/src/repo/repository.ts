@@ -719,6 +719,22 @@ export interface ChangesetQueryArgs {
   tag?: string;
 }
 
+/** The cChangesets.list beanFeed params: the site's change sets narrowed by publish date, name, tags and categories. */
+export interface ChangesetFeedArgs {
+  /** The feed's site; '' leaves the site unfiltered (`1=1`), as beanFeed does. */
+  siteId: string;
+  /** `publishdate >= x` params in addParam order, each a date part as `cf_sql_date` binds it. */
+  publishDateFrom?: readonly Date[];
+  /** `publishdate <= x`, a date part. */
+  publishDateTo?: Date;
+  /** `name contains x`: `name LIKE '%x%'`. */
+  nameContains?: string;
+  /** Change sets assigned any of these tags; an empty list matches none (legacy's `criteria='none'`). */
+  tags?: readonly string[];
+  /** Change sets assigned any of these categories; an empty list matches none. */
+  categoryIds?: readonly string[];
+}
+
 /** changesetManager.getQuery columns. */
 export type ChangesetListRow = Pick<
   ChangesetRow,
@@ -2917,6 +2933,36 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       );
       return rows.map((row) => row.changesetid);
     },
+
+    // The feed has no ORDER BY, so SQL Server returns the clustered primary-key order.
+    /** changesetManager.getFeed as cChangesets.list narrows it: one page of the site's change sets in id order, with the count of all. */
+    changesetFeedPage(tx: TenantTx, args: ChangesetFeedArgs, page: RowPage): Promise<PagedRows<ChangesetRow>> {
+      const p = new SqlParams(1);
+      const filters = [`tenant_id = $1`];
+      if (args.siteId !== '') filters.push(`siteid = ${p.add(args.siteId)}`);
+      for (const from of args.publishDateFrom ?? []) filters.push(`publishdate >= ${p.add(from)}`);
+      if (args.publishDateTo !== undefined) filters.push(`publishdate <= ${p.add(args.publishDateTo)}`);
+      if (args.nameContains !== undefined) filters.push(ciLike(p, 'name', `%${args.nameContains}%`));
+      const defs: TableDef[] = [CHANGESET];
+      if (args.tags !== undefined) {
+        defs.push(CHANGESET_TAG_ASSIGN);
+        filters.push(
+          `upper(changesetid) IN (SELECT upper(a.changesetid) FROM ${name(CHANGESET_TAG_ASSIGN)} a WHERE a.tenant_id = $1 AND ${ciIn(p, 'a.tag', args.tags)})`,
+        );
+      }
+      if (args.categoryIds !== undefined) {
+        defs.push(CHANGESET_CATEGORY_ASSIGN);
+        filters.push(
+          `upper(changesetid) IN (SELECT upper(a.changesetid) FROM ${name(CHANGESET_CATEGORY_ASSIGN)} a WHERE a.tenant_id = $1 AND ${idIn(p, 'a.categoryid', args.categoryIds)})`,
+        );
+      }
+      return selectPage<ChangesetRow>(
+        tx,
+        defs,
+        { select: `SELECT * FROM ${name(CHANGESET)} WHERE ${filters.join(' AND ')}`, order: 'ORDER BY changesetid', values: [tx.tenantId, ...p.values] },
+        page,
+      );
+    },
   };
 
   // ---- approvals ----
@@ -3733,6 +3779,18 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
         `SELECT * FROM ${name(GROUP_PROJECTION)} WHERE tenant_id = $1 AND NOT deleted AND is_public = ${p.add(args.isPublic)}` +
           ` AND ${ciIdExpr('site_id', 'legacy_ci')} = ${p.add(args.siteId)}::bpchar AND lower(rtrim(group_name)) <> 'admin'` +
           ` ORDER BY ${orderKey('lower(group_name)', 'asc')}, group_id`,
+        [tx.tenantId, ...p.values],
+      );
+    },
+
+    /** The live groups of user pool site `siteId` with `isPublic`, by name (approvalChainBean.getAvailableGroupsIterator over one pool). */
+    poolGroups(tx: TenantTx, args: { siteId: string; isPublic: 0 | 1 }): Promise<GroupProjectionRow[]> {
+      const p = new SqlParams(1);
+      return select<GroupProjectionRow>(
+        tx,
+        [GROUP_PROJECTION],
+        `SELECT * FROM ${name(GROUP_PROJECTION)} WHERE tenant_id = $1 AND NOT deleted AND is_public = ${p.add(args.isPublic)}` +
+          ` AND ${ciIdExpr('site_id', 'legacy_ci')} = ${p.add(args.siteId)}::bpchar ORDER BY ${orderKey('lower(group_name)', 'asc')}, group_id`,
         [tx.tenantId, ...p.values],
       );
     },

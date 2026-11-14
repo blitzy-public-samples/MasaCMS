@@ -100,7 +100,7 @@ export function newChangesetBean(actor: Actor, clock: Clock, values: ChangesetVa
 }
 
 /** bean.set(rs) of a stored row over the init defaults: every column replaces its default, NULL dates as unset and a NULL `published` as 0. */
-function loadedBean(row: ChangesetRow): ChangesetBean {
+export function loadedBean(row: ChangesetRow): ChangesetBean {
   return {
     changesetid: text(row.changesetid),
     siteid: text(row.siteid),
