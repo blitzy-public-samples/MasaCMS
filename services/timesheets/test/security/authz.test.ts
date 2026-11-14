@@ -1,84 +1,64 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** In-process authorisation matrix of every timesheets route, composed from createService and the package's own registrars. */
-import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
+/** In-process authorisation matrix of every timesheets route, injected into the app buildApp composes over the in-memory recording db. */
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   INVOCATION_HEADER,
   PUBSUB_INVOKER_ROLE,
+  Roles,
   UndeclaredRouteError,
   collectRouteMatrix,
   type Opt2RouteConfig,
   type RouteMatrixEntry,
   type Transport,
 } from '@opt2/platform/auth';
-import { buildPushBody, encodeEnvelope, registerConsumers, type EventEnvelope } from '@opt2/platform/events';
-import { LEGACY_ERROR_MAP, cfUuid } from '@opt2/platform/legacy-compat';
-import { createLogger } from '@opt2/platform/logging';
-import {
-  closeGates,
-  ensureUnitGates,
-  openGates,
-  registerMigrationHandlers,
-  registerWritePositionHeader,
-} from '@opt2/platform/migration-kit';
-import {
-  CSRF_CONSUME_PATH,
-  IDENTITY_SERVICE,
-  createService,
-  fixedClock,
-  loadEnv,
-  type CsrfConsumeRequest,
-  type FastifyInstance,
-  type ServiceRequest,
-  type ServiceResponse,
-} from '@opt2/platform/service-kit';
+import { buildPushBody, encodeEnvelope, type EventEnvelope } from '@opt2/platform/events';
+import { CSRF_HEADER_EXPIRES, CSRF_HEADER_TOKEN, LEGACY_ERROR_MAP, cfUuid } from '@opt2/platform/legacy-compat';
+import { CSRF_CONSUME_PATH, IDENTITY_SERVICE, type FastifyInstance, type ServiceRequest } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import {
   ROLE_SET,
   TENANT_A,
   TENANT_B,
-  TENANT_LIST,
   TEST_PUSH_KEY,
+  asOf,
   authHeadersFor,
   createCapturingPublisher,
-  createThrowawaySchema,
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
-  pgAvailable,
   pushKeyQuery,
   pushTo,
   registryPayloads,
-  seedRegistry,
   subjectQueryFor,
   testEnvelope,
   testVerifier,
   type InjectResponse,
   type RoleSubject,
-  type ThrowawaySchema,
 } from '@opt2/platform/testing';
+import { SERVICE_NAME, buildApp } from '../../src/app.js';
 import type { TimesheetAction, TimesheetState } from '../../src/domain/lifecycle.transitions.js';
-import { PERSON_ARCHIVED_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION, createConsumers } from '../../src/events/consumers.js';
+import { PERSON_ARCHIVED_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { PERSON_ARCHIVED_TOPIC } from '../../src/events/person-archived.js';
-import { mappings, units } from '../../src/migration/mappings/index.js';
-import { createTimesheetsRepository, type TimesheetsRepository } from '../../src/repo/repository.js';
-import { TIMESHEETS_UNITS, type TimesheetDayRow, type TimesheetRow } from '../../src/repo/tables.js';
 import { FIXTURE_PREFIX } from '../../src/routes/fixture.js';
-import { registerRoutes } from '../../src/routes/index.js';
+import {
+  CSRF_HEADERS,
+  TEST_CLOCK,
+  buildTestApp,
+  createRecordingDb,
+  serviceHeaders,
+  testEnv,
+  type RecordingDb,
+  type ReportingScopeAnswer,
+  type TestApp,
+} from '../helpers/app.js';
+import { dayRow, seedSheet, toSeed } from '../helpers/days.js';
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
-  paths: Record<string, Record<string, Record<string, unknown>>>;
-};
+const CONTRACT = await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8');
 
-const SERVICE = 'timesheets';
-const VERSION = '1.0.0';
+const SERVICE = SERVICE_NAME;
 const SITE_A = TENANT_A.siteId;
 const SITE_B = TENANT_B.siteId;
 const ON_SITE_A = `siteid=${SITE_A}`;
@@ -93,25 +73,29 @@ const EXPORT_ID = '7E57A0C7-0000-4000-8000000000000040';
 const EXPORT_CLAIM = '2';
 const EXPORT_SCOPE_PATH = `/internal/v1/exports/${EXPORT_ID}/source-scope`;
 const SCOPE_LOOKUP = `reporting GET ${EXPORT_SCOPE_PATH}`;
-const CLOCK = fixedClock(new Date(2026, 5, 30, 10, 0, 0, 0));
-const AS_OF = '2026-06-30';
+const AS_OF = asOf();
 const ACTOR_ID = '7E57A0C7-0000-4000-8000000000000001';
 const PERSON = '7E57A0C7-0000-4000-8000000000000002';
 const ARCHIVED_PERSON = '7E57A0C7-0000-4000-8000000000000003';
-const SHEET_A = '7E57A0C7-0000-4000-8000000000000010';
-const SHEET_B = '7E57A0C7-0000-4000-8000000000000020';
 const SESSION_ID = '7E57A0C7-0000-4000-8000000000000030';
 const UNKNOWN_DAY = '7E57A0C7-0000-4000-8000000000000099';
-// The identity double answers every consume with `csrfVerdict`, valid by default, so admitted writes reach their handlers.
-const CSRF_HEADERS = { 'x-csrf_token': 'AUTHZPROBETOKEN', 'x-csrf_token_expires': '260630120000000' } as const;
+/** Work date of every day the probes seed on the tenant-a sheet: the first day of its period. */
+const WORK_DATE = '2026-06-08';
 const METHOD_OVERRIDE = 'x-http-method-override';
 const CONSUME = `${IDENTITY_SERVICE} POST ${CSRF_CONSUME_PATH}`;
 const COMMENT = { comment: 'authz probe' };
 
-const EMPLOYEE = 'timesheets.employee';
-const PRIMARY = 'timesheets.primary-approver';
-const SECONDARY = 'timesheets.secondary-approver';
-const EXPORTER = 'reporting.exporter';
+/** One sheet per tenant, without days; the probes add tenant-a days as they need them. */
+const SEEDED_A = seedSheet(TENANT_A, { personId: PERSON, states: [] });
+const SEEDED_B = seedSheet(TENANT_B, { personId: PERSON, states: [] });
+const SHEET_A = SEEDED_A.sheet.timesheet_id;
+const SHEET_B = SEEDED_B.sheet.timesheet_id;
+
+const EMPLOYEE = Roles.timesheetsEmployee;
+const PRIMARY = Roles.timesheetsPrimaryApprover;
+const SECONDARY = Roles.timesheetsSecondaryApprover;
+const EXPORTER = Roles.reportingExporter;
+/** timesheets.cfc `variables.roles`, which its gate() requires on every fixture route; the /v1 sheet and day routes declare the same set. */
 const TIMESHEET_ROLES: readonly string[] = [EMPLOYEE, PRIMARY, SECONDARY];
 const STATUS_ROLES: readonly string[] = [EXPORTER, PRIMARY, SECONDARY];
 
@@ -192,18 +176,20 @@ interface Tunnel {
 interface Effects {
   tenantTx: number;
   metadataTx: number;
+  /** `<service> <METHOD> <path>` of each call identity's consume or reporting's scope double received. */
   calls: string[];
   published: number;
-  /** Whether any row of the schema, in any fixture tenant, changed. */
+  /** Whether the recording db committed any write, changelog rows included. */
   written: boolean;
 }
 
 interface Mark {
   tenantTx: number;
   metadataTx: number;
-  calls: number;
+  consumes: number;
+  lookups: number;
   published: number;
-  fingerprint: string;
+  writes: number;
 }
 
 interface Probe {
@@ -254,35 +240,19 @@ const DENIAL_ERRORS: Readonly<Record<401 | 403, readonly ErrorBody[]>> = {
 
 const NO_EFFECTS: Effects = { tenantTx: 0, metadataTx: 0, calls: [], published: 0, written: false };
 
-let handle: ThrowawaySchema;
-let repository: TimesheetsRepository;
+let recording: RecordingDb;
+let t: TestApp<TenantDb>;
 let app: FastifyInstance;
-let fingerprintSql = '';
 let dayA = '';
 const counts = { tenantTx: 0, metadataTx: 0 };
-const calls: string[] = [];
-const consumed: CsrfConsumeRequest[] = [];
-const publisher = createCapturingPublisher();
-/** Identity's answer to every consume call. */
-let csrfVerdict: { status: number; valid: boolean } = { status: 200, valid: true };
-
-const ENV = loadEnv(undefined, {
-  PORT: '8118',
-  OPT2_SERVICE_NAME: SERVICE,
-  OPT2_ENV: 'local',
-  OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
-  OPT2_TOKEN_ISSUER: 'opt2-local-identity',
-  OPT2_TOKEN_AUDIENCE: 'opt2-local',
-  TZ: Intl.DateTimeFormat().resolvedOptions().timeZone,
-});
 
 /** `db` with every transaction the routes open counted. */
 function countingDb(db: TenantDb): TenantDb {
   const counted: TenantDb = {
     schema: db.schema,
-    withTenant(tenantId, fn) {
+    withTenant(tenantId, fn, options) {
       counts.tenantTx += 1;
-      return db.withTenant(tenantId, fn);
+      return db.withTenant(tenantId, fn, options);
     },
     withMetadata(fn, options) {
       counts.metadataTx += 1;
@@ -293,102 +263,39 @@ function countingDb(db: TenantDb): TenantDb {
   return Object.freeze(counted);
 }
 
-/** The timesheets service as its registrars compose it: service kit, routes, migration handlers and push consumers. */
-async function composeApp(db: TenantDb): Promise<FastifyInstance> {
-  const composed = await createService({
-    name: SERVICE,
-    version: VERSION,
-    env: ENV,
-    clock: CLOCK,
-    verifierOverride: testVerifier(SERVICE),
-    pool: db,
-    logger: createLogger({ service: SERVICE, version: VERSION, env: 'local', destination: { write: () => undefined } }),
-  });
-  const repo = createTimesheetsRepository({ clock: CLOCK, schema: db.schema });
-  registerWritePositionHeader(composed);
-  registerRoutes(composed, { db, repository: repo, clock: CLOCK });
-  registerMigrationHandlers(composed, { owner: SERVICE, repository: repo, mappings, units, db });
-  registerConsumers(composed, { service: SERVICE, consumers: createConsumers({ repository: repo }), publisher, db });
-  return composed;
+/** `<service> <METHOD> <path>` of a service call. */
+function callKey(request: ServiceRequest): string {
+  return `${request.service} ${request.method} ${request.path}`;
 }
 
-/**
- * Reporting's confirmation of the running export job the matrix probes, and identity's consume verdict; any other service call is
- * a defect the matrix reports as a 5xx.
- */
-function answer(request: ServiceRequest): ServiceResponse {
-  calls.push(`${request.service} ${request.method} ${request.path}`);
-  if (request.service === 'reporting' && request.method === 'GET' && request.path === EXPORT_SCOPE_PATH && request.userToken === null) {
-    const scope = { exportId: EXPORT_ID, tenantId: TENANT_A.tenantId, siteId: SITE_A, source: 'timesheets.sheets', state: 'running', claim: EXPORT_CLAIM };
-    return { status: 200, headers: {}, body: scope };
-  }
-  if (request.service !== IDENTITY_SERVICE || request.method !== 'POST' || request.path !== CSRF_CONSUME_PATH) {
-    throw new Error(`timesheets calls no other service: ${request.method} ${request.service} ${request.path}`);
-  }
-  consumed.push(request.json as CsrfConsumeRequest);
-  const { status, valid } = csrfVerdict;
-  return { status, headers: {}, body: status === 200 ? { valid } : undefined };
-}
-
-/** Moves every timesheets gate to `state` through the holder compare-and-set. */
-async function setGates(state: 'open' | 'legacy'): Promise<void> {
-  await closeGates(handle.app, { units: TIMESHEETS_UNITS, holderId: 'authz-test', allowLegacy: true });
-  await openGates(handle.app, { units: TIMESHEETS_UNITS, holderId: 'authz-test', state });
-}
-
-function sheetRow(id: string, siteid: string, programId: number): Omit<TimesheetRow, 'tenant_id'> {
-  return {
-    timesheet_id: id,
-    person_id: PERSON,
-    siteid,
-    period_start: new Date(2026, 5, 22),
-    period_end: new Date(2026, 5, 28),
-    due_date: new Date(2026, 6, 1),
-    created: new Date(2026, 5, 21, 9, 0, 0),
-    lastupdate: null,
-    lastupdatebyid: null,
-    legacy_program_id: programId,
-  };
+/** Reporting's confirmation of the running export job the matrix probes, asked without a user token; any other lookup rejects, a 5xx the matrix reports. */
+function reportingScope(request: ServiceRequest): ReportingScopeAnswer {
+  if (request.path !== EXPORT_SCOPE_PATH || request.userToken !== null) return new Error(`unexpected reporting lookup ${callKey(request)}`);
+  return { status: 200, body: { exportId: EXPORT_ID, tenantId: TENANT_A.tenantId, siteId: SITE_A, source: 'timesheets.sheets', state: 'running', claim: EXPORT_CLAIM } };
 }
 
 /** A fresh day in `state` on the tenant-a sheet; returns its id. */
-async function seedDay(state: TimesheetState): Promise<string> {
-  const dayId = cfUuid();
-  const row: Omit<TimesheetDayRow, 'tenant_id'> = {
-    day_id: dayId,
-    timesheet_id: SHEET_A,
-    work_date: new Date(2026, 5, 22),
-    hours: '7.5000',
-    state,
-    lastupdate: null,
-    lastupdatebyid: null,
-    legacy_program_id: 1,
-  };
-  await handle.app.withTenant(TENANT_A.tenantId, (tx) => repository.insert(tx, 'timesheet_day', row));
-  return dayId;
+function seedDay(state: TimesheetState): string {
+  const day = dayRow(SEEDED_A.sheet, { workDate: WORK_DATE, state });
+  recording.seed({ timesheet_day: [day] });
+  return day.day_id;
 }
 
-/** One digest per table of the throwaway schema, read under each fixture tenant. */
-async function fingerprint(): Promise<string> {
-  const digests: string[] = [];
-  for (const tenant of TENANT_LIST) {
-    const { rows } = await handle.app.withTenant(tenant.tenantId, (tx) => tx.query<{ t: string; h: string }>(fingerprintSql));
-    digests.push(...rows.map(({ t, h }) => `${tenant.key}.${t}=${h}`));
-  }
-  return digests.join(' ');
+function published(): number {
+  return t.publisher.published.length + t.publisher.raw.length;
 }
 
-async function mark(): Promise<Mark> {
-  return { ...counts, calls: calls.length, published: publisher.published.length + publisher.raw.length, fingerprint: await fingerprint() };
+function mark(): Mark {
+  return { ...counts, consumes: t.csrf.calls.length, lookups: t.reporting.lookups.length, published: published(), writes: recording.writes.length };
 }
 
-async function effectsSince(from: Mark): Promise<Effects> {
+function effectsSince(from: Mark): Effects {
   return {
     tenantTx: counts.tenantTx - from.tenantTx,
     metadataTx: counts.metadataTx - from.metadataTx,
-    calls: calls.slice(from.calls),
-    published: publisher.published.length + publisher.raw.length - from.published,
-    written: (await fingerprint()) !== from.fingerprint,
+    calls: [...t.csrf.calls.slice(from.consumes).map(() => CONSUME), ...t.reporting.lookups.slice(from.lookups).map(callKey)],
+    published: published() - from.published,
+    written: recording.writes.length !== from.writes,
   };
 }
 
@@ -409,18 +316,18 @@ async function outcomeOf(
   request: ProbeRequest,
   credentials: Record<string, string>,
 ): Promise<{ status: number; error: ErrorBody | undefined; effects: Effects }> {
-  const before = await mark();
+  const before = mark();
   const res = await inject(request, credentials);
-  return { status: res.statusCode, error: errorOf(res), effects: await effectsSince(before) };
+  return { status: res.statusCode, error: errorOf(res), effects: effectsSince(before) };
 }
 
-/** User-token and gateway-invocation headers of a `roles` holder on `site`. */
+/** User-token and gateway-invocation headers of a `roles` holder on `site`, in the session the CSRF checks expect. */
 async function userHeaders(roles: readonly string[], site: string = SITE_A): Promise<Record<string, string>> {
   const [user, gateway] = await Promise.all([
-    mintUserToken({ sub: ACTOR_ID, sid: SESSION_ID, site, roles: ['system-user', ...roles] }),
-    mintServiceToken({ caller: 'gateway', audience: SERVICE }),
+    mintUserToken({ sub: ACTOR_ID, sid: SESSION_ID, site, roles: [Roles.systemUser, ...roles] }),
+    serviceHeaders('gateway'),
   ]);
-  return { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${gateway}` };
+  return { authorization: `Bearer ${user}`, ...gateway };
 }
 
 /** The `error` object of a legacy envelope response, or undefined when the body is not one. */
@@ -466,7 +373,7 @@ function migrationRead(_res: InjectResponse, effects: Effects): string[] {
 function pushApplied(res: InjectResponse, effects: Effects): string[] {
   const problems: string[] = [];
   if (res.statusCode < 200 || res.statusCode > 299) problems.push(`expected an ack, got ${snippet(res)}`);
-  if (effects.published > 0) problems.push(`the delivery was dead-lettered: ${JSON.stringify(publisher.raw.at(-1)?.topic)}`);
+  if (effects.published > 0) problems.push(`the delivery was dead-lettered: ${JSON.stringify(t.publisher.raw.at(-1)?.topic)}`);
   return problems;
 }
 
@@ -538,7 +445,7 @@ function dayRequest(base: string, dayId: string, action: string, tunnel: Tunnel)
 function dayMismatch(tunnel: Tunnel): Probe {
   return {
     label: `submit from DRAFT${tunnelLabel(tunnel)}, notFound`,
-    request: async () => dayRequest(`${P}/days`, await seedDay('DRAFT'), 'submit', tunnel),
+    request: () => dayRequest(`${P}/days`, seedDay('DRAFT'), 'submit', tunnel),
     allow: TIMESHEET_ROLES,
     checkAdmitted: notFoundUntouched,
   };
@@ -548,7 +455,7 @@ function dayMismatch(tunnel: Tunnel): Probe {
 function workflowProbes(base: string, stateOf: (body: unknown) => unknown, tunnel: Tunnel = PLAIN_POST, rows = WORKFLOW): Probe[] {
   return rows.map(({ action, from, role, to }) => ({
     label: `${action} from ${from}${tunnelLabel(tunnel)}`,
-    request: async (): Promise<ProbeRequest> => dayRequest(base, await seedDay(from), action, tunnel),
+    request: () => dayRequest(base, seedDay(from), action, tunnel),
     allow: [role],
     lifecycleRefused: TIMESHEET_ROLES.filter((held) => held !== role),
     checkAdmitted: (res, effects) => {
@@ -604,7 +511,7 @@ function pushProbe(url: string, subscription: string, envelope: () => EventEnvel
 /** A migration-kit route for the migration workload alone. */
 function migrationRoute(request: ProbeRequest): Expectation {
   return {
-    declared: { transport: 'service', requires: ['platform.migration'] },
+    declared: { transport: 'service', requires: [Roles.platformMigration] },
     deny401: NO_INVOCATION,
     probes: [{ label: 'call', request: () => request, allow: ['service:migration'], checkAdmitted: request.method === 'GET' ? migrationRead : noCheck }],
   };
@@ -719,9 +626,9 @@ function hookDenialEffects(url: string, status: number): Effects {
 async function mismatchesOf(key: string, entry: Expectation, probe: Probe, subject: RoleSubject): Promise<string[]> {
   const request = await probe.request();
   const credentials = await authHeadersFor(subject, { audience: SERVICE, site: SITE_A, sub: ACTOR_ID });
-  const before = await mark();
+  const before = mark();
   const res = probe.send === undefined ? await inject(request, credentials, subjectQueryFor(subject)) : await probe.send(subject, credentials, request);
-  const effects = await effectsSince(before);
+  const effects = effectsSince(before);
   const at = `${key} ${probe.label} as ${subject.name}`;
   const denied = res.statusCode === 401 || res.statusCode === 403;
 
@@ -761,60 +668,50 @@ function comparable(declared: { transport?: unknown; requires?: unknown; public?
 
 const HTTP_METHODS: ReadonlySet<string> = new Set(['get', 'put', 'post', 'delete', 'patch', 'head', 'options']);
 
-/** Every operation contracts/openapi.yaml declares, keyed as Fastify registers it. */
-function contractDeclarations(): Record<string, Record<string, unknown>> {
-  const declared: Record<string, Record<string, unknown>> = {};
-  for (const [path, item] of Object.entries(OPENAPI.paths)) {
-    for (const [method, operation] of Object.entries(item)) {
-      if (!HTTP_METHODS.has(method)) continue;
-      declared[`${method.toUpperCase()} ${path.replace(/\{(\w+)\}/g, ':$1')}`] = comparable({
-        transport: operation['x-opt2-transport'],
-        requires: operation['x-opt2-requires'],
-        public: operation['x-opt2-public'],
-      });
+/** Each `paths:` operation of the contract `text`, keyed as Fastify registers it, with its x-opt2 transport, roles and public flag, read by indentation. */
+function contractDeclarations(text: string): Record<string, Record<string, unknown>> {
+  const found: Record<string, { transport?: string; requires?: string[]; public?: boolean }> = {};
+  let inPaths = false;
+  let path = '';
+  let operation: (typeof found)[string] | undefined;
+  let list: string[] | undefined;
+  for (const line of text.split(/\r?\n/)) {
+    const item = /^ {8}- (\S+)\s*$/.exec(line)?.[1];
+    if (list !== undefined && item !== undefined) {
+      list.push(item);
+      continue;
+    }
+    list = undefined;
+    const [, indent = '', name = '', value = ''] = /^( *)([^\s:][^:]*):\s*(.*?)\s*$/.exec(line) ?? [];
+    if (indent === '' && name !== '') inPaths = name === 'paths';
+    else if (!inPaths) continue;
+    else if (indent.length === 2) path = name.replace(/\{(\w+)\}/g, ':$1');
+    else if (indent.length === 4) operation = HTTP_METHODS.has(name) ? (found[`${name.toUpperCase()} ${path}`] = {}) : undefined;
+    else if (indent.length === 6 && operation !== undefined) {
+      if (name === 'x-opt2-transport') operation.transport = value;
+      if (name === 'x-opt2-public') operation.public = value === 'true';
+      if (name === 'x-opt2-requires') operation.requires = value === '' ? (list = []) : value.replace(/^\[|\]$/g, '').split(',').map((role) => role.trim());
     }
   }
-  return declared;
+  return Object.fromEntries(Object.entries(found).map(([key, declared]) => [key, comparable(declared)]));
 }
 
-const available = await pgAvailable();
-
-describe.skipIf(!available)('timesheets authorisation', () => {
-  /** Releases what beforeAll acquired, most recent first, including after a failed setup. */
-  const releases: Array<() => Promise<void>> = [];
-
+describe('timesheets authorisation', () => {
   beforeAll(async () => {
-    handle = await createThrowawaySchema({ service: SERVICE, migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
-    releases.unshift(() => handle.drop());
-    await ensureUnitGates(handle.app, TIMESHEETS_UNITS);
-    await seedRegistry(handle.app);
-    repository = createTimesheetsRepository({ clock: CLOCK, schema: handle.schema });
-    app = await composeApp(countingDb(handle.app));
-    releases.unshift(() => app.opt2.shutdown());
-    await app.ready();
-    vi.spyOn(app.opt2.client, 'request').mockImplementation((request: ServiceRequest) => Promise.resolve(answer(request)));
-    await setGates('open');
-
-    const { rows } = await handle.adminPool.query<{ tablename: string }>(
-      'SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename',
-      [handle.schema],
-    );
-    fingerprintSql = rows
-      .map(({ tablename }) => `SELECT '${tablename}' AS t, md5(coalesce(string_agg(x::text, '|' ORDER BY x::text), '')) AS h FROM ${handle.schema}.${tablename} x`)
-      .join(' UNION ALL ');
-    fingerprintSql = `SELECT t, h FROM (${fingerprintSql}) f ORDER BY t`;
-
-    await handle.app.withTenant(TENANT_A.tenantId, (tx) => repository.insert(tx, 'timesheet', sheetRow(SHEET_A, SITE_A, 1)));
-    await handle.app.withTenant(TENANT_B.tenantId, (tx) => repository.insert(tx, 'timesheet', sheetRow(SHEET_B, SITE_B, 2)));
-    dayA = await seedDay('DRAFT');
+    recording = createRecordingDb(toSeed(SEEDED_A, SEEDED_B));
+    t = await buildTestApp({ db: countingDb(recording) });
+    app = t.app;
+    t.reporting.answer(reportingScope);
+    dayA = seedDay('DRAFT');
   });
 
   afterAll(async () => {
-    for (const release of releases) await release();
+    // `t` is unset when beforeAll failed before buildTestApp resolved.
+    await t?.app.close();
   });
 
   beforeEach(() => {
-    csrfVerdict = { status: 200, valid: true };
+    t.csrf.answer(true);
   });
 
   describe('route declarations', () => {
@@ -837,7 +734,7 @@ describe.skipIf(!available)('timesheets authorisation', () => {
     });
 
     it('declares every route exactly as contracts/openapi.yaml does', () => {
-      expect(Object.fromEntries(collectRouteMatrix(app).routes.map((route) => [keyOf(route), comparable(route)]))).toEqual(contractDeclarations());
+      expect(Object.fromEntries(collectRouteMatrix(app).routes.map((route) => [keyOf(route), comparable(route)]))).toEqual(contractDeclarations(CONTRACT));
     });
 
     it('probes exactly the ROLE_SET subjects, naming only them', () => {
@@ -880,17 +777,17 @@ describe.skipIf(!available)('timesheets authorisation', () => {
     });
 
     it.each(routes)('has identity consume the %s pair in the token session for the day id as sent, before the write', async (_label, base, tunnel) => {
-      const dayId = (await seedDay('DRAFT')).toLowerCase();
-      const before = consumed.length;
+      const dayId = seedDay('DRAFT').toLowerCase();
+      const before = t.csrf.calls.length;
       const outcome = await outcomeOf(dayAction(base, tunnel, dayId, 'submit'), await userHeaders([EMPLOYEE]));
       expect([outcome.status, outcome.effects.written]).toEqual([200, true]);
-      expect(consumed.slice(before)).toEqual([
-        { sessionId: SESSION_ID, token: CSRF_HEADERS['x-csrf_token'], expires: CSRF_HEADERS['x-csrf_token_expires'], context: dayId },
+      expect(t.csrf.calls.slice(before)).toEqual([
+        { sessionId: SESSION_ID, token: CSRF_HEADERS[CSRF_HEADER_TOKEN], expires: CSRF_HEADERS[CSRF_HEADER_EXPIRES], context: dayId },
       ]);
     });
 
     it.each(routes)('refuses a %s write without a token, consuming and writing nothing', async (_label, base, tunnel) => {
-      const outcome = await outcomeOf(dayAction(base, tunnel, await seedDay('DRAFT'), 'submit', false), await userHeaders([EMPLOYEE]));
+      const outcome = await outcomeOf(dayAction(base, tunnel, seedDay('DRAFT'), 'submit', false), await userHeaders([EMPLOYEE]));
       expect({ status: outcome.status, error: outcome.error, calls: outcome.effects.calls, written: outcome.effects.written }).toEqual({
         status: 400,
         error: INVALID_TOKENS,
@@ -900,8 +797,8 @@ describe.skipIf(!available)('timesheets authorisation', () => {
     });
 
     it.each(routes)('refuses a %s write whose token identity rejects, writing nothing', async (_label, base, tunnel) => {
-      csrfVerdict = { status: 200, valid: false };
-      const outcome = await outcomeOf(dayAction(base, tunnel, await seedDay('DRAFT'), 'submit'), await userHeaders([EMPLOYEE]));
+      t.csrf.answer(false);
+      const outcome = await outcomeOf(dayAction(base, tunnel, seedDay('DRAFT'), 'submit'), await userHeaders([EMPLOYEE]));
       expect({ status: outcome.status, error: outcome.error, calls: outcome.effects.calls, written: outcome.effects.written }).toEqual({
         status: 400,
         error: INVALID_TOKENS,
@@ -911,9 +808,17 @@ describe.skipIf(!available)('timesheets authorisation', () => {
     });
 
     it.each(routes)('fails a %s write closed when identity cannot consume the token', async (_label, base, tunnel) => {
-      csrfVerdict = { status: 503, valid: false };
-      const outcome = await outcomeOf(dayAction(base, tunnel, await seedDay('DRAFT'), 'submit'), await userHeaders([EMPLOYEE]));
-      expect({ status: outcome.status, calls: outcome.effects.calls, written: outcome.effects.written }).toEqual({ status: 503, calls: [CONSUME], written: false });
+      const request = dayAction(base, tunnel, seedDay('DRAFT'), 'submit');
+      const headers = await userHeaders([EMPLOYEE]);
+      // Identity's next answer, to this write's consume, is its 503.
+      const client = vi.spyOn(app.opt2.client, 'request').mockResolvedValueOnce({ status: 503, headers: {}, body: undefined });
+      try {
+        const outcome = await outcomeOf(request, headers);
+        const calls = client.mock.calls.map(([call]) => callKey(call));
+        expect({ status: outcome.status, calls, written: outcome.effects.written }).toEqual({ status: 503, calls: [CONSUME], written: false });
+      } finally {
+        client.mockRestore();
+      }
     });
 
     it.each(routes)('consumes no %s token for an action the lifecycle does not name', async (_label, base, tunnel) => {
@@ -1042,15 +947,13 @@ describe.skipIf(!available)('timesheets authorisation', () => {
 
     it('refuses a tasks-invoker token on the service routes, with or without the gateway invocation credential', async () => {
       const tasks = `Bearer ${await mintTasksInvokerToken({ audience: SERVICE })}`;
-      const gateway = `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SERVICE })}`;
       await expectRefused(serviceRoutes(), { authorization: tasks });
-      await expectRefused(serviceRoutes(), { authorization: tasks, [INVOCATION_HEADER]: gateway });
+      await expectRefused(serviceRoutes(), { authorization: tasks, ...(await serviceHeaders('gateway')) });
     });
 
     it('refuses the push key on the service routes, alone or beside the gateway invocation credential', async () => {
-      const gateway = `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SERVICE })}`;
       await expectRefused(serviceRoutes().map((request) => withPushKey(request)), {});
-      await expectRefused(userRoutes().map((request) => withPushKey(request)), { [INVOCATION_HEADER]: gateway });
+      await expectRefused(userRoutes().map((request) => withPushKey(request)), await serviceHeaders('gateway'));
     });
 
     it('refuses a user token sent without, or with a misaddressed, invocation credential', async () => {
@@ -1070,8 +973,7 @@ describe.skipIf(!available)('timesheets authorisation', () => {
       ['/v1 sheet status', { method: 'GET', url: `${V1}/sheet-status` }, 403],
     ])('refuses %s to a workload credential carrying the user role without a user token', async (_label, request, status) => {
       const role = request.url.endsWith('sheet-status') ? EXPORTER : EMPLOYEE;
-      const workload = `Bearer ${await mintServiceToken({ caller: 'gateway', audience: SERVICE, roles: [role] })}`;
-      await expectRefused([request], { [INVOCATION_HEADER]: workload }, status);
+      await expectRefused([request], await serviceHeaders('gateway', [role]), status);
     });
   });
 
@@ -1082,11 +984,17 @@ describe.skipIf(!available)('timesheets authorisation', () => {
       ['declares both requires and public', `${P}/__both`, { requires: [EMPLOYEE], public: true }],
       ['is a public push route', '/internal/v1/events/timesheets.__public', { public: true, transport: 'pubsub-push' }],
       ['declares the service transport on a push path', '/internal/v1/events/timesheets.__service', { transport: 'service', requires: [EMPLOYEE] }],
-    ])('fails start-up of the composed service when a route %s', async (_label, url, opt2) => {
+    ])('fails start-up of the timesheets app when a route %s', async (_label, url, opt2) => {
       let composed: FastifyInstance | undefined;
       try {
         const startUp = (async () => {
-          composed = await composeApp(handle.app);
+          composed = await buildApp({
+            env: await testEnv(),
+            clock: TEST_CLOCK,
+            verifierOverride: testVerifier(),
+            db: createRecordingDb(),
+            publisher: createCapturingPublisher(),
+          });
           composed.get(url, opt2 === undefined ? {} : { config: { opt2 } }, () => Promise.resolve({}));
           await composed.ready();
         })();
