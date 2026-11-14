@@ -4,7 +4,7 @@ import { cfEq } from '@/lib/cfml';
 import type { CsrfRenderer } from '@/lib/csrf';
 import { encodeJs, encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
-import { structText, structValue, type CarchStruct } from '../carch/model';
+import { structText, structValue, type CarchPageData, type CarchStruct } from '../carch/model';
 
 /** A query flag as the contract carries it: a number, a boolean or its text; SQL NULL as null. */
 export type CategoryFlag = number | string | boolean | null;
@@ -15,7 +15,7 @@ export interface CategoryNode {
   /** `''` at the top of the tree. */
   readonly parentID: string;
   readonly name: string;
-  /** The child count. */
+  /** The child count; the number of `children` when the row carries none. */
   readonly hasKids: CategoryFlag;
   readonly isOpen: CategoryFlag;
   readonly isInterestGroup: CategoryFlag;
@@ -23,7 +23,15 @@ export interface CategoryNode {
   readonly restrictGroups: string;
   /** `getCategories(siteID, categoryID)`, in its name order. */
   readonly children: readonly CategoryNode[];
+  /** The other `getCategories` columns, present only when the row carries them. */
+  readonly siteID?: string;
+  readonly filename?: string;
+  readonly urltitle?: string;
+  readonly isFeatureable?: CategoryFlag;
 }
+
+/** A category tree node; the same shape as {@link CategoryNode}. */
+export type CategoryTreeNode = CategoryNode;
 
 /** Whether `value` is a struct: an object that is neither null nor an array. */
 export const isStruct = (value: unknown): value is CarchStruct =>
@@ -38,23 +46,61 @@ export function flagOf(struct: CarchStruct, key: string): CategoryFlag {
   throw new TypeError(`${key} is not a simple value`);
 }
 
-/** The nodes of one tree level. */
-function levelOf(value: unknown): CategoryNode[] {
+/** The rows of one tree level. */
+function rowsOf(value: unknown): CarchStruct[] {
   if (!Array.isArray(value)) throw new TypeError('rc.categories holds a level that is not an array');
-  return value.map((row: unknown): CategoryNode => {
+  return value.map((row: unknown): CarchStruct => {
     if (!isStruct(row)) throw new TypeError('rc.categories holds a row that is not a struct');
-    return {
-      categoryID: structText(row, 'categoryID'),
-      parentID: structText(row, 'parentID'),
-      name: structText(row, 'name'),
-      hasKids: flagOf(row, 'hasKids'),
-      isOpen: flagOf(row, 'isOpen'),
-      isInterestGroup: flagOf(row, 'isInterestGroup'),
-      isActive: flagOf(row, 'isActive'),
-      restrictGroups: structText(row, 'restrictGroups'),
-      children: levelOf(structValue(row, 'children')),
-    };
+    return row;
   });
+}
+
+/** Whether `row` carries `key`, in any case. */
+const has = (row: CarchStruct, key: string): boolean => structValue(row, key) !== undefined;
+
+/** The node of `row` over `children`. */
+function nodeOf(row: CarchStruct, children: CategoryNode[]): CategoryNode {
+  return {
+    categoryID: structText(row, 'categoryID'),
+    parentID: structText(row, 'parentID'),
+    name: structText(row, 'name'),
+    hasKids: has(row, 'hasKids') ? flagOf(row, 'hasKids') : children.length,
+    isOpen: flagOf(row, 'isOpen'),
+    isInterestGroup: flagOf(row, 'isInterestGroup'),
+    isActive: flagOf(row, 'isActive'),
+    restrictGroups: structText(row, 'restrictGroups'),
+    children,
+    ...(has(row, 'siteID') ? { siteID: structText(row, 'siteID') } : {}),
+    ...(has(row, 'filename') ? { filename: structText(row, 'filename') } : {}),
+    ...(has(row, 'urltitle') ? { urltitle: structText(row, 'urltitle') } : {}),
+    ...(has(row, 'isFeatureable') ? { isFeatureable: flagOf(row, 'isFeatureable') } : {}),
+  };
+}
+
+/** The nodes of one nested tree level, each row carrying its `children` level. */
+function levelOf(value: unknown): CategoryNode[] {
+  return rowsOf(value).map((row) => nodeOf(row, levelOf(structValue(row, 'children'))));
+}
+
+/**
+ * The tree of flat rows: each row under the row its `parentID` names (ignoring case, as SQL Server compares the ids),
+ * the rows with an empty `parentID` at the top, each level in the order received.
+ */
+function nestFlat(rows: readonly CarchStruct[]): CategoryNode[] {
+  const byParent = new Map<string, CarchStruct[]>();
+  for (const row of rows) {
+    const parentId = structText(row, 'parentID').toUpperCase();
+    const level = byParent.get(parentId);
+    if (level === undefined) byParent.set(parentId, [row]);
+    else level.push(row);
+  }
+  const levelUnder = (parentId: string, ancestors: ReadonlySet<string>): CategoryNode[] =>
+    (byParent.get(parentId) ?? []).map((row) => {
+      const id = structText(row, 'categoryID').toUpperCase();
+      if (ancestors.has(id)) throw new TypeError(`rc.categories holds category ${id} under itself`);
+      return nodeOf(row, levelUnder(id, new Set([...ancestors, id])));
+    });
+  return levelUnder('', new Set());
 }
 
 /** The category tree `rc.categories` of a strategies-content screen model; throws when it is malformed. */
@@ -62,20 +108,34 @@ export function categoryTreeOf(rc: CarchStruct): CategoryNode[] {
   return levelOf(structValue(rc, 'categories'));
 }
 
+/**
+ * The category tree of a `listCategories` or `getCategory` screen model, whose `rc.categories` rows either carry their
+ * `children` level or are flat rows nested here by `parentID`; throws when it is malformed.
+ */
+export function toCategoryTree(data: CarchPageData): CategoryNode[] {
+  const value = structValue(data.rc, 'categories');
+  const rows = rowsOf(value);
+  return rows.some((row) => has(row, 'children')) ? levelOf(value) : nestFlat(rows);
+}
+
 /** Every category id of `nodes` and their descendants, in tree order. */
 export function categoryIdsOf(nodes: readonly CategoryNode[]): string[] {
   return nodes.flatMap((node) => [node.categoryID, ...categoryIdsOf(node.children)]);
 }
 
-/** Inputs of {@link renderCategoryNest}. */
-export interface CategoryNestInput {
+/** Every category id of `nodes` depth-first, the contexts to prefetch before {@link renderCategoryNest}. */
+export const collectCategoryIds = categoryIdsOf;
+
+/**
+ * Inputs of {@link renderCategoryNest}. The tag's `siteID` attribute, `rc.siteID`, is accepted as `siteid` or
+ * `siteId`, so callers written to either name render the same table.
+ */
+export type CategoryNestInput = {
   readonly nodes: readonly CategoryNode[];
-  /** The tag's `siteID` attribute, `rc.siteID`. */
-  readonly siteid: string;
   readonly rb: RbLookup;
-  /** Holds the delete tokens of every category in `nodes`. */
+  /** Holds the delete tokens of every category in `nodes`, prefetched with {@link collectCategoryIds}. */
   readonly csrf: CsrfRenderer;
-}
+} & ({ readonly siteid: string } | { readonly siteId: string });
 
 /** The values every row repeats. */
 interface RowParts {
@@ -140,15 +200,17 @@ function levelRows(parts: RowParts, nodes: readonly CategoryNode[], level: numbe
 /**
  * `<cf_dsp_nest parentID="" nestLevel="0">`: the categories table over the whole tree, or the no-categories notice.
  * ACF whitespace management prints the tag's other whitespace as nothing, and the one space after the notice.
+ * Synchronous: the caller prefetches the delete tokens in its load step, so `csrf.render` needs no identity call here.
  */
 export function renderCategoryNest(input: CategoryNestInput): SafeHtml {
   const { nodes, rb } = input;
+  const siteid = 'siteid' in input ? input.siteid : input.siteId;
   const label = (key: string): SafeHtml => raw(rb.rbKey(`categorymanager.${key}`));
   if (nodes.length === 0) return html`<div class="help-block-empty">${label('nocategories')}</div> `;
   const parts: RowParts = {
     label,
-    jsSiteId: raw(encodeJs(input.siteid)),
-    urlSiteId: raw(encodeUrl(input.siteid)),
+    jsSiteId: raw(encodeJs(siteid)),
+    urlSiteId: raw(encodeUrl(siteid)),
     deleteConfirm: raw(encodeJs(rb.rbKey('categorymanager.deleteconfirm'))),
     csrf: input.csrf,
   };
