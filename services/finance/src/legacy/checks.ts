@@ -15,7 +15,8 @@ export type FixtureCheckStep = 'path' | 'site' | 'login' | 'role' | 'existence' 
 
 /**
  * Order in which the finance fixture checks a request: api.cfm path and site, then finance.cfc with auth.cfc the rest.
- * A request failing several checks answers in the platform's order instead: login and role before site.
+ * A request without a user token, or whose siteid is not its token's site, answers login and role before site instead: the platform
+ * decides them before any handler runs, and the gateway always sends a token minted for the requested site.
  */
 export const FIXTURE_CHECK_ORDER: readonly FixtureCheckStep[] = Object.freeze([
   'path',
@@ -87,10 +88,15 @@ export async function resolveFixtureSite(params: FixtureParams, ctx: FixtureSite
   return { siteId, tenantId: ctx.claims.tid };
 }
 
-/** The fixture's answer to a platform role denial: invalidParameters when the token's site is unregistered, as resolveSite raises before requireAny; else `denial`. */
+/**
+ * The fixture's answer to a platform role denial: invalidParameters when the token's site is unregistered, as resolveSite raises before
+ * requireAny; authorization for an anonymous token, as requireLogin raises; else `denial`.
+ */
 export async function fixtureDenialOverride(denial: AuthDenial, ctx: FixtureDenialContext): Promise<AuthDenial | FixtureApiError> {
   if (denial.reason !== 'forbidden' || ctx.claims === undefined) return denial;
-  return (await tenantForRegisteredSite(ctx.registry, ctx.claims.site)) === null ? new FixtureApiError('invalidParameters') : denial;
+  if ((await tenantForRegisteredSite(ctx.registry, ctx.claims.site)) === null) return new FixtureApiError('invalidParameters');
+  // Identity mints sub '' for a session without a login; the gateway forwards it, and the fixture answers that session 401, not 403.
+  return ctx.claims.sub === '' ? new FixtureApiError('authorization') : denial;
 }
 
 /** The tenant's `Program_<id>` binding, read under `tx`'s tenant, the verified `tenantId`; throws invalidParameters when it has none, as auth.cfc programFor does. */

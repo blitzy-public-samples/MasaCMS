@@ -591,7 +591,7 @@ async function readCurrentUser(deps: AdminUserRouteDeps, claims: UserClaims | un
 // ---- Advanced-search criteria and the session's retained values ----
 
 /** The session's advanced-search criteria as identity holds them, with admin request start-up's `param` defaults [legacy: admin/Application.cfc:459-466]. */
-function storedCriteria(state: AdminSessionState): AdvancedSearchCriteria {
+export function storedCriteria(state: AdminSessionState): AdvancedSearchCriteria {
   const defaults = newAdvancedSearchCriteria();
   return {
     paramArray: (state.paramArray ?? []).map((row) => ({

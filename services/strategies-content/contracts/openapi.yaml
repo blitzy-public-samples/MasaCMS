@@ -2057,34 +2057,50 @@ paths:
   /_api/resource/variation:
     get:
       operationId: resourceVariationGet
-      summary: Serves the variation targeting script when the `variations` setting is on.
+      summary: Answers handleAPIRequest's variation branch, which runs variation.js.cfm when the url carries `siteid` and the `variations` setting is on.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-route-keys:
+      x-opt2-route-keys: &variationKeys
         - 'variation:js'
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
-        - $ref: '#/components/parameters/SiteIdRequired'
+        - $ref: '#/components/parameters/VariationSiteId'
       responses:
         '200':
-          description: The variation script.
-          headers:
-            Generator:
-              $ref: '#/components/headers/Generator'
-            Strict-Transport-Security:
-              $ref: '#/components/headers/StrictTransportSecurity'
-          content:
-            application/javascript:
-              schema:
-                type: string
+          $ref: '#/components/responses/VariationUnmatched'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFoundPage'
-          description: The site 404 page; the route exists only while `variations` is on.
+          description: The branch is taken and no user token accompanies the call.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The branch is taken and `siteid` differs from the token's site.
         '503':
-          $ref: '#/components/responses/Unavailable'
+          $ref: '#/components/responses/VariationUnavailable'
+  /_api/resource/variation/{path}:
+    parameters:
+      - $ref: '#/components/parameters/ApiPath'
+    get:
+      operationId: resourceVariationPathGet
+      summary: The variation branch for a longer path, which legacy matches by its `/_api/resource/variation` prefix.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *variationKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/VariationSiteId'
+      responses:
+        '200':
+          $ref: '#/components/responses/VariationUnmatched'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: The branch is taken and no user token accompanies the call.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The branch is taken and `siteid` differs from the token's site.
+        '503':
+          $ref: '#/components/responses/VariationUnavailable'
   /core/modules/v1/comments/ajax/commentsProxy.cfc:
     get:
       operationId: commentsProxyGet
@@ -7780,6 +7796,13 @@ components:
       schema:
         type: string
         minLength: 1
+    VariationSiteId:
+      name: siteid
+      in: query
+      required: false
+      description: '`url.siteid` only, with no `default` fallback; without it the variation branch is not taken.'
+      schema:
+        type: string
     LegacyMethod:
       name: method
       in: query
@@ -8497,6 +8520,30 @@ components:
           schema:
             type: string
             format: binary
+    VariationUnmatched:
+      description: The empty page handleAPIRequest answers when the url carries no `siteid` or the `variations` setting is off, as no endpoint then matches.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+      content:
+        text/html;charset=UTF-8:
+          schema:
+            $ref: '#/components/schemas/EmptyBody'
+    VariationUnavailable:
+      description: Legacy-shaped 503, always once the branch is taken, as the script embeds mura.min.js and theme, renderer, resource-bundle and tracking values only the CFML runtime holds.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
     NotFoundPage:
       description: The site 404 page.
       headers:
