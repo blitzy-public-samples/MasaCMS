@@ -1,4 +1,4 @@
-/** `repo/content-queries` history order, `historyPage` pages and `historyBatches` keyset batches over a throwaway `content` schema. */
+/** `repo/content-queries` history order, `historyPage` pages, `historyCount` counts and `historyBatches` keyset batches over a throwaway `content` schema. */
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -12,6 +12,7 @@ import {
   draftHist,
   hist,
   historyBatches,
+  historyCount,
   historyPage,
   pendingChangesets,
   type HistoryRead,
@@ -204,6 +205,13 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries history paging and
     expect(await inA((tx) => historyPage(tx, 'hist', { contentId: cfId('Z', 9), siteId: SITE }, { limit: 10 }))).toEqual({ rows: [], total: 0 });
   });
 
+  it.each<[string, HistoryRead, typeof ARGS, number]>([
+    ...READS.map((read): [string, HistoryRead, typeof ARGS, number] => [read, read, ARGS, EXPECTED[read].length]),
+    ['unknown content', 'hist', { contentId: cfId('Z', 9), siteId: SITE }, 0],
+  ])('historyCount counts the rows of %s', async (_label, read, args, total) => {
+    expect(await inA((tx) => historyCount(tx, read, args))).toBe(total);
+  });
+
   it.each(byReadAnd([1, 2, undefined]))('historyBatches reads every row of %s in batches of %s', async (read, batchSize) => {
     const [all, batches] = await inA(async (tx) => [await ALL_ROWS[read](tx, ARGS), await batchesOf(tx, read, ARGS, batchSize)] as const);
     const size = batchSize ?? HISTORY_BATCH_SIZE;
@@ -243,12 +251,13 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries history paging and
     await expect(inA(read)).rejects.toBeInstanceOf(RangeError);
   });
 
-  it('makes historyPage and historyBatches wait out an executing window and fail with UnitReadBlockedError', async () => {
+  it('makes historyPage, historyCount and historyBatches wait out an executing window and fail with UnitReadBlockedError', async () => {
     const holderId = `window-${randomUUID()}`;
     await closeGates(handle.app, { units: CONTENT_UNITS, holderId, phase: 'executing', allowLegacy: true });
     try {
       const reads: [string, (tx: TenantTx) => Promise<unknown>][] = [
         ['historyPage', (tx) => historyPage(tx, 'hist', ARGS, { limit: 1 })],
+        ['historyCount', (tx) => historyCount(tx, 'hist', ARGS)],
         ['historyBatches', (tx) => historyBatches(tx, 'hist', ARGS).next()],
       ];
       for (const [label, read] of reads) {

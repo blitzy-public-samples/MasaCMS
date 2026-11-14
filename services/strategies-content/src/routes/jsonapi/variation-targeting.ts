@@ -13,13 +13,13 @@ import {
   javaTrim,
   LegacyApiError,
 } from '@opt2/platform/legacy-compat';
-import type { Actor } from '../../domain/context.js';
+import type { Actor, DomainDeps } from '../../domain/context.js';
 import {
   deleteVariationTargeting,
   findVariationTargeting,
-  listVariationTargetings,
   saveVariationTargeting,
   variationsEnabled,
+  withVariationTargetingFeed,
   type VariationTargeting,
   type VariationTargetingColumns,
   type VariationTargetingValues,
@@ -150,11 +150,6 @@ function urlText(ctx: JsonApiRequestContext, name: string): string {
   return typeof value === 'string' ? value : '';
 }
 
-/** SQL Server's `=` key: case-insensitive, trailing spaces ignored. */
-function sqlKey(id: string): string {
-  return id.replace(/ +$/u, '').toLowerCase();
-}
-
 /** The bean as getFilteredValues reads it. */
 function viewOf(allValues: Struct): ApiEntityView {
   return {
@@ -198,13 +193,18 @@ function listedValues(row: VariationTargetingColumns, ctx: JsonApiRequestContext
   return values;
 }
 
-/** packageIteratorArray over the feed's page, or the countOnly count, which beanFeed answers as a string. */
+/**
+ * packageIteratorArray over the feed's page of the actor's targeting rows (only those of `input.ids` when given), or the
+ * countOnly count, which beanFeed answers as a string.
+ */
 async function feedResult(
+  domain: DomainDeps,
+  actor: Actor,
   call: JsonApiCall,
-  rows: readonly VariationTargetingColumns[],
+  input: { ids?: readonly string[] },
   order: (items: Struct[]) => Struct[] = (items) => items,
 ): Promise<JsonApiResult> {
-  const result = beanFeedQuery(rows, call, FEED_OPTIONS);
+  const result = await withVariationTargetingFeed(domain, actor, input, (source) => beanFeedQuery(source, call, FEED_OPTIONS));
   if ('count' in result) return jsonApiResultOf({ count: String(result.count) }, ENTITY);
   const ctx = call.apiContext;
   const expandLinks = expandOf(call);
@@ -247,7 +247,7 @@ const findNew: JsonApiHandlerFn = guarded(async (_ctx, call) => {
 const findFeed: JsonApiHandlerFn = guarded(async (ctx, call) => {
   const actor = actorOf(call);
   if (!entityAccessAllowed(actor, CONFIG)) return authorizationDenied();
-  return feedResult(call, await listVariationTargetings(ctx.domain, actor));
+  return feedResult(ctx.domain, actor, call, {});
 });
 
 /** findMany (2627-2709): the rows whose id is in `ids`, in list order unless the URL sorts them. */
@@ -255,10 +255,8 @@ const findMany: JsonApiHandlerFn = guarded(async (ctx, call) => {
   const actor = actorOf(call);
   if (!entityAccessAllowed(actor, CONFIG)) return authorizationDenied();
   const ids = call.ids ?? [];
-  const wanted = new Set(ids.map(sqlKey));
-  const rows = (await listVariationTargetings(ctx.domain, actor)).filter((row) => wanted.has(sqlKey(row.targetingid)));
-  if (urlText(call.apiContext, 'sort') !== '') return feedResult(call, rows);
-  return feedResult(call, rows, (items) =>
+  if (urlText(call.apiContext, 'sort') !== '') return feedResult(ctx.domain, actor, call, { ids });
+  return feedResult(ctx.domain, actor, call, { ids }, (items) =>
     ids.flatMap((id): Struct[] => {
       const item = items.find((candidate) => typeof candidate['id'] === 'string' && cfEq(candidate['id'], id));
       return item === undefined ? [] : [item];

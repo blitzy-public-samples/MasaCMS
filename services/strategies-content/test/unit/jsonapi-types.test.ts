@@ -13,7 +13,9 @@ import {
   entityActionAllowed,
   findPropertiesFor,
   jsonApiResultOf,
+  mergedSource,
   permissionsOf,
+  rowsSource,
   UnsupportedFeedQueryError,
   type BeanFeedOptions,
   type BeanFeedResult,
@@ -163,7 +165,7 @@ function ids(result: BeanFeedResult<Row>): unknown[] {
   return page(result).items.map((row) => row['commentid']);
 }
 
-function query(raw: string, options: Partial<BeanFeedOptions> = {}, rows: Row[] = ROWS): BeanFeedResult<Row> {
+function query(raw: string, options: Partial<BeanFeedOptions> = {}, rows: Row[] = ROWS): Promise<BeanFeedResult<Row>> {
   return beanFeedQuery(rows, callFor({ raw }), { ...OPTIONS, ...options });
 }
 
@@ -396,9 +398,9 @@ describe('findPropertiesFor', () => {
 });
 
 describe('beanFeedQuery', () => {
-  it('serves findAll in the feed default order with the default page', () => {
+  it('serves findAll in the feed default order with the default page', async () => {
     const call = callFor({ method: 'findAll' });
-    const result = page(beanFeedQuery(ROWS, call, OPTIONS));
+    const result = page(await beanFeedQuery(ROWS, call, OPTIONS));
     expect(result.items.map((r) => r['commentid'])).toEqual(['C3', 'C1', 'C2']);
     expect(result.baseUrl).toBeUndefined();
     expect(result.page).toEqual({
@@ -413,8 +415,8 @@ describe('beanFeedQuery', () => {
     expect(call.apiContext.url['entityname']).toBe('comment');
   });
 
-  it('never filters in findAll', () => {
-    expect(ids(beanFeedQuery(ROWS, callFor({ method: 'findAll', raw: 'name=bob' }), OPTIONS))).toEqual([
+  it('never filters in findAll', async () => {
+    expect(ids(await beanFeedQuery(ROWS, callFor({ method: 'findAll', raw: 'name=bob' }), OPTIONS))).toEqual([
       'C3',
       'C1',
       'C2',
@@ -463,8 +465,8 @@ describe('beanFeedQuery', () => {
     ['sum=&name=bob', ['C2']],
     ['siteid=tenant-a', ['C3', 'C1', 'C2']],
     ['siteid=umbrella', []],
-  ])('findQuery %s', (raw, expected) => {
-    expect(ids(query(raw))).toEqual(expected);
+  ])('findQuery %s', async (raw, expected) => {
+    expect(ids(await query(raw))).toEqual(expected);
   });
 
   const LIKE_ROWS: Row[] = [
@@ -505,8 +507,8 @@ describe('beanFeedQuery', () => {
     ['nothing for a class of a reversed range', 'contains%5E%5Bz-a%5D', []],
     ['the other items of a class with a reversed range', 'contains%5E%5Bz-ab%5D', ['L1', 'L2', 'L5', 'L6', 'L7']],
     ['a range beside a reversed one', 'ends%5E%5Bz-ab-c%5D', ['L1', 'L3', 'L4', 'L5', 'L9']],
-  ])('findQuery LIKE matches %s (name=%s)', (_label, criteria, expected) => {
-    expect(ids(query(`name=${criteria}`, { defaultSort: undefined }, LIKE_ROWS))).toEqual(expected);
+  ])('findQuery LIKE matches %s (name=%s)', async (_label, criteria, expected) => {
+    expect(ids(await query(`name=${criteria}`, { defaultSort: undefined }, LIKE_ROWS))).toEqual(expected);
   });
 
   const CLASS_ROWS: Row[] = 'b B z Z _ [ ^ m á Á ç d - e % 5 ax% xb a'
@@ -527,34 +529,34 @@ describe('beanFeedQuery', () => {
     ['a digit-to-letter range', 'begins%5E%5B9-A%5D', ['K17', 'K19']],
     ['a negated unclosed class a trailing ^ leaves', 'x*%5B%5E', ['K18']],
     ['an unsupported class no value reaches', 'begins%5Ezz%5B!-%2F%5D', []],
-  ])('findQuery LIKE class matches %s (name=%s)', (_label, criteria, expected) => {
-    expect(ids(query(`name=${criteria}`, { defaultSort: undefined }, CLASS_ROWS))).toEqual(expected);
+  ])('findQuery LIKE class matches %s (name=%s)', async (_label, criteria, expected) => {
+    expect(ids(await query(`name=${criteria}`, { defaultSort: undefined }, CLASS_ROWS))).toEqual(expected);
   });
 
   it.each([
     ['a range with a symbol end', 'contains%5E%5B!-%2F%5D'],
     ['a range with a \\ end', 'contains%5E%5Ba-%5C%5D'],
     ['a class with --', 'begins%5E%5Bx--z%5D'],
-  ])('findQuery LIKE does not compute %s (name=%s) in memory', (_label, criteria) => {
-    expect(() => query(`name=${criteria}`, { defaultSort: undefined }, CLASS_ROWS)).toThrow(UnsupportedFeedQueryError);
+  ])('findQuery LIKE does not compute %s (name=%s) in memory', async (_label, criteria) => {
+    await expect(query(`name=${criteria}`, { defaultSort: undefined }, CLASS_ROWS)).rejects.toThrow(UnsupportedFeedQueryError);
   });
 
-  it('decides a character outside the reproduced collation order by class members only', () => {
+  it('decides a character outside the reproduced collation order by class members only', async () => {
     const rows: Row[] = [
       { commentid: 'U1', name: 'þ' },
       { commentid: 'U2', name: 'b' },
     ];
-    expect(ids(query('name=begins%5E%5B%C3%BEa-z%5D', { defaultSort: undefined }, rows))).toEqual(['U1', 'U2']);
-    expect(() => query('name=begins%5E%5Ba-z%5D', { defaultSort: undefined }, rows)).toThrow(UnsupportedFeedQueryError);
+    expect(ids(await query('name=begins%5E%5B%C3%BEa-z%5D', { defaultSort: undefined }, rows))).toEqual(['U1', 'U2']);
+    await expect(query('name=begins%5E%5Ba-z%5D', { defaultSort: undefined }, rows)).rejects.toThrow(UnsupportedFeedQueryError);
   });
 
-  it('matches a LIKE pattern in bounded time on text that makes a backtracking regex explode', () => {
+  it('matches a LIKE pattern in bounded time on text that makes a backtracking regex explode', async () => {
     const rows: Row[] = [
       { commentid: 'R1', name: 'a'.repeat(60) },
       { commentid: 'R2', name: `${'a'.repeat(60)}c` },
     ];
     const started = performance.now();
-    const result = ids(query(`name=like%5E${'%25a'.repeat(8)}%25b`, { defaultSort: undefined }, rows));
+    const result = ids(await query(`name=like%5E${'%25a'.repeat(8)}%25b`, { defaultSort: undefined }, rows));
     expect(performance.now() - started).toBeLessThan(1000);
     expect(result).toEqual([]);
   });
@@ -591,8 +593,8 @@ describe('beanFeedQuery', () => {
     ['pageIndex=0', 'server_error'],
     ['groupBy=name', 'server_error'],
     ['count=*', 'server_error'],
-  ])('findQuery %s throws %s', (raw, type) => {
-    expect(() => query(raw)).toThrow(expect.objectContaining({ type }) as LegacyApiError);
+  ])('findQuery %s throws %s', async (raw, type) => {
+    await expect(query(raw)).rejects.toThrow(expect.objectContaining({ type }) as LegacyApiError);
   });
 
   it.each([
@@ -601,16 +603,16 @@ describe('beanFeedQuery', () => {
     ['sum=flagcount', { ...OPTIONS, defaultSort: undefined }],
     ['countOnly=true&groupBy=name', OPTIONS],
     ['countOnly=true&innerJoin=comment', OPTIONS],
-  ])('findQuery %s is not computed in memory', (raw, options) => {
-    expect(() => beanFeedQuery(ROWS, callFor({ raw }), options)).toThrow(UnsupportedFeedQueryError);
+  ])('findQuery %s is not computed in memory', async (raw, options) => {
+    await expect(beanFeedQuery(ROWS, callFor({ raw }), options)).rejects.toThrow(UnsupportedFeedQueryError);
   });
 
-  it('ignores aggregates and keeps the column SELECT when the URL scope has fields', () => {
+  it('ignores aggregates and keeps the column SELECT when the URL scope has fields', async () => {
     const call = callFor({ raw: 'count=*', url: { count: '*', fields: 'name' } });
-    expect(ids(beanFeedQuery(ROWS, call, OPTIONS))).toEqual(['C3', 'C1', 'C2']);
+    expect(ids(await beanFeedQuery(ROWS, call, OPTIONS))).toEqual(['C3', 'C1', 'C2']);
     expect(call.apiContext.url['fields']).toBe('name,commentid');
     const grouped = callFor({ raw: 'groupBy=name', url: { groupBy: 'name', fields: 'name' } });
-    expect(() => beanFeedQuery(ROWS, grouped, OPTIONS)).toThrow(LegacyApiError);
+    await expect(beanFeedQuery(ROWS, grouped, OPTIONS)).rejects.toThrow(LegacyApiError);
   });
 
   it.each([
@@ -632,18 +634,18 @@ describe('beanFeedQuery', () => {
     ['size=2&limit=1', ['C3']],
     ['maxitems=*', ['C3', 'C1', 'C2']],
     ['maxitems=abc&size=abc', ['C3', 'C1', 'C2']],
-  ])('orders and limits %s', (raw, expected) => {
-    expect(ids(query(raw))).toEqual(expected);
+  ])('orders and limits %s', async (raw, expected) => {
+    expect(ids(await query(raw))).toEqual(expected);
   });
 
-  it('writes the joined sort back into the URL scope', () => {
+  it('writes the joined sort back into the URL scope', async () => {
     const call = callFor({ raw: 'sort=-name' });
-    beanFeedQuery(ROWS, call, OPTIONS);
+    await beanFeedQuery(ROWS, call, OPTIONS);
     expect(call.apiContext.url['sort']).toBe('-name');
   });
 
-  it('keeps the row order when neither the request nor the feed sorts', () => {
-    expect(ids(query('name=*', { defaultSort: undefined }))).toEqual(['C1', 'C2', 'C3']);
+  it('keeps the row order when neither the request nor the feed sorts', async () => {
+    expect(ids(await query('name=*', { defaultSort: undefined }))).toEqual(['C1', 'C2', 'C3']);
   });
 
   it.each([
@@ -656,14 +658,14 @@ describe('beanFeedQuery', () => {
     ['itemsPerPage=1&startIndex=3', ['C2'], { pageIndex: 3 }],
     ['startIndex=0', [], { pageIndex: 0 }],
     ['nextn=1', ['C3'], { nextN: 1, pageCount: 3 }],
-  ])('pages %s', (raw, expected, pageValues) => {
-    const result = page(query(raw));
+  ])('pages %s', async (raw, expected, pageValues) => {
+    const result = page(await query(raw));
     expect(result.items.map((r) => r['commentid'])).toEqual(expected);
     expect(result.page).toMatchObject({ recordCount: 3, ...pageValues });
   });
 
-  it('pages an empty feed from its first page', () => {
-    const result = page(beanFeedQuery([], callFor({ raw: 'startIndex=4&isnew=1' }), OPTIONS));
+  it('pages an empty feed from its first page', async () => {
+    const result = page(await beanFeedQuery([], callFor({ raw: 'startIndex=4&isnew=1' }), OPTIONS));
     expect(result.items).toEqual([]);
     expect(result.page).toMatchObject({ recordCount: 0, pageIndex: 1 });
   });
@@ -673,40 +675,52 @@ describe('beanFeedQuery', () => {
     ['countOnly=1&name=bob', 1],
     ['countOnly=yes&maxitems=1', 3],
     ['countOnly=true&sort=name%3Bdrop', 3],
-  ])('counts %s', (raw, count) => {
-    expect(query(raw)).toEqual({ count });
+  ])('counts %s', async (raw, count) => {
+    expect(await query(raw)).toEqual({ count });
   });
 
-  it('pages findMany rows whatever countOnly says, as legacy findMany never counts', () => {
-    const result = page(beanFeedQuery(ROWS, callFor({ method: 'findMany', raw: 'countOnly=true' }), OPTIONS));
+  it('pages findMany rows whatever countOnly says, as legacy findMany never counts', async () => {
+    const result = page(await beanFeedQuery(ROWS, callFor({ method: 'findMany', raw: 'countOnly=true' }), OPTIONS));
     expect(result.items).toHaveLength(3);
     expect(result.baseUrl).toBeUndefined();
   });
 
-  it('builds the findQuery base URL from the query string, skipping pageIndex and empty values', () => {
-    const result = page(query('Name=b%20o&pageindex=2&or&sort=-name'));
+  it('builds the findQuery base URL from the query string, skipping pageIndex and empty values', async () => {
+    const result = page(await query('Name=b%20o&pageindex=2&or&sort=-name'));
     expect(result.baseUrl).toBe(`${ENDPOINT}/comment/?Name=b+o&or&sort=-name`);
   });
 
-  it('filters by expansion params, leaves the excluded ones to the feed props and pages from the URL scope', () => {
+  it('filters by expansion params, leaves the excluded ones to the feed props and pages from the URL scope', async () => {
     const call = callFor({ method: 'findOne', raw: 'itemsPerPage=1', url: { itemsPerPage: '1' } });
-    const result = page(beanFeedQuery(ROWS, call, { ...OPTIONS, expandedParams: { isapproved: 1, maxitems: '1' } }));
+    const result = page(await beanFeedQuery(ROWS, call, { ...OPTIONS, expandedParams: { isapproved: 1, maxitems: '1' } }));
     expect(result.items.map((r) => r['commentid'])).toEqual(['C3']);
     expect(result.page).toMatchObject({ recordCount: 1, nextN: 1 });
     expect(result.baseUrl).toBe(`${ENDPOINT}/comment/?isapproved=1`);
     // A key no column holds is a filter there too, which SQL Server rejects.
-    expect(() => beanFeedQuery(ROWS, call, { ...OPTIONS, expandedParams: { cachedWithin: '5' } })).toThrow(
+    await expect(beanFeedQuery(ROWS, call, { ...OPTIONS, expandedParams: { cachedWithin: '5' } })).rejects.toThrow(
       LegacyApiError,
     );
   });
 
-  it('checks columns against the declared column list and compares string timestamps', () => {
+  it('checks columns against the declared column list and compares string timestamps', async () => {
     const rows: Row[] = [
       { commentid: 'S1', entered: '2026-01-05 00:00:00.000' },
       { commentid: 'S2', entered: '2026-03-01 08:30:00' },
     ];
     const options = { ...OPTIONS, columns: ['commentid', 'entered'] };
-    expect(ids(query('entered=gt%5E2026-02-01&sort=-entered', options, rows))).toEqual(['S2']);
-    expect(() => query('name=x', options, rows)).toThrow(LegacyApiError);
+    expect(ids(await query('entered=gt%5E2026-02-01&sort=-entered', options, rows))).toEqual(['S2']);
+    await expect(query('name=x', options, rows)).rejects.toThrow(LegacyApiError);
+  });
+});
+
+describe('mergedSource', () => {
+  it('reads all rows of sources too large to spread into one call, in source order', async () => {
+    const size = 150_000;
+    const first: Row[] = Array.from({ length: size }, (_, i) => ({ id: i }));
+    const second: Row[] = Array.from({ length: size }, (_, i) => ({ id: size + i }));
+    const rows = await mergedSource([rowsSource(first), rowsSource(second)]).all();
+    expect(rows).toHaveLength(2 * size);
+    expect([0, size - 1, size, 2 * size - 1].map((at) => rows[at]?.['id'])).toEqual([0, size - 1, size, 2 * size - 1]);
+    expect(rows.every((row, at) => row['id'] === at)).toBe(true);
   });
 });

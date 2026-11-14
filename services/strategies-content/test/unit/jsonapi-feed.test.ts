@@ -2,14 +2,16 @@
 // ACF 2023 answers for the same calls: feedBean.getEntityName() is `content`, so bean-object checks treat a feed as content.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildEnvelope, LegacyApiError, serializeResponse } from '@opt2/platform/legacy-compat';
+import type { TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, pgAvailable, type TenantFixture } from '@opt2/platform/testing';
 import { saveContent, type ContentSaveSite } from '../../src/domain/content.js';
 import { actorFromClaims, UndefinedLegacyMethodError, type Actor } from '../../src/domain/context.js';
-import { createFeed, readFeed } from '../../src/domain/feeds.js';
+import { createFeed, listFeeds, querySiteFeeds, readFeed } from '../../src/domain/feeds.js';
 import { contentApiSerializer, jsonApiEndpoint, type JsonApiRequestContext } from '../../src/legacy/jsonapi-serializers.js';
+import type { FeedInput } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { feedHandler } from '../../src/routes/jsonapi/feed.js';
-import { createJsonApiParams, type JsonApiCall, type JsonApiResult } from '../../src/routes/jsonapi/types.js';
+import { createJsonApiParams, rowsSource, type JsonApiCall, type JsonApiResult } from '../../src/routes/jsonapi/types.js';
 import { ADMIN, END, HOME, NOBODY, SITE, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
 
 type Struct = Record<string, unknown>;
@@ -305,6 +307,196 @@ describe.skipIf(!(await pgAvailable()))('JSON API feed handler', () => {
     ])('delete when %s', async (_label, actor, id, csrf, expected, remains) => {
       expect(await on('delete', { actor, id: id(), csrf })).toEqual(expected);
       expect(await stored(id())).toBe(remains);
+    });
+  });
+
+  // The SQL feed source against the rows the handlers read before it: listFeeds' two lists concatenated and sorted by
+  // upper-cased feedid, findMany's ids kept by SQL Server key, all evaluated in memory.
+  describe('SQL-bounded collection reads', () => {
+    const B = TENANT_B.siteId;
+    const at = (text: string): Date => new Date(`${text}T00:00:00Z`);
+    const row = (feedid: string, values: Struct): Struct => ({ feedid, siteid: B, type: 'Local', ...values });
+    const CORPUS: Struct[] = [
+      row('abc', { name: 'Zeta', isactive: 1, maxitems: 5, nextn: 10, lastupdate: at('2026-03-01'), datecreated: at('2025-01-01') }),
+      row('ABC', { type: 'Remote', name: 'alpha', isactive: 0, maxitems: 10, displayname: 1, remotepubdate: at('2026-02-01') }),
+      row('abe', { name: null, isactive: 1, maxitems: 5, usecategoryintersect: 1, lastupdate: at('2026-01-15') }),
+      row('ABE', { name: 'b', isactive: null, maxitems: 7, datecreated: at('2025-06-01') }),
+      row('abf', { name: 'Same', isactive: 1, nextn: 20, displayname: 0 }),
+      row('ABF', { name: 'same', isactive: 1, nextn: 20, lastupdate: at('2026-03-01') }),
+      row('ß1', { type: 'Remote', name: 'Straße', maxitems: 3, remotepubdate: at('2026-02-02') }),
+      row('SS1', { name: 'strasse', maxitems: 3, isactive: 0 }),
+      row('ss0', { name: 'Ärger', maxitems: 12, lastupdate: at('2025-12-31') }),
+      row('ab\u0001', { name: 'ctl', isactive: 1 }),
+      row('ab', { type: 'Remote', name: 'short', isactive: 1, maxitems: 1 }),
+      row('ab!', { name: 'bang', maxitems: 2, datecreated: at('2024-05-05') }),
+      row('\uE000x', { name: 'private', maxitems: 8 }),
+      row('\u{1F600}x', { type: 'Remote', name: 'emoji \u{1F600}', maxitems: 9 }),
+      row('\uD7FFx', { name: 'hangul', maxitems: 4 }),
+      row('ǅz', { name: 'Ǆ title', isactive: 0 }),
+      row('µm', { name: 'micro', isactive: 1, nextn: 5 }),
+      row('ﬃ', { name: 'ligature', maxitems: 6 }),
+      row('İd', { name: 'dotted', maxitems: 6 }),
+      row('ΑΣ', { type: 'Remote', name: 'sigma', isactive: 1 }),
+      row(cfId('F', 1), { type: 'local ', name: 'Trailing type', isactive: 1 }),
+      row(cfId('F', 2), { type: 'Component', name: 'Other type' }),
+      row(cfId('F', 3), { type: null, name: 'No type' }),
+      row(cfId('F', 4), { siteid: 'other-site', name: 'Other site' }),
+      row(cfId('F', 5), { siteid: B.toUpperCase(), name: 'Site case' }),
+      row(cfId('F', 6), { type: 'REMOTE', name: 'Upper remote', isactive: 1, remotepubdate: at('2026-02-03') }),
+    ];
+
+    beforeAll(async () => {
+      await fx.inTenant(async (tx) => {
+        for (const values of CORPUS) await fx.repo.feeds.insertFeed(tx, values as FeedInput);
+      }, TENANT_B.tenantId);
+    });
+
+    /** What a handler answers on the wire, or the error it raises. */
+    async function outcome(op: Op, a: CallArgs): Promise<unknown> {
+      try {
+        const result = await on(op, { site: TENANT_B, actor: COLLECTIONS, ...a });
+        return result.error === undefined ? { status: result.status, data: wire(result) } : result;
+      } catch (err) {
+        const error = err as Error & { type?: unknown };
+        return { error: { name: error.name, type: error.type, message: error.message } };
+      }
+    }
+
+    /** The handler's answer over the rows it read before its reads were bounded in SQL. */
+    async function reference(op: Op, a: CallArgs): Promise<unknown> {
+      const { rsLocal, rsRemote } = await listFeeds(fx.deps, ADMIN_B, B);
+      const order = (x: { feedid: string }, y: { feedid: string }): number => {
+        const p = x.feedid.toUpperCase();
+        const q = y.feedid.toUpperCase();
+        return p < q ? -1 : p > q ? 1 : 0;
+      };
+      const sqlKey = (value: string): string => value.replace(/ +$/u, '').toLowerCase();
+      const wanted = new Set((a.ids ?? []).map(sqlKey));
+      const rows = [...rsLocal, ...rsRemote].sort(order).filter((feedRow) => op !== 'findMany' || wanted.has(sqlKey(feedRow.feedid)));
+      const spy = vi.spyOn(fx.repo.beanFeed, 'source').mockImplementation(() => rowsSource(rows));
+      try {
+        return await outcome(op, a);
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    it('selects Local and Remote feeds of the site only, in upper-cased feedid code-unit order with listFeeds\' order on ties', async () => {
+      const scope = await querySiteFeeds(fx.deps, ADMIN_B, { siteId: B }, async (source) => ({
+        all: await source.all(),
+        page: await source.rows({ order: [] }, 0, 100),
+      }));
+      const ids = (rows: readonly { feedid: string; name: string | null }[]): string[] =>
+        rows.filter((feedRow) => feedRow.name !== 'Bee').map((feedRow) => feedRow.feedid.trimEnd());
+      // 'ß1' upper-cases to 'SS1' plus one more pad than 'SS1'; 'ﬃ' to 'FFI'; ties put Local first, then name, then feedid.
+      const expected = [
+        'ab\u0001', 'ab', 'ab!', 'abc', 'ABC', 'abe', 'ABE', 'ABF', 'abf', cfId('F', 1), cfId('F', 6), 'ﬃ',
+        'ss0', 'SS1', 'ß1', 'İd', 'ǅz', 'ΑΣ', 'µm', '\uD7FFx', '\u{1F600}x', '\uE000x',
+      ];
+      expect(ids(scope.all)).toEqual(expected);
+      expect(ids(scope.page)).toEqual(expected);
+      const { rsLocal, rsRemote } = await listFeeds(fx.deps, ADMIN_B, B);
+      expect(scope.all).toEqual(expect.arrayContaining([...rsLocal, ...rsRemote]));
+      expect(scope.all).toHaveLength(rsLocal.length + rsRemote.length);
+    });
+
+    it.each<[string, Struct]>([
+      ['every row', {}],
+      ['a page', { itemsPerPage: 3, pageIndex: 2 }],
+      ['a start index', { itemsPerPage: 4, startIndex: 6 }],
+      ['a page past the end', { itemsPerPage: 2, pageIndex: 99 }],
+      ['maxItems', { maxItems: 5 }],
+      ['maxItems with paging', { maxItems: 5, itemsPerPage: 2, pageIndex: 3 }],
+      ['maxItems *', { maxItems: '*', itemsPerPage: '*' }],
+      ['countOnly', { countOnly: 'true' }],
+      ['countOnly with a filter', { countOnly: 'true', type: 'remote' }],
+      ['a case-insensitive name', { name: 'ALPHA' }],
+      ['a like pattern', { name: 's*' }],
+      ['contains', { name: 'contains^ra' }],
+      ['in', { name: 'in^Zeta,same,ß' }],
+      ['not in', { name: 'notin^Zeta,same' }],
+      ['null', { name: 'null' }],
+      ['not null with or', { name: 'neq^null', or: '', isactive: 0 }],
+      ['a grouping', { openGrouping: '', name: 'a*', or: '', type: 'remote', closeGrouping: '', isactive: 1 }],
+      ['a numeric hint', { isactive: 1, itemsPerPage: 3 }],
+      ['numeric neq', { isactive: 'neq^1' }],
+      ['numeric gt', { maxitems: 'gt^5' }],
+      ['numeric in', { maxitems: 'in^5,10,3' }],
+      ['numeric lte', { nextn: 'lte^10' }],
+      ['a smallint hint', { displayname: 1 }],
+      ['a numeric null', { usecategoryintersect: 'null' }],
+      ['a timestamp', { lastupdate: 'gt^2026-01-01' }],
+      ['a timestamp lt', { datecreated: 'lt^2025-06-01' }],
+      ['an unhinted timestamp', { remotepubdate: '2026-02-01' }],
+      ['the id', { id: 'abc' }],
+      ['an ignored feedid', { feedid: 'abc', itemsPerPage: 2 }],
+      ['an astral like', { name: 'emoji _' }],
+      ['a name sort', { sort: 'name' }],
+      ['a descending sort with a second key', { sort: '-name,feedid' }],
+      ['a numeric sort', { sort: '-maxitems', itemsPerPage: 5, pageIndex: 2 }],
+      ['sortBy', { sortBy: 'lastupdate', sortDirection: 'desc' }],
+      ['a type sort', { sort: 'type,-isactive' }],
+      ['an unhinted timestamp sort', { sort: 'remotepubdate' }],
+      ['a fields list', { fields: 'name,type', itemsPerPage: 2 }],
+      ['a value that is no column', { isnew: '0' }],
+    ])('findQuery with %s answers what the in-memory feed answers', async (_label, url) => {
+      expect(await outcome('findQuery', { url })).toEqual(await reference('findQuery', { url }));
+    });
+
+    it.each<[string, Struct]>([
+      ['countOnly', { countOnly: 'true' }],
+      ['countOnly ignoring filters and maxItems', { countOnly: 'true', name: 'alpha', maxItems: 2 }],
+      ['no countOnly', {}],
+      ['a bad sort', { sort: 'bogus' }],
+    ])('findAll with %s answers what the in-memory feed answers', async (_label, url) => {
+      expect(await outcome('findAll', { url })).toEqual(await reference('findAll', { url }));
+    });
+
+    it.each<[string, string[], Struct]>([
+      ['case-variant, padded and repeated ids', ['ABC', 'abc', 'abe ', 'ABE', 'Abc', 'abc'], { fields: 'name,url' }],
+      ['full case mapping ids', ['ß1', 'SS1 ', 'ss0', 'ǅZ', 'µM', 'ﬃ', 'i\u0307d', 'ας'], { fields: 'name,url', sort: 'name' }],
+      ['excluded, missing and unbindable ids', [cfId('F', 2), cfId('F', 4), cfId('F', 5), cfId('X', 9), 'ab\u0000', 'ab'], { fields: 'name' }],
+      ['a sort', ['ABC', 'abf', 'ab!', cfId('F', 6)], { fields: 'name,url', sort: '-name' }],
+      ['paging', ['ABC', 'abf', 'ab!', cfId('F', 6)], { fields: 'name', itemsPerPage: 1, pageIndex: 2 }],
+      ['countOnly, which findMany ignores', ['abc', 'ab'], { fields: 'name', countOnly: 'true' }],
+      ['no ids', [], { fields: 'name' }],
+      ['the contentnav defaults', ['abc'], {}],
+    ])('findMany with %s answers what the in-memory feed answers', async (_label, ids, url) => {
+      expect(await outcome('findMany', { ids, url })).toEqual(await reference('findMany', { ids, url }));
+    });
+
+    it('reads a page, a findMany selection and a count with no statement returning more rows than it answers', async () => {
+      const statements: { sql: string; rows: number }[] = [];
+      const source = fx.repo.beanFeed.source.bind(fx.repo.beanFeed);
+      const recording = (tx: TenantTx): TenantTx => ({
+        kind: tx.kind,
+        tenantId: tx.tenantId,
+        schema: tx.schema,
+        onCommit: (cb, onError) => {
+          tx.onCommit(cb, onError);
+        },
+        query: (async (text: string | { text: string }, values?: unknown[]) => {
+          const result = await tx.query(text, values);
+          statements.push({ sql: typeof text === 'string' ? text : text.text, rows: result.rows.length });
+          return result;
+        }) as TenantTx['query'],
+      });
+      const spy = vi.spyOn(fx.repo.beanFeed, 'source').mockImplementation((run, spec) => source((fn) => run((tx) => fn(recording(tx))), spec));
+      try {
+        const page = await outcome('findQuery', { url: { fields: 'name', itemsPerPage: 2, pageIndex: 3 } });
+        expect((page as { data: Struct }).data['items']).toHaveLength(2);
+        expect(Math.max(...statements.map((statement) => statement.rows))).toBeLessThanOrEqual(2);
+        expect(statements.filter((statement) => / LIMIT /.test(statement.sql)).map((statement) => statement.rows)).toEqual([2]);
+        statements.length = 0;
+        const many = await outcome('findMany', { ids: ['ABC', 'ab'], url: { fields: 'name', sort: 'name' } });
+        expect((many as { data: Struct }).data['items']).toHaveLength(3);
+        expect(Math.max(...statements.map((statement) => statement.rows))).toBeLessThanOrEqual(3);
+        statements.length = 0;
+        expect(await outcome('findAll', { url: { countOnly: 'true' } })).toEqual({ status: 200, data: { count: '23' } });
+        expect(statements.map((statement) => statement.rows).every((rows) => rows <= 1)).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });

@@ -25,7 +25,7 @@ import {
   type CategoryOptions,
 } from '../../domain/categories.js';
 import type { Actor } from '../../domain/context.js';
-import { feedPoolSites, readAcrossContentPool, type PoolSite } from '../../domain/pools.js';
+import { feedPoolSites, type PoolSite } from '../../domain/pools.js';
 import { CONTENT_ENTITIES } from '../../legacy/jsonapi-entities.js';
 import {
   paramUrl,
@@ -35,7 +35,8 @@ import {
   urlParam,
   type ApiEntityView,
 } from '../../legacy/jsonapi-serializers.js';
-import type { ContentRepository } from '../../repo/repository.js';
+import type { FeedTableSpec } from '../../repo/bean-feed-sql.js';
+import type { AssignmentCategory, ContentRepository } from '../../repo/repository.js';
 // Type-only: ../index.ts imports ../jsonapi.ts, which imports this folder.
 import type { ContentRouteContext } from '../index.js';
 import {
@@ -45,9 +46,11 @@ import {
   entityActionAllowed,
   findPropertiesFor,
   jsonApiResultOf,
+  mergedSource,
   permissionsOf,
   type BeanFeedOptions,
   type BeanFeedResult,
+  type BeanFeedSource,
   type EntityHandler,
   type JsonApiCall,
   type JsonApiResult,
@@ -184,6 +187,14 @@ async function feedSites(ctx: ContentRouteContext, call: JsonApiCall): Promise<P
   return sites.length > 0 ? sites : [{ siteId: call.siteId, tenantId: call.tenantId }];
 }
 
+/** A feed over `sites` (beanFeed `siteID IN (…)`): one SQL source per site, each of its statements run in that site's tenant. */
+function poolFeed(ctx: ContentRouteContext, sites: readonly PoolSite[], specOf: (site: PoolSite) => FeedTableSpec): BeanFeedSource<Struct> {
+  const { db, repository } = ctx.domain;
+  const sources = sites.map((site) => repository.beanFeed.source<Struct>((fn) => withTenant(db, site.tenantId, fn), specOf(site)));
+  const [only] = sources;
+  return sources.length === 1 && only !== undefined ? only : mergedSource(sources);
+}
+
 /** The countOnly result, or the page of iteratorToArray items packageIteratorArray returns, as `data`. */
 async function feedData<R extends Readonly<Struct>>(
   call: JsonApiCall,
@@ -277,12 +288,11 @@ function categoryView(values: Readonly<Struct>, call: JsonApiCall): ApiEntityVie
   };
 }
 
-/** The category feed's rows (beanFeed `siteID IN (…)`), each site's read in that site's tenant. */
-function categoryFeedRows(ctx: ContentRouteContext, sites: readonly PoolSite[]): Promise<Struct[]> {
-  return readAcrossContentPool(ctx.domain.db, sites, async (tx, site) =>
-    (await ctx.domain.repository.categories.categoriesBySite(tx, { siteId: site.siteId })).map(
-      (row): Struct => Object.fromEntries(CATEGORY_COLUMNS.map((column) => [column, row[column]])),
-    ),
+/** The category feed of `sites` (beanFeed `siteID IN (…)`), only the categories of `ids` when given. */
+function categoryFeed(ctx: ContentRouteContext, sites: readonly PoolSite[], ids?: readonly string[]): BeanFeedSource<Struct> {
+  const { categories } = ctx.domain.repository;
+  return poolFeed(ctx, sites, (site) =>
+    categories.siteCategoriesFeed(ids === undefined ? { siteId: site.siteId } : { siteId: site.siteId, categoryIds: ids }),
   );
 }
 
@@ -311,8 +321,7 @@ function rejectNotesFilter(call: JsonApiCall): void {
 async function findCategories(ctx: ContentRouteContext, call: JsonApiCall): Promise<JsonApiResult> {
   if (!entityAccessAllowed(call.actor, CATEGORY)) return authorizationDenied();
   rejectNotesFilter(call);
-  const rows = await categoryFeedRows(ctx, await feedSites(ctx, call));
-  const result = beanFeedQuery(rows, call, CATEGORY_FEED);
+  const result = await beanFeedQuery(categoryFeed(ctx, await feedSites(ctx, call)), call, CATEGORY_FEED);
   return jsonApiResultOf(await feedData(call, CATEGORY.name, result, (row) => categoryRowView(row, ctx, call)), CATEGORY.name);
 }
 
@@ -335,9 +344,7 @@ export const categoryHandler: EntityHandler = Object.freeze({
     paramUrl(call.apiContext, 'entityname', call.entityName);
     if (!entityAccessAllowed(call.actor, CATEGORY)) return authorizationDenied();
     const ids = idsOf(call);
-    const wanted = new Set(ids.map(sqlKey));
-    const rows = (await categoryFeedRows(ctx, await feedSites(ctx, call))).filter((row) => wanted.has(sqlKey(row['categoryid'])));
-    const result = beanFeedQuery(rows, call, CATEGORY_FEED);
+    const result = await beanFeedQuery(categoryFeed(ctx, await feedSites(ctx, call), ids), call, CATEGORY_FEED);
     const inIdOrder = (items: Struct[]): Struct[] =>
       ids.flatMap((id): Struct[] => {
         const item = items.find((candidate) => cfEq(cfText(candidate['id']), id));
@@ -453,22 +460,18 @@ async function categoryIndex(ctx: ContentRouteContext, call: JsonApiCall): Promi
   return index;
 }
 
-/** getLoadSQLColumnsAndTables' joins (contentCategoryAssignBean.cfc:93-100): rows whose category exists, with its columns. */
-function joinCategories(rows: readonly Struct[], index: ReadonlyMap<string, CategoryRow>): Struct[] {
-  return rows.flatMap((row) => {
-    const category = index.get(sqlKey(row['categoryid']));
-    if (category === undefined) return [];
+/** getLoadSQLColumnsAndTables' joined columns (contentCategoryAssignBean.cfc:93-100) of each indexed category. */
+function joinedCategories(index: ReadonlyMap<string, CategoryRow>): AssignmentCategory[] {
+  return [...index.values()].map((category) => {
     const parent = category.parentid === null ? undefined : index.get(sqlKey(category.parentid));
-    return [
-      {
-        ...row,
-        categoryname: category.name,
-        parentname: parent?.name ?? null,
-        parentid: category.parentid,
-        filename: category.filename,
-        path: category.path,
-      },
-    ];
+    return {
+      categoryid: category.categoryid,
+      categoryname: category.name,
+      parentname: parent?.name ?? null,
+      parentid: category.parentid,
+      filename: category.filename,
+      path: category.path,
+    };
   });
 }
 
@@ -485,28 +488,27 @@ function joinsCategories(call: JsonApiCall): boolean {
   return !isTrue(urlParam(call.apiContext, 'countOnly')) && cfText(urlParam(call.apiContext, 'fields')) === '';
 }
 
-/** The assignment rows of `sites` (`siteID IN (…)`), each site's read in that site's tenant; a bounded findQuery reads one version's. */
-async function assignmentFeedRows(
+/** The assignment feed of `sites` (`siteID IN (…)`, one version's for a bounded findQuery), joined when `join` and rows exist. */
+async function assignmentFeed(
   ctx: ContentRouteContext,
   call: JsonApiCall,
   sites: readonly PoolSite[],
   join: boolean,
-): Promise<Struct[]> {
+): Promise<BeanFeedSource<Struct>> {
   const histId = boundHistId(call);
-  const content = ctx.domain.repository.content;
-  const rows = await readAcrossContentPool(ctx.domain.db, sites, async (tx, site): Promise<Struct[]> => {
-    const read =
-      histId === undefined
-        ? await content.siteCategoryAssignments(tx, { siteId: site.siteId })
-        : (await content.categoryAssignments(tx, { contentHistId: histId })).filter((row) => sqlKey(row.siteid) === sqlKey(site.siteId));
-    return read.map((row): Struct => ({ ...row }));
-  });
-  return join && rows.length > 0 ? joinCategories(rows, await categoryIndex(ctx, call)) : rows;
+  const { content } = ctx.domain.repository;
+  const scope = (site: PoolSite): { siteId: string; contentHistId?: string } =>
+    histId === undefined ? { siteId: site.siteId } : { siteId: site.siteId, contentHistId: histId };
+  const assignments = poolFeed(ctx, sites, (site) => content.categoryAssignmentsFeed(scope(site)));
+  if (!join || (await assignments.isEmpty())) return assignments;
+  const categories = joinedCategories(await categoryIndex(ctx, call));
+  return poolFeed(ctx, sites, (site) => content.categoryAssignmentsFeed({ ...scope(site), categories }));
 }
 
 /** The row a key-less loadBy reads (beanORM.cfc:766-845): the request site's first joined assignment, in clustered-key order. */
 async function firstAssignment(ctx: ContentRouteContext, call: JsonApiCall): Promise<Struct | undefined> {
-  const [first] = await assignmentFeedRows(ctx, call, [{ siteId: call.siteId, tenantId: call.tenantId }], true);
+  const feed = await assignmentFeed(ctx, call, [{ siteId: call.siteId, tenantId: call.tenantId }], true);
+  const [first] = await feed.rows({ order: [] }, 0, 1);
   return first;
 }
 
@@ -552,8 +554,8 @@ function serializeAssignment(
 /** findAll and findQuery over the assignment feed. */
 async function findAssignments(ctx: ContentRouteContext, call: JsonApiCall): Promise<JsonApiResult> {
   if (!entityAccessAllowed(call.actor, ASSIGNMENT)) return authorizationDenied();
-  const rows = await assignmentFeedRows(ctx, call, await feedSites(ctx, call), joinsCategories(call));
-  const result = beanFeedQuery(rows, call, ASSIGNMENT_FEED);
+  const feed = await assignmentFeed(ctx, call, await feedSites(ctx, call), joinsCategories(call));
+  const result = await beanFeedQuery(feed, call, ASSIGNMENT_FEED);
   return jsonApiResultOf(await feedData(call, ASSIGNMENT.name, result, (row) => assignmentRowView(row, call)), ASSIGNMENT.name);
 }
 
@@ -574,8 +576,8 @@ export const contentCategoryAssignHandler: EntityHandler = Object.freeze({
   async findMany(ctx: ContentRouteContext, call: JsonApiCall): Promise<JsonApiResult> {
     paramUrl(call.apiContext, 'entityname', call.entityName);
     if (!entityAccessAllowed(call.actor, ASSIGNMENT)) return authorizationDenied();
-    const rows = await assignmentFeedRows(ctx, call, await feedSites(ctx, call), joinsCategories(call));
-    const result = beanFeedQuery(rows, call, ASSIGNMENT_FEED);
+    const feed = await assignmentFeed(ctx, call, await feedSites(ctx, call), joinsCategories(call));
+    const result = await beanFeedQuery(feed, call, ASSIGNMENT_FEED);
     const ids = idsOf(call);
     const inIdOrder = (items: Struct[]): Struct[] => {
       if (ids.length > 0 && items.length > 0) throw undefinedElement('ID', 'I2');

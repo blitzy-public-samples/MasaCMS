@@ -362,6 +362,30 @@ export async function getHistory(deps: DomainDeps, actor: Actor, item: ItemRef):
   return finishScreen(deps, actor, model);
 }
 
+/** The getHist rows of the item's active version in the `{ offset, limit }` window `windowOf` picks from their count, in history order. */
+export async function getHistoryWindow<W extends { offset: number; limit: number }>(
+  deps: DomainDeps,
+  actor: Actor,
+  item: ItemRef,
+  windowOf: (historyTotal: number) => W,
+): Promise<{ items: HistRow[]; window: W }> {
+  return withTenant(deps.db, actor.tenantId, async (tx) => {
+    const bean = await activeBean(tx, deps.repository, item);
+    const history = beanItem(bean);
+    const total = await deps.repository.content.historyCount(tx, 'hist', history);
+    // A new bean's iterator holds only the first page getHistory reads.
+    const window = windowOf(bean.isNew === 1 ? Math.min(total, HISTORY_MAX_PAGE) : total);
+    const items: HistRow[] = [];
+    while (items.length < window.limit) {
+      const limit = Math.min(window.limit - items.length, HISTORY_MAX_PAGE);
+      const { rows } = await deps.repository.content.historyPage(tx, 'hist', history, { limit, offset: window.offset + items.length });
+      items.push(...rows);
+      if (rows.length < limit) break;
+    }
+    return { items, window };
+  });
+}
+
 /** The change sets of the trail versions that name one, keyed by the version's `changesetid`. */
 async function trailChangesets(tx: TenantTx, repo: ContentRepository, trail: readonly ContentVersionRow[]): Promise<Map<string, ChangesetRow>> {
   const found = new Map<string, ChangesetRow>();

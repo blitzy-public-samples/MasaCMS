@@ -34,6 +34,7 @@ import {
   previewOrder,
   rssChannelItems,
 } from '../legacy/remote-feed.js';
+import type { BeanFeedSource } from '../repo/bean-feed-sql.js';
 import {
   FEED_SORT_OPTIONS,
   type FeedAdvancedParamFields,
@@ -888,6 +889,17 @@ export function listFeeds(deps: FeedDeps, actor: Actor, siteId: string): Promise
     rsLocal: await deps.repository.feeds.listFeeds(tx, { siteId, type: 'Local' }),
     rsRemote: await deps.repository.feeds.listFeeds(tx, { siteId, type: 'Remote' }),
   }));
+}
+
+/** The JSON API `feed` scope of `args.siteId` (listFeeds' feeds, only those of `feedIds` when given), handed to `query` inside one tenant transaction. */
+export function querySiteFeeds<T>(
+  deps: FeedDeps,
+  actor: Actor,
+  args: { siteId: string; feedIds?: readonly string[] },
+  query: (source: BeanFeedSource<FeedFields>) => Promise<T>,
+): Promise<T> {
+  const spec = deps.repository.feeds.siteFeedsFeed(args);
+  return withTenant(deps.db, actor.tenantId, (tx) => query(deps.repository.beanFeed.source<FeedFields>((fn) => fn(tx), spec)));
 }
 
 /** feedManager.read: the stored feed the key names, else a new bean (of the site, for a name or remote id read). */

@@ -15,6 +15,8 @@ import {
   urlParam,
   type ApiEntityView,
 } from '../../legacy/jsonapi-serializers.js';
+// Type-only: ../index.ts imports ../jsonapi.ts, which imports this folder.
+import type { ContentRouteContext } from '../index.js';
 import {
   authorizationDenied,
   beanFeedQuery,
@@ -24,11 +26,14 @@ import {
   jsonApiResultOf,
   permissionsOf,
   type BeanFeedOptions,
+  type BeanFeedResult,
   type EntityHandler,
   type JsonApiCall,
   type JsonApiHandlerFn,
   type JsonApiResult,
 } from './types.js';
+
+type StatsRow = Record<string, unknown>;
 
 const ENTITY = 'stats';
 const CONFIG = CONTENT_ENTITIES.stats;
@@ -82,13 +87,15 @@ function inIdOrder(items: readonly Record<string, unknown>[], ids: readonly stri
   });
 }
 
-/** The feed's count or page over `rows`, each page row packaged as an iterator bean (`set(row).setIsNew(0)`). */
-async function feedResult(
-  call: JsonApiCall,
-  rows: readonly Readonly<Record<string, unknown>>[],
-  ids?: readonly string[],
-): Promise<JsonApiResult> {
-  const result = beanFeedQuery(rows, call, FEED_OPTIONS);
+/** The site's stats rows (only those of `contentIds` when given) through the generic beanFeed, read in one tenant transaction. */
+function siteFeed(ctx: ContentRouteContext, call: JsonApiCall, contentIds?: readonly string[]): Promise<BeanFeedResult<StatsRow>> {
+  const { db, repository } = ctx.domain;
+  const spec = repository.stats.siteStatsFeed(contentIds === undefined ? { siteId: call.siteId } : { siteId: call.siteId, contentIds });
+  return withTenant(db, call.tenantId, (tx) => beanFeedQuery(repository.beanFeed.source<StatsRow>((fn) => fn(tx), spec), call, FEED_OPTIONS));
+}
+
+/** The feed's count or page, each page row packaged as an iterator bean (`set(row).setIsNew(0)`). */
+async function feedResult(call: JsonApiCall, result: BeanFeedResult<StatsRow>, ids?: readonly string[]): Promise<JsonApiResult> {
   if ('count' in result) return jsonApiResultOf({ count: result.count }, ENTITY);
   const views = result.items.map((row) => statsView(statsValues({ ...row, isNew: 0 })));
   let items = await serializeEntityList(views, call.apiContext, { entityName: ENTITY, expand: call.params.string('expand') });
@@ -116,20 +123,14 @@ const findOne: JsonApiHandlerFn = async (ctx, call) => {
 const findFeed: JsonApiHandlerFn = async (ctx, call) => {
   if (!entityAccessAllowed(call.actor, CONFIG)) return authorizationDenied();
   // Only the request site's rows: a `contentpoolid` naming other sites would reach other tenants' rows.
-  const rows = await withTenant(ctx.domain.db, call.tenantId, (tx) =>
-    ctx.domain.repository.stats.siteStats(tx, { siteId: call.siteId }),
-  );
-  return feedResult(call, rows);
+  return feedResult(call, await siteFeed(ctx, call));
 };
 
 /** findMany (2627-2710): the site's rows of `ids`, in the order of `ids` unless the URL sorts them. */
 const findMany: JsonApiHandlerFn = async (ctx, call) => {
   if (!entityAccessAllowed(call.actor, CONFIG)) return authorizationDenied();
   const ids = call.ids ?? [];
-  const rows = await withTenant(ctx.domain.db, call.tenantId, (tx) =>
-    ctx.domain.repository.stats.siteStats(tx, { siteId: call.siteId, contentIds: ids }),
-  );
-  return feedResult(call, rows, ids);
+  return feedResult(call, await siteFeed(ctx, call, ids), ids);
 };
 
 /** findPermissions (2240-2266): bean.getPermissions of a fresh stats bean; an id makes legacy call `loadBy`. */

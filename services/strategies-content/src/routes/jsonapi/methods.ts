@@ -21,7 +21,7 @@ import {
   LegacyServiceUnavailableError,
 } from '@opt2/platform/legacy-compat';
 import { categoryCrumbs, newCategoryBean, readCategory } from '../../domain/categories.js';
-import { getCrumbList, getHistory, readContent, type ContentBean } from '../../domain/content-tree.js';
+import { getCrumbList, getHistoryWindow, readContent, type ContentBean } from '../../domain/content-tree.js';
 import type { Actor, SiteContentSettings } from '../../domain/context.js';
 import { FeedBean, FeedContentUnsupportedError, feedContent } from '../../domain/feeds.js';
 import { submitForm as undefinedSubmitForm } from '../../domain/forms.js';
@@ -186,9 +186,8 @@ function onePage<T>(items: readonly T[], entityName: string): { items: readonly 
   return { items, page: iteratorPage({ recordCount: items.length, maxRecordsPerPage: items.length, entityName }) };
 }
 
-/** The page setIteratorProps (jsonApiUtility.cfc:3160-3183) selects from a queryIterator over `rows` set without a page size. */
-function urlPageOf<R>(rows: readonly R[], ctx: JsonApiRequestContext, entityName: string): { items: R[]; page: CollectionPage } {
-  const recordCount = rows.length;
+/** The slice bounds and page setIteratorProps (jsonApiUtility.cfc:3160-3183) selects from a queryIterator of `recordCount` rows set without a page size. */
+function urlPageBounds(recordCount: number, ctx: JsonApiRequestContext, entityName: string): { start: number; end: number; page: CollectionPage } {
   const nextN = (n: unknown): number => (cfIsNumeric(n) && cfToNumber(n) !== 0 ? cfToNumber(n) : recordCount);
   let perPage = recordCount;
   let pageIndex = 1;
@@ -222,7 +221,23 @@ function urlPageOf<R>(rows: readonly R[], ctx: JsonApiRequestContext, entityName
   if (cfIsNumeric(urlParam(ctx, 'offset'))) throw new LegacyApiError('server_error');
   const end = Math.min(recordCount, pageIndex * perPage);
   if (recordIndex < 0 && recordIndex < end) throw new LegacyApiError('server_error');
-  return { items: rows.slice(recordIndex, end), page: iteratorPage({ recordCount, maxRecordsPerPage: perPage, pageIndex, entityName }) };
+  return { start: recordIndex, end, page: iteratorPage({ recordCount, maxRecordsPerPage: perPage, pageIndex, entityName }) };
+}
+
+/** The page setIteratorProps (jsonApiUtility.cfc:3160-3183) selects from a queryIterator over `rows` set without a page size. */
+function urlPageOf<R>(rows: readonly R[], ctx: JsonApiRequestContext, entityName: string): { items: R[]; page: CollectionPage } {
+  const { start, end, page } = urlPageBounds(rows.length, ctx, entityName);
+  return { items: rows.slice(start, end), page };
+}
+
+/** The rows `slice(start, end)` takes from `length` rows, as an integer offset and row count. */
+function sliceWindow(start: number, end: number, length: number): { offset: number; limit: number } {
+  const index = (bound: number): number => {
+    const whole = Math.trunc(bound) || 0;
+    return whole < 0 ? Math.max(length + whole, 0) : Math.min(whole, length);
+  };
+  const offset = index(start);
+  return { offset, limit: Math.max(index(end) - offset, 0) };
 }
 
 // ---- findCrumbArray ----
@@ -318,13 +333,18 @@ const findCrumbArray: MethodHandler = async (ctx, call) => {
 
 // ---- findVersionHistory ----
 
-/** contentBean.getVersionHistoryQuery of the item's active version: every getHist row, newest first. */
-async function versionRows(ctx: Ctx, reader: Actor, item: { contentId: string; siteId: string }): Promise<Row[]> {
-  const history = await getHistory(ctx.domain, reader, item);
-  if (history.historyTotal <= history.items.length || history.contentBean.isNew === 1) return history.items;
-  // The history screen's page stops at 1000 versions; the JSON API iterator pages over all of them.
-  const { contentid, siteid } = history.contentBean.version;
-  return ctx.domain.db.withTenant(reader.tenantId, (tx) => ctx.domain.repository.content.hist(tx, { contentId: contentid ?? '', siteId: siteid ?? '' }));
+/** The item's getVersionHistoryIterator after setIteratorProps: only its page's getHist rows, newest first, and the page. */
+async function versionPage(
+  ctx: Ctx,
+  call: JsonApiCall,
+  reader: Actor,
+  item: { contentId: string; siteId: string },
+): Promise<{ items: Row[]; page: CollectionPage }> {
+  const { items, window } = await getHistoryWindow(ctx.domain, reader, item, (recordCount) => {
+    const { start, end, page } = urlPageBounds(recordCount, call.apiContext, 'content');
+    return { ...sliceWindow(start, end, recordCount), page };
+  });
+  return { items, page: window.page };
 }
 
 /** findVersionHistory (jsonApiUtility.cfc:3236-3256): a content item's versions for its authors and editors, each self link naming its version. */
@@ -335,7 +355,7 @@ const findVersionHistory: MethodHandler = async (ctx, call) => {
   const item = { contentId: idOf(call), siteId: call.siteId };
   const perm = await getNodePerm(ctx.domain, reader, await getCrumbList(ctx.domain, reader, item));
   if (perm !== 'author' && perm !== 'editor') return authorizationDenied();
-  const { items, page } = urlPageOf(await versionRows(ctx, reader, item), call.apiContext, 'content');
+  const { items, page } = await versionPage(ctx, call, reader, item);
   const expand = expandOf(call);
   const views = await contentNavViews(ctx, call, items, { expand, expanded: 0 });
   const opts = { expand, expanded: 0 };

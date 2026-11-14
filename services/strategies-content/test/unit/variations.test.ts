@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LegacyApiError, isCfUuid } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
-import { withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { withTenant, type QueryConfig, type QueryResult, type QueryResultRow, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims, type Actor, type DomainDeps } from '../../src/domain/context.js';
 import {
@@ -87,6 +87,27 @@ const inA = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> => withTenant(hand
 async function storedRow(targetingId: string): Promise<Record<string, unknown> | null> {
   return inA((tx) => repo.platform.findByKey(tx, 'variation_targeting', { targetingid: targetingId }));
 }
+
+/** `handle.app` with the text of every statement its tenant transactions issue appended to `statements`. */
+function recordingDb(statements: string[]): TenantDb {
+  return {
+    schema: handle.app.schema,
+    withTenant: (tenantId, fn) =>
+      handle.app.withTenant(tenantId, (tx) =>
+        fn({
+          ...tx,
+          query: <R extends QueryResultRow = QueryResultRow>(text: string | QueryConfig, values?: unknown[]): Promise<QueryResult<R>> => {
+            statements.push(typeof text === 'string' ? text : text.text);
+            return tx.query<R>(text, values);
+          },
+        }),
+      ),
+    withMetadata: (fn) => handle.app.withMetadata(fn),
+    end: () => Promise.resolve(),
+  };
+}
+
+const targetingStatements = (statements: readonly string[]): string[] => statements.filter((sql) => sql.includes('variation_targeting'));
 
 describe.skipIf(!(await pgAvailable()))('domain/variations over a throwaway content schema', () => {
   beforeAll(async () => {
@@ -181,5 +202,81 @@ describe.skipIf(!(await pgAvailable()))('domain/variations over a throwaway cont
         { contentid: cfId('C', 2), title: 'Hero', initjs: 'again()', targetingjs: '' },
       ],
     });
+  });
+
+  const upper = cfId('C', 20);
+  const mixed = `c${cfId('C', 22).slice(1)}`;
+  const otherSiteCase = cfId('C', 23);
+  const unscripted = cfId('C', 24);
+
+  it('variationScriptModel reads every item targeting in one statement and answers what the per-item read answers', async () => {
+    const before: string[] = [];
+    const first = await variationScriptModel({ ...deps, db: recordingDb(before) }, contentEditor, { siteId: SITE, contentType: '' });
+
+    await withGatedTenant(handle.app, TENANT_A.tenantId, async (tx) => {
+      const base = { siteid: SITE, subtype: 'Default', moduleid: VARIATION_MODULE, approved: 1, active: 1, display: 1, type: 'Variation' };
+      const items: [string, string, number][] = [
+        [upper, 'Upper', 20], [cfId('C', 22), 'Mixed', 22], [otherSiteCase, 'Site case', 23], [unscripted, 'Unscripted', 24], ['short-variation', 'Short', 25],
+      ];
+      for (const [contentid, title, n] of items) {
+        await repo.content.insertVersion(tx, { ...base, contentid, contenthistid: cfId('H', n), title, menutitle: title });
+      }
+      const rows: [number, string, string, string][] = [
+        [21, upper, SITE, 'upper()'],
+        [20, upper.toLowerCase(), SITE, 'lower()'],
+        [22, mixed, SITE, 'mixed()'],
+        [23, otherSiteCase, SITE.toUpperCase(), 'site()'],
+        [25, 'SHORT-VARIATION', SITE, 'short()'],
+      ];
+      for (const [n, contentid, siteid, initjs] of rows) {
+        await saveVariationTargetingInTx(tx, repo, { targetingid: cfId('T', n), contentid, siteid, initjs, targetingjs: `["#${String(n)}"]` }, contentEditor);
+      }
+    });
+    const after: string[] = [];
+    const model = await variationScriptModel({ ...deps, db: recordingDb(after) }, contentEditor, { siteId: SITE, contentType: '' });
+
+    expect(model?.variations.length).toBe((first?.variations.length ?? 0) + 5);
+    expect(after.length).toBe(before.length);
+    expect(targetingStatements(after)).toHaveLength(1);
+    const items = await inA((tx) => repo.content.componentType(tx, { siteId: SITE, type: 'Variation' }));
+    const perItem = await Promise.all(
+      items.map(async (item) => {
+        const contentid = item.contentid ?? '';
+        const { initjs, targetingjs } = await readVariationTargeting(deps, contentEditor, { contentId: contentid, siteId: SITE });
+        return { contentid, title: item.menutitle ?? '', initjs, targetingjs };
+      }),
+    );
+    expect(model?.variations).toEqual(perItem);
+    expect(model?.variations).toEqual(
+      expect.arrayContaining([
+        { contentid: upper, title: 'Upper', initjs: 'lower()', targetingjs: '["#20"]' },
+        { contentid: cfId('C', 22), title: 'Mixed', initjs: '', targetingjs: '' },
+        { contentid: otherSiteCase, title: 'Site case', initjs: '', targetingjs: '' },
+        { contentid: unscripted, title: 'Unscripted', initjs: '', targetingjs: '' },
+        { contentid: 'short-variation'.padEnd(35), title: 'Short', initjs: 'short()', targetingjs: '["#25"]' },
+      ]),
+    );
+  });
+
+  it('targetingsForContents answers each requested id as targetingFor does, and issues no statement for no ids', async () => {
+    const ids = [upper, upper.toLowerCase(), cfId('C', 22), mixed, 'short-variation', 'SHORT-VARIATION  ', otherSiteCase, unscripted, upper, ''];
+    const batched = await inA((tx) => repo.variation.targetingsForContents(tx, { contentIds: ids, siteId: SITE }));
+    const perId = await inA(async (tx) => {
+      const rows = [];
+      for (const contentId of ids) {
+        rows.push(await repo.variation.targetingFor(tx, { contentId, siteId: SITE }));
+      }
+      return rows;
+    });
+    expect(batched).toEqual(perId);
+    expect(batched.map((row) => row?.targetingid ?? null)).toEqual([
+      cfId('T', 20), cfId('T', 20), null, cfId('T', 22), cfId('T', 25), cfId('T', 25), null, null, cfId('T', 20), null,
+    ]);
+
+    const statements: string[] = [];
+    await expect(
+      recordingDb(statements).withTenant(TENANT_A.tenantId, (tx) => repo.variation.targetingsForContents(tx, { contentIds: [], siteId: SITE })),
+    ).resolves.toEqual([]);
+    expect(statements).toEqual([]);
   });
 });

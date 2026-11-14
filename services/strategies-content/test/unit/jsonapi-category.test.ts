@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { UserClaims } from '@opt2/platform/auth';
 import { buildEnvelope, isCfUuid, LegacyApiError, serializeResponse } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
-import { withTenant } from '@opt2/platform/tenancy';
+import { withTenant, type TenantDb, type TenantTx, type TransactionCallOptions } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
   TENANT_B,
@@ -17,7 +17,13 @@ import {
   type TenantFixture,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
-import { createCategory, readCategory, setCategoryAssignments, type CategoryBean } from '../../src/domain/categories.js';
+import {
+  createCategory,
+  listPoolCategories,
+  readCategory,
+  setCategoryAssignments,
+  type CategoryBean,
+} from '../../src/domain/categories.js';
 import {
   actorFromClaims,
   CONTENT_CONFIG_DEFAULTS,
@@ -27,13 +33,22 @@ import {
 } from '../../src/domain/context.js';
 import type { LegacySiteUrlConfig } from '../../src/legacy/content-urls.js';
 import { contentApiSerializer, jsonApiEndpoint, type JsonApiRequestContext } from '../../src/legacy/jsonapi-serializers.js';
-import { createContentRepository } from '../../src/repo/repository.js';
+import type { FeedRunner, FeedTableSpec } from '../../src/repo/bean-feed-sql.js';
+import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { categoryHandler, contentCategoryAssignHandler } from '../../src/routes/jsonapi/category.js';
-import { createJsonApiParams, type EntityHandler, type JsonApiCall, type JsonApiResult } from '../../src/routes/jsonapi/types.js';
+import {
+  createJsonApiParams,
+  rowsSource,
+  type BeanFeedSource,
+  type EntityHandler,
+  type JsonApiCall,
+  type JsonApiResult,
+} from '../../src/routes/jsonapi/types.js';
 
 type Struct = Record<string, unknown>;
+type CategoryRow = Awaited<ReturnType<ContentRepository['categories']['categoriesBySite']>>[number];
 type Op = 'findOne' | 'findMany' | 'findAll' | 'findQuery' | 'findNew' | 'findProperties' | 'findPermissions' | 'save' | 'delete';
 
 const clock = fixedClock(new Date(2026, 5, 30, 10, 0, 0, 456));
@@ -553,6 +568,462 @@ describe.skipIf(!(await pgAvailable()))('JSON API category and contentCategoryAs
       );
       expect(call.validateCsrf).toHaveBeenCalledTimes(1);
       expect(itemsOf(await onAssign('findAll'))).toHaveLength(2);
+    });
+  });
+});
+
+// ---- the SQL-bounded feeds against the whole-site reads the handlers evaluated in memory before them ----
+
+/** tcontentcategories columns, as the category feed projected each row it read. */
+const READ_CATEGORY_COLUMNS = [
+  'categoryid', 'siteid', 'parentid', 'datecreated', 'lastupdate', 'lastupdateby', 'name', 'notes', 'isinterestgroup',
+  'isactive', 'isopen', 'sortby', 'sortdirection', 'restrictgroups', 'path', 'remoteid', 'remotesourceurl', 'remotepubdate',
+  'urltitle', 'filename', 'isfeatureable',
+] as const;
+
+/** The id and site equality the handlers applied in memory: trailing spaces dropped, then lower-cased. */
+function sqlKey(value: unknown): string {
+  return (typeof value === 'string' ? value : '').replace(/ +$/u, '').toLowerCase();
+}
+
+/** The scope a feed spec was built for; the reading repository answers it with whole-site reads. */
+type ReadScope =
+  | { kind: 'category'; siteId: string; categoryIds?: readonly string[] }
+  | { kind: 'assignment'; siteId: string; contentHistId?: string; categories?: readonly unknown[] };
+
+/** A feed source evaluating in memory the rows `load` reads on first use. */
+function readRows(load: () => Promise<Struct[]>): BeanFeedSource<Struct> {
+  let memory: Promise<BeanFeedSource<Struct>> | undefined;
+  const held = (): Promise<BeanFeedSource<Struct>> => (memory ??= load().then((rows) => rowsSource(rows)));
+  return {
+    columns: [],
+    isEmpty: async () => (await held()).isEmpty(),
+    filterThrows: async (where) => (await held()).filterThrows(where),
+    count: async (query) => (await held()).count(query),
+    rows: async (query, offset, limit) => (await held()).rows(query, offset, limit),
+    all: async () => (await held()).all(),
+  };
+}
+
+/** The join index the assignment feed read whole: the category pool's categories, then the request site's, first per key. */
+async function readIndex(domain: DomainDeps, call: JsonApiCall): Promise<Map<string, CategoryRow>> {
+  const pool = await listPoolCategories(domain, { ...call.actor, tenantId: call.tenantId, siteId: call.siteId });
+  const own = await withTenant(domain.db, call.tenantId, (tx) => domain.repository.categories.categoriesBySite(tx, { siteId: call.siteId }));
+  const index = new Map<string, CategoryRow>();
+  for (const row of [...pool, ...own]) if (!index.has(sqlKey(row.categoryid))) index.set(sqlKey(row.categoryid), row);
+  return index;
+}
+
+/** A scope's rows as the handlers selected them: every row of the site, then the ids filter or category join in memory. */
+async function readScope(domain: DomainDeps, call: JsonApiCall, run: FeedRunner, scope: ReadScope): Promise<Struct[]> {
+  const { categories, content } = domain.repository;
+  if (scope.kind === 'category') {
+    const rows = await run(async (tx) =>
+      (await categories.categoriesBySite(tx, { siteId: scope.siteId })).map(
+        (row): Struct => Object.fromEntries(READ_CATEGORY_COLUMNS.map((column) => [column, row[column]])),
+      ),
+    );
+    const wanted = scope.categoryIds === undefined ? undefined : new Set(scope.categoryIds.map(sqlKey));
+    return wanted === undefined ? rows : rows.filter((row) => wanted.has(sqlKey(row['categoryid'])));
+  }
+  const histId = scope.contentHistId;
+  const rows = await run(async (tx) =>
+    (histId === undefined
+      ? await content.siteCategoryAssignments(tx, { siteId: scope.siteId })
+      : (await content.categoryAssignments(tx, { contentHistId: histId })).filter((row) => sqlKey(row.siteid) === sqlKey(scope.siteId))
+    ).map((row): Struct => ({ ...row })),
+  );
+  if (scope.categories === undefined || rows.length === 0) return rows;
+  const index = await readIndex(domain, call);
+  return rows.flatMap((row) => {
+    const category = index.get(sqlKey(row['categoryid']));
+    if (category === undefined) return [];
+    const parent = category.parentid === null ? undefined : index.get(sqlKey(category.parentid));
+    const joined = { categoryname: category.name, parentname: parent?.name ?? null, parentid: category.parentid };
+    return [{ ...row, ...joined, filename: category.filename, path: category.path }];
+  });
+}
+
+/** `domain` whose category and assignment feeds read every site row and evaluate the request in memory. */
+function readingDomain(domain: DomainDeps, call: JsonApiCall): DomainDeps {
+  const { repository } = domain;
+  const spec = (scope: ReadScope): FeedTableSpec => scope as unknown as FeedTableSpec;
+  const reading = {
+    ...repository,
+    categories: { ...repository.categories, siteCategoriesFeed: (args: Struct) => spec({ kind: 'category', ...args } as ReadScope) },
+    content: { ...repository.content, categoryAssignmentsFeed: (args: Struct) => spec({ kind: 'assignment', ...args } as ReadScope) },
+    beanFeed: {
+      source: (run: FeedRunner, scope: FeedTableSpec) => readRows(() => readScope(domain, call, run, scope as unknown as ReadScope)),
+    },
+  };
+  return { ...domain, repository: reading as unknown as ContentRepository };
+}
+
+/** The URL scope legacy parses from `raw`: decoded keys and values. */
+function urlOf(raw: string): Struct {
+  const url: Struct = {};
+  for (const item of raw.split('&').filter((part) => part !== '')) {
+    const [key = '', ...rest] = item.split('=');
+    url[decodeURIComponent(key)] = decodeURIComponent(rest.join('='));
+  }
+  return url;
+}
+
+/** What a handler answered for `call` (status, error and the wire body), or what it raised. */
+async function outcomeOf(handler: EntityHandler, op: Op, call: JsonApiCall, domain: DomainDeps): Promise<Struct> {
+  const fn = handler[op];
+  if (fn === undefined) throw new Error(`${handler.entity} has no ${op}`);
+  try {
+    const result = await fn({ domain } as unknown as ContentRouteContext, call);
+    if (result.error !== undefined) return { status: result.status, error: result.error };
+    const serializer = contentApiSerializer(result.serializerEntity ?? '');
+    return { status: result.status, body: serializeResponse(buildEnvelope({ method: op, data: result.data }), { serializer }).body };
+  } catch (err) {
+    const error = err as Error & { type?: unknown };
+    return { thrown: error.constructor.name, message: error.message, type: error.type };
+  }
+}
+
+const at = (y: number, mo: number, d: number, h = 0, mi = 0, s = 0, ms = 0): Date => new Date(y, mo - 1, d, h, mi, s, ms);
+const K = (n: number): string => cfId('K', n);
+const KB = (n: number): string => cfId('B', n);
+const KU = (n: number): string => cfId('U', n);
+const FH = (n: number): string => cfId('F', n);
+/** A mixed-case own-site category id; the pool holds its upper-case form, which the join index takes first. */
+const K_MIXED = 'Km000008-aaaa-BBBB-CCCCDDDDEEEEFFFF';
+/** A short id the char(35) column pads. */
+const K_SHORT = 'SHORT-ID';
+const F_MIXED = 'Fm000005-aaaa-BBBB-CCCCDDDDEEEEFFFF';
+
+const categoryRow = (categoryid: string, siteid: string, values: Struct): Struct => ({ categoryid, siteid, ...values });
+const OWN_CATEGORIES: Struct[] = [
+  categoryRow(K(1), 'tenant-a', { name: 'Alpha', isactive: 1, isinterestgroup: 0, datecreated: at(2026, 1, 5), filename: 'alpha', path: K(1), isfeatureable: 1 }),
+  categoryRow(K(2), 'tenant-a', { name: 'alpha ', isactive: 0, isinterestgroup: 0, datecreated: at(2025, 12, 31), filename: 'alpha-2', path: K(2) }),
+  categoryRow(K(3), 'tenant-a', {
+    name: 'Beta',
+    parentid: K(1),
+    isactive: 1,
+    remotepubdate: at(2026, 2, 1, 8, 30, 0, 123),
+    filename: 'alpha/beta',
+    path: `${K(1)},${K(3)}`,
+    notes: 'n1',
+  }),
+  categoryRow(K(4), 'tenant-a', { isactive: null, datecreated: at(2026, 1, 5) }),
+  categoryRow(K(5), 'tenant-a', { name: 'ÁLPHA', isactive: 1, isinterestgroup: 1, datecreated: at(2026, 3, 1) }),
+  categoryRow(K(6), 'tenant-a', { name: 'gamma_x', isinterestgroup: 1, isopen: 1, isactive: 1 }),
+  categoryRow(K(7), 'tenant-a', { name: 'Zeta', isactive: 1, sortby: 'name', sortdirection: 'desc' }),
+  categoryRow(K_MIXED, 'tenant-a', { name: 'delta', isactive: 1, filename: 'delta' }),
+  categoryRow(K_SHORT, 'tenant-a', { name: 'Short', isactive: 0 }),
+  categoryRow(K(9), 'tenant-a', { name: 'a😀b', isactive: 1 }),
+  categoryRow(K(10), 'tenant-a', { name: '', isactive: 1 }),
+  categoryRow(K(11), 'Tenant-A', { name: 'Cased Site' }),
+  categoryRow(K(12), 'other-site', { name: 'Other' }),
+];
+const B_CATEGORIES: Struct[] = [
+  categoryRow(KB(1), 'tenant-b', { name: 'Alpha', isactive: 1, datecreated: at(2026, 1, 5) }),
+  categoryRow(KB(2), 'tenant-b', { name: 'beta', isactive: 0 }),
+  categoryRow(KB(3), 'tenant-b', { isactive: 1 }),
+  categoryRow(KB(4), 'tenant-b', { name: 'Omega', parentid: KB(1), isactive: 1 }),
+  categoryRow(K(1), 'tenant-b', { name: 'Bee Alpha', isactive: 1 }),
+];
+const POOL_CATEGORIES: Struct[] = [
+  categoryRow(KU(1), POOL, { name: 'Pool Root', filename: 'pool-root', path: KU(1) }),
+  categoryRow(KU(2), POOL, { name: 'Pool Child', parentid: KU(1), filename: 'pool-root/pool-child', path: `${KU(1)},${KU(2)}` }),
+  categoryRow(K_MIXED.toUpperCase(), POOL, { name: 'Pool Shadow' }),
+  categoryRow(KU(4), POOL, { name: 'Shadow Child', parentid: K_MIXED.toLowerCase() }),
+  categoryRow(KU(5), POOL, { name: 'Orphan', parentid: cfId('Z', 9) }),
+];
+
+const assignmentRow = (contenthistid: string, categoryid: string, siteid: string | null, values: Struct = {}): Struct => ({
+  contenthistid,
+  categoryid,
+  siteid,
+  contentid: C1,
+  isfeature: 0,
+  ...values,
+});
+const A_ASSIGNMENTS: Struct[] = [
+  assignmentRow(FH(1), KU(2), 'tenant-a', { orderno: 1 }),
+  assignmentRow(FH(1), K(1), 'tenant-a', { orderno: 2, isfeature: 1, featurestart: at(2026, 1, 1), featurestop: at(2026, 12, 31, 23, 59, 59) }),
+  assignmentRow(FH(1), cfId('X', 9), 'tenant-a', { orderno: 3 }),
+  assignmentRow(FH(2), K(3), 'tenant-a', { orderno: 2, isfeature: 2, featurestart: at(2026, 3, 1) }),
+  assignmentRow(FH(2), KU(1), 'tenant-a', { orderno: null, contentid: null }),
+  assignmentRow(FH(3), K_MIXED.toLowerCase(), 'tenant-a', { orderno: 5 }),
+  assignmentRow(FH(3), KU(4), 'tenant-a', { orderno: 1, featurestop: at(2026, 6, 30) }),
+  assignmentRow(FH(3).toLowerCase(), KU(5), 'tenant-a', { orderno: 4 }),
+  assignmentRow(F_MIXED, K(5), 'tenant-a', { orderno: 7, isfeature: 1 }),
+  assignmentRow(FH(6), K(6), 'TENANT-A ', { orderno: 6 }),
+  assignmentRow(FH(7), K(7), 'other-site', { orderno: 1 }),
+  assignmentRow(FH(8), K(2), null, { orderno: 1 }),
+  assignmentRow(FH(9), K_SHORT, 'tenant-a', { orderno: 0, featurestart: at(2025, 12, 31) }),
+];
+const B_ASSIGNMENTS: Struct[] = [
+  assignmentRow(FH(21), KB(1), 'tenant-b', { orderno: 1 }),
+  assignmentRow(FH(21), K(1), 'tenant-b', { orderno: 2, isfeature: 1 }),
+  assignmentRow(FH(22), KU(1), 'tenant-b', { orderno: 3 }),
+  assignmentRow(FH(23), KB(4), 'tenant-b', { orderno: null }),
+];
+
+// Filters (conditions, null, like, lists, or and grouping), sorts, paging, maxItems, countOnly, fields and content pools.
+const CATEGORY_QUERIES: string[] = [
+  '', 'name=alpha', 'name=ALPHA%20', 'name=Alpha*', 'name=*a*', 'name=like%5Ea_pha', 'name=like%5E%5Bab%5D%25', 'name=null', 'name=neq%5Enull',
+  'name=', 'name=in%5Ealpha%2CBeta', 'name=notin%5Ealpha', 'name=gt%5Eb', 'name=lte%5Ebeta', 'name=*%F0%9F%98%80*', 'name=like%5Ea_b',
+  'isactive=1', 'isactive=null', 'isactive=gt%5E0', 'isactive=0&or&name=Beta', 'openGrouping&isactive=1&or&isinterestgroup=1&closeGrouping&name=neq%5Enull',
+  'datecreated=2026-01-05', 'datecreated=gt%5E2026-01-01', 'remotepubdate=null', 'remotepubdate=2026-02-01%2008%3A30%3A00.123', 'parentid=null',
+  `parentid=${K(1)}`, `id=${K(3).toLowerCase()}`, `categoryid=${K_MIXED.toUpperCase()}`, 'siteid=TENANT-A', 'filename=alpha%2Fbeta', 'notes=n1',
+  'sort=-name', 'sort=isactive%2C-name', 'sort=-datecreated%2Cname', 'sortBy=name&sortDirection=desc', 'sortBy=isactive%2Cname', 'sort=filename',
+  'sort=tcontentcategories.name', 'sort=nope', 'sort=categoryname', 'itemsPerPage=2', 'itemsPerPage=2&pageIndex=2', 'itemsPerPage=3&pageIndex=4',
+  'startIndex=3&itemsPerPage=2', 'maxitems=3', 'maxitems=3&itemsPerPage=2&pageIndex=2', 'itemsPerPage=*', 'itemsPerPage=0', 'maxitems=*',
+  'countOnly=true', 'countOnly=true&isactive=1',
+  'fields=name%2Cisactive&sort=-name', 'fields=nope', 'contentpoolid=*', 'contentpoolid=*&sort=-name&itemsPerPage=3&pageIndex=2',
+  'contentpoolid=tenant-b%2Ctenant-a&name=alpha', 'contentpoolid=*&countOnly=true', 'contentpoolid=*&sort=isactive%2Cname&maxitems=6', 'contentpoolid=TENANT-B',
+];
+const ASSIGNMENT_QUERIES: string[] = [
+  '', `contenthistid=${FH(1)}`, `contenthistid=${FH(3)}`, `contenthistid=${FH(3).toLowerCase()}`, `contenthistid=${F_MIXED.toUpperCase()}`,
+  `contenthistid=${F_MIXED}`, `contenthistid=${FH(1)}&or&orderno=7`, `contenthistid=${FH(1)}&orderno=gt%5E1`, 'contenthistid=*0000003*',
+  `contenthistid=${FH(7)}`, `categoryid=${K(1)}`, `categoryid=${K_MIXED}`, 'isfeature=1', 'isfeature=gt%5E0', 'orderno=gt%5E1', 'orderno=null',
+  'orderno=in%5E1%2C2', 'featurestart=null', 'featurestart=gt%5E2026-01-01', 'contentid=null', 'siteid=TENANT-A', 'siteid=like%5Etenant%25',
+  'sort=-orderno', 'sort=featurestop', 'sort=-featurestop%2Ccontenthistid', 'sort=categoryid%2C-isfeature', 'sortBy=orderno&sortDirection=desc',
+  'sort=categoryname', 'categoryname=Pool%20Child', 'featuresop=1', 'parentid=null', 'itemsPerPage=2&pageIndex=2', 'startIndex=4&itemsPerPage=3',
+  'maxitems=2', 'itemsPerPage=*', 'maxitems=*', 'countOnly=true', `countOnly=true&contenthistid=${FH(1)}`, 'fields=contentid%2Corderno', 'fields=categoryname', 'contentpoolid=*',
+  'contentpoolid=*&sort=-orderno&itemsPerPage=2&pageIndex=2', 'contentpoolid=tenant-b%2Ctenant-a', `contentpoolid=*&contenthistid=${FH(21)}`,
+  'contentpoolid=*&countOnly=true',
+];
+
+describe.skipIf(!(await pgAvailable()))('category and contentCategoryAssign feeds in SQL against the in-memory evaluation', () => {
+  let feedHandle: ThrowawaySchema;
+  let feedDeps: DomainDeps;
+  let recordedDeps: DomainDeps;
+  const statements: { tenantId: string; sql: string; rows: number }[] = [];
+
+  /** `tx`, recording each statement and the rows it returned. */
+  function recordingTx(tx: TenantTx): TenantTx {
+    return {
+      kind: tx.kind,
+      tenantId: tx.tenantId,
+      schema: tx.schema,
+      onCommit: (cb, onError) => {
+        tx.onCommit(cb, onError);
+      },
+      query: (async (text: string | { text: string }, values?: unknown[]) => {
+        const result = await tx.query(text, values);
+        statements.push({ tenantId: tx.tenantId, sql: typeof text === 'string' ? text : text.text, rows: result.rows.length });
+        return result;
+      }) as TenantTx['query'],
+    };
+  }
+
+  /** `db`, whose tenant transactions record their statements. */
+  function recordingDb(db: TenantDb): TenantDb {
+    return {
+      schema: db.schema,
+      withTenant: <T,>(tenantId: string, fn: (tx: TenantTx) => Promise<T>, options?: TransactionCallOptions): Promise<T> =>
+        options === undefined ? db.withTenant(tenantId, (tx) => fn(recordingTx(tx))) : db.withTenant(tenantId, (tx) => fn(recordingTx(tx)), options),
+      withMetadata: (fn, options) => (options === undefined ? db.withMetadata(fn) : db.withMetadata(fn, options)),
+      end: () => db.end(),
+    };
+  }
+
+  async function insertRows(tenantId: string, table: string, rows: readonly Struct[]): Promise<void> {
+    await withTenant(feedHandle.app, tenantId, async (tx) => {
+      for (const row of rows) {
+        const names = Object.keys(row);
+        const placeholders = names.map((_, i) => `$${String(i + 2)}`).join(', ');
+        await tx.query(`INSERT INTO ${feedHandle.schema}.${table} (tenant_id, ${names.join(', ')}) VALUES ($1, ${placeholders})`, [
+          tx.tenantId,
+          ...Object.values(row),
+        ]);
+      }
+    });
+  }
+
+  beforeAll(async () => {
+    feedHandle = await createThrowawaySchema({
+      service: 'strategies-content',
+      schemaName: 'content',
+      migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)),
+    });
+    await ensureUnitGates(feedHandle.app, CONTENT_UNITS);
+    await closeGates(feedHandle.app, { units: CONTENT_UNITS, holderId: 'jsonapi-category-feed-test', allowLegacy: true });
+    await openGates(feedHandle.app, { units: CONTENT_UNITS, holderId: 'jsonapi-category-feed-test', state: 'open' });
+    await seedRegistry(feedHandle.app);
+    // tenant-a's content pool lists tenant-b too, so `contentpoolid` feeds merge two site tenants.
+    await feedHandle.app.withMetadata((tx) =>
+      tx.query(`UPDATE ${feedHandle.schema}.tenant_registry SET content_pool_ids = $1, content_pool_tenants = $2 WHERE tenant_id = $3`, [
+        [TENANT_A.siteId, TENANT_B.siteId],
+        [TENANT_A.tenantId, TENANT_B.tenantId],
+        TENANT_A.tenantId,
+      ]),
+    );
+    await insertRows(TENANT_A.tenantId, 'category', OWN_CATEGORIES);
+    await insertRows(TENANT_B.tenantId, 'category', B_CATEGORIES);
+    await insertRows(TENANT_UMBRELLA.tenantId, 'category', POOL_CATEGORIES);
+    await insertRows(TENANT_A.tenantId, 'content_category_assign', A_ASSIGNMENTS);
+    await insertRows(TENANT_B.tenantId, 'content_category_assign', B_ASSIGNMENTS);
+    feedDeps = { db: feedHandle.app, repository: createContentRepository({ clock, schema: feedHandle.schema }), clock, config: CONTENT_CONFIG_DEFAULTS };
+    recordedDeps = { ...feedDeps, db: recordingDb(feedHandle.app) };
+  });
+
+  afterAll(async () => {
+    await feedHandle?.drop();
+  });
+
+  /** The SQL feed's outcome for a call, after asserting it equals the in-memory evaluation's for the same call. */
+  async function compare(handler: EntityHandler, a: CallArgs): Promise<Struct> {
+    const entityName = handler === categoryHandler ? 'category' : 'contentCategoryAssign';
+    const expected = await outcomeOf(handler, a.method, callFor({ ...a, entityName }), readingDomain(feedDeps, callFor({ ...a, entityName })));
+    const actual = await outcomeOf(handler, a.method, callFor({ ...a, entityName }), feedDeps);
+    expect(actual).toEqual(expected);
+    return actual;
+  }
+
+  /** The `data` of a compared outcome's wire body. */
+  function bodyData(outcome: Struct): Struct {
+    expect(outcome['body']).toEqual(expect.any(String));
+    return (JSON.parse(String(outcome['body'])) as { data: Struct }).data;
+  }
+
+  const cases = (queries: readonly string[]): [string, 'findQuery' | 'findAll', string][] =>
+    [TENANT_A, TENANT_B].flatMap((site) =>
+      (['findQuery', 'findAll'] as const).flatMap((method) => queries.map((raw): [string, 'findQuery' | 'findAll', string] => [site.siteId, method, raw])),
+    );
+  const siteOf = (siteId: string): TenantFixture => (siteId === TENANT_B.siteId ? TENANT_B : TENANT_A);
+
+  it.each(cases(CATEGORY_QUERIES))('category on %s: %s %s', async (siteId, method, raw) => {
+    await compare(categoryHandler, { method, site: siteOf(siteId), url: urlOf(raw) });
+  });
+
+  it.each<[string, string[], string]>([
+    ['case variants, repeats, padding, other tenants and a missing id', [K(3), K_MIXED.toLowerCase(), cfId('X', 1), K(3), 'short-id', 'SHORT-ID  ', KB(1), K(1).toLowerCase()], ''],
+    ['the same ids under a URL sort', [K(3), K_MIXED.toLowerCase(), K(3), 'short-id', K(1)], 'sort=-name'],
+    ['the same ids over the content pool', [K(1), KB(1), K(1).toUpperCase(), KB(4)], 'contentpoolid=*'],
+    ['a page of the content pool, sorted', [K(1), KB(1), K(3), KB(4), K(5)], 'contentpoolid=*&sort=name&itemsPerPage=2&pageIndex=2'],
+    ['ids no statement can bind', ['a\u0000b', '\uD800', K(7)], ''],
+    ['countOnly, which findMany ignores', [K(1), K(2)], 'countOnly=true'],
+    ['no ids', [], ''],
+  ])('category findMany with %s', async (_label, ids, raw) => {
+    await compare(categoryHandler, { method: 'findMany', ids, url: urlOf(raw) });
+  });
+
+  it.each(cases(ASSIGNMENT_QUERIES))('contentCategoryAssign on %s: %s %s', async (siteId, method, raw) => {
+    await compare(contentCategoryAssignHandler, { method, site: siteOf(siteId), url: urlOf(raw) });
+  });
+
+  it.each<[string, TenantFixture, string[], string]>([
+    ['ids and no URL sort', TENANT_A, [FH(1)], ''],
+    ['ids and a URL sort', TENANT_A, [FH(1)], 'sort=-orderno'],
+    ['ids over the content pool, paged', TENANT_A, [FH(1)], 'contentpoolid=*&sort=orderno&itemsPerPage=2&pageIndex=2'],
+    ['no ids', TENANT_B, [], ''],
+  ])('contentCategoryAssign findMany with %s', async (_label, site, ids, raw) => {
+    await compare(contentCategoryAssignHandler, { method: 'findMany', site, ids, url: urlOf(raw) });
+  });
+
+  it.each<[string, TenantFixture]>([
+    ['findOne', TENANT_A],
+    ['findOne', TENANT_B],
+    ['findOne', TENANT_UMBRELLA],
+    ['findNew', TENANT_A],
+  ])('contentCategoryAssign %s on %o answers the first joined assignment', async (method, site) => {
+    await compare(contentCategoryAssignHandler, { method: method as Op, site, id: cfId('X', 3) });
+  });
+
+  it('answers the rows the in-memory evaluation selects, so the comparisons exercise the corpus', async () => {
+    const categoryIds = async (a: CallArgs): Promise<unknown[]> =>
+      (bodyData(await compare(categoryHandler, a))['items'] as Struct[]).map((item) => item['categoryid']);
+    const padded = K_SHORT.padEnd(35);
+    expect(await categoryIds({ method: 'findAll' })).toEqual([K(4), K(10), K(9), K(1), K(2), K(5), K(3), K_MIXED, K(6), padded, K(7)]);
+    // The padded short id is read, but the `ids` reorder compares it untrimmed, so it drops out.
+    expect(await categoryIds({ method: 'findMany', ids: [K(3), K_MIXED.toLowerCase(), K(3), 'short-id', KB(1)] })).toEqual([K(3), K_MIXED, K(3)]);
+    expect(await categoryIds({ method: 'findMany', ids: ['short-id'], url: urlOf('sort=name') })).toEqual([padded]);
+    expect(await categoryIds({ method: 'findQuery', url: urlOf('contentpoolid=*&name=alpha') })).toEqual([K(1), K(2), KB(1)]);
+    const assignments = async (a: CallArgs): Promise<unknown[]> =>
+      (bodyData(await compare(contentCategoryAssignHandler, a))['items'] as Struct[]).map((item) => [item['contenthistid'], item['categoryname']]);
+    expect(await assignments({ method: 'findAll' })).toEqual([
+      [FH(1), 'Alpha'],
+      [FH(1), 'Pool Child'],
+      [FH(2), 'Beta'],
+      [FH(2), 'Pool Root'],
+      [FH(3), 'Shadow Child'],
+      [FH(3), 'Pool Shadow'],
+      [FH(6), 'gamma_x'],
+      [FH(9), 'Short'],
+      [F_MIXED, 'ÁLPHA'],
+      [FH(3).toLowerCase(), 'Orphan'],
+    ]);
+    // The bounded findQuery reads the version's case forms in category id order.
+    const version = { method: 'findQuery', url: urlOf(`contenthistid=${FH(3)}`) } as const;
+    expect(await assignments(version)).toEqual([
+      [FH(3), 'Shadow Child'],
+      [FH(3).toLowerCase(), 'Orphan'],
+      [FH(3), 'Pool Shadow'],
+    ]);
+    const parents = (bodyData(await compare(contentCategoryAssignHandler, version))['items'] as Struct[]).map((item) => [item['parentname'], item['parentid']]);
+    expect(parents).toEqual([
+      ['Pool Shadow', K_MIXED.toLowerCase()],
+      ['', cfId('Z', 9)],
+      ['', ''],
+    ]);
+    expect(bodyData(await compare(contentCategoryAssignHandler, { method: 'findQuery', url: urlOf('countOnly=true') }))).toEqual({ count: '11' });
+  });
+
+  describe('statements', () => {
+    /** The recorded statements over `table` (`category` or `content_category_assign`). */
+    const reads = (table: string): { tenantId: string; sql: string; rows: number }[] =>
+      statements.filter((s) => s.sql.includes(`"${feedHandle.schema}"."${table}"`));
+
+    async function run(handler: EntityHandler, a: CallArgs): Promise<Struct[]> {
+      statements.length = 0;
+      const entityName = handler === categoryHandler ? 'category' : 'contentCategoryAssign';
+      const outcome = await outcomeOf(handler, a.method, callFor({ ...a, entityName }), recordedDeps);
+      return (bodyData(outcome)['items'] as Struct[] | undefined) ?? [];
+    }
+
+    it.each<[string, Struct, number]>([
+      ['one site', { sort: 'name', itemsPerPage: '3', pageIndex: '2' }, 3],
+      ['each of two content-pool sites', { contentpoolid: '*', sort: 'name', itemsPerPage: '2', pageIndex: '2' }, 4],
+    ])('a category page reads at most offset + limit rows from %s', async (_label, url, bound) => {
+      expect(await run(categoryHandler, { method: 'findQuery', url })).toHaveLength(Number(url['itemsPerPage']));
+      const pages = reads('category').filter((s) => s.sql.includes(' LIMIT '));
+      expect(new Set(pages.map((s) => s.tenantId)).size).toBe(url['contentpoolid'] === undefined ? 1 : 2);
+      expect(pages.every((s) => s.rows <= bound)).toBe(true);
+      expect(reads('category').every((s) => s.rows <= bound)).toBe(true);
+      expect(OWN_CATEGORIES.length).toBeGreaterThan(bound);
+    });
+
+    it('a category findMany reads only the listed categories', async () => {
+      expect(await run(categoryHandler, { method: 'findMany', ids: [K(3), K(1)] })).toHaveLength(2);
+      expect(Math.max(...reads('category').map((s) => s.rows))).toBe(2);
+    });
+
+    it('an assignment page reads at most offset + limit assignment rows', async () => {
+      expect(await run(contentCategoryAssignHandler, { method: 'findQuery', url: { itemsPerPage: '2', pageIndex: '2' } })).toHaveLength(2);
+      expect(reads('content_category_assign').some((s) => s.sql.includes(' LIMIT '))).toBe(true);
+      expect(reads('content_category_assign').every((s) => s.rows <= 2)).toBe(true);
+    });
+
+    it.each<[string, EntityHandler, string, boolean]>([
+      ['a sort on the date-hinted featurestop', contentCategoryAssignHandler, 'sort=-featurestop%2Ccontenthistid&itemsPerPage=2', false],
+      ['date, list and grouped filters', contentCategoryAssignHandler, 'openGrouping&featurestart=gt%5E2025-01-01&or&orderno=in%5E1%2C2&closeGrouping', false],
+      ['a like on names', categoryHandler, 'name=*a*&sort=-isactive%2Cname&itemsPerPage=3', false],
+      ['an `_` like over stored astral text', categoryHandler, 'name=like%5Ea_b', false],
+      ['an `_` like matching stored astral text by code units', categoryHandler, 'name=like%5Ea__b&itemsPerPage=1', false],
+      ['a NUL in an equality criteria', categoryHandler, 'name=Al%00pha&itemsPerPage=2', false],
+      ['a NUL in an in list', categoryHandler, 'name=in%5EAl%00pha%2C%00&itemsPerPage=2', false],
+    ])('%s reads the whole scope only when SQL cannot evaluate it exactly', async (_label, handler, raw, whole) => {
+      await compare(handler, { method: 'findQuery', url: urlOf(raw) });
+      await run(handler, { method: 'findQuery', url: urlOf(raw) });
+      const table = handler === categoryHandler ? 'category' : 'content_category_assign';
+      const scans = reads(table).filter((s) => !s.sql.includes(' LIMIT ') && !s.sql.includes('count(*)') && !s.sql.includes('EXISTS'));
+      expect(scans.length > 0).toBe(whole);
+    });
+
+    it.each(['findOne', 'findNew'] as const)('%s reads one assignment row, not the site', async (method) => {
+      statements.length = 0;
+      const outcome = await outcomeOf(contentCategoryAssignHandler, method, callFor({ method, entityName: 'contentCategoryAssign', id: cfId('X', 3) }), recordedDeps);
+      expect(bodyData(outcome)).toMatchObject({ contenthistid: FH(1), categoryid: K(1), categoryname: 'Alpha', isnew: 0 });
+      const first = reads('content_category_assign').filter((s) => s.sql.includes(' LIMIT '));
+      expect(first.map((s) => s.rows)).toEqual([1]);
+      expect(reads('content_category_assign').every((s) => s.rows <= 1)).toBe(true);
     });
   });
 });

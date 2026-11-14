@@ -2,6 +2,7 @@
 import { LegacyApiError, cfUuid } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import type { BeanFeedSource } from '../repo/bean-feed-sql.js';
 import type { ContentRepository } from '../repo/repository.js';
 import { VARIATION_TARGETING, type VariationTargetingRow } from '../repo/tables.js';
 import { writeContextFor, type Actor, type ContentConfig, type DomainDeps } from './context.js';
@@ -124,13 +125,20 @@ export function findVariationTargeting(
   });
 }
 
-/** The rows the entity's beanFeed selects for the actor's tenant, in primary-key order. */
-export async function listVariationTargetings(
+/**
+ * The rows the entity's beanFeed selects for the actor's tenant, in primary-key order (only those of `ids` when given),
+ * as a SQL feed source `fn` reads in one tenant transaction.
+ */
+export function withVariationTargetingFeed<T>(
   deps: Pick<DomainDeps, 'db' | 'repository'>,
   actor: Actor,
-): Promise<VariationTargetingColumns[]> {
-  const rows = await withTenant(deps.db, actor.tenantId, (tx) => deps.repository.variation.targetingsOfTenant(tx));
-  return rows.map(({ tenant_id: _tenant, ...columns }) => columns);
+  input: { ids?: readonly string[] },
+  fn: (source: BeanFeedSource<VariationTargetingColumns>) => Promise<T>,
+): Promise<T> {
+  return withTenant(deps.db, actor.tenantId, async (tx) => {
+    const spec = await deps.repository.variation.targetingFeed(tx, input);
+    return fn(deps.repository.beanFeed.source<VariationTargetingColumns>((run) => run(tx), spec));
+  });
 }
 
 /**
@@ -226,12 +234,13 @@ export async function variationScriptModel(
   }
   return withTenant(deps.db, actor.tenantId, async (tx) => {
     const items = await deps.repository.content.componentType(tx, { siteId: input.siteId, type: 'Variation' });
-    const variations: VariationScriptItem[] = [];
-    for (const item of items) {
-      const contentid = item.contentid ?? '';
-      const targeting = await loadForContent(tx, deps.repository, contentid, input.siteId);
-      variations.push({ contentid, title: item.menutitle ?? '', initjs: targeting.initjs, targetingjs: targeting.targetingjs });
-    }
+    const contentIds = items.map((item) => item.contentid ?? '');
+    const rows = await deps.repository.variation.targetingsForContents(tx, { contentIds, siteId: input.siteId });
+    const variations = items.map((item, index): VariationScriptItem => {
+      const row = rows[index] ?? null;
+      const targeting = row === null ? { initjs: '', targetingjs: '' } : fromRow(row);
+      return { contentid: item.contentid ?? '', title: item.menutitle ?? '', initjs: targeting.initjs, targetingjs: targeting.targetingjs };
+    });
     return { siteId: input.siteId, contentType: input.contentType, variations };
   });
 }

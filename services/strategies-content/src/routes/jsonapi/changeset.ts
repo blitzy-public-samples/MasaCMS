@@ -16,11 +16,11 @@ import {
   deleteChangeset,
   deleteChangesetCategoryAssignment,
   findChangesetCategoryAssignment,
-  listChangesetCategoryAssignments,
-  listChangesetRows,
   loadChangeset,
   loadedBean,
   newChangesetBean,
+  queryChangesetCategoryAssignmentFeed,
+  queryChangesetFeed,
   saveChangesetCategoryAssignment,
   saveChangesetEntity,
   setChangesetValues,
@@ -218,11 +218,6 @@ function setNoCase(record: Struct, name: string, value: unknown): void {
   Object.defineProperty(record, keyOf(record, name) ?? name, { value, writable: true, enumerable: true, configurable: true });
 }
 
-/** SQL Server's id equality: case-insensitive, trailing spaces ignored. */
-function sqlKey(value: unknown): string {
-  return text(value).replace(/ +$/u, '').toLowerCase();
-}
-
 /** A truthy CFML boolean, as `isBoolean(x) && x` reads it. */
 function isTrue(value: unknown): boolean {
   return cfIsBoolean(value) && cfToBoolean(value);
@@ -400,14 +395,15 @@ async function changesetEntity(scope: Scope, id: string, opts: ExpansionOptions)
   });
 }
 
-/** The changeset feed's page (or count) over `rows`. */
+/** The changeset feed's page (or count) over the site's change sets, only those of `ids` when given. */
 async function changesetFeed(
   scope: Scope,
-  rows: readonly ChangesetColumns[],
+  ids?: readonly string[],
   arrange?: (items: Struct[]) => Struct[],
 ): Promise<JsonApiResult> {
-  const { call } = scope;
-  const result = beanFeedQuery(rows, call, CHANGESET_FEED);
+  const { ctx, call } = scope;
+  const feedScope = { siteId: call.siteId, changesetIds: ids };
+  const result = await queryChangesetFeed(ctx.domain, readerOf(call), feedScope, (source) => beanFeedQuery(source, call, CHANGESET_FEED));
   const view = changesetItems(scope, selectedColumns(call, CHANGESET_COLUMNS));
   return jsonApiResultOf(await collectionData(scope, result, view, CHANGESET.name, { expand: expandOf(call) }, arrange), CHANGESET.name);
 }
@@ -426,7 +422,7 @@ function rejectUndeclaredFilter(call: JsonApiCall): void {
 async function findChangesets(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
   if (!entityAccessAllowed(call.actor, CHANGESET)) return authorizationDenied();
   rejectUndeclaredFilter(call);
-  return changesetFeed(scopeOf(ctx, call), await listChangesetRows(ctx.domain, readerOf(call), call.siteId));
+  return changesetFeed(scopeOf(ctx, call));
 }
 
 /** The bean after save's error overlay (2054-2061): each request value the reloaded bean holds is set on it again. */
@@ -476,9 +472,7 @@ export const changesetHandler: EntityHandler = Object.freeze({
   async findMany(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
     paramUrl(call.apiContext, 'entityname', call.entityName);
     if (!entityAccessAllowed(call.actor, CHANGESET)) return authorizationDenied();
-    const wanted = new Set(idsOf(call).map(sqlKey));
-    const rows = (await listChangesetRows(ctx.domain, readerOf(call), call.siteId)).filter((row) => wanted.has(sqlKey(row.changesetid)));
-    return changesetFeed(scopeOf(ctx, call), rows, findManyOrder(call));
+    return changesetFeed(scopeOf(ctx, call), idsOf(call), findManyOrder(call));
   },
 
   findAll: findChangesets,
@@ -616,17 +610,20 @@ function serializeAssignment(
 /** findAll and findQuery (2542-2625, 2711-2918) over the site's assignments. */
 async function findAssignments(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
   if (!entityAccessAllowed(call.actor, ASSIGNMENT)) return authorizationDenied();
-  return assignmentFeed(scopeOf(ctx, call), await listChangesetCategoryAssignments(ctx.domain, readerOf(call), call.siteId));
+  return assignmentFeed(scopeOf(ctx, call));
 }
 
-/** The assignment feed's page (or count) over `rows`. */
+/** The assignment feed's page (or count) over the site's assignments, only those of `ids` when given. */
 async function assignmentFeed(
   scope: Scope,
-  rows: readonly ChangesetCategoryAssignmentColumns[],
+  ids?: readonly string[],
   arrange?: (items: Struct[]) => Struct[],
 ): Promise<JsonApiResult> {
-  const { call } = scope;
-  const result = beanFeedQuery(rows, call, ASSIGNMENT_FEED);
+  const { ctx, call } = scope;
+  const feedScope = { siteId: call.siteId, assignmentIds: ids };
+  const result = await queryChangesetCategoryAssignmentFeed(ctx.domain, readerOf(call), feedScope, (source) =>
+    beanFeedQuery(source, call, ASSIGNMENT_FEED),
+  );
   const view = assignmentItems(selectedColumns(call, ASSIGNMENT_COLUMNS));
   return jsonApiResultOf(await collectionData(scope, result, view, ASSIGNMENT.name, { expand: expandOf(call) }, arrange), ASSIGNMENT.name);
 }
@@ -656,11 +653,7 @@ export const changesetCategoryAssignmentHandler: EntityHandler = Object.freeze({
   async findMany(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
     paramUrl(call.apiContext, 'entityname', call.entityName);
     if (!entityAccessAllowed(call.actor, ASSIGNMENT)) return authorizationDenied();
-    const wanted = new Set(idsOf(call).map(sqlKey));
-    const rows = (await listChangesetCategoryAssignments(ctx.domain, readerOf(call), call.siteId)).filter((row) =>
-      wanted.has(sqlKey(row.assignmentid)),
-    );
-    return assignmentFeed(scopeOf(ctx, call), rows, findManyOrder(call));
+    return assignmentFeed(scopeOf(ctx, call), idsOf(call), findManyOrder(call));
   },
 
   findAll: findAssignments,
@@ -747,9 +740,10 @@ async function expandMany(scope: Scope, prop: RelationProp, params: Struct, opts
   if (!cfEq(prop.cfc, ASSIGNMENT.name)) throw relationUnavailable(CHANGESET.name, prop.name);
   const { ctx, call } = scope;
   if (!entityAccessAllowed(call.actor, ASSIGNMENT)) throw new LegacyApiError('authorization');
-  const rows = await listChangesetCategoryAssignments(ctx.domain, readerOf(call), call.siteId);
   const feedCall: JsonApiCall = { ...call, entityName: ASSIGNMENT.name, method: 'findQuery' };
-  const result = beanFeedQuery(rows, feedCall, { ...ASSIGNMENT_FEED, expandedParams: params });
+  const result = await queryChangesetCategoryAssignmentFeed(ctx.domain, readerOf(call), { siteId: call.siteId }, (source) =>
+    beanFeedQuery(source, feedCall, { ...ASSIGNMENT_FEED, expandedParams: params }),
+  );
   return collectionData(scope, result, assignmentItems(ASSIGNMENT_COLUMNS), ASSIGNMENT.name, opts);
 }
 

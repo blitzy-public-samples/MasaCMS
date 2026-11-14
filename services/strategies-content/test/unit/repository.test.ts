@@ -66,7 +66,7 @@ describe.skipIf(!(await pgAvailable()))('repo/repository', () => {
 
   it('exposes every namespace and the platform repository', () => {
     expect(Object.keys(repo).sort()).toEqual(
-      ['approvalQueues', 'approvals', 'categories', 'changesets', 'comments', 'content', 'extend', 'feeds', 'files', 'forms', 'platform', 'projections', 'stats', 'trash', 'variation'].sort(),
+      ['approvalQueues', 'approvals', 'beanFeed', 'categories', 'changesets', 'comments', 'content', 'extend', 'feeds', 'files', 'forms', 'platform', 'projections', 'stats', 'trash', 'variation'].sort(),
     );
     expect(repo.platform.schema).toBe(handle.schema);
     expect(typeof repo.content.readVersion).toBe('function');
@@ -476,6 +476,28 @@ describe.skipIf(!(await pgAvailable()))('repo/repository', () => {
     expect(removed?.categoryid).toBe(parent.categoryid);
     expect((await inA((tx) => repo.categories.readCategory(tx, { categoryId: child.categoryid })))[0]?.parentid).toBeNull();
     expect(await inA((tx) => repo.categories.readCategory(tx, { name: 'CHILD', siteId: SITE }))).toHaveLength(1);
+  });
+
+  it('readCategoriesIn and readFileMetas key each id’s row as readCategory and readFileMeta return it', async () => {
+    const [one, two] = [cfId('Q', 1), cfId('Q', 2)];
+    for (const [categoryid, name] of [[one, 'One'], [two, 'Two upper'], [two.toLowerCase(), 'Two lower']] as const) {
+      await inA((tx) => repo.categories.insertCategory(tx, { categoryid, siteid: SITE, name }));
+    }
+    const categoryIds = [one, one.toLowerCase(), `${two} `, two.toLowerCase(), cfId('Q', 9), '', one];
+    const categories = await inA((tx) => repo.categories.readCategoriesIn(tx, categoryIds));
+    expect(categories.get(one)?.name).toBe('One');
+    for (const id of categoryIds) {
+      expect(categories.get(id)).toStrictEqual((await inA((tx) => repo.categories.readCategory(tx, { categoryId: id })))[0]);
+    }
+    const file = await inA((tx) => repo.files.insertFile(tx, { siteid: SITE, filename: 'q.pdf', fileext: 'pdf', filesize: 9 }));
+    const fileIds = [file.fileid, file.fileid.toLowerCase(), `${file.fileid} `, cfId('Q', 8)];
+    const metas = await inA((tx) => repo.files.readFileMetas(tx, fileIds));
+    expect(metas.get(file.fileid)).toMatchObject({ fileid: file.fileid, filename: 'q.pdf', filesize: 9 });
+    for (const id of fileIds) {
+      expect(metas.get(id) ?? null).toStrictEqual(await inA((tx) => repo.files.readFileMeta(tx, id)));
+    }
+    expect(await inA((tx) => repo.categories.readCategoriesIn(tx, []))).toEqual(new Map());
+    expect(await inA((tx) => repo.files.readFileMetas(tx, []))).toEqual(new Map());
   });
 
   it('writes and queries change sets as changesetManager does', async () => {

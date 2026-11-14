@@ -737,11 +737,28 @@ describe('loadsiteflat', () => {
     identity.adminState = { siteid: SITE, mura: { flatViewArgs: { [SITE]: { tab: 1 } } } };
   });
 
+  const ASSIGNMENTS = /FROM "content"\."content_category_assign" a WHERE /;
+  const CATEGORIES = /^SELECT \* FROM "content"\."category" WHERE tenant_id = \$1 AND categoryid/;
+  /** Each page row's category names, as its `categories` list prints them. */
+  const rowCategories = (body: string): string[] =>
+    [...body.matchAll(/<li class="categories">[^<]*<strong>([\s\S]*?)<\/strong>/g)].map((match) => (match[1] ?? '').replace(/\s+/g, ' ').trim());
+
   it('lists a page of the feed with each row’s crumbs, verdict, categories and lock owner, recording the flat view arguments', async () => {
     t.db.respond(FEED, [feedRow(PAGE, PAGE_HIST, { lockid: USER_ID }), feedRow(KID, KID_HIST, { fileid: FILE, fileext: 'png' })]);
-    t.db.respond(/FROM "content"\."content_category_assign" a WHERE /, (params) => (bound(params, PAGE_HIST) ? [{ contenthistid: PAGE_HIST, categoryid: CAT_B }, { contenthistid: PAGE_HIST, categoryid: CAT_A }] : []));
-    t.db.respond(/^SELECT \* FROM "content"\."category" WHERE tenant_id = \$1 AND categoryid/, (params) =>
-      bound(params, CAT_A) ? [{ categoryid: CAT_A, name: 'Alpha', filename: 'alpha' }] : [{ categoryid: CAT_B, name: 'Beta', filename: 'beta' }],
+    // The lower-case id is a second assignment of Alpha, and E2000000-0099 names no category.
+    const assignments = [
+      { contenthistid: PAGE_HIST, categoryid: CAT_B },
+      { contenthistid: PAGE_HIST, categoryid: CAT_A },
+      { contenthistid: KID_HIST, categoryid: CAT_A },
+      { contenthistid: KID_HIST, categoryid: CAT_A.toLowerCase() },
+      { contenthistid: KID_HIST, categoryid: 'E2000000-0099-4A5B-8C7D9E0F1A2B3C4D' },
+    ];
+    t.db.respond(ASSIGNMENTS, (params) => assignments.filter((row) => bound(params, row.contenthistid)));
+    t.db.respond(CATEGORIES, (params) =>
+      [
+        { categoryid: CAT_A, name: 'Alpha', filename: 'alpha' },
+        { categoryid: CAT_B, name: 'Beta', filename: 'beta' },
+      ].filter((row) => bound(params, row.categoryid)),
     );
     t.db.respond(/AS haskids FROM "content"\."category" c/, (params) =>
       bound(params, CAT_A) ? [{ categoryid: CAT_B, name: 'Beta', isopen: 0, haskids: 0, parentid: CAT_A }] : [{ categoryid: CAT_A, name: 'Alpha', isopen: 1, haskids: 1, parentid: null }],
@@ -753,9 +770,25 @@ describe('loadsiteflat', () => {
     expect(res.body).toContain('Ada');
     expect(res.body).toContain(`<img src="/sites/${TENANT_UMBRELLA.siteId}/cache/file/${FILE}_small.png" /></a></div>`);
     expect(res.body.indexOf('Alpha')).toBeLessThan(res.body.indexOf('Beta'));
+    expect(rowCategories(res.body)).toEqual(['Alpha, Beta', 'Alpha, Alpha']);
     const effects = effectsOf(out) as { mura: { flatViewArgs: Record<string, Json> } };
     expect(effects.mura.flatViewArgs[SITE]).toMatchObject({ tab: 1 });
-    expect(t.db.statements.find((s) => /FROM "content"\."category" WHERE tenant_id = \$1 AND categoryid/.test(s.sql))?.tenantId).toBe(TENANT_UMBRELLA.tenantId);
+    expect(t.db.statements.filter((s) => ASSIGNMENTS.test(s.sql)).map((s) => s.tenantId)).toEqual([TENANT_A.tenantId]);
+    expect(t.db.statements.filter((s) => CATEGORIES.test(s.sql)).map((s) => s.tenantId)).toEqual([TENANT_UMBRELLA.tenantId]);
+  });
+
+  it.each([
+    ['a category read failing at the first row answers before the second row’s lock halts', [PAGE_HIST], 500],
+    ['the second row’s lock halts before its own category read fails', [KID_HIST], 503],
+  ] as const)('raises the first failing row’s error: %s', async (_label, assigned, status) => {
+    t.db.respond(FEED, [feedRow(PAGE, PAGE_HIST), feedRow(KID, KID_HIST, { lockid: OTHER_USER })]);
+    t.db.respond(ASSIGNMENTS, (params) => assigned.filter((contenthistid) => bound(params, contenthistid)).map((contenthistid) => ({ contenthistid, categoryid: CAT_A })));
+    t.db.respond(CATEGORIES, () => {
+      throw new Error('boom');
+    });
+    const { res, error } = await raw('loadsiteflat', {});
+    expect(res.statusCode).toBe(status);
+    expect(error).toMatchObject(status === 503 ? { reason: 'carch-loadsiteflat-halted' } : { message: 'boom' });
   });
 
   it('halts a row locked by another user, whose name is people data', async () => {

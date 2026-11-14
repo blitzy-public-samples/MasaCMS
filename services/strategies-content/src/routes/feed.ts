@@ -76,6 +76,26 @@ interface ItemPlan {
   renderContent: boolean;
 }
 
+/** One feed row and what the batched reads found for it. */
+interface ItemRead {
+  readonly at: number;
+  readonly row: FeedItemRow;
+  readonly summary: string;
+  readonly contentHistId: string;
+  readonly readsBody: boolean;
+  tenantId: string;
+  body: string | null;
+  assigned: readonly { categoryid: string }[];
+  categories: string[];
+  file: RssFileView | null;
+}
+
+/** How far row-ordered batch reads got: every row before `reached` passed each stage so far; `failure` stopped row `reached`. */
+interface RowStages {
+  reached: number;
+  failure: unknown;
+}
+
 // Public, as legacy serves feeds to any visitor. The handler checks `siteid` itself once it has applied the `default`
 // fallback, which the platform's check of every supplied `siteid` would not.
 const ROUTE: { opt2: Opt2RouteConfig } = Object.freeze({ opt2: Object.freeze({ public: true, transport: 'service', siteCheck: false }) });
@@ -174,38 +194,48 @@ function feedView(bean: FeedBean): RssFeedView {
   };
 }
 
-/** contentNavBean.getValue('body') of a feed row: the body of its version (contentNavBean.cfc:140-187). */
-async function versionBody(deps: FeedRouteContext['domain'], tenantId: string, contentHistId: string): Promise<string | null> {
-  const [version] = await withTenant(deps.db, tenantId, (tx) => deps.repository.content.readVersion(tx, { contentHistId }));
-  return version?.body ?? null;
+/** Records `error` as stopping row `at`, unless an earlier row has already failed. */
+function failAt(stages: RowStages, at: number, error: unknown): void {
+  if (at < stages.reached) {
+    stages.reached = at;
+    stages.failure = error;
+  }
 }
 
-/** contentManager.getCategoriesByHistID's names (contentGatewayAdobe.cfc:2139-2152): the version's categories, joined in its category pool, by filename. */
-async function categoryNames(deps: FeedRouteContext['domain'], tenantId: string, contentHistId: string): Promise<string[]> {
-  const assigned = await withTenant(deps.db, tenantId, (tx) => deps.repository.content.categoryAssignments(tx, { contentHistId }));
-  if (assigned.length === 0) return [];
-  const categories = await inPoolTenant(deps.db, tenantId, 'category', async (tx) => {
-    const found = [];
-    for (const assignment of assigned) {
-      const [category] = await deps.repository.categories.readCategory(tx, { categoryId: assignment.categoryid });
-      if (category !== undefined) found.push(category);
+/**
+ * Runs `read` once per `keyOf` group of the items `selects` before the first failed row, groups in the order of their
+ * first item; a failed read stops its group's first row, where reading row by row would first have met it.
+ */
+async function eachGroup<K>(
+  stages: RowStages,
+  items: readonly ItemRead[],
+  selects: (item: ItemRead) => boolean,
+  keyOf: (item: ItemRead) => K,
+  read: (key: K, group: readonly ItemRead[]) => Promise<void>,
+): Promise<void> {
+  const groups = new Map<K, ItemRead[]>();
+  for (const item of items) {
+    if (item.at >= stages.reached || !selects(item)) continue;
+    const group = groups.get(keyOf(item));
+    if (group === undefined) groups.set(keyOf(item), [item]);
+    else group.push(item);
+  }
+  for (const [key, group] of groups) {
+    const reached = group.filter((item) => item.at < stages.reached);
+    const [first] = reached;
+    if (first === undefined) break;
+    try {
+      await read(key, reached);
+    } catch (error) {
+      failAt(stages, first.at, error);
     }
-    return found;
-  });
-  return categories
-    .sort((a, b) => (a.filename ?? '').toLowerCase().localeCompare((b.filename ?? '').toLowerCase()))
-    .map((category) => category.name ?? '');
-}
-
-/** fileManager.readMeta of an item's file, read in its site's file pool; null when no tfiles row has the id. */
-async function fileView(deps: FeedRouteContext['domain'], tenantId: string, fileId: string): Promise<RssFileView | null> {
-  const meta = await inPoolTenant(deps.db, tenantId, 'file', (tx) => deps.repository.files.readFileMeta(tx, fileId));
-  return meta === null ? null : { fileext: meta.fileext, filesize: meta.filesize, contenttype: meta.contenttype, contentsubtype: meta.contentsubtype };
+  }
 }
 
 /**
  * The writers' view of each feed row (rss20, feedApiUtility.cfc:303-381; rss092, 405-444): the body where it is read,
- * category names for RSS 2.0 and the file meta of an item with a file.
+ * category names for RSS 2.0 and the file meta of an item with a file, each read once per site tenant (category and
+ * file reads in its pool tenant); throws the error of the first failing row.
  */
 async function itemViews(deps: FeedRouteContext['domain'], rows: readonly FeedItemRow[], plan: ItemPlan): Promise<RssItemView[]> {
   const tenants = new Map<string, string>();
@@ -219,35 +249,74 @@ async function itemViews(deps: FeedRouteContext['domain'], rows: readonly FeedIt
     }
     return tenantId;
   };
-  const views: RssItemView[] = [];
-  for (const row of rows) {
-    const tenantId = await tenantOf(row.siteid ?? '');
+  const rss20 = plan.version === 'rss 2.0';
+  const stages: RowStages = { reached: rows.length, failure: undefined };
+  const items = rows.map((row, at): ItemRead => {
     const summary = row.summary ?? '';
-    const rss20 = plan.version === 'rss 2.0';
     const readsBody = rss20 ? plan.renderContent : plan.allowHtml === 0 && summary === '';
-    const body = readsBody ? await versionBody(deps, tenantId, row.contenthistid ?? '') : null;
-    // setDynamicContent evaluates [m] tags as CFML, which only the legacy runtime renders.
-    const dynamicSources = rss20 ? [summary, ...(readsBody ? [body ?? ''] : [])] : [readsBody ? (body ?? '') : summary];
-    if (dynamicSources.some(hasDynamicTags)) {
-      throw new LegacyServiceUnavailableError(`Content ${row.contentid ?? ''} has dynamic tags only the CFML runtime renders`, 'auto', 'feed-dynamic-content');
+    return { at, row, summary, contentHistId: row.contenthistid ?? '', readsBody, tenantId: '', body: null, assigned: [], categories: [], file: null };
+  });
+  for (const item of items) {
+    try {
+      item.tenantId = await tenantOf(item.row.siteid ?? '');
+    } catch (error) {
+      failAt(stages, item.at, error);
+      break;
     }
-    views.push({
-      contentid: row.contentid,
-      siteid: row.siteid,
-      type: row.type,
-      filename: row.filename,
-      menutitle: row.menutitle,
-      summary: row.summary,
-      body,
-      releasedate: row.releasedate,
-      lastupdate: row.lastupdate,
-      fileid: row.fileid,
-      // rss092 reads the categories too but never prints them.
-      categories: rss20 ? await categoryNames(deps, tenantId, row.contenthistid ?? '') : [],
-      file: row.fileid ? await fileView(deps, tenantId, row.fileid) : null,
+  }
+  await eachGroup(stages, items, (item) => item.readsBody, (item) => item.tenantId, async (tenantId, group) => {
+    const versions = await withTenant(deps.db, tenantId, (tx) => deps.repository.content.readVersionsIn(tx, { contentHistIds: group.map((item) => item.contentHistId) }));
+    for (const item of group) item.body = versions.get(item.contentHistId)?.body ?? null;
+  });
+  for (const item of items.slice(0, stages.reached)) {
+    // setDynamicContent evaluates [m] tags as CFML, which only the legacy runtime renders.
+    const dynamicSources = rss20 ? [item.summary, ...(item.readsBody ? [item.body ?? ''] : [])] : [item.readsBody ? (item.body ?? '') : item.summary];
+    if (dynamicSources.some(hasDynamicTags)) {
+      failAt(stages, item.at, new LegacyServiceUnavailableError(`Content ${item.row.contentid ?? ''} has dynamic tags only the CFML runtime renders`, 'auto', 'feed-dynamic-content'));
+      break;
+    }
+  }
+  // rss092 reads the categories too but never prints them.
+  if (rss20) {
+    // contentManager.getCategoriesByHistID's names (contentGatewayAdobe.cfc:2139-2152): the version's categories, joined in its category pool, by filename.
+    await eachGroup(stages, items, () => true, (item) => item.tenantId, async (tenantId, group) => {
+      const assigned = await withTenant(deps.db, tenantId, (tx) => deps.repository.content.categoryAssignmentsIn(tx, { contentHistIds: group.map((item) => item.contentHistId) }));
+      for (const item of group) item.assigned = assigned.get(item.contentHistId) ?? [];
+    });
+    await eachGroup(stages, items, (item) => item.assigned.length > 0, (item) => item.tenantId, async (tenantId, group) => {
+      const categoryIds = group.flatMap((item) => item.assigned.map((assignment) => assignment.categoryid));
+      const categories = await inPoolTenant(deps.db, tenantId, 'category', (tx) => deps.repository.categories.readCategoriesIn(tx, categoryIds));
+      for (const item of group) {
+        item.categories = item.assigned
+          .flatMap((assignment) => categories.get(assignment.categoryid) ?? [])
+          .sort((a, b) => (a.filename ?? '').toLowerCase().localeCompare((b.filename ?? '').toLowerCase()))
+          .map((category) => category.name ?? '');
+      }
     });
   }
-  return views;
+  // fileManager.readMeta of an item's file, read in its site's file pool; null when no tfiles row has the id.
+  await eachGroup(stages, items, (item) => Boolean(item.row.fileid), (item) => item.tenantId, async (tenantId, group) => {
+    const metas = await inPoolTenant(deps.db, tenantId, 'file', (tx) => deps.repository.files.readFileMetas(tx, group.map((item) => item.row.fileid ?? '')));
+    for (const item of group) {
+      const meta = metas.get(item.row.fileid ?? '');
+      item.file = meta === undefined ? null : { fileext: meta.fileext, filesize: meta.filesize, contenttype: meta.contenttype, contentsubtype: meta.contentsubtype };
+    }
+  });
+  if (stages.reached < items.length) throw stages.failure;
+  return items.map(({ row, body, categories, file }) => ({
+    contentid: row.contentid,
+    siteid: row.siteid,
+    type: row.type,
+    filename: row.filename,
+    menutitle: row.menutitle,
+    summary: row.summary,
+    body,
+    releasedate: row.releasedate,
+    lastupdate: row.lastupdate,
+    fileid: row.fileid,
+    categories,
+    file,
+  }));
 }
 
 /** feed()'s render (feedApiUtility.cfc:257-275): the feed in its site's locale through the RSS writers, or an empty page for another version. */

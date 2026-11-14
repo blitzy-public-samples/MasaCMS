@@ -8,17 +8,25 @@ import { Roles, moduleRole } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError, isCfUuid } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createLocalStorageAdapter, type StoragePort } from '@opt2/platform/storage';
-import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, fixedClock, pgAvailable, seedRegistry, type ThrowawaySchema } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims, type Actor, type ContentConfig } from '../../src/domain/context.js';
 import { ImageUploadHaltedError, type UploadedFile } from '../../src/domain/files.js';
+import { withPoolTenant } from '../../src/domain/pools.js';
 import { jsonApiEndpoint, type JsonApiRequestContext } from '../../src/legacy/jsonapi-serializers.js';
 import type { LegacySiteUrlConfig } from '../../src/legacy/content-urls.js';
-import { createContentRepository, type ContentRepository, type FileInput } from '../../src/repo/repository.js';
+import { createContentRepository, type ContentRepository, type FileInput, type FileMetadataInput } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { fileHandler, fileMetaDataHandler } from '../../src/routes/jsonapi/file.js';
-import { createJsonApiParams, type EntityHandler, type JsonApiCall, type JsonApiHandlerFn, type JsonApiResult } from '../../src/routes/jsonapi/types.js';
+import {
+  createJsonApiParams,
+  rowsSource,
+  type EntityHandler,
+  type JsonApiCall,
+  type JsonApiHandlerFn,
+  type JsonApiResult,
+} from '../../src/routes/jsonapi/types.js';
 
 type Struct = Record<string, unknown>;
 
@@ -582,6 +590,230 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
     it('delete answers authorization for a call without a tenant', async () => {
       const { call: noTenant } = call({ method: 'delete', id: META_ID, site: { siteId: TENANT_B.siteId, tenantId: '' } });
       await expect(handlerOf(fileMetaDataHandler, 'delete')(ctx, noTenant)).resolves.toEqual({ error: 'authorization' });
+    });
+  });
+
+  describe('SQL-bounded feeds and keyed metadata reads', () => {
+    const CORPUS = { siteId: 'Corpus-Site', tenantId: TENANT_B.tenantId };
+    const EMPTY = { siteId: 'empty-corpus-site', tenantId: TENANT_B.tenantId };
+    const POOLED = { ...TENANT_A, filePoolId: TENANT_UMBRELLA.siteId };
+    const fileIdOf = (n: number): string => cfId('S', n);
+    const metaIdOf = (n: number): string => cfId('T', n);
+    // Stored ids equal to another stored id but for case, which the site scan and SQL Server both match.
+    const LOWER_FILE = fileIdOf(6).toLowerCase();
+    const LOWER_META = metaIdOf(1).toLowerCase();
+    const at = (day: number): Date => new Date(2026, 0, day, 8, 30);
+    // A zero-width space is ignorable under the id collation, so only the collation equates these ids with stored ones.
+    const zeroWidth = (id: string): string => `${id.slice(0, 4)}\u200B${id.slice(4)}`;
+
+    type Statement = { sql: string; rows: number };
+    type Outcome = { value: JsonApiResult; url: Struct } | { error: { name: string; message: string; type: unknown } };
+
+    /** SQL Server equality of two ids as the site scan compared them: trailing spaces dropped, case ignored. */
+    const sameId = (a: string, b: string): boolean => a.replace(/ +$/u, '').toLowerCase() === b.replace(/ +$/u, '').toLowerCase();
+
+    /** The `fileid`s or `metaid`s of a collection answer. */
+    const itemIds = (result: JsonApiResult): unknown[] => (dataOf(result)['items'] as Struct[]).map((item) => item['id']);
+
+    beforeAll(async () => {
+      const files: [string, Omit<FileInput, 'fileid'>][] = [
+        [fileIdOf(1), { siteid: 'corpus-site', filename: 'alpha.pdf', fileext: 'pdf', filesize: 10, caption: 'Alpha', created: at(1), remotepubdate: at(3) }],
+        [fileIdOf(2), { siteid: 'CORPUS-SITE  ', filename: 'Beta.docx', fileext: 'docx', filesize: 200, credits: 'Ann', created: at(2), deleted: 1 }],
+        [fileIdOf(3), { siteid: CORPUS.siteId, filename: 'gamma_1.pdf', fileext: 'pdf', caption: 'alpha  ', alttext: 'é', created: at(2) }],
+        [fileIdOf(4), { siteid: CORPUS.siteId, filename: 'délta.txt', fileext: 'txt', filesize: 10, caption: 'Ünïcode', created: at(5) }],
+        [fileIdOf(5), { siteid: CORPUS.siteId, filename: 'smile \u{1F600}.pdf', fileext: 'pdf', filesize: 55, created: at(4) }],
+        [LOWER_FILE, { siteid: CORPUS.siteId, filename: 'lower.pdf', fileext: 'pdf', filesize: 0, created: at(6) }],
+        [fileIdOf(7), { siteid: 'other-site', filename: 'other.pdf', fileext: 'pdf', filesize: 1 }],
+      ];
+      for (const [fileId, row] of files) await insertFile(TENANT_B.tenantId, fileId, row);
+      const metas: FileMetadataInput[] = [
+        { metaid: metaIdOf(1), siteid: 'corpus-site', fileid: fileIdOf(1), contentid: CONTENT_ID, contenthistid: HIST_ID, caption: 'Upper' },
+        { metaid: LOWER_META, siteid: CORPUS.siteId, fileid: fileIdOf(3), contentid: CONTENT_ID, contenthistid: HIST_ID, caption: 'lower' },
+        { metaid: metaIdOf(2), siteid: 'CORPUS-SITE', fileid: fileIdOf(1), contentid: CONTENT_ID, contenthistid: cfId('H', 3), alttext: 'Alt', remotepubdate: at(2) },
+        { metaid: metaIdOf(3), siteid: CORPUS.siteId, fileid: fileIdOf(2), contentid: cfId('C', 2), contenthistid: cfId('H', 4), caption: 'beta', remoteid: 'R1', remotepubdate: at(9) },
+        { metaid: metaIdOf(4), siteid: CORPUS.siteId, fileid: fileIdOf(4), contentid: cfId('C', 2), contenthistid: cfId('H', 4), caption: 'Gamma_x', credits: 'Ann' },
+        { metaid: metaIdOf(5), siteid: 'other-site', fileid: fileIdOf(7), contentid: CONTENT_ID, contenthistid: HIST_ID, caption: 'Other' },
+      ];
+      await gated(TENANT_B.tenantId, async (tx) => {
+        for (const row of metas) await repo.files.insertFileMetadata(tx, row);
+      });
+    });
+
+    /** The rows the site-list feeds evaluated: the entity's site list in its tenant without the tenant column, findMany's narrowed to its ids. */
+    async function siteListRows(entity: EntityHandler, call: JsonApiCall): Promise<Struct[]> {
+      const listed: Struct[] =
+        entity === fileHandler
+          ? await withPoolTenant(handle.app, call.tenantId, 'file', (tx) => repo.files.listFiles(tx, call.siteId))
+          : await withTenant(handle.app, call.tenantId, (tx) => repo.files.listFileMetadata(tx, { siteId: call.siteId }));
+      const pk = entity.config.primaryKey;
+      const ids = call.method === 'findMany' ? (call.ids ?? []) : undefined;
+      return listed
+        .map((row) => Object.fromEntries(Object.entries(row).filter(([column]) => column !== 'tenant_id')))
+        .filter((row) => ids === undefined || ids.some((id) => sameId(String(row[pk]), id)));
+    }
+
+    /** `ctx` whose feed sources are the in-memory evaluator over `rows`. */
+    function memoryCtx(rows: readonly Struct[]): ContentRouteContext {
+      const repository = { ...repo, beanFeed: { source: () => rowsSource(rows) } };
+      return { ...ctx, domain: { ...ctx.domain, repository } } as unknown as ContentRouteContext;
+    }
+
+    /** `ctx` whose tenant transactions record each statement and the number of rows it returned. */
+    function recordingCtx(statements: Statement[]): ContentRouteContext {
+      const record = (tx: TenantTx): TenantTx => ({
+        kind: tx.kind,
+        tenantId: tx.tenantId,
+        schema: tx.schema,
+        onCommit: (cb, onError) => {
+          tx.onCommit(cb, onError);
+        },
+        query: (async (text: string | { text: string }, values?: unknown[]) => {
+          const result = await tx.query(text, values);
+          statements.push({ sql: typeof text === 'string' ? text : text.text, rows: result.rows.length });
+          return result;
+        }) as TenantTx['query'],
+      });
+      const db: TenantDb = {
+        schema: handle.app.schema,
+        withTenant: (tenantId, fn, options) => handle.app.withTenant(tenantId, (tx) => fn(record(tx)), options),
+        withMetadata: (fn, options) => handle.app.withMetadata(fn, options),
+        end: () => Promise.resolve(),
+      };
+      return { ...ctx, domain: { ...ctx.domain, db } };
+    }
+
+    /** What `entity` answers `input` with under `routeCtx` and the URL scope it left, or the error it raised. */
+    async function outcomeOf(entity: EntityHandler, routeCtx: ContentRouteContext, input: CallInput): Promise<Outcome> {
+      const { call } = callOf(input);
+      try {
+        const value = await handlerOf(entity, input.method as 'findAll')(routeCtx, call);
+        return { value, url: { ...call.apiContext.url } };
+      } catch (err) {
+        const error = err as Error & { type?: unknown };
+        return { error: { name: error.name, message: error.message, type: error.type } };
+      }
+    }
+
+    const fileCase = (label: string, method: string, url: Struct, extra: Partial<CallInput> = {}): [string, EntityHandler, CallInput] => [
+      `file ${label}`,
+      fileHandler,
+      { method, site: CORPUS, url, ...extra },
+    ];
+    const metaCase = (label: string, method: string, url: Struct, extra: Partial<CallInput> = {}): [string, EntityHandler, CallInput] => [
+      `fileMetaData ${label}`,
+      fileMetaDataHandler,
+      { method, entity: 'fileMetaData', site: CORPUS, url, ...extra },
+    ];
+    const FILE_IDS = [fileIdOf(3), fileIdOf(1).toLowerCase(), fileIdOf(3), `${fileIdOf(2)}  `, cfId('S', 99), fileIdOf(6), 'x\u0000y', zeroWidth(fileIdOf(4))];
+    const META_IDS = [metaIdOf(3), LOWER_META, metaIdOf(1), metaIdOf(3).toLowerCase(), metaIdOf(5), cfId('T', 99), zeroWidth(metaIdOf(4))];
+    const FEED_CASES: [string, EntityHandler, CallInput][] = [
+      fileCase('findAll', 'findAll', {}),
+      fileCase('second page', 'findAll', { itemsPerPage: 2, pageIndex: 2 }),
+      fileCase('page past the end', 'findAll', { itemsPerPage: 4, pageIndex: 9 }),
+      fileCase('startIndex', 'findAll', { itemsPerPage: 2, startIndex: 3 }),
+      fileCase('maxItems', 'findAll', { maxItems: 3 }),
+      fileCase('countOnly', 'findAll', { countOnly: 'true' }),
+      fileCase('fields', 'findAll', { fields: 'filename,caption,nosuch' }),
+      fileCase('sort list', 'findAll', { sort: '-filesize,filename' }),
+      fileCase('sortBy descending', 'findAll', { sortBy: 'created', sortDirection: 'desc' }),
+      fileCase('sort over NULLs and trailing spaces', 'findAll', { sort: 'caption' }),
+      fileCase('sort by a binary column', 'findAll', { sort: 'image' }),
+      fileCase('sort by an unknown column', 'findAll', { sort: 'nosuch' }),
+      fileCase('equality', 'findQuery', { fileext: 'PDF' }),
+      fileCase('equality ignoring case and trailing spaces', 'findQuery', { caption: 'ALPHA' }),
+      fileCase('like', 'findQuery', { filename: '*a*' }),
+      fileCase('like with an underscore over astral text', 'findQuery', { filename: 'gamma_*' }),
+      fileCase('null', 'findQuery', { caption: 'null' }),
+      fileCase('numeric comparison', 'findQuery', { filesize: 'gt^50' }),
+      fileCase('in list', 'findQuery', { fileext: 'in^pdf,docx' }),
+      fileCase('or', 'findQuery', { fileext: 'txt', or: '', filesize: '200' }),
+      fileCase('timestamp comparison', 'findQuery', { created: 'gte^2026-01-02' }),
+      fileCase('timestamp null', 'findQuery', { remotepubdate: 'null' }),
+      fileCase('id', 'findQuery', { id: LOWER_FILE.toUpperCase() }),
+      fileCase('filtered countOnly', 'findQuery', { fileext: 'pdf', countOnly: 'true' }),
+      fileCase('property without a column', 'findQuery', { filefield: 'x' }),
+      fileCase('NUL in a criteria', 'findQuery', { filename: 'a\u0000b' }),
+      fileCase('findMany', 'findMany', {}, { ids: FILE_IDS }),
+      fileCase('findMany sorted', 'findMany', { sort: 'filename' }, { ids: FILE_IDS }),
+      fileCase('findMany paged', 'findMany', { itemsPerPage: 1, pageIndex: 2 }, { ids: FILE_IDS }),
+      fileCase('findMany without a match', 'findMany', {}, { ids: [cfId('S', 98)] }),
+      fileCase('empty site with an unknown column', 'findQuery', { filefield: 'x', sort: 'nosuch' }, { site: EMPTY }),
+      fileCase('empty site countOnly', 'findAll', { countOnly: 'true' }, { site: EMPTY }),
+      fileCase('pooled site', 'findAll', {}, { site: POOLED, actor: actorOf(TENANT_A) }),
+      metaCase('findAll', 'findAll', {}),
+      metaCase('second page', 'findAll', { itemsPerPage: 2, pageIndex: 2 }),
+      metaCase('countOnly', 'findAll', { countOnly: 'true' }),
+      metaCase('fields', 'findAll', { fields: 'caption' }),
+      metaCase('sort list', 'findAll', { sort: 'contenthistid,-caption' }),
+      metaCase('sortBy a timestamp descending', 'findAll', { sortBy: 'remotepubdate', sortDirection: 'desc' }),
+      metaCase('equality ignoring case', 'findQuery', { contentid: CONTENT_ID.toLowerCase() }),
+      metaCase('like with an underscore', 'findQuery', { caption: '*a_*' }),
+      metaCase('null', 'findQuery', { caption: 'null' }),
+      metaCase('not null', 'findQuery', { remotepubdate: 'neq^null' }),
+      metaCase('timestamp comparison', 'findQuery', { remotepubdate: 'lt^2026-01-05' }),
+      metaCase('in list', 'findQuery', { caption: 'in^upper,BETA' }),
+      metaCase('hinted property without a column', 'findQuery', { filesize: '1' }),
+      metaCase('empty site with a hinted property without a column', 'findQuery', { filesize: '1' }, { site: EMPTY }),
+      metaCase('findMany', 'findMany', {}, { ids: META_IDS }),
+      metaCase('findMany sorted', 'findMany', { sort: '-caption' }, { ids: META_IDS }),
+      metaCase('pooled site', 'findAll', {}, { site: POOLED, actor: actorOf(TENANT_A) }),
+    ];
+
+    it.each(FEED_CASES)('%s answers what the site list evaluated in memory answers', async (_label, entity, input) => {
+      const rows = await siteListRows(entity, callOf(input).call);
+      expect(await outcomeOf(entity, ctx, input)).toEqual(await outcomeOf(entity, memoryCtx(rows), input));
+    });
+
+    it('answers the corpus rows, so the comparison exercises the data', async () => {
+      const files = await handlerOf(fileHandler, 'findAll')(ctx, callOf({ method: 'findAll', site: CORPUS }).call);
+      expect(itemIds(files)).toEqual([fileIdOf(1), fileIdOf(2), fileIdOf(3), fileIdOf(4), fileIdOf(5), LOWER_FILE]);
+      const metas = await handlerOf(fileMetaDataHandler, 'findAll')(ctx, callOf({ method: 'findAll', entity: 'fileMetaData', site: CORPUS }).call);
+      expect(itemIds(metas)).toEqual([metaIdOf(1), metaIdOf(2), metaIdOf(3), metaIdOf(4), LOWER_META]);
+      const many = await handlerOf(fileHandler, 'findMany')(ctx, callOf({ method: 'findMany', site: CORPUS, ids: FILE_IDS }).call);
+      // findMany's ordering compares ids with CFML `eq`, which keeps trailing spaces, so the padded id orders no item.
+      expect(itemIds(many)).toEqual([fileIdOf(3), fileIdOf(1), fileIdOf(3), LOWER_FILE]);
+    });
+
+    it('reads a page with a count and one LIMIT statement holding only the page rows', async () => {
+      const statements: Statement[] = [];
+      const call = callOf({ method: 'findAll', site: CORPUS, url: { itemsPerPage: 2, pageIndex: 2 } }).call;
+      expect(itemIds(await handlerOf(fileHandler, 'findAll')(recordingCtx(statements), call))).toEqual([fileIdOf(3), fileIdOf(4)]);
+      const reads = statements.filter((statement) => /\."file"(\s|$)/.test(statement.sql));
+      expect(reads.filter((statement) => /\bLIMIT\b/.test(statement.sql)).map((statement) => statement.rows)).toEqual([2]);
+      expect(Math.max(...reads.map((statement) => statement.rows))).toBeLessThanOrEqual(2);
+    });
+
+    it('reads only the requested rows for findMany', async () => {
+      const statements: Statement[] = [];
+      const call = callOf({ method: 'findMany', entity: 'fileMetaData', site: CORPUS, ids: [metaIdOf(4), metaIdOf(2)] }).call;
+      expect(itemIds(await handlerOf(fileMetaDataHandler, 'findMany')(recordingCtx(statements), call))).toEqual([metaIdOf(4), metaIdOf(2)]);
+      const reads = statements.filter((statement) => statement.sql.includes('."file_metadata"'));
+      expect(Math.max(...reads.map((statement) => statement.rows))).toBeLessThanOrEqual(2);
+    });
+
+    it('reads one metadata row, not the site, for findOne', async () => {
+      const statements: Statement[] = [];
+      const call = callOf({ method: 'findOne', entity: 'fileMetaData', site: CORPUS, id: metaIdOf(2).toLowerCase() }).call;
+      const data = dataOf(await handlerOf(fileMetaDataHandler, 'findOne')(recordingCtx(statements), call));
+      expect(data).toMatchObject({ metaid: metaIdOf(2), isnew: 0, alttext: 'Alt', filename: 'alpha.pdf' });
+      expect(statements.filter((statement) => statement.sql.includes('."file_metadata"')).map((statement) => statement.rows)).toEqual([1]);
+    });
+
+    it.each([
+      ['the stored case', metaIdOf(2), CORPUS.siteId, metaIdOf(2)],
+      ['another case with trailing spaces, under another case of the site', `${metaIdOf(2).toLowerCase()}  `, 'CORPUS-SITE', metaIdOf(2)],
+      ['an id two stored rows equal, the first in id order', LOWER_META, CORPUS.siteId, metaIdOf(1)],
+      ["another site's row", metaIdOf(5), CORPUS.siteId, null],
+      ['a missing id', cfId('T', 99), CORPUS.siteId, null],
+      ['an id holding NUL', `${metaIdOf(2)}\u0000`, CORPUS.siteId, null],
+      ['an id only the collation equates', zeroWidth(metaIdOf(2)), CORPUS.siteId, null],
+    ] as const)('findFileMetadata of %s answers the row the site scan found', async (_name, metaId, siteId, expected) => {
+      const [found, listed] = await withTenant(handle.app, TENANT_B.tenantId, async (tx) => [
+        await repo.files.findFileMetadata(tx, { siteId, metaId }),
+        await repo.files.listFileMetadata(tx, { siteId }),
+      ] as const);
+      expect(found).toEqual(listed.find((row) => sameId(row.metaid, metaId)) ?? null);
+      expect(found?.metaid ?? null).toBe(expected);
     });
   });
 });

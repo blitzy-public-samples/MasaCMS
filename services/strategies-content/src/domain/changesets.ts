@@ -17,6 +17,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { registeredTenants, withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import type { BeanFeedSource } from '../repo/bean-feed-sql.js';
 import type { ChangesetAssignmentRow, ChangesetFeedArgs } from '../repo/repository.js';
 import type { ChangesetCategoryAssignRow, ChangesetRollbackRow, ChangesetRow, ContentRow, TrashRow } from '../repo/tables.js';
 import { loadRequest, saveRequest } from './approval-requests.js';
@@ -356,10 +357,15 @@ function withoutTenant<R extends { tenant_id: string }>({ tenant_id: _tenant, ..
   return columns;
 }
 
-/** changesetBean.getFeed's rows of `siteId` in the actor's tenant, in primary-key order, before request params apply. */
-export async function listChangesetRows(deps: DomainDeps, actor: Actor, siteId: string): Promise<ChangesetColumns[]> {
-  const rows = await withTenant(deps.db, actor.tenantId, (tx) => deps.repository.changesets.siteChangesets(tx, { siteId }));
-  return rows.map(withoutTenant);
+/** Runs `query` over changesetBean.getFeed's rows of `scope.siteId` (only those of `scope.changesetIds` when given) in one tenant transaction. */
+export function queryChangesetFeed<T>(
+  deps: DomainDeps,
+  actor: Actor,
+  scope: { siteId: string; changesetIds?: readonly string[] },
+  query: (source: BeanFeedSource<ChangesetColumns>) => Promise<T>,
+): Promise<T> {
+  const spec = deps.repository.changesets.siteChangesetsFeed(scope);
+  return withTenant(deps.db, actor.tenantId, (tx) => query(deps.repository.beanFeed.source<ChangesetColumns>((fn) => fn(tx), spec)));
 }
 
 /** changesetBean.loadBy(changesetID) on a `$.getBean('changeset')`, which holds the request site: the site's stored change set, else a new bean of the site. */
@@ -388,14 +394,17 @@ export function saveChangesetEntity(
   });
 }
 
-/** changesetCategoryAssignment getFeed's rows of `siteId` in the actor's tenant, in primary-key order. */
-export async function listChangesetCategoryAssignments(
+/** Runs `query` over changesetCategoryAssignment getFeed's rows of `scope.siteId` (only those of `scope.assignmentIds` when given) in one tenant transaction. */
+export function queryChangesetCategoryAssignmentFeed<T>(
   deps: DomainDeps,
   actor: Actor,
-  siteId: string,
-): Promise<ChangesetCategoryAssignmentColumns[]> {
-  const rows = await withTenant(deps.db, actor.tenantId, (tx) => deps.repository.changesets.siteCategoryAssignments(tx, { siteId }));
-  return rows.map(withoutTenant);
+  scope: { siteId: string; assignmentIds?: readonly string[] },
+  query: (source: BeanFeedSource<ChangesetCategoryAssignmentColumns>) => Promise<T>,
+): Promise<T> {
+  const spec = deps.repository.changesets.siteCategoryAssignmentsFeed(scope);
+  return withTenant(deps.db, actor.tenantId, (tx) =>
+    query(deps.repository.beanFeed.source<ChangesetCategoryAssignmentColumns>((fn) => fn(tx), spec)),
+  );
 }
 
 /** changesetCategoryAssignment loadBy(assignmentid, siteid): the site's stored row, or null. */

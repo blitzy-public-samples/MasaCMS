@@ -1,6 +1,7 @@
 /** Tenant-scoped file reads, manifest queries and durable publication intents. */
 import { awaitReadable, qualified } from '@opt2/platform/migration-kit';
 import type { QueryResultRow, TenantTx } from '@opt2/platform/tenancy';
+import type { FeedColumn, FeedTableSpec } from './bean-feed-sql.js';
 import {
   CONTENT,
   EXTEND_DATA,
@@ -136,11 +137,20 @@ const extendCol = (name: Column<ExtendDataRow>): string => `"${name}"`;
 const idEquals = (tx: TenantTx, column: string, param: string): string =>
   `(${column} COLLATE ${qualified(tx.schema, 'legacy_char_ci')}) = ${param}::bpchar`;
 
+/** `idEquals` against any element of the array parameter `param`. */
+const idInArray = (tx: TenantTx, column: string, param: string): string =>
+  `(${column} COLLATE ${qualified(tx.schema, 'legacy_char_ci')}) = ANY(${param}::bpchar[])`;
+
 /** SQL `expr` as SQL Server's case-insensitive collation compares it: trailing spaces dropped, lower-cased. */
 const ci = (expr: string): string => `lower(rtrim(${expr}))`;
 
 /** `ci` of a JavaScript string. */
 const ciKey = (value: string): string => value.replace(/ +$/, '').toLowerCase();
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/** Text a parameter carries unchanged and a stored value can equal: no NUL and no lone surrogate. */
+const bindable = (value: string): boolean => !value.includes('\u0000') && !LONE_SURROGATE.test(value);
 
 /** The first row `sql` returns over `params`, or null. */
 async function firstRow<R extends QueryResultRow>(tx: TenantTx, sql: string, params: unknown[]): Promise<R | null> {
@@ -177,6 +187,21 @@ export function readFileAll(tx: TenantTx, fileId: string): Promise<FileRow | nul
 /** `fileDAO.readMeta`: the file `fileId` without image bytes; null when absent. */
 export function readFileMeta(tx: TenantTx, fileId: string): Promise<ReadFileMetaRow | null> {
   return readFileColumns<ReadFileMetaRow>(tx, fileId, META_COLUMNS);
+}
+
+/** `readFileMeta` of several files with one query: each id's file, keyed by the id as given; an absent file has no entry. */
+export async function readFileMetas(tx: TenantTx, fileIds: readonly string[]): Promise<Map<string, ReadFileMetaRow>> {
+  const ids = [...new Set(fileIds)];
+  if (ids.length === 0) {
+    return new Map();
+  }
+  await awaitReadable(tx, [UNIT_OF.file]);
+  const { rows } = await tx.query<ReadFileMetaRow & { requested_fileid: string }>(
+    `SELECT k.requested_fileid, f.* FROM unnest($1::text[]) AS k(requested_fileid) CROSS JOIN LATERAL` +
+      ` (SELECT ${selectList(META_COLUMNS)} FROM ${qualified(tx.schema, FILE.table)} WHERE ${idEquals(tx, fileCol('fileid'), 'k.requested_fileid')} LIMIT 1) f`,
+    [ids],
+  );
+  return new Map(rows.map(({ requested_fileid: requested, ...meta }) => [requested, meta]));
 }
 
 /** `fileDAO.readSmall`: the file `fileId` with its small rendition; null when absent or without one. */
@@ -218,6 +243,56 @@ export async function listFileMetadata(tx: TenantTx, filter: FileMetadataFilter)
     params,
   );
   return rows;
+}
+
+/** The first `listFileMetadata` row of `siteId` whose `metaid` equals `metaId` ignoring case and trailing spaces; null when none. */
+export async function findFileMetadata(tx: TenantTx, args: { siteId: string; metaId: string }): Promise<FileMetadataRow | null> {
+  if (!bindable(args.metaId)) {
+    return null;
+  }
+  await awaitReadable(tx, [UNIT_OF.file_metadata]);
+  const key = ciKey(args.metaId);
+  const { rows } = await tx.query<FileMetadataRow>(
+    `SELECT ${allColumns(FILE_METADATA)} FROM ${qualified(tx.schema, FILE_METADATA.table)}` +
+      ` WHERE ${ci(metaCol('siteid'))} = ${ci('$1::text')} AND ${idEquals(tx, metaCol('metaid'), '$2')} ORDER BY ${metaCol('metaid')}`,
+    [args.siteId, key],
+  );
+  return rows.find((row) => ciKey(row.metaid) === key) ?? null;
+}
+
+/** The rows a site feed selects: one site's, only those whose key matches one of `ids` ignoring case and trailing spaces when given. */
+export interface SiteFeedScope {
+  siteId: string;
+  ids?: readonly string[] | undefined;
+}
+
+/** The beanFeed spec of `def`'s rows of `scope` with every column but the tenant's, ordered by `key` as the site list reads them. */
+function siteFeedSpec(tx: TenantTx, def: typeof FILE | typeof FILE_METADATA, key: string, scope: SiteFeedScope): FeedTableSpec {
+  const where = ['"tenant_id" = $1', `${ci('"siteid"')} = ${ci('$2::text')}`];
+  const values: unknown[] = [scope.siteId];
+  if (scope.ids !== undefined) {
+    // The collated test lets the key's index serve the lookup; the lower-cased one keeps exactly the ids `ciKey` equates.
+    const keys = [...new Set(scope.ids.filter(bindable).map(ciKey))];
+    values.push(keys, keys);
+    where.push(idInArray(tx, key, '$3'), `${ci(key)} = ANY($4::text[])`);
+  }
+  const columns: Record<string, FeedColumn> = {};
+  for (const column of def.columns) {
+    if (column.name !== 'tenant_id') {
+      columns[column.name] = { sql: `"${column.name}"`, type: column.type };
+    }
+  }
+  return { defs: [def], from: qualified(tx.schema, def.table), where, values, columns, tieBreak: [key] };
+}
+
+/** The `file` entity feed's scope: `listFiles`'s rows and order, without the tenant column. */
+export function siteFilesFeed(tx: TenantTx, scope: SiteFeedScope): FeedTableSpec {
+  return siteFeedSpec(tx, FILE, fileCol('fileid'), scope);
+}
+
+/** The `fileMetaData` entity feed's scope: `listFileMetadata`'s rows of the site and order, without the tenant column. */
+export function siteFileMetadataFeed(tx: TenantTx, scope: SiteFeedScope): FeedTableSpec {
+  return siteFeedSpec(tx, FILE_METADATA, metaCol('metaid'), scope);
 }
 
 // file_object has no unit of its own; its rows are content.file data written in that unit's gated transactions, so the

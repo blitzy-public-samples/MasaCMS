@@ -4,10 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LegacyApiError, isCfUuid, serializeResponse } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
-import type { TenantDb } from '@opt2/platform/tenancy';
-import { TENANT_A, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { withTenant, type QueryConfig, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, type Actor, type DomainDeps } from '../../src/domain/context.js';
-import { listVariationTargetings } from '../../src/domain/variations.js';
+import { withVariationTargetingFeed } from '../../src/domain/variations.js';
 import { contentApiSerializer, type JsonApiRequestContext } from '../../src/legacy/jsonapi-serializers.js';
 import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
@@ -15,6 +15,7 @@ import { variationTargetingHandler as handler } from '../../src/routes/jsonapi/v
 import {
   beanFeedQuery,
   createJsonApiParams,
+  rowsSource,
   type JsonApiCall,
   type JsonApiHandlerFn,
   type JsonApiResult,
@@ -333,9 +334,9 @@ describe('beanFeedQuery for findMany', () => {
   it.each<[string, boolean]>([
     ['findMany', false],
     ['findAll', true],
-  ])('%s with countOnly=true answers a count: %s', (method, counted) => {
+  ])('%s with countOnly=true answers a count: %s', async (method, counted) => {
     const rows = [{ targetingid: 'A', contentid: null, siteid: SITE, initjs: null, targetingjs: null }];
-    const result = beanFeedQuery(rows, callFor({ method, url: { countOnly: 'true' } }), { primaryKey: 'targetingid', propertyNames: [] });
+    const result = await beanFeedQuery(rows, callFor({ method, url: { countOnly: 'true' } }), { primaryKey: 'targetingid', propertyNames: [] });
     expect('count' in result).toBe(counted);
   });
 });
@@ -488,8 +489,8 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
     expect(data).toEqual({ ...storedData(ids.second, { contentid: 'ABC', initjs: '', targetingjs: '' }), saveerrors: false, errors: {} });
   });
 
-  it('listVariationTargetings returns the columns of the tenant rows in primary-key order', async () => {
-    const rows = await listVariationTargetings(deps, CONTENT_EDITOR);
+  it('the feed source holds the columns of the tenant rows in primary-key order', async () => {
+    const rows = await withVariationTargetingFeed(deps, CONTENT_EDITOR, {}, (source) => source.all());
     expect(rows.map((row) => row.targetingid)).toEqual([ids.first, ids.second].sort());
     expect(Object.keys(rows[0] ?? {}).sort()).toEqual(['contentid', 'initjs', 'siteid', 'targetingid', 'targetingjs']);
   });
@@ -615,5 +616,243 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
     expect(call.csrfChecks).toBe(1);
     const after = await run(ctx, 'findOne', { id: ids.second, actor: CONTENT_EDITOR });
     expect(wire(after, 'findOne')).toEqual({ apiversion: 'v1', data: newBeanData(ids.second), method: 'findOne' });
+  });
+});
+
+/** The id key findMany matched in memory before its ids reached SQL: trailing spaces dropped, then lower-cased. */
+const memoryKey = (id: string): string => id.replace(/ +$/u, '').toLowerCase();
+
+const KELVIN_ID = '\u212Aelvin-04';
+const DOTTED_ID = '\u0130d-05';
+const SIGMA_ID = '\u039F\u0394\u039F\u03A3-06';
+const UPPER_ID = '0000000A-AAAA-BBBB-CCCCDDDDEEEEFFFF';
+const LOWER_ID = '0000000b-aaaa-bbbb-ccccddddeeeeffff';
+
+/** A stored targeting row in column order. */
+const targeting = (targetingid: string, contentid: string | null, siteid: string | null, initjs: string | null, targetingjs: string | null): Row => ({
+  targetingid,
+  siteid,
+  initjs,
+  targetingjs,
+  contentid,
+});
+
+// Case and trailing-space variants, NULLs, an empty id, astral text in two columns, and ids outside ASCII that
+// String.prototype.toLowerCase and PostgreSQL's lower() fold differently.
+const TENANT_A_ROWS: Row[] = [
+  targeting(UPPER_ID, HOME_ID, SITE, 'init();', '[1]'),
+  targeting(LOWER_ID, 'ABC', SITE, null, null),
+  targeting('MiXeD-03', null, 'other-site', '  padded  ', 'x_y'),
+  targeting(KELVIN_ID, 'ABC', SITE, 'a\u{1F600}b', 'k'),
+  targeting(DOTTED_ID, 'abc', 'TENANT-A', '\u00C1LICE', null),
+  targeting(SIGMA_ID, HOME_ID, SITE, 'alice', 'x%y'),
+  targeting('', null, null, null, null),
+  targeting('trail-08 ', 'ABC ', SITE, 'Init();', '[2]'),
+  targeting('KELVIN-04', HOME_ID, `${SITE} `, 'init();', ''),
+  targeting('zz-10', 'ABC', SITE, 'b', 'a\u{1F600}b'),
+];
+const TENANT_B_ROWS: Row[] = [targeting(UPPER_ID, 'B', SITE, 'tenant-b', null), targeting('bb-only', 'B', SITE, 'tenant-b', null)];
+
+/** A findQuery or findAll request: its query string and, where it differs, the URL scope dispatch leaves. */
+type FeedCase = [method: 'findQuery' | 'findAll', raw: string, url?: Row];
+
+const FEED_CASES: FeedCase[] = [
+  ...[
+    '', 'contentid=ABC', 'contentid=abc', 'contentid=ABC%20', 'contentid=null', 'contentid=neq%5Enull', 'initjs=null', 'initjs=*it*',
+    'initjs=like%5Ei_it%25', 'initjs=like%5E%5Bai%5D%25', 'targetingjs=like%5Ex_y', 'siteid=like%5Eother_site', 'siteid=in%5Etenant-a%2Cother-site',
+    'siteid=notin%5Eother-site', 'siteid=TENANT-A', 'initjs=%C3%A1lice', 'initjs=alice', 'initjs=a%00', 'targetingid=gt%5Em',
+    `targetingid=lt%5E${LOWER_ID}`, `id=${LOWER_ID.toUpperCase()}`, 'targetingid=kelvin-04', 'targetingid=', 'contentid=ABC&or&initjs=null',
+    'openGrouping&contentid=ABC&or&siteid=other-site&closeGrouping&targetingjs=null', 'sort=contentid', 'sort=-contentid',
+    'sort=-initjs%2Ctargetingid', 'sort=targetingjs', 'sortBy=siteid&sortDirection=desc', 'sort=siteid%2C-contentid', 'orderby=-targetingid',
+    'itemsPerPage=2&pageIndex=2', 'itemsPerPage=3&pageIndex=3', 'itemsPerPage=4&pageIndex=99', 'startIndex=4&itemsPerPage=2',
+    'nextn=3&pageIndex=2', 'maxitems=3', 'maxitems=3&itemsPerPage=2&pageIndex=2', 'maxitems=*', 'itemsPerPage=*', 'offset=1',
+    'countOnly=true', 'countOnly=true&contentid=ABC', 'countOnly=1&maxitems=1', 'countOnly=true&initjs=like%5Ei_it%25',
+    'fields=initjs%2Ccontentid', 'fields=initjs&sort=-initjs', 'fields=nosuch', 'contentid=ABC&sort=-targetingid&itemsPerPage=2&pageIndex=2',
+    'sort=nope', 'isnew=1', 'addObjects=1', 'groupBy=siteid', 'innerJoin=content',
+  ].map((raw): FeedCase => ['findQuery', raw]),
+  ['findQuery', 'initjs=x', { initjs: '\uD800' }],
+  ...['', 'sort=-contentid&itemsPerPage=2&pageIndex=2', 'countOnly=true', 'maxitems=2', 'contentid=ABC', 'fields=targetingjs'].map(
+    (raw): FeedCase => ['findAll', raw],
+  ),
+];
+
+const MANY_IDS: string[][] = [
+  [LOWER_ID.toUpperCase(), ABSENT_ID, 'mixed-03'],
+  [UPPER_ID, UPPER_ID.toLowerCase(), `${UPPER_ID}   `, UPPER_ID],
+  ['kelvin-04'],
+  ['\u212AELVIN-04'],
+  ['i\u0307d-05'],
+  ['\u0130D-05'],
+  ['id-05'],
+  ['\u03BF\u03B4\u03BF\u03C2-06'],
+  ['\u03BF\u03B4\u03BF\u03C3-06'],
+  [`${SIGMA_ID}  `],
+  ['', ' '],
+  ['TRAIL-08'],
+  ['a\u0000'],
+  ['\uD800', 'zz-10'],
+  ['bb-only'],
+  [],
+];
+const MANY_URLS: string[] = ['', 'sort=-contentid', 'sort=targetingid', 'countOnly=true', 'itemsPerPage=1&pageIndex=2', 'fields=initjs', 'maxitems=1', 'sort=nope'];
+
+describe.skipIf(!(await pgAvailable()))('feeds read in SQL against the in-memory feed over every tenant row', () => {
+  let schema: ThrowawaySchema;
+  let dropSchema: (() => Promise<void>) | undefined;
+  let feedDeps: DomainDeps;
+  const statements: { sql: string; rows: number }[] = [];
+
+  /** `tx` recording each statement it runs and the rows it returned. */
+  function recordingTx(tx: TenantTx): TenantTx {
+    return {
+      kind: tx.kind,
+      tenantId: tx.tenantId,
+      schema: tx.schema,
+      onCommit: (cb, onError) => {
+        tx.onCommit(cb, onError);
+      },
+      query: (async (text: string | QueryConfig, values?: unknown[]) => {
+        const result = await tx.query(text, values);
+        statements.push({ sql: typeof text === 'string' ? text : text.text, rows: result.rows.length });
+        return result;
+      }) as TenantTx['query'],
+    };
+  }
+
+  beforeAll(async () => {
+    schema = await createThrowawaySchema({
+      service: 'strategies-content',
+      schemaName: 'content',
+      migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)),
+    });
+    const created = schema;
+    dropSchema = () => created.drop();
+    await ensureUnitGates(schema.app, CONTENT_UNITS);
+    await closeGates(schema.app, { units: CONTENT_UNITS, holderId: 'jsonapi-variation-feed-test', allowLegacy: true });
+    await openGates(schema.app, { units: CONTENT_UNITS, holderId: 'jsonapi-variation-feed-test', state: 'open' });
+    for (const [tenantId, rows] of [
+      [TENANT_A.tenantId, TENANT_A_ROWS],
+      [TENANT_B.tenantId, TENANT_B_ROWS],
+    ] as const) {
+      await withTenant(schema.app, tenantId, async (tx) => {
+        for (const row of rows) {
+          await tx.query(
+            `INSERT INTO ${schema.schema}.variation_targeting (tenant_id, targetingid, siteid, initjs, targetingjs, contentid) VALUES ($1, $2, $3, $4, $5, $6)`,
+            [tx.tenantId, ...Object.values(row)],
+          );
+        }
+      });
+    }
+    const db = schema.app;
+    const recording: TenantDb = {
+      schema: db.schema,
+      withTenant: (tenantId, fn, options) => db.withTenant(tenantId, (tx) => fn(recordingTx(tx)), options),
+      withMetadata: (fn, options) => db.withMetadata(fn, options),
+      end: () => db.end(),
+    };
+    const clock = fixedClock(new Date(2026, 5, 30, 10, 15, 42));
+    feedDeps = {
+      db: recording,
+      repository: createContentRepository({ clock, schema: schema.schema }),
+      clock,
+      config: { ...CONTENT_CONFIG_DEFAULTS, variations: true },
+    };
+  });
+
+  afterAll(async () => {
+    await dropSchema?.();
+  });
+
+  /** The rows the handlers read whole before: every targeting row of the tenant without its tenant column. */
+  async function memoryRows(): Promise<Row[]> {
+    const rows = await withTenant(schema.app, TENANT_A.tenantId, (tx) => feedDeps.repository.variation.targetingsOfTenant(tx));
+    return rows.map((row) => Object.fromEntries(Object.entries(row).filter(([column]) => column !== 'tenant_id')));
+  }
+
+  /** The handlers over the in-memory feed of `rows`, as they read before. */
+  function inMemory(rows: Row[]): RouteContext {
+    const repository = { ...feedDeps.repository, beanFeed: { source: () => rowsSource(rows) } } as unknown as ContentRepository;
+    return contextOf({ ...feedDeps, repository });
+  }
+
+  /** The wire body of one handler call, or the error it raised. */
+  async function outcome(context: RouteContext, method: Method, o: Omit<CallOptions, 'method'>): Promise<unknown> {
+    try {
+      return wire(await run(context, method, { ...o, actor: CONTENT_EDITOR }), method);
+    } catch (err) {
+      const error = err as Error & { type?: unknown };
+      return { error: error.constructor.name, message: error.message, type: error.type };
+    }
+  }
+
+  /** findMany of `ids` over SQL and over the in-memory feed of the rows the handler kept before. */
+  async function compareMany(ids: string[], raw: string): Promise<unknown> {
+    const wanted = new Set(ids.map(memoryKey));
+    const kept = (await memoryRows()).filter((row) => wanted.has(memoryKey(String(row['targetingid']))));
+    const expected = await outcome(inMemory(kept), 'findMany', { ids, raw });
+    expect(await outcome(contextOf(feedDeps), 'findMany', { ids, raw })).toEqual(expected);
+    return expected;
+  }
+
+  /** The kind of each variation_targeting statement recorded since `statements` was emptied. */
+  const shapes = (): string[] =>
+    statements
+      .filter((s) => s.sql.includes('variation_targeting'))
+      .map((s) => (s.sql.includes('LIMIT') ? 'page' : s.sql.includes('count(*)') ? 'count' : s.sql.includes('targetingid::text ~') ? 'ids' : 'other'));
+
+  it('holds the rows the handlers read before, column for column and in their order', async () => {
+    const rows = await withVariationTargetingFeed(feedDeps, CONTENT_EDITOR, {}, (source) => source.all());
+    const before = await memoryRows();
+    expect(rows).toEqual(before);
+    expect(rows.map((row) => Object.keys(row))).toEqual(before.map((row) => Object.keys(row)));
+    expect(rows).toHaveLength(TENANT_A_ROWS.length);
+  });
+
+  it.each(FEED_CASES)('%s %s %j answers what the in-memory feed answers', async (method, raw, url) => {
+    const o = url === undefined ? { raw } : { raw, url };
+    const expected = await outcome(inMemory(await memoryRows()), method, o);
+    expect(await outcome(contextOf(feedDeps), method, o)).toEqual(expected);
+  });
+
+  it.each(MANY_IDS.flatMap((ids) => MANY_URLS.map((raw): [string[], string] => [ids, raw])))(
+    'findMany of %j with %s answers what the in-memory feed answers',
+    async (ids, raw) => {
+      await compareMany(ids, raw);
+    },
+  );
+
+  it('selects the rows the in-memory feed selects, so the comparison exercises the data', async () => {
+    const itemIds = (body: unknown): unknown => ((body as { data: { items?: Row[] } }).data.items ?? []).map((item) => item['id']);
+    expect(itemIds(await compareMany(['kelvin-04'], 'sort=targetingid'))).toEqual(expect.arrayContaining(['KELVIN-04', KELVIN_ID]));
+    expect(itemIds(await compareMany(['kelvin-04'], 'sort=targetingid'))).toHaveLength(2);
+    expect(itemIds(await compareMany(['\u03BF\u03B4\u03BF\u03C2-06'], ''))).toEqual([SIGMA_ID]);
+    expect(itemIds(await compareMany(['\u03BF\u03B4\u03BF\u03C3-06'], ''))).toEqual([]);
+    expect(itemIds(await compareMany(['\u0130D-05', 'TRAIL-08', ''], ''))).toEqual([DOTTED_ID, 'trail-08', '']);
+    expect(itemIds(await compareMany(['bb-only', UPPER_ID], ''))).toEqual([UPPER_ID]);
+    const query = await outcome(contextOf(feedDeps), 'findQuery', { raw: 'initjs=like%5Ei_it%25&sort=targetingid' });
+    expect(itemIds(query)).toEqual([UPPER_ID, 'KELVIN-04', 'trail-08']);
+  });
+
+  it('reads one count and one page holding only the page rows', async () => {
+    statements.length = 0;
+    await outcome(contextOf(feedDeps), 'findQuery', { raw: 'contentid=neq%5Enull&sort=-targetingid&itemsPerPage=2&pageIndex=2' });
+    expect(shapes()).toEqual(['count', 'page']);
+    expect(statements.filter((s) => s.sql.includes('variation_targeting')).map((s) => s.rows)).toEqual([1, 2]);
+
+    statements.length = 0;
+    await outcome(contextOf(feedDeps), 'findMany', { ids: [UPPER_ID, LOWER_ID, 'zz-10'], raw: 'itemsPerPage=1&pageIndex=2' });
+    expect(shapes()).toEqual(['count', 'page']);
+    expect(statements.filter((s) => s.sql.includes('variation_targeting')).map((s) => s.rows)).toEqual([1, 1]);
+
+    statements.length = 0;
+    await outcome(contextOf(feedDeps), 'findAll', { raw: 'countOnly=true' });
+    expect(shapes()).toEqual(['count']);
+  });
+
+  it('reads the stored ids outside ASCII only for a findMany id outside ASCII', async () => {
+    statements.length = 0;
+    await outcome(contextOf(feedDeps), 'findMany', { ids: ['\u0130D-05', 'zz-10'], raw: '' });
+    expect(shapes()).toEqual(['ids', 'count', 'page']);
+    expect(statements.find((s) => s.sql.includes('targetingid::text ~'))?.rows).toBe(3);
   });
 });

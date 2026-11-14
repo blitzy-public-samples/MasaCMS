@@ -434,4 +434,106 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
     const unhandled = logLines.filter((line) => line.message === 'unhandled feed error').map(({ severity, error: logged }) => ({ severity, error: logged }));
     expect(unhandled).toEqual(status === 500 ? [{ severity: 'ERROR', error: serializeError(error) }] : []);
   });
+
+  describe('batched item reads', () => {
+    const [GAMMA, ALPHA, BETA] = [cfId('K', 1), cfId('K', 2), cfId('K', 3)] as const;
+
+    /** Assigns `categoryIds` to the active version of `contentId`, in order. */
+    const assign = async (contentId: string, categoryIds: readonly string[]): Promise<void> => {
+      const { contenthistid } = await versionOf(contentId);
+      for (const [orderNo, categoryId] of categoryIds.entries()) {
+        await withGatedTenant(fx.handle.app, TENANT_A.tenantId, (tx) =>
+          fx.repo.categories.setAssignment(tx, { categoryId, contentId, contentHistId: String(contenthistid), isFeature: 0, orderNo, siteId: SITE_ID }),
+        );
+      }
+    };
+
+    /** The counter of the statements the app pool's connections run, while a request is counted. */
+    let counting: { statements: number } | undefined;
+
+    /** The response to a GET of `url` by a tenant-a reader, with the statements its connections ran. */
+    async function counted(url: string): Promise<{ res: InjectResponse; statements: number }> {
+      const headers = await as(SITE_ID);
+      const counter = { statements: 0 };
+      counting = counter;
+      try {
+        return { res: await get(url, headers), statements: counter.statements };
+      } finally {
+        counting = undefined;
+      }
+    }
+
+    beforeAll(async () => {
+      const wrapped = new WeakSet<object>();
+      fx.handle.appPool.on('acquire', (client) => {
+        if (wrapped.has(client)) return;
+        wrapped.add(client);
+        const query: unknown = client.query;
+        Object.defineProperty(client, 'query', {
+          configurable: true,
+          writable: true,
+          value: (...args: unknown[]): unknown => {
+            if (counting !== undefined) counting.statements += 1;
+            return Reflect.apply(query as (...params: unknown[]) => unknown, client, args);
+          },
+        });
+      });
+      for (const [categoryid, name, filename] of [[GAMMA, 'Gamma', 'c-third'], [ALPHA, 'Alpha', 'a-one'], [BETA, 'Beta', 'B-two']] as const) {
+        await withGatedTenant(fx.handle.app, TENANT_UMBRELLA.tenantId, (tx) => fx.repo.categories.insertCategory(tx, { categoryid, siteid: TENANT_UMBRELLA.siteId, name, filename }));
+      }
+      const single = await page({ parentid: ids.bravo, type: 'Folder', title: 'Single' });
+      const batch = await page({ parentid: ids.bravo, type: 'Folder', title: 'Batch' });
+      const order = await page({ parentid: ids.bravo, type: 'Folder', title: 'Order' });
+      ids.solo = await page({ parentid: single, title: 'Solo', body: '<p>Solo body</p>', fileid: FILE_ID });
+      ids.item1 = await page({ parentid: batch, title: 'Item 1', body: '<p>One</p>' });
+      ids.item2 = await page({ parentid: batch, title: 'Item 2', body: '<p>Two</p>', fileid: FILE_ID });
+      ids.item3 = await page({ parentid: batch, title: 'Item 3', summary: 'Three' });
+      ids.item4 = await page({ parentid: batch, title: 'Item 4', fileid: FILE_ID });
+      ids.first = await page({ parentid: order, title: 'A first' });
+      ids.second = await page({ parentid: order, title: 'B second', summary: 'Sum [m]1+1[/m] here' });
+      await assign(ids.solo, [BETA]);
+      // The lower-case id is a second assignment of Alpha, and K99 names no category.
+      await assign(ids.item1, [GAMMA, ALPHA, BETA, ALPHA.toLowerCase()]);
+      await assign(ids.item2, [BETA, cfId('K', 99)]);
+      await assign(ids.item4, [GAMMA, ALPHA]);
+      await assign(ids.first, [ALPHA]);
+      ids.single20 = await feed(ADMIN, { name: 'Single 20', contentid: single, version: 'RSS 2.0' });
+      ids.batch20 = await feed(ADMIN, { name: 'Batch 20', contentid: batch, version: 'RSS 2.0' });
+      ids.orderAsc = await feed(ADMIN, { name: 'Order asc', contentid: order, version: 'RSS 2.0' });
+      ids.orderDesc = await feed(ADMIN, { name: 'Order desc', contentid: order, version: 'RSS 2.0', sortdirection: 'desc' });
+    });
+
+    it('writes several items’ bodies, repeated pooled categories and pooled files with the statements of a single item', async () => {
+      const single = await counted(`/_api/feed/v1/tenant-a/?feedid=${ids.single20 ?? ''}&content=true`);
+      const batch = await counted(`/_api/feed/v1/tenant-a/?feedid=${ids.batch20 ?? ''}&content=true`);
+      const items = [
+        await expectedItem(ids.item1 ?? '', { categories: ['Alpha', 'Alpha', 'Beta', 'Gamma'], file: null, readsBody: true }),
+        await expectedItem(ids.item2 ?? '', { categories: ['Beta'], file: PDF, readsBody: true }),
+        await expectedItem(ids.item3 ?? '', { categories: [], file: null, readsBody: true }),
+        await expectedItem(ids.item4 ?? '', { categories: ['Alpha', 'Gamma'], file: PDF, readsBody: true }),
+      ];
+      const expected = renderFeed(feedView(ids.batch20 ?? '', { name: 'Batch 20', description: '', allowhtml: 1, version: 'RSS 2.0' }), items, renderOptions(true));
+      expect({ status: batch.res.statusCode, body: batch.res.body }).toEqual({ status: 200, body: expected.body });
+      expect(batch.res.body).toContain('<category>Alpha</category><category>Alpha</category><category>Beta</category><category>Gamma</category>');
+      expect(batch.res.body).toContain('<content:encoded><![CDATA[<p>Two</p>]]></content:encoded>');
+      expect(single.res.statusCode).toBe(200);
+      expect(single.res.body).toContain('<category>Beta</category>');
+      expect(single.statements).toBeGreaterThan(0);
+      expect(batch.statements).toBe(single.statements);
+    });
+
+    it.each([
+      ['a category read failing on the first row answers before the second row’s dynamic tags', 'orderAsc', true, 500],
+      ['the second row’s dynamic tags fail closed once the first row reads cleanly', 'orderAsc', false, 503],
+      ['the first row’s dynamic tags fail closed before the second row’s category read', 'orderDesc', true, 503],
+    ] as const)('raises the first failing row’s error: %s', async (_label, key, failing, status) => {
+      const readCategoriesIn = async (): Promise<never> => {
+        throw new Error('boom');
+      };
+      const repository: ContentRepository = failing ? { ...fx.repo, categories: { ...fx.repo.categories, readCategoriesIn } } : fx.repo;
+      const res = await withDomain({ repository }, async () => get(`/_api/feed/v1/tenant-a/?feedid=${ids[key] ?? ''}`, await as(SITE_ID)));
+      expect(res.statusCode).toBe(status);
+      if (status === 500) expect(res.body).toBe(feedErrorPacket('unhandled', MOZILLA).body);
+    });
+  });
 });

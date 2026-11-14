@@ -49,6 +49,7 @@ import {
   jsonApiResultOf,
   permissionsOf,
   type BeanFeedOptions,
+  type BeanFeedSource,
   type EntityHandler,
   type JsonApiCall,
   type JsonApiHandlerFn,
@@ -307,10 +308,9 @@ interface MetaRecord {
  */
 async function loadMetaRecord(ctx: RouteContext, call: JsonApiCall, metaId: string): Promise<MetaRecord | null> {
   const { db, repository, clock } = ctx.domain;
-  const rows = await withTenant(db, call.tenantId, (tx) => repository.files.listFileMetadata(tx, { siteId: call.siteId }));
-  const meta = rows.find((row) => sameId(row.metaid, metaId));
+  const meta = await withTenant(db, call.tenantId, (tx) => repository.files.findFileMetadata(tx, { siteId: call.siteId, metaId }));
   const fileId = meta?.fileid ?? null;
-  if (meta === undefined || fileId === null) return null;
+  if (meta === null || fileId === null) return null;
   const file = await withPoolTenant(db, call.tenantId, 'file', (tx) => repository.files.readFileMeta(tx, fileId));
   if (file === null) return null;
   const joined = Object.fromEntries(JOINED_FILE_COLUMNS.map((column) => [column, beanValue(file[column])]));
@@ -326,8 +326,8 @@ interface FileEntity {
   load(ctx: RouteContext, call: JsonApiCall, id: string): Promise<Struct | null>;
   /** A new bean's values under the key `id` and the site `siteId`. */
   fresh(ctx: RouteContext, call: JsonApiCall, id: string, siteId: string): Struct;
-  /** The entity feed's rows of the request site, before request params apply. */
-  feed(ctx: RouteContext, call: JsonApiCall): Promise<Struct[]>;
+  /** Runs `use` in the rows' tenant over the entity feed of the request site (only rows of `ids` when given), before request params apply. */
+  feed<T>(ctx: RouteContext, call: JsonApiCall, ids: readonly string[] | undefined, use: (source: BeanFeedSource<Struct>) => Promise<T>): Promise<T>;
   /** The bean an iterator builds from a feed row (beanIterator.cfc:98-101), narrowed to the selected columns. */
   item(ctx: RouteContext, call: JsonApiCall, row: Readonly<Struct>, selected?: ReadonlySet<string>): Struct;
   view(values: Struct): ApiEntityView;
@@ -347,9 +347,11 @@ const FILE: FileEntity = {
     return row === null ? null : storedFileValues(row, ctx.domain.clock.now());
   },
   fresh: (ctx, _call, id, siteId) => fileBeanDefaults(id, siteId, ctx.domain.clock.now()),
-  feed: async (ctx, call) => {
-    const rows = await withPoolTenant(ctx.domain.db, call.tenantId, 'file', (tx) => ctx.domain.repository.files.listFiles(tx, call.siteId));
-    return rows.map((row) => columnsOf(row));
+  feed: (ctx, call, ids, use) => {
+    const { db, repository } = ctx.domain;
+    return withPoolTenant(db, call.tenantId, 'file', (tx) =>
+      use(repository.beanFeed.source<Struct>((fn) => fn(tx), repository.files.siteFilesFeed(tx, { siteId: call.siteId, ids }))),
+    );
   },
   item: (ctx, _call, row, selected) => ({ ...fileBeanDefaults(cfUuid(), '', ctx.domain.clock.now()), ...beanColumns(row, selected), isnew: 0 }),
   // The legacy oracle's file beans carry no `fileMetaData` back-reference, so no link or expansion names one.
@@ -367,9 +369,11 @@ const META: FileEntity = {
   },
   load: async (ctx, call, id) => (await loadMetaRecord(ctx, call, id))?.values ?? null,
   fresh: (ctx, call, id, siteId) => metaBeanDefaults(id, siteId, call.site.urls.directImages, ctx.domain.clock.now()),
-  feed: async (ctx, call) => {
-    const rows = await withTenant(ctx.domain.db, call.tenantId, (tx) => ctx.domain.repository.files.listFileMetadata(tx, { siteId: call.siteId }));
-    return rows.map((row) => columnsOf(row));
+  feed: (ctx, call, ids, use) => {
+    const { db, repository } = ctx.domain;
+    return withTenant(db, call.tenantId, (tx) =>
+      use(repository.beanFeed.source<Struct>((fn) => fn(tx), repository.files.siteFileMetadataFeed(tx, { siteId: call.siteId, ids }))),
+    );
   },
   // A feed selects the table alone, so iterator beans carry no joined file columns.
   item: (ctx, call, row, selected) => {
@@ -446,8 +450,8 @@ function findNewHandler(entity: FileEntity): JsonApiHandlerFn {
 }
 
 /** The columns a feed's `fields` param selects (beanFeed.cfc:201-213): the listed names that are columns, or undefined for all. */
-function selectedColumns(call: JsonApiCall, rows: readonly Readonly<Struct>[]): ReadonlySet<string> | undefined {
-  const columns = new Set(Object.keys(rows[0] ?? {}));
+function selectedColumns(call: JsonApiCall, feedColumns: readonly string[]): ReadonlySet<string> | undefined {
+  const columns = new Set(feedColumns);
   const fields = text(urlParam(call.apiContext, 'fields'))
     .split(',')
     .map((field) => field.trim().toLowerCase())
@@ -463,11 +467,14 @@ function inIdsOrder(items: readonly Struct[], ids: readonly string[]): Struct[] 
   });
 }
 
-/** findAll, findQuery and findMany (jsonApiUtility.cfc:2542-2918) over the entity feed's rows. */
-async function feedResult(entity: FileEntity, ctx: RouteContext, call: JsonApiCall, rows: Struct[]): Promise<JsonApiResult> {
-  const result = beanFeedQuery(rows, call, entity.feedOptions);
+/** findAll, findQuery and findMany (jsonApiUtility.cfc:2542-2918) over the entity feed, narrowed to the rows of `scopeIds` when given. */
+async function feedResult(entity: FileEntity, ctx: RouteContext, call: JsonApiCall, scopeIds?: readonly string[]): Promise<JsonApiResult> {
+  const { result, columns } = await entity.feed(ctx, call, scopeIds, async (source) => ({
+    result: await beanFeedQuery(source, call, entity.feedOptions),
+    columns: source.columns,
+  }));
   if ('count' in result) return jsonApiResultOf({ count: result.count }, entity.config.name);
-  const selected = selectedColumns(call, rows);
+  const selected = selectedColumns(call, columns);
   const views = result.items.map((row) => entity.view(entity.item(ctx, call, row, selected)));
   const items = await serializeEntityList(
     views,
@@ -485,7 +492,7 @@ async function feedResult(entity: FileEntity, ctx: RouteContext, call: JsonApiCa
 function feedHandler(entity: FileEntity): JsonApiHandlerFn {
   return async (ctx, call) => {
     if (!entityAccessAllowed(call.actor, entity.config)) return authorizationDenied();
-    return feedResult(entity, ctx, call, await entity.feed(ctx, call));
+    return feedResult(entity, ctx, call);
   };
 }
 
@@ -495,9 +502,7 @@ function findManyHandler(entity: FileEntity): JsonApiHandlerFn {
     if (!entityAccessAllowed(call.actor, entity.config)) return authorizationDenied();
     const ids = call.ids;
     if (ids === undefined) throw new LegacyApiError('server_error');
-    const pk = entity.config.primaryKey;
-    const rows = (await entity.feed(ctx, call)).filter((row) => ids.some((id) => sameId(text(row[pk]), id)));
-    return feedResult(entity, ctx, call, rows);
+    return feedResult(entity, ctx, call, ids);
   };
 }
 

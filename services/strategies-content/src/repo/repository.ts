@@ -14,6 +14,7 @@ import { systemClock, type Clock } from '@opt2/platform/service-kit';
 import { LEGACY_ADMIN_SENTINEL_ID, LegacyServiceUnavailableError, cfEq, cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
 import * as contentQueries from './content-queries.js';
 import { ContentQueryError, SqlParams, firstById, type SortDirection } from './content-queries.js';
+import { sqlFeedSource, type BeanFeedSource, type FeedColumn, type FeedRunner, type FeedTableSpec } from './bean-feed-sql.js';
 import * as feedQueries from './feed-queries.js';
 import * as fileQueries from './files.js';
 import {
@@ -472,10 +473,25 @@ function ormStorage(row: RepositoryRow): RepositoryRow {
 
 const STATS_COUNT_COLUMNS = ['views', 'rating', 'totalvotes', 'upvotes', 'downvotes', 'comments', 'disablecomments', 'majorversion', 'minorversion'] as const;
 // `select *` of tcontentstats without the tenant column.
-const STATS_FEED_COLUMNS = CONTENT_STATS.columns
-  .map((column) => column.name)
-  .filter((column) => column !== 'tenant_id')
-  .join(', ');
+const STATS_FEED_COLUMNS: Readonly<Record<string, FeedColumn>> = Object.fromEntries(
+  CONTENT_STATS.columns.filter((column) => column.name !== 'tenant_id').map((column) => [column.name, { sql: column.name, type: column.type }]),
+);
+// `select *` of tcontentvariationtargeting without the tenant column.
+const VARIATION_TARGETING_FEED_COLUMNS: Readonly<Record<string, FeedColumn>> = Object.fromEntries(
+  VARIATION_TARGETING.columns.filter((column) => column.name !== 'tenant_id').map((column) => [column.name, { sql: column.name, type: column.type }]),
+);
+// translate() arguments lowering text as String.prototype.toLowerCase lowers it into ASCII: A-Z and KELVIN SIGN, the
+// only other character it lowers to an ASCII one.
+const ASCII_FOLD_FROM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ\u212A';
+const ASCII_FOLD_TO = 'abcdefghijklmnopqrstuvwxyzk';
+const ASCII_TEXT = /^[\u0001-\u007f]*$/u;
+// An ARE matching a character outside ASCII.
+const NON_ASCII_ARE = '[^\\x01-\\x7f]';
+
+/** A targeting id as SQL Server's `=` matches it: trailing spaces dropped, then lower-cased. */
+function targetingKey(id: string): string {
+  return id.replace(/ +$/u, '').toLowerCase();
+}
 // raterManager.getTopRated's content types and grouped content columns (raterManager.cfc:204-253), plus `fileid` for the file join.
 const TOP_RATED_TYPES = ['Page', 'Component', 'Link', 'File', 'Folder', 'Calendar', 'Form', 'Gallery'];
 const TOP_RATED_COLUMNS = [
@@ -485,6 +501,34 @@ const TOP_RATED_COLUMNS = [
 ] as const;
 
 // ---- feeds, comments and categories ----
+
+// `select *` of tcontentcategories without the tenant column.
+const CATEGORY_FEED_COLUMNS: Readonly<Record<string, FeedColumn>> = Object.fromEntries(
+  CATEGORY.columns.filter((column) => column.name !== 'tenant_id').map((column) => [column.name, { sql: column.name, type: column.type }]),
+);
+// tcontentcategoryassign's columns, read under the alias `a`.
+const ASSIGNMENT_FEED_COLUMNS: Readonly<Record<string, FeedColumn>> = Object.fromEntries(
+  CATEGORY_ASSIGN.columns.filter((column) => column.name !== 'tenant_id').map((column) => [column.name, { sql: `a.${column.name}`, type: column.type }]),
+);
+// The tcontentcategories columns the assignment load SQL joins (contentCategoryAssignBean.cfc:93-100).
+const ASSIGNMENT_JOIN_COLUMNS = ['categoryname', 'parentname', 'parentid', 'filename', 'path'] as const;
+// Text a statement binds unchanged and a stored value can equal: no NUL and no lone surrogate.
+const STORABLE_TEXT = /^[^\u0000\uD800-\uDFFF]*$/u;
+
+/** An id or site as the JSON API feeds compare them: trailing spaces dropped, then lower-cased. */
+function feedKey(value: string): string {
+  return value.replace(/ +$/u, '').toLowerCase();
+}
+
+/** The tcontentcategories values a contentCategoryAssign feed row joins by its category id. */
+export interface AssignmentCategory {
+  categoryid: string;
+  categoryname: string | null;
+  parentname: string | null;
+  parentid: string | null;
+  filename: string | null;
+  path: string | null;
+}
 
 /** A feed (collection) to insert; `feedid` defaults to a new CF UUID. */
 export type FeedInput = Omit<Fields<FeedRow>, 'feedid'> & { feedid?: string; siteid: string };
@@ -508,6 +552,25 @@ export interface FeedItemsInput {
 /** The item and advanced-param sets feedDAO.create and update write with the feed row. */
 export interface FeedChildrenInput extends FeedItemsInput {
   advancedParams?: readonly FeedAdvancedParamInput[];
+}
+
+// `select *` of tcontentfeeds without the tenant column, as feedGateway.getFeeds reads it.
+const FEED_FEED_COLUMNS: Readonly<Record<string, FeedColumn>> = Object.fromEntries(
+  FEED.columns.filter((column) => column.name !== 'tenant_id').map((column) => [column.name, { sql: column.name, type: column.type }]),
+);
+// ICU's root case mapping, which String.prototype.toUpperCase and toLowerCase apply.
+const ICU_ROOT = 'pg_catalog."und-x-icu"';
+// The char(35) feedid, padding kept, upper-cased as JavaScript does, as one key per character ordered as UTF-16 code
+// units: U+E000-U+FFFF are lifted above the supplementary planes, whose surrogates sort below them.
+const FEED_ID_UPPER_KEY =
+  'ARRAY(SELECT CASE WHEN u.cp BETWEEN 57344 AND 65535 THEN u.cp + 1114112 ELSE u.cp END' +
+  ` FROM string_to_table(upper(rpad(feedid::text, 35) COLLATE ${ICU_ROOT}), NULL) WITH ORDINALITY AS c(ch, n), ascii(c.ch) AS u(cp)` +
+  ' ORDER BY c.n)';
+
+/** A feed id as the JSON API feed handlers key it: trailing spaces dropped, lower-cased as JavaScript does; null for text no stored id holds. */
+function feedIdKey(id: string): string | null {
+  const key = id.replace(/ +$/u, '').toLowerCase();
+  return key.includes('\u0000') || /[\uD800-\uDFFF]/u.test(key) ? null : key;
 }
 
 /** A comment to insert (contentCommentBean.save); `commentid` defaults to a new CF UUID, `path` comes from the caller. */
@@ -883,6 +946,19 @@ function changesetStorage(row: RepositoryRow): RepositoryRow {
   return stored;
 }
 
+/** `select *` of a change-set table without its tenant column, as a beanFeed spec selects it. */
+function changesetFeedColumns(def: typeof CHANGESET | typeof CHANGESET_CATEGORY_ASSIGN): Readonly<Record<string, FeedColumn>> {
+  return Object.fromEntries(def.columns.filter((column) => column.name !== 'tenant_id').map((column) => [column.name, { sql: column.name, type: column.type }]));
+}
+
+const CHANGESET_FEED_COLUMNS = changesetFeedColumns(CHANGESET);
+const CHANGESET_CATEGORY_ASSIGN_FEED_COLUMNS = changesetFeedColumns(CHANGESET_CATEGORY_ASSIGN);
+
+/** The requested ids a text parameter can carry: stored text holds no NUL or lone surrogate, so the others match no row. */
+function storableIds(ids: readonly string[]): string[] {
+  return ids.filter((id) => !id.includes('\u0000') && !/[\uD800-\uDFFF]/u.test(id));
+}
+
 /** Builds the content repository: the platform repository of `OWNED_TABLES` and one helper namespace per content area. */
 export function createContentRepository({ clock = systemClock, schema = SCHEMA }: ContentRepositoryOptions = {}) {
   const platform: Repository = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock });
@@ -890,6 +966,8 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
   /** An id column as SQL Server's CI_AS `=` compares it; leakproof, unlike lower(), so its expression index applies under forced RLS. */
   const ciIdExpr = (column: string, collation: 'legacy_ci' | 'legacy_char_ci'): string =>
     `((${column}::bpchar) COLLATE ${qualified(schema, collation)})`;
+  /** `expr` as {@link feedKey} reads it; ICU lower-casing is the Unicode default case mapping toLowerCase applies. */
+  const feedKeyOf = (expr: string): string => `(lower(rtrim((${expr})::text) COLLATE ${qualified(schema, 'bean_feed_ci')}) COLLATE "C")`;
 
   /** Rows of a raw SELECT over `defs`, read behind their units' window phase. */
   function select<R extends QueryResultRow>(tx: TenantTx, defs: readonly TableDef[], sql: string, values: readonly unknown[]): Promise<R[]> {
@@ -1251,6 +1329,38 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
 
   const content = {
     ...contentQueries,
+
+    /** The contentCategoryAssign beanFeed scope (site, or one version's), inner-joined by feedKey to the first of `categories` per key when given. */
+    categoryAssignmentsFeed(args: { siteId: string; contentHistId?: string; categories?: readonly AssignmentCategory[] }): FeedTableSpec {
+      const p = new SqlParams(1);
+      let from = `${name(CATEGORY_ASSIGN)} a`;
+      let columns = ASSIGNMENT_FEED_COLUMNS;
+      if (args.categories !== undefined) {
+        const byKey = new Map<string, AssignmentCategory>();
+        for (const category of args.categories) {
+          if (!byKey.has(feedKey(category.categoryid))) byKey.set(feedKey(category.categoryid), category);
+        }
+        const joined = [...byKey.values()];
+        const arrays = [[...byKey.keys()], ...ASSIGNMENT_JOIN_COLUMNS.map((column) => joined.map((category) => category[column]))];
+        from +=
+          ` INNER JOIN unnest(${arrays.map((values) => `${p.add(values)}::text[]`).join(', ')})` +
+          ` AS c(category_key, ${ASSIGNMENT_JOIN_COLUMNS.join(', ')}) ON (c.category_key = ${feedKeyOf('a.categoryid')})`;
+        columns = { ...columns, ...Object.fromEntries(ASSIGNMENT_JOIN_COLUMNS.map((column) => [column, { sql: `c.${column}`, type: 's' } as const])) };
+      }
+      const histId = args.contentHistId;
+      const scope =
+        histId === undefined
+          ? [ciEq(p, 'a.siteid', args.siteId)]
+          : [idEq(p, 'a.contenthistid', histId), `${feedKeyOf('a.siteid')} = ${p.add(feedKey(args.siteId))}::text`];
+      return {
+        defs: [CATEGORY_ASSIGN],
+        from,
+        where: ['a.tenant_id = $1', ...scope],
+        values: p.values,
+        columns,
+        tieBreak: histId === undefined ? ['a.contenthistid', 'a.categoryid'] : ['a.categoryid', 'a.contenthistid'],
+      };
+    },
 
     /** contentDAO.create: inserts a version as legacy stores it and returns it with its identity `tcontent_id`. */
     async insertVersion(tx: TenantTx, row: VersionInput, ctx?: WriteContext): Promise<ContentRow> {
@@ -1654,19 +1764,21 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     /** contentStatsBean.getQuery. */
     readStats: contentQueries.stats,
 
-    /** A beanFeed over `tcontentstats`: the site's rows, only those of `contentIds` when given, in clustered key order. */
-    siteStats(tx: TenantTx, args: { siteId: string; contentIds?: readonly string[] }): Promise<Omit<ContentStatsRow, 'tenant_id'>[]> {
+    /** The beanFeed scope of `tcontentstats`: the site's rows, only those of `contentIds` when given, in clustered key order. */
+    siteStatsFeed(args: { siteId: string; contentIds?: readonly string[] }): FeedTableSpec {
       const p = new SqlParams(1);
       const filters = ['tenant_id = $1', `siteid = ${p.add(args.siteId)}`];
       if (args.contentIds !== undefined) {
         filters.push(idIn(p, 'contentid', args.contentIds));
       }
-      return select<Omit<ContentStatsRow, 'tenant_id'>>(
-        tx,
-        [CONTENT_STATS],
-        `SELECT ${STATS_FEED_COLUMNS} FROM ${name(CONTENT_STATS)} WHERE ${filters.join(' AND ')} ORDER BY contentid, siteid`,
-        [tx.tenantId, ...p.values],
-      );
+      return {
+        defs: [CONTENT_STATS],
+        from: name(CONTENT_STATS),
+        where: filters,
+        values: p.values,
+        columns: STATS_FEED_COLUMNS,
+        tieBreak: ['contentid', 'siteid'],
+      };
     },
 
     /** raterManager.readRate: one user's rating of an item, or null. */
@@ -1979,6 +2091,29 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     },
 
     replaceAdvancedParams,
+
+    /**
+     * The JSON API beanFeed scope of `tcontentfeeds`: the site's Local and Remote feeds of `listFeeds`, only those of
+     * `feedIds` when given, ordered as the two lists concatenated and stably sorted by upper-cased feedid.
+     */
+    siteFeedsFeed(args: { siteId: string; feedIds?: readonly string[] }): FeedTableSpec {
+      const p = new SqlParams(1);
+      const local = ciEq(p, 'type', 'Local');
+      const remote = ciEq(p, 'type', 'Remote');
+      const filters = ['tenant_id = $1', `siteid = ${p.add(args.siteId)}`, `(${local} OR ${remote})`];
+      if (args.feedIds !== undefined) {
+        const keys = [...new Set(args.feedIds.map(feedIdKey).filter((key) => key !== null))];
+        filters.push(`lower(feedid::text COLLATE ${ICU_ROOT}) COLLATE "C" = ANY(${p.add(keys)}::text[])`);
+      }
+      return {
+        defs: [FEED],
+        from: name(FEED),
+        where: filters,
+        values: p.values,
+        columns: FEED_FEED_COLUMNS,
+        tieBreak: [FEED_ID_UPPER_KEY, `(CASE WHEN ${local} THEN 0 ELSE 1 END)`, orderKey('lower(name)', 'asc'), 'feedid'],
+      };
+    },
   };
 
   // ---- comments ----
@@ -2285,6 +2420,27 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       );
     },
 
+    /** The beanFeed scope of the JSON API comment feed: `commentFeed`'s uncapped rows of `siteId` in its order, only those of `commentIds` when given. */
+    commentFeedSpec(args: { siteId: string; commentIds?: readonly string[] }): FeedTableSpec {
+      const p = new SqlParams(1);
+      const where = [commentFeedQuery(p, { siteId: args.siteId, maxItems: 0 }).where];
+      if (args.commentIds !== undefined) {
+        // An id holding NUL or a lone surrogate, which PostgreSQL text cannot store, equals no stored id.
+        const ids = args.commentIds.filter((id) => !/\0|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(id));
+        where.push(`${ciIdExpr('commentid', 'legacy_char_ci')} = ANY(${p.add(ids)}::bpchar[])`);
+      }
+      return {
+        defs: [COMMENT],
+        from: name(COMMENT),
+        where,
+        values: p.values,
+        columns: Object.fromEntries(
+          COMMENT.columns.filter((column) => column.name !== 'tenant_id').map((column) => [column.name, { sql: column.name, type: column.type }]),
+        ),
+        tieBreak: [orderKey(sortColumn(COMMENT, name(COMMENT), 'entered'), 'asc'), 'commentid'],
+      };
+    },
+
     /** contentCommentBean.getKidsQuery: the replies to one comment. */
     commentKids(
       tx: TenantTx,
@@ -2566,6 +2722,18 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       ]);
     },
 
+    /** `readCategory` by category id for several ids with one query: each id's first category, keyed by the id. */
+    async readCategoriesIn(tx: TenantTx, categoryIds: readonly string[]): Promise<Map<string, CategoryRow>> {
+      const ids = [...new Set(categoryIds)];
+      if (ids.length === 0) return new Map();
+      const p = new SqlParams(1);
+      const rows = await select<CategoryRow>(tx, [CATEGORY], `SELECT * FROM ${name(CATEGORY)} WHERE tenant_id = $1 AND ${idIn(p, 'categoryid', ids)} ORDER BY categoryid`, [
+        tx.tenantId,
+        ...p.values,
+      ]);
+      return firstById(rows, ids, (row) => row.categoryid);
+    },
+
     listCategories: categoryList,
 
     /** categoryGateway.getCategoryCount. */
@@ -2581,6 +2749,24 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     /** categoryGateway.getCategoriesBySiteID. */
     categoriesBySite(tx: TenantTx, args: { siteId: string; keywords?: string }): Promise<CategoryRow[]> {
       return siteCategories(tx, args, false);
+    },
+
+    /** The category beanFeed scope: the site's categories in categoriesBySite order, only those of `categoryIds` (by feedKey) when given. */
+    siteCategoriesFeed(args: { siteId: string; categoryIds?: readonly string[] }): FeedTableSpec {
+      const p = new SqlParams(1);
+      const filters = ['tenant_id = $1', `siteid = ${p.add(args.siteId)}`];
+      if (args.categoryIds !== undefined) {
+        const keys = new Set(args.categoryIds.filter((id) => STORABLE_TEXT.test(id)).map(feedKey));
+        filters.push(`${feedKeyOf('categoryid')} = ANY(${p.add([...keys])}::text[])`);
+      }
+      return {
+        defs: [CATEGORY],
+        from: name(CATEGORY),
+        where: filters,
+        values: p.values,
+        columns: CATEGORY_FEED_COLUMNS,
+        tieBreak: [orderKey('lower(name)', 'asc'), 'categoryid'],
+      };
     },
 
     /** categoryGateway.getInterestGroupsBySiteID. */
@@ -3036,6 +3222,40 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
         `SELECT * FROM ${name(CHANGESET_CATEGORY_ASSIGN)} WHERE ${filters.join(' AND ')} ORDER BY assignmentid`,
         [tx.tenantId, ...p.values],
       );
+    },
+
+    /** The beanFeed scope of changesetBean.getFeed: the site's change sets, only those of `changesetIds` when given, in primary-key order. */
+    siteChangesetsFeed(args: { siteId: string; changesetIds?: readonly string[] }): FeedTableSpec {
+      const p = new SqlParams(1);
+      const filters = ['tenant_id = $1', `siteid = ${p.add(args.siteId)}`];
+      if (args.changesetIds !== undefined) {
+        filters.push(`${ciIdExpr('changesetid', 'legacy_char_ci')} = ANY(${p.add(storableIds(args.changesetIds))}::bpchar[])`);
+      }
+      return {
+        defs: [CHANGESET],
+        from: name(CHANGESET),
+        where: filters,
+        values: p.values,
+        columns: CHANGESET_FEED_COLUMNS,
+        tieBreak: ['changesetid'],
+      };
+    },
+
+    /** The beanFeed scope of changesetCategoryAssignment getFeed: the site's rows, only those of `assignmentIds` when given, in primary-key order. */
+    siteCategoryAssignmentsFeed(args: { siteId: string; assignmentIds?: readonly string[] }): FeedTableSpec {
+      const p = new SqlParams(1);
+      const filters = ['tenant_id = $1', `siteid = ${p.add(args.siteId)}`];
+      if (args.assignmentIds !== undefined) {
+        filters.push(`${ciIdExpr('assignmentid', 'legacy_char_ci')} = ANY(${p.add(storableIds(args.assignmentIds))}::bpchar[])`);
+      }
+      return {
+        defs: [CHANGESET_CATEGORY_ASSIGN],
+        from: name(CHANGESET_CATEGORY_ASSIGN),
+        where: filters,
+        values: p.values,
+        columns: CHANGESET_CATEGORY_ASSIGN_FEED_COLUMNS,
+        tieBreak: ['assignmentid'],
+      };
     },
 
     /** changesetCategoryAssignment beanORM.save: updates the row with the id (any site), else inserts it; '' binds NULL. */
@@ -3629,6 +3849,32 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       return rows[0] ?? null;
     },
 
+    /** targetingFor of every id of `contentIds` in one statement: element i is the row targetingFor returns for `contentIds[i]`, or null. */
+    async targetingsForContents(
+      tx: TenantTx,
+      args: { contentIds: readonly string[]; siteId: string },
+    ): Promise<(VariationTargetingRow | null)[]> {
+      if (args.contentIds.length === 0) {
+        return [];
+      }
+      const forms = args.contentIds.flatMap((id, index) => idForms([id]).map((form) => ({ form, index })));
+      const p = new SqlParams(1);
+      const rows = await select<VariationTargetingRow & { requested_index: number }>(
+        tx,
+        [VARIATION_TARGETING],
+        `SELECT DISTINCT ON (f.requested_index) f.requested_index, t.*` +
+          ` FROM unnest(${p.add(forms.map(({ form }) => form))}::text[], ${p.add(forms.map(({ index }) => index))}::integer[]) AS f(form, requested_index)` +
+          ` INNER JOIN ${name(VARIATION_TARGETING)} t ON t.contentid = f.form::bpchar` +
+          ` WHERE t.tenant_id = $1 AND t.siteid = ${p.add(args.siteId)} ORDER BY f.requested_index, t.targetingid`,
+        [tx.tenantId, ...p.values],
+      );
+      const found: (VariationTargetingRow | null)[] = args.contentIds.map(() => null);
+      for (const { requested_index: index, ...row } of rows) {
+        found[index] = row;
+      }
+      return found;
+    },
+
     /** The tenant's targeting rows in primary-key order, as contentVariationTargetingBean's beanFeed selects them. */
     targetingsOfTenant(tx: TenantTx): Promise<VariationTargetingRow[]> {
       return select<VariationTargetingRow>(
@@ -3637,6 +3883,39 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
         `SELECT * FROM ${name(VARIATION_TARGETING)} WHERE tenant_id = $1 ORDER BY targetingid`,
         [tx.tenantId],
       );
+    },
+
+    /** The beanFeed scope of targetingsOfTenant's rows; with `ids`, only the rows whose id equals one of them as SQL Server's `=` compares. */
+    async targetingFeed(tx: TenantTx, args: { ids?: readonly string[] } = {}): Promise<FeedTableSpec> {
+      const p = new SqlParams(1);
+      const filters = ['tenant_id = $1'];
+      if (args.ids !== undefined) {
+        const keys = new Set(args.ids.map(targetingKey));
+        const ascii = [...keys].filter((key) => ASCII_TEXT.test(key));
+        // Only an id holding a character outside ASCII lowers to a key outside ASCII; no stored id holds NUL.
+        let stored: string[] = [];
+        if ([...keys].some((key) => !ASCII_TEXT.test(key) && !key.includes('\u0000'))) {
+          const rows = await select<{ targetingid: string }>(
+            tx,
+            [VARIATION_TARGETING],
+            `SELECT targetingid FROM ${name(VARIATION_TARGETING)} WHERE tenant_id = $1 AND targetingid::text ~ $2::text`,
+            [tx.tenantId, NON_ASCII_ARE],
+          );
+          stored = rows.map((row) => row.targetingid).filter((id) => keys.has(targetingKey(id)));
+        }
+        filters.push(
+          `translate(targetingid::text, ${p.add(ASCII_FOLD_FROM)}::text, ${p.add(ASCII_FOLD_TO)}::text) = ANY(${p.add(ascii)}::text[])` +
+            ` OR targetingid = ANY(${p.add(stored)}::bpchar[])`,
+        );
+      }
+      return {
+        defs: [VARIATION_TARGETING],
+        from: name(VARIATION_TARGETING),
+        where: filters,
+        values: p.values,
+        columns: VARIATION_TARGETING_FEED_COLUMNS,
+        tieBreak: ['targetingid'],
+      };
     },
   };
 
@@ -3922,6 +4201,13 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     },
   };
 
+  const beanFeed = {
+    /** A JSON API feed source over `spec`, whose statements `run` opens the tenant transaction for. */
+    source<R extends QueryResultRow>(run: FeedRunner, spec: FeedTableSpec): BeanFeedSource<R> {
+      return sqlFeedSource<R>({ spec, run, select, collation: qualified(schema, 'bean_feed_ci') });
+    },
+  };
+
   return Object.freeze({
     platform,
     content,
@@ -3938,6 +4224,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     approvalQueues,
     trash,
     projections,
+    beanFeed,
   });
 }
 

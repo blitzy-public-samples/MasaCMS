@@ -13,6 +13,7 @@ import {
   javaTrim,
   LegacyServiceUnavailableError,
 } from '@opt2/platform/legacy-compat';
+import { withTenant } from '@opt2/platform/tenancy';
 import {
   deleteComment,
   feedCommentValues,
@@ -86,13 +87,12 @@ const FEED_OPTIONS: BeanFeedOptions = {
   table: 'tcontentcomments',
 };
 
-/** Per-call state: the site's comment rows, read at most once, and the resolver of comment relations. */
+/** Per-call state: the call, the values view and the resolver of comment relations. */
 interface CommentScope {
   readonly ctx: Ctx;
   readonly call: JsonApiCall;
   readonly view: CommentValuesView;
   readonly resolver: ExpansionResolver;
-  rows(): Promise<FeedRow[]>;
 }
 
 /** The own key equal to `name` ignoring case. */
@@ -173,10 +173,11 @@ function relationUnavailable(name: string): LegacyServiceUnavailableError {
   );
 }
 
-/** Every comment of the request site (the comment feed's `siteID in (contentPoolID)` scope), in its tenant. */
-async function siteRows(ctx: Ctx, call: JsonApiCall): Promise<FeedRow[]> {
-  const rows = await getComments(ctx.domain, call.actor, { siteId: call.siteId, maxItems: 0 });
-  return rows.map(({ tenant_id: _tenantId, ...row }) => row);
+/** beanFeed over the site's comments (the feed's `siteID in (contentPoolID)` scope), or those of `ids`, in SQL in one actor-tenant transaction. */
+function siteFeed(ctx: Ctx, call: JsonApiCall, options: BeanFeedOptions, ids?: readonly string[]): Promise<BeanFeedResult<FeedRow>> {
+  const { db, repository } = ctx.domain;
+  const spec = repository.comments.commentFeedSpec(ids === undefined ? { siteId: call.siteId } : { siteId: call.siteId, commentIds: ids });
+  return withTenant(db, call.actor.tenantId, (tx) => beanFeedQuery(repository.beanFeed.source<FeedRow>((fn) => fn(tx), spec), call, options));
 }
 
 /** What the comment's values need beyond its row: the site scheme setURL prefixes. */
@@ -186,7 +187,6 @@ function valuesView(call: JsonApiCall): CommentValuesView {
 
 /** The scope of one handler call. */
 function commentScope(ctx: Ctx, call: JsonApiCall): CommentScope {
-  let rows: Promise<FeedRow[]> | undefined;
   const scope: CommentScope = {
     ctx,
     call,
@@ -197,7 +197,6 @@ function commentScope(ctx: Ctx, call: JsonApiCall): CommentScope {
       crumbs: () => Promise.reject(relationUnavailable('crumbs')),
       relatedContent: () => Promise.reject(relationUnavailable('relatedcontent')),
     },
-    rows: () => (rows ??= siteRows(ctx, call)),
   };
   return scope;
 }
@@ -250,7 +249,7 @@ async function expandMany(scope: CommentScope, prop: RelationProp, params: Struc
   if (!cfEq(prop.cfc, 'comment')) throw relationUnavailable(prop.name);
   const expandedParams = { ...params };
   allowQueryParams(expandedParams, scope.call.actor);
-  const result = beanFeedQuery(await scope.rows(), scope.call, { ...FEED_OPTIONS, expandedParams });
+  const result = await siteFeed(scope.ctx, scope.call, { ...FEED_OPTIONS, expandedParams });
   return feedData(scope, result, 'findQuery', opts);
 }
 
@@ -274,13 +273,8 @@ async function findFeed(ctx: Ctx, call: JsonApiCall, method: 'findall' | 'findQu
   const scope = commentScope(ctx, call);
   paramUrl(call.apiContext, 'entityname', call.entityName);
   allowQueryParams(call.apiContext.url, call.actor);
-  const result = beanFeedQuery(await scope.rows(), call, FEED_OPTIONS);
+  const result = await siteFeed(ctx, call, FEED_OPTIONS);
   return jsonApiResultOf(await feedData(scope, result, method, { expand: expandOf(call), expanded: 0 }), 'comment');
-}
-
-/** SQL Server `IN` equality of a stored id: case-insensitive, trailing spaces ignored. */
-function sameId(stored: string, id: string): boolean {
-  return stored.trimEnd().toLowerCase() === id.trimEnd().toLowerCase();
 }
 
 /** findMany (2627-2709): the comments of `ids`, in the order of `ids` (repeats included) unless `sort` is set. */
@@ -288,8 +282,7 @@ async function findMany(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
   const scope = commentScope(ctx, call);
   paramUrl(call.apiContext, 'entityname', call.entityName);
   const ids = call.ids ?? [];
-  const rows = (await scope.rows()).filter((row) => ids.some((id) => sameId(row.commentid, id)));
-  const result = beanFeedQuery(rows, call, FEED_OPTIONS);
+  const result = await siteFeed(ctx, call, FEED_OPTIONS, ids);
   const sort = urlParam(call.apiContext, 'sort');
   const sorted = sort !== undefined && sort !== null && sort !== '';
   const inIdOrder = (items: Struct[]): Struct[] =>

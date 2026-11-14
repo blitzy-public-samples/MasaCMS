@@ -23,6 +23,17 @@ import type { Actor, SiteContentSettings } from '../../domain/context.js';
 import type { UploadedFile } from '../../domain/files.js';
 import { getModulePerm } from '../../domain/permissions.js';
 import type {
+  BeanFeedSource,
+  FeedCondition,
+  FeedCount,
+  FeedOperator,
+  FeedOrderTerm,
+  FeedParamCondition,
+  FeedParamType,
+  FeedQuery,
+} from '../../repo/bean-feed-sql.js';
+import { likeRuns, likeVerdict, type LikeRuns, type LikeToken } from '../../repo/feed-like.js';
+import type {
   ContentEntityConfig,
   ContentEntityName,
   EntityPropertyHint,
@@ -37,6 +48,17 @@ import {
 } from '../../legacy/jsonapi-serializers.js';
 // Type-only: ../index.ts imports ../jsonapi.ts, which imports this folder.
 import type { ContentRouteContext } from '../index.js';
+
+export type {
+  BeanFeedSource,
+  FeedCondition,
+  FeedCount,
+  FeedOperator,
+  FeedOrderTerm,
+  FeedParamCondition,
+  FeedParamType,
+  FeedQuery,
+} from '../../repo/bean-feed-sql.js';
 
 type Struct = Record<string, unknown>;
 
@@ -147,13 +169,18 @@ export interface EntityHandler {
 /** Handles a public method such as `findCrumbArray`. */
 export type MethodHandler = JsonApiHandlerFn;
 
+/** The error CFML raises converting a complex value to a string. */
+function complexValueError(): TypeError {
+  return new TypeError('Complex object types cannot be converted to simple values.');
+}
+
 /** CFML conversion of a simple value to a string; '' for null or undefined. */
 function cfText(value: unknown): string {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value;
   if (typeof value === 'number') return cfNumberString(value);
   if (typeof value === 'boolean') return String(value);
-  throw new TypeError('Complex object types cannot be converted to simple values.');
+  throw complexValueError();
 }
 
 /** The key of `record` matching `name` ignoring case. */
@@ -377,8 +404,8 @@ export class UnsupportedFeedQueryError extends Error {
   override readonly name: string = 'UnsupportedFeedQueryError';
 }
 
-type ParamType = 'varchar' | 'numeric' | 'timestamp';
-type Condition = '=' | '!=' | '>' | '>=' | '<' | '<=' | 'in' | 'not in' | 'like' | '';
+type ParamType = FeedParamType;
+type Condition = FeedOperator | '';
 
 /** One row of beanFeed's params query, as mura.queryParam leaves it. */
 interface FeedParam {
@@ -399,13 +426,8 @@ interface OrderItem {
   ownTable: boolean;
 }
 
-interface OrderTerm {
-  column: string;
-  desc: boolean;
-}
-
 type Truth = boolean | null;
-type Expr = { kind: 'param'; param: FeedParam } | { kind: 'and' | 'or'; left: Expr; right: Expr };
+type Expr = FeedCondition;
 
 // findQuery's two exclusion lists (jsonApiUtility.cfc:2800 and 2850), lower-cased.
 const EXPANDED_EXCLUDED: ReadonlySet<string> = new Set(
@@ -543,127 +565,41 @@ function timeOf(value: unknown): number | undefined {
   return typeof value === 'string' ? parseCfDate(value)?.getTime() : undefined;
 }
 
-/** The test of one pattern character position against one code unit of the value. */
-type LikeToken = (ch: string) => boolean;
-
-/** One `%`-free run of a LIKE pattern, one token per character position. */
-type LikeRun = readonly LikeToken[];
-
-const LIKE_RANGE_END = /^[0-9A-Za-z]$/;
-
-/** COLLATOR's rank of each code unit below U+0180 whose SQL Server order, as nvarchar and as varchar, it reproduces. */
-function likeRanks(): ReadonlyMap<string, number> {
-  const units = Array.from({ length: 0x180 }, (_, code) => String.fromCharCode(code))
-    .filter((ch) => !'ª²³¹º¼½¾ÐÞðþĸŉŒœŠšŸ'.includes(ch))
-    .sort((a, b) => COLLATOR.compare(a, b));
-  const ranks = new Map<string, number>();
-  units.forEach((ch, i) => {
-    const previous = units[i - 1];
-    const tied = previous !== undefined && COLLATOR.compare(previous, ch) === 0;
-    ranks.set(ch, tied ? (ranks.get(previous) ?? i) : i);
-  });
-  return ranks;
-}
-
-const LIKE_RANKS = likeRanks();
-
-/** A code unit as a case-insensitive non-unicode JS regex compares it (ES Canonicalize). */
-function likeFold(ch: string): string {
-  const upper = ch.toUpperCase();
-  return upper.length !== 1 || (ch.charCodeAt(0) >= 128 && upper.charCodeAt(0) < 128) ? ch : upper;
-}
-
-/** The rank of a range endpoint SQL Server and COLLATOR order alike (an ASCII letter or digit), else undefined. */
-function likeRangeEnd(ch: string): number | undefined {
-  return LIKE_RANGE_END.test(ch) ? LIKE_RANKS.get(ch) : undefined;
-}
-
-/** The token of a LIKE `[...]` class's content under SQL Server's `^`, `-` and collation-range rules. */
-function likeClass(content: string): LikeToken {
-  const body = content.replace(/^\^+/, '');
-  const negated = body !== content;
-  const unsupported = (): never => {
-    throw new UnsupportedFeedQueryError(`LIKE class [${content}]`);
-  };
-  if (body.includes('--')) return unsupported;
-  const members = new Set<string>();
-  const ranges: [number, number][] = [];
-  let unranked = false;
-  for (let i = 0; i < body.length; i++) {
-    if (body.charAt(i + 1) !== '-' || i + 2 >= body.length) members.add(likeFold(body.charAt(i)));
-    else {
-      const from = likeRangeEnd(body.charAt(i));
-      const to = likeRangeEnd(body.charAt(i + 2));
-      if (from === undefined || to === undefined) unranked = true;
-      else ranges.push([from, to]);
-      i += 2;
-      // A `-` right after a range and before another character is dropped.
-      if (body.charAt(i + 1) === '-' && i + 2 < body.length) i++;
-    }
-  }
-  return (ch) => {
-    const rank = LIKE_RANKS.get(ch);
-    const inRange = rank !== undefined && ranges.some(([from, to]) => from <= rank && rank <= to);
-    if (members.has(likeFold(ch)) || inRange) return !negated;
-    if (unranked || (rank === undefined && ranges.length > 0)) return unsupported();
-    return negated;
-  };
+/** Whether `token` matches the code unit `ch`; a class verdict the in-memory feed cannot compute raises. */
+function likeTokenMatches(token: LikeToken, ch: string): boolean {
+  const verdict = likeVerdict(token, ch);
+  if (verdict === 'unsupported' && token.kind === 'class') throw new UnsupportedFeedQueryError(`LIKE class [${token.content}]`);
+  return verdict === 'match';
 }
 
 /** Whether `run` matches `text` at offset `at`. */
-function likeRunAt(run: LikeRun, text: string, at: number): boolean {
-  return at + run.length <= text.length && run.every((token, i) => token(text.charAt(at + i)));
+function likeRunAt(run: readonly LikeToken[], text: string, at: number): boolean {
+  return at + run.length <= text.length && run.every((token, i) => likeTokenMatches(token, text.charAt(at + i)));
 }
 
 /** A SQL Server LIKE pattern (`%`, `_` and `[...]` classes) matched case-insensitively without backtracking. */
 class LikePattern {
-  /** The run before the first `%`, matched at the start. */
-  private readonly head: LikeRun;
-  /** The runs between `%`s, in order. */
-  private readonly middle: readonly LikeRun[];
-  /** The run after the last `%`, matched at the end; undefined when the pattern has no `%`. */
-  private readonly tail: LikeRun | undefined;
+  private readonly runs: LikeRuns;
 
   constructor(pattern: string) {
-    const ended: LikeRun[] = [];
-    let tokens: LikeToken[] = [];
-    for (let i = 0; i < pattern.length; i++) {
-      const ch = pattern.charAt(i);
-      if (ch === '%') {
-        ended.push(tokens);
-        tokens = [];
-      } else if (ch === '_') tokens.push(() => true);
-      else if (ch === '[') {
-        // A class ends at the first `]` after its `[`, or at the end of the pattern.
-        const close = pattern.indexOf(']', i + 1);
-        const end = close < 0 ? pattern.length : close;
-        tokens.push(likeClass(pattern.slice(i + 1, end)));
-        i = end;
-      } else {
-        const folded = likeFold(ch);
-        tokens.push((unit) => likeFold(unit) === folded);
-      }
-    }
-    const [head, ...middle] = ended;
-    this.head = head ?? tokens;
-    this.middle = middle;
-    this.tail = head === undefined ? undefined : tokens;
+    this.runs = likeRuns(pattern);
   }
 
   /** Whether `text` matches; each middle run takes its leftmost fit, which is optimal for fixed-length runs. */
   matches(text: string): boolean {
-    if (this.tail === undefined) return text.length === this.head.length && likeRunAt(this.head, text, 0);
-    if (!likeRunAt(this.head, text, 0)) return false;
-    let cursor = this.head.length;
-    for (const run of this.middle) {
+    const { head, middle, tail } = this.runs;
+    if (tail === undefined) return text.length === head.length && likeRunAt(head, text, 0);
+    if (!likeRunAt(head, text, 0)) return false;
+    let cursor = head.length;
+    for (const run of middle) {
       const latest = text.length - run.length;
       let at = cursor;
       while (at <= latest && !likeRunAt(run, text, at)) at++;
       if (at > latest) return false;
       cursor = at + run.length;
     }
-    const start = text.length - this.tail.length;
-    return start >= cursor && likeRunAt(this.tail, text, start);
+    const start = text.length - tail.length;
+    return start >= cursor && likeRunAt(tail, text, start);
   }
 }
 
@@ -740,7 +676,7 @@ function compareNonNull(a: unknown, b: unknown, type: ParamType): number {
 class ConditionParser {
   private pos = 0;
 
-  constructor(private readonly tokens: readonly (string | FeedParam)[]) {}
+  constructor(private readonly tokens: readonly (string | FeedParamCondition)[]) {}
 
   parse(): Expr {
     const expr = this.or();
@@ -774,12 +710,44 @@ class ConditionParser {
       return expr;
     }
     if (token === undefined || typeof token === 'string') throw serverError();
-    return { kind: 'param', param: token };
+    return token;
   }
 }
 
+/** A WHERE-clause param as the feed plan carries it. */
+function conditionOf(param: FeedParam, condition: FeedOperator): FeedParamCondition {
+  const { field, type, criteria, isNull } = param;
+  const listed = condition === 'in' || condition === 'not in';
+  const items = cfListToArray(criteria);
+  const compared = listed ? (items.length > 0 ? items : ['']) : [criteria];
+  return {
+    kind: 'param',
+    column: field.toLowerCase(),
+    field,
+    type,
+    condition,
+    criteria,
+    isNull,
+    ...(listed ? { items: compared } : {}),
+    ...(param.pattern === undefined ? {} : { pattern: criteria }),
+    ...(type === 'timestamp' ? { times: compared.map((value) => timeOf(value) ?? 0) } : {}),
+  };
+}
+
+const likePatterns = new WeakMap<FeedParamCondition, LikePattern>();
+
+/** The compiled `like` pattern of a param, once per param. */
+function likePattern(param: FeedParamCondition, pattern: string): LikePattern {
+  let compiled = likePatterns.get(param);
+  if (compiled === undefined) {
+    compiled = new LikePattern(pattern);
+    likePatterns.set(param, compiled);
+  }
+  return compiled;
+}
+
 /** SQL three-valued truth of `param` for `row`. */
-function paramTruth(param: FeedParam, row: Readonly<Struct>): Truth {
+function paramTruth(param: FeedParamCondition, row: Readonly<Struct>): Truth {
   const value = getNoCase(row, param.field);
   if (param.isNull) {
     if (param.condition === '=') return value === null || value === undefined;
@@ -787,10 +755,9 @@ function paramTruth(param: FeedParam, row: Readonly<Struct>): Truth {
     return null;
   }
   if (value === null || value === undefined) return null;
-  if (param.pattern !== undefined) return param.pattern.matches(cfText(value).trimEnd());
+  if (param.pattern !== undefined) return likePattern(param, param.pattern).matches(cfText(value).trimEnd());
   if (param.condition === 'in' || param.condition === 'not in') {
-    const items = cfListToArray(param.criteria);
-    const found = (items.length > 0 ? items : ['']).some((item) => compareNonNull(value, item, param.type) === 0);
+    const found = (param.items ?? ['']).some((item) => compareNonNull(value, item, param.type) === 0);
     return param.condition === 'in' ? found : !found;
   }
   const order = compareNonNull(value, param.criteria, param.type);
@@ -812,7 +779,7 @@ function paramTruth(param: FeedParam, row: Readonly<Struct>): Truth {
 
 /** SQL three-valued evaluation of `expr` for `row`. */
 function exprTruth(expr: Expr, row: Readonly<Struct>): Truth {
-  if (expr.kind === 'param') return paramTruth(expr.param, row);
+  if (expr.kind === 'param') return paramTruth(expr, row);
   const left = exprTruth(expr.left, row);
   const right = exprTruth(expr.right, row);
   if (expr.kind === 'and') {
@@ -823,7 +790,12 @@ function exprTruth(expr: Expr, row: Readonly<Struct>): Truth {
   return left === false && right === false ? false : null;
 }
 
-/** beanFeed state a request builds (beanFeed.cfc:301-346, 614-733), evaluated over rows in getQuery's order (819-1111). */
+/** Raises the error filtering `rows` by `where` raises at its first row that raises one. */
+function raiseFilter(where: Expr | undefined, rows: readonly Readonly<Struct>[]): void {
+  if (where !== undefined) for (const row of rows) exprTruth(where, row);
+}
+
+/** beanFeed state a request builds (beanFeed.cfc:301-346, 614-733), evaluated by its source in getQuery's order (819-1111). */
 class BeanFeed<R extends Readonly<Struct>> {
   readonly params: FeedParam[] = [];
   readonly groupBy: string[] = [];
@@ -837,17 +809,17 @@ class BeanFeed<R extends Readonly<Struct>> {
   private readonly columns: ReadonlySet<string> | undefined;
   private readonly properties: ReadonlySet<string>;
 
+  /** `columns` are the table's, or undefined for a scope without rows whose columns were not declared. */
   constructor(
-    private readonly rows: readonly R[],
+    private source: BeanFeedSource<R>,
+    columns: readonly string[] | undefined,
     private readonly options: BeanFeedOptions,
   ) {
     this.sortBy = options.defaultSort?.sortBy ?? '';
     this.sortDirection = options.defaultSort?.sortDirection ?? 'asc';
     this.orderBy = cfListToArray(options.defaultOrderBy ?? '').map((text): OrderItem => ({ text, ownTable: false }));
     this.properties = new Set(options.propertyNames.map((name) => name.toLowerCase()));
-    const columns = options.columns ?? [...new Set(rows.flatMap((row) => Object.keys(row)))];
-    this.columns =
-      options.columns === undefined && rows.length === 0 ? undefined : new Set(columns.map((c) => c.toLowerCase()));
+    this.columns = columns === undefined ? undefined : new Set(columns.map((c) => c.toLowerCase()));
   }
 
   /** bean.valueExists: a property or one of the base bean's other instance values. */
@@ -954,7 +926,7 @@ class BeanFeed<R extends Readonly<Struct>> {
 
   /** The WHERE clause SQL Server would compile, as an expression; undefined when there are no params. */
   private where(): Expr | undefined {
-    const tokens: (string | FeedParam)[] = [];
+    const tokens: (string | FeedParamCondition)[] = [];
     let started = false;
     let openGrouping = false;
     const open = (connector: string): void => {
@@ -963,10 +935,12 @@ class BeanFeed<R extends Readonly<Struct>> {
       openGrouping = true;
     };
     for (const param of this.params) {
+      let leaf: FeedParamCondition | undefined;
       if (param.field !== '') {
         const invalidType = param.type !== 'varchar' && !param.isNull && param.criteria === '';
         const nullList = param.isNull && (param.condition === 'in' || param.condition === 'not in');
         if (param.condition === '' || !this.hasColumn(param.field) || invalidType || nullList) throw serverError();
+        leaf = conditionOf(param, param.condition);
       }
       if (!started) {
         openGrouping = true;
@@ -980,8 +954,8 @@ class BeanFeed<R extends Readonly<Struct>> {
         openGrouping = false;
       } else if (!openGrouping) tokens.push(rel);
       started = true;
-      if (param.field !== '') {
-        tokens.push(param);
+      if (leaf !== undefined) {
+        tokens.push(leaf);
         openGrouping = false;
       }
     }
@@ -990,22 +964,43 @@ class BeanFeed<R extends Readonly<Struct>> {
     return new ConditionParser(tokens).parse();
   }
 
-  /** The rows the WHERE clause and joins select, after every check getQuery's SQL would fail. */
-  private filtered(): R[] {
+  /** The WHERE clause, after every check getQuery's SQL would fail before reading a row. */
+  private checkedWhere(): Expr | undefined {
     this.checkDeniedTables();
     const where = this.where();
     // leftJoin builds its ON clause from the sample bean's column value, so its SQL never compiles (beanFeed.cfc:670-686).
     if (this.joins.some((join) => join.kind === 'left')) throw serverError();
     const inner = this.joins[0];
     if (inner !== undefined) throw new UnsupportedFeedQueryError(`innerJoin on ${inner.cfc}`);
-    return where === undefined ? [...this.rows] : this.rows.filter((row) => exprTruth(where, row) === true);
+    return where;
+  }
+
+  /** Raises the error that filtering the rows by `where` raises. */
+  private async checkFilter(where: Expr | undefined): Promise<void> {
+    raiseFilter(where, await this.source.filterThrows(where));
+  }
+
+  /** The count of the rows `query` selects; a source that cannot evaluate it exactly is replaced by its rows in memory. */
+  private async counted(query: FeedQuery): Promise<number> {
+    const counted = await this.source.count(query);
+    if (counted.kind === 'count') return counted.count;
+    if (counted.kind === 'throws') {
+      raiseFilter(query.where, counted.rows);
+      throw complexValueError();
+    }
+    const memory = rowsSource(await this.source.all());
+    this.source = memory;
+    return (await memory.count(query)).count;
   }
 
   /** getAvailableCount: `count(*)` over the filtered rows, before TOP. */
-  count(): number {
-    const rows = this.filtered();
-    if (this.groupBy.length > 0) throw new UnsupportedFeedQueryError('countOnly with groupBy');
-    return rows.length;
+  async count(): Promise<number> {
+    const where = this.checkedWhere();
+    if (this.groupBy.length > 0) {
+      await this.checkFilter(where);
+      throw new UnsupportedFeedQueryError('countOnly with groupBy');
+    }
+    return this.counted({ where, order: [] });
   }
 
   /** A validated ORDER BY column; qualified names must name the entity's table. */
@@ -1026,62 +1021,187 @@ class BeanFeed<R extends Readonly<Struct>> {
     return column;
   }
 
+  /** An ORDER BY term over `column`, typed as its params are. */
+  private term(column: string, desc: boolean): FeedOrderTerm {
+    return { column: column.toLowerCase(), field: column, desc, type: this.typeOf(column) };
+  }
+
   /** The ORDER BY terms (utility.validateSort / validateSortBy / validateSortDirection, beanFeed.caseInsensitiveOrderBy). */
-  private orderTerms(): OrderTerm[] {
+  private orderTerms(): FeedOrderTerm[] {
     if (this.orderBy.length > 0) {
       return this.orderBy.map(({ text, ownTable }) => {
         const parts = text.trim().replace(/\s+/g, ' ').split(' ');
         const direction = parts.length >= 2 ? (parts.pop() ?? '').toLowerCase() : 'asc';
         const field = parts.join(' ').trim();
         if (!SORT_FIELD.test(field) || (direction !== 'asc' && direction !== 'desc')) throw serverError();
-        return { column: this.orderColumn(field, ownTable), desc: direction === 'desc' };
+        return this.term(this.orderColumn(field, ownTable), direction === 'desc');
       });
     }
     if (this.sortBy === '') return [];
     const fields = cfListToArray(this.sortBy).map((field) => field.trim());
     if (fields.some((field) => !SORT_FIELD.test(field))) throw serverError();
     const desc = this.sortDirection.toLowerCase() === 'desc';
-    return fields.map((field, i) => ({
-      column: this.orderColumn(i === 0 ? `own.${field}` : field, i === 0),
-      desc: i === fields.length - 1 && desc,
-    }));
+    return fields.map((field, i) =>
+      this.term(this.orderColumn(i === 0 ? `own.${field}` : field, i === 0), i === fields.length - 1 && desc),
+    );
   }
 
-  /** The selected rows: filtered, grouped as SQL Server allows, ordered and limited by TOP. */
-  select(urlFields: string): R[] {
-    const rows = this.filtered();
-    const order = this.orderTerms();
-    const grouped = this.groupBy.length > 0;
-    // beanFeed.isAggregateQuery (beanFeed.cfc:758-769): a `fields` URL param keeps the plain column SELECT.
-    if (urlFields === '' && (grouped || this.aggregates.length > 0)) {
-      const groupColumns = new Set(this.groupBy.map((column) => column.toLowerCase()));
-      if (order.some((term) => !groupColumns.has(term.column.toLowerCase()))) throw serverError();
-      throw new UnsupportedFeedQueryError('aggregate SELECT');
+  /** The selected rows' query and count: filtered, grouped as SQL Server allows, ordered and limited by TOP. */
+  async select(urlFields: string): Promise<{ query: FeedQuery; recordCount: number }> {
+    const where = this.checkedWhere();
+    let order: FeedOrderTerm[];
+    try {
+      order = this.orderTerms();
+      const grouped = this.groupBy.length > 0;
+      // beanFeed.isAggregateQuery (beanFeed.cfc:758-769): a `fields` URL param keeps the plain column SELECT.
+      if (urlFields === '' && (grouped || this.aggregates.length > 0)) {
+        const groupColumns = new Set(this.groupBy.map((column) => column.toLowerCase()));
+        if (order.some((term) => !groupColumns.has(term.column.toLowerCase()))) throw serverError();
+        throw new UnsupportedFeedQueryError('aggregate SELECT');
+      }
+      // Every selected column must be grouped, and the pk is always selected ungrouped.
+      if (grouped) throw serverError();
+      if (!Number.isSafeInteger(this.maxItems) || this.maxItems < 0) throw serverError();
+    } catch (error) {
+      // The rows are filtered before these checks run, so the filter's conversion error comes first.
+      await this.checkFilter(where);
+      throw error;
     }
-    // Every selected column must be grouped, and the pk is always selected ungrouped.
-    if (grouped) throw serverError();
-    if (!Number.isSafeInteger(this.maxItems) || this.maxItems < 0) throw serverError();
-    const types = order.map((term) => this.typeOf(term.column));
-    const sorted =
-      order.length === 0
-        ? rows
-        : rows
-            .map((row, index) => ({ row, index }))
-            .sort((a, b) => {
-              for (const [i, term] of order.entries()) {
-                const x = getNoCase(a.row, term.column);
-                const y = getNoCase(b.row, term.column);
-                const xNull = x === null || x === undefined;
-                const yNull = y === null || y === undefined;
-                const diff =
-                  xNull || yNull ? Number(!xNull) - Number(!yNull) : compareNonNull(x, y, types[i] ?? 'varchar');
-                if (diff !== 0) return term.desc ? -diff : diff;
-              }
-              return a.index - b.index;
-            })
-            .map(({ row }) => row);
-    return this.maxItems > 0 ? sorted.slice(0, this.maxItems) : sorted;
+    const query: FeedQuery = { where, order };
+    const count = await this.counted(query);
+    return { query, recordCount: this.maxItems > 0 ? Math.min(count, this.maxItems) : count };
   }
+
+  /** `limit` rows of `query` after the first `offset`. */
+  rows(query: FeedQuery, offset: number, limit: number): Promise<R[]> {
+    return this.source.rows(query, offset, limit);
+  }
+}
+
+/** `a` against `b` by `order`: the first term that differs, NULL lowest; 0 when every term ties. */
+function compareRows(a: Readonly<Struct>, b: Readonly<Struct>, order: readonly FeedOrderTerm[]): number {
+  for (const term of order) {
+    const x = getNoCase(a, term.field);
+    const y = getNoCase(b, term.field);
+    const xNull = x === null || x === undefined;
+    const yNull = y === null || y === undefined;
+    const diff = xNull || yNull ? Number(!xNull) - Number(!yNull) : compareNonNull(x, y, term.type);
+    if (diff !== 0) return term.desc ? -diff : diff;
+  }
+  return 0;
+}
+
+/** `rows` sorted by `order`, ties kept in row order. */
+function sortRows<R extends Readonly<Struct>>(rows: R[], order: readonly FeedOrderTerm[]): R[] {
+  if (order.length === 0) return rows;
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const diff = compareRows(a.row, b.row, order);
+      return diff !== 0 ? diff : a.index - b.index;
+    })
+    .map(({ row }) => row);
+}
+
+/** A value cfText refuses. */
+function isComplexValue(value: unknown): boolean {
+  return value !== null && value !== undefined && !['string', 'number', 'boolean'].includes(typeof value);
+}
+
+/** A non-null value of a numeric or timestamp term that compareNonNull orders inconsistently (NaN, infinite). */
+function isUnorderable(value: unknown, type: ParamType): boolean {
+  if (value === null || value === undefined) return false;
+  return !Number.isFinite(type === 'numeric' ? Number(value) : (timeOf(value) ?? 0));
+}
+
+/** A feed source over rows in memory, which answers every query itself. */
+interface MemorySource<R> extends BeanFeedSource<R> {
+  count(query: FeedQuery): Promise<Extract<FeedCount<R>, { kind: 'count' }>>;
+}
+
+/** A feed source over rows read whole: the in-memory evaluator of legacy's SQL Server semantics. */
+export function rowsSource<R extends Readonly<Struct>>(rows: readonly R[]): MemorySource<R> {
+  const selected = new WeakMap<FeedQuery, R[]>();
+  const filter = (where: Expr | undefined): R[] =>
+    where === undefined ? [...rows] : rows.filter((row) => exprTruth(where, row) === true);
+  const select = (query: FeedQuery): R[] => {
+    let held = selected.get(query);
+    if (held === undefined) {
+      held = sortRows(filter(query.where), query.order);
+      selected.set(query, held);
+    }
+    return held;
+  };
+  return {
+    columns: [...new Set(rows.flatMap((row) => Object.keys(row)))],
+    isEmpty: () => Promise.resolve(rows.length === 0),
+    filterThrows: () => Promise.resolve(rows),
+    count: (query) => {
+      const held = select(query);
+      const holds = (test: (term: FeedOrderTerm, value: unknown) => boolean): boolean =>
+        query.order.some((term) => held.some((row) => test(term, getNoCase(row, term.field))));
+      return Promise.resolve({
+        kind: 'count',
+        count: held.length,
+        pairable: holds((term, value) => term.type === 'varchar' && isComplexValue(value)),
+        unstable: holds((term, value) => term.type !== 'varchar' && isUnorderable(value, term.type)),
+      });
+    },
+    rows: (query, offset, limit) => Promise.resolve(select(query).slice(offset, offset + limit)),
+    all: () => Promise.resolve([...rows]),
+  };
+}
+
+/** A feed over `sources` (e.g. one transaction per pool tenant) whose rows are theirs concatenated in source order. */
+export function mergedSource<R extends Readonly<Struct>>(sources: readonly BeanFeedSource<R>[]): BeanFeedSource<R> {
+  return {
+    columns: [...new Set(sources.flatMap((source) => source.columns))],
+    async isEmpty() {
+      for (const source of sources) if (!(await source.isEmpty())) return false;
+      return true;
+    },
+    async filterThrows(where) {
+      // Each source's rows hold its first raising row, so in source order the first raising row is the merged feed's.
+      const lists: (readonly R[])[] = [];
+      for (const source of sources) lists.push(await source.filterThrows(where));
+      return lists.flat();
+    },
+    async count(query) {
+      const counted: Extract<FeedCount<R>, { kind: 'count' }>[] = [];
+      let ordering = false;
+      for (const source of sources) {
+        const each = await source.count(query);
+        // Every row is filtered before any is sorted, so the first source whose filtering raises decides the error.
+        if (each.kind === 'rows' || (each.kind === 'throws' && each.rows.length > 0)) return each;
+        if (each.kind === 'throws') ordering = true;
+        else counted.push(each);
+      }
+      if (ordering) return { kind: 'throws', rows: [] };
+      // Rows of different sources a comparator cannot order, or that may tie on a complex value, need one in-memory sort.
+      const pairable = counted.filter((each) => each.pairable).length;
+      if (pairable > 1 || counted.some((each) => each.unstable)) return { kind: 'rows' };
+      const count = counted.reduce((total, each) => total + each.count, 0);
+      return { kind: 'count', count, pairable: pairable > 0, unstable: false };
+    },
+    async rows(query, offset, limit) {
+      const lists: R[][] = [];
+      for (const source of sources) lists.push(await source.rows(query, 0, offset + limit));
+      return lists
+        .flatMap((rows, at) => rows.map((row, index) => ({ row, at, index })))
+        .sort((a, b) => {
+          const diff = compareRows(a.row, b.row, query.order);
+          if (diff !== 0) return diff;
+          return a.at !== b.at ? a.at - b.at : a.index - b.index;
+        })
+        .slice(offset, offset + limit)
+        .map(({ row }) => row);
+    },
+    async all() {
+      const lists: R[][] = [];
+      for (const source of sources) lists.push(await source.all());
+      return lists.flat();
+    },
+  };
 }
 
 /** findQuery's query-string loop (jsonApiUtility.cfc:2812-2903): filters, keywords and the base URL. */
@@ -1192,17 +1312,23 @@ function requestIsAggregate(ctx: JsonApiRequestContext): boolean {
   return cfText(urlParam(ctx, 'fields')) === '' && ctx.isAggregateQuery;
 }
 
-/** The beanIterator page over `rows` after setIteratorProps (jsonApiUtility.cfc:3160-3183, queryIterator.cfc). */
-function iteratorPageOf<R>(
-  rows: readonly R[],
+/** Array.prototype.slice's bound for `index` over `length` items. */
+function sliceIndex(index: number, length: number): number {
+  const relative = Number.isNaN(index) ? 0 : Math.trunc(index);
+  return relative < 0 ? Math.max(length + relative, 0) : Math.min(relative, length);
+}
+
+/** The beanIterator page over `recordCount` rows (jsonApiUtility.cfc:3160-3183), its rows being `slice(from, to)`. */
+function iteratorPageOf(
+  recordCount: number,
   ctx: JsonApiRequestContext,
   feedNextN: number,
   entityName: string,
 ): {
-  items: R[];
+  from: number;
+  to: number;
   page: CollectionPage;
 } {
-  const recordCount = rows.length;
   const nextN = (n: unknown): number => (cfIsNumeric(n) && cfToNumber(n) !== 0 ? cfToNumber(n) : recordCount);
   let perPage = nextN(feedNextN);
   let pageIndex = 1;
@@ -1238,9 +1364,15 @@ function iteratorPageOf<R>(
   // queryRowToStruct has no row at or below 0.
   if (recordIndex < 0 && recordIndex < end) throw serverError();
   return {
-    items: rows.slice(recordIndex, end),
+    from: sliceIndex(recordIndex, recordCount),
+    to: sliceIndex(end, recordCount),
     page: iteratorPage({ recordCount, maxRecordsPerPage: perPage, pageIndex, entityName }),
   };
+}
+
+/** A source rather than rows. */
+function isSource<R>(rows: readonly R[] | BeanFeedSource<R>): rows is BeanFeedSource<R> {
+  return !Array.isArray(rows);
 }
 
 /**
@@ -1249,14 +1381,16 @@ function iteratorPageOf<R>(
  * findQuery's filters run for `call.method` findQuery or when `options.expandedParams` is given; findMany never
  * answers `countOnly`; paging always reads the URL scope.
  */
-export function beanFeedQuery<R extends Readonly<Record<string, unknown>>>(
-  rows: readonly R[],
+export async function beanFeedQuery<R extends Readonly<Record<string, unknown>>>(
+  rows: readonly R[] | BeanFeedSource<R>,
   call: JsonApiCall,
   options: BeanFeedOptions,
-): BeanFeedResult<R> {
+): Promise<BeanFeedResult<R>> {
   const ctx = call.apiContext;
   paramUrl(ctx, 'entityname', call.entityName);
-  const feed = new BeanFeed(rows, options);
+  const source = isSource(rows) ? rows : rowsSource(rows);
+  const columns = options.columns ?? ((await source.isEmpty()) ? undefined : source.columns);
+  const feed = new BeanFeed(source, columns, options);
   const expanded = options.expandedParams;
   let baseUrl: string | undefined;
   if (expanded !== undefined) baseUrl = applyExpandedParams(feed, call, expanded);
@@ -1264,8 +1398,9 @@ export function beanFeedQuery<R extends Readonly<Record<string, unknown>>>(
   const params: Struct = expanded === undefined ? ctx.url : { ...expanded };
   applyFeedProps(feed, call, params, options.primaryKey);
   const countOnly = getNoCase(params, 'countOnly');
-  if (!cfEq(call.method, 'findMany') && cfIsBoolean(countOnly) && cfToBoolean(countOnly)) return { count: feed.count() };
-  const selected = feed.select(cfText(urlParam(ctx, 'fields')));
-  const { items, page } = iteratorPageOf(selected, ctx, feed.nextN, call.entityName);
+  if (!cfEq(call.method, 'findMany') && cfIsBoolean(countOnly) && cfToBoolean(countOnly)) return { count: await feed.count() };
+  const { query, recordCount } = await feed.select(cfText(urlParam(ctx, 'fields')));
+  const { from, to, page } = iteratorPageOf(recordCount, ctx, feed.nextN, call.entityName);
+  const items = to > from ? await feed.rows(query, from, to - from) : [];
   return baseUrl === undefined ? { items, page } : { items, page, baseUrl };
 }

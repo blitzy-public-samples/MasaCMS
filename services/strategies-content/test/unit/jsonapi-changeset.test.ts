@@ -5,10 +5,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { UserClaims } from '@opt2/platform/auth';
 import { buildEnvelope, isCfUuid, LegacyApiError, LegacyServiceUnavailableError, serializeResponse } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
-import { withTenant } from '@opt2/platform/tenancy';
+import { withTenant, type QueryResultRow, type TenantTx } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
   TENANT_B,
+  TENANT_UMBRELLA,
   createThrowawaySchema,
   fixedClock,
   pgAvailable,
@@ -19,11 +20,19 @@ import {
 import { actorFromClaims, CONTENT_CONFIG_DEFAULTS, type Actor, type DomainDeps, type SiteContentSettings } from '../../src/domain/context.js';
 import type { LegacySiteUrlConfig } from '../../src/legacy/content-urls.js';
 import { contentApiSerializer, jsonApiEndpoint, type JsonApiRequestContext } from '../../src/legacy/jsonapi-serializers.js';
-import { createContentRepository } from '../../src/repo/repository.js';
+import type { FeedRunner, FeedTableSpec } from '../../src/repo/bean-feed-sql.js';
+import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
 import { changesetCategoryAssignmentHandler, changesetHandler } from '../../src/routes/jsonapi/changeset.js';
-import { createJsonApiParams, type EntityHandler, type JsonApiCall, type JsonApiResult } from '../../src/routes/jsonapi/types.js';
+import {
+  createJsonApiParams,
+  rowsSource,
+  type BeanFeedSource,
+  type EntityHandler,
+  type JsonApiCall,
+  type JsonApiResult,
+} from '../../src/routes/jsonapi/types.js';
 
 type Struct = Record<string, unknown>;
 type Op = 'findOne' | 'findMany' | 'findAll' | 'findQuery' | 'findNew' | 'findProperties' | 'findPermissions' | 'save' | 'delete';
@@ -221,6 +230,103 @@ async function createChangeset(form: Struct, who: Actor = PUBLISHER_A, site: Ten
 
 let SPRING: Struct;
 let AUTUMN: Struct;
+
+/** Runs `op` of `handler` for `call` over `domain`. */
+function invokeWith(domain: DomainDeps, handler: EntityHandler, op: Op, call: JsonApiCall): Promise<JsonApiResult> {
+  const fn = handler[op];
+  if (fn === undefined) throw new Error(`${handler.entity} has no ${op}`);
+  return fn({ domain } as unknown as ContentRouteContext, call);
+}
+
+/** What a handler over `domain` answered on the wire or raised for a call built from `a`, with the URL scope the call left. */
+async function outcomeOf(domain: DomainDeps, a: CallArgs): Promise<unknown> {
+  const call = callFor(a);
+  const handler = a.entityName === 'changeset' ? changesetHandler : changesetCategoryAssignmentHandler;
+  try {
+    const result = await invokeWith(domain, handler, a.method, call);
+    if (result.error !== undefined) return { result, url: { ...call.apiContext.url } };
+    return { status: result.status, data: wire(a.method, result), url: { ...call.apiContext.url } };
+  } catch (err) {
+    const error = err as Error & { type?: unknown };
+    return { error: { name: error.constructor.name, message: error.message, type: error.type } };
+  }
+}
+
+/** The id equality the whole-site findMany filter applied: case-insensitive, trailing spaces ignored. */
+const sqlKey = (value: unknown): string => (typeof value === 'string' ? value : '').replace(/ +$/u, '').toLowerCase();
+
+/** The rows the whole-site reads returned: each site table in primary-key order without its tenant column. */
+interface WholeSite {
+  changesets: Struct[];
+  assignments: Struct[];
+}
+
+/** `domain` whose change-set feeds read `site` through the in-memory evaluator, findMany's ids picked by {@link sqlKey}. */
+function inMemoryDeps(domain: DomainDeps, site: WholeSite): DomainDeps {
+  const repository = domain.repository;
+  const held = new WeakMap<FeedTableSpec, Struct[]>();
+  const pick = (rows: Struct[], key: string, ids: readonly string[] | undefined): Struct[] => {
+    if (ids === undefined) return rows;
+    const wanted = new Set(ids.map(sqlKey));
+    return rows.filter((row) => wanted.has(sqlKey(row[key])));
+  };
+  const changesets: ContentRepository['changesets'] = {
+    ...repository.changesets,
+    siteChangesetsFeed(args) {
+      const spec = repository.changesets.siteChangesetsFeed(args);
+      held.set(spec, pick(site.changesets, 'changesetid', args.changesetIds));
+      return spec;
+    },
+    siteCategoryAssignmentsFeed(args) {
+      const spec = repository.changesets.siteCategoryAssignmentsFeed(args);
+      held.set(spec, pick(site.assignments, 'assignmentid', args.assignmentIds));
+      return spec;
+    },
+  };
+  const beanFeed: ContentRepository['beanFeed'] = {
+    source: <R extends QueryResultRow>(_run: FeedRunner, spec: FeedTableSpec): BeanFeedSource<R> =>
+      rowsSource(held.get(spec) ?? []) as unknown as BeanFeedSource<R>,
+  };
+  return { ...domain, repository: { ...repository, changesets, beanFeed } };
+}
+
+/** A transaction handle that records each statement and the rows it returned. */
+function recording(tx: TenantTx, statements: { sql: string; rows: number }[]): TenantTx {
+  return {
+    kind: tx.kind,
+    tenantId: tx.tenantId,
+    schema: tx.schema,
+    onCommit: (cb, onError) => {
+      tx.onCommit(cb, onError);
+    },
+    query: (async (text: string | { text: string }, values?: unknown[]) => {
+      const result = await tx.query(text, values);
+      statements.push({ sql: typeof text === 'string' ? text : text.text, rows: result.rows.length });
+      return result;
+    }) as TenantTx['query'],
+  };
+}
+
+/** `domain` recording every feed statement, and counting the whole-site reads of both tables. */
+function recordingDeps(domain: DomainDeps, statements: { sql: string; rows: number }[], wholeSiteReads: { n: number }): DomainDeps {
+  const repository = domain.repository;
+  const changesets: ContentRepository['changesets'] = {
+    ...repository.changesets,
+    siteChangesets(tx, args) {
+      wholeSiteReads.n++;
+      return repository.changesets.siteChangesets(tx, args);
+    },
+    siteCategoryAssignments(tx, args) {
+      if (args.assignmentId === undefined) wholeSiteReads.n++;
+      return repository.changesets.siteCategoryAssignments(tx, args);
+    },
+  };
+  const beanFeed: ContentRepository['beanFeed'] = {
+    source: <R extends QueryResultRow>(run: FeedRunner, spec: FeedTableSpec): BeanFeedSource<R> =>
+      repository.beanFeed.source<R>((fn) => run((tx) => fn(recording(tx, statements))), spec),
+  };
+  return { ...domain, repository: { ...repository, changesets, beanFeed } };
+}
 
 describe.skipIf(!(await pgAvailable()))('JSON API changeset and changesetCategoryAssignment handlers', () => {
   beforeAll(async () => {
@@ -593,6 +699,197 @@ describe.skipIf(!(await pgAvailable()))('JSON API changeset and changesetCategor
       const data = wire('findProperties', await onAssignment('findProperties', { actor: ADMIN_A }));
       expect((data['properties'] as Struct[]).map((p) => p['name'])).toEqual(['site', 'category', 'changeset', 'assignmentid']);
       expect(data).toMatchObject({ bundleable: 'true', table: 'tchangesetcategoryassign', primarykey: 'assignmentid' });
+    });
+  });
+
+  describe('SQL feeds against the in-memory evaluator over the whole-site rows', () => {
+    const SITE = TENANT_UMBRELLA;
+    const OTHER_SITE = 'umbrella-other';
+    const WHO = actor(TENANT_UMBRELLA, ['system-user', 'm:014', 'm:000']);
+    const MIXED = 'MiXeD001-aaaa-BBBB-ccccDDDDeeeeFFFF';
+    const LOWER = cfId('c', 3).toLowerCase();
+    const SHORT = 'short-id';
+    const C = (n: number): string => cfId('C', n);
+    const D = (n: number): string => cfId('D', n);
+    const day = (month: number, date: number, hours = 0, minutes = 0): Date => new Date(2026, month - 1, date, hours, minutes);
+
+    const CHANGESETS: Struct[] = [
+      { changesetid: C(1), name: 'Alpha', description: 'first', created: day(1, 5), publishdate: day(7, 1, 10, 15), published: 0, lastupdateby: 'Ann' },
+      { changesetid: C(2), name: 'alpha', description: null, created: day(1, 5), published: 1, lastupdate: day(2, 1), closedate: day(3, 1) },
+      { changesetid: LOWER, name: 'Beta ', created: day(2, 1), publishdate: day(7, 1, 10, 15), published: 0, remoteid: 'R1' },
+      { changesetid: MIXED, name: 'beta', created: day(3, 1), published: null, remotepubdate: day(4, 1) },
+      { changesetid: SHORT, name: 'Gamma_Launch', created: day(3, 1), publishdate: day(1, 1), published: 1 },
+      { changesetid: C(6), name: null, created: null, published: 0 },
+      { changesetid: C(7), name: '', description: '', created: day(5, 5), published: 0 },
+      { changesetid: C(8), name: 'a\u{1F600}b', created: day(6, 1), published: 2 },
+      { changesetid: C(9), name: 'Ünïcode', created: day(6, 2), publishdate: day(8, 1), published: 0 },
+      { changesetid: C(10), name: 'Zed', created: day(6, 3), publishdate: day(7, 1, 10, 15), published: 1, lastupdatebyid: cfId('E', 1) },
+      { changesetid: C(11), name: 'Delta 50%', created: day(6, 4), published: 0 },
+      { changesetid: C(12), siteid: OTHER_SITE, name: 'Other site', created: day(1, 1), published: 0 },
+    ].map((row) => ({ siteid: SITE.siteId, ...row }));
+
+    const ASSIGNMENTS: Struct[] = [
+      { assignmentid: D(1), changesetid: C(1), categoryid: CAT_1 },
+      { assignmentid: D(2), changesetid: C(1).toLowerCase(), categoryid: CAT_2 },
+      { assignmentid: 'dShort', changesetid: C(1), categoryid: null },
+      { assignmentid: cfId('d', 4).toLowerCase(), changesetid: MIXED, categoryid: CAT_1 },
+      { assignmentid: D(5), changesetid: MIXED.toUpperCase(), categoryid: CAT_2.toLowerCase() },
+      { assignmentid: D(6), changesetid: C(10), categoryid: CAT_1 },
+      { assignmentid: D(7), changesetid: null, categoryid: CAT_1 },
+      { assignmentid: D(8), siteid: OTHER_SITE, changesetid: C(1), categoryid: CAT_1 },
+    ].map((row) => ({ siteid: SITE.siteId, ...row }));
+
+    let whole: WholeSite;
+    let memory: DomainDeps;
+
+    /** Inserts `rows` into `content.<table>` of the umbrella tenant. */
+    async function insertRows(table: string, rows: readonly Struct[]): Promise<void> {
+      await withTenant(handle.app, SITE.tenantId, async (tx) => {
+        for (const row of rows) {
+          const names = Object.keys(row);
+          const placeholders = names.map((_, i) => `$${String(i + 2)}`).join(', ');
+          await tx.query(`INSERT INTO ${handle.schema}.${table} (tenant_id, ${names.join(', ')}) VALUES ($1, ${placeholders})`, [
+            tx.tenantId,
+            ...Object.values(row),
+          ]);
+        }
+      });
+    }
+
+    beforeAll(async () => {
+      await insertRows('changeset', CHANGESETS);
+      await insertRows('changeset_category_assign', ASSIGNMENTS);
+      const strip = (row: Struct): Struct => Object.fromEntries(Object.entries(row).filter(([column]) => column !== 'tenant_id'));
+      whole = await withTenant(handle.app, SITE.tenantId, async (tx) => ({
+        changesets: (await deps.repository.changesets.siteChangesets(tx, { siteId: SITE.siteId })).map(strip),
+        assignments: (await deps.repository.changesets.siteCategoryAssignments(tx, { siteId: SITE.siteId })).map(strip),
+      }));
+      memory = inMemoryDeps(deps, whole);
+    });
+
+    it('scopes both feeds to the rows, values and order of the whole-site reads', async () => {
+      const all = (spec: FeedTableSpec): Promise<Struct[]> =>
+        withTenant(handle.app, SITE.tenantId, (tx) => deps.repository.beanFeed.source<Struct>((fn) => fn(tx), spec).all());
+      expect(whole.changesets).toHaveLength(11);
+      expect(whole.assignments).toHaveLength(7);
+      const changesets = await all(deps.repository.changesets.siteChangesetsFeed({ siteId: SITE.siteId }));
+      expect(changesets).toEqual(whole.changesets);
+      expect(changesets.map((row) => Object.keys(row))).toEqual(whole.changesets.map((row) => Object.keys(row)));
+      expect(await all(deps.repository.changesets.siteCategoryAssignmentsFeed({ siteId: SITE.siteId }))).toEqual(whole.assignments);
+    });
+
+    const CHANGESET_QUERIES: Struct[] = [
+      {}, { name: 'alpha' }, { name: 'ALPHA ' }, { name: '*a*' }, { name: 'like^a_b' }, { name: 'like^%[_]%' }, { name: 'Gamma_Launch' },
+      { name: 'null' }, { name: 'neq^null' }, { name: '' }, { name: 'in^alpha,beta' }, { name: 'notin^alpha' }, { name: 'gt^m' },
+      { name: 'begins^d' }, { name: 'contains^50%' }, { name: 'unicode' }, { description: 'null' }, { published: '1' }, { published: 'gt^0' },
+      { published: 'null' }, { published: 'in^0,2' }, { published: 'abc' }, { publishdate: 'gt^2026-01-01' }, { publishdate: '2026-07-01 10:15:00' },
+      { publishdate: 'null' }, { created: 'lt^2026-03-01' }, { created: 'in^2026-01-05,2026-03-01' }, { closedate: 'neq^null' }, { remotepubdate: 'x' },
+      { name: 'alpha', or: '', published: '1' }, { openGrouping: '', name: 'alpha', or: '', published: '2', closeGrouping: '', description: 'null' },
+      { sort: '-name' }, { sort: 'publishdate' }, { sort: '-publishdate,name' }, { sort: 'published,-created' }, { sortBy: 'created', sortDirection: 'desc' },
+      { sort: 'tchangesets.name' }, { sort: 'nope' }, { orderby: '-created' }, { itemsPerPage: '3', pageIndex: '2' }, { itemsPerPage: '4', pageIndex: '99' },
+      { startIndex: '5', itemsPerPage: '2' }, { maxitems: '3' }, { maxitems: '5', itemsPerPage: '2', pageIndex: '3' }, { nextn: '2' },
+      { itemsPerPage: '*' }, { maxitems: '*', itemsPerPage: '0' },
+      { countOnly: 'true' }, { countOnly: 'true', name: '*a*' }, { countOnly: 'true', name: 'like^a_b' }, { fields: 'name,publishdate', sort: '-publishdate' },
+      { id: MIXED.toUpperCase() }, { changesetid: LOWER.toUpperCase() }, { lastupdatebyid: 'x' }, { tags: 'x' },
+      { expand: 'categoryassignments', itemsPerPage: '3' }, { expand: 'categoryassignments', name: 'beta' },
+    ];
+    const CHANGESET_IDS = [C(10), C(1).toLowerCase(), MISSING, C(1), LOWER.toUpperCase(), MIXED.toUpperCase(), 'SHORT-ID', '', 'x\u0000', '\uD800', C(12)];
+    const FIND_MANY_URLS: Struct[] = [{}, { sort: '-name' }, { countOnly: 'true' }, { itemsPerPage: '2', pageIndex: '2' }, { fields: 'name' }, { expand: 'categoryassignments' }];
+    const ASSIGNMENT_QUERIES: Struct[] = [
+      {}, { changesetid: C(1) }, { changesetid: C(1).toLowerCase() }, { changesetid: MIXED }, { categoryid: `in^${CAT_1},${CAT_2.toLowerCase()}` },
+      { categoryid: 'null' }, { categoryid: 'neq^null' }, { changesetid: 'null' }, { siteid: 'UMBRELLA' }, { sort: '-categoryid' },
+      { sort: 'changesetid,-assignmentid' }, { itemsPerPage: '2', pageIndex: '2' }, { countOnly: 'true', changesetid: C(1) }, { changeset: 'x' },
+      { assignmentid: 'like^%A%' }, { assignmentid: '*short*' }, { id: 'DSHORT' }, { maxitems: '2' }, { fields: 'categoryid' },
+    ];
+    const ASSIGNMENT_IDS = [D(1).toLowerCase(), 'DSHORT', cfId('d', 4).toUpperCase(), MISSING, D(1), D(8)];
+
+    const cases: [string, CallArgs][] = [
+      ...CHANGESET_QUERIES.map((url): [string, CallArgs] => ['changeset findQuery', { method: 'findQuery', entityName: 'changeset', url }]),
+      ...[{}, { itemsPerPage: '2', pageIndex: '2' }, { countOnly: 'true' }, { sort: '-name', maxitems: '4' }, { expand: 'categoryassignments' }].map(
+        (url): [string, CallArgs] => ['changeset findAll', { method: 'findAll', entityName: 'changeset', url }],
+      ),
+      ...FIND_MANY_URLS.map((url): [string, CallArgs] => ['changeset findMany', { method: 'findMany', entityName: 'changeset', ids: CHANGESET_IDS, url }]),
+      ['changeset findMany without ids', { method: 'findMany', entityName: 'changeset', ids: [] }],
+      ...[C(1), MIXED, SHORT, C(10), C(6)].map((id): [string, CallArgs] => [
+        'changeset findOne expanding',
+        { method: 'findOne', entityName: 'changeset', id, url: { expand: 'categoryassignments' } },
+      ]),
+      ...ASSIGNMENT_QUERIES.map((url): [string, CallArgs] => ['assignment findQuery', { method: 'findQuery', entityName: 'changesetCategoryAssignment', url }]),
+      ...[{}, { countOnly: 'true' }, { itemsPerPage: '3', pageIndex: '2' }].map((url): [string, CallArgs] => [
+        'assignment findAll',
+        { method: 'findAll', entityName: 'changesetCategoryAssignment', url },
+      ]),
+      ...[{}, { sort: '-categoryid' }, { itemsPerPage: '1', pageIndex: '2' }].map((url): [string, CallArgs] => [
+        'assignment findMany',
+        { method: 'findMany', entityName: 'changesetCategoryAssignment', ids: ASSIGNMENT_IDS, url },
+      ]),
+    ];
+
+    it.each(cases)('%s %j answers what the whole-site read answered', async (_label, a) => {
+      const args: CallArgs = { ...a, site: SITE, actor: WHO };
+      expect(await outcomeOf(deps, args)).toEqual(await outcomeOf(memory, args));
+    });
+
+    it('selects the rows the cases are about, so the comparison exercises the data', async () => {
+      const names = async (a: CallArgs): Promise<unknown[]> => {
+        const data = wire(a.method, await invokeWith(deps, changesetHandler, a.method, callFor({ ...a, site: SITE, actor: WHO })));
+        return itemsOf(data).map((item) => item['name']);
+      };
+      // Each listed id answers its row in list order, whatever its case or padding; a repeated id repeats it.
+      const listed = await names({ method: 'findMany', entityName: 'changeset', ids: CHANGESET_IDS });
+      expect(listed).toEqual(['Zed', 'Alpha', 'Alpha', 'Beta', 'beta', 'Gamma_Launch']);
+      expect(await names({ method: 'findQuery', entityName: 'changeset', url: { name: 'alpha' } })).toEqual(['Alpha', 'alpha']);
+      expect(await names({ method: 'findQuery', entityName: 'changeset', url: { name: 'like^a_b' } })).toEqual([]);
+      const expanded = wire(
+        'findOne',
+        await invokeWith(deps, changesetHandler, 'findOne', callFor({ method: 'findOne', entityName: 'changeset', site: SITE, actor: WHO, id: MIXED, url: { expand: 'categoryassignments' } })),
+      );
+      const expandedIds = itemsOf(expanded['categoryassignments'] as Struct).map((item) => String(item['assignmentid']));
+      expect(expandedIds.sort()).toEqual([cfId('d', 4).toLowerCase(), D(5)].sort());
+    });
+
+    it('reads one count and one page for a page request, only the requested ids for findMany, and never the whole site', async () => {
+      const statements: { sql: string; rows: number }[] = [];
+      const wholeSiteReads = { n: 0 };
+      const recorded = recordingDeps(deps, statements, wholeSiteReads);
+      // The statements over the feed tables; the others are the read barrier's gate checks.
+      const feed = (): { sql: string; rows: number }[] =>
+        statements.filter((s) => ['changeset', 'changeset_category_assign'].some((table) => s.sql.includes(`"${handle.schema}"."${table}" WHERE`)));
+      const kinds = (): string[] => feed().map((s) => (s.sql.includes(' LIMIT ') ? 'page' : s.sql.includes('count(*)') ? 'count' : 'other'));
+
+      const page = await invokeWith(
+        recorded,
+        changesetHandler,
+        'findQuery',
+        callFor({ method: 'findQuery', entityName: 'changeset', site: SITE, actor: WHO, url: { published: '0', sort: '-created', itemsPerPage: '2', pageIndex: '2' } }),
+      );
+      expect(itemsOf(wire('findQuery', page))).toHaveLength(2);
+      expect(kinds()).toEqual(['count', 'page']);
+      expect(feed()[1]?.rows).toBe(2);
+
+      statements.length = 0;
+      const many = await invokeWith(recorded, changesetHandler, 'findMany', callFor({ method: 'findMany', entityName: 'changeset', site: SITE, actor: WHO, ids: CHANGESET_IDS }));
+      expect(itemsOf(wire('findMany', many))).toHaveLength(6);
+      expect(kinds()).toEqual(['count', 'page']);
+      expect(feed()[1]?.rows).toBe(5);
+      expect(feed().every((s) => s.sql.includes('legacy_char_ci'))).toBe(true);
+
+      statements.length = 0;
+      const expanded = await invokeWith(
+        recorded,
+        changesetHandler,
+        'findQuery',
+        callFor({ method: 'findQuery', entityName: 'changeset', site: SITE, actor: WHO, url: { name: 'in^alpha,beta', expand: 'categoryassignments' } }),
+      );
+      expect(itemsOf(wire('findQuery', expanded))).toHaveLength(4);
+      const assignmentPages = feed().filter((s) => s.sql.includes('changeset_category_assign') && s.sql.includes(' LIMIT '));
+      expect(assignmentPages.map((s) => s.rows)).toEqual([3, 2]);
+      expect(Math.max(...feed().map((s) => s.rows))).toBeLessThan(whole.assignments.length);
+
+      statements.length = 0;
+      await invokeWith(recorded, changesetCategoryAssignmentHandler, 'findQuery', callFor({ method: 'findQuery', entityName: 'changesetCategoryAssignment', site: SITE, actor: WHO, url: { countOnly: 'true' } }));
+      expect(kinds()).toEqual(['count']);
+      expect(wholeSiteReads.n).toBe(0);
     });
   });
 });

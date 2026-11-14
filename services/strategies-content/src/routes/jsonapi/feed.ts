@@ -19,7 +19,7 @@ import {
   LegacyApiError,
 } from '@opt2/platform/legacy-compat';
 import { UndefinedLegacyMethodError, type Actor } from '../../domain/context.js';
-import { FeedBean, FeedParamsQuery, deleteFeed, getContentItems, listFeeds, readFeed, saveFeed } from '../../domain/feeds.js';
+import { FeedBean, FeedParamsQuery, deleteFeed, getContentItems, listFeeds, querySiteFeeds, readFeed, saveFeed } from '../../domain/feeds.js';
 import { allowContentAction, getModulePerm } from '../../domain/permissions.js';
 import { CONTENT_ENTITIES } from '../../legacy/jsonapi-entities.js';
 import {
@@ -135,11 +135,6 @@ function getNoCase(record: Readonly<Struct>, name: string): unknown {
 /** CFML struct write: replaces an existing key ignoring case, else adds it. */
 function setNoCase(record: Struct, name: string, value: unknown): void {
   Object.defineProperty(record, keyOf(record, name) ?? name, { value, writable: true, enumerable: true, configurable: true });
-}
-
-/** SQL Server's id equality: case-insensitive, trailing spaces ignored. */
-function sqlKey(value: unknown): string {
-  return cfText(value).replace(/ +$/u, '').toLowerCase();
 }
 
 /** The acting user with the call's verified tenant and site, which the feed reads run in (anonymous actors carry neither). */
@@ -328,15 +323,13 @@ async function collectionOf(
 
 // ---- feeds ----
 
-/** The site's feeds as the plain beanFeed selects them: `siteID = ?`, Local and Remote alike, in clustered (feedid) order. */
-async function siteFeedRows(ctx: RouteContext, call: JsonApiCall): Promise<FeedRow[]> {
-  const { rsLocal, rsRemote } = await listFeeds(ctx.domain, readerOf(call), call.siteId);
-  const order = (a: FeedRow, b: FeedRow): number => {
-    const x = a.feedid.toUpperCase();
-    const y = b.feedid.toUpperCase();
-    return x < y ? -1 : x > y ? 1 : 0;
-  };
-  return [...rsLocal, ...rsRemote].sort(order);
+/**
+ * The site's feeds as the plain beanFeed selects them (`siteID = ?`, Local and Remote alike, in clustered (feedid)
+ * order), only those of `ids` when given, through beanFeedQuery in one tenant transaction.
+ */
+function siteFeed(ctx: RouteContext, call: JsonApiCall, ids?: readonly string[]): Promise<BeanFeedResult<FeedRow>> {
+  const args = ids === undefined ? { siteId: call.siteId } : { siteId: call.siteId, feedIds: ids };
+  return querySiteFeeds(ctx.domain, readerOf(call), args, (source) => beanFeedQuery(source, call, FEED_OPTIONS));
 }
 
 /** Throws findQuery's invalidParameters for a query param naming an instance value that is no property. */
@@ -367,9 +360,7 @@ const findMany: JsonApiHandlerFn = async (ctx, call) => {
   paramUrl(call.apiContext, 'entityname', call.entityName);
   if (!entityAccessAllowed(call.actor, FEED)) return authorizationDenied();
   const ids = idsOf(call);
-  const wanted = new Set(ids.map(sqlKey));
-  const rows = (await siteFeedRows(ctx, call)).filter((row) => wanted.has(sqlKey(row.feedid)));
-  const result = beanFeedQuery(rows, call, FEED_OPTIONS);
+  const result = await siteFeed(ctx, call, ids);
   if ('count' in result) return jsonApiResultOf({ count: result.count }, ENTITY);
   const inIdOrder = (items: Struct[]): Struct[] =>
     ids.flatMap((id): Struct[] => {
@@ -382,7 +373,7 @@ const findMany: JsonApiHandlerFn = async (ctx, call) => {
 
 /** findAll (2542-2625): countOnly counts the site's feeds; otherwise legacy refuses `feed` with invalidParameters (2602-2606). */
 const findAll: JsonApiHandlerFn = async (ctx, call) => {
-  const result = beanFeedQuery(await siteFeedRows(ctx, call), call, FEED_OPTIONS);
+  const result = await siteFeed(ctx, call);
   if ('count' in result) return jsonApiResultOf({ count: result.count }, ENTITY);
   throw new LegacyApiError('invalidParameters');
 };
@@ -391,7 +382,7 @@ const findAll: JsonApiHandlerFn = async (ctx, call) => {
 const findQuery: JsonApiHandlerFn = async (ctx, call) => {
   if (!entityAccessAllowed(call.actor, FEED)) return authorizationDenied();
   rejectInstanceValueFilters(call);
-  const result = beanFeedQuery(await siteFeedRows(ctx, call), call, FEED_OPTIONS);
+  const result = await siteFeed(ctx, call);
   if ('count' in result) return jsonApiResultOf({ count: result.count }, ENTITY);
   return jsonApiResultOf(await collectionOf(ctx, call, result, ENTITY), ENTITY);
 };

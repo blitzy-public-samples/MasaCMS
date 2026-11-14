@@ -15,12 +15,14 @@ import {
   SqlParams,
   activeClause,
   categoryAssignments,
+  categoryAssignmentsIn,
   contentAssignments,
   contentIdFromHistId,
   contentObject,
   contentObjects,
   count,
   crumbPath,
+  crumbPaths,
   expireAssignments,
   extendedCastColumn,
   extendedSortJoin,
@@ -41,6 +43,7 @@ import {
   readActiveByTitle,
   readActiveByUrlTitle,
   readVersion,
+  readVersionsIn,
   regionObjects,
   relatedItems,
   sections,
@@ -50,6 +53,7 @@ import {
   timespanInterval,
   versionParents,
   type ChangesetPreview,
+  type Crumb,
   type KidsArgs,
   type NestRow,
   type SqlFragment,
@@ -737,6 +741,53 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries versions and tree'
     expect(crumbs[0]?.parentarray).toBeUndefined();
     expect(crumbs[49]?.contentid).toBe(LOOP_2);
     expect(crumbs[50]?.contentid).toBe(LOOP_1);
+  });
+
+  it('crumbPaths reads every item’s crumbs, a call per site, exactly as crumbPath does', async () => {
+    const items: { contentId: string; siteId: string; path?: string }[] = [
+      { contentId: CHILD, siteId: SITE },
+      { contentId: CHILD.toLowerCase(), siteId: SITE, path: '' },
+      { contentId: CHILD, siteId: SITE, path: `${HOME},${FOLDER},${BETA},${CHILD}` },
+      { contentId: BETA, siteId: SITE, path: `${HOME},${FOLDER.toLowerCase()} ,${MISSING},${BETA}` },
+      { contentId: CHILD, siteId: SITE, path: ',,' },
+      { contentId: ROOT_PARENT_ID.toLowerCase(), siteId: SITE },
+      { contentId: CHILD, siteId: OTHER_SITE },
+      { contentId: CHILD, siteId: OTHER_SITE, path: `${HOME},${CHILD}` },
+      { contentId: ORPHAN, siteId: SITE },
+      { contentId: ROOTLESS, siteId: SITE },
+      { contentId: LOOP_1, siteId: SITE },
+      { contentId: MISSING, siteId: SITE },
+    ];
+    const single = await inA(async (tx) => {
+      const crumbs = [];
+      for (const item of items) crumbs.push(await crumbPath(tx, item));
+      return crumbs;
+    });
+    expect(single.map((crumbs) => crumbs.length)).toEqual([4, 4, 4, 3, 0, 0, 0, 0, 1, 1, 51, 0]);
+    const batched = await inA(async (tx) => {
+      const crumbs: Crumb[][] = [];
+      for (const siteId of new Set(items.map((item) => item.siteId))) {
+        const at = items.flatMap((item, index) => (item.siteId === siteId ? [index] : []));
+        const read = await crumbPaths(tx, { siteId, items: at.map((index) => items[index] ?? { contentId: '' }) });
+        at.forEach((index, n) => (crumbs[index] = read[n] ?? []));
+      }
+      return crumbs;
+    });
+    expect(batched).toStrictEqual(single);
+    expect(await inA((tx) => crumbPaths(tx, { siteId: SITE, items: [] }))).toEqual([]);
+  });
+
+  it('categoryAssignmentsIn and readVersionsIn key each id’s rows as categoryAssignments and readVersion return them', async () => {
+    const ids = [BETA_H, BETA_H.toLowerCase(), `${BETA_H} `, ALPHA_H, MISSING, '', BETA_H];
+    const assignments = await inA((tx) => categoryAssignmentsIn(tx, { contentHistIds: ids }));
+    const versions = await inA((tx) => readVersionsIn(tx, { contentHistIds: ids }));
+    expect(assignments.get(BETA_H)?.map((row) => row.categoryid)).toEqual([CAT_1, CAT_2]);
+    for (const id of ids) {
+      expect(assignments.get(id)).toStrictEqual(await inA((tx) => categoryAssignments(tx, { contentHistId: id })));
+      expect(versions.get(id)).toStrictEqual((await inA((tx) => readVersion(tx, { contentHistId: id })))[0]);
+    }
+    expect(await inA((tx) => categoryAssignmentsIn(tx, { contentHistIds: [] }))).toEqual(new Map());
+    expect(await inA((tx) => readVersionsIn(tx, { contentHistIds: [] }))).toEqual(new Map());
   });
 
   it('kids selects the getKids column list with its file, metadata and stats joins', async () => {

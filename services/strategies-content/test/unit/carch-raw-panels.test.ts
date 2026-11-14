@@ -749,6 +749,27 @@ describe('loadclass', () => {
     expect(options(res.body)).toEqual([BETA, ZED, ALPHA]);
     expect(res.body).toContain('Home  &gt; Beta  &gt; Zed');
     expect(ran(SECTIONS)[0]?.params).toContain(type);
+    expect(ran(CRUMBS).map((statement) => statement.tenantId)).toEqual([TENANT_A.tenantId]);
+  });
+
+  it('walks the parents of sections without a stored path one level at a time, falling back to their titles', async () => {
+    seedContent([
+      home(),
+      version({ contentid: ALPHA, contenthistid: 'H1', menutitle: '', title: 'alpha', path: null }),
+      version({ contentid: BETA, contenthistid: 'H2', menutitle: 'Beta', path: null }),
+      version({ contentid: ZED, contenthistid: 'H3', menutitle: 'Zed', parentid: BETA, path: null }),
+    ]);
+    db.respond(SECTIONS, [
+      { contentid: ALPHA, menutitle: '', type: 'Folder', siteid: SITE, path: null },
+      { contentid: ZED, menutitle: 'Zed', type: 'Folder', siteid: SITE, path: null },
+      { contentid: BETA, menutitle: 'Beta', type: 'Folder', siteid: SITE, path: null },
+    ]);
+    const res = await raw('loadclass', { query: { classid: 'folder', subclassid: BETA } });
+    expect(res.statusCode, String(thrown)).toBe(200);
+    expect(options(res.body)).toEqual([BETA, ZED, ALPHA]);
+    expect(res.body).toContain('Home  &gt; Beta  &gt; Zed');
+    expect(res.body).toContain('Home  &gt; alpha');
+    expect(ran(CRUMBS)).toHaveLength(3);
   });
 
   it('fails as legacy does on a section without crumbs', async () => {

@@ -1937,20 +1937,47 @@ function withReportColumns(rows: FlatFeedRow[], report: string, sortBy: string, 
   return rows;
 }
 
-/** `item.getCategoriesIterator()` names: the version's categories, joined in its category pool, by filename. */
-async function categoryNamesOf(ctx: ContentRouteContext, actor: Actor, contentHistId: string): Promise<string[]> {
-  const assigned = await inTenant(ctx, actor, (tx) => ctx.domain.repository.content.categoryAssignments(tx, { contentHistId }));
-  if (assigned.length === 0) return [];
-  const pool = (await poolTenantFor(ctx.domain.db, actor.tenantId, 'category')) ?? actor.tenantId;
-  const categories = await ctx.domain.db.withTenant(pool, async (tx) => {
-    const found = [];
-    for (const assignment of assigned) {
-      const [category] = await ctx.domain.repository.categories.readCategory(tx, { categoryId: assignment.categoryid });
-      if (category !== undefined) found.push(category);
-    }
-    return found;
-  });
-  return categories.sort((a, b) => noCaseCompare(a.filename ?? '', b.filename ?? '')).map((category) => category.name ?? '');
+/** Category names per version, with the failure of their category-pool read and the first version it stops. */
+interface VersionCategoryNames {
+  names: string[][];
+  failure?: { at: number; error: unknown };
+}
+
+/** `item.getCategoriesIterator()` names of each version: its categories, joined in the category pool, by filename. */
+async function readCategoryNames(ctx: ContentRouteContext, actor: Actor, contentHistIds: readonly string[]): Promise<VersionCategoryNames> {
+  const assigned = await inTenant(ctx, actor, (tx) => ctx.domain.repository.content.categoryAssignmentsIn(tx, { contentHistIds }));
+  const rows = contentHistIds.map((contentHistId) => assigned.get(contentHistId) ?? []);
+  const at = rows.findIndex((row) => row.length > 0);
+  if (at === -1) return { names: rows.map(() => []) };
+  try {
+    const pool = (await poolTenantFor(ctx.domain.db, actor.tenantId, 'category')) ?? actor.tenantId;
+    const categoryIds = rows.flatMap((row) => row.map((assignment) => assignment.categoryid));
+    const categories = await ctx.domain.db.withTenant(pool, (tx) => ctx.domain.repository.categories.readCategoriesIn(tx, categoryIds));
+    return {
+      names: rows.map((row) =>
+        row
+          .flatMap((assignment) => categories.get(assignment.categoryid) ?? [])
+          .sort((a, b) => noCaseCompare(a.filename ?? '', b.filename ?? ''))
+          .map((category) => category.name ?? ''),
+      ),
+    };
+  } catch (error) {
+    return { names: rows.map(() => []), failure: { at, error } };
+  }
+}
+
+/**
+ * The category names of the version at `index` of `contentHistIds`, all read with one assignment and one category read
+ * at the first call; a failed read raises its error at the version that would first have met it.
+ */
+function categoryNamesOf(ctx: ContentRouteContext, actor: Actor, contentHistIds: readonly string[]): (index: number) => Promise<string[]> {
+  let read: Promise<VersionCategoryNames> | undefined;
+  return async (index) => {
+    read ??= readCategoryNames(ctx, actor, contentHistIds);
+    const { names, failure } = await read;
+    if (failure !== undefined && failure.at <= index) throw failure.error;
+    return names[index] ?? [];
+  };
 }
 
 /** dsp_categories_nest.cfm's tree: each pool level by name, with the levels under rows that have children. */
@@ -1982,7 +2009,9 @@ async function runLoadSiteFlat(request: FastifyRequest, ctx: ContentRouteContext
   const page = siteFlatPage(ordered.length, cfToNumber(eventText(event, 'page')));
   const memberships = await membershipsOf(request, ctx, actor);
   const pageRows: SiteFlatRow[] = [];
-  for (const row of ordered.slice(page.offset, page.offset + page.count)) {
+  const shown = ordered.slice(page.offset, page.offset + page.count);
+  const categoriesOf = categoryNamesOf(ctx, actor, shown.map((row) => row.contenthistid ?? ''));
+  for (const [index, row] of shown.entries()) {
     const contentId = row.contentid ?? '';
     const rowSite = row.siteid ?? siteId;
     const crumbs = await getCrumbList(ctx.domain, actor, { contentId, siteId: rowSite });
@@ -1997,7 +2026,7 @@ async function runLoadSiteFlat(request: FastifyRequest, ctx: ContentRouteContext
       lastupdateby: stored?.lastupdateby ?? null,
       crumbs,
       verdict: await getNodePerm(ctx.domain, actor, crumbs, memberships),
-      categories: await categoryNamesOf(ctx, actor, row.contenthistid ?? ''),
+      categories: await categoriesOf(index),
       ...(lockedBy === undefined ? {} : { lockedBy: { fname: lockedBy.fname, lname: lockedBy.lname } }),
     });
   }
@@ -2448,12 +2477,14 @@ function zoomText(crumbs: readonly Crumb[]): string {
 async function sectionsOf(ctx: ContentRouteContext, actor: Actor, siteId: string, type: string): Promise<ObjectClassSection[]> {
   const rows = await inTenant(ctx, actor, async (tx) => {
     const sections = await ctx.domain.repository.content.sections(tx, { siteId, type });
-    const found: ObjectClassSection[] = [];
-    for (const row of sections) {
-      const crumbs = await ctx.domain.repository.content.crumbPath(tx, { contentId: row.contentid ?? '', siteId: row.siteid ?? siteId, path: row.path ?? '' });
-      found.push({ contentid: row.contentid ?? '', pathString: zoomText(crumbs) });
+    const crumbs: Crumb[][] = [];
+    for (const sectionSite of new Set(sections.map((row) => row.siteid ?? siteId))) {
+      const at = sections.flatMap((row, index) => ((row.siteid ?? siteId) === sectionSite ? [index] : []));
+      const items = at.map((index) => ({ contentId: sections[index]?.contentid ?? '', path: sections[index]?.path ?? '' }));
+      const read = await ctx.domain.repository.content.crumbPaths(tx, { siteId: sectionSite, items });
+      at.forEach((index, n) => (crumbs[index] = read[n] ?? []));
     }
-    return found;
+    return sections.map((row, index): ObjectClassSection => ({ contentid: row.contentid ?? '', pathString: zoomText(crumbs[index] ?? []) }));
   });
   // A query of queries orders text case-sensitively; the stable sort keeps ties in query order.
   return rows.sort((a, b) => (a.pathString < b.pathString ? -1 : a.pathString > b.pathString ? 1 : 0));

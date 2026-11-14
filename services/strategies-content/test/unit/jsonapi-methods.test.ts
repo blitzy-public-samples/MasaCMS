@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { buildEnvelope, serializeResponse } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
+import type { QueryConfig, QueryResult, QueryResultRow, TenantDb, TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_UMBRELLA, assertResponseMatchesOpenApi, pgAvailable, seedRegistry } from '@opt2/platform/testing';
 import { createCategory, type CategoryBean } from '../../src/domain/categories.js';
 import { saveContent } from '../../src/domain/content.js';
@@ -315,8 +316,122 @@ describe.skipIf(!(await pgAvailable()))('JSON API public methods', () => {
       expect(data).toMatchObject({ totalitems: 2, totalpages: 2, pageindex: pageIndex, itemsperpage: 1 });
     });
 
+    it.each(['*', 0])('lists every version on one page for itemsPerPage=%s', async (itemsPerPage) => {
+      const data = wire('findVersionHistory', await on('findVersionHistory', { actor: ADMIN, id: ALPHA, url: { itemsPerPage } }));
+      expect((data['items'] as Struct[]).map((item) => item['summary'])).toEqual(['second', '']);
+      expect(data).toMatchObject({ totalitems: 2, totalpages: 1, pageindex: 1, itemsperpage: 2 });
+    });
+
     it('answers the legacy 500 for a numeric offset, which setIteratorProps applies to an undefined feed', async () => {
       await expect(on('findVersionHistory', { actor: ADMIN, id: ALPHA, url: { offset: 1 } })).rejects.toEqual(legacyError('server_error'));
+    });
+
+    describe('over more getHist rows than one history page', () => {
+      // 1004 versions, one holding two approval requests that straddle the 1000th row: 1005 getHist rows.
+      const ROWS = 1005;
+      const SPLIT_VERSION = cfId('V', 999);
+      let LONG = '';
+      let HIST: string[] = [];
+
+      /** A getHist select a recording transaction ran: the rows it returned and whether its SQL bounds them. */
+      interface HistRead {
+        rows: number;
+        limited: boolean;
+      }
+
+      /** `tx` recording each getHist select it runs into `reads`. */
+      function recordingTx(tx: TenantTx, reads: HistRead[]): TenantTx {
+        const query = async <R extends QueryResultRow>(text: string | QueryConfig, values?: unknown[]): Promise<QueryResult<R>> => {
+          const result = await tx.query<R>(text, values);
+          const sql = typeof text === 'string' ? text : text.text;
+          if (sql.includes('changsetpublished')) reads.push({ rows: result.rows.length, limited: /\bLIMIT\b/.test(sql) });
+          return result;
+        };
+        return { ...tx, query };
+      }
+
+      /** The route context over a database whose tenant transactions record their getHist selects into `reads`. */
+      function recordingCtx(reads: HistRead[]): ContentRouteContext {
+        const { db } = fx.deps;
+        const recording: TenantDb = {
+          schema: db.schema,
+          withTenant: (tenantId, fn, options) => db.withTenant(tenantId, (tx) => fn(recordingTx(tx, reads)), options),
+          withMetadata: (fn, options) => db.withMetadata(fn, options),
+          end: () => db.end(),
+        };
+        return { domain: { ...fx.deps, db: recording }, storage: fx.deps.storage } as unknown as ContentRouteContext;
+      }
+
+      /** findVersionHistory of the long item for an editor and `url`, recording its getHist selects into `reads`. */
+      function longHistory(url: Struct, reads: HistRead[]): Promise<JsonApiResult> {
+        const handler = CONTENT_METHODS.findVersionHistory;
+        if (handler === undefined) throw new Error('no findVersionHistory');
+        return handler(recordingCtx(reads), callFor('findVersionHistory', { actor: ADMIN, id: LONG, url }));
+      }
+
+      beforeAll(async () => {
+        LONG = await page({ parentid: HOME, title: 'Long History' });
+        const [active] = (await fx.rows('content', 'contentid = $1', [LONG])) as Array<{ contenthistid: string }>;
+        const { schema } = fx.handle;
+        await fx.inTenant(async (tx) => {
+          const { rows } = await tx.query<{ column_name: string }>(
+            `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'content' AND column_name <> 'tcontent_id' ORDER BY ordinal_position`,
+            [schema],
+          );
+          const names = rows.map((row) => row.column_name);
+          // Older copies of the active version, two to each lastupdate.
+          const copied: Record<string, string> = {
+            contenthistid: `'V' || lpad(g::text, 7, '0') || '-AAAA-BBBB-CCCCDDDDEEEEFFFF'`,
+            active: '0',
+            lastupdate: `c.lastupdate - ((g + 1) / 2) * interval '1 minute'`,
+          };
+          await tx.query(
+            `INSERT INTO ${schema}.content (${names.join(', ')}) SELECT ${names.map((n) => copied[n] ?? `c.${n}`).join(', ')}` +
+              ` FROM ${schema}.content c CROSS JOIN generate_series(1, $2::integer) AS g WHERE c.contenthistid = $1 ORDER BY g`,
+            [active?.contenthistid, ROWS - 2],
+          );
+        });
+        for (const n of [1, 2]) {
+          await insert('approval_request', { requestid: cfId('RQ', n), contenthistid: SPLIT_VERSION, siteid: SITE_ID, userid: ADMIN.userId, groupid: cfId('G', 1), status: 'Pending' });
+        }
+        const hist = await fx.inTenant((tx) => fx.repo.content.hist(tx, { contentId: LONG, siteId: SITE_ID }));
+        HIST = hist.map((row) => row.contenthistid ?? '');
+        expect(HIST).toHaveLength(ROWS);
+        expect(HIST.slice(999, 1001)).toEqual([SPLIT_VERSION, SPLIT_VERSION]);
+      });
+
+      const hundreds = { totalpages: 11, itemsperpage: 100 };
+      // Every item builds a contentnav view by its own reads, so the all-rows page takes seconds.
+      it.each<[string, Struct, [number, number], Struct]>([
+        ['default paging', {}, [0, ROWS], { pageindex: 1, totalpages: 1, startindex: 1, endindex: ROWS, itemsperpage: ROWS }],
+        ['a middle page', { itemsPerPage: 100, pageIndex: 3 }, [200, 300], { ...hundreds, pageindex: 3, startindex: 201, endindex: 300 }],
+        ['the last page', { itemsPerPage: 100, pageIndex: 11 }, [1000, ROWS], { ...hundreds, pageindex: 11, startindex: 1001, endindex: ROWS }],
+        ['a page past the last record', { itemsPerPage: 100, pageIndex: 12 }, [0, 100], { ...hundreds, pageindex: 1, startindex: 1, endindex: 100 }],
+        ['startIndex', { itemsPerPage: 100, startIndex: 950 }, [949, 1000], { ...hundreds, pageindex: 10, startindex: 901, endindex: 1000 }],
+        ['a startIndex past the last record', { itemsPerPage: 100, startIndex: 5000 }, [0, 100], { ...hundreds, pageindex: 1, startindex: 1, endindex: 100 }],
+        ['a one-row page after the first 1000', { itemsPerPage: 1, pageIndex: 1001 }, [1000, 1001], { pageindex: 1001, totalpages: ROWS, startindex: 1001, endindex: 1001, itemsperpage: 1 }],
+        ['a page across the 1000th row', { itemsPerPage: 300, pageIndex: 4 }, [900, ROWS], { pageindex: 4, totalpages: 4, startindex: 901, endindex: ROWS, itemsperpage: 300 }],
+        ['a fractional page size', { itemsPerPage: 2.5, pageIndex: 3 }, [5, 7], { pageindex: 3, totalpages: 402, startindex: 6, endindex: 7.5, itemsperpage: 2.5 }],
+        ['a negative page size', { itemsPerPage: -1000 }, [0, 5], { pageindex: 1, totalpages: 0, startindex: 1, endindex: -1000, itemsperpage: -1000 }],
+        ['a negative page window', { itemsPerPage: -100, pageIndex: 3 }, [0, 0], { pageindex: 3, totalpages: 0, startindex: -199, endindex: -300, itemsperpage: -100 }],
+      ])(
+        'pages %s as a slice of the full getHist read, reading only that slice',
+        async (_label, url, [start, end], pageMeta) => {
+          const reads: HistRead[] = [];
+          const data = wire('findVersionHistory', await longHistory(url, reads));
+          expect((data['items'] as Struct[]).map((item) => item['contenthistid'])).toEqual(HIST.slice(start, end));
+          expect(data).toMatchObject({ totalitems: ROWS, ...pageMeta });
+          expect(reads.reduce((sum, read) => sum + read.rows, 0)).toBe(end - start);
+          expect(reads.every((read) => read.limited && read.rows <= 1000)).toBe(true);
+        },
+        120_000,
+      );
+
+      it('answers the legacy 500 for a negative start row before reading any version', async () => {
+        const reads: HistRead[] = [];
+        await expect(longHistory({ itemsPerPage: 100, startIndex: -5 }, reads)).rejects.toEqual(legacyError('server_error'));
+        expect(reads).toEqual([]);
+      });
     });
   });
 

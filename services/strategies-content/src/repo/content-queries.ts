@@ -950,6 +950,24 @@ export async function categoryAssignments(tx: TenantTx, args: { contentHistId: s
   );
 }
 
+/** `categoryAssignments` of several versions with one query: each id's assignments in that read's order, keyed by the id. */
+export async function categoryAssignmentsIn(tx: TenantTx, args: { contentHistIds: readonly string[] }): Promise<Map<string, CategoryAssignmentRow[]>> {
+  const ids = [...new Set(args.contentHistIds)];
+  if (ids.length === 0) {
+    return new Map();
+  }
+  await readable(tx, 'content_category_assign');
+  const p = new SqlParams();
+  const rows = await run<CategoryAssignmentRow>(
+    tx,
+    `SELECT ${columns(CATEGORY_ASSIGN, 'a', ['contenthistid', 'categoryid', 'contentid', 'isfeature', 'orderno', 'siteid', 'featurestart', 'featurestop'])}` +
+      ` FROM ${qualified(tx.schema, CATEGORY_ASSIGN.table)} a WHERE ${idIn(p, 'a.contenthistid', ids)} ORDER BY a.categoryid`,
+    p.values,
+  );
+  const rowsOf = rowsById(rows, (row) => row.contenthistid);
+  return new Map(ids.map((id) => [id, rowsOf([id])]));
+}
+
 /**
  * The category assignments of a site (the contentCategoryAssign beanFeed's `siteID IN (…)`), assignment columns only,
  * in clustered-key order. As for {@link categoryAssignments}, the caller joins the category columns in the pool tenant.
@@ -2061,6 +2079,14 @@ export async function historyPage<K extends HistoryRead>(
     p.values,
   );
   return { rows, total };
+}
+
+/** The row count of a contentGateway history read (getHist and its siblings), which `historyPage` pages. */
+export async function historyCount(tx: TenantTx, read: HistoryRead, args: { contentId: string; siteId: string }): Promise<number> {
+  await readable(tx, 'content', 'approval_request', 'changeset');
+  const p = new SqlParams();
+  const [counted] = await run<{ total: number }>(tx, `SELECT count(*)::integer AS total${historyFrom(tx, read, args, p)}`, p.values);
+  return counted?.total ?? 0;
 }
 
 /** Every row of a contentGateway history read (getHist and its siblings) in keyset batches of history order, where legacy needs every row. */
