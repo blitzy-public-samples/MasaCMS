@@ -10,12 +10,11 @@ import {
   SIGN_ACTION,
   SIGNER_ROLES,
   VERIFY_ACTION,
-  VERIFY_SCREEN,
 } from './common';
 import { loadRequest, renderRequest, type RequestData } from './request';
 import { requestsScreen } from './requests';
 import { submitSign } from './sign';
-import { loadVerify, renderVerify, type VerifyData } from './verify';
+import { VERIFY_SUPPLIED_ROLES, verifyScreen } from './verify';
 import { submitVerifyCopy } from './verify-copy';
 
 /** Module, owning service, the contract roles of the operation behind a definition and their deny-by-default gate. */
@@ -30,13 +29,6 @@ const requestScreen: Opt2ScreenDefinition<RequestData> = Object.freeze({
   render: renderRequest,
 });
 
-const verifyScreen: Opt2ScreenDefinition<VerifyData> = Object.freeze({
-  ...access(READER_ROLES),
-  screen: VERIFY_SCREEN,
-  load: loadVerify,
-  render: renderVerify,
-});
-
 const signAction: Opt2ActionDefinition = Object.freeze({
   ...access(SIGNER_ROLES),
   action: SIGN_ACTION,
@@ -44,7 +36,7 @@ const signAction: Opt2ActionDefinition = Object.freeze({
 });
 
 const verifyAction: Opt2ActionDefinition = Object.freeze({
-  ...access(READER_ROLES),
+  ...access(VERIFY_SUPPLIED_ROLES),
   action: VERIFY_ACTION,
   submit: submitVerifyCopy,
 });

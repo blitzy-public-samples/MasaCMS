@@ -1,8 +1,9 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
+import { Roles, type Role } from '@opt2/platform/auth';
 import { html, type SafeHtml } from '@/lib/html';
 import type { ShellView } from '@/shell/document';
-import type { ScreenContext } from '../../registry';
-import { alertBox, block, controlGroup, opt2View, pageHeader, postForm, textarea } from '../shared';
+import type { Opt2ScreenDefinition, ScreenContext } from '../../registry';
+import { alertBox, block, controlGroup, opt2Gate, opt2View, pageHeader, postForm, textarea } from '../shared';
 import {
   ESIGNATURE,
   MISSING_ID,
@@ -27,6 +28,12 @@ export interface VerifyBodyOptions {
   readonly copy?: VerifyResult;
   readonly entries?: string;
 }
+
+/** Roles the contract requires to verify a request's stored chain (`verifyChain`). */
+export const VERIFY_ROLES: readonly Role[] = Object.freeze([Roles.esignatureSigner, Roles.esignatureAuditor]);
+
+/** Roles the contract requires to verify a supplied copy of a request's chain (`verifySuppliedChain`). */
+export const VERIFY_SUPPLIED_ROLES: readonly Role[] = Object.freeze([Roles.esignatureSigner, Roles.esignatureAuditor]);
 
 const TITLE = 'Verify Audit Chain';
 const COPY_ROWS = 12;
@@ -84,3 +91,15 @@ export function verifyBody(ctx: ScreenContext, data: VerifyData, opts: VerifyBod
 export function renderVerify(ctx: ScreenContext, data: VerifyData): ShellView {
   return opt2View(ESIGNATURE, verifyBody(ctx, data));
 }
+
+// The copy form needs no role check of its own: verifySuppliedChain and getAuditChain require the gate's roles.
+/** The chain verification screen, behind the deny-by-default gate of the contract's roles. */
+export const verifyScreen: Opt2ScreenDefinition<VerifyData> = Object.freeze({
+  module: ESIGNATURE,
+  service: ESIGNATURE,
+  screen: VERIFY_SCREEN,
+  roles: VERIFY_ROLES,
+  gate: opt2Gate(VERIFY_ROLES),
+  load: loadVerify,
+  render: renderVerify,
+});
