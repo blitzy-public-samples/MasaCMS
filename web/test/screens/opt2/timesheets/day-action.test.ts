@@ -141,12 +141,15 @@ describe('timesheets day-action', () => {
     expect(fragmentModel(renderedBody(result)).alerts).toEqual([{ text: message, className: 'alert alert-error' }]);
   });
 
-  it('leaves an action name it does not know to the service', async () => {
-    const req = actionRequest(Roles.timesheetsEmployee, { dayid: TIMESHEET_IDS.dayDraft, dayaction: 'approve' });
+  it.each([
+    { what: 'an action name it does not know', dayid: TIMESHEET_IDS.dayDraft, dayaction: 'approve' },
+    { what: 'an empty day id', dayid: '', dayaction: 'submit' },
+  ])('leaves $what to the service and shows its 404', async ({ dayid, dayaction }) => {
+    const req = actionRequest(Roles.timesheetsEmployee, { dayid, dayaction });
 
     const { result, gateway } = await submit(req, timesheetsAnswersByRole.employee);
 
-    expect(timesheetsCalls(gateway)[0]).toBe(`POST /v1/timesheets/days/${TIMESHEET_IDS.dayDraft}/approve`);
+    expect(timesheetsCalls(gateway)[0]).toBe(`POST /v1/timesheets/days/${dayid}/${dayaction}`);
     expect(fragmentModel(renderedBody(result)).alerts).toEqual([{ text: 'Not Found', className: 'alert alert-error' }]);
   });
 
