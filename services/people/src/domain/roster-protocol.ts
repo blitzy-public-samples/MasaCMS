@@ -149,8 +149,13 @@ export interface RosterInput {
   sessionReloginId?: string;
 }
 
-/** Legacy's outcome of the save: the saved bean, or its validation errors with the values the form re-renders. */
-export type RosterResult = { ok: true; userId: string; values: UserValues } | { ok: false; errors: LegacyErrors; values: UserValues };
+/**
+ * Legacy's outcome of the save: the saved bean, or its validation errors with the values the form re-renders.
+ * `finishPending` marks a save whose identity `:finish` recovery still owes; identity keeps the user closed to every read until then.
+ */
+export type RosterResult =
+  | { ok: true; userId: string; values: UserValues; finishPending?: true }
+  | { ok: false; errors: LegacyErrors; values: UserValues };
 
 /** The `{photo}` branches are withheld and served by legacy; raised before any write. */
 export class PhotoBranchError extends LegacyServiceUnavailableError {
@@ -843,14 +848,16 @@ function commitRequest(input: RosterInput, person: PersonRow): AccountCommitRequ
   return { sessionEffects: { reloginSessionId: input.sessionReloginId, person: { fname, lname, email, company, subtype } } };
 }
 
-/** Step 5 after `done`: identity's `:finish`, then the operation leaves `finish-pending` and its registration ends. */
-async function finishOperation(deps: RosterDeps, tenantId: string, userId: string, operationId: string, budget: Budget, write: WriteContext): Promise<void> {
+/** Step 5 after `done`: identity's `:finish`, then the operation leaves `finish-pending` and its registration ends; false when recovery owes the finish. */
+async function finishOperation(deps: RosterDeps, tenantId: string, userId: string, operationId: string, budget: Budget, write: WriteContext): Promise<boolean> {
   try {
     await deps.faults.at('after-done');
     await deps.identity.finish(userId, operationId, callOptions(budget, 'finish'));
     await closeOperation(deps, tenantId, operationId, { state: 'done', error: null }, write);
+    return true;
   } catch {
     // The change is complete on both sides, so the save succeeds; recovery repeats the `finish-pending` operation's `:finish`.
+    return false;
   }
 }
 
@@ -947,8 +954,9 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
       await releaseOperation(tx, operationId);
     }),
   );
-  await finishOperation(deps, tenantId, userId, operationId, budget, write);
-  return { ok: true, userId, values: { ...shaped.values, ...committed.audit, isnew: 0, errors: {} } };
+  const finished = await finishOperation(deps, tenantId, userId, operationId, budget, write);
+  const values = { ...shaped.values, ...committed.audit, isnew: 0, errors: {} };
+  return finished ? { ok: true, userId, values } : { ok: true, userId, values, finishPending: true };
 }
 
 /** `row` with its timestamp columns, which JSON carries as ISO text, back as Dates. */
