@@ -6,6 +6,7 @@ import { Roles, type Role } from '@opt2/platform/auth';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import type { Opt2ScreenDefinition } from '@/screens/registry';
+import { alertBox } from '@/screens/opt2/shared';
 import { timesheetsScreens } from '@/screens/opt2/timesheets';
 import { loadSheet, sheetBody } from '@/screens/opt2/timesheets/sheet';
 import { TIMESHEETS_AS_OF, TIMESHEET_IDS, timesheetsAnswersByRole } from '../../../fixtures/opt2/timesheets';
@@ -180,6 +181,39 @@ describe('timesheets sheet detail', () => {
 
     expect(fragmentModel(markup).buttons).toEqual([]);
     expect(gateway.calls.some(({ service, path }) => service === 'identity' && path === '/v1/csrf/tokens')).toBe(false);
+  });
+
+  it('renders a not-found alert without calling timesheets when no sheet id is given', async () => {
+    const gateway = fakeGatewayClient(timesheetsAnswersByRole.employee);
+    const req = opt2RoleRequest(Roles.timesheetsEmployee, { rc: { siteid: SITE, asOf: TIMESHEETS_AS_OF } });
+    const ctx = makeScreenContext({ req, gateway });
+
+    const page = await renderScreenPage(sheetScreen(), ctx);
+
+    if (page.kind !== 'document') throw new Error(`redirected to ${page.location}`);
+    expect(page.html).toContain('<div class="alert alert-error"><span>Timesheet not found.</span></div>');
+    expect(fragmentModel(toString(sheetBody(ctx, await loadSheet(ctx))))).toEqual({
+      title: '',
+      headings: ['Timesheet'],
+      labels: [],
+      controls: [],
+      buttons: [],
+      links: [{ href: LIST_URL, text: 'Timesheets' }],
+      tables: [],
+      alerts: [{ text: 'Timesheet not found.', className: 'alert alert-error' }],
+    });
+    expect(gateway.calls.filter(({ service }) => service === 'timesheets')).toEqual([]);
+  });
+
+  it('places a supplied alert between the header and the sheet tables', async () => {
+    const gateway = fakeGatewayClient(timesheetsAnswersByRole.employee);
+    const ctx = makeScreenContext({ req: sheetRequest(Roles.timesheetsEmployee), gateway });
+
+    const markup = toString(sheetBody(ctx, await loadSheet(ctx), alertBox('blackout')));
+
+    const alertAt = markup.indexOf('<div class="alert alert-error"><span>blackout</span></div>');
+    expect(alertAt).toBeGreaterThan(markup.indexOf('</h1>'));
+    expect(alertAt).toBeLessThan(markup.indexOf('<table'));
   });
 
   it('renders inside the shell with the OPT-2 timesheets entry active', async () => {
