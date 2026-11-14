@@ -1,5 +1,5 @@
 // Consumer contracts of the package's service clients: each owners-client operation against every owner contract serving it,
-// the remote background client against the real routes, and the window and transition clients against the migration contract.
+// the remote background and fault clients against the real routes, and the window and transition clients against the migration contract.
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
@@ -13,6 +13,7 @@ import { TENANT_A, mintServiceToken } from '@opt2/platform/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
+import { remoteFaults } from '../../src/faults/index.js';
 import { createOwnersClient, type OwnersClient } from '../../src/owners/client.js';
 import { loadUnitCatalog, type DataOwner } from '../../src/owners/units.js';
 import { queueControlTargets, remoteBackgroundState, type BackgroundRecord } from '../../src/quiesce/index.js';
@@ -253,7 +254,11 @@ function injectingClient(app: RouteApp['app'], caller: string, calls: ContractCa
         headers: { [INVOCATION_HEADER]: `Bearer ${token}`, ...(req.json === undefined ? {} : { 'content-type': 'application/json' }) },
         ...(req.json === undefined ? {} : { payload: JSON.stringify(req.json) }),
       });
-      const answer: ServiceResponse = { status: res.statusCode, headers: { 'content-type': String(res.headers['content-type']) }, body: res.json<unknown>() };
+      // A 204 carries neither a body nor a content type.
+      const answer: ServiceResponse =
+        res.body === ''
+          ? { status: res.statusCode, headers: {}, body: undefined }
+          : { status: res.statusCode, headers: { 'content-type': String(res.headers['content-type']) }, body: res.json<unknown>() };
       assertAnswerMatchesContract(req, answer);
       return answer as ServiceResponse<T>;
     },
@@ -300,6 +305,33 @@ describe('remote background client against the real background routes', () => {
     expect(calls.map(({ caller, operationId }) => [caller, operationId])).toEqual([
       ['operator', 'backgroundSuspend'],
       ['operator', 'backgroundResume'],
+    ]);
+  });
+});
+
+describe('remote fault client against the real fault routes', () => {
+  let t: RouteApp;
+  const calls: ContractCall[] = [];
+
+  beforeAll(async () => {
+    t = await buildRouteApp({ db: memoryMigrationDb().db });
+  });
+
+  afterAll(async () => {
+    await t?.close();
+  });
+
+  const remote = () => remoteFaults({ env: t.ctx.env, clientAs: (caller) => injectingClient(t.app, caller, calls) });
+
+  it('arms and disarms the projector delay through faultSet and faultClear as the operator', async () => {
+    await remote().set('projector-delay', { delayMs: 3000 });
+    expect(t.faults.active()).toEqual([{ name: 'projector-delay', params: { delayMs: 3000 }, since: expect.any(String) as unknown }]);
+
+    await remote().clear('projector-delay');
+    expect(t.faults.active()).toEqual([]);
+    expect(calls.map(({ caller, operationId }) => [caller, operationId])).toEqual([
+      ['operator', 'faultSet'],
+      ['operator', 'faultClear'],
     ]);
   });
 });

@@ -18,6 +18,7 @@ import {
   defaultBoundaryState,
   memoryMigrationDb,
   postgresMigrationDb,
+  type Effects,
   type MigrationDb,
   type OpenApiDoc,
   type RouteApp,
@@ -130,6 +131,9 @@ const IMPORT_URL = '/internal/v1/scheduler/state:import';
 const SUSPEND_URL = '/internal/v1/background:suspend';
 const RESUME_URL = '/internal/v1/background:resume';
 const LEGACY_STEPS_URL = '/internal/v1/legacy-steps';
+const DELAY_FAULT_URL = '/internal/v1/faults/projector-delay';
+const UNKNOWN_FAULT_URL = '/internal/v1/faults/projector-stall';
+const NO_EFFECTS: Effects = { transactions: 0, statements: 0, serviceCalls: 0, bridgeCalls: 0, legacyReads: 0, faultToggles: 0 };
 
 const PROGRAMS_SITES: Presenter = { caller: 'programs-sites' };
 // The cursor in the legacy time mask; the deadline is wall-clock time, so it lies ahead of every case of the run.
@@ -361,6 +365,61 @@ const CASES: readonly ResponseCase[] = [
   },
   { operationId: 'backgroundResume', status: 401, title: 'without a credential', method: 'POST', url: RESUME_URL, as: 'none' },
   { operationId: 'backgroundResume', status: 403, title: 'for programs-sites', method: 'POST', url: RESUME_URL, as: { caller: 'programs-sites' } },
+  {
+    operationId: 'faultSet',
+    status: 204,
+    title: 'arming the 3 s projector delay',
+    method: 'PUT',
+    url: DELAY_FAULT_URL,
+    as: OPERATOR,
+    payload: { params: { delayMs: 3000 } },
+    outbound: [],
+    verify: (_body, t) => {
+      expect(t.faults.active()).toEqual([{ name: 'projector-delay', params: { delayMs: 3000 }, since: expect.any(String) as unknown }]);
+      expect(t.effects()).toEqual({ ...NO_EFFECTS, faultToggles: 1 });
+    },
+  },
+  {
+    operationId: 'faultSet',
+    status: 400,
+    title: 'for a delay that is not a number',
+    method: 'PUT',
+    url: DELAY_FAULT_URL,
+    as: OPERATOR,
+    payload: { params: { delayMs: 'soon' } },
+    verify: (_body, t) => expect(t.faults.active()).toEqual([]),
+  },
+  { operationId: 'faultSet', status: 401, title: 'without a credential', method: 'PUT', url: DELAY_FAULT_URL, as: 'none', payload: { params: {} } },
+  { operationId: 'faultSet', status: 403, title: 'for the gateway', method: 'PUT', url: DELAY_FAULT_URL, as: GATEWAY, payload: { params: {} } },
+  {
+    operationId: 'faultSet',
+    status: 404,
+    title: 'for a fault the registry does not know',
+    method: 'PUT',
+    url: UNKNOWN_FAULT_URL,
+    as: OPERATOR,
+    payload: { params: {} },
+    verify: (_body, t) => expect(t.effects()).toEqual(NO_EFFECTS),
+  },
+  {
+    operationId: 'faultClear',
+    status: 204,
+    title: 'disarming an armed fault',
+    method: 'DELETE',
+    url: DELAY_FAULT_URL,
+    as: OPERATOR,
+    arrange: (t) => {
+      t.faults.set('projector-delay', { delayMs: 3000 });
+    },
+    outbound: [],
+    verify: (_body, t) => {
+      expect(t.faults.active()).toEqual([]);
+      expect(t.effects()).toEqual({ ...NO_EFFECTS, faultToggles: 1 });
+    },
+  },
+  { operationId: 'faultClear', status: 401, title: 'without a credential', method: 'DELETE', url: DELAY_FAULT_URL, as: 'none' },
+  { operationId: 'faultClear', status: 403, title: 'for the migration workload', method: 'DELETE', url: DELAY_FAULT_URL, as: { caller: 'migration' } },
+  { operationId: 'faultClear', status: 404, title: 'for a fault the registry does not know', method: 'DELETE', url: UNKNOWN_FAULT_URL, as: OPERATOR },
 ];
 
 /** `<operationId> <status>` of every answer the contract declares for a served operation. */
@@ -431,10 +490,7 @@ describe('served operations', () => {
       t.resetEffects();
       const url = path.replace(/\{(\w+)\}/g, (_match, name: string) => (name === 'name' ? 'projector-delay' : 'contract-probe-id'));
       const res = await t.app.inject({ method, url, headers: { ...(await invocation('operator')), 'content-type': 'application/json' }, payload: method === 'GET' || method === 'DELETE' ? undefined : '{}' });
-      expect({ status: res.statusCode, effects: t.effects() }).toEqual({
-        status: 404,
-        effects: { transactions: 0, statements: 0, serviceCalls: 0, bridgeCalls: 0, legacyReads: 0 },
-      });
+      expect({ status: res.statusCode, effects: t.effects() }).toEqual({ status: 404, effects: NO_EFFECTS });
     },
   );
 
@@ -481,6 +537,7 @@ describe.each(BACKENDS)('declared answers over $name', ({ available, open }) => 
     beforeEach(async () => {
       await store.clear();
       Object.assign(t.state, defaultBoundaryState());
+      for (const fault of t.faults.active()) t.faults.clear(fault.name);
     });
 
     it.each(CASES)('$operationId $status $title', async (c) => {
@@ -495,7 +552,7 @@ describe.each(BACKENDS)('declared answers over $name', ({ available, open }) => 
       expect(res.statusCode).toBe(status);
       if (outbound !== undefined) expect(t.calls.map(({ req, operationId }) => `${req.service} ${operationId}`)).toEqual(outbound);
       if (status === 401 || status === 403) {
-        expect(t.effects()).toEqual({ transactions: 0, statements: 0, serviceCalls: 0, bridgeCalls: 0, legacyReads: 0 });
+        expect(t.effects()).toEqual(NO_EFFECTS);
       }
       c.verify?.(body as Json, t);
     });

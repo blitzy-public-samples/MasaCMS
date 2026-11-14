@@ -30,12 +30,14 @@ import { parse } from 'yaml';
 
 import { createMigrationContext, type MigrationContext } from '../../src/context.js';
 import { createGatewayClient, currentAuthority } from '../../src/cutover/index.js';
+import { createFaultRegistry, type FaultRegistry } from '../../src/faults/index.js';
 import { migrationEnvSchema } from '../../src/env.js';
 import { BRIDGE_JOBS, createBridgeClient, type LegacyDb, type SchedulerDescription } from '../../src/legacy/index.js';
 import { createBackgroundState } from '../../src/quiesce/index.js';
 import { createProjector, type StartupGuardRunner } from '../../src/reverse/index.js';
 import { AUTHORITY_ROUTES, registerAuthorityRoutes } from '../../src/routes/authority.js';
 import { BACKGROUND_ROUTES, registerBackgroundRoutes } from '../../src/routes/background.js';
+import { FAULT_ROUTES, registerFaultRoutes } from '../../src/routes/faults.js';
 import { LEGACY_STEP_ROUTES, registerLegacyStepRoutes } from '../../src/routes/legacy-steps.js';
 import { PROJECTION_ROUTES, registerProjectionRoutes } from '../../src/routes/projection.js';
 import { SCHEDULER_ROUTES, registerSchedulerRoutes } from '../../src/routes/scheduler.js';
@@ -52,6 +54,7 @@ const LEGACY_ORIGIN = 'http://legacy.route-suites.test';
 export const REGISTERED_OPERATIONS = Object.freeze([
   ...AUTHORITY_ROUTES,
   ...BACKGROUND_ROUTES,
+  ...FAULT_ROUTES,
   ...LEGACY_STEP_ROUTES,
   ...PROJECTION_ROUTES,
   ...SCHEDULER_ROUTES,
@@ -59,8 +62,6 @@ export const REGISTERED_OPERATIONS = Object.freeze([
 
 /** Contract operations this composition does not serve: no registrar of theirs is composed here, and the service has no `server.ts` composing them yet. */
 export const ABSENT_OPERATIONS = Object.freeze([
-  'faultClear',
-  'faultSet',
   'gatesList',
   'transitionGet',
   'transitionStart',
@@ -583,6 +584,22 @@ const UNSTARTED_LOOP_GUARD: StartupGuardRunner = {
   run: () => Promise.reject(new Error('The projector loop is not started in the route suites')),
 };
 
+/** `registry` as the fault routes see it, counting each fault armed or disarmed. */
+function countedFaults(registry: FaultRegistry, counter: { toggles: number }): Pick<FaultRegistry, 'set' | 'clear'> {
+  return {
+    set(name, params) {
+      const armed = registry.set(name, params);
+      counter.toggles += 1;
+      return armed;
+    },
+    clear(name) {
+      const wasArmed = registry.clear(name);
+      counter.toggles += 1;
+      return wasArmed;
+    },
+  };
+}
+
 /** Every effect a request can leave behind. */
 export interface Effects {
   transactions: number;
@@ -590,6 +607,8 @@ export interface Effects {
   serviceCalls: number;
   bridgeCalls: number;
   legacyReads: number;
+  /** Faults armed or disarmed through the fault routes. */
+  faultToggles: number;
 }
 
 /** The composed app, its context, the boundary state it answers from and the effects it records. */
@@ -597,6 +616,8 @@ export interface RouteApp {
   app: FastifyInstance;
   ctx: MigrationContext;
   state: BoundaryState;
+  /** The registry the fault routes arm; arranging through it records no effect. */
+  faults: FaultRegistry;
   /** Outbound service calls since the last reset, each checked against its producer's contract. */
   calls: ContractCall[];
   effects(): Effects;
@@ -631,6 +652,7 @@ export async function buildRouteApp(options: BuildRouteAppOptions): Promise<Rout
   const recording = recordingDb(options.db);
   const legacyCounter = { reads: 0 };
   const bridgeCounter = { calls: 0 };
+  const faultCounter = { toggles: 0 };
   const env = loadEnv(migrationEnvSchema, ENV_SOURCE);
   const logger = createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } });
   const client = contractClient(SERVICE, boundaryResponder(state), calls);
@@ -644,6 +666,12 @@ export async function buildRouteApp(options: BuildRouteAppOptions): Promise<Rout
     client,
     gateway: createGatewayClient({ migrationClient: client, operatorClient: contractClient('operator', boundaryResponder(state), calls) }),
   });
+  // No projector or window consults the fault hooks here, and a crash fault would otherwise exit the test worker.
+  const faults = createFaultRegistry(ctx, {
+    exit: (code) => {
+      throw new Error(`A fault tried to exit the route suites with status ${String(code)}`);
+    },
+  });
   let app: FastifyInstance | undefined;
   try {
     app = await createService({ name: SERVICE, version: '1.0.0', env, verifierOverride: testVerifier(SERVICE), logger });
@@ -651,6 +679,7 @@ export async function buildRouteApp(options: BuildRouteAppOptions): Promise<Rout
     const projector = createProjector(ctx, { startupGuard: UNSTARTED_LOOP_GUARD });
     registerAuthorityRoutes(app, { authority: () => currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths }), catalog: ctx.catalog });
     registerBackgroundRoutes(app, { background });
+    registerFaultRoutes(app, { faults: countedFaults(faults, faultCounter) });
     // The route suites run no step whose units are target-authoritative, so no window ever opens over the in-memory schema.
     registerLegacyStepRoutes(app, { windows: createWindowService(ctx, { projector }) });
     registerProjectionRoutes(app, { projector, defaultTimeoutMs: ctx.config.projection.defaultAwaitTimeoutMs });
@@ -667,6 +696,7 @@ export async function buildRouteApp(options: BuildRouteAppOptions): Promise<Rout
     app: ready,
     ctx,
     state,
+    faults,
     calls,
     effects: () => ({
       transactions: recording.transactions,
@@ -674,12 +704,14 @@ export async function buildRouteApp(options: BuildRouteAppOptions): Promise<Rout
       serviceCalls: calls.length,
       bridgeCalls: bridgeCounter.calls,
       legacyReads: legacyCounter.reads,
+      faultToggles: faultCounter.toggles,
     }),
     resetEffects() {
       recording.reset();
       calls.length = 0;
       bridgeCounter.calls = 0;
       legacyCounter.reads = 0;
+      faultCounter.toggles = 0;
     },
     async close() {
       await ready.opt2.shutdown();

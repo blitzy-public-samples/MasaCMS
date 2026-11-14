@@ -34,7 +34,7 @@ import { SERVICE, buildRouteApp, memoryMigrationDb, type Effects, type RouteApp 
 
 const SITE_A = TENANT_A.siteId;
 const DENIED_STATUSES: ReadonlySet<number> = new Set([401, 403]);
-const NO_EFFECTS: Effects = { transactions: 0, statements: 0, serviceCalls: 0, bridgeCalls: 0, legacyReads: 0 };
+const NO_EFFECTS: Effects = { transactions: 0, statements: 0, serviceCalls: 0, bridgeCalls: 0, legacyReads: 0, faultToggles: 0 };
 
 const SYNTHETIC = [
   'timesheets.employee',
@@ -77,7 +77,7 @@ const THROUGH_GATEWAY: readonly string[] = [...USERS, 'service:gateway'];
 /** Public on the service transport: a managed tasks token is still verified, and refused, as a user token. */
 const PUBLIC_ADMITTED = EVERYONE.filter((name) => name !== 'service:tasks-invoker');
 
-type Method = 'GET' | 'POST';
+type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
 /** A route's declaration and independently admitted subject names. */
 interface ExpectedRoute {
@@ -88,6 +88,8 @@ interface ExpectedRoute {
   public?: true;
   siteCheck?: false;
   allow: readonly string[];
+  /** Status of an admitted request; 200 when absent. */
+  admitted?: number;
 }
 
 const OPERATOR_ONLY: readonly Role[] = [Roles.platformOperator];
@@ -103,6 +105,8 @@ const EXPECTED: readonly ExpectedRoute[] = [
   },
   { method: 'POST', url: '/internal/v1/background::resume', transport: 'service', requires: OPERATOR_ONLY, allow: ['service:operator'] },
   { method: 'POST', url: '/internal/v1/background::suspend', transport: 'service', requires: OPERATOR_ONLY, allow: ['service:operator'] },
+  { method: 'PUT', url: '/internal/v1/faults/:name', transport: 'service', requires: OPERATOR_ONLY, allow: ['service:operator'], admitted: 204 },
+  { method: 'DELETE', url: '/internal/v1/faults/:name', transport: 'service', requires: OPERATOR_ONLY, allow: ['service:operator'], admitted: 204 },
   { method: 'POST', url: '/internal/v1/legacy-steps', transport: 'service', requires: ['service:programs-sites'], siteCheck: false, allow: ['service:programs-sites'] },
   { method: 'POST', url: '/internal/v1/projection/await', transport: 'service', requires: ['service:gateway'], allow: THROUGH_GATEWAY },
   { method: 'GET', url: '/internal/v1/scheduler/state', transport: 'service', requires: OPERATOR_ONLY, allow: ['service:operator'] },
@@ -111,8 +115,10 @@ const EXPECTED: readonly ExpectedRoute[] = [
 
 const SUSPENSION = { suspended: true, since: null, reason: 'authz matrix', pushConfigs: {}, pausedQueues: [], pausedTasks: [] };
 
-/** Valid input of each route, so an admitted request reaches its handler and answers 200. */
-const PROBE_INPUT: Readonly<Record<string, { query?: string; payload?: unknown }>> = {
+/** Valid input of each route, so an admitted request reaches its handler and answers its admitted status. */
+const PROBE_INPUT: Readonly<Record<string, { url?: string; query?: string; payload?: unknown }>> = {
+  'PUT /internal/v1/faults/:name': { url: '/internal/v1/faults/projector-delay', payload: { params: { delayMs: 3000 } } },
+  'DELETE /internal/v1/faults/:name': { url: '/internal/v1/faults/projector-delay' },
   'GET /internal/v1/authority': { query: '?units=people.person_archive,people.person' },
   'POST /internal/v1/projection/await': { payload: { positions: { people: '100' }, timeoutMs: 2000 } },
   'POST /internal/v1/scheduler/state::import': { payload: { nativeTasks: [], ping: false } },
@@ -141,7 +147,7 @@ function keyOf(route: Pick<ExpectedRoute | RouteMatrixEntry, 'method' | 'url'>):
 
 function probeOf(route: ExpectedRoute): ProbeRequest {
   const input = PROBE_INPUT[keyOf(route)] ?? {};
-  return { method: route.method, url: `${route.url.replace(/::/g, ':')}${input.query ?? ''}`, payload: input.payload };
+  return { method: route.method, url: `${input.url ?? route.url.replace(/::/g, ':')}${input.query ?? ''}`, payload: input.payload };
 }
 
 /** A declaration in comparable form: `requires` sorted, defaults dropped. */
@@ -297,7 +303,7 @@ describe('role matrix', () => {
     const outcome = await outcomeOf(send);
     const at = `${keyOf(route)} as ${subject}`;
     if (allow) {
-      expect({ at, status: outcome.status }).toEqual({ at, status: 200 });
+      expect({ at, status: outcome.status }).toEqual({ at, status: route.admitted ?? 200 });
       // An admitted request reaches its handler, so the effect counters that prove denials effect-free do count.
       if (route.url !== '/healthz') expect(outcome.effects).not.toEqual(NO_EFFECTS);
       return;
