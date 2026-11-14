@@ -6,7 +6,7 @@ The gateway is the strangler-fig front door of OPT-2. Every browser and API requ
 ## What it does
 
 - **Only public entry point.** Cloud Run `INGRESS_TRAFFIC_ALL` with `allUsers` as invoker; locally port 8100 (`OPT2_PORT_GATEWAY` in `harness/repro/ports.env`). Because ingress is public, the gateway verifies invocation credentials itself.
-- **One route key.** Every request is keyed by `routeKeyForRequest` from `@opt2/platform/legacy-compat`, the same function the inventory, `src/cutover/build-groups.ts` and the golden coverage check call, with the variants of `cutover/variants.json`. The most specific key wins.
+- **One route key.** Keys come from one module, `platform/src/legacy-compat/route-key.ts` (`@opt2/platform/legacy-compat`), so every consumer shares one precedence. Live requests: the dispatcher keys every edge request but the relay's (`/opt2/svc/**`) with `routeKeyForRequest` and the variants of `cutover/variants.json`, and the most specific key wins; the golden coverage check keys scenario requests with the same function. Precomputed keys: the inventory keys entry points with `routeKeyForEntryPoint`, which delegates to `routeKeyForRequest`; `src/cutover/build-groups.ts` keys nothing itself and groups the inventory's keys, compared in `normaliseRouteKey` form. `test/route-key-parity.test.ts` runs the shared conflict table through the matcher and asserts its keys equal `routeKeyForRequest`'s.
 - **Routing** by the matched entry of the active version:
 
 | Matched entry | Destination |
@@ -27,9 +27,10 @@ The gateway is the strangler-fig front door of OPT-2. Every browser and API requ
 | `cutover/variants.json` | Request-decidable variant predicates, such as `admin:cusers.update{type=2,action=add}`, `{photo}` and `{upload=image}` |
 | `cutover/groups.json` | Write-authority groups, generated from `opt2/inventory/legacy-inventory.json` and `opt2/table-ownership.json` by `npm run cutover:groups` |
 | `cutover/versions/v0001.json` | Every group `legacy`, every inventoried route `legacy`; only `/opt2/stub/**` (plus the gateway's own `/gateway/legacy-bridge/**` and web's `/_next/**`) is `target` |
-| `cutover/versions/v0002.json` | Every group with a carry write entry `target`, and every carry entry its units allow; halted or `fix`-pending write variants are `legacy-write`. Committed after parity replay |
+| `cutover/versions/v0002.json` | Parity milestone: a group goes `target` when it has a carry write entry and none of its units keeps an unprevented non-gateway writer; a carry entry goes `target` when its units allow it; halted or `fix`-pending write variants are `legacy-write`. Committed after parity replay |
 | `cutover/versions/v0003.json` | Rollback rehearsal: the roster group set `R` back to `legacy`, named in `rollbackRefs` with `opt2/reports/reconciliation/rollback-before.json` and its evidence |
 
+- **`v0002` as committed.** 12 of 54 groups are `target`. Six groups with carry write entries stay `legacy` because their units have `appstart` writers that `src/cutover/prevented-writers.ts` does not close, chiefly Masa's start-up bundle deploy (`getToWork*` in `core/mura/publisher.cfc`): `grp:content.approval_action`, `grp:identity.credential`, `grp:identity.permission`, `grp:people.user_favorite`, `grp:programs_sites.image_size`, `grp:programs_sites.site`. `grp:identity.credential` holds `admin:clogin.login`, so sessions stay legacy-primary (see [Sessions and CSRF](#sessions-and-csrf)).
 - **File fields:** `tableVersion`, `previous`, `sourceSha`, `createdAt`, `groupAuthority` (group id → `legacy|target`), `rollbackRefs`, `entries`.
 - **Entry fields:** `route` (key with any variant), `owningService`, `tableVersion`, `state` (`legacy|target`), `kind` (`read|write|legacy-write|job|static`), `group` (for `write` entries), `units[]`, `disposition` (from the inventory).
 - **Validation** (`src/cutover/validate.ts`; finding rule ids in brackets), run by `npm run cutover:validate` in CI mode and again at activation:
@@ -58,7 +59,7 @@ State lives only in the `gateway` schema (`db/migrations/`), never in a file or 
 | `gateway.session_barrier` | Recorded and pending write positions per session and owner |
 
 - Activation validates the version, requires its `previous` to equal the active version, and commits a new `epoch`. Freeze and unfreeze also commit a new epoch.
-- Every write reads the epoch before routing; instances refresh their cached version and heartbeat every second. With no active version, or a cached one older than two seconds, every request answers the legacy-shaped 503.
+- Every write reads the epoch before routing; instances refresh their cached version and heartbeat every second. With no active version, or a cached one older than two seconds, every edge request the cut-over table dispatches (`edge*`) answers the legacy-shaped 503; `GET /healthz`, the internal operations (cut-over activate, freeze, unfreeze and status, in-flight orphan clearing, legacy-session mark-used) and the web service-call relay (`/internal/v1/relay/**` and its `/opt2/svc/**` alias) keep answering.
 - An operation is visible only once every live instance reports the new epoch; the transition procedure waits for this.
 - Freezing never changes where an entry routes. A frozen entry's requests wait up to 30 s, then answer the legacy-shaped 503.
 - Only the forwarding instance removes its `inflight` row. A dead instance's row is cleared only by evidence, never by time: `gates-closed` for target-bound writes (the owner's gates closed on the route's units), `legacy-restart` for legacy-bound writes (a controlled ColdFusion restart).
