@@ -263,6 +263,7 @@ export function urlFormType(req: Pick<EditFormInput['req'], 'headers' | 'formSco
 
 /**
  * `formBuilderManager.createJSONForm(formID)`: an empty form bean and no datasets, serialized in ACF 2023's key order.
+ * Built here, not read from the edit model: it reads no store, and only this request's `url.formType` decides its use.
  */
 function createJsonForm(formId: string): string {
   return (
