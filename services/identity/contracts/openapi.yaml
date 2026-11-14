@@ -2621,7 +2621,7 @@ paths:
   /internal/v1/authenticate:
     post:
       operationId: authenticateRequest
-      summary: Resolves a client request's session cookie, Basic or Bearer credentials or OAuth client credentials by legacy rules.
+      summary: Applies a sessionless REST request's Basic, Bearer or OAuth client credentials by legacy rules.
       description: The gateway sends the request facts before routing; `legacyResponse` is the exact answer when legacy credential handling answers on its own, such as a 401 or 500 with its `WWW-Authenticate`, an OAuth token or token info, carrying legacy's CORS origin echo for an allowed `Origin`.
       tags: [internal]
       x-opt2-transport: service
@@ -5933,7 +5933,7 @@ components:
           type: string
     AuthenticateResponse:
       type: object
-      description: '`session` maps legacy session cookies, `authenticated` means credentials logged a session in for this request, `denied` and `answered` carry the legacy answer.'
+      description: '`authenticated` means credentials logged a session in for this request, `denied` and `answered` carry the legacy answer. This sessionless REST exchange reads no cookies, so `session` and `anonymous` are never returned.'
       required:
         - outcome
         - sessionId

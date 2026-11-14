@@ -3,7 +3,7 @@
   "$id": "urn:opt2:identity:event:identity.group.changed.v1",
   "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
   "title": "identity.group.changed.v1",
-  "description": "Full state of one Masa group account.",
+  "description": "Full state of one Masa group's name-and-pool projection; no other group-account column is carried.",
   "x-opt2-kind": "state",
   "type": "object",
   "additionalProperties": false,

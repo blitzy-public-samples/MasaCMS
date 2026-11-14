@@ -101,7 +101,7 @@ Each row traces one legacy behaviour identity carries or owns, keyed by its inve
 
 ## Withheld, legacy-served and retired
 
-These keep running on legacy in every version, inside write windows once their units move. Identity serves none of them.
+Withheld and legacy-served items keep running on legacy in every version. Those that write are `legacy-write` entries and run inside write windows once a unit they write is `target`-authoritative. The retired SOAP `svc:muraProxy` is unreachable at the pin, blocked by the `core/mura` directory guard, and runs nowhere. Identity serves none of them.
 
 | Inventory id / route key | Legacy source (path:lines) | Disposition | Target code | Proof (test file › test name, or GS id) |
 |---|---|---|---|---|

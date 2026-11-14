@@ -137,7 +137,7 @@ A caller holding only `m:008` on the group routes also needs `m:000` on the site
 | Method and path | Transport | Requires | Does |
 |---|---|---|---|
 | `POST /internal/v1/tokens` | service | `service:gateway` | Mints the site-scoped user token of a session |
-| `POST /internal/v1/authenticate` | service | `service:gateway` | Resolves a session cookie, `Basic` or `Bearer` credentials or OAuth client credentials by legacy rules, or returns legacy's exact answer |
+| `POST /internal/v1/authenticate` | service | `service:gateway` | Sessionless REST credential exchange for `/_api/rest/v1`: applies `Basic`, `Bearer` or `access_token` and OAuth client credentials by legacy rules in a new request session, or returns legacy's exact answer. It reads no session cookie; browser cookies are resolved by [`gateway/src/session/resolve.ts`](../../gateway/src/session/resolve.ts) and legacy sessions adopted through `POST /internal/v1/sessions:adopt` |
 | `GET /.well-known/jwks.json` | service | public | The local signer's public key (`OPT2_JWKS_URL`) |
 | `POST /internal/v1/sessions:adopt` | service | `service:gateway` | Creates or updates the identity session of a legacy session from the bridge's `op=describe` |
 | `GET /internal/v1/sessions/{sid}/state`, `/admin-site`, `/snapshot` | service | `service:gateway` | Active flag and epoch; the selected admin site; the login snapshot, CSRF secret and used tokens for `op=hydrate` |
@@ -173,7 +173,7 @@ Identity writes each event to `identity.outbox` in the transaction of the change
 
 | Topic | Kind | Carries | Consumers |
 |---|---|---|---|
-| `identity.group.changed.v1` | `state` | Full state of one group account | people, strategies-content (group names) |
+| `identity.group.changed.v1` | `state` | Full state of one group's name-and-pool projection: `groupId`, `siteId`, `groupName`, `type` (always 1), `isPublic`, `poolTenantId`, `deleted`. No other group-account column is carried | people, strategies-content (group names) |
 | `identity.permission.changed.v1` | `state` | Every permission row of one group in one site | strategies-content (`content.permission_projection`) |
 | `identity.membership.changed.v1` | `state` | Every group one user belongs to | strategies-content (`content.membership_projection`) |
 | `identity.login-mail.requested.v1` | `process` | One login-information mail, rendered as legacy renders it | communications, which sends it |
