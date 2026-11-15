@@ -5,8 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { VariantDeclaration } from '@opt2/platform/legacy-compat';
-import { memorySourceTree, openSourceTree, parseCfmlComponent } from '../../src/inventory/closure.js';
-import type { CfmlComponent, ClosureContext, ComponentIndex, SourceTree } from '../../src/inventory/closure.js';
+import { computeClosure, memorySourceTree, openSourceTree, parseCfmlComponent } from '../../src/inventory/closure.js';
+import type { CfmlComponent, ClosureContext, ComponentIndex, Predicates, SourceTree } from '../../src/inventory/closure.js';
 import {
   CONTROLLERS_DIR,
   CORE_SEARCH_SCOPE,
@@ -21,7 +21,7 @@ import {
 import type { ActionEntry, ControllerEntry, ControllerExtraction, VariantEntry } from '../../src/inventory/controllers.js';
 import { loadRoleOverrides, loadWriterOverrides } from '../../src/inventory/overrides.js';
 import type { RequiredRole, RoleOverride, RoleOverrides, SourceRef } from '../../src/inventory/overrides.js';
-import { loadInventoryVariants } from '../../src/inventory/route-keys.js';
+import { inventoryRouteKey, loadInventoryVariants, normaliseInventoryKey } from '../../src/inventory/route-keys.js';
 import { assertOutsideRepo } from '../../src/lib/paths.js';
 
 const CTL = CONTROLLERS_DIR;
@@ -388,6 +388,44 @@ const BEANS: Readonly<Record<string, string>> = {
   fixturemanager: FIXTURE_MANAGER,
 };
 
+const CEDGE = `${CTL}/cedge.cfc`;
+
+/** An in-memory circuit whose token check, content declarations and redirects use the argument-less and empty forms. */
+const EDGE_FILES: Readonly<Record<string, string>> = {
+  [`${CTL}/controller.cfc`]: BASE_CONTROLLER,
+  [CEDGE]: circuit(
+    '\tpublic any function token(rc) {',
+    '\t\tif ( arguments.rc.$.validateCSRFTokens() ) {',
+    '\t\t\targuments.rc.ok = true;',
+    '\t\t}',
+    '\t}',
+    '',
+    '\tpublic any function raw(rc) {',
+    '\t\tcfcontent(reset=true);',
+    '\t\twriteOutput(arguments.rc.body);',
+    '\t\tabort;',
+    '\t}',
+    '',
+    '\tpublic any function back(rc) {',
+    '\t\tvariables.fw.redirect();',
+    '\t}',
+    '',
+    '\tpublic any function finish(rc) {',
+    '\t\tnote(arguments.rc);',
+    '\t\tclose(arguments.rc);',
+    '\t}',
+    '',
+    '\tprivate any function note(rc) {',
+    '\t\targuments.rc.noted = true;',
+    '\t}',
+    '',
+    '\tprivate any function close(rc) {',
+    '\t\tvariables.fw.redirect(action="cEdge.list", append="siteid");',
+    '\t}',
+  ),
+  [`${VIEWS}/cedge/plain.cfm`]: lines('<cfcontent type="; charset=utf-8">', '<cfoutput><p>plain</p></cfoutput>', '<cfabort>'),
+};
+
 /** Variants the committed file does not declare, for the variant forms and the match-order checks. */
 const CUSTOM_VARIANTS: readonly VariantDeclaration[] = [
   { route: 'admin:cfixture.update', variant: 'action=add', when: [{ param: 'action', equals: 'Add' }] },
@@ -411,9 +449,23 @@ const CUSTOM_VARIANTS: readonly VariantDeclaration[] = [
   { route: 'admin:cmerge.save', variant: 'mode', when: [{ param: 'mode', in: ['b', 'a'] }] },
 ];
 
+/** Closure predicates of the committed cusers.update declarations, one list of alternatives per declaration in file order. */
+const CUSERS_UPDATE_PREDICATES: ReadonlyArray<readonly Predicates[]> = [
+  [{ newFile: true }, { removePhotoFile: 'true' }],
+  [{ type: '2', action: 'Add', extendSetID: true }],
+  [{ type: '2', action: 'Update', extendSetID: true }],
+  [{ type: '1', action: 'Delete' }],
+  [{ type: '1', extendSetID: true }],
+  [{ type: '2', action: 'Add' }],
+  [{ type: '2', action: 'Delete' }],
+  [{ type: '2', action: 'Update' }],
+  [{ type: '1' }],
+];
+
 let root = '';
 let tree: SourceTree;
 let ctx: ClosureContext;
+let customCtx: ClosureContext;
 let variants: readonly VariantDeclaration[];
 let roleOverrides: RoleOverrides;
 let extraction: ControllerExtraction;
@@ -507,7 +559,8 @@ beforeAll(async () => {
   roleOverrides = await loadRoleOverrides(fixturePath('inventory/role-overrides.valid.yaml'));
   extraction = await extractControllers(ctx, { variants, roleOverrides });
   const overrides = await loadWriterOverrides(fixturePath('inventory/writer-overrides.valid.yaml'));
-  custom = await extractControllers({ ...ctx, overrides }, { variants: CUSTOM_VARIANTS, roleOverrides });
+  customCtx = { ...ctx, overrides };
+  custom = await extractControllers(customCtx, { variants: CUSTOM_VARIANTS, roleOverrides });
 });
 
 afterAll(async () => {
@@ -595,6 +648,18 @@ describe('circuits and actions', () => {
     const approve = actionOf(extraction, 'ctl:cmodes.approve');
     expect([approve.kind, approve.action, approve.viewPath]).toEqual(['method', 'approve', `${VIEWS}/cmodes/approve.cfm`]);
     expect(actionOf(extraction, 'ctl:cmodes.exportcsv').name).toBe('exportCsv');
+  });
+
+  it('keys every action as the platform keys the same admin entry point, in canonical lower case', async () => {
+    const actions = extraction.controllers.flatMap((c) => c.actions.map((a) => ({ c, a })));
+    expect(actions).toHaveLength(extraction.counts.actions);
+    for (const { c, a } of actions) {
+      const keyed = await inventoryRouteKey({ kind: 'admin', action: `${c.circuit}.${a.name}` }, { variants });
+      expect([a.variants.at(-1)?.routeKey, a.variants.at(-1)?.predicate]).toEqual([keyed.key, null]);
+      expect([keyed.key, a.id]).toEqual([`admin:${c.circuit.toLowerCase()}.${a.action}`, `ctl:${c.circuit.toLowerCase()}.${a.action}`]);
+      expect(normaliseInventoryKey(keyed.key)).toBe(keyed.key);
+    }
+    expect(onlyVariant(extraction, 'ctl:cfixture.update').routeKey).toBe('admin:cfixture.update');
   });
 
   it('spans a method action over its function and a view-only action over its whole view', () => {
@@ -742,6 +807,40 @@ describe('required role', () => {
     ]);
   });
 
+  it('leaves the opaque cfixture.special branch unclassified and reports it when no override settles it', async () => {
+    const result = await extractControllers(ctx, { variants, roleOverrides: { ...roleOverrides, overrides: [] } });
+    const special = onlyVariant(result, 'ctl:cfixture.special').requiredRole;
+    expect([special.classification, special.pattern, special.unclassified, special.override, special.source]).toEqual([
+      null,
+      null,
+      true,
+      null,
+      { path: CFIXTURE, lines: [11, 13] },
+    ]);
+    expect(onlyVariant(result, 'ctl:cfixture.update').requiredRole).toEqual(controllerOf(extraction, 'cfixture').requiredRole);
+    expect(controllerOf(result, 'cusers').requiredRole).toMatchObject({ classification: null, unclassified: true, override: null });
+    expect(result.unclassifiedGates).toEqual(
+      expect.arrayContaining([
+        { circuit: 'cfixture', actions: ['special'], source: { path: CFIXTURE, lines: [11, 13] } },
+        { circuit: 'cusers', actions: ['list', 'update'], source: block(CUSERS, 'if ( !arguments.rc.isAdmin', 2) },
+      ]),
+    );
+  });
+
+  it('leaves a gate on a request flag that before() never assigns unclassified', async () => {
+    const files = {
+      [`${CTL}/controller.cfc`]: BASE_CONTROLLER,
+      [`${CTL}/cflag.cfc`]: gated(['if ( !arguments.rc.allowed ) secure(arguments.rc);'], 'main'),
+    };
+    const result = await extractControllers(memoryContext(files), { variants, roleOverrides });
+    expect(controllerOf(result, 'cflag').requiredRole).toMatchObject({
+      gate: '!arguments.rc.allowed',
+      classification: null,
+      pattern: null,
+      unclassified: true,
+    });
+  });
+
   it('reports each unsettled gate once per source span with the actions it covers', () => {
     expect(extraction.unclassifiedGates).toEqual([
       { circuit: 'cdeny', actions: ['main'], source: span(`${CTL}/cdeny.cfc`, 'secure(arguments.rc);', 'if ( true and yes )') },
@@ -846,13 +945,66 @@ describe('variants and write sets', () => {
     ['{type=2,action=add,extdata}', ['tfixture']],
     ['{type=1,action=delete}', ['tfixturemembers']],
     ['{type=1,extdata}', ['tfixture']],
+    ['{type=2,action=add}', ['tfixture']],
     ['{type=2,action=delete}', ['tfixture', 'tfixturemembers']],
+    ['{type=2,action=update}', ['tfixture']],
     ['{type=1}', ['tfixture']],
     ['', ['tfixture', 'tfixturemembers']],
   ])('computes the cusers.update%s write set from its own branch minus the earlier variants', (suffix, writeSet) => {
     const variant = variantOf(extraction, 'ctl:cusers.update', `admin:cusers.update${suffix}`);
     expect(variant.writeSet).toEqual(writeSet);
     expect(variant.closureEvidence.every((w) => w.trigger === 'request' && w.table !== null && writeSet.includes(w.table))).toBe(true);
+  });
+
+  it.each<[string, Array<[string, string, string, string]>]>([
+    ['{type=2,action=add}', [['tfixture', 'insert', FIXTURE_DAO, 'create']]],
+    ['{type=2,action=update}', [['tfixture', 'update', FIXTURE_DAO, 'update']]],
+    [
+      '{type=2,action=delete}',
+      [
+        ['tfixture', 'delete', USER_MANAGER, 'delete'],
+        ['tfixturemembers', 'delete', FIXTURE_DAO, 'deleteMembership'],
+      ],
+    ],
+  ])('traces the cusers.update%s writes to the manager and DAO statements its branch reaches', (suffix, writes) => {
+    const variant = variantOf(extraction, 'ctl:cusers.update', `admin:cusers.update${suffix}`);
+    expect(variant.closureEvidence.map((w) => [w.table, w.op, w.component, w.method])).toEqual(writes);
+  });
+
+  it.each<[Record<string, string>, string]>([
+    [{ type: '1' }, 'admin:cusers.update{type=1}'],
+    [{ type: '2', action: 'Add' }, 'admin:cusers.update{type=2,action=add}'],
+    [{ type: '2', action: 'Update' }, 'admin:cusers.update{type=2,action=update}'],
+    [{ type: '2', action: 'Delete' }, 'admin:cusers.update{type=2,action=delete}'],
+    [{ type: '2', action: 'Update', newFile: 'photo.png' }, 'admin:cusers.update{photo}'],
+  ])('keys a cusers.update request with %j as the platform does: %s', async (params, key) => {
+    const keyed = await inventoryRouteKey({ kind: 'admin', action: 'cUsers.update', params }, { variants });
+    expect(keyed.key).toBe(key);
+    expect(variantOf(extraction, 'ctl:cusers.update', key).id).toBe(`ctl:${key.slice('admin:'.length)}`);
+  });
+
+  it('computes every cusers.update write set as the closure engine does for its predicates minus the earlier ones', () => {
+    const action = actionOf(extraction, 'ctl:cusers.update');
+    expect(action.variants).toHaveLength(CUSERS_UPDATE_PREDICATES.length + 1);
+    action.variants.forEach((v, i) => {
+      const positive = CUSERS_UPDATE_PREDICATES[i] ?? [{}];
+      const excludePredicates = CUSERS_UPDATE_PREDICATES.slice(0, i).flat();
+      const tables = positive.flatMap(
+        (predicates) => computeClosure({ component: CUSERS, method: 'update', predicates, excludePredicates }, ctx).tables,
+      );
+      expect(v.writeSet).toEqual([...new Set(tables)].sort());
+    });
+  });
+
+  it.each<[string, Predicates[], Predicates[]]>([
+    ['admin:cfixture.update{action=add}', [{ action: 'Add' }], []],
+    ['admin:cfixture.update{action=change}', [{ action: 'Update' }, { action: 'Delete' }], [{ action: 'Add' }]],
+    ['admin:cfixture.update', [{}], [{ action: 'Add' }, { action: 'Update' }, { action: 'Delete' }]],
+  ])('computes the custom %s write set as the closure engine does', (key, positive, excludePredicates) => {
+    const tables = positive.flatMap(
+      (predicates) => computeClosure({ component: CFIXTURE, method: 'update', predicates, excludePredicates }, customCtx).tables,
+    );
+    expect(variantOf(custom, 'ctl:cfixture.update', key).writeSet).toEqual([...new Set(tables)].sort());
   });
 
   it('records the guards a variant cannot decide as conditional writes', () => {
@@ -990,6 +1142,14 @@ describe('CSRF context', () => {
     for (const v of actionOf(extraction, id).variants) expect([v.csrfContext, v.csrfValidation]).toEqual([context, validation]);
   });
 
+  it('records an empty context for a token check that names none', async () => {
+    const result = await extractControllers(memoryContext(EDGE_FILES), { variants, roleOverrides });
+    expect([onlyVariant(result, 'ctl:cedge.token').csrfContext, onlyVariant(result, 'ctl:cedge.token').csrfValidation]).toEqual([
+      '',
+      'validates',
+    ]);
+  });
+
   it('records the same token check on every variant of an action', () => {
     expect(new Set(actionOf(extraction, 'ctl:cusers.update').variants.map((v) => `${v.csrfContext}|${v.csrfValidation}`))).toEqual(
       new Set(['rc.userid|validates']),
@@ -1022,6 +1182,17 @@ describe('response modes', () => {
     for (const v of action.variants) {
       expect([v.responseMode, v.layout, v.contentType, v.redirectTarget]).toEqual([mode, layout, contentType, redirect]);
     }
+  });
+
+  it.each<[string, string, string | null, string | null]>([
+    ['ctl:cedge.raw', 'json', 'text/html', null],
+    ['ctl:cedge.plain', 'fragment', 'text/html', null],
+    ['ctl:cedge.back', 'redirect', null, null],
+    ['ctl:cedge.finish', 'redirect', null, 'cEdge.list'],
+  ])('records %s as %s when its type, media type or redirect target is left out', async (id, mode, contentType, redirect) => {
+    const result = await extractControllers(memoryContext(EDGE_FILES), { variants, roleOverrides });
+    const v = onlyVariant(result, id);
+    expect([v.responseMode, v.contentType, v.redirectTarget]).toEqual([mode, contentType, redirect]);
   });
 
   it('closes a method that aborts over its own body and never reads the view of the same name', () => {
