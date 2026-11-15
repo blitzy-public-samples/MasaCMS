@@ -1,39 +1,89 @@
-/** In-process strategies-content app for the contract and security suites: every implemented route over a recording pool, no PostgreSQL. */
+/**
+ * Shared scaffolding of the strategies-content suites: environment, clock, in-memory database, storage, task and
+ * service-client fakes, the app builders for `app.inject`, and the throwaway PostgreSQL schema helpers.
+ */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { INVOCATION_HEADER } from '@opt2/platform/auth';
+import { Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
+import { fileURLToPath } from 'node:url';
+import { INVOCATION_HEADER, LOCAL_USER_TOKEN } from '@opt2/platform/auth';
 import { registerConsumers } from '@opt2/platform/events';
 import { createLogger } from '@opt2/platform/logging';
-import { registerMigrationHandlers, registerWritePositionHeader } from '@opt2/platform/migration-kit';
-import { createService, loadEnv, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
-import { createLocalStorageAdapter, type LocalStorageAdapter } from '@opt2/platform/storage';
-import type {
-  CreateTaskInput,
-  CreateTaskResult,
-  DeleteTaskResult,
-  QueueState,
-  TaskInfo,
-  TaskPort,
+import {
+  closeGates,
+  ensureUnitGates,
+  openGates,
+  registerMigrationHandlers,
+  registerWritePositionHeader,
+  sha256Hex,
+  type GatePhase,
+  type GateState,
+  type UnitGate,
+} from '@opt2/platform/migration-kit';
+import {
+  CSRF_CONSUME_PATH,
+  IDENTITY_SERVICE,
+  ServiceUnavailableError,
+  createService,
+  loadEnv,
+  type Clock,
+  type CsrfConsumeRequest,
+  type FastifyInstance,
+  type ServiceClient,
+  type ServiceRequest,
+  type ServiceResponse,
+} from '@opt2/platform/service-kit';
+import {
+  SIGNED_URL_TTL_S,
+  StorageObjectNotFoundError,
+  UnknownBucketError,
+  assertBucket,
+  assertObjectKey,
+  createLocalStorageAdapter,
+  signLocalUrl,
+  verifySignedUrl,
+  type BucketName,
+  type LocalStorageAdapter,
+  type ObjectHead,
+  type PutBody,
+  type PutResult,
+} from '@opt2/platform/storage';
+import {
+  assertCreateInput,
+  resolvePageSize,
+  type CreateTaskInput,
+  type CreateTaskResult,
+  type DeleteTaskResult,
+  type QueueState,
+  type TaskInfo,
+  type TaskPage,
+  type TaskPageRequest,
+  type TaskPort,
 } from '@opt2/platform/tasks';
 import { tenantDbFromPool, tenantIdForSite, type TenantDb } from '@opt2/platform/tenancy';
 import {
   businessClock,
   createCapturingPublisher,
+  createThrowawaySchema,
   mintServiceToken,
   mintUserToken,
   registryPayloads,
   testVerifier,
   writeTestSecrets,
   type CapturingPublisher,
+  type ThrowawaySchema,
+  type ThrowawaySchemaOptions,
 } from '@opt2/platform/testing';
+import { buildApp, contentEnvSchema, type ContentEnv } from '../../src/app.js';
 import { CONTENT_CONFIG_DEFAULTS } from '../../src/domain/context.js';
 import { contentConsumers } from '../../src/events/consumers.js';
 import { registerJobRoutes } from '../../src/jobs/index.js';
 import { mappings, units } from '../../src/migration/mappings/index.js';
-import { createExportObjects } from '../../src/migration/objects.js';
+import { CONTENT_FILES_BUCKET, createExportObjects } from '../../src/migration/objects.js';
 import { OWNER, SCHEMA, createContentRepository } from '../../src/repo/repository.js';
-import { CONTENT_UNITS } from '../../src/repo/tables.js';
+import { CONTENT_UNITS, type ContentUnit } from '../../src/repo/tables.js';
 import { registerCommentsProxyRoutes } from '../../src/routes/comments-proxy.js';
 import { registerFileRoutes } from '../../src/routes/files.js';
 import { registerContentLinksRoutes } from '../../src/routes/internal-content-links.js';
@@ -65,27 +115,44 @@ export interface RecordedStatement {
   tenantId: string | null;
 }
 
-/** Rows a responder answers, or a function of the statement's parameters building them. */
-export type ResponderRows = readonly Row[] | ((params: readonly unknown[], sql: string) => readonly Row[]);
+/** Rows of a statement computed from its parameters, SQL and transaction tenant; it may throw to fail the statement. */
+export type Responder = (params: readonly unknown[], sql: string, ctx: { tenantId: string | null }) => readonly Row[];
+
+/** Rows a responder answers, or the function building them. */
+export type ResponderRows = readonly Row[] | Responder;
+
+/** A responder pattern: a RegExp over the collapsed SQL, or a case-insensitive substring of it. */
+export type ResponderPattern = RegExp | string;
 
 /** Gate state of one unit of write authority. */
 export interface FakeGate {
-  state: 'legacy' | 'open' | 'closed';
-  phase: 'quiet' | 'executing' | 'importing' | 'import-pending';
+  state: GateState;
+  phase: GatePhase;
   holder_id: string | null;
+}
+
+/** Gates and responders a {@link RecordingDb} starts with, and returns to on `reset`. */
+export interface RecordingDbSeed {
+  gates?: Partial<Record<ContentUnit, GateState | Partial<FakeGate>>>;
+  responses?: ReadonlyArray<readonly [ResponderPattern, ResponderRows]>;
 }
 
 /** A TenantDb over an in-memory pool that records every statement and answers it from responders and built-in rules. */
 export interface RecordingDb extends TenantDb {
   /** Every statement since the last `clear`, transaction control included. */
   readonly statements: readonly RecordedStatement[];
-  /** Answers statements whose collapsed SQL matches `pattern` with `rows` until `reset`; the latest responder wins. */
-  respond(pattern: RegExp, rows: ResponderRows): void;
-  /** Sets the gate a unit reads and writes as. */
+  /** Recorded statements that write: a leading INSERT, UPDATE or DELETE, or one inside a `WITH` query. */
+  writes(): RecordedStatement[];
+  /** Every content unit's gate, and any other unit set, ordered by unit. */
+  gates(): Array<FakeGate & { unit: string }>;
+  /** Answers statements matching `pattern` with `rows` until `reset`; the latest responder wins. */
+  respond(pattern: ResponderPattern, rows: ResponderRows): void;
+  /** Sets the gate a unit reads and writes as; a unit never set reads as open, quiet and unheld. */
   setGate(unit: string, gate: Partial<FakeGate>): void;
-  /** Forgets the recorded statements. */
+  setGate(unit: string, state: GateState, phase?: GatePhase): void;
+  /** Forgets the recorded statements; responders and gates stay. */
   clear(): void;
-  /** Forgets the statements, responders, gate overrides, inbox receipts and staged object intents. */
+  /** Returns to the created state: no statements, inbox receipts or staged object intents, and the seed's gates and responders only. */
   reset(): void;
 }
 
@@ -96,6 +163,9 @@ const REGISTRY_TABLE = /"?\w+"?\."?tenant_registry"?/i;
 const INBOX_INSERT = /^INSERT INTO "?\w+"?\."?inbox"?/i;
 const CHANGELOG_INSERT = /^INSERT INTO "?\w+"?\."?changelog"?/i;
 const STAGED_OBJECT_TABLE = /"?\w+"?\."?staged_object"?/i;
+const CURRENT_XACT_ID = /^SELECT pg_current_xact_id\(\)(?:::\w+)?(?: AS "?(\w+)"?)?$/i;
+const WRITE_STATEMENT = /^(?:INSERT|UPDATE|DELETE)\b/i;
+const CTE_WRITE = /^WITH\b.*\b(?:INSERT INTO|DELETE FROM|UPDATE \S+ SET)\b/i;
 const OPEN_GATE: FakeGate = Object.freeze({ state: 'open', phase: 'quiet', holder_id: null });
 
 function collapse(sql: string): string {
@@ -234,17 +304,34 @@ function registryMatches(sql: string, params: readonly unknown[], rows: readonly
   return rows.filter((row) => alternatives.some((terms) => terms.length > 0 && terms.every((term) => term(row))));
 }
 
+/** Whether a responder `pattern` matches the collapsed `sql`. */
+function patternMatches(pattern: ResponderPattern, sql: string): boolean {
+  return typeof pattern === 'string' ? sql.toLowerCase().includes(collapse(pattern).toLowerCase()) : pattern.test(sql);
+}
+
 /** Creates a {@link RecordingDb} over schema `content`; nothing connects to PostgreSQL. */
-export function createRecordingDb(): RecordingDb {
+export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
   const statements: RecordedStatement[] = [];
-  let responders: Array<{ pattern: RegExp; rows: ResponderRows }> = [];
-  const gates = new Map<string, FakeGate>();
+  let responders: Array<{ pattern: ResponderPattern; rows: ResponderRows }> = [];
+  const gateOverrides = new Map<string, FakeGate>();
   const receipts = new Set<string>();
   const registry = new Map<string, Row>(registryPayloads().map((payload) => [tenantIdForSite(payload.siteId), registryRow(payload)]));
   /** `content.staged_object` rows by `<tenant_id>/<stage_id>`. */
   const stagedObjects = new Map<string, Row>();
+  let nextXactId = BigInt(FAKE_XID);
 
-  const gateOf = (unit: string): FakeGate => gates.get(unit) ?? OPEN_GATE;
+  const gateOf = (unit: string): FakeGate => gateOverrides.get(unit) ?? OPEN_GATE;
+  const setGate = (unit: string, gate: GateState | Partial<FakeGate>, phase?: GatePhase): void => {
+    const patch = typeof gate === 'string' ? { state: gate, ...(phase === undefined ? {} : { phase }) } : gate;
+    gateOverrides.set(unit, { ...gateOf(unit), ...patch });
+  };
+  const applySeed = (): void => {
+    responders = (seed.responses ?? []).map(([pattern, rows]) => ({ pattern, rows }));
+    for (const [unit, gate] of Object.entries(seed.gates ?? {})) {
+      if (gate !== undefined) setGate(unit, gate);
+    }
+  };
+  applySeed();
   const answer = (rows: readonly Row[], rowCount: number | null = rows.length, command = 'SELECT') => ({
     command,
     rows: [...rows],
@@ -284,6 +371,12 @@ export function createRecordingDb(): RecordingDb {
     if (setting !== null) {
       if (setting[1] === 'app.tenant_id') session.tenantId = params[0] === '' ? null : String(params[0]);
       return answer([{ set_config: params[0] }]);
+    }
+    const xactId = CURRENT_XACT_ID.exec(sql);
+    if (xactId !== null) {
+      const xid = String(nextXactId);
+      nextXactId += 1n;
+      return answer([{ [xactId[1] ?? 'pg_current_xact_id']: xid }]);
     }
     if (/current_setting\('lock_timeout'\)/i.test(sql)) return answer([{ value: '0' }]);
     if (/pg_snapshot_x(?:min|max)\(pg_current_snapshot\(\)\)/i.test(sql)) return answer([{ value: FAKE_XID }]);
@@ -330,12 +423,10 @@ export function createRecordingDb(): RecordingDb {
           const sql = collapse(typeof text === 'string' ? text : text.text);
           const params = (typeof text === 'string' ? values : (text.values ?? values)) ?? [];
           statements.push({ sql, params, tenantId: session.tenantId });
-          for (let i = responders.length - 1; i >= 0; i -= 1) {
-            const responder = responders[i];
-            if (responder !== undefined && responder.pattern.test(sql)) {
-              const rows = typeof responder.rows === 'function' ? responder.rows(params, sql) : responder.rows;
-              return answer(rows, rows.length, verbOf(sql));
-            }
+          const responder = responders.findLast((candidate) => patternMatches(candidate.pattern, sql));
+          if (responder !== undefined) {
+            const rows = typeof responder.rows === 'function' ? responder.rows(params, sql, { tenantId: session.tenantId }) : responder.rows;
+            return answer(rows, rows.length, verbOf(sql));
           }
           return builtIn(sql, params, session);
         },
@@ -351,38 +442,59 @@ export function createRecordingDb(): RecordingDb {
     withMetadata: db.withMetadata.bind(db),
     end: db.end.bind(db),
     statements,
-    respond(pattern: RegExp, rows: ResponderRows): void {
+    writes: (): RecordedStatement[] => statements.filter((statement) => WRITE_STATEMENT.test(statement.sql) || CTE_WRITE.test(statement.sql)),
+    gates: () =>
+      [...new Set<string>([...CONTENT_UNITS, ...gateOverrides.keys()])].sort().map((unit) => ({ unit, ...gateOf(unit) })),
+    respond(pattern: ResponderPattern, rows: ResponderRows): void {
       responders.push({ pattern, rows });
     },
-    setGate(unit: string, gate: Partial<FakeGate>): void {
-      gates.set(unit, { ...gateOf(unit), ...gate });
-    },
+    setGate,
     clear(): void {
       statements.length = 0;
     },
     reset(): void {
       statements.length = 0;
-      responders = [];
-      gates.clear();
+      gateOverrides.clear();
       receipts.clear();
       stagedObjects.clear();
+      applySeed();
     },
   });
 }
 
-/** A TaskPort over in-memory queues that records each call. */
+/** A TaskPort over in-memory queues that records each call and never dispatches. */
 export interface FakeTaskPort extends TaskPort {
   readonly kind: 'local';
   /** Every call, as `<op> <queue>`. */
   readonly calls: string[];
+  /** Input of every `create` call, repeats and injected failures included. */
+  readonly created: CreateTaskInput[];
+  /** Live tasks, neither done nor deleted, in creation order. */
+  readonly tasks: readonly CreateTaskInput[];
+  /** Makes the next `times` creates reject, with `error` when given, after their input is checked. */
+  failCreate(times?: number, error?: Error): void;
+  /** Marks the live task `name`, on `queue` when given, done, so it leaves `list` and `get`; throws when none matches. */
+  markDone(name: string, queue?: string): void;
+  /** Forgets every call, task, tombstone, paused queue and pending failure. */
+  clear(): void;
 }
 
-/** Creates a {@link FakeTaskPort}; a name created once on a queue answers `created: false` again, as Cloud Tasks tombstones do. */
+/**
+ * Creates a {@link FakeTaskPort}; inputs are checked as the adapters check them, and a name created once on a queue
+ * answers `created: false` again, deleted or done, as Cloud Tasks tombstones do.
+ */
 export function createFakeTaskPort(): FakeTaskPort {
   const calls: string[] = [];
-  const live = new Map<string, CreateTaskInput>();
+  const created: CreateTaskInput[] = [];
+  const held = new Map<string, { input: CreateTaskInput; live: boolean }>();
   const paused = new Set<string>();
+  let pendingFailures = 0;
+  let failure: Error | undefined;
   const keyOf = (queue: string, name: string): string => `${queue}/${name}`;
+  const liveTask = (queue: string, name: string) => {
+    const task = held.get(keyOf(queue, name));
+    return task?.live === true ? task : undefined;
+  };
   const infoOf = (input: CreateTaskInput): TaskInfo => ({
     queue: input.queue,
     name: input.name,
@@ -394,25 +506,42 @@ export function createFakeTaskPort(): FakeTaskPort {
   return {
     kind: 'local',
     calls,
+    created,
+    get tasks(): CreateTaskInput[] {
+      return [...held.values()].filter((task) => task.live).map((task) => task.input);
+    },
     async create(input: CreateTaskInput): Promise<CreateTaskResult> {
       calls.push(`create ${input.queue}`);
+      created.push(input);
+      assertCreateInput(input);
+      if (pendingFailures > 0) {
+        pendingFailures -= 1;
+        throw failure ?? new Error(`fake task port: injected create failure on ${input.queue}/${input.name}`);
+      }
       const key = keyOf(input.queue, input.name);
-      if (live.has(key)) return { name: input.name, created: false };
-      live.set(key, input);
+      if (held.has(key)) return { name: input.name, created: false };
+      held.set(key, { input, live: true });
       return { name: input.name, created: true };
     },
     async delete(queue: string, name: string): Promise<DeleteTaskResult> {
       calls.push(`delete ${queue}`);
-      return { name, deleted: live.delete(keyOf(queue, name)) };
+      const task = liveTask(queue, name);
+      if (task !== undefined) task.live = false;
+      return { name, deleted: task !== undefined };
     },
-    async list(queue: string) {
+    async list(queue: string, page?: TaskPageRequest): Promise<TaskPage> {
       calls.push(`list ${queue}`);
-      return { tasks: [...live.values()].filter((input) => input.queue === queue).map(infoOf) };
+      const pageSize = resolvePageSize(page?.pageSize);
+      const live = [...held.values()].filter((task) => task.live && task.input.queue === queue);
+      const start = page?.pageToken === undefined ? 0 : Number(page.pageToken);
+      const end = start + pageSize;
+      const tasks = live.slice(start, end).map((task) => infoOf(task.input));
+      return end < live.length ? { tasks, nextPageToken: String(end) } : { tasks };
     },
     async get(queue: string, name: string): Promise<TaskInfo | undefined> {
       calls.push(`get ${queue}`);
-      const input = live.get(keyOf(queue, name));
-      return input === undefined ? undefined : infoOf(input);
+      const task = liveTask(queue, name);
+      return task === undefined ? undefined : infoOf(task.input);
     },
     async pauseQueue(queue: string): Promise<void> {
       calls.push(`pauseQueue ${queue}`);
@@ -427,7 +556,242 @@ export function createFakeTaskPort(): FakeTaskPort {
       return { queue, paused: paused.has(queue) };
     },
     close: async (): Promise<void> => undefined,
+    failCreate(times = 1, error?: Error): void {
+      pendingFailures = times;
+      failure = error;
+    },
+    markDone(name: string, queue?: string): void {
+      const task = [...held.values()].find(
+        (candidate) => candidate.live && candidate.input.name === name && (queue === undefined || candidate.input.queue === queue),
+      );
+      if (task === undefined) throw new Error(`fake task port holds no live task ${queue === undefined ? '' : `${queue}/`}${name}`);
+      task.live = false;
+    },
+    clear(): void {
+      calls.length = 0;
+      created.length = 0;
+      held.clear();
+      paused.clear();
+      pendingFailures = 0;
+      failure = undefined;
+    },
   };
+}
+
+/** HMAC key of the memory storage's signed URLs; not a secret. */
+export const MEMORY_STORAGE_HMAC_KEY: Buffer = Buffer.from('opt2-strategies-content-test-memory-storage-key', 'utf8');
+
+/** One stored object of the memory storage. */
+export interface MemoryObject {
+  bytes: Buffer;
+  contentType: string;
+  size: number;
+  sha256: string;
+}
+
+/** Member of the storage port, as {@link MemoryStorage.calls} records it. */
+export type StorageOp = 'put' | 'get' | 'stream' | 'open' | 'delete' | 'head' | 'signedUrl';
+
+/** One storage call; `size`, `sha256` and `contentType` are those a `put` stored. */
+export interface StorageCall {
+  op: StorageOp;
+  bucket: string;
+  key: string;
+  size?: number;
+  sha256?: string;
+  contentType?: string;
+}
+
+/** A local storage port over an in-memory `content-files` bucket that records each call and every URL it signs. */
+export interface MemoryStorage extends LocalStorageAdapter {
+  /** Stored objects by key. */
+  readonly objects: Map<string, MemoryObject>;
+  readonly calls: StorageCall[];
+  readonly signedUrls: string[];
+  /** Stores an object without recording a call, as staged test data. */
+  preload(key: string, bytes: Buffer | Uint8Array | string, contentType: string): PutResult;
+  /** Forgets the recorded calls and signed URLs; the objects stay. */
+  clear(): void;
+}
+
+/** Creates a {@link MemoryStorage}; any bucket but `content-files` throws UnknownBucketError, and URLs expire on `clock`. */
+export function createMemoryStorage(opts: { clock?: Clock } = {}): MemoryStorage {
+  const clock = opts.clock ?? TEST_CLOCK;
+  const objects = new Map<string, MemoryObject>();
+  const calls: StorageCall[] = [];
+  const signedUrls: string[] = [];
+  const checked = (bucket: string, key: string): string => {
+    if (assertBucket(bucket) !== CONTENT_FILES_BUCKET) throw new UnknownBucketError(bucket);
+    return assertObjectKey(key);
+  };
+  const store = (key: string, bytes: Buffer, contentType: string): MemoryObject => {
+    const object = { bytes, contentType, size: bytes.length, sha256: sha256Hex(bytes) };
+    objects.set(key, object);
+    return object;
+  };
+  const stored = (op: StorageOp, bucket: BucketName, key: string): MemoryObject => {
+    calls.push({ op, bucket, key: checked(bucket, key) });
+    const object = objects.get(key);
+    if (object === undefined) throw new StorageObjectNotFoundError(bucket, key);
+    return object;
+  };
+  const headOf = ({ size, sha256, contentType }: MemoryObject): ObjectHead => ({ size, sha256, contentType });
+  const bytesOf = async (body: PutBody): Promise<Buffer> => (body instanceof Readable ? buffer(body) : Buffer.from(body));
+
+  return {
+    kind: 'local',
+    objects,
+    calls,
+    signedUrls,
+    async put(bucket, key, body, putOpts) {
+      checked(bucket, key);
+      const { size, sha256, contentType } = store(key, await bytesOf(body), putOpts.contentType);
+      calls.push({ op: 'put', bucket, key, size, sha256, contentType });
+      return { size, sha256 };
+    },
+    async get(bucket, key) {
+      return Buffer.from(stored('get', bucket, key).bytes);
+    },
+    async stream(bucket, key) {
+      return Readable.from([stored('stream', bucket, key).bytes]);
+    },
+    async open(bucket, key) {
+      const object = stored('open', bucket, key);
+      return { head: headOf(object), body: Readable.from([object.bytes]) };
+    },
+    async delete(bucket, key) {
+      calls.push({ op: 'delete', bucket, key: checked(bucket, key) });
+      objects.delete(key);
+    },
+    async head(bucket, key) {
+      calls.push({ op: 'head', bucket, key: checked(bucket, key) });
+      const object = objects.get(key);
+      return object === undefined ? null : headOf(object);
+    },
+    async signedUrl(bucket, key, signOpts = {}) {
+      calls.push({ op: 'signedUrl', bucket, key: checked(bucket, key) });
+      const expires = Math.floor(clock.now().getTime() / 1000) + (signOpts.expiresS ?? SIGNED_URL_TTL_S);
+      const url = signLocalUrl({ bucket, key, expires, disposition: signOpts.disposition }, MEMORY_STORAGE_HMAC_KEY);
+      signedUrls.push(url);
+      return url;
+    },
+    verifySignedUrl: (url, at = clock.now().getTime()) => verifySignedUrl(url, at, MEMORY_STORAGE_HMAC_KEY),
+    preload(key, bytes, contentType) {
+      const { size, sha256 } = store(checked(CONTENT_FILES_BUCKET, key), Buffer.from(bytes), contentType);
+      return { size, sha256 };
+    },
+    clear(): void {
+      calls.length = 0;
+      signedUrls.length = 0;
+    },
+  };
+}
+
+/** Answers one service call. */
+export type ClientHandler = (req: ServiceRequest) => ServiceResponse | Promise<ServiceResponse>;
+
+/** Handlers by callee, each keyed `'<METHOD> <path>'`; a `{name}` path segment matches any one segment. */
+export type ClientHandlers = Readonly<Record<string, Readonly<Record<string, ClientHandler>>>>;
+
+/** Names of the user struct identity's current session answers. */
+export interface SessionUserNames {
+  fname: string;
+  lname: string;
+}
+
+/**
+ * Fake service client: records each call, then answers from handlers, else from identity's CSRF consume and current
+ * session defaults; an unmatched call throws after it is recorded.
+ */
+export interface ClientRecorder extends ServiceClient {
+  readonly requests: ServiceRequest[];
+  /** Bodies of the default CSRF consume calls, in order. */
+  readonly csrfConsumes: CsrfConsumeRequest[];
+  /** `valid` the default CSRF consume answers; initially true. */
+  csrfValid: boolean;
+  /** Names the default `GET /v1/sessions/current` answers, which become the actor's audit name. */
+  sessionUser: SessionUserNames;
+  /** Adds a handler of one method and path above every earlier one and the defaults. */
+  on(service: string, method: ServiceRequest['method'], path: string, handler: ClientHandler): void;
+  /** Makes the next call to `service` throw `error`, by default the ServiceUnavailableError of an unreachable callee. */
+  failNext(service: string, error?: Error): void;
+  /** Replaces `request` on the app's own service client, which the CSRF hook and the routes call. */
+  install(app: FastifyInstance): void;
+  /** Empties `requests` and `csrfConsumes`; handlers, defaults and pending failures stay. */
+  clear(): void;
+}
+
+interface ClientRoute {
+  service: string;
+  method: ServiceRequest['method'];
+  pattern: RegExp;
+  handler: ClientHandler;
+}
+
+const CLIENT_ROUTE_KEY = /^(GET|POST|PUT|PATCH|DELETE) (\/\S*)$/;
+const CURRENT_SESSION_PATH = '/v1/sessions/current';
+
+function clientRoute(service: string, method: ServiceRequest['method'], routePath: string, handler: ClientHandler): ClientRoute {
+  const source = routePath
+    .split(/(\{[^}/]+\})/)
+    .map((part) => (/^\{[^}/]+\}$/.test(part) ? '[^/]+' : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    .join('');
+  return { service, method, pattern: new RegExp(`^${source}$`), handler };
+}
+
+/** Creates a {@link ClientRecorder} with `handlers` above its defaults. */
+export function createClientRecorder(handlers: ClientHandlers = {}): ClientRecorder {
+  const requests: ServiceRequest[] = [];
+  const csrfConsumes: CsrfConsumeRequest[] = [];
+  const routes: ClientRoute[] = [];
+  const failures = new Map<string, Error[]>();
+  for (const [service, keyed] of Object.entries(handlers)) {
+    for (const [key, handler] of Object.entries(keyed)) {
+      const parsed = CLIENT_ROUTE_KEY.exec(key);
+      if (parsed?.[1] === undefined || parsed[2] === undefined) throw new TypeError(`client handler key must be '<METHOD> <path>': ${key}`);
+      routes.push(clientRoute(service, parsed[1] as ServiceRequest['method'], parsed[2], handler));
+    }
+  }
+
+  const recorder: ClientRecorder = {
+    requests,
+    csrfConsumes,
+    csrfValid: true,
+    sessionUser: { fname: 'Test', lname: 'User' },
+    async request<T = unknown>(req: ServiceRequest): Promise<ServiceResponse<T>> {
+      requests.push(req);
+      const failure = failures.get(req.service)?.shift();
+      if (failure !== undefined) throw failure;
+      const requestPath = req.path.split('?')[0] ?? req.path;
+      const route = [...defaults, ...routes].findLast(
+        (candidate) => candidate.service === req.service && candidate.method === req.method && candidate.pattern.test(requestPath),
+      );
+      if (route === undefined) throw new Error(`unexpected service call ${req.service} ${req.method} ${req.path}`);
+      return (await route.handler(req)) as ServiceResponse<T>;
+    },
+    close: async (): Promise<void> => undefined,
+    on(service, method, routePath, handler) {
+      routes.push(clientRoute(service, method, routePath, handler));
+    },
+    failNext(service, error = new ServiceUnavailableError(service, Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }))) {
+      failures.set(service, [...(failures.get(service) ?? []), error]);
+    },
+    install(app) {
+      Object.defineProperty(app.opt2.client, 'request', { value: recorder.request, writable: true, configurable: true, enumerable: true });
+    },
+    clear() {
+      requests.length = 0;
+      csrfConsumes.length = 0;
+    },
+  };
+  const defaults: readonly ClientRoute[] = [
+    clientRoute(IDENTITY_SERVICE, 'POST', CSRF_CONSUME_PATH, (req) => {
+      csrfConsumes.push(req.json as CsrfConsumeRequest);
+      return { status: 200, headers: {}, body: { valid: recorder.csrfValid } };
+    }),
+    clientRoute(IDENTITY_SERVICE, 'GET', CURRENT_SESSION_PATH, () => ({ status: 200, headers: {}, body: { user: { ...recorder.sessionUser } } })),
+  ];
+  return recorder;
 }
 
 /** The app under test and the recordings its routes write to. */
@@ -447,19 +811,59 @@ export interface ContentTestAppOptions {
   declare?: (app: FastifyInstance) => unknown;
 }
 
-/** Environment of a test app; the JWKS URL is never fetched, as the test verifier replaces the remote key set. */
-export function testEnv(stateDir: string): Record<string, string> {
-  return {
+/** Local base URL of each service the suites address, at its `harness/repro/ports.env` port. */
+const LOCAL_SERVICE_URLS: Readonly<Record<string, string>> = Object.freeze({
+  identity: 'http://127.0.0.1:8111',
+  people: 'http://127.0.0.1:8112',
+  'programs-sites': 'http://127.0.0.1:8113',
+  [SERVICE]: 'http://127.0.0.1:8114',
+  gateway: 'http://127.0.0.1:8100',
+  migration: 'http://127.0.0.1:8102',
+});
+
+/** A fresh state directory under the OS temp directory holding the platform test key pair and push key. */
+export async function createTestStateDir(): Promise<string> {
+  const stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-content-test-'));
+  try {
+    await writeTestSecrets(stateDir);
+  } catch (err) {
+    await rm(stateDir, { recursive: true, force: true });
+    throw err;
+  }
+  return stateDir;
+}
+
+/**
+ * Raw local environment over `stateDir` that `loadEnv(contentEnvSchema)` accepts; `overrides` merge last, an `undefined`
+ * value removing the variable. The JWKS URL is never fetched and `PG_*` never connect, as suites inject the verifier and database.
+ */
+export function testEnv(stateDir: string, overrides: Readonly<Record<string, string | undefined>> = {}): Record<string, string> {
+  const merged: Record<string, string | undefined> = {
     PORT: '8114',
     OPT2_SERVICE_NAME: SERVICE,
     OPT2_ENV: 'local',
-    OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
-    OPT2_TOKEN_ISSUER: 'opt2-local-identity',
-    OPT2_TOKEN_AUDIENCE: 'opt2-local',
+    OPT2_DB_AUTH: 'password',
+    PG_HOST: process.env.PG_HOST || '127.0.0.1',
+    PG_PORT: process.env.PG_PORT || '5432',
+    PG_DATABASE: process.env.PG_DATABASE || 'opt2',
+    PG_USER: process.env.PG_USER || 'content_app',
+    // loadEnv reads a blank password as missing, which OPT2_DB_AUTH=password rejects.
+    PG_PASSWORD: process.env.PG_PASSWORD || 'unused',
+    OPT2_TOKEN_ISSUER: LOCAL_USER_TOKEN.issuer,
+    OPT2_TOKEN_AUDIENCE: LOCAL_USER_TOKEN.audience,
+    OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
+    OPT2_GATEWAY_URL: 'http://127.0.0.1:8100',
+    OPT2_MIGRATION_URL: 'http://127.0.0.1:8102',
+    OPT2_SERVICE_URLS: JSON.stringify(LOCAL_SERVICE_URLS),
     OPT2_STATE_DIR: stateDir,
-    OPT2_SERVICE_URLS: JSON.stringify({ [SERVICE]: 'http://127.0.0.1:8114', 'programs-sites': 'http://127.0.0.1:8113' }),
-    TZ: 'UTC',
+    OPT2_TASKS_ADAPTER: 'local',
+    OPT2_STORAGE_ADAPTER: 'local',
+    GOOGLE_CLOUD_PROJECT: 'opt2-local',
+    TZ: process.env.TZ || 'UTC',
+    MURA_VARIATIONS: 'false',
+    ...overrides,
   };
+  return Object.fromEntries(Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }
 
 /**
@@ -523,6 +927,83 @@ export async function buildContentApp(options: ContentTestAppOptions = {}): Prom
   }
 }
 
+/** Options of {@link buildTestApp}; it creates every fake it is not given. */
+export interface TestAppOptions<D extends TenantDb = RecordingDb> {
+  /** Merged into {@link testEnv}; an `OPT2_STATE_DIR` here is the caller's and is never removed. */
+  env?: Readonly<Record<string, string | undefined>>;
+  clock?: Clock;
+  /** Replaces the recording database, for example with a throwaway schema's `app`. */
+  db?: D;
+  storage?: MemoryStorage;
+  taskPort?: FakeTaskPort;
+  client?: ClientRecorder;
+  /** Handlers of the client recorder created when `client` is absent. */
+  clientHandlers?: ClientHandlers;
+  publisher?: CapturingPublisher;
+}
+
+/** The service's own composition root over fakes, and the fakes behind it. */
+export interface TestApp<D extends TenantDb = RecordingDb> {
+  app: FastifyInstance;
+  env: ContentEnv;
+  storage: MemoryStorage;
+  taskPort: FakeTaskPort;
+  client: ClientRecorder;
+  db: D;
+  clock: Clock;
+  publisher: CapturingPublisher;
+  stateDir: string;
+  /** Closes the app, then removes the state directory unless the caller supplied it; repeated calls share the first outcome. */
+  close(): Promise<void>;
+}
+
+/**
+ * Builds strategies-content through `buildApp` over the fakes, installs the client recorder and awaits `ready`; it never
+ * listens. A failed build closes what it built and removes its state directory, then rethrows.
+ */
+export function buildTestApp<D extends TenantDb = RecordingDb>(opts?: TestAppOptions<D>): Promise<TestApp<D>>;
+export async function buildTestApp(opts: TestAppOptions<TenantDb> = {}): Promise<TestApp<TenantDb>> {
+  const callerStateDir = opts.env?.OPT2_STATE_DIR;
+  const stateDir = callerStateDir ?? (await createTestStateDir());
+  const removeStateDir = async (): Promise<void> => {
+    if (callerStateDir === undefined) await rm(stateDir, { recursive: true, force: true });
+  };
+  let app: FastifyInstance | undefined;
+  try {
+    const env = loadEnv(contentEnvSchema, testEnv(stateDir, opts.env));
+    const clock = opts.clock ?? TEST_CLOCK;
+    let recording: RecordingDb | undefined;
+    const db = opts.db ?? (recording = createRecordingDb());
+    const storage = opts.storage ?? createMemoryStorage({ clock });
+    const taskPort = opts.taskPort ?? createFakeTaskPort();
+    const client = opts.client ?? createClientRecorder(opts.clientHandlers);
+    const publisher = opts.publisher ?? createCapturingPublisher();
+    app = await buildApp({ env, clock, verifierOverride: testVerifier(SERVICE), db, storage, taskPort, publisher });
+    client.install(app);
+    await app.ready();
+    recording?.clear();
+    const built = app;
+    let closing: Promise<void> | undefined;
+    const close = (): Promise<void> =>
+      (closing ??= (async () => {
+        try {
+          await built.close();
+        } finally {
+          await removeStateDir();
+        }
+      })());
+    return { app: built, env, storage, taskPort, client, db, clock, publisher, stateDir, close };
+  } catch (err) {
+    // The build error is the one reported; a failure closing the partial app must not replace it.
+    await app?.close().catch(() => undefined);
+    await removeStateDir();
+    throw err;
+  }
+}
+
+/** Alias of {@link buildTestApp}. */
+export const testApp = buildTestApp;
+
 /** A user token of `site` and the gateway's invocation credential, as the gateway relays a browser call. */
 export async function userHeaders(opts: { sub: string; site: string; roles: readonly string[]; s2?: boolean }): Promise<Record<string, string>> {
   const [user, invocation] = await Promise.all([
@@ -540,4 +1021,25 @@ export async function serviceHeaders(
   const invocation = `Bearer ${await mintServiceToken({ caller, audience: SERVICE })}`;
   if (user === undefined) return { [INVOCATION_HEADER]: invocation };
   return { authorization: `Bearer ${await mintUserToken({ sub: user.sub, site: user.site, roles: [...user.roles] })}`, [INVOCATION_HEADER]: invocation };
+}
+
+export { pgAvailable } from '@opt2/platform/testing';
+
+/** The service's migrations, applied in file-name order. */
+export const CONTENT_MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
+
+/** Holder under which {@link openContentGates} closes and reopens the gates. */
+const OPEN_GATES_HOLDER = 'strategies-content-test-setup';
+
+/** A throwaway copy of schema `content` with every migration applied; drop it in `afterAll`. Needs a reachable `PG_*` server. */
+export function withPgSchema(opts: Pick<ThrowawaySchemaOptions, 'schemaName' | 'extraSql'> = {}): Promise<ThrowawaySchema> {
+  return createThrowawaySchema({ service: OWNER, schemaName: SCHEMA, migrationsDir: CONTENT_MIGRATIONS_DIR, ...opts });
+}
+
+/** Creates any missing content unit gate and opens every one, as test setup; idempotent, and only the handle's schema is touched. */
+export async function openContentGates(handle: Pick<ThrowawaySchema, 'app'>): Promise<UnitGate[]> {
+  await ensureUnitGates(handle.app, CONTENT_UNITS);
+  // Through the platform's compare-and-set, as a window's holder reopens them, rather than writing gate rows by hand.
+  await closeGates(handle.app, { units: CONTENT_UNITS, holderId: OPEN_GATES_HOLDER, allowLegacy: true });
+  return openGates(handle.app, { units: CONTENT_UNITS, holderId: OPEN_GATES_HOLDER, state: 'open' });
 }

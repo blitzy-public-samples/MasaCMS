@@ -1,7 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { pgAvailable, testPgConfig } from '@opt2/platform/testing';
+import { loadConfig } from '../../src/config.js';
 import { assertRoles, type Finding, type FindingKind, type RoleAssertionInput } from '../../src/db-bootstrap/assertions.js';
+import { resetLocalSchemas } from '../../src/db-bootstrap/migrations.js';
 import {
   defaultPrivilegesSql,
   postMigrationGrantsSql,
@@ -319,6 +322,36 @@ describe('privilege statements', () => {
   });
 });
 
+describe('statements of every configured schema', () => {
+  const chains = Object.values(loadConfig().owners).map((owner) => rolesFor(owner.schema));
+
+  it.each<[string, RoleMode]>([
+    ['local', LOCAL],
+    ['cloud', { kind: 'cloud' }],
+  ])('grant no %s service role SUPERUSER, BYPASSRLS, CREATEROLE, owner membership or DDL', (_target, mode) => {
+    expect(chains).toHaveLength(13);
+    for (const roles of chains) {
+      const statements = [
+        ...createRolesSql(roles, mode),
+        ...createSchemaSql(roles, { ifNotExists: true }),
+        ...roleChainSql(roles),
+        ...defaultPrivilegesSql(roles),
+        ...postMigrationGrantsSql(roles),
+      ].map(redactSql);
+      const app = quoteIdent(roles.app);
+      const appPrivileges = statements
+        .filter((statement) => statement.endsWith(` TO ${app}`))
+        .map((statement) => /GRANT (.+?) ON /.exec(statement)?.[1]);
+
+      for (const statement of statements) expect(statement).not.toMatch(/(?<!NO)SUPERUSER|(?<!NO)BYPASSRLS|CREATEROLE/);
+      expect(statements.filter((statement) => statement.startsWith(`GRANT ${quoteIdent(roles.owner)} TO `))).toEqual([
+        `GRANT ${quoteIdent(roles.owner)} TO ${quoteIdent(roles.migrator)}`,
+      ]);
+      expect(new Set(appPrivileges)).toEqual(new Set(['SELECT, INSERT, UPDATE, DELETE', 'USAGE, SELECT, UPDATE', 'USAGE']));
+    }
+  });
+});
+
 describe('assertRoles', () => {
   it('finds nothing in a sound local chain and only reads the catalog', async () => {
     const { client, calls } = fakeClient(soundCatalog('local'));
@@ -622,72 +655,87 @@ describe('assertRoles', () => {
   });
 });
 
-const PG_CONFIG: pg.ClientConfig = {
-  host: process.env.PG_HOST,
-  port: Number(process.env.PG_PORT ?? 5432),
-  user: process.env.PG_USER,
-  password: process.env.PG_PASSWORD,
-  database: process.env.PG_DATABASE,
-  connectionTimeoutMillis: 2000,
-};
-
-/** True when every required `PG_*` variable is set and the server accepts a connection. */
-async function pgReachable(): Promise<boolean> {
-  if (!process.env.PG_HOST || !process.env.PG_USER || !process.env.PG_DATABASE) return false;
-  const client = new pg.Client(PG_CONFIG);
-  try {
-    await client.connect();
-  } catch {
-    return false;
-  }
-  await client.end();
-  return true;
-}
-
-const available = await pgReachable();
+const available = await pgAvailable();
 const created: SchemaRoles[] = [];
 
-/** Runs `work` on a fresh randomly named role set inside one transaction that is always rolled back. */
-async function inRolledBackTransaction(work: (client: pg.Client, roles: SchemaRoles) => Promise<void>): Promise<void> {
-  const roles = rolesFor(`t_dbb_${randomBytes(4).toString('hex')}`);
-  created.push(roles);
-  const client = new pg.Client(PG_CONFIG);
+type LocalMode = Extract<RoleMode, { kind: 'local' }>;
+
+/** Settings of the `PG_*` bootstrap user, or of `login` on the same server and database. */
+function pgConfig(login?: { user: string; password: string }): pg.ClientConfig {
+  return { ...testPgConfig(), ...login, connectionTimeoutMillis: 2000 };
+}
+
+/** Runs `work` on a client connected with `config` and always ends the client. */
+async function withClient<T>(config: pg.ClientConfig, work: (client: pg.Client) => Promise<T>): Promise<T> {
+  const client = new pg.Client(config);
   await client.connect();
   try {
-    await client.query('BEGIN');
-    await work(client, roles);
+    return await work(client);
   } finally {
-    try {
-      await client.query('ROLLBACK');
-    } finally {
-      await client.end();
-    }
+    await client.end();
   }
 }
 
-/** Creates the local role chain, a migrated table and its grants, in bootstrap order. */
-async function bootstrapChain(client: pg.Client, roles: SchemaRoles): Promise<void> {
-  const mode: RoleMode = {
+async function run(client: pg.Client, statements: readonly string[]): Promise<void> {
+  for (const statement of statements) await client.query(statement);
+}
+
+/** A randomly named role set, recorded for the leftover check. */
+function freshRoles(): SchemaRoles {
+  const roles = rolesFor(`t_dbb_${randomBytes(4).toString('hex')}`);
+  created.push(roles);
+  return roles;
+}
+
+/** Local login mode with freshly generated app and migrator passwords. */
+function localMode(): LocalMode {
+  return {
     kind: 'local',
     appPassword: randomBytes(18).toString('base64url'),
     migratorPassword: randomBytes(18).toString('base64url'),
   };
-  for (const statement of [
+}
+
+/** Admin-session statements that create the local roles, the schema and the role chain, in bootstrap order. */
+function chainSql(roles: SchemaRoles, mode: LocalMode): string[] {
+  return [
     CREATEROLE_SELF_GRANT_SQL,
     ...createRolesSql(roles, mode),
     ...createSchemaSql(roles, { ifNotExists: false }),
     ...roleChainSql(roles),
+  ];
+}
+
+/** Statements of a session that may become the owner: default privileges, a one-table migration and its grants. */
+function ownerSql(roles: SchemaRoles): string[] {
+  return [
     setRoleSql(roles.owner),
     ...defaultPrivilegesSql(roles),
     `CREATE TABLE ${quoteIdent(roles.schema)}.note (id serial PRIMARY KEY)`,
     ...postMigrationGrantsSql(roles),
     RESET_ROLE_SQL,
-  ]) {
-    await client.query(statement);
-  }
+  ];
 }
 
-describe.skipIf(!available)('db-bootstrap against PostgreSQL', () => {
+/** Runs `work` on a fresh role set inside one transaction that is always rolled back. */
+async function inRolledBackTransaction(work: (client: pg.Client, roles: SchemaRoles) => Promise<void>): Promise<void> {
+  const roles = freshRoles();
+  await withClient(pgConfig(), async (client) => {
+    await client.query('BEGIN');
+    try {
+      await work(client, roles);
+    } finally {
+      await client.query('ROLLBACK');
+    }
+  });
+}
+
+/** Creates the local role chain, a migrated table and its grants on the admin session, in bootstrap order. */
+async function bootstrapChain(client: pg.Client, roles: SchemaRoles): Promise<void> {
+  await run(client, [...chainSql(roles, localMode()), ...ownerSql(roles)]);
+}
+
+describe.skipIf(!available)('local roles against PostgreSQL (skipped: PostgreSQL not reachable via PG_*)', () => {
   it('builds a local role chain in which assertRoles finds nothing', async () => {
     await inRolledBackTransaction(async (client, roles) => {
       await bootstrapChain(client, roles);
@@ -733,17 +781,70 @@ describe.skipIf(!available)('db-bootstrap against PostgreSQL', () => {
     });
   });
 
+  describe('with a committed chain migrated by the migrator login', () => {
+    const roles = freshRoles();
+    const mode = localMode();
+    const note = `${quoteIdent(roles.schema)}.note`;
+    const local = { roles: [roles], target: 'local' } as const;
+
+    beforeAll(async () => {
+      await withClient(pgConfig(), (admin) => run(admin, chainSql(roles, mode)));
+      await withClient(pgConfig({ user: roles.migrator, password: mode.migratorPassword }), (migrator) =>
+        run(migrator, ownerSql(roles)),
+      );
+    });
+
+    afterAll(async () => {
+      await withClient(pgConfig(), (admin) => resetLocalSchemas(admin, [roles]));
+    });
+
+    it('leaves a sound chain whose migrated table belongs to the owner', async () => {
+      await withClient(pgConfig(), async (admin) => {
+        expect(await assertRoles(admin, local)).toEqual([]);
+        const { rows } = await admin.query('SELECT pg_get_userbyid(relowner) AS owner FROM pg_class WHERE oid = $1::regclass', [note]);
+        expect(rows).toEqual([{ owner: roles.owner }]);
+      });
+    });
+
+    it('lets the app login read and write the table but refuses DDL and becoming the owner', async () => {
+      await withClient(pgConfig({ user: roles.app, password: mode.appPassword }), async (app) => {
+        await app.query(`INSERT INTO ${note} DEFAULT VALUES`);
+        expect((await app.query(`SELECT id FROM ${note}`)).rows).toEqual([{ id: 1 }]);
+        for (const statement of [
+          `CREATE TABLE ${quoteIdent(roles.schema)}.extra (id int)`,
+          `ALTER TABLE ${note} ADD COLUMN body text`,
+          `DROP TABLE ${note}`,
+          setRoleSql(roles.owner),
+        ]) {
+          await expect(app.query(statement)).rejects.toMatchObject({ code: '42501' });
+        }
+      });
+    });
+
+    it('reports a direct grant of the owner to the app and the CREATE right it inherits, and nothing once revoked', async () => {
+      // The PG_* bootstrap user is no superuser and cannot grant BYPASSRLS, so the injected defect is an owner grant.
+      await withClient(pgConfig(), async (admin) => {
+        await admin.query(grantRoleToSql(roles.owner, roles.app));
+        try {
+          expect(await assertRoles(admin, local)).toEqual([
+            finding('app-create-privilege', roles.app, `can CREATE in schema ${roles.schema}`),
+            finding('app-owner-membership', roles.app, `member of ${roles.owner}`),
+          ]);
+        } finally {
+          await admin.query(`REVOKE ${quoteIdent(roles.owner)} FROM ${quoteIdent(roles.app)}`);
+        }
+        expect(await assertRoles(admin, local)).toEqual([]);
+      });
+    });
+  });
+
   it('leaves no role or schema of this run behind', async () => {
-    const client = new pg.Client(PG_CONFIG);
-    await client.connect();
-    try {
+    await withClient(pgConfig(), async (client) => {
       const { rows } = await client.query<{ name: string }>(
         'SELECT rolname AS name FROM pg_roles WHERE rolname = ANY($1::text[]) UNION ALL SELECT nspname FROM pg_namespace WHERE nspname = ANY($2::text[])',
         [allRoleNames(created), created.map((roles) => roles.schema)],
       );
       expect(rows).toEqual([]);
-    } finally {
-      await client.end();
-    }
+    });
   });
 });

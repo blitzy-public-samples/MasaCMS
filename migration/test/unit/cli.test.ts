@@ -1,9 +1,9 @@
-// Unit tests for the `opt2-migrate` CLI: argument parsing, dispatch, the summary line, redaction and exit codes, with tracing, the context and every command module stubbed.
-import { spawnSync } from 'node:child_process';
+// Unit tests for the `opt2-migrate` CLI: argument parsing, dispatch, the summary line, redaction, exit codes and the entry check, with tracing,
+// the context and every command module stubbed. opt2-ops and opt2-db have their own suites, quiesce-cli.test.ts and db-bootstrap-cli.test.ts.
 import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { shutdownTracing, startTracing } from '@opt2/platform/tracing';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
@@ -142,6 +142,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.unstubAllEnvs();
 });
@@ -524,38 +525,57 @@ describe('main', () => {
   });
 });
 
-describe('opt2-migrate as a process', () => {
+describe('opt2-migrate as the entry module', () => {
   const dirs: string[] = [];
+  const exitCodeBefore = process.exitCode;
+  let loads = 0;
 
   afterEach(() => {
+    process.exitCode = exitCodeBefore;
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  /** Runs the CLI source through tsx with no MURA_* or PG_* variables, as the entry module at `script`. */
-  function runCli(script: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:MURA_|PG_)/.test(key)));
-    const child = spawnSync(process.execPath, ['--import', 'tsx', script, ...args], { cwd: PACKAGE_DIR, env, encoding: 'utf8' });
-    return { status: child.status, stdout: child.stdout, stderr: child.stderr };
+  /** Loads a fresh instance of the CLI with `process.argv` as Node sets it for `script`, and returns what it wrote and set. */
+  async function loadAs(script: string, args: string[]): Promise<{ exitCode: typeof process.exitCode; stdout: string; stderr: string }> {
+    const out: string[] = [];
+    const err: string[] = [];
+    const argv = process.argv;
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => out.push(String(chunk)) > 0);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => err.push(String(chunk)) > 0);
+    process.argv = [argv[0] ?? process.execPath, script, ...args];
+    try {
+      loads += 1;
+      // The query makes a module instance of its own, so the entry check runs again while every import stays mocked.
+      const instance = `${pathToFileURL(CLI_SOURCE).href}?entry=${loads}`;
+      await import(/* @vite-ignore */ instance);
+      // main resolves in microtasks for help and usage errors; setImmediate runs after all of them.
+      await new Promise((resolve) => setImmediate(resolve));
+      return { exitCode: process.exitCode, stdout: out.join(''), stderr: err.join('') };
+    } finally {
+      process.argv = argv;
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
   }
 
   it.each([
-    { args: ['--help'], status: 0 },
-    { args: ['nope'], status: 2 },
-    { args: ['transition', '--to', '3'], status: 2 },
-  ])('exits $status for $args', ({ args, status }) => {
-    const child = runCli(CLI_SOURCE, args);
-    expect(child.status, child.stderr).toBe(status);
-    if (status === 0) expect(child.stdout).toBe(USAGE);
-    else expect(child.stderr).toMatch(/^opt2-migrate: /);
+    { args: ['--help'], exitCode: 0, stdout: USAGE, stderr: '' },
+    { args: ['nope'], exitCode: 2, stdout: '', stderr: `opt2-migrate: unknown command "nope"\n${USAGE}` },
+    { args: ['transition', '--to', '3'], exitCode: 2, stdout: '', stderr: `opt2-migrate: --to must name a cut-over version vNNNN, got "3"\n${usageFor('transition')}` },
+  ])('sets exit code $exitCode for $args', async ({ args, ...expected }) => {
+    await expect(loadAs(CLI_SOURCE, args)).resolves.toEqual(expected);
+    expect(createMigrationContext).not.toHaveBeenCalled();
   });
 
-  it('runs through a symlinked bin path', () => {
+  it('runs through a symlinked bin path', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'opt2-migrate-bin-'));
     dirs.push(dir);
-    const link = path.join(dir, 'opt2-migrate.ts');
+    const link = path.join(dir, 'opt2-migrate');
     symlinkSync(CLI_SOURCE, link);
-    const child = runCli(link, ['--help']);
-    expect(child.status, child.stderr).toBe(0);
-    expect(child.stdout).toBe(USAGE);
+    await expect(loadAs(link, ['--help'])).resolves.toEqual({ exitCode: 0, stdout: USAGE, stderr: '' });
+  });
+
+  it('runs nothing when another module is the entry', async () => {
+    await expect(loadAs(fileURLToPath(import.meta.url), ['--help'])).resolves.toEqual({ exitCode: exitCodeBefore, stdout: '', stderr: '' });
   });
 });
