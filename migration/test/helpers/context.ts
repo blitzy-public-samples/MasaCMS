@@ -1,5 +1,6 @@
 // The one test composition of a MigrationContext: the real createMigrationContext over in-process doubles of SQL Server,
 // the bridge, the owners, the gateway and the service mesh, with config paths and reports under temporary directories.
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import { createLogger, type Logger } from '@opt2/platform/logging';
@@ -20,6 +21,7 @@ import { createBridgeClient } from '../../src/legacy/bridge.js';
 import type { OwnersClient } from '../../src/owners/client.js';
 import type { UnitCatalog } from '../../src/owners/units.js';
 import { migrationsDirFor } from '../../src/paths.js';
+import { PROJECTOR_LOCK_KEY } from '../../src/reverse/projector.js';
 
 import { startBridgeDouble, type BridgeDouble, type BridgeDoubleOptions } from './bridge-double.js';
 import {
@@ -159,15 +161,29 @@ export interface MigrationSchemaHandle {
   drop(): Promise<void>;
 }
 
+const PROJECTOR_LOCK_VALUE = PROJECTOR_LOCK_KEY.toString();
+
+/** The projector's advisory-lock key for one throwaway schema, a signed 64-bit integer as text. */
+function projectorLockKeyFor(schema: string): string {
+  return createHash('sha256').update(`${PROJECTOR_LOCK_VALUE}:${schema}`).digest().readBigInt64BE(0).toString();
+}
+
 /**
  * The throwaway app pool as the `migration` pool createMigrationContext requires (it rejects `app`, named after the
  * throwaway schema): statements naming `migration.` or `tx.schema` are rewritten to the throwaway schema, as its migrations were.
+ * Advisory locks span the database, so the projector's lock is keyed per throwaway schema, as one `migration` schema per
+ * database keys it in a deployment.
  */
 function migrationNamedDb(throwaway: ThrowawaySchema): TenantDb {
   const rewrite = (sql: string): string => rewriteMigrationSql(sql, MIGRATION_SCHEMA, throwaway.schema, throwaway.roles);
+  const lockKey = projectorLockKeyFor(throwaway.schema);
+  const scope = (sql: string, values?: unknown[]): unknown[] | undefined =>
+    sql.includes('pg_try_advisory_xact_lock(') && values?.length === 1 && values[0] === PROJECTOR_LOCK_VALUE ? [lockKey] : values;
   const rewritingQuery = (tx: TxBase): TxBase['query'] =>
     ((text: string | QueryConfig, values?: unknown[]) =>
-      tx.query(typeof text === 'string' ? rewrite(text) : { ...text, text: rewrite(text.text) }, values)) as TxBase['query'];
+      typeof text === 'string'
+        ? tx.query(rewrite(text), scope(text, values))
+        : tx.query({ ...text, text: rewrite(text.text), values: scope(text.text, text.values) }, scope(text.text, values))) as TxBase['query'];
   const bindTenant = (tx: TenantTx): TenantTx => Object.freeze({ ...tx, schema: MIGRATION_SCHEMA, query: rewritingQuery(tx) });
   const bindMetadata = (tx: MetadataTx): MetadataTx => Object.freeze({ ...tx, schema: MIGRATION_SCHEMA, query: rewritingQuery(tx) });
   return Object.freeze({
