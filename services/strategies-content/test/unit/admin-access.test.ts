@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { Roles, moduleRole } from '@opt2/platform/auth';
-import { legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import { adminUrl } from '@opt2/platform/legacy-compat';
+import { IDENTITY_SERVICE, legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import { TENANT_A, TENANT_B } from '@opt2/platform/testing';
 import { actorFromClaims } from '../../src/domain/context.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
@@ -21,7 +22,8 @@ import {
   requireCircuitAccess,
   type ContentAdminCircuit,
 } from '../../src/routes/v1/access.js';
-import { buildContentApp, serviceHeaders, userHeaders, type ContentTestApp } from '../helpers/app.js';
+import { buildContentApp, buildTestApp, serviceHeaders, userHeaders, type ContentTestApp, type TestApp } from '../helpers/app.js';
+import { CONTENT_SUBJECTS, contentHeaders, type ContentSubject } from '../helpers/tokens.js';
 
 type ContractOperation = Record<string, unknown>;
 
@@ -106,6 +108,14 @@ describe('adminRedirect', () => {
     },
   ] as const)('$name', ({ action, rc, append, expected }) => {
     expect(adminRedirect(action, rc, append)).toEqual(expected);
+  });
+
+  it("renders secure()'s login redirect through adminUrl as FW/1 does, with the returnURL web supplies", () => {
+    const rc = { compactDisplay: 'true', returnURL: 'http://localhost/admin/?muraAction=cArch.list&siteid=default' };
+    const redirect = adminRedirect('cLogin.main', rc, ['returnURL', 'compactDisplay']);
+    expect(adminUrl({ ...redirect, adminDir: '.' })).toBe(
+      './?muraAction=cLogin.main&returnURL=http%3A%2F%2Flocalhost%2Fadmin%2F%3FmuraAction%3DcArch.list%26siteid%3Ddefault&compactDisplay=true',
+    );
   });
 });
 
@@ -214,5 +224,88 @@ describe('circuit gates and denials', () => {
     const headers = await userHeaders({ sub: USER, site: SITE, roles: [Roles.siteAdmin] });
     const response = await t.app.inject({ method: 'POST', url: `/v1/sites/${SITE}/csrf`, headers, payload: { chainid: 'C1' } });
     expect([response.statusCode, response.json()]).toEqual([200, { rejected: true }]);
+  });
+});
+
+const ADMINS: readonly ContentSubject[] = ['site-admin', 's2'];
+const READ_ID = 'E1F2A3B4-0001-4A5B-8C7D9E0F1A2B3C4D';
+
+/** One contract read of each circuit, and the subjects its gate admits on their own site. */
+const CIRCUIT_READS: ReadonlyArray<{ circuit: ContentAdminCircuit; path: string; query: string; admits: readonly ContentSubject[] }> = [
+  { circuit: 'carch', path: '/v1/sites/{siteid}/content/drafts', query: '', admits: ['editor', ...ADMINS] },
+  { circuit: 'cchangesets', path: '/v1/sites/{siteid}/changesets/{changesetid}', query: '', admits: ADMINS },
+  { circuit: 'ccomments', path: '/v1/sites/{siteid}/comments', query: '', admits: ADMINS },
+  { circuit: 'ccategory', path: '/v1/sites/{siteid}/categories', query: '', admits: ADMINS },
+  { circuit: 'cfeed', path: '/v1/sites/{siteid}/feeds', query: '', admits: ADMINS },
+  { circuit: 'cchain', path: '/v1/sites/{siteid}/approval-chains', query: '', admits: ADMINS },
+  { circuit: 'cform', path: '/v1/raw/cform/getfieldtype', query: 'siteid={siteid}', admits: ADMINS },
+  {
+    circuit: 'cnav',
+    path: '/v1/raw/cnav/searchsitedata',
+    query: 'siteid={siteid}&searchString=x',
+    admits: CONTENT_SUBJECTS.filter((subject) => subject !== 'other-tenant'),
+  },
+  { circuit: 'cperm', path: '/v1/sites/{siteid}/content/{contentid}/crumbs', query: '', admits: ADMINS },
+];
+
+/** `template` with `{siteid}` as the tenant-a site and every other parameter as READ_ID. */
+const fill = (template: string): string =>
+  template.replaceAll('{siteid}', TENANT_A.siteId).replaceAll(/\{\w+\}/g, READ_ID);
+
+const readUrl = (read: (typeof CIRCUIT_READS)[number], extraQuery = ''): string => {
+  const query = [fill(read.query), extraQuery].filter((part) => part !== '').join('&');
+  return query === '' ? fill(read.path) : `${fill(read.path)}?${query}`;
+};
+
+describe('registered circuit reads', () => {
+  let t: TestApp;
+
+  beforeAll(async () => {
+    // The carch reads load identity's stored admin state and cnav lists the session's sites; both answer empty.
+    t = await buildTestApp({
+      env: { LOG_LEVEL: 'error' },
+      clientHandlers: {
+        [IDENTITY_SERVICE]: {
+          'GET /v1/sessions/current/admin-state': () => ({ status: 200, headers: {}, body: {} }),
+          'GET /v1/sessions/current/sites': () => ({ status: 200, headers: {}, body: { sites: [] } }),
+        },
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it('probes one contract GET of every circuit', () => {
+    expect(new Set(CIRCUIT_READS.map(({ circuit }) => circuit))).toEqual(new Set(CIRCUITS));
+    for (const { circuit, path } of CIRCUIT_READS) {
+      const actions = OPENAPI.paths[path]?.get?.['x-opt2-legacy-actions'] as readonly string[] | undefined;
+      expect(actions?.[0]?.split('.')[0], path).toBe(circuit);
+    }
+  });
+
+  it.each(
+    CIRCUIT_READS.flatMap((read) =>
+      CONTENT_SUBJECTS.map((subject) => ({
+        ...read,
+        subject,
+        status: read.admits.includes(subject) ? 200 : subject === 'anonymous' ? 401 : 403,
+      })),
+    ),
+  )('$circuit GET $path as $subject answers $status', async (cell) => {
+    const response = await t.app.inject({ method: 'GET', url: readUrl(cell), headers: await contentHeaders(cell.subject) });
+    expect(response.statusCode, response.body).toBe(cell.status);
+  });
+
+  it.each([
+    { subject: 'site-admin', flag: '0', status: 200 },
+    { subject: 'editor', flag: '1', status: 403 },
+  ] as const)('cfeed answers $subject $status whatever feed-manager flag ($flag) the request carries', async ({ subject, flag, status }) => {
+    const feeds = CIRCUIT_READS.find(({ circuit }) => circuit === 'cfeed');
+    if (feeds === undefined) throw new TypeError('CIRCUIT_READS has no cfeed read');
+    const url = readUrl(feeds, `hasFeedManager=${flag}&feedManager=${flag}`);
+    const response = await t.app.inject({ method: 'GET', url, headers: await contentHeaders(subject) });
+    expect(response.statusCode, response.body).toBe(status);
   });
 });
