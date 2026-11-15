@@ -1,0 +1,90 @@
+name: terraform
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: 1.17.1
+          # The wrapper would decorate the JSON that plan.sh reads from terraform show.
+          terraform_wrapper: false
+      - name: Verify Terraform
+        run: test "$(terraform version | head -n 1)" = "Terraform v1.17.1"
+      # plan.sh runs node to read the plan JSON and write the report.
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22.23.4
+      - name: Install npm
+        run: npm install -g npm@11.21.0
+      - name: Verify toolchain
+        run: |
+          test "$(node -v)" = "v22.23.4"
+          test "$(npm -v)" = "11.21.0"
+      - name: Set state directory
+        run: |
+          echo "OPT2_STATE_DIR=$RUNNER_TEMP/opt2-state" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/opt2-state"
+      - name: Init, fmt, validate and plan
+        run: bash infra/terraform/plan.sh
+
+  topology:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22.23.4
+      - name: Install npm
+        run: npm install -g npm@11.21.0
+      - name: Verify toolchain
+        run: |
+          test "$(node -v)" = "v22.23.4"
+          test "$(npm -v)" = "11.21.0"
+      - name: Install
+        working-directory: harness
+        run: npm ci
+      - name: Regenerate cloud topology
+        working-directory: harness
+        run: npx tsx src/repro/pubsub-topology.ts --target cloud
+      - name: Check committed topology is current
+        run: |
+          git ls-files --error-unmatch infra/terraform/envs/plan/topology.auto.tfvars.json
+          git diff --exit-code -- infra/terraform/envs/plan/topology.auto.tfvars.json
+
+  no-apply-guard:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Check for apply commands
+        run: |
+          test -d infra
+          test -d harness
+          # appl[y] spells the pattern without the two-word phrase it searches for.
+          set +e
+          grep -rnE 'terraform([[:space:]]+-[^[:space:]]+)*[[:space:]]+appl[y]' infra/ harness/
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then echo "::error::apply command found"; exit 1; fi
+          if [ "$rc" -ne 1 ]; then echo "::error::grep failed ($rc)"; exit "$rc"; fi
