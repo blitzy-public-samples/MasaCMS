@@ -156,9 +156,9 @@ export function at(localIso: string): Date {
   return date;
 }
 
-/** Masa content `path`: the single-quoted ids from the root down, comma separated. */
+/** Masa content `path` as contentManager.setMaterializedPath stores it: the ids from the root down, comma separated, unquoted. */
 export function contentPath(...ids: readonly string[]): string {
-  return ids.map((id) => `'${id}'`).join(',');
+  return ids.join(',');
 }
 
 const CREATED_AT = '2026-06-01T09:00:00';
