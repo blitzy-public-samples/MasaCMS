@@ -1,6 +1,8 @@
-/** In-process authorisation matrix of every strategies-content route: declarations, admitted subjects, tenant and transport boundaries. */
-import { createHash, randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+/** Authorisation matrix of every strategies-content route through `app.inject`: declarations, legacy gates, transports, site binding and tenancy. */
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { afterAll, describe, expect, it } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 import {
   AuthDenial,
   INVOCATION_HEADER,
@@ -10,35 +12,41 @@ import {
   UndeclaredRouteError,
   collectRouteMatrix,
   hasAnyRole,
+  isServiceRole,
+  moduleRole,
   renderAuthDenial,
+  rolesForService,
   serviceRole,
+  transportForPath,
   type DenialResponse,
+  type Opt2RouteConfig,
   type Role,
-  type RouteMatrix,
   type RouteMatrixEntry,
   type Transport,
 } from '@opt2/platform/auth';
-import { buildPushBody, encodeEnvelope, type EventEnvelope } from '@opt2/platform/events';
-import type { FastifyInstance } from '@opt2/platform/service-kit';
+import { LEGACY_ERROR_MAP, WWW_AUTHENTICATE } from '@opt2/platform/legacy-compat';
+import { IDENTITY_SERVICE, createService, loadEnv, type Clock, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import { SIGNED_URL_TTL_S } from '@opt2/platform/storage';
 import {
   ROLE_SET,
   TENANT_A,
   TENANT_B,
+  TENANT_UMBRELLA,
   TEST_PUSH_KEY,
   authHeadersFor,
-  fixtureForTenant,
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
-  poolTenantExpectation,
   pushTo,
   registryPayloads,
-  subjectSiteFor,
   testEnvelope,
+  testVerifier,
   type InjectResponse,
+  type PushTarget,
   type RoleSubject,
 } from '@opt2/platform/testing';
 import {
+  CONTENT_SUBSCRIPTIONS,
   GROUP_CHANGED_SUBSCRIPTION,
   GROUP_CHANGED_TOPIC,
   MEMBERSHIP_CHANGED_SUBSCRIPTION,
@@ -48,209 +56,689 @@ import {
   SITE_CHANGED_SUBSCRIPTION,
   SITE_CHANGED_TOPIC,
 } from '../../src/events/consumers.js';
-import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
-import { SERVICE, buildContentApp, serviceHeaders, userHeaders, type ContentTestApp } from '../helpers/app.js';
+import { FEED_AUTO_IMPORT_PATH, PUBLISH_SCHEDULED_CHANGESETS_PATH } from '../../src/jobs/index.js';
+import { CIRCUIT_ROUTE_REQUIRES, FEED_MANAGER_FLAG_SOURCE, adminDenial, type GatedContentAdminCircuit } from '../../src/routes/v1/access.js';
+import { contentQueues } from '../../src/tasks/port.js';
+import { TEST_CLOCK, buildTestApp, testEnv, type ClientHandlers, type RecordedStatement, type TestApp } from '../helpers/app.js';
+import { IDS, seedMemoryStorage, seedRecordingDb } from '../helpers/seed.js';
+import {
+  CONTENT_SUBJECTS,
+  SUBJECT_CLAIMS,
+  SUBJECT_USER_IDS,
+  contentHeaders,
+  pushQuery,
+  serviceHeaders,
+  tasksHeaders,
+  type ContentServiceCaller,
+  type TokenSubject,
+} from '../helpers/tokens.js';
 
+type Headers = Record<string, string>;
+type HttpMethod = 'DELETE' | 'GET' | 'POST' | 'PUT';
+
+const SERVICE = 'strategies-content';
 const SITE_A = TENANT_A.siteId;
 const SITE_B = TENANT_B.siteId;
-const FILE_ID = 'B1C2D3E4-0001-4A5B-8C7D9E0F1A2B3C4D';
-const GROUP_ID = 'A1B2C3D4-0001-4A5B-8C7D9E0F1A2B3C4D';
-const USER_ID = 'C1D2E3F4-0001-4A5B-8C7D9E0F1A2B3C4D';
-const OBJECT_BYTES = Buffer.from('strategies-content authz probe');
-const OWN_QUEUE = 'content-scheduled-publish';
 const COMMENTS_PROXY_URL = '/core/modules/v1/comments/ajax/commentsProxy.cfc';
-const CONTENT_ID = 'E1F2A3B4-0001-4A5B-8C7D9E0F1A2B3C4D';
-const JSON_HEADERS = { 'content-type': 'application/json' } as const;
-const WRONG_PUSH_KEY = 'opt2-wrong-push-key';
-const DENIED_STATUSES: ReadonlySet<number> = new Set([401, 403]);
-const MINIMUM_SUBJECTS = ['anonymous', 'member', 'system-user', 'editor', 'site-admin', 's2', 'other-tenant'] as const;
+const FORM: Headers = Object.freeze({ 'content-type': 'application/x-www-form-urlencoded' });
+const JSON_BODY: Headers = Object.freeze({ 'content-type': 'application/json' });
+const CSRF_FIELDS = 'csrf_token=TOKEN&csrf_token_expires=260630130000000';
+const REFERER = 'http://localhost:8080/admin/?muraAction=cArch.list&siteid=tenant-a';
+const GATEWAY_ROLES: readonly Role[] = Object.freeze(rolesForService('gateway'));
 
-const pushUrl = (subscription: string): string => `/internal/v1/events/${subscription}`;
+const M = Object.freeze({
+  siteManager: moduleRole('00000000000000000000000000000000000'),
+  forms: moduleRole('00000000000000000000000000000000004'),
+  categories: moduleRole('00000000000000000000000000000000010'),
+  collections: moduleRole('00000000000000000000000000000000011'),
+  changesets: moduleRole('00000000000000000000000000000000014'),
+  comments: moduleRole('00000000000000000000000000000000015'),
+});
 
-type Method = 'GET' | 'POST' | 'DELETE';
+/** Offset added to the business clock, which the signed-URL expiry test advances. */
+let clockOffsetMs = 0;
+const CLOCK: Clock = { now: () => new Date(TEST_CLOCK.now().getTime() + clockOffsetMs) };
 
-/** One registered route, its declaration, and how its probe answers once admitted. */
-interface ExpectedRoute {
-  method: Method;
-  url: string;
-  transport: Transport;
-  requires?: readonly Role[];
-  public?: true;
-  /** The handler acts for a forwarded user token and refuses a caller that presents none. */
-  actsForUser?: true;
-  /** The probe supplies `siteid` tenant-a, which the site check compares with the user token's site. */
-  probesSite?: true;
-  /** The handler checks the site itself instead of the platform's check of every supplied `siteid`. */
-  siteCheck?: false;
-  /** Status of the probe once every check admits it. */
-  admitted: number;
-}
-
-const HEADER_PROMPT_ROLES: readonly Role[] = [Roles.s2, Roles.siteAdmin, Roles.systemUser];
-const FILE_READ_ROLES: readonly Role[] = [Roles.s2, Roles.siteAdmin, 'm:000'];
-const MIGRATION_ONLY: readonly Role[] = [Roles.platformMigration];
-const QUEUE_CONTROLLERS: readonly Role[] = [Roles.platformMigration, Roles.platformOperator];
-const PUSH_INVOKER: readonly Role[] = [PUBSUB_INVOKER_ROLE];
-const TASKS_INVOKER: readonly Role[] = [TASKS_INVOKER_ROLE];
-
-const EXPECTED: readonly ExpectedRoute[] = [
-  { method: 'GET', url: '/healthz', transport: 'service', public: true, admitted: 200 },
-  {
-    method: 'GET',
-    url: '/v1/sites/:siteid/header-prompts',
-    transport: 'service',
-    requires: HEADER_PROMPT_ROLES,
-    actsForUser: true,
-    probesSite: true,
-    admitted: 200,
+/** identity's answers to the session reads the admitted admin cells make. */
+const IDENTITY_HANDLERS: ClientHandlers = {
+  [IDENTITY_SERVICE]: {
+    'GET /v1/sessions/current/sites': () => ({ status: 200, headers: {}, body: { sites: [{ siteID: SITE_A, site: 'Tenant A' }] } }),
+    'GET /v1/sessions/current/admin-state': () => ({ status: 200, headers: {}, body: {} }),
+    'POST /v1/sessions/current/admin-state': () => ({ status: 200, headers: {}, body: {} }),
+    'POST /v1/csrf/tokens': (req) => {
+      const contexts = (req.json as { contexts?: string[] } | undefined)?.contexts ?? [];
+      const tokens = contexts.map((context) => ({ context, csrf_token: 'TOKEN', csrf_token_expires: '260630130000000' }));
+      return { status: 200, headers: {}, body: { tokens } };
+    },
   },
-  {
-    method: 'POST',
-    url: '/internal/v1/files::lookup',
-    transport: 'service',
-    requires: [serviceRole('people'), serviceRole('identity')],
-    actsForUser: true,
-    admitted: 200,
-  },
-  { method: 'POST', url: '/internal/v1/content::links', transport: 'service', requires: [serviceRole('people')], admitted: 200 },
-  {
-    method: 'GET',
-    url: '/v1/sites/:siteid/files/:fileid/download-url',
-    transport: 'service',
-    requires: FILE_READ_ROLES,
-    actsForUser: true,
-    probesSite: true,
-    // The probe's file id names no stored row.
-    admitted: 404,
-  },
-  { method: 'GET', url: '/opt2/files/content-files/:tenantId/:objectName', transport: 'service', public: true, admitted: 200 },
-  ...(['GET', 'POST'] as const).map(
-    (method): ExpectedRoute => ({
-      method,
-      url: COMMENTS_PROXY_URL,
-      transport: 'service',
-      public: true,
-      siteCheck: false,
-      actsForUser: true,
-      probesSite: true,
-      admitted: 200,
-    }),
-  ),
-  { method: 'POST', url: '/internal/v1/migration/objects', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
-  { method: 'GET', url: '/internal/v1/migration/objects', transport: 'service', requires: MIGRATION_ONLY, admitted: 404 },
-  { method: 'DELETE', url: '/internal/v1/migration/objects', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
-  { method: 'POST', url: '/internal/v1/migration/apply', transport: 'service', requires: MIGRATION_ONLY, admitted: 400 },
-  { method: 'GET', url: '/internal/v1/migration/export', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
-  { method: 'GET', url: '/internal/v1/migration/changes', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
-  { method: 'GET', url: '/internal/v1/migration/position', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
-  { method: 'GET', url: '/internal/v1/migration/watermark', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
-  { method: 'POST', url: '/internal/v1/migration/watermark', transport: 'service', requires: MIGRATION_ONLY, admitted: 400 },
-  { method: 'POST', url: '/internal/v1/migration/gate', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
-  { method: 'POST', url: '/internal/v1/jobs/publish-scheduled-changesets', transport: 'cloud-tasks', requires: TASKS_INVOKER, admitted: 200 },
-  { method: 'POST', url: '/internal/v1/jobs/feed-auto-import', transport: 'cloud-tasks', requires: TASKS_INVOKER, admitted: 200 },
-  { method: 'POST', url: '/internal/v1/task-queues/:queue/pause', transport: 'service', requires: QUEUE_CONTROLLERS, admitted: 200 },
-  { method: 'POST', url: '/internal/v1/task-queues/:queue/resume', transport: 'service', requires: QUEUE_CONTROLLERS, admitted: 200 },
-  // content-scheduled-publish, the only queue this service creates tasks on, is not a recurring chain.
-  { method: 'POST', url: '/internal/v1/task-queues/:queue/ensure', transport: 'service', requires: QUEUE_CONTROLLERS, admitted: 400 },
-  ...[SITE_CHANGED_SUBSCRIPTION, GROUP_CHANGED_SUBSCRIPTION, PERMISSION_CHANGED_SUBSCRIPTION, MEMBERSHIP_CHANGED_SUBSCRIPTION].map(
-    (subscription): ExpectedRoute => ({ method: 'POST', url: pushUrl(subscription), transport: 'pubsub-push', requires: PUSH_INVOKER, admitted: 204 }),
-  ),
-];
+};
 
-/** One concrete request; a subject's credentials are added when it is sent. */
-interface ProbeRequest {
-  method: Method;
-  url: string;
-  payload?: Record<string, unknown> | Buffer;
-  headers?: Record<string, string>;
+const t: TestApp = await buildTestApp({ env: { LOG_LEVEL: 'fatal' }, clock: CLOCK, clientHandlers: IDENTITY_HANDLERS });
+seedRecordingDb(t.db);
+seedMemoryStorage(t.storage);
+const MATRIX: readonly RouteMatrixEntry[] = collectRouteMatrix(t.app).routes;
+
+afterAll(async () => {
+  await t.close();
+});
+
+/** Headers and the query string (without `?`) a request presents. */
+interface Credential {
+  headers: Headers;
+  query: string;
 }
 
-/** Handler effects of one request: statements on the pool, published messages and task-port calls. */
-interface Effects {
-  statements: number;
-  published: number;
-  tasks: number;
+/** What arrives on the wire: nothing, the gateway's invocation credential alone or beside a user token, a workload's, the push key or a tasks token. */
+type Presents = 'nothing' | 'gateway' | 'user' | 'workload' | 'workload+user' | 'push-key' | 'tasks';
+
+/** One identity of the matrix. */
+interface Subject {
+  name: string;
+  presents: Presents;
+  /** Roles the user token claims; empty without one. */
+  userRoles: readonly Role[];
+  /** Roles of the invocation credential or managed identity. */
+  workloadRoles: readonly Role[];
+  /** Site of the user token; undefined without one. */
+  site: string | undefined;
+  /** Whether the user token names a signed-in user rather than the anonymous principal. */
+  signedIn: boolean;
+  mint(transport: Transport, path: string): Promise<Credential>;
 }
 
-/** What one request answered and left behind. */
-interface Outcome {
-  status: number;
-  body: string;
-  headers: Record<string, string>;
-  query: Record<string, string>;
-  effects: Effects;
+const headersOnly = async (headers: Promise<Headers>): Promise<Credential> => ({ headers: await headers, query: '' });
+
+/** A user token of `site` beside the gateway's invocation credential, minted through the platform test signer. */
+async function userCredential(claims: { sub: string; roles: readonly Role[]; site?: string; tid?: string; exp?: number }): Promise<Credential> {
+  const site = claims.site ?? SITE_A;
+  const [user, gateway] = await Promise.all([
+    mintUserToken({ sub: claims.sub, site, roles: claims.roles, ...(claims.tid === undefined ? {} : { tid: claims.tid }), ...(claims.exp === undefined ? {} : { exp: claims.exp }) }),
+    mintServiceToken({ caller: 'gateway', audience: SERVICE }),
+  ]);
+  return { headers: { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${gateway}` }, query: '' };
 }
 
-const NO_EFFECTS: Effects = { statements: 0, published: 0, tasks: 0 };
-
-let t: ContentTestApp;
-let matrix: RouteMatrix;
-/** A local signed URL of a stored tenant-a object, signed once the app exists. */
-let localFileUrl = '';
-
-/** `<METHOD> <url>` of a route. */
-function keyOf(route: Pick<ExpectedRoute, 'method' | 'url'> | Pick<RouteMatrixEntry, 'method' | 'url'>): string {
-  return `${route.method} ${route.url}`;
-}
-
-/** A declaration in comparable form: `requires` sorted, defaults dropped. */
-function comparable(route: ExpectedRoute | RouteMatrixEntry): Record<string, unknown> {
-  return {
-    method: route.method,
-    url: route.url,
-    transport: route.transport,
-    ...(route.requires === undefined ? {} : { requires: [...route.requires].sort() }),
-    ...(route.public === true ? { public: true } : {}),
-    ...('siteCheck' in route && route.siteCheck === false ? { siteCheck: false } : {}),
-    ...('edge' in route && route.edge === true ? { edge: true } : {}),
-  };
-}
-
-/** Comparable declarations ordered by method and url. */
-function declarations(routes: ReadonlyArray<ExpectedRoute | RouteMatrixEntry>): Record<string, unknown>[] {
-  return [...routes].sort((a, b) => (keyOf(a) < keyOf(b) ? -1 : 1)).map(comparable);
-}
-
-function subjectNamed(name: string): RoleSubject {
+function roleSubject(name: string): RoleSubject {
   const subject = ROLE_SET.find((candidate) => candidate.name === name);
   if (subject === undefined) throw new TypeError(`ROLE_SET has no subject named ${name}`);
   return subject;
 }
 
-/** The EXPECTED row of `method` and `url`; throws TypeError when there is none. */
-function routeOf(method: Method, url: string): ExpectedRoute {
-  const route = EXPECTED.find((candidate) => candidate.method === method && candidate.url === url);
-  if (route === undefined) throw new TypeError(`EXPECTED has no ${method} ${url}`);
-  return route;
+function contentUser(name: TokenSubject): Subject {
+  const claims = SUBJECT_CLAIMS[name];
+  return {
+    name,
+    presents: 'user',
+    userRoles: claims.roles,
+    workloadRoles: GATEWAY_ROLES,
+    site: claims.site,
+    signedIn: true,
+    mint: () => headersOnly(contentHeaders(name, { site: SITE_A })),
+  };
 }
 
-const credentialCache = new Map<string, { mintedAt: number; headers: Promise<Record<string, string>> }>();
+function syntheticUser(role: string): Subject {
+  const subject = roleSubject(role);
+  return {
+    name: role,
+    presents: 'user',
+    userRoles: subject.roles,
+    workloadRoles: GATEWAY_ROLES,
+    site: SITE_A,
+    signedIn: true,
+    mint: () => headersOnly(authHeadersFor(subject, { audience: SERVICE, site: SITE_A })),
+  };
+}
 
-// Tokens live 300 s; re-minting after 120 s keeps a slow run from presenting an expired one.
+const CONTENT_CALLERS: Readonly<Record<string, ContentServiceCaller>> = Object.freeze({
+  migration: 'platform.migration',
+  operator: 'platform.operator',
+  'programs-sites': 'service:programs-sites',
+});
+
+function workload(caller: string): Subject {
+  const helperCaller = CONTENT_CALLERS[caller];
+  return {
+    name: serviceRole(caller),
+    presents: 'workload',
+    userRoles: [],
+    workloadRoles: rolesForService(caller),
+    site: undefined,
+    signedIn: false,
+    mint: () => headersOnly(helperCaller === undefined ? authHeadersFor(roleSubject(serviceRole(caller)), { audience: SERVICE }) : serviceHeaders(helperCaller)),
+  };
+}
+
+/** `caller`'s invocation credential beside a tenant-a system user's token, as people and identity forward one. */
+function workloadForUser(caller: string): Subject {
+  return {
+    name: `${serviceRole(caller)} for a tenant-a user`,
+    presents: 'workload+user',
+    userRoles: [Roles.systemUser],
+    workloadRoles: rolesForService(caller),
+    site: SITE_A,
+    signedIn: true,
+    async mint() {
+      const [user, invocation] = await Promise.all([
+        mintUserToken({ sub: SUBJECT_USER_IDS['system-user'], site: SITE_A, roles: [Roles.systemUser] }),
+        mintServiceToken({ caller, audience: SERVICE }),
+      ]);
+      return { headers: { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${invocation}` }, query: '' };
+    },
+  };
+}
+
+/** A tenant-a system user holding exactly `modules`, proving one AND condition or single-role path of a circuit gate. */
+function gateProbe(name: string, modules: readonly Role[], index: number): Subject {
+  const roles = [Roles.systemUser, ...modules];
+  return {
+    name,
+    presents: 'user',
+    userRoles: roles,
+    workloadRoles: GATEWAY_ROLES,
+    site: SITE_A,
+    signedIn: true,
+    mint: () => userCredential({ sub: `D0000000-0000-0000-00000000000000${String(index).padStart(2, '0')}`, roles }),
+  };
+}
+
+const ANONYMOUS: Subject = {
+  name: 'anonymous',
+  presents: 'gateway',
+  userRoles: [],
+  workloadRoles: GATEWAY_ROLES,
+  site: undefined,
+  signedIn: false,
+  mint: () => headersOnly(contentHeaders('anonymous')),
+};
+
+/** The gateway's anonymous principal (`sub` ''), the token every visitor's request carries. */
+const VISITOR: Subject = {
+  name: 'anonymous principal',
+  presents: 'user',
+  userRoles: [],
+  workloadRoles: GATEWAY_ROLES,
+  site: SITE_A,
+  signedIn: false,
+  mint: () => userCredential({ sub: '', roles: [] }),
+};
+
+const TASKS_INVOKER: Subject = {
+  name: TASKS_INVOKER_ROLE,
+  presents: 'tasks',
+  userRoles: [],
+  workloadRoles: [TASKS_INVOKER_ROLE],
+  site: undefined,
+  signedIn: false,
+  mint: (transport, path) =>
+    headersOnly(transport === 'cloud-tasks' ? tasksHeaders(path) : authHeadersFor(roleSubject(TASKS_INVOKER_ROLE), { audience: SERVICE })),
+};
+
+const PUSH_INVOKER: Subject = {
+  name: PUBSUB_INVOKER_ROLE,
+  presents: 'push-key',
+  userRoles: [],
+  workloadRoles: [PUBSUB_INVOKER_ROLE],
+  site: undefined,
+  signedIn: false,
+  mint: async () => ({ headers: {}, query: pushQuery() }),
+};
+
+const SYNTHETIC_SUBJECTS: readonly string[] = [
+  Roles.timesheetsEmployee,
+  Roles.timesheetsPrimaryApprover,
+  Roles.timesheetsSecondaryApprover,
+  Roles.financePreparer,
+  Roles.financeApprover,
+  Roles.esignatureSigner,
+  Roles.esignatureAuditor,
+  Roles.reportingExporter,
+  Roles.surveysManager,
+  Roles.communicationsSender,
+];
+
+const GATE_PROBES: ReadonlyArray<readonly [string, readonly Role[]]> = [
+  ['m:014 only', [M.changesets]],
+  ['m:014+m:000', [M.changesets, M.siteManager]],
+  ['m:015 only', [M.comments]],
+  ['m:015+m:000', [M.comments, M.siteManager]],
+  ['m:010 only', [M.categories]],
+  ['m:010+m:000', [M.categories, M.siteManager]],
+  ['m:011 only', [M.collections]],
+  ['m:011+m:000', [M.collections, M.siteManager]],
+  ['m:004 only', [M.forms]],
+  ['m:000+m:004', [M.siteManager, M.forms]],
+];
+
+const SUBJECTS: readonly Subject[] = [
+  ANONYMOUS,
+  ...CONTENT_SUBJECTS.filter((name): name is TokenSubject => name !== 'anonymous').map(contentUser),
+  VISITOR,
+  ...SYNTHETIC_SUBJECTS.map(syntheticUser),
+  ...['migration', 'operator', 'programs-sites', 'people', 'identity'].map(workload),
+  workloadForUser('people'),
+  workloadForUser('identity'),
+  TASKS_INVOKER,
+  PUSH_INVOKER,
+  ...GATE_PROBES.map(([name, modules], index) => gateProbe(name, modules, index)),
+];
+
+function subjectNamed(name: string): Subject {
+  const subject = SUBJECTS.find((candidate) => candidate.name === name);
+  if (subject === undefined) throw new TypeError(`No matrix subject named ${name}`);
+  return subject;
+}
+
+const credentialCache = new Map<string, { mintedAt: number; credential: Promise<Credential> }>();
+
+// User tokens live 300 s; re-minting after 120 s keeps a slow run from presenting an expired one.
 const CREDENTIAL_REUSE_MS = 120_000;
 
-/** `authHeadersFor(subject)` on tenant-a, reused across probes while its tokens are fresh. */
-function credentialsOf(subject: RoleSubject): Promise<Record<string, string>> {
-  const cached = credentialCache.get(subject.name);
-  if (cached !== undefined && Date.now() - cached.mintedAt < CREDENTIAL_REUSE_MS) return cached.headers;
-  const headers = authHeadersFor(subject, { site: SITE_A, audience: SERVICE, sub: USER_ID });
-  credentialCache.set(subject.name, { mintedAt: Date.now(), headers });
-  return headers;
+/** `subject`'s credential for a request to `path` on `entry`'s transport, reused while its tokens are fresh. */
+function credentialFor(subject: Subject, entry: Pick<RouteMatrixEntry, 'transport'>, path: string): Promise<Credential> {
+  const key = subject.presents === 'tasks' ? `${subject.name} ${entry.transport} ${path}` : subject.name;
+  const hit = credentialCache.get(key);
+  if (hit !== undefined && Date.now() - hit.mintedAt < CREDENTIAL_REUSE_MS) return hit.credential;
+  const credential = subject.mint(entry.transport, path);
+  credentialCache.set(key, { mintedAt: Date.now(), credential });
+  return credential;
 }
 
-async function tasksInvokerCredentials(): Promise<Record<string, string>> {
-  return { authorization: `Bearer ${await mintTasksInvokerToken({ audience: SERVICE })}` };
+/** Verdict inputs beside the verified roles. */
+interface AllowContext {
+  /** A verified user token arrived, the anonymous principal's included. */
+  userToken: boolean;
+  /** `tsettings.feedManager` of the site, from the verified source the cfeed gate reads. */
+  feedManager: boolean;
 }
 
-/** A user token of tenant-a claiming both managed invoker roles and s2. */
-async function invokerClaimingUserToken(): Promise<Record<string, string>> {
-  const token = await mintUserToken({ sub: USER_ID, site: SITE_A, roles: [PUBSUB_INVOKER_ROLE, TASKS_INVOKER_ROLE, Roles.s2] });
-  return { authorization: `Bearer ${token}` };
+/** Methods and either one exact Fastify url or a url prefix. */
+interface Match {
+  methods: readonly HttpMethod[];
+  url?: string;
+  prefix?: string;
+}
+
+const at = (methods: string, url: string): Match => ({ methods: methods.split(',') as HttpMethod[], url });
+const under = (methods: string, prefix: string): Match => ({ methods: methods.split(',') as HttpMethod[], prefix });
+
+type Declared = { public: true; siteCheck: boolean } | { requires: readonly Role[]; siteCheck: boolean };
+
+/** One route family of the literal table. */
+interface Family {
+  family: string;
+  match: readonly Match[];
+  transport: Transport;
+  declared: Declared;
+  /** The admin circuit whose `before()` gate the handler runs; its refusals are `denied-gate`. */
+  circuit?: GatedContentAdminCircuit | 'cnav';
+  /** Legacy's verdict over the verified roles, evaluated once the declaration admits the caller. */
+  allow(roles: readonly Role[], ctx: AllowContext): boolean;
+  /** The probe supplies `siteid=tenant-a`, which must be the user token's site. */
+  siteScoped: boolean;
+  /** WWW-Authenticate of the handler's own refusal when `allow` fails, as legacy's REST credential block sends it. */
+  challenge?: string;
+  /** Every url field is a call argument, so the push key's `key` field alone makes the call unrunnable before any credential is read. */
+  strictArguments?: true;
+}
+
+const ADMIN: readonly Role[] = [Roles.s2, Roles.siteAdmin];
+const adminOrS2 = (roles: readonly Role[]): boolean => hasAnyRole(roles, ADMIN);
+const withSiteManager = (roles: readonly Role[], module: Role): boolean => adminOrS2(roles) || (roles.includes(module) && roles.includes(M.siteManager));
+const userTokenOnly = (_roles: readonly Role[], ctx: AllowContext): boolean => ctx.userToken;
+const always = (): boolean => true;
+
+const PUBLIC_LENIENT: Declared = { public: true, siteCheck: false };
+const PUBLIC_CHECKED: Declared = { public: true, siteCheck: true };
+const requiring = (...roles: Role[]): Declared => ({ requires: roles, siteCheck: true });
+
+const PUSH_URLS = [
+  '/internal/v1/events/strategies-content.identity.group.changed.v1',
+  '/internal/v1/events/strategies-content.identity.membership.changed.v1',
+  '/internal/v1/events/strategies-content.identity.permission.changed.v1',
+  '/internal/v1/events/strategies-content.programs-sites.site.changed.v1',
+];
+const JOB_URLS = ['/internal/v1/jobs/feed-auto-import', '/internal/v1/jobs/publish-scheduled-changesets'];
+
+const FAMILIES: readonly Family[] = [
+  { family: 'health', match: [at('GET', '/healthz')], transport: 'service', declared: PUBLIC_CHECKED, allow: always, siteScoped: false },
+  {
+    family: 'JSON API',
+    match: ['/_api/json/v1', '/_api/ajax/v1'].flatMap((lead) => [lead, `${lead}/:siteid`, `${lead}/:siteid/*`].map((url) => at('DELETE,GET,POST,PUT', url))),
+    transport: 'service',
+    declared: PUBLIC_LENIENT,
+    allow: always,
+    siteScoped: true,
+  },
+  {
+    family: 'REST API',
+    match: ['/_api/rest/v1', '/_api/rest/v1/:siteid', '/_api/rest/v1/:siteid/*'].map((url) => at('DELETE,GET,POST,PUT', url)),
+    transport: 'service',
+    declared: PUBLIC_LENIENT,
+    allow: userTokenOnly,
+    challenge: WWW_AUTHENTICATE.basic,
+    siteScoped: true,
+  },
+  {
+    family: 'feed',
+    match: ['/_api/feed/v1', '/_api/feed/v1/*', '/tasks/feed', '/tasks/feed/*'].map((url) => at('GET', url)),
+    transport: 'service',
+    declared: PUBLIC_LENIENT,
+    allow: userTokenOnly,
+    siteScoped: true,
+  },
+  {
+    family: 'render',
+    match: [at('GET', '/_api/render/:size'), at('GET', '/tasks/render/:size')],
+    transport: 'service',
+    declared: PUBLIC_CHECKED,
+    allow: userTokenOnly,
+    siteScoped: false,
+  },
+  {
+    family: 'variation resource',
+    match: [at('GET', '/_api/resource/variation'), at('GET', '/_api/resource/variation/*')],
+    transport: 'service',
+    declared: PUBLIC_LENIENT,
+    allow: always,
+    siteScoped: false,
+  },
+  {
+    family: 'comments proxy',
+    match: [at('GET,POST', COMMENTS_PROXY_URL)],
+    transport: 'service',
+    declared: PUBLIC_LENIENT,
+    allow: userTokenOnly,
+    strictArguments: true,
+    siteScoped: true,
+  },
+  {
+    family: 'signed objects',
+    match: [at('GET', '/opt2/files/content-files/:tenantId/:objectName')],
+    transport: 'service',
+    declared: PUBLIC_CHECKED,
+    allow: always,
+    siteScoped: false,
+  },
+  {
+    family: 'signed-URL issuance',
+    match: [at('GET', '/v1/sites/:siteid/files/:fileid/download-url')],
+    transport: 'service',
+    declared: requiring(Roles.s2, Roles.siteAdmin, M.siteManager),
+    allow: (roles) => hasAnyRole(roles, [Roles.s2, Roles.siteAdmin, M.siteManager]),
+    siteScoped: true,
+  },
+  {
+    family: 'header prompts',
+    match: [at('GET', '/v1/sites/:siteid/header-prompts')],
+    transport: 'service',
+    declared: requiring(Roles.s2, Roles.siteAdmin, Roles.systemUser),
+    allow: (roles) => hasAnyRole(roles, [Roles.s2, Roles.siteAdmin, Roles.systemUser]),
+    siteScoped: true,
+  },
+  {
+    family: 'content links',
+    match: [at('POST', '/internal/v1/content::links')],
+    transport: 'service',
+    declared: requiring(serviceRole('people')),
+    allow: always,
+    siteScoped: false,
+  },
+  {
+    family: 'file lookup',
+    match: [at('POST', '/internal/v1/files::lookup')],
+    transport: 'service',
+    declared: requiring(serviceRole('people'), serviceRole('identity')),
+    allow: userTokenOnly,
+    siteScoped: false,
+  },
+  {
+    family: 'migration',
+    match: [
+      at('POST', '/internal/v1/migration/apply'),
+      at('GET', '/internal/v1/migration/changes'),
+      at('GET', '/internal/v1/migration/export'),
+      at('POST', '/internal/v1/migration/gate'),
+      at('DELETE,GET,POST', '/internal/v1/migration/objects'),
+      at('GET', '/internal/v1/migration/position'),
+      at('GET,POST', '/internal/v1/migration/watermark'),
+    ],
+    transport: 'service',
+    declared: requiring(Roles.platformMigration),
+    allow: always,
+    siteScoped: false,
+  },
+  {
+    family: 'queue control',
+    match: ['ensure', 'pause', 'resume'].map((op) => at('POST', `/internal/v1/task-queues/:queue/${op}`)),
+    transport: 'service',
+    declared: requiring(Roles.platformMigration, Roles.platformOperator),
+    allow: always,
+    siteScoped: false,
+  },
+  { family: 'push', match: PUSH_URLS.map((url) => at('POST', url)), transport: 'pubsub-push', declared: requiring(PUBSUB_INVOKER_ROLE), allow: always, siteScoped: false },
+  { family: 'jobs', match: JOB_URLS.map((url) => at('POST', url)), transport: 'cloud-tasks', declared: requiring(TASKS_INVOKER_ROLE), allow: always, siteScoped: false },
+  {
+    family: 'carch',
+    circuit: 'carch',
+    match: [
+      under('GET,POST', '/v1/raw/carch/'),
+      at('GET', '/v1/sites/:siteid/content'),
+      at('GET', '/v1/sites/:siteid/content/:contentid'),
+      at('GET', '/v1/sites/:siteid/content/:contentid/history'),
+      at('GET', '/v1/sites/:siteid/content/:contentid/multi-file-upload'),
+      at('GET', '/v1/sites/:siteid/content/:contentid/versions/:contenthistid/audit'),
+      at('GET', '/v1/sites/:siteid/content/drafts'),
+      at('GET', '/v1/sites/:siteid/content/images'),
+      at('GET', '/v1/sites/:siteid/content/tree'),
+      at('POST', '/v1/sites/:siteid/content/versions/:contenthistid/object-params'),
+      at('GET', '/v1/sites/:siteid/content/versions/:contenthistid/summary'),
+      at('GET', '/v1/sites/:siteid/feeds/display-fields'),
+      at('GET', '/v1/sites/:siteid/files/image-details'),
+      at('GET', '/v1/sites/:siteid/forms/:contentid/responses'),
+      at('POST', '/v1/sites/:siteid/forms/:contentid/responses/delete'),
+      at('GET,POST', '/v1/sites/:siteid/variation-targeting'),
+    ],
+    transport: 'service',
+    declared: requiring(Roles.s2, Roles.siteAdmin, M.siteManager),
+    allow: (roles) => hasAnyRole(roles, [Roles.s2, Roles.siteAdmin, M.siteManager]),
+    siteScoped: true,
+  },
+  {
+    family: 'cperm',
+    circuit: 'cperm',
+    match: [at('GET', '/v1/sites/:siteid/content/:contentid/crumbs')],
+    transport: 'service',
+    declared: requiring(Roles.s2, Roles.siteAdmin),
+    allow: adminOrS2,
+    siteScoped: true,
+  },
+  {
+    family: 'cchangesets',
+    circuit: 'cchangesets',
+    match: [
+      under('GET,POST', '/v1/raw/cchangesets/'),
+      at('GET,POST', '/v1/sites/:siteid/changesets'),
+      at('GET', '/v1/sites/:siteid/changesets/:changesetid'),
+      at('GET', '/v1/sites/:siteid/changesets/:changesetid/assignments'),
+      at('POST', '/v1/sites/:siteid/changesets/:changesetid/delete'),
+      at('POST', '/v1/sites/:siteid/changesets/:changesetid/items/:contenthistid/remove'),
+      at('POST', '/v1/sites/:siteid/changesets/:changesetid/rollback'),
+    ],
+    transport: 'service',
+    declared: requiring(Roles.s2, Roles.siteAdmin, M.changesets),
+    allow: (roles) => withSiteManager(roles, M.changesets),
+    siteScoped: true,
+  },
+  {
+    family: 'ccomments',
+    circuit: 'ccomments',
+    match: [
+      under('GET,POST', '/v1/raw/ccomments/'),
+      at('GET', '/v1/sites/:siteid/comments'),
+      at('POST', '/v1/sites/:siteid/comments/:commentid'),
+      ...['approve', 'delete', 'spam', 'unapprove'].map((action) => at('POST', `/v1/sites/:siteid/comments/:commentid/${action}`)),
+      at('POST', '/v1/sites/:siteid/comments/bulk'),
+      at('POST', '/v1/sites/:siteid/comments/purge-deleted'),
+    ],
+    transport: 'service',
+    declared: requiring(Roles.s2, Roles.siteAdmin, M.comments),
+    allow: (roles) => withSiteManager(roles, M.comments),
+    siteScoped: true,
+  },
+  {
+    family: 'ccategory',
+    circuit: 'ccategory',
+    match: [at('GET,POST', '/v1/sites/:siteid/categories'), at('GET', '/v1/sites/:siteid/categories/:categoryid')],
+    transport: 'service',
+    declared: requiring(Roles.s2, Roles.siteAdmin, M.categories),
+    allow: (roles) => withSiteManager(roles, M.categories),
+    siteScoped: true,
+  },
+  {
+    family: 'cfeed',
+    circuit: 'cfeed',
+    match: [
+      under('GET,POST', '/v1/raw/cfeed/'),
+      at('GET', '/v1/sites/:siteid/feeds'),
+      at('GET', '/v1/sites/:siteid/feeds/:feedid'),
+      at('GET', '/v1/sites/:siteid/feeds/:feedid/import'),
+    ],
+    transport: 'service',
+    declared: requiring(Roles.s2, Roles.siteAdmin, M.collections),
+    allow: (roles, ctx) => ctx.feedManager && withSiteManager(roles, M.collections),
+    siteScoped: true,
+  },
+  {
+    family: 'cchain',
+    circuit: 'cchain',
+    match: [
+      at('GET,POST', '/v1/sites/:siteid/approval-chains'),
+      at('GET', '/v1/sites/:siteid/approval-chains/:chainid'),
+      at('GET', '/v1/sites/:siteid/approval-chains/:chainid/pending'),
+      at('POST', '/v1/sites/:siteid/approval-chains/:chainid/delete'),
+    ],
+    transport: 'service',
+    declared: requiring(Roles.s2, Roles.siteAdmin),
+    allow: adminOrS2,
+    siteScoped: true,
+  },
+  {
+    family: 'cform',
+    circuit: 'cform',
+    match: [under('GET,POST', '/v1/raw/cform/'), at('POST', '/v1/sites/:siteid/forms/import')],
+    transport: 'service',
+    declared: requiring(Roles.s2, Roles.siteAdmin, M.forms),
+    allow: (roles) => hasAnyRole(roles, [Roles.s2, Roles.siteAdmin, M.siteManager]) && hasAnyRole(roles, [Roles.s2, Roles.siteAdmin, M.forms]),
+    siteScoped: true,
+  },
+  { family: 'cnav', circuit: 'cnav', match: [under('GET,POST', '/v1/raw/cnav/')], transport: 'service', declared: PUBLIC_CHECKED, allow: always, siteScoped: true },
+];
+
+function matches(match: Match, entry: Pick<RouteMatrixEntry, 'method' | 'url'>): boolean {
+  if (!match.methods.includes(entry.method as HttpMethod)) return false;
+  return match.url !== undefined ? entry.url === match.url : match.prefix !== undefined && entry.url.startsWith(match.prefix);
+}
+
+function familiesOf(entry: Pick<RouteMatrixEntry, 'method' | 'url'>): Family[] {
+  return FAMILIES.filter((family) => family.match.some((match) => matches(match, entry)));
+}
+
+const routeKey = (entry: Pick<RouteMatrixEntry, 'method' | 'url'>): string => `${entry.method} ${entry.url}`;
+
+/** What a cell answers: admitted, refused by the platform's credential, role or site checks, or refused by a circuit's `before()` gate. */
+type Outcome = { kind: 'allowed' } | { kind: 'denied-auth' | 'denied-gate'; status: 401 | 403; challenge?: string };
+
+const ALLOWED: Outcome = Object.freeze({ kind: 'allowed' });
+const AUTH_401: Outcome = Object.freeze({ kind: 'denied-auth', status: 401 });
+const AUTH_403: Outcome = Object.freeze({ kind: 'denied-auth', status: 403 });
+
+/** The roles the platform verifies from what `subject` presents: user roles without workload ones, then the workload's. */
+function verifiedRoles(subject: Subject): Role[] {
+  if (subject.presents === 'push-key' || subject.presents === 'tasks') return [];
+  return [...new Set([...subject.userRoles.filter((role) => !isServiceRole(role)), ...subject.workloadRoles])];
+}
+
+/** The cell's expected outcome, from the literal table only: transport, declared roles, site, then legacy's verdict. */
+function expectedOutcome(family: Family, subject: Subject, feedManager = true): Outcome {
+  if (family.transport === 'pubsub-push') return subject.presents === 'push-key' ? ALLOWED : AUTH_401;
+  if (family.transport === 'cloud-tasks') return subject.presents === 'tasks' ? ALLOWED : AUTH_401;
+  // The service transport verifies a bearer in Authorization as a user token, public routes included.
+  if (subject.presents === 'tasks') return AUTH_401;
+  const declared = family.declared;
+  if (subject.presents === 'push-key' && 'requires' in declared) return AUTH_401;
+  if (subject.presents === 'push-key' && family.strictArguments === true) return ALLOWED;
+  const roles = verifiedRoles(subject);
+  if ('requires' in declared && !hasAnyRole(roles, declared.requires)) {
+    return !subject.signedIn && declared.requires.some((role) => !isServiceRole(role)) ? AUTH_401 : AUTH_403;
+  }
+  const userToken = subject.site !== undefined;
+  if (family.siteScoped && userToken && subject.site !== SITE_A) return AUTH_403;
+  if (!family.allow(roles, { userToken, feedManager })) {
+    if (family.circuit !== undefined) return { kind: 'denied-gate', status: subject.signedIn ? 403 : 401 };
+    return family.challenge === undefined ? AUTH_401 : { ...AUTH_401, challenge: family.challenge };
+  }
+  return ALLOWED;
+}
+
+function sameOutcome(a: Outcome, b: Outcome): boolean {
+  return a.kind === b.kind && (a.kind === 'allowed' || (b.kind !== 'allowed' && a.status === b.status));
+}
+
+function outcomeLabel(outcome: Outcome): string {
+  return outcome.kind === 'allowed' ? 'allowed' : `denied (${outcome.status} ${outcome.kind === 'denied-gate' ? 'gate' : 'auth'})`;
+}
+
+/** One concrete request; a subject's credential is added when it is sent. */
+interface Probe {
+  method: HttpMethod;
+  url: string;
+  payload?: string | Buffer | Record<string, unknown>;
+  headers?: Headers;
+}
+
+const OWN_QUEUE: string = contentQueues()[0] ?? 'content-scheduled-publish';
+
+/** The value each path parameter of a probe takes; `siteid` is the site under test. */
+function pathValues(site: string): Readonly<Record<string, string>> {
+  return {
+    siteid: site,
+    contentid: IDS.content.section,
+    contenthistid: IDS.hist.sectionDraft,
+    changesetid: IDS.changesets.scheduledFuture,
+    commentid: IDS.comments.unapproved,
+    categoryid: IDS.categories.pooledChild,
+    feedid: IDS.feeds.local,
+    chainid: IDS.approval.chain,
+    fileid: IDS.files.pdf,
+    queue: OWN_QUEUE,
+    size: 'file',
+  };
+}
+
+/** A Fastify url with its parameters filled; `::` is Fastify's literal `:`. */
+function fillPath(url: string, site: string): string {
+  const values = pathValues(site);
+  return url
+    .split('::')
+    .map((part) =>
+      part.replace(/:(\w+)/g, (_whole, name: string) => {
+        const value = values[name];
+        if (value === undefined) throw new TypeError(`No probe value for path parameter ${name} of ${url}`);
+        return value;
+      }),
+    )
+    .join(':');
+}
+
+function withQuery(url: string, query: string): string {
+  return query === '' ? url : `${url}${url.includes('?') ? '&' : '?'}${query}`;
 }
 
 /** A fresh contract-valid tenant-a envelope of the topic `subscription` consumes. */
-function envelopeFor(subscription: string): EventEnvelope {
+function envelopeFor(subscription: string): ReturnType<typeof testEnvelope> {
   const tenantId = TENANT_A.tenantId;
+  const groupId = IDS.groups.editor;
   switch (subscription) {
     case SITE_CHANGED_SUBSCRIPTION: {
       const site = registryPayloads().find((payload) => payload.siteId === SITE_A);
@@ -261,47 +749,48 @@ function envelopeFor(subscription: string): EventEnvelope {
       return testEnvelope({
         topic: GROUP_CHANGED_TOPIC,
         tenantId,
-        aggregateId: GROUP_ID,
-        payload: { groupId: GROUP_ID, siteId: SITE_A, groupName: 'Content Editors', type: 1, isPublic: 0, poolTenantId: tenantId, deleted: false },
+        aggregateId: groupId,
+        payload: { groupId, siteId: SITE_A, groupName: 'Editor', type: 1, isPublic: 0, poolTenantId: tenantId, deleted: false },
       });
     case PERMISSION_CHANGED_SUBSCRIPTION:
       return testEnvelope({
         topic: PERMISSION_CHANGED_TOPIC,
         tenantId,
         aggregateType: 'group',
-        aggregateId: GROUP_ID,
-        payload: { groupId: GROUP_ID, siteId: SITE_A, rows: [{ contentId: '00000000000000000000000000000000001', siteId: SITE_A, type: 'Editor' }] },
+        aggregateId: groupId,
+        payload: { groupId, siteId: SITE_A, rows: [{ contentId: IDS.content.section, siteId: SITE_A, type: 'Editor' }] },
       });
     case MEMBERSHIP_CHANGED_SUBSCRIPTION:
       return testEnvelope({
         topic: MEMBERSHIP_CHANGED_TOPIC,
         tenantId,
         aggregateType: 'user',
-        aggregateId: USER_ID,
-        payload: { userId: USER_ID, siteId: SITE_A, groupIds: [GROUP_ID] },
+        aggregateId: SUBJECT_USER_IDS.editor,
+        payload: { userId: SUBJECT_USER_IDS.editor, siteId: SITE_A, groupIds: [groupId] },
       });
     default:
       throw new TypeError(`No envelope for subscription ${subscription}`);
   }
 }
 
-/** The push subscription a push row delivers to; throws TypeError for any other row. */
-function subscriptionOf(route: ExpectedRoute): string {
-  if (route.transport !== 'pubsub-push') throw new TypeError(`${keyOf(route)} is not a push route`);
-  return route.url.slice(pushUrl('').length);
+/** The subscription of a push route's url. */
+function subscriptionOf(url: string): string {
+  return url.slice('/internal/v1/events/'.length);
 }
 
-/** A push delivery to `subscription` without the push key. */
-function pushRequest(subscription: string): ProbeRequest {
-  const body = buildPushBody({ data: encodeEnvelope(envelopeFor(subscription)), messageId: randomUUID(), subscription });
-  return { method: 'POST', url: pushUrl(subscription), headers: JSON_HEADERS, payload: { ...body } };
+/** The delivery pushTo builds for `subscription`, without its push key, so each subject presents its own credential. */
+async function pushProbe(subscription: string): Promise<Probe> {
+  let captured: Probe | undefined;
+  const recorder: PushTarget = {
+    inject: ((options: { url: string; payload: Record<string, unknown> }) => {
+      captured = { method: 'POST', url: options.url.split('?')[0] ?? options.url, payload: options.payload, headers: JSON_BODY };
+      return Promise.resolve(undefined);
+    }) as unknown as PushTarget['inject'],
+  };
+  await pushTo(recorder, subscription, envelopeFor(subscription));
+  if (captured === undefined) throw new Error(`pushTo sent no delivery to ${subscription}`);
+  return captured;
 }
-
-function withPushKey(request: ProbeRequest): ProbeRequest {
-  return { ...request, url: `${request.url}${request.url.includes('?') ? '&' : '?'}key=${TEST_PUSH_KEY}` };
-}
-
-const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
 /** The system task body of one site-monitor step, as the programs-sites orchestrator sends it. */
 const siteMonitorTask = (queue: string, step: string): Record<string, unknown> => ({
@@ -311,139 +800,183 @@ const siteMonitorTask = (queue: string, step: string): Record<string, unknown> =
   payload: { step, theTime: '2026-06-30T12:00:00.000', lastMonitored: '2026-06-30T11:45:00.000' },
 });
 
-/** The request each non-push row is probed with: tenant-a ids and this service's own queue. */
-const PROBES: Readonly<Record<string, () => ProbeRequest>> = {
-  'GET /healthz': () => ({ method: 'GET', url: '/healthz' }),
-  'GET /v1/sites/:siteid/header-prompts': () => ({ method: 'GET', url: `/v1/sites/${SITE_A}/header-prompts` }),
-  'GET /v1/sites/:siteid/files/:fileid/download-url': () => ({ method: 'GET', url: `/v1/sites/${SITE_A}/files/${FILE_ID}/download-url` }),
-  'GET /opt2/files/content-files/:tenantId/:objectName': () => ({ method: 'GET', url: localFileUrl }),
-  'POST /internal/v1/files::lookup': () => ({
-    method: 'POST',
-    url: '/internal/v1/files:lookup',
-    headers: JSON_HEADERS,
-    payload: { fileIds: [FILE_ID] },
-  }),
-  'POST /internal/v1/content::links': () => ({
-    method: 'POST',
-    url: '/internal/v1/content:links',
-    headers: JSON_HEADERS,
-    payload: { siteId: SITE_A, contentIds: [CONTENT_ID] },
-  }),
-  [`GET ${COMMENTS_PROXY_URL}`]: () => ({
-    method: 'GET',
-    url: `${COMMENTS_PROXY_URL}?method=getContentStats&contentID=${CONTENT_ID}&siteid=${SITE_A}`,
-  }),
-  [`POST ${COMMENTS_PROXY_URL}`]: () => ({
-    method: 'POST',
-    url: COMMENTS_PROXY_URL,
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    payload: Buffer.from(`method=flag&commentID=${CONTENT_ID}&siteid=${SITE_A}`),
-  }),
+const OBJECT_PROBE_KEY = `${TENANT_A.tenantId}/${IDS.files.pdf}_authz.pdf`;
+const OBJECT_PROBE_BYTES = Buffer.from('strategies-content authz probe');
+
+const SEEDED_PDF_KEY = [...t.storage.objects.keys()].find((key) => key.endsWith(`${IDS.files.pdf}.pdf`)) ?? `missing ${IDS.files.pdf}.pdf`;
+/** A signed local URL of the seeded umbrella PDF, the probe of the signed-object route. */
+const SEEDED_PDF_URL = await t.storage.signedUrl('content-files', SEEDED_PDF_KEY);
+
+const get = (url: string): Probe => ({ method: 'GET', url });
+const postForm = (url: string, form: string): Probe => ({ method: 'POST', url, payload: form, headers: FORM });
+const postJson = (url: string, json: Record<string, unknown>): Probe => ({ method: 'POST', url, payload: json, headers: JSON_BODY });
+
+/** Requests a route serves the same way for every admitted caller, or that reach the action's ordinary path past its gate. */
+const PROBE_OVERRIDES: Readonly<Record<string, (site: string) => Probe>> = {
+  'GET /healthz': () => get('/healthz'),
+  'GET /opt2/files/content-files/:tenantId/:objectName': () => get(SEEDED_PDF_URL),
+  'POST /internal/v1/content::links': (site) => postJson('/internal/v1/content:links', { siteId: site, contentIds: [IDS.content.pageOne] }),
+  'POST /internal/v1/files::lookup': () => postJson('/internal/v1/files:lookup', { fileIds: [IDS.files.pdf] }),
   'POST /internal/v1/migration/objects': () => ({
     method: 'POST',
     url: `/internal/v1/migration/objects?${new URLSearchParams({
       tenantId: TENANT_A.tenantId,
-      fileId: FILE_ID,
-      variant: '',
-      ext: 'png',
-      contentType: 'image/png',
-      sha256: sha256(OBJECT_BYTES),
+      fileId: IDS.files.pdf,
+      variant: '_authz',
+      ext: 'pdf',
+      contentType: 'application/pdf',
+      sha256: createHashHex(OBJECT_PROBE_BYTES),
     }).toString()}`,
     headers: { 'content-type': 'application/octet-stream' },
-    payload: OBJECT_BYTES,
+    payload: OBJECT_PROBE_BYTES,
   }),
-  'GET /internal/v1/migration/objects': () => ({
-    method: 'GET',
-    url: `/internal/v1/migration/objects?key=${encodeURIComponent(`${TENANT_A.tenantId}/${FILE_ID}.png`)}`,
-  }),
-  'DELETE /internal/v1/migration/objects': () => ({
-    method: 'DELETE',
-    url: `/internal/v1/migration/objects?key=${encodeURIComponent(`${TENANT_A.tenantId}/${FILE_ID}.png`)}`,
-  }),
-  'POST /internal/v1/migration/apply': () => ({ method: 'POST', url: '/internal/v1/migration/apply', headers: JSON_HEADERS, payload: {} }),
-  'GET /internal/v1/migration/export': () => ({
-    method: 'GET',
-    url: `/internal/v1/migration/export?unit=content.file&tenantId=${TENANT_A.tenantId}`,
-  }),
-  'GET /internal/v1/migration/changes': () => ({ method: 'GET', url: `/internal/v1/migration/changes?tenantId=${TENANT_A.tenantId}` }),
-  'GET /internal/v1/migration/position': () => ({ method: 'GET', url: '/internal/v1/migration/position' }),
-  'GET /internal/v1/migration/watermark': () => ({ method: 'GET', url: '/internal/v1/migration/watermark' }),
-  'POST /internal/v1/migration/watermark': () => ({ method: 'POST', url: '/internal/v1/migration/watermark', headers: JSON_HEADERS, payload: {} }),
-  'POST /internal/v1/migration/gate': () => ({
-    method: 'POST',
-    url: '/internal/v1/migration/gate',
-    headers: JSON_HEADERS,
-    payload: { op: 'status', units: ['content.file'] },
-  }),
-  'POST /internal/v1/jobs/publish-scheduled-changesets': () => ({
-    method: 'POST',
-    url: '/internal/v1/jobs/publish-scheduled-changesets',
-    headers: JSON_HEADERS,
-    payload: siteMonitorTask('content-scheduled-publish', 'publishScheduledChangesets'),
-  }),
-  'POST /internal/v1/jobs/feed-auto-import': () => ({
-    method: 'POST',
-    url: `/internal/v1/jobs/feed-auto-import?siteid=${SITE_A}`,
-    headers: JSON_HEADERS,
-    payload: siteMonitorTask('content-feed-import', 'feedAutoImport'),
-  }),
-  'POST /internal/v1/task-queues/:queue/pause': () => ({ method: 'POST', url: `/internal/v1/task-queues/${OWN_QUEUE}/pause`, headers: JSON_HEADERS, payload: {} }),
-  'POST /internal/v1/task-queues/:queue/resume': () => ({ method: 'POST', url: `/internal/v1/task-queues/${OWN_QUEUE}/resume`, headers: JSON_HEADERS, payload: {} }),
-  'POST /internal/v1/task-queues/:queue/ensure': () => ({ method: 'POST', url: `/internal/v1/task-queues/${OWN_QUEUE}/ensure`, headers: JSON_HEADERS, payload: {} }),
+  'GET /internal/v1/migration/objects': () => get(`/internal/v1/migration/objects?key=${encodeURIComponent(OBJECT_PROBE_KEY)}`),
+  'DELETE /internal/v1/migration/objects': () => ({ method: 'DELETE', url: `/internal/v1/migration/objects?key=${encodeURIComponent(OBJECT_PROBE_KEY)}` }),
+  'POST /internal/v1/migration/apply': () => postJson('/internal/v1/migration/apply', {}),
+  'GET /internal/v1/migration/export': () => get(`/internal/v1/migration/export?unit=content.file&tenantId=${TENANT_A.tenantId}`),
+  'GET /internal/v1/migration/changes': () => get(`/internal/v1/migration/changes?tenantId=${TENANT_A.tenantId}`),
+  'GET /internal/v1/migration/position': () => get('/internal/v1/migration/position'),
+  'GET /internal/v1/migration/watermark': () => get('/internal/v1/migration/watermark'),
+  'POST /internal/v1/migration/watermark': () => postJson('/internal/v1/migration/watermark', {}),
+  'POST /internal/v1/migration/gate': () => postJson('/internal/v1/migration/gate', { op: 'status', units: ['content.file'] }),
+  'POST /internal/v1/jobs/publish-scheduled-changesets': () =>
+    postJson(PUBLISH_SCHEDULED_CHANGESETS_PATH, siteMonitorTask('content-scheduled-publish', 'publishScheduledChangesets')),
+  'POST /internal/v1/jobs/feed-auto-import': (site) => postJson(`${FEED_AUTO_IMPORT_PATH}?siteid=${site}`, siteMonitorTask('content-feed-import', 'feedAutoImport')),
+  'GET /v1/sites/:siteid/content': (site) => get(`/v1/sites/${site}/content?keywords=Page`),
+  'GET /v1/sites/:siteid/variation-targeting': (site) => get(`/v1/sites/${site}/variation-targeting?remoteid=authz-probe`),
+  'POST /v1/sites/:siteid/variation-targeting': (site) => postForm(`/v1/sites/${site}/variation-targeting`, `remoteid=authz-probe&${CSRF_FIELDS}`),
+  'POST /v1/sites/:siteid/changesets': (site) =>
+    postForm(`/v1/sites/${site}/changesets`, `changesetid=${IDS.changesets.scheduledFuture}&name=Future%20Release&${CSRF_FIELDS}`),
+  'POST /v1/sites/:siteid/categories': (site) =>
+    postForm(`/v1/sites/${site}/categories`, `categoryid=${IDS.categories.pooledChild}&action=update&name=News&${CSRF_FIELDS}`),
 };
 
-/** The request a row is probed with. */
-function probeRequest(route: ExpectedRoute): ProbeRequest {
-  if (route.transport === 'pubsub-push') return pushRequest(subscriptionOf(route));
-  const probe = PROBES[keyOf(route)];
-  if (probe === undefined) throw new TypeError(`No probe for ${keyOf(route)}`);
-  return probe();
+/** The rc of a raw admin probe: tenant-a's section page, its draft, and the module, type and file the raw actions dereference. */
+function rawFields(site: string): string {
+  return new URLSearchParams({
+    siteid: site,
+    contentid: IDS.content.pageOne,
+    contenthistid: IDS.hist.pageOneDraft,
+    contenthistid1: IDS.hist.pageOneActive,
+    contenthistid2: IDS.hist.pageOneDraft,
+    parentid: IDS.content.section,
+    moduleid: IDS.modules.content,
+    type: 'Page',
+    subtype: 'Default',
+    fileid: IDS.files.pdf,
+    changesetid: IDS.changesets.scheduledFuture,
+    requestid: IDS.approval.request,
+    action: 'approve',
+    comment: 'authz probe',
+    tab: '0',
+    size: 'small',
+    searchString: 'tenant',
+  }).toString();
 }
 
-function inject(request: ProbeRequest, credentials: Record<string, string>): Promise<InjectResponse> {
-  const { method, url, payload, headers } = request;
-  return t.app.inject({ method, url, headers: { ...headers, ...credentials }, ...(payload === undefined ? {} : { payload }) });
-}
-
-/** Sends one probe and records its answer and effects. */
-async function outcomeOf(send: () => Promise<InjectResponse>): Promise<Outcome> {
-  t.db.clear();
-  t.publisher.clear();
-  t.taskPort.calls.length = 0;
-  const res = await send();
-  const sentUrl = new URL(res.raw.req.url ?? '/', 'http://strategies-content.test');
-  const headers = Object.fromEntries(Object.entries(res.headers).map(([name, value]) => [name, String(value)]));
-  return {
-    status: res.statusCode,
-    body: res.body,
-    headers,
-    query: Object.fromEntries(sentUrl.searchParams),
-    effects: {
-      statements: t.db.statements.length,
-      published: t.publisher.published.length + t.publisher.raw.length,
-      tasks: t.taskPort.calls.length,
-    },
-  };
-}
-
-function parsedBody(body: string): unknown {
-  try {
-    return JSON.parse(body) as unknown;
-  } catch {
-    return undefined;
+/** The request a family sends to `entry` when no override names it. */
+function familyProbe(family: Family, entry: RouteMatrixEntry, site: string): Probe {
+  const url = fillPath(entry.url, site);
+  const method = entry.method as HttpMethod;
+  switch (family.family) {
+    case 'JSON API':
+    case 'REST API':
+      return { method, url: url.endsWith('/*') ? `${url.slice(0, -2)}/notanentity` : url.includes(`/${site}`) ? url : `${url}?siteid=${site}` };
+    case 'feed':
+      return get(`${url.endsWith('/*') ? `${url.slice(0, -2)}/${site}` : url}?feedid=${IDS.feeds.local}&siteid=${site}`);
+    case 'render':
+      return get(`${url}?fileID=${IDS.files.pdf}`);
+    case 'variation resource':
+      return get(url.endsWith('/*') ? `${url.slice(0, -2)}/probe` : url);
+    case 'comments proxy': {
+      const fields = `method=getContentStats&contentID=${IDS.content.pageOne}&siteid=${site}`;
+      return method === 'GET' ? get(`${url}?${fields}`) : postForm(url, fields);
+    }
+    case 'queue control':
+      return postJson(url, {});
+    default:
+      if (entry.url.startsWith('/v1/raw/')) {
+        const fields = `${rawFields(site)}&${CSRF_FIELDS}`;
+        return method === 'GET' ? get(`${url}?${fields}`) : postForm(url, fields);
+      }
+      return method === 'GET' ? get(url) : postForm(url, CSRF_FIELDS);
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+/** The probe of `entry` naming `site`. */
+async function probeFor(entry: RouteMatrixEntry, family: Family, site: string = SITE_A): Promise<Probe> {
+  if (entry.transport === 'pubsub-push') return pushProbe(subscriptionOf(entry.url));
+  const override = PROBE_OVERRIDES[routeKey(entry)];
+  return override === undefined ? familyProbe(family, entry, site) : override(site);
 }
 
-/** Whether `body` is a legacy JSON API error envelope (jsonApiUtility.cfc:1318-1340); `params` is left out when the request had none. */
-function isErrorEnvelope(body: unknown): boolean {
-  if (!isRecord(body) || !isRecord(body.error) || !(body.params === undefined || isRecord(body.params))) return false;
-  const { apiversion, method, error } = body;
-  return typeof apiversion === 'string' && typeof method === 'string' && typeof error.code === 'string' && typeof error.message === 'string';
+function createHashHex(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
+
+/** A request's response and every effect it left: statements, writes, storage puts and reads, tasks, CSRF consumes, session lookups. */
+interface ProbeResult {
+  res: InjectResponse;
+  query: Record<string, string>;
+  statements: RecordedStatement[];
+  writes: RecordedStatement[];
+  puts: number;
+  objectReads: number;
+  tasksCreated: number;
+  csrfConsumes: Array<{ context: string }>;
+  sessionLookups: number;
+}
+
+/** Empties every recorder a cell reads and lets identity validate CSRF tokens again. */
+function resetRecorders(): void {
+  t.db.clear();
+  t.storage.clear();
+  t.taskPort.clear();
+  t.client.clear();
+  t.client.csrfValid = true;
+  t.publisher.clear();
+}
+
+function resultOf(res: InjectResponse): ProbeResult {
+  const sent = new URL(res.raw.req.url ?? '/', 'http://strategies-content.test');
+  return {
+    res,
+    query: Object.fromEntries(sent.searchParams),
+    statements: [...t.db.statements],
+    writes: t.db.writes(),
+    puts: t.storage.calls.filter((call) => call.op === 'put').length,
+    objectReads: t.storage.calls.filter((call) => call.op === 'get' || call.op === 'stream' || call.op === 'open').length,
+    tasksCreated: t.taskPort.created.length,
+    csrfConsumes: t.client.csrfConsumes.map(({ context }) => ({ context })),
+    sessionLookups: t.client.requests.filter((req) => req.service === IDENTITY_SERVICE && req.method === 'GET' && req.path === '/v1/sessions/current').length,
+  };
+}
+
+/** Sends `probe` with `credential` after resetting the recorders; `csrfValid` is identity's verdict on any token it consumes. */
+async function send(probe: Probe, credential: Credential, csrfValid = true): Promise<ProbeResult> {
+  resetRecorders();
+  t.client.csrfValid = csrfValid;
+  const res = await t.app.inject({
+    method: probe.method,
+    url: withQuery(probe.url, credential.query),
+    headers: { ...probe.headers, ...credential.headers },
+    ...(probe.payload === undefined ? {} : { payload: probe.payload }),
+  });
+  return resultOf(res);
+}
+
+/** Sends `entry`'s probe as `subject`; the push invoker delivers through pushTo, as the emulator does. */
+async function sendCell(entry: RouteMatrixEntry, family: Family, subject: Subject, site: string = SITE_A): Promise<ProbeResult> {
+  if (entry.transport === 'pubsub-push' && subject.presents === 'push-key') {
+    resetRecorders();
+    const subscription = subscriptionOf(entry.url);
+    return resultOf(await pushTo(t.app, subscription, envelopeFor(subscription)));
+  }
+  const probe = await probeFor(entry, family, site);
+  return send(probe, await credentialFor(subject, entry, probe.url.split('?')[0] ?? probe.url));
+}
+
+type DenialRequest = Parameters<typeof renderAuthDenial>[1];
 
 const DENIAL_KINDS: readonly AuthDenial[] = [
   AuthDenial.unauthenticated('missing-credential'),
@@ -452,343 +985,572 @@ const DENIAL_KINDS: readonly AuthDenial[] = [
   AuthDenial.forbidden(),
 ];
 
-/** Every response `renderAuthDenial` gives a request with `query` at `status`. */
-function renderedDenials(status: number, query: Record<string, string>): DenialResponse[] {
-  const request = { query } as unknown as Parameters<typeof renderAuthDenial>[1];
-  return DENIAL_KINDS.filter((denial) => denial.statusCode === status).map((denial) => renderAuthDenial(denial, request));
+/** The platform's rendering of an auth denial that `result` answered exactly, if any. */
+function renderedDenialOf(result: ProbeResult): DenialResponse | undefined {
+  const request = { query: result.query } as unknown as DenialRequest;
+  return DENIAL_KINDS.filter((denial) => denial.statusCode === result.res.statusCode)
+    .map((denial) => renderAuthDenial(denial, request))
+    .find((rendered) => rendered.body === result.res.body);
 }
 
-/** Every way `outcome` departs from a refusal before any handler work: 401 or 403, the exact rendered envelope and headers, no effect. */
-function denialProblems(outcome: Outcome, at: string): string[] {
-  if (!DENIED_STATUSES.has(outcome.status)) return [`${at}: expected 401 or 403, got ${outcome.status} ${outcome.body.slice(0, 160)}`];
+function outcomeOf(result: ProbeResult): Outcome {
+  if (renderedDenialOf(result) === undefined) return ALLOWED;
+  const status = result.res.statusCode === 401 ? 401 : 403;
+  return { kind: result.sessionLookups > 0 ? 'denied-gate' : 'denied-auth', status };
+}
+
+/** Every way a refused `result` departs from the rendered denial, with legacy's `challenge` where it sends one, before any handler effect. */
+function denialProblems(result: ProbeResult, at: string, challenge?: string): string[] {
+  const rendered = renderedDenialOf(result);
+  if (rendered === undefined) return [`${at}: ${result.res.statusCode} is not a rendered auth denial: ${result.res.body.slice(0, 200)}`];
   const problems: string[] = [];
-  if (!isErrorEnvelope(parsedBody(outcome.body))) {
-    problems.push(`${at}: denial is not the legacy error envelope: ${outcome.body.slice(0, 160)}`);
+  const headers = Object.entries(rendered.headers).filter(([name]) => name.toLowerCase() !== 'www-authenticate');
+  for (const [name, value] of headers) {
+    const sent = result.res.headers[name.toLowerCase()];
+    if (String(sent) !== value) problems.push(`${at}: header ${name} is ${String(sent)}, not ${value}`);
   }
-  const rendered = renderedDenials(outcome.status, outcome.query).find((response) => response.body === outcome.body);
-  if (rendered === undefined) {
-    problems.push(`${at}: body is not one renderAuthDenial builds: ${outcome.body.slice(0, 160)}`);
-  } else {
-    for (const [name, value] of Object.entries(rendered.headers)) {
-      const sent = outcome.headers[name.toLowerCase()];
-      if (sent !== value) problems.push(`${at}: header ${name} is ${sent}, not ${value}`);
-    }
+  const expectedChallenge = challenge ?? Object.entries(rendered.headers).find(([name]) => name.toLowerCase() === 'www-authenticate')?.[1];
+  const sentChallenge = result.res.headers['www-authenticate'];
+  if ((sentChallenge === undefined ? undefined : String(sentChallenge)) !== expectedChallenge) {
+    problems.push(`${at}: WWW-Authenticate is ${String(sentChallenge)}, not ${String(expectedChallenge)}`);
   }
-  if (JSON.stringify(outcome.effects) !== JSON.stringify(NO_EFFECTS)) {
-    problems.push(`${at}: denial left effects ${JSON.stringify(outcome.effects)}`);
-  }
+  const effects = { writes: result.writes.length, puts: result.puts, tasks: result.tasksCreated, csrfConsumes: result.csrfConsumes.length };
+  if (Object.values(effects).some((count) => count > 0)) problems.push(`${at}: denial left effects ${JSON.stringify(effects)}`);
   return problems;
 }
 
-/** One route × credential cell of the matrix. */
-interface Cell {
-  method: Method;
-  url: string;
-  subject: string;
-  /** Status the cell must answer when admitted; undefined when it must be refused. */
-  admitted: number | undefined;
-  send: () => Promise<InjectResponse>;
+function describeResult(result: ProbeResult): string {
+  return `${result.res.statusCode} ${result.res.body.slice(0, 200)}`;
 }
 
-/** Subjects that present no credential at all, which must answer 401. */
-const PRESENTS_NOTHING: ReadonlySet<string> = new Set(['anonymous', 'no-key']);
-
-/** Roles the route's transport verifies from what `subject` presents; null when the transport refuses the credential itself. */
-function verifiedRoles(route: ExpectedRoute, subject: RoleSubject): readonly Role[] | null {
-  const invoker = (role: Role): readonly Role[] => (subject.roles.includes(role) ? [role] : []);
-  switch (route.transport) {
-    case 'pubsub-push':
-      return invoker(PUBSUB_INVOKER_ROLE);
-    case 'cloud-tasks':
-      return invoker(TASKS_INVOKER_ROLE);
-    case 'service':
-      // authHeadersFor sends the tasks invoker's token in Authorization, which this transport verifies as a user token,
-      // so it is refused even on a public route.
-      if (subject.roles.includes(TASKS_INVOKER_ROLE)) return null;
-      // The push invoker's only credential is the push key, so it presents nothing here.
-      if (subject.roles.includes(PUBSUB_INVOKER_ROLE)) return [];
-      // A user's call arrives with the gateway's invocation credential.
-      return subject.kind === 'user' ? [...subject.roles, serviceRole('gateway')] : subject.roles;
-  }
-}
-
-/** Whether every check admits `subject`: the transport, the route's roles, the handler's user and the token's site. */
-function admits(route: ExpectedRoute, subject: RoleSubject): boolean {
-  const roles = verifiedRoles(route, subject);
-  if (roles === null || !(route.public === true || hasAnyRole(roles, route.requires ?? []))) return false;
-  if (route.actsForUser === true && subject.kind !== 'user') return false;
-  return route.probesSite !== true || subject.kind !== 'user' || subjectSiteFor(subject, SITE_A) === SITE_A;
-}
-
-/** Sends `route`'s probe as `subject`, with the credential the route's transport takes from that subject. */
-function sendAs(route: ExpectedRoute, subject: RoleSubject): () => Promise<InjectResponse> {
-  if (route.transport === 'pubsub-push') {
-    const subscription = subscriptionOf(route);
-    if (subject.roles.includes(PUBSUB_INVOKER_ROLE)) return () => pushTo(t.app, subscription, envelopeFor(subscription));
-  }
-  return async () => inject(probeRequest(route), await credentialsOf(subject));
-}
-
-function cellOf(route: ExpectedRoute, subject: string, allow: boolean, send: () => Promise<InjectResponse>): Cell {
-  return { method: route.method, url: route.url, subject, admitted: allow ? route.admitted : undefined, send };
-}
-
-const PUSH_ROUTES = EXPECTED.filter((route) => route.transport === 'pubsub-push');
-const LOOKUP = routeOf('POST', '/internal/v1/files::lookup');
-const PEOPLE_USER = { sub: USER_ID, roles: [Roles.systemUser] } as const;
-
-/** Credentials outside ROLE_SET: push keys on every push route, and people or identity forwarding a user token to the file lookup. */
-const EXTRA_CELLS: readonly Cell[] = [
-  ...PUSH_ROUTES.flatMap((route) => {
-    const subscription = subscriptionOf(route);
-    return [
-      cellOf(route, 'push-key', true, () => pushTo(t.app, subscription, envelopeFor(subscription))),
-      cellOf(route, 'push-key-wrong', false, () => pushTo(t.app, subscription, envelopeFor(subscription), { key: WRONG_PUSH_KEY })),
-      cellOf(route, 'no-key', false, () => inject(pushRequest(subscription), {})),
-    ];
-  }),
-  ...['people', 'identity'].flatMap((caller) => [
-    cellOf(LOOKUP, `${serviceRole(caller)} for a tenant-a user`, true, async () =>
-      inject(probeRequest(LOOKUP), await serviceHeaders(caller, { ...PEOPLE_USER, site: SITE_A })),
-    ),
-    cellOf(LOOKUP, `${serviceRole(caller)} for a tenant-b user`, true, async () =>
-      inject(probeRequest(LOOKUP), await serviceHeaders(caller, { ...PEOPLE_USER, site: SITE_B })),
-    ),
-    cellOf(LOOKUP, `${serviceRole(caller)} for a tenant-b user naming tenant-a`, false, async () => {
-      const request = probeRequest(LOOKUP);
-      return inject({ ...request, url: `${request.url}?siteid=${SITE_A}` }, await serviceHeaders(caller, { ...PEOPLE_USER, site: SITE_B }));
-    }),
-  ]),
-];
-
-const CELLS: readonly Cell[] = [
-  ...EXPECTED.flatMap((route) => ROLE_SET.map((subject) => cellOf(route, subject.name, admits(route, subject), sendAs(route, subject)))),
-  ...EXTRA_CELLS,
-];
-
-function titleOf(cell: Pick<Cell, 'method' | 'url' | 'subject'>): string {
-  return `${cell.method} ${cell.url} as ${cell.subject}`;
-}
-
-const outcomes = new Map<string, Outcome>();
 const unexpectedAllows: string[] = [];
 const unexpectedDenies: string[] = [];
+const wrongDenials: string[] = [];
 
-/** Every way a probed cell departs from its expectation. */
-function verdictOf(cell: Cell): string[] {
-  const at = titleOf(cell);
-  const outcome = outcomes.get(at);
-  if (outcome === undefined) return [`${at}: not probed`];
-  if (cell.admitted !== undefined) {
-    return outcome.status === cell.admitted ? [] : [`${at}: expected ${cell.admitted}, got ${outcome.status} ${outcome.body.slice(0, 160)}`];
-  }
-  const problems = denialProblems(outcome, at);
-  if (PRESENTS_NOTHING.has(cell.subject) && outcome.status !== 401) {
-    problems.push(`${at}: no credential must answer 401, got ${outcome.status}`);
-  }
-  return problems;
+const REPO_ROOT = new URL('../../../../', import.meta.url);
+
+async function readYaml(relative: string): Promise<unknown> {
+  return parseYaml(await readFile(new URL(relative, REPO_ROOT), 'utf8')) as unknown;
 }
 
-beforeAll(async () => {
-  t = await buildContentApp();
-  matrix = collectRouteMatrix(t.app);
-  const key = `${TENANT_A.tenantId}/${FILE_ID}.pdf`;
-  await t.storage.put(CONTENT_FILES_BUCKET, key, OBJECT_BYTES, { contentType: 'application/pdf' });
-  localFileUrl = await t.storage.signedUrl(CONTENT_FILES_BUCKET, key);
-});
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
-afterAll(async () => {
-  await t?.close();
-});
-
-describe('route declarations', () => {
-  it('declared routes equal the expected table', () => {
-    expect(declarations(matrix.routes)).toEqual(declarations(EXPECTED));
-  });
-
-  it('ROLE_SET holds the minimum subjects, every synthetic role and every service caller', () => {
-    expect(ROLE_SET.map((subject) => subject.name)).toEqual(expect.arrayContaining([...MINIMUM_SUBJECTS]));
-    expect(subjectNamed('other-tenant').crossTenant).toBe(true);
-    expect(ROLE_SET.filter((subject) => subject.kind === 'service').map((subject) => subject.name)).toEqual(
-      expect.arrayContaining([serviceRole('people'), serviceRole('migration'), serviceRole('operator'), PUBSUB_INVOKER_ROLE, TASKS_INVOKER_ROLE]),
-    );
-  });
-});
-
-describe('route admission', () => {
-  beforeAll(async () => {
-    for (const cell of CELLS) {
-      const outcome = await outcomeOf(cell.send);
-      outcomes.set(titleOf(cell), outcome);
-      const denied = DENIED_STATUSES.has(outcome.status);
-      if (!denied && cell.admitted === undefined) unexpectedAllows.push(`${titleOf(cell)}: ${outcome.status}`);
-      if (denied && cell.admitted !== undefined) unexpectedDenies.push(`${titleOf(cell)}: ${outcome.status}`);
-    }
-  }, 300_000);
-
-  it('probes each route once per ROLE_SET subject and extra credential', () => {
-    const titles = CELLS.map(titleOf);
-    expect(new Set(titles).size).toBe(titles.length);
-    expect(CELLS).toHaveLength(EXPECTED.length * ROLE_SET.length + EXTRA_CELLS.length);
-  });
-
-  it('admits at least one credential and refuses at least one on every route', () => {
-    const coverage = EXPECTED.map((route) => {
-      const cells = CELLS.filter((cell) => cell.method === route.method && cell.url === route.url);
-      return { route: keyOf(route), admitted: cells.some((cell) => cell.admitted !== undefined), refused: cells.some((cell) => cell.admitted === undefined) };
+describe('strategies-content authorisation matrix', () => {
+  describe('the literal route table', () => {
+    it('matches every registered route with exactly one family', () => {
+      const unmatched = MATRIX.filter((entry) => familiesOf(entry).length !== 1).map(
+        (entry) => `${routeKey(entry)} matches ${familiesOf(entry).map((family) => family.family).join(', ') || 'no family'}`,
+      );
+      expect(unmatched).toEqual([]);
     });
-    expect(coverage).toEqual(EXPECTED.map((route) => ({ route: keyOf(route), admitted: true, refused: true })));
+
+    it('has no stale entry: every url and method of every family names a registered route', () => {
+      const stale = FAMILIES.flatMap((family) =>
+        family.match.flatMap((match) =>
+          match.methods
+            .filter((method) => !MATRIX.some((entry) => matches({ ...match, methods: [method] }, entry)))
+            .map((method) => `${family.family}: ${method} ${match.url ?? `${match.prefix ?? ''}…`}`),
+        ),
+      );
+      expect(stale).toEqual([]);
+    });
+
+    it("declares each route's transport, roles, public flag and site check as its family does", () => {
+      const declared = (entry: Pick<RouteMatrixEntry, 'transport' | 'requires' | 'public' | 'siteCheck'>) => ({
+        transport: entry.transport,
+        ...(entry.requires === undefined ? {} : { requires: [...entry.requires] }),
+        ...(entry.public === true ? { public: true } : {}),
+        siteCheck: entry.siteCheck,
+      });
+      const drift = MATRIX.flatMap((entry) => {
+        const [family] = familiesOf(entry);
+        if (family === undefined) return [];
+        const expected = declared({ transport: family.transport, siteCheck: family.declared.siteCheck, ...('requires' in family.declared ? { requires: [...family.declared.requires] } : { public: true as const }) });
+        return JSON.stringify(declared(entry)) === JSON.stringify(expected) ? [] : [`${routeKey(entry)}: ${JSON.stringify(declared(entry))} ≠ ${JSON.stringify(expected)}`];
+      });
+      expect(drift).toEqual([]);
+      expect(MATRIX.filter((entry) => entry.edge === true).map(routeKey)).toEqual([]);
+    });
+
+    it('declares on every route the transport transportForPath gives its url', () => {
+      expect(MATRIX.filter((entry) => transportForPath(entry.url) !== entry.transport).map(routeKey)).toEqual([]);
+    });
+
+    it("lists each gated circuit's roles as access.ts declares them", () => {
+      const circuits = FAMILIES.filter((family): family is Family & { circuit: GatedContentAdminCircuit } => family.circuit !== undefined && family.circuit !== 'cnav');
+      const table = Object.fromEntries(circuits.map((family) => [family.circuit, 'requires' in family.declared ? [...family.declared.requires] : []]));
+      const declared = Object.fromEntries(Object.entries(CIRCUIT_ROUTE_REQUIRES).map(([circuit, roles]) => [circuit, [...roles]]));
+      expect(declared).toEqual(table);
+    });
+
+    it('names the four consumed subscriptions and the two site-monitor job paths', () => {
+      expect([...PUSH_URLS].sort()).toEqual(CONTENT_SUBSCRIPTIONS.map((subscription) => `/internal/v1/events/${subscription}`).sort());
+      expect([...JOB_URLS].sort()).toEqual([FEED_AUTO_IMPORT_PATH, PUBLISH_SCHEDULED_CHANGESETS_PATH].sort());
+    });
+
+    it('keeps cnav public as the inventory role override and the contract both record it', async () => {
+      const overrides = await readYaml('harness/inventory/role-overrides.yaml');
+      const cnav = isRecord(overrides) && Array.isArray(overrides.overrides) ? overrides.overrides.find((row: unknown) => isRecord(row) && row.id === 'role:cnav.*') : undefined;
+      expect(isRecord(cnav) ? cnav.requiredRole : undefined).toBe('public');
+      const inventory = JSON.parse(await readFile(new URL('opt2/inventory/legacy-inventory.json', REPO_ROOT), 'utf8')) as { controllers: Array<{ id: string; requiredRole?: { override?: string } }> };
+      expect(inventory.controllers.find((controller) => controller.id === 'ctl:cnav')?.requiredRole?.override).toBe('harness/inventory/role-overrides.yaml#role:cnav.*');
+      const contract = await readYaml('services/strategies-content/contracts/openapi.yaml');
+      const paths = isRecord(contract) && isRecord(contract.paths) ? contract.paths : {};
+      const operations = Object.entries(paths)
+        .filter(([path]) => path.startsWith('/v1/raw/cnav/'))
+        .flatMap(([, item]) => (isRecord(item) ? Object.values(item).filter(isRecord) : []));
+      expect(operations.length).toBeGreaterThan(0);
+      expect(operations.map((operation) => [operation['x-opt2-public'], operation['x-opt2-requires']])).toEqual(operations.map(() => [true, undefined]));
+      expect(familiesOf({ method: 'GET', url: '/v1/raw/cnav/searchsitedata' }).map((family) => family.declared)).toEqual([PUBLIC_CHECKED]);
+    });
+
+    it('probes the content subjects, the synthetic roles, the platform callers, both managed invokers and every gate probe', () => {
+      const names = SUBJECTS.map((subject) => subject.name);
+      expect(new Set(names).size).toBe(names.length);
+      const required = [
+        ...CONTENT_SUBJECTS,
+        ...SYNTHETIC_SUBJECTS,
+        serviceRole('migration'),
+        serviceRole('operator'),
+        serviceRole('programs-sites'),
+        TASKS_INVOKER_ROLE,
+        PUBSUB_INVOKER_ROLE,
+        ...GATE_PROBES.map(([name]) => name),
+      ];
+      expect(required.filter((name) => !names.includes(name))).toEqual([]);
+      expect(subjectNamed('other-tenant').site).toBe(SITE_B);
+      expect(subjectNamed('editor').userRoles).toContain(M.siteManager);
+    });
   });
 
-  it.each(CELLS.map((cell) => [cell.method, cell.url, cell.subject, cell] as const))('%s %s as %s', (_method, _url, _subject, cell) => {
-    expect(verdictOf(cell)).toEqual([]);
-  });
+  for (const entry of MATRIX) {
+    const [family] = familiesOf(entry);
+    describe(routeKey(entry), () => {
+      const cells = SUBJECTS.map((subject) => {
+        const expected = family === undefined ? undefined : expectedOutcome(family, subject);
+        const label = expected === undefined ? 'no family' : outcomeLabel(expected);
+        return { title: `${routeKey(entry)} × ${subject.name} → ${label}`, subject, expected };
+      });
+      it.each(cells)('$title', async ({ title, subject, expected }) => {
+        if (family === undefined || expected === undefined) throw new Error(`${routeKey(entry)} has no family in the literal table`);
+        const result = await sendCell(entry, family, subject);
+        const observed = outcomeOf(result);
+        const problems: string[] = [];
+        if (!sameOutcome(observed, expected)) {
+          const line = `${title}: observed ${outcomeLabel(observed)}, ${describeResult(result)}`;
+          problems.push(line);
+          if (observed.kind === 'allowed') unexpectedAllows.push(line);
+          else if (expected.kind === 'allowed') unexpectedDenies.push(line);
+          else wrongDenials.push(line);
+        }
+        if (observed.kind !== 'allowed') problems.push(...denialProblems(result, title, expected.kind === 'allowed' ? undefined : expected.challenge));
+        expect(problems).toEqual([]);
+      });
+    });
+  }
 
-  it('zero unexpected allows and denies', () => {
-    expect({ unexpectedAllows, unexpectedDenies }).toEqual({ unexpectedAllows: [], unexpectedDenies: [] });
+  it('zero unexpected allows, zero unexpected denies and zero denials of the wrong kind', () => {
+    expect({ unexpectedAllows, unexpectedDenies, wrongDenials }).toEqual({ unexpectedAllows: [], unexpectedDenies: [], wrongDenials: [] });
   });
 });
+
+const SERVICE_TRANSPORT: Pick<RouteMatrixEntry, 'transport'> = Object.freeze({ transport: 'service' });
+
+/** `subject`'s credential on a service route. */
+const credentialOf = (name: string): Promise<Credential> => credentialFor(subjectNamed(name), SERVICE_TRANSPORT, '');
+
+/** The body `renderAuthDenial` gives `denial` for a request with `query`. */
+function denialBody(denial: AuthDenial, query: Record<string, string> = {}): string {
+  return renderAuthDenial(denial, { query } as unknown as DenialRequest).body;
+}
+
+function entryNamed(method: HttpMethod, url: string): RouteMatrixEntry {
+  const entry = MATRIX.find((candidate) => candidate.method === method && candidate.url === url);
+  if (entry === undefined) throw new TypeError(`No registered route ${method} ${url}`);
+  return entry;
+}
+
+function familyOf(entry: RouteMatrixEntry): Family {
+  const [family] = familiesOf(entry);
+  if (family === undefined) throw new TypeError(`${routeKey(entry)} has no family`);
+  return family;
+}
+
+describe('legacy handler gates', () => {
+  const saveForm = `contentid=${IDS.content.section}&title=Probe&${CSRF_FIELDS}`;
+  const authorization = LEGACY_ERROR_MAP.authorization;
+  const refusedSave = { apiversion: 'v1', method: 'save', error: { message: authorization.message, code: authorization.code } };
+
+  it.each(['member', 'system-user'])(
+    'POST /_api/json/v1/tenant-a/content × %s → denied (401 authorization) after exactly one CSRF consume, writing nothing',
+    async (name) => {
+      const result = await send(postForm(`/_api/json/v1/${SITE_A}/content`, saveForm), await credentialOf(name));
+      expect(result.res.statusCode).toBe(authorization.status);
+      expect(JSON.parse(result.res.body)).toEqual(refusedSave);
+      expect({ writes: result.writes.length, csrfConsumes: result.csrfConsumes }).toEqual({ writes: 0, csrfConsumes: [{ context: 'new' }] });
+    },
+  );
+
+  it('POST /_api/rest/v1/tenant-a/content × system-user → denied (401 authorization), sessionless REST consuming no token', async () => {
+    const result = await send(postForm(`/_api/rest/v1/${SITE_A}/content`, saveForm), await credentialOf('system-user'));
+    expect(result.res.statusCode).toBe(authorization.status);
+    expect(JSON.parse(result.res.body)).toEqual(refusedSave);
+    expect({ writes: result.writes.length, csrfConsumes: result.csrfConsumes }).toEqual({ writes: 0, csrfConsumes: [] });
+  });
+
+  it('POST /_api/json/v1/tenant-a/content × editor → allowed past allowSave: one CSRF consume, then the content insert', async () => {
+    const form = `parentid=${IDS.content.section}&type=Page&title=Probe&${CSRF_FIELDS}`;
+    const result = await send(postForm(`/_api/json/v1/${SITE_A}/content`, form), await credentialOf('editor'));
+    // RecordingDb rows lack catalog columns, so the save fails after its insert; its full answer is the PostgreSQL suites'.
+    expect(result.res.body).not.toContain(authorization.message);
+    expect(result.csrfConsumes).toEqual([{ context: 'new' }]);
+    expect(result.writes.some((statement) => /^INSERT INTO "?content"?\."?content"?\b/i.test(statement.sql))).toBe(true);
+  });
+
+  it.each<[string, () => Promise<Credential>, keyof typeof LEGACY_ERROR_MAP]>([
+    ['an expired user token', () => userCredential({ sub: SUBJECT_USER_IDS['site-admin'], roles: [Roles.siteAdmin], exp: Math.floor(Math.min(Date.now(), CLOCK.now().getTime()) / 1000) - 60 }), 'accessTokenExpired'],
+    [
+      'a tampered user token',
+      async () => {
+        const credential = await userCredential({ sub: SUBJECT_USER_IDS['site-admin'], roles: [Roles.siteAdmin] });
+        const bearer = credential.headers.authorization ?? '';
+        const tampered = `${bearer.slice(0, -4)}${bearer.endsWith('AAAA') ? 'BBBB' : 'AAAA'}`;
+        return { ...credential, headers: { ...credential.headers, authorization: tampered } };
+      },
+      'invalidAccessToken',
+    ],
+  ])('GET /_api/rest/v1/tenant-a/content × %s → denied (401 invalid_token) with the legacy bearer challenge', async (_label, credential, type) => {
+    const result = await send(get(`/_api/rest/v1/${SITE_A}/content/${IDS.content.pageOne}`), await credential());
+    const { status, code, message } = LEGACY_ERROR_MAP[type];
+    expect(result.res.statusCode).toBe(status);
+    expect(JSON.parse(result.res.body)).toMatchObject({ error: { code, message } });
+    expect(code).toBe('invalid_token');
+    expect(result.res.headers['www-authenticate']).toBe(WWW_AUTHENTICATE.bearerInvalidAccessToken);
+    expect(denialProblems(result, type)).toEqual([]);
+  });
+
+  it.each([undefined, REFERER])('GET /v1/sites/tenant-a/changesets × m:014 only, Referer %s → denied (403 gate): the forbidden envelope, no Location', async (referer) => {
+    const probe = get(`/v1/sites/${SITE_A}/changesets`);
+    const result = await send({ ...probe, headers: referer === undefined ? {} : { referer } }, await credentialOf('m:014 only'));
+    expect(outcomeOf(result)).toEqual({ kind: 'denied-gate', status: 403 });
+    expect(result.res.body).toBe(denialBody(AuthDenial.forbidden()));
+    expect(result.res.headers.location).toBeUndefined();
+    expect(denialProblems(result, 'cchangesets gate')).toEqual([]);
+  });
+
+  /** The request parts `secure()` reads: the verified user, the Referer and the url scope. */
+  function secureRequest(sub: string | undefined, headers: Headers, query: Headers): FastifyRequest {
+    const user = sub === undefined ? undefined : { sub, sid: 's', tid: TENANT_A.tenantId, site: SITE_A, roles: [], s2: false, epoch: 0 };
+    const url = withQuery('/v1/sites/tenant-a/changesets', new URLSearchParams(query).toString());
+    return { opt2Auth: { user, roles: [], transport: 'service' }, headers, query, url, body: undefined } as unknown as FastifyRequest;
+  }
+
+  it.each<[string, string | undefined, Headers, Headers, unknown]>([
+    ['a signed-in user with a Referer', SUBJECT_USER_IDS['system-user'], { referer: REFERER }, {}, { kind: 'back', location: REFERER }],
+    ['a signed-in user without one', SUBJECT_USER_IDS['system-user'], {}, {}, { kind: 'back', location: './' }],
+    [
+      'the anonymous principal',
+      '',
+      {},
+      { compactDisplay: 'true' },
+      { kind: 'login', redirect: { circuit: 'cLogin', action: 'main', params: [['compactDisplay', 'true']] } },
+    ],
+    ['a caller without a user token', undefined, {}, {}, { kind: 'login', redirect: { circuit: 'cLogin', action: 'main', params: [] } }],
+  ])("secure() sends %s where legacy's controller.cfc:83-92 and utility.cfc:302-309 do", (_label, sub, headers, query, redirect) => {
+    const denial = adminDenial(secureRequest(sub, headers, query));
+    expect({ status: denial.statusCode, redirect: denial.redirect }).toEqual({ status: sub === undefined || sub === '' ? 401 : 403, redirect });
+  });
+
+  // No verified source holds tsettings.feedManager, so no flag-off site exists to probe; the cells run with legacy's default of 1.
+  it('reads tsettings.feedManager from no request value: with no verified source the cfeed gate keeps legacy’s default of 1', () => {
+    expect(FEED_MANAGER_FLAG_SOURCE).toBe('unavailable');
+  });
+
+  it.each(
+    (
+      [
+        ['s2', '0', ALLOWED],
+        ['s2', 'false', ALLOWED],
+        ['m:011+m:000', '0', ALLOWED],
+        ['m:011 only', '1', { kind: 'denied-gate', status: 403 }],
+      ] as const
+    ).map(([name, flag, expected]) => ({ name, flag, expected, label: outcomeLabel(expected) })),
+  )('GET /v1/sites/tenant-a/feeds?hasfeedmanager=$flag × $name → $label, as the roles alone decide', async ({ name, flag, expected }) => {
+    const result = await send(get(`/v1/sites/${SITE_A}/feeds?hasfeedmanager=${flag}&hasFeedManager=${flag}`), await credentialOf(name));
+    expect(outcomeOf(result), describeResult(result)).toEqual(expected);
+    expect(expectedOutcome(familyOf(entryNamed('GET', '/v1/sites/:siteid/feeds')), subjectNamed(name))).toEqual(expected);
+  });
+});
+
+/** Inbox receipts a request recorded. */
+function inboxWrites(result: ProbeResult): RecordedStatement[] {
+  return result.statements.filter((statement) => /^INSERT INTO "?\w+"?\."?inbox"?/i.test(statement.sql));
+}
+
+/** A tenant-a user token claiming both managed invoker roles and S2, beside the gateway's credential. */
+const invokerClaimingUser = (): Promise<Credential> =>
+  userCredential({ sub: SUBJECT_USER_IDS.s2, roles: [PUBSUB_INVOKER_ROLE, TASKS_INVOKER_ROLE, Roles.s2] });
+
+const invocationOf = async (caller: string, roles?: string[]): Promise<Credential> => ({
+  headers: { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller, audience: SERVICE, ...(roles === undefined ? {} : { roles }) })}` },
+  query: '',
+});
+
+const tasksTokenFor = async (audience: string): Promise<Credential> => ({
+  headers: { authorization: `Bearer ${await mintTasksInvokerToken({ audience })}` },
+  query: '',
+});
+
+/** CF-format and RFC 4122 ids, which differ between two otherwise equal responses. */
+const IDS_IN_BODY = /[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-?[0-9A-F]{12,16}/gi;
 
 describe('transport separation', () => {
-  const noCredential = async (): Promise<Record<string, string>> => ({});
-  const pubsubServiceToken = async (): Promise<Record<string, string>> => ({
-    [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'pubsub-invoker', audience: SERVICE, roles: [PUBSUB_INVOKER_ROLE] })}`,
-  });
-  const probe = (method: Method, url: string) => (): ProbeRequest => probeRequest(routeOf(method, url));
+  const managed = MATRIX.filter((entry) => entry.transport !== 'service');
+  const serviceRoutes = MATRIX.filter((entry) => entry.transport === 'service');
 
-  const CASES: ReadonlyArray<{ title: string; request: () => ProbeRequest; credentials: () => Promise<Record<string, string>> }> = [
-    ...PUSH_ROUTES.flatMap((route) => [
-      { title: `user token on push ${route.url}`, request: () => pushRequest(subscriptionOf(route)), credentials: invokerClaimingUserToken },
-      { title: `pubsub-invoker service token on push ${route.url}`, request: () => pushRequest(subscriptionOf(route)), credentials: pubsubServiceToken },
-      { title: `tasks-invoker token on push ${route.url}`, request: () => pushRequest(subscriptionOf(route)), credentials: tasksInvokerCredentials },
-    ]),
-    ...(
-      [
-        ['GET', '/v1/sites/:siteid/header-prompts'],
-        ['GET', '/v1/sites/:siteid/files/:fileid/download-url'],
-        ['POST', '/internal/v1/files::lookup'],
-        ['POST', '/internal/v1/content::links'],
-        ['POST', '/internal/v1/migration/objects'],
-        ['POST', '/internal/v1/migration/apply'],
-        ['POST', '/internal/v1/task-queues/:queue/pause'],
-      ] as const
-    ).flatMap(([method, url]) => [
-      { title: `tasks-invoker token on ${method} ${url}`, request: probe(method, url), credentials: tasksInvokerCredentials },
-      { title: `push key on ${method} ${url}`, request: () => withPushKey(probe(method, url)()), credentials: noCredential },
-      { title: `invoker-claiming user token alone on ${method} ${url}`, request: probe(method, url), credentials: invokerClaimingUserToken },
-    ]),
+  const MANAGED_REFUSALS: ReadonlyArray<readonly [string, (entry: RouteMatrixEntry) => Promise<Credential>]> = [
+    ['an s2 user token beside the gateway credential', () => credentialOf('s2')],
+    ['a user token claiming both invoker roles', () => invokerClaimingUser()],
+    ['the migration invocation credential', () => invocationOf('migration', [serviceRole('migration'), Roles.platformMigration])],
+    ['a pubsub-invoker service token in the invocation header', () => invocationOf('pubsub-invoker', [PUBSUB_INVOKER_ROLE])],
+    ['no credential', async () => ({ headers: {}, query: '' })],
+    [
+      'the other managed credential',
+      async (entry) => (entry.transport === 'pubsub-push' ? tasksTokenFor(SERVICE) : { headers: {}, query: `key=${encodeURIComponent(TEST_PUSH_KEY)}` }),
+    ],
+    [
+      'its own credential addressed wrongly',
+      async (entry) => (entry.transport === 'pubsub-push' ? { headers: {}, query: 'key=opt2-wrong-push-key' } : tasksTokenFor('identity')),
+    ],
   ];
 
-  it.each(CASES)('refuses $title', async ({ title, request, credentials }) => {
-    const presented = await credentials();
-    const outcome = await outcomeOf(() => inject(request(), presented));
-    expect(denialProblems(outcome, title)).toEqual([]);
+  describe.each(managed.map((entry) => ({ entry, key: routeKey(entry) })))('$key', ({ entry }) => {
+    it.each(MANAGED_REFUSALS.map(([label, credential]) => ({ label, credential })))(
+      `${routeKey(entry)} × $label → denied (401 auth), no inbox receipt and no task`,
+      async ({ credential }) => {
+        const result = await send(await probeFor(entry, familyOf(entry)), await credential(entry));
+        expect(outcomeOf(result), describeResult(result)).toEqual(AUTH_401);
+        expect(denialProblems(result, routeKey(entry))).toEqual([]);
+        expect({ inbox: inboxWrites(result).length, tasks: result.tasksCreated }).toEqual({ inbox: 0, tasks: 0 });
+      },
+    );
+
+    it(`${routeKey(entry)} × its managed credential → allowed`, async () => {
+      const invoker = entry.transport === 'pubsub-push' ? PUSH_INVOKER : TASKS_INVOKER;
+      const result = await sendCell(entry, familyOf(entry), invoker);
+      expect(outcomeOf(result), describeResult(result)).toEqual(ALLOWED);
+      // The seed's due change set cannot publish against RecordingDb rows, so admission is shown by the handler's tenant transaction.
+      expect(result.statements.some((statement) => statement.tenantId !== null), describeResult(result)).toBe(true);
+    });
+  });
+
+  it.each(serviceRoutes.map((entry) => ({ entry, key: routeKey(entry) })))('$key × a tasks-invoker token in Authorization → denied (401 invalid token)', async ({ entry }) => {
+    const probe = await probeFor(entry, familyOf(entry));
+    const result = await send(probe, await tasksTokenFor(SERVICE));
+    expect(outcomeOf(result), describeResult(result)).toEqual(AUTH_401);
+    expect(denialProblems(result, routeKey(entry))).toEqual([]);
+  });
+
+  it.each(serviceRoutes.map((entry) => ({ entry, key: routeKey(entry), declared: entry.public === true ? 'answered as anonymous' : 'denied (401 auth)' })))(
+    '$key × the push key → $declared',
+    async ({ entry }) => {
+      const probe = await probeFor(entry, familyOf(entry));
+      const pushed = await send(probe, { headers: {}, query: pushQuery() });
+      if (entry.public !== true) {
+        expect(outcomeOf(pushed), describeResult(pushed)).toEqual(AUTH_401);
+        expect(denialProblems(pushed, routeKey(entry))).toEqual([]);
+        return;
+      }
+      const anonymous = await send({ ...probe, url: withQuery(probe.url, pushQuery()) }, await credentialOf('anonymous'));
+      const comparable = (result: ProbeResult) => ({ status: result.res.statusCode, body: result.res.body.replace(IDS_IN_BODY, '<id>'), writes: result.writes.length });
+      expect(comparable(pushed)).toEqual(comparable(anonymous));
+    },
+  );
+});
+
+/** Every string id of `value`, nested objects included. */
+function idsOf(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  return isRecord(value) ? Object.values(value).flatMap(idsOf) : [];
+}
+
+/** Seed ids of tenant-a and of its umbrella pools, which no tenant-b caller may ever see; the Masa sentinels are shared and excluded. */
+const TENANT_A_SEED_IDS: readonly string[] = idsOf(IDS).filter((id) => /^A[0-9A-F]{7}-/.test(id));
+const FOREIGN_TENANTS: readonly string[] = [TENANT_A.tenantId, TENANT_UMBRELLA.tenantId].map((id) => id.toLowerCase());
+
+describe('site binding and tenancy', () => {
+  it.each(
+    (
+      [
+        ['the path', () => get(`/v1/sites/${SITE_B}/content/tree`)],
+        ['the query', () => get(`/v1/raw/carch/loadsiteflat?${rawFields(SITE_B)}`)],
+        ['the form', () => postForm('/v1/raw/carch/unlocknode', `${rawFields(SITE_B)}&${CSRF_FIELDS}`)],
+        ['the JSON API path', () => get(`/_api/json/v1/${SITE_B}/notanentity`)],
+        ['the comments proxy call', () => get(`${COMMENTS_PROXY_URL}?method=getContentStats&contentID=${IDS.content.pageOne}&siteid=${SITE_B}`)],
+        ['the feed request', () => get(`/_api/feed/v1?feedid=${IDS.feeds.local}&siteid=${SITE_B}`)],
+      ] as const
+    ).map(([where, probe]) => ({ where, probe })),
+  )('tenant-b in $where × a tenant-a site-admin → denied (403 site mismatch), before any effect', async ({ probe }) => {
+    const result = await send(probe(), await credentialOf('site-admin'));
+    expect(outcomeOf(result), describeResult(result)).toEqual(AUTH_403);
+    expect(result.res.body).toBe(denialBody(AuthDenial.siteMismatch(), result.query));
+    expect(denialProblems(result, 'site mismatch')).toEqual([]);
+  });
+
+  it.each([
+    ['GET /v1/sites/<tid>/content/tree', () => get(`/v1/sites/${TENANT_A.tenantId}/content/tree`)],
+    ['GET /v1/raw/carch/loadsiteflat?siteid=<tid>', () => get(`/v1/raw/carch/loadsiteflat?${rawFields(TENANT_A.tenantId)}`)],
+  ])("%s × a tenant-a site-admin → denied (403): siteid is compared with the token's site, never its tid", async (_label, probe) => {
+    const result = await send(probe(), await credentialOf('site-admin'));
+    expect(outcomeOf(result), describeResult(result)).toEqual(AUTH_403);
+    expect(denialProblems(result, 'tid as siteid')).toEqual([]);
+  });
+
+  it("GET /v1/sites/tenant-a/content/tree × a site-admin token of site tenant-a whose tid is tenant-b's → allowed, reading only that tid", async () => {
+    const credential = await userCredential({ sub: SUBJECT_USER_IDS['site-admin'], roles: [Roles.systemUser, Roles.siteAdmin], tid: TENANT_B.tenantId });
+    const result = await send(get(`/v1/sites/${SITE_A}/content/tree`), credential);
+    expect(outcomeOf(result), describeResult(result)).toEqual(ALLOWED);
+    const tenants = new Set(result.statements.flatMap((statement) => (statement.tenantId === null ? [] : [statement.tenantId.toLowerCase()])));
+    expect([...tenants]).toEqual([TENANT_B.tenantId.toLowerCase()]);
+  });
+
+  it.each(MATRIX.map((entry) => ({ entry, key: routeKey(entry) })))(
+    '$key × other-tenant on its own tenant-b probe → runs only in tenant-b and reveals no tenant-a data',
+    async ({ entry }) => {
+      const probe = await probeFor(entry, familyOf(entry), SITE_B);
+      const result = await send(probe, await credentialFor(subjectNamed('other-tenant'), entry, probe.url.split('?')[0] ?? probe.url));
+      // Handlers echo requested ids (an unknown chain answers as a new bean), so only ids the probe did not send count as leaks.
+      const sent = `${probe.url} ${typeof probe.payload === 'string' ? probe.payload : JSON.stringify(probe.payload ?? '')}`.toUpperCase();
+      const tenants = [...new Set(result.statements.flatMap((statement) => (statement.tenantId === null ? [] : [statement.tenantId.toLowerCase()])))];
+      const foreignWrites = result.writes.filter((statement) => statement.params.some((param) => typeof param === 'string' && FOREIGN_TENANTS.includes(param.toLowerCase())));
+      expect(
+        {
+          tenants: tenants.filter((tenant) => tenant !== TENANT_B.tenantId.toLowerCase()),
+          leakedIds: TENANT_A_SEED_IDS.filter((id) => !sent.includes(id.toUpperCase()) && result.res.body.toUpperCase().includes(id.toUpperCase())),
+          foreignWrites: foreignWrites.map((statement) => statement.sql.slice(0, 80)),
+        },
+        describeResult(result),
+      ).toEqual({ tenants: [], leakedIds: [], foreignWrites: [] });
+    },
+  );
+
+  describe('signed objects on GET /opt2/files/content-files/*', () => {
+    const anonymous = (): Promise<Credential> => credentialOf('anonymous');
+    const seeded = (): Buffer => t.storage.objects.get(SEEDED_PDF_KEY)?.bytes ?? Buffer.alloc(0);
+
+    it('GET <a URL getFileDownloadUrl issued> × anonymous → allowed (200), streaming the stored bytes and content type', async () => {
+      const issued = await send(get(`/v1/sites/${SITE_A}/files/${IDS.files.pdf}/download-url`), await credentialOf('site-admin'));
+      expect(issued.res.statusCode, describeResult(issued)).toBe(200);
+      const { url } = JSON.parse(issued.res.body) as { url: string };
+      const result = await send(get(url), await anonymous());
+      expect(result.res.statusCode).toBe(200);
+      expect(result.res.rawPayload.equals(seeded())).toBe(true);
+      expect(result.res.headers['content-type']).toBe('application/pdf');
+    });
+
+    it.each([
+      ['a tampered sig', (url: string) => url.replace(/([?&]sig=)([0-9A-Za-z_-])/, (_whole, lead: string, first: string) => `${lead}${first === 'A' ? 'B' : 'A'}`)],
+      ['a missing sig', (url: string) => url.replace(/[?&]sig=[^&]*/, '')],
+    ])('GET <the seeded URL with %s> × anonymous → denied (403 auth), reading no object', async (_label, alter) => {
+      const url = alter(SEEDED_PDF_URL);
+      expect(url).not.toBe(SEEDED_PDF_URL);
+      const result = await send(get(url), await anonymous());
+      expect(outcomeOf(result), describeResult(result)).toEqual(AUTH_403);
+      expect(denialProblems(result, 'signed object')).toEqual([]);
+      expect(result.objectReads).toBe(0);
+    });
+
+    it(`GET <a URL issued ${SIGNED_URL_TTL_S + 1} s ago> × anonymous → denied (403 auth), reading no object`, async () => {
+      const url = await t.storage.signedUrl('content-files', SEEDED_PDF_KEY);
+      clockOffsetMs = (SIGNED_URL_TTL_S + 1) * 1000;
+      try {
+        const result = await send(get(url), await anonymous());
+        expect(outcomeOf(result), describeResult(result)).toEqual(AUTH_403);
+        expect(denialProblems(result, 'expired signed object')).toEqual([]);
+        expect(result.objectReads).toBe(0);
+      } finally {
+        clockOffsetMs = 0;
+      }
+    });
   });
 });
 
-describe('tenant boundaries', () => {
-  /** Status and the tenants of every tenant transaction one request ran. */
-  async function tenantsOf(send: () => Promise<InjectResponse>): Promise<{ status: number; tenants: string[] }> {
-    const outcome = await outcomeOf(send);
-    const tenants = new Set(t.db.statements.flatMap((statement) => (statement.tenantId === null ? [] : [statement.tenantId.toLowerCase()])));
-    return { status: outcome.status, tenants: [...tenants].sort() };
-  }
+describe('reproduced legacy weaknesses', () => {
+  it('POST /v1/raw/carch/approvalaction × site-admin without a CSRF token → allowed, applying the approval and consuming no token', async () => {
+    const form = new URLSearchParams({ siteid: SITE_A, requestID: IDS.approval.request, action: 'approve', comment: 'approved without a token' }).toString();
+    const result = await send(postForm('/v1/raw/carch/approvalaction', form), await credentialOf('site-admin'));
+    expect(result.res.statusCode, describeResult(result)).toBe(200);
+    expect(result.writes.length).toBeGreaterThan(0);
+    expect(result.csrfConsumes).toEqual([]);
+  });
 
-  /** The file-pool tenants of the public and private user pools of fixture `tenantId`, as the photo lookup reads them. */
-  function photoFileTenants(tenantId: string): string[] {
-    const fixture = fixtureForTenant(tenantId);
-    if (fixture === undefined) throw new TypeError(`No tenant fixture for ${tenantId}`);
-    const pools = (['publicUser', 'privateUser'] as const).map((kind) => {
-      const userPool = fixtureForTenant(poolTenantExpectation(fixture, kind));
-      if (userPool === undefined) throw new TypeError(`No fixture for the ${kind} pool of ${fixture.siteId}`);
-      return poolTenantExpectation(userPool, 'file');
+  it('cChangesets.publish, which checks no CSRF token, has no target route: POST /v1/sites/tenant-a/changesets/<id>/publish × site-admin → 404, writing nothing', async () => {
+    expect(MATRIX.filter((entry) => /\/changesets\b.*publish/i.test(entry.url)).map(routeKey)).toEqual([]);
+    const result = await send(postForm(`/v1/sites/${SITE_A}/changesets/${IDS.changesets.scheduledFuture}/publish`, 'csrf_token='), await credentialOf('site-admin'));
+    expect(result.res.statusCode).toBe(404);
+    expect({ writes: result.writes.length, csrfConsumes: result.csrfConsumes }).toEqual({ writes: 0, csrfConsumes: [] });
+  });
+
+  it("POST /v1/sites/tenant-a/changesets/<id>/rollback × site-admin with a refused token → one consume (changesetid), no write, legacy's edit redirect", async () => {
+    const changesetId = IDS.changesets.scheduledFuture;
+    const result = await send(postForm(`/v1/sites/${SITE_A}/changesets/${changesetId}/rollback`, CSRF_FIELDS), await credentialOf('site-admin'), false);
+    expect(result.res.statusCode, describeResult(result)).toBe(200);
+    expect(JSON.parse(result.res.body)).toEqual({
+      saved: false,
+      errors: {},
+      redirect: { circuit: 'cChangesets', action: 'edit', params: [['changesetID', changesetId], ['siteID', SITE_A]] },
     });
-    return [...new Set(pools)].sort();
-  }
-
-  it.each([
-    ['an S2 user of tenant-a reads tenant-b', [Roles.s2], SITE_A, SITE_B, ''],
-    ['a site admin of tenant-b reads tenant-a', [Roles.systemUser, Roles.siteAdmin], SITE_B, SITE_A, ''],
-    ['a system user of tenant-a names tenant-b in the query', [Roles.systemUser], SITE_A, SITE_A, `?siteid=${SITE_B}`],
-  ])('refuses getHeaderPrompts when %s', async (title, roles, tokenSite, pathSite, query) => {
-    const headers = await userHeaders({ sub: USER_ID, site: tokenSite, roles });
-    const outcome = await outcomeOf(() => t.app.inject({ method: 'GET', url: `/v1/sites/${pathSite}/header-prompts${query}`, headers }));
-    expect(outcome.status).toBe(403);
-    expect(denialProblems(outcome, title)).toEqual([]);
+    expect({ writes: result.writes.length, csrfConsumes: result.csrfConsumes }).toEqual({ writes: 0, csrfConsumes: [{ context: changesetId }] });
   });
 
-  it.each([
-    ['a site admin', [Roles.systemUser, Roles.siteAdmin], [TENANT_B.tenantId]],
-    ['a system user, whose groups sit in its private user pool', [Roles.systemUser], [TENANT_B.tenantId, poolTenantExpectation(TENANT_B, 'privateUser')]],
-  ])('getHeaderPrompts of tenant-b as %s runs only in tenant-b and its pool', async (_label, roles, expected) => {
-    const headers = await userHeaders({ sub: USER_ID, site: SITE_B, roles });
-    const read = await tenantsOf(() => t.app.inject({ method: 'GET', url: `/v1/sites/${SITE_B}/header-prompts`, headers }));
-    expect(read).toEqual({ status: 200, tenants: [...new Set(expected.map((id) => id.toLowerCase()))].sort() });
-  });
-
-  it.each([TENANT_A, TENANT_B])('getFileDownloadUrl for a $siteId site admin reads only that site’s file pool', async (fixture) => {
-    const headers = await userHeaders({ sub: USER_ID, site: fixture.siteId, roles: [Roles.siteAdmin] });
-    const read = await tenantsOf(() => t.app.inject({ method: 'GET', url: `/v1/sites/${fixture.siteId}/files/${FILE_ID}/download-url`, headers }));
-    expect(read).toEqual({ status: 404, tenants: [poolTenantExpectation(fixture, 'file').toLowerCase()] });
-  });
-
-  it.each([TENANT_A, TENANT_B])('the file lookup for a $siteId user reads only that site’s photo file pools', async (fixture) => {
-    const headers = await serviceHeaders('people', { ...PEOPLE_USER, site: fixture.siteId });
-    const read = await tenantsOf(() => inject(probeRequest(LOOKUP), headers));
-    expect(read).toEqual({ status: 200, tenants: photoFileTenants(fixture.tenantId) });
-  });
-
-  it.each([TENANT_A, TENANT_B])('the content link lookup for $siteId runs only in that site’s tenant', async (fixture) => {
-    const request = { ...probeRequest(routeOf('POST', '/internal/v1/content::links')), payload: { siteId: fixture.siteId, contentIds: [CONTENT_ID] } };
-    const read = await tenantsOf(async () => inject(request, await serviceHeaders('people')));
-    expect(read).toEqual({ status: 200, tenants: [fixture.tenantId.toLowerCase()] });
-  });
-
-  it.each([TENANT_A, TENANT_B])('a comments proxy call of a $siteId visitor runs only in that tenant', async (fixture) => {
-    const headers = await userHeaders({ sub: '', site: fixture.siteId, roles: [] });
-    const read = await tenantsOf(() =>
-      t.app.inject({ method: 'GET', url: `${COMMENTS_PROXY_URL}?method=getContentStats&contentID=${CONTENT_ID}`, headers }),
-    );
-    expect(read).toEqual({ status: 200, tenants: [fixture.tenantId.toLowerCase()] });
-  });
-
-  it('dead-letters a site delivery whose envelope tenant is not the site’s, writing nothing', async () => {
-    const site = envelopeFor(SITE_CHANGED_SUBSCRIPTION);
-    const outcome = await outcomeOf(() => pushTo(t.app, SITE_CHANGED_SUBSCRIPTION, { ...site, tenantId: TENANT_B.tenantId }));
-    expect(outcome.status).toBe(204);
-    expect(t.db.statements.filter((statement) => /^INSERT INTO "?content"?\."?tenant_registry"?/i.test(statement.sql))).toEqual([]);
-    expect(t.publisher.deadLetters(SITE_CHANGED_SUBSCRIPTION)).toHaveLength(1);
+  it('POST /v1/sites/tenant-a/categories (ccategory.update) × site-admin with a refused token → one consume (categoryid), no write', async () => {
+    const categoryId = IDS.categories.pooledChild;
+    const form = `categoryid=${categoryId}&action=update&name=News&${CSRF_FIELDS}`;
+    const result = await send(postForm(`/v1/sites/${SITE_A}/categories`, form), await credentialOf('site-admin'), false);
+    expect(outcomeOf(result), describeResult(result)).toEqual(ALLOWED);
+    expect({ writes: result.writes.length, csrfConsumes: result.csrfConsumes }).toEqual({ writes: 0, csrfConsumes: [{ context: categoryId }] });
   });
 });
 
 describe('undeclared routes', () => {
   it.each<[string, (app: FastifyInstance) => unknown]>([
-    ['no config.opt2', (app) => app.get('/v1/sites/:siteid/undeclared', async () => ({}))],
-    ['an empty requires list', (app) => app.get('/v1/sites/:siteid/undeclared', { config: { opt2: { requires: [] } } }, async () => ({}))],
+    ['no config.opt2', (app) => app.get('/undeclared', async () => ({}))],
+    ['an empty requires list', (app) => app.get('/undeclared', { config: { opt2: { requires: [] } } }, async () => ({}))],
+    ['both requires and public', (app) => app.get('/undeclared', { config: { opt2: { requires: [Roles.s2], public: true } } }, async () => ({}))],
     [
-      'both requires and public',
-      (app) => app.get('/v1/sites/:siteid/undeclared', { config: { opt2: { requires: [Roles.s2], public: true } } }, async () => ({})),
+      'the service transport on a Cloud Tasks path',
+      (app) => app.post('/internal/v1/jobs/x', { config: { opt2: { requires: [TASKS_INVOKER_ROLE], transport: 'service' } satisfies Opt2RouteConfig } }, async () => ({})),
     ],
     [
-      'a push path on the service transport',
-      (app) => app.post(pushUrl('strategies-content.undeclared.v1'), { config: { opt2: { requires: [PUBSUB_INVOKER_ROLE] } } }, async () => ({})),
+      'a public managed route',
+      (app) => app.post('/internal/v1/events/strategies-content.undeclared.v1', { config: { opt2: { public: true, transport: 'pubsub-push' } } }, async () => ({})),
     ],
   ])('fails start-up for a route with %s', async (_label, declare) => {
-    await expect(buildContentApp({ declare })).rejects.toBeInstanceOf(UndeclaredRouteError);
+    const env = loadEnv(undefined, testEnv(t.stateDir, { LOG_LEVEL: 'fatal' }));
+    const app = await createService({ name: `${SERVICE}-undeclared`, version: '0.0.0', env, verifierOverride: testVerifier() });
+    try {
+      const startUp = (async () => {
+        await app.register(async (scope) => {
+          declare(scope);
+        });
+        await app.ready();
+      })();
+      await expect(startUp).rejects.toBeInstanceOf(UndeclaredRouteError);
+    } finally {
+      await app.close().catch(() => undefined);
+    }
   });
 
   it.each([
     ['GET', '/v1/sites/tenant-a/undeclared', 's2'],
-    ['GET', '/internal/v1/undeclared', 'service:migration'],
-    ['DELETE', '/internal/v1/migration/apply', 'service:migration'],
+    ['GET', '/internal/v1/undeclared', serviceRole('migration')],
+    ['DELETE', '/internal/v1/migration/apply', serviceRole('migration')],
     ['POST', '/v1/sites/tenant-a/header-prompts', 's2'],
     ['GET', '/v1/sites/tenant-a/undeclared', 'anonymous'],
-  ] as const)('answers %s %s as %s with the legacy 404 and no effect', async (method, url, subject) => {
-    const outcome = await outcomeOf(async () => t.app.inject({ method, url, headers: await credentialsOf(subjectNamed(subject)) }));
-    expect({ status: outcome.status, envelope: isErrorEnvelope(parsedBody(outcome.body)), effects: outcome.effects }).toEqual({
-      status: 404,
-      envelope: true,
-      effects: NO_EFFECTS,
-    });
+  ] as const)('%s %s × %s → the legacy 404, with no effect', async (method, url, name) => {
+    const result = await send({ method, url }, await credentialOf(name));
+    expect({ status: result.res.statusCode, writes: result.writes.length, statements: result.statements.length }).toEqual({ status: 404, writes: 0, statements: 0 });
   });
 });
