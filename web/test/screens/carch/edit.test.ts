@@ -2,8 +2,11 @@
 // bodies around the real edit panels.
 import { readFileSync } from 'node:fs';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, cfUuid } from '@opt2/platform/legacy-compat';
+import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { secure } from '@/lib/access-gate';
 import { createCsrfRenderer } from '@/lib/csrf';
+import { formatDateTimeShort } from '@/lib/dates';
 import { isSafeHtml, raw, toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
@@ -13,21 +16,50 @@ import { editScreen, renderEditView } from '@/screens/carch/edit';
 import { renderEditPanels, urlFormType } from '@/screens/carch/edit-panels';
 import type { EditFormInput, EditFormState, SubTypeRow } from '@/screens/carch/form/custom-tags';
 import { renderChangesetsDialog } from '@/screens/carch/form/changesets';
+import { headFormBuilder } from '@/screens/carch/form/head-formbuilder';
 import {
   COMPONENT_MODULE_ID,
   CONTENT_MODULE_ID,
   FORM_MODULE_ID,
   ROOT_CONTENT_ID,
   VARIATION_MODULE_ID,
+  structOf,
+  structText,
 } from '@/screens/carch/model';
+import { displayErrors } from '@/screens/carch/partials/display-errors';
 import { carchJs } from '@/screens/carch/partials/js';
 import { status } from '@/screens/carch/partials/status';
 import type { CarchPageModel } from '@/screens/carch/service';
 import type { PageControllerRedirect, ScreenContext } from '@/screens/registry';
 import type { ShellView } from '@/shell/document';
-import { adminS2Request, editorRequest, type AdminRequestPartial } from '../../helpers/admin-request';
+import { USER_IDS } from '../../fixtures/session';
+import { APPROVAL_GROUP_IDS } from '../../fixtures/strategies-content/approval-chains';
+import {
+  CARCH_PATHS,
+  CONTENT_HIST_IDS,
+  CONTENT_IDS,
+  carchEditExistingPage,
+  carchEditFile,
+  carchEditNewPage,
+} from '../../fixtures/strategies-content/carch';
+import { CATEGORY_IDS } from '../../fixtures/strategies-content/categories';
+import {
+  adminS2Request,
+  anonymousRequest,
+  editorRequest,
+  siteAdminRequest,
+  type AdminRequestPartial,
+} from '../../helpers/admin-request';
+import { fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeReply, type RecordedRequest } from '../../helpers/fake-gateway';
+import {
+  fakeGatewayClient,
+  routeKey,
+  type FakeGatewayClient,
+  type FakeReply,
+  type RecordedRequest,
+} from '../../helpers/fake-gateway';
+import { FIXED_CSRF, makeScreenContext, renderScreenModel, renderScreenPage } from '../../helpers/screen-context';
 
 vi.mock('@opt2/platform/legacy-compat', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@opt2/platform/legacy-compat')>();
@@ -1170,3 +1202,625 @@ describe('carch.edit controller step', () => {
     await expect(editScreen.load?.(ctx)).rejects.toThrow('carch.edit loaded before its controller step ran');
   });
 });
+
+// ---- The page in the shell over the recorded strategies-content edit models ----
+
+const TENANT = 'tenant-a';
+const LOCK_HOLDER = Object.freeze({ fname: 'Quinn', lname: 'Editor', email: 'quinn@example.com' });
+
+type ScreenCtx = ScreenContext & { gateway: FakeGatewayClient };
+
+/** `fixture` deep-copied, with `rc` members and then `rc.contentBean` members replaced. */
+function editModel(fixture: CarchPageModel, rc: Struct = {}, bean: Struct = {}): CarchPageModel {
+  const copy = structuredClone(fixture);
+  return { ...copy, rc: { ...copy.rc, ...rc, contentBean: { ...structOf(copy.rc, 'contentBean'), ...bean } } };
+}
+
+/** The URL scope the Site Manager opens `model`'s version with; a new node's `contentid` is empty. */
+function editRc(model: CarchPageModel, extra: Readonly<Record<string, string>> = {}): Record<string, string> {
+  const bean = structOf(model.rc, 'contentBean');
+  return {
+    contentid: structText(bean, 'isNew') === '1' ? '' : structText(bean, 'contentID'),
+    contenthistid: structText(bean, 'contentHistID'),
+    parentid: structText(bean, 'parentID') || ROOT_CONTENT_ID,
+    type: structText(bean, 'type'),
+    moduleid: structText(bean, 'moduleID'),
+    siteid: TENANT,
+    ...extra,
+  };
+}
+
+/** The tenant-a site admin opening `model`; `site` members replace the served site's. */
+const tenantRequest = (
+  model: CarchPageModel,
+  extra: Readonly<Record<string, string>> = {},
+  site: AdminRequestPartial['site'] = {},
+): AdminRequest => siteAdminRequest(TENANT, { circuit: 'cArch', item: 'edit', rc: editRc(model, extra), site });
+
+/** The screen context of `req` over a gateway serving `model` at the request's content (the bean's id when new). */
+function modelContext(model: CarchPageModel, req: AdminRequest): ScreenCtx {
+  const contentId = structText(structOf(model.rc, 'contentBean'), 'contentID');
+  const path: `/v1/${string}` = `/v1/sites/${req.rc.siteid ?? ''}/content/${contentId}`;
+  if (req.rc.contentid === '') vi.mocked(cfUuid).mockReturnValue(contentId);
+  const gateway = fakeGatewayClient({ [routeKey('GET', 'strategies-content', path)]: { status: 200, body: model } });
+  return makeScreenContext({ req, gateway });
+}
+
+/** cArch.edit of `model` in the legacy shell, parsed, with the context it ran in. */
+async function editPage(
+  model: CarchPageModel,
+  req: AdminRequest,
+): Promise<{ $: cheerio.CheerioAPI; html: string; ctx: ScreenCtx }> {
+  const ctx = modelContext(model, req);
+  const page = await renderScreenPage(editScreen, ctx);
+  if (page.kind !== 'document') throw new Error(`carch.edit redirected to ${page.location}`);
+  return { $: cheerio.load(page.html), html: page.html, ctx };
+}
+
+/** The parity model of the first element `selector` matches. */
+function sectionModel($: cheerio.CheerioAPI, selector: string) {
+  const section = $(selector).first();
+  if (section.length === 0) throw new Error(`no ${selector}`);
+  return fragmentModel($.html(section));
+}
+
+/** The settings panels' heading ids in document order. */
+const panelIds = ($: cheerio.CheerioAPI): string[] =>
+  $('#content-panels > .mura-panel > .mura-panel-heading')
+    .toArray()
+    .map((el) => $(el).attr('id') ?? '');
+
+/** `siteManager.tablist` as the closing script sets it. */
+function tablistOf(html: string): string {
+  const match = /siteManager\.tablist='([^']*)'/.exec(html);
+  if (match?.[1] === undefined) throw new Error('no siteManager.tablist');
+  return match[1];
+}
+
+/** `[name, type, value]` of each control named in `names`, in document order. */
+const controlsNamed = (model: ReturnType<typeof fragmentModel>, ...names: string[]) =>
+  model.controls.filter((c) => names.includes(c.name)).map((c) => [c.name, c.type, c.value] as const);
+
+/** The contexts identity was asked to issue CSRF tokens for. */
+const csrfContexts = (gateway: FakeGatewayClient): string[] =>
+  gateway.calls
+    .filter((call) => call.service === 'identity' && call.path === '/v1/csrf/tokens')
+    .flatMap((call) => (call.json as { readonly contexts: readonly string[] }).contexts);
+
+const NEW_HIST_ID_OF_FIXTURE = structText(structOf(carchEditNewPage.rc, 'contentBean'), 'contentHistID');
+
+describe('carch.edit page of a new Page', () => {
+  it('reads the new node and signs #contentForm for <contentHistID>add', async () => {
+    const ctx = modelContext(editModel(carchEditNewPage), tenantRequest(carchEditNewPage));
+    const page = await renderScreenModel(editScreen, ctx);
+    expect(page.headings).toContain(ctx.rb.rbKey('sitemanager.content.createcontent'));
+    expect(page.controls.filter((c) => c.name.startsWith('csrf_token')).map((c) => [c.name, c.type, c.value])).toEqual([
+      [CSRF_FIELD_TOKEN, 'hidden', '<token>'],
+      [CSRF_FIELD_EXPIRES, 'hidden', '<token>'],
+    ]);
+    expect(ctx.gateway.calls.find((call) => call.service === 'strategies-content')?.path).toBe(CARCH_PATHS.editNewPage);
+    expect(csrfContexts(ctx.gateway)).toContain(`${NEW_HIST_ID_OF_FIXTURE}add`);
+    // The same fields close #contentForm.
+    const { $ } = await editPage(editModel(carchEditNewPage), tenantRequest(carchEditNewPage));
+    expect($('form#contentForm[name="contentForm"]')).toHaveLength(1);
+    expect(controlsNamed(sectionModel($, '#contentForm'), CSRF_FIELD_TOKEN, CSRF_FIELD_EXPIRES)).toEqual([
+      [CSRF_FIELD_TOKEN, 'hidden', FIXED_CSRF.token],
+      [CSRF_FIELD_EXPIRES, 'hidden', FIXED_CSRF.expires],
+    ]);
+  });
+
+  it('offers the page-level types, resetting the extended attributes on change', async () => {
+    const { $, html } = await editPage(editModel(carchEditNewPage), tenantRequest(carchEditNewPage));
+    const [selector] = sectionModel($, '#contentForm').controls.filter((c) => c.name === 'typeSelector');
+    expect(selector?.type).toBe('select-one');
+    expect(selector?.options.map((o) => o.value)).toEqual(['Page^Default', 'Folder^Default', 'Calendar^Default']);
+    expect(html).toContain('<select name="typeSelector" onchange="siteManager.resetExtendedAttributes(');
+  });
+
+  it('prints the Basic panel body in the CKEditor render area', async () => {
+    const { $ } = await editPage(editModel(carchEditNewPage), tenantRequest(carchEditNewPage));
+    expect($('#mura-content-body-render > #bodyContainer > textarea#body[name="body"]')).toHaveLength(1);
+    expect(controlsNamed(sectionModel($, '#mura-content-body-render'), 'body')).toEqual([
+      ['body', 'textarea', '<p></p>'],
+    ]);
+  });
+
+  it('schedules the display with the display select and both datetime selectors', async () => {
+    const { $ } = await editPage(editModel(carchEditNewPage), tenantRequest(carchEditNewPage));
+    const panel = sectionModel($, '#panel-schedule');
+    const [display] = panel.controls.filter((c) => c.name === 'display');
+    expect($('#panel-schedule select#mura-display')).toHaveLength(1);
+    expect(display?.options.map((o) => [o.value, o.selected])).toEqual([
+      ['1', true],
+      ['0', false],
+      ['2', false],
+    ]);
+    expect(controlsNamed(panel, 'displayStart', 'displayStop')).toEqual([
+      ['displayStart', 'hidden', ''],
+      ['displayStop', 'hidden', ''],
+    ]);
+  });
+
+  it('publishes with the feature select, the restrict groups and the expiry selector', async () => {
+    const groups = [
+      { userid: APPROVAL_GROUP_IDS.contentEditors, groupname: 'Content Editors', isPublic: 0 },
+      { userid: APPROVAL_GROUP_IDS.marketing, groupname: 'Marketing', isPublic: 1 },
+    ];
+    const model = editModel(carchEditNewPage, { rsRestrictGroups: groups }, { restrictGroups: 'Marketing' });
+    const { $ } = await editPage(model, tenantRequest(model, {}, { extranet: true }));
+    const panel = sectionModel($, '#panel-publishing');
+    const select = (name: string) => panel.controls.find((c) => c.name === name);
+    expect(select('isFeature')?.options.map((o) => o.value)).toEqual(['0', '1', '2']);
+    expect(select('restrictgroups')?.type).toBe('select-multiple');
+    // Member groups are listed before the system groups.
+    expect(select('restrictgroups')?.options.map((o) => o.value)).toEqual([
+      '',
+      'RestrictAll',
+      APPROVAL_GROUP_IDS.marketing,
+      APPROVAL_GROUP_IDS.contentEditors,
+    ]);
+    expect(select('restrictgroups')?.selected).toEqual([APPROVAL_GROUP_IDS.marketing]);
+    expect(controlsNamed(panel, 'expires')).toEqual([['expires', 'hidden', '']]);
+  });
+
+  it('closes with the carch edit scripts, CKEditor summary loader included', async () => {
+    const ctx = modelContext(editModel(carchEditNewPage), tenantRequest(carchEditNewPage));
+    const { view } = await run(ctx);
+    const ajax = toString(view?.ajax ?? raw(''));
+    expect(ajax).toBe(toString(carchJs(ctx, 'edit')));
+    expect(ajax).toContain('editSummary = function(){');
+  });
+
+  it('sends an anonymous request to the controller secure() redirect before any read', async () => {
+    const req = anonymousRequest({ circuit: 'cArch', item: 'edit', rc: editRc(carchEditNewPage) });
+    const ctx = modelContext(editModel(carchEditNewPage), req);
+    const denied = secure(req);
+    await expect(renderScreenPage(editScreen, ctx)).resolves.toEqual({
+      kind: 'redirect',
+      location: denied.kind === 'redirect' ? denied.location : '',
+    });
+    expect(ctx.gateway.calls.filter((call) => call.service === 'strategies-content')).toEqual([]);
+  });
+});
+
+/** Each panel's accordion heading id by its `tabList` id. */
+const TAB_HEADINGS: Readonly<Record<string, string>> = Object.freeze({
+  tabbasic: 'heading-basic',
+  tabsummary: 'heading-summary',
+  tabassoc: 'heading-assoc',
+  tabpublishing: 'heading-publishing',
+  tabschedule: 'heading-schedule',
+  tablayoutobjects: 'heading-layout',
+  tabcategorization: 'heading-categories',
+  tabtags: 'heading-tags',
+  tabrelatedcontent: 'heading-relatedcontent',
+  tabusagereport: 'heading-usagereport',
+  tabextendedattributes: 'heading-extendedattributes',
+  tabremote: 'heading-remote',
+});
+
+const HOME_MODEL = editModel(
+  carchEditExistingPage,
+  {},
+  { contentID: ROOT_CONTENT_ID, parentID: END_ID, title: 'Home', menuTitle: 'Home', filename: '' },
+);
+
+/** qa_editor outside the private pool opening About Us on `default`; the posted role fields grant nothing. */
+function publicEditorRequest(): AdminRequest {
+  const rc = { ...editRc(carchEditExistingPage), siteid: 'default', S2IsPrivate: 'true', s2: '1', isS2: 'true' };
+  const req = editorRequest({ circuit: 'cArch', item: 'edit', rc });
+  return { ...req, session: { ...req.session, s2IsPrivate: false } };
+}
+
+const FORMS_PAGE = editModel(carchEditNewPage, {}, { moduleID: FORM_MODULE_ID });
+
+/** A stored module node of `type` filed under `moduleId`, over the About Us model's site data. */
+function storedModuleNode(
+  type: string,
+  moduleId: string,
+  contentId: string,
+  contentHistId: string,
+  bean: Struct = {},
+): CarchPageModel {
+  const filed = { contentID: contentId, contentHistID: contentHistId, parentID: moduleId, moduleID: moduleId };
+  return editModel(carchEditExistingPage, {}, { ...filed, type, filename: '', ...bean });
+}
+
+const COMPONENT_MODEL = storedModuleNode(
+  'Component',
+  COMPONENT_MODULE_ID,
+  CONTENT_IDS.homeBanner,
+  CONTENT_HIST_IDS.homeBanner,
+  { title: 'Home Banner', menuTitle: 'Home Banner' },
+);
+
+/** A builder form body holding the entity legacy stores for a double quote. */
+const FORM_BODY = '{"form":{"name":"Contact &quot;Us&quot;","fields":{}},"datasets":{}}';
+
+const FORM_MODEL = storedModuleNode('Form', FORM_MODULE_ID, CONTENT_IDS.contactForm, CONTENT_HIST_IDS.contactForm, {
+  title: 'Contact Us',
+  menuTitle: 'Contact Us',
+  body: FORM_BODY,
+});
+
+describe('carch.edit settings panels', () => {
+  it.each([
+    [
+      'a new Page',
+      editModel(carchEditNewPage),
+      () => tenantRequest(carchEditNewPage),
+      'tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tablayoutobjects,tabtags,tabrelatedcontent,tabremote',
+      [],
+    ],
+    [
+      'a stored Page with categories and extend sets',
+      editModel(carchEditExistingPage),
+      () => tenantRequest(carchEditExistingPage),
+      'tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tablayoutobjects,tabcategorization,tabtags,' +
+        'tabrelatedcontent,tabextendedattributes,tabremote',
+      [],
+    ],
+    [
+      'Home, without Scheduling and Remote',
+      HOME_MODEL,
+      () => tenantRequest(HOME_MODEL),
+      'tabbasic,tabsummary,tabassoc,tabpublishing,tablayoutobjects,tabcategorization,tabtags,tabrelatedcontent,' +
+        'tabextendedattributes',
+      [],
+    ],
+    [
+      'a new Link',
+      editModel(carchEditNewPage),
+      () => tenantRequest(carchEditNewPage, { type: 'Link' }),
+      'tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tabtags,tabrelatedcontent,tabremote',
+      [],
+    ],
+    [
+      'a stored File, which takes no associated image',
+      editModel(carchEditFile),
+      () => tenantRequest(carchEditFile),
+      'tabbasic,tabsummary,tabpublishing,tabschedule,tabtags,tabrelatedcontent,tabremote',
+      [],
+    ],
+    [
+      'a stored Component',
+      COMPONENT_MODEL,
+      () => tenantRequest(COMPONENT_MODEL),
+      'tabbasic,tabsummary,tabpublishing,tabschedule,tabcategorization,tabtags,tabusagereport,tabextendedattributes',
+      [],
+    ],
+    [
+      'a stored builder Form',
+      FORM_MODEL,
+      () => tenantRequest(FORM_MODEL),
+      'tabbasic,tabpublishing,tabschedule,tabcategorization,tabtags,tabusagereport,tabextendedattributes',
+      [],
+    ],
+    [
+      'a Page filed outside the Site Manager module',
+      FORMS_PAGE,
+      () => tenantRequest(FORMS_PAGE),
+      'tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tabtags,tabremote',
+      ['ommitRelatedContentTab'],
+    ],
+    [
+      'qa_editor outside the private pool',
+      editModel(carchEditExistingPage),
+      publicEditorRequest,
+      'tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tabcategorization,tabtags,tabrelatedcontent,' +
+        'tabextendedattributes',
+      ['ommitRemoteTab'],
+    ],
+  ] as const)('renders the panels of %s in legacy order', async (_label, model, request, tablist, omitted) => {
+    const { $, html } = await editPage(model, request());
+    expect(tablistOf(html)).toBe(tablist);
+    expect(panelIds($)).toEqual(tablist.split(',').map((tab) => TAB_HEADINGS[tab]));
+    const hidden = sectionModel($, '#content-panels').controls.filter((c) => c.name.startsWith('ommit'));
+    expect(hidden.map((c) => [c.name, c.type, c.value])).toEqual(omitted.map((name) => [name, 'hidden', 'true']));
+  });
+
+  it('labels the panels from the admin bundle', async () => {
+    const { $, ctx } = await editPage(editModel(carchEditExistingPage), tenantRequest(carchEditExistingPage));
+    const tab = (key: string): string => ctx.rb.rbKey(`sitemanager.content.tabs.${key}`);
+    const image = ctx.rb.rbKey('sitemanager.content.fields.selectimage').split(' ').at(-1);
+    const titles = $('#content-panels > .mura-panel > .mura-panel-heading .mura-panel-title a').toArray();
+    expect(titles.map((el) => $(el).text().trim())).toEqual([
+      tab('basic'),
+      ctx.rb.rbKey('sitemanager.content.fields.summary'),
+      image,
+      tab('publishing'),
+      'Scheduling',
+      tab('layoutobjects'),
+      tab('categorization'),
+      tab('tags'),
+      tab('relatedcontent'),
+      tab('extendedattributes'),
+      'Remote',
+    ]);
+  });
+
+  it('nests the site categories, checking the assigned ones', async () => {
+    const { $, html } = await editPage(editModel(carchEditExistingPage), tenantRequest(carchEditExistingPage));
+    expect($('#panel-categories ul.categorylist#mura-nodes')).toHaveLength(1);
+    const items = $('#mura-nodes li[data-categoryid]').toArray();
+    expect(items.map((el) => $(el).attr('data-categoryid'))).toEqual([
+      CATEGORY_IDS.topics,
+      CATEGORY_IDS.topicsNews,
+      CATEGORY_IDS.topicsEvents,
+      CATEGORY_IDS.topicsEventsLocal,
+      CATEGORY_IDS.restricted,
+    ]);
+    const checked = sectionModel($, '#mura-nodes').controls.filter((c) => c.name === 'categoryid' && c.checked);
+    expect(checked.map((c) => c.value)).toEqual([CATEGORY_IDS.topicsNews, CATEGORY_IDS.topicsEvents]);
+    // The pooled categories belong to the umbrella site, so the open-category feed of tenant-a finds none.
+    expect(html).not.toContain(".find('span.hasChildren:first').trigger('click');");
+  });
+
+  it("opens the assigned site categories' ancestors once each", async () => {
+    const resited = (nodes: unknown): unknown =>
+      (nodes as Struct[]).map((node) => ({ ...node, siteID: TENANT, children: resited(node.children) }));
+    const model = editModel(carchEditExistingPage, { categories: resited(carchEditExistingPage.rc.categories) });
+    const { html } = await editPage(model, tenantRequest(model));
+    const trigger =
+      `$('#bigui__categories li[data-categoryid="${CATEGORY_IDS.topics}"]')` +
+      ".find('span.hasChildren:first').trigger('click'); ";
+    expect(html.split(trigger)).toHaveLength(2);
+    expect(html).toContain(`${trigger}\n\n\t\tcatsInited=true;`);
+  });
+
+  it.each([
+    ['the default selector', '', {}, ['tags']],
+    [
+      'one selector per custom tag group',
+      'Audience^ Region',
+      { Audiencetags: 'staff' },
+      ['tags', 'Audiencetags', 'Regiontags'],
+    ],
+  ] as const)('tags with %s', async (_label, customTagGroups, bean, selectors) => {
+    const model = editModel(carchEditExistingPage, { siteConfig: { customTagGroups } }, bean);
+    const { $, html } = await editPage(model, tenantRequest(model));
+    expect($('#panel-tags .tagSelector').toArray().map((el) => $(el).attr('id'))).toEqual(selectors);
+    expect(html).toContain("url: '?muraAction=carch.loadtagarray&siteid=' + siteid,");
+    const panel = sectionModel($, '#panel-tags');
+    const tags = controlsNamed(panel, 'tags', 'Audiencetags').filter(([, type]) => type === 'hidden');
+    expect(tags).toEqual([
+      ['tags', 'hidden', 'about'],
+      ['tags', 'hidden', 'program'],
+      ...(customTagGroups === '' ? [] : [['Audiencetags', 'hidden', 'staff'] as const]),
+    ]);
+    for (const group of selectors.slice(1)) {
+      const taggroup = group.slice(0, -'tags'.length);
+      expect(html).toContain(`url:'?muraAction=carch.loadtagarray&siteid=' + siteid + '&taggroup=${taggroup}',`);
+    }
+  });
+
+  it('selects the templates and configures the layout objects', async () => {
+    const site = { ...structOf(carchEditExistingPage.rc, 'site'), customTagGroups: 'Audience,Region' };
+    const model = editModel(carchEditExistingPage, { site });
+    const { $, html } = await editPage(model, tenantRequest(model));
+    const panel = sectionModel($, '#panel-layout');
+    const select = (name: string) => panel.controls.find((c) => c.name === name);
+    expect(select('template')?.options.map((o) => o.value)).toEqual(['', 'default.cfm', 'two-column.cfm']);
+    expect(select('template')?.selected).toEqual(['default.cfm']);
+    expect(select('childTemplate')?.selected).toEqual(['two-column.cfm']);
+    expect(html).toContain('\n<script>\nsiteManager.customtaggroups=["Audience","Region"];\n\n');
+    expect(html).toContain('\nvar pluginConfigurators=new Array();\n');
+  });
+
+  it('keeps the remote identifiers', async () => {
+    const { $ } = await editPage(editModel(carchEditExistingPage), tenantRequest(carchEditExistingPage));
+    const fields = ['remoteID', 'remoteURL', 'remotePubDate', 'remoteSource', 'remoteSourceURL'];
+    expect(controlsNamed(sectionModel($, '#panel-remote'), ...fields)).toEqual([
+      ['remoteID', 'text', 'PA-ABOUT-001'],
+      ['remoteURL', 'text', ''],
+      ['remotePubDate', 'hidden', ''],
+      ['remoteSource', 'text', ''],
+      ['remoteSourceURL', 'text', ''],
+    ]);
+  });
+
+  it('loads the extended attributes into their own panel', async () => {
+    const { $ } = await editPage(editModel(carchEditExistingPage), tenantRequest(carchEditExistingPage));
+    expect($('#panel-extendedattributes #extendset-container-default.extendedattributes-body')).toHaveLength(1);
+  });
+});
+
+/** `model` with its version's stats locked by `lockId` with `lockType`, and `lockedBy` as the holder. */
+function lockedModel(model: CarchPageModel, lockId: string, lockType: string): CarchPageModel {
+  const stats = { ...structOf(structOf(model.rc, 'contentBean'), 'stats'), lockID: lockId, lockType };
+  return editModel(model, { lockedBy: { ...LOCK_HOLDER } }, { stats });
+}
+
+describe('carch.edit page of a stored Page', () => {
+  it('opens with the secondary menu and the crumbs', async () => {
+    const { $ } = await editPage(editModel(carchEditExistingPage), tenantRequest(carchEditExistingPage));
+    expect($('.mura-header div.nav-module-specific')).toHaveLength(1);
+    expect(sectionModel($, '.mura-header ul.breadcrumb').links.map((link) => link.text)).toEqual(['Home', 'About Us']);
+  });
+
+  it.each([
+    ['the session user', true],
+    ['someone else', false],
+  ] as const)('flags a node lock held by %s', async (_label, own) => {
+    const req = tenantRequest(carchEditExistingPage);
+    const holder = own ? req.session.mura.userID : USER_IDS.qaEditor;
+    const { $, html } = await editPage(lockedModel(carchEditExistingPage, holder, 'node'), req);
+    expect(html).toContain('siteManager.hasNodeLock=true;');
+    const notices = ['#msg-node-locked', '#msg-node-locked-else'] as const;
+    const [shown, absent] = own ? notices : [notices[1], notices[0]];
+    expect($(`#dspStatusContainer ${shown}`)).toHaveLength(1);
+    expect($(`#dspStatusContainer ${shown}`).attr('style')).toBeUndefined();
+    expect($(`#dspStatusContainer ${absent}`)).toHaveLength(0);
+    if (!own) {
+      const [notice] = sectionModel($, '#msg-node-locked-else').alerts;
+      expect(notice?.text).toContain(`${LOCK_HOLDER.fname} ${LOCK_HOLDER.lname}`);
+      expect(sectionModel($, '#msg-node-locked-else').links[0]?.href).toMatch(/^mailto:quinn@example\.com\?subject=/);
+      expect(html).toContain("$('.form-actions').hide();");
+    }
+  });
+
+  it('summarises the version: last update and copyable ids', async () => {
+    const req = tenantRequest(carchEditExistingPage);
+    const { $, ctx } = await editPage(editModel(carchEditExistingPage), req);
+    const lastUpdate = structText(structOf(carchEditExistingPage.rc, 'contentBean'), 'lastUpdate');
+    const updated = formatDateTimeShort(lastUpdate, req.session.dateKeyFormat, req.session.locale);
+    expect($('#mura-content-metadata').text().replace(/\s+/g, ' ')).toContain(
+      `${ctx.rb.rbKey('sitemanager.content.update')}: ${updated}`,
+    );
+    expect($('#mura-content-metadata .clicktocopy').toArray().map((el) => $(el).text())).toEqual([
+      'about-us',
+      CONTENT_IDS.aboutUs,
+    ]);
+  });
+
+  it.each([
+    ['assigns change sets on a site that has them', true],
+    ['offers no change set on a site without them', false],
+  ] as const)('%s', async (_label, hasChangesets) => {
+    const req = tenantRequest(carchEditExistingPage, {}, { hasChangesets });
+    const { $, html } = await editPage(editModel(carchEditExistingPage), req);
+    expect($('div#changesetContainer')).toHaveLength(hasChangesets ? 1 : 0);
+    expect(html.includes("saveToChangeset('','tenant-a','');return false;")).toBe(hasChangesets);
+  });
+
+  it.each([
+    ['the newer draft and the version notes', {}, {}, false, ['draft', 'notes']],
+    [
+      'the pending change sets',
+      { draftcheck: { showdialog: 'false', historyid: '' } },
+      { notes: '' },
+      true,
+      ['changesets'],
+    ],
+    [
+      'nothing without drafts, change sets or notes',
+      { draftcheck: { showdialog: 'false', historyid: '' } },
+      { notes: '' },
+      false,
+      [],
+    ],
+  ] as const)('alerts %s', async (_label, rc, bean, hasChangesets, kinds) => {
+    const pendingChangesets = [{ contentHistID: CONTENT_HIST_IDS.aboutUsDraft, changesetName: 'Q3 Review' }];
+    const model = editModel(carchEditExistingPage, { ...rc, ...(hasChangesets ? { pendingChangesets } : {}) }, bean);
+    const { $, ctx } = await editPage(model, tenantRequest(model, {}, { hasChangesets }));
+    const rb = (key: string): string => ctx.rb.rbKey(key);
+    const texts: Readonly<Record<string, string>> = {
+      draft: `${rb('sitemanager.draftprompt.inline')}: ${rb('sitemanager.draftprompt.gotolatest')}`,
+      notes: `${rb('sitemanager.content.notes')}: Annual review copy.`,
+      // The label carries its own markup, which the alert text drops.
+      changesets: `${rb('sitemanager.content.changesetnodenotify').replace(/<[^>]+>/g, '')}: Q3 Review`,
+    };
+    expect(sectionModel($, '#dspStatusContainer').alerts).toEqual(
+      kinds.map((kind) => ({ text: texts[kind], className: 'alert alert-info' })),
+    );
+  });
+
+  it('lists the validation errors, leaving out siteID', async () => {
+    const errors = { title: "The 'Title' field is required", siteID: 'x' };
+    const model = editModel(carchEditExistingPage, {}, { errors });
+    const { $, html } = await editPage(model, tenantRequest(model));
+    const { alerts } = sectionModel($, '#dspStatusContainer');
+    const errorAlerts = alerts.filter((a) => a.className === 'alert alert-error');
+    expect(errorAlerts).toEqual([{ text: "The 'Title' field is required", className: 'alert alert-error' }]);
+    expect(html).toContain(
+      `<div class="alert alert-error"><span>${toString(displayErrors(Object.entries(errors)))}</span></div>`,
+    );
+  });
+});
+
+describe('carch.edit page of a stored File', () => {
+  it('prints the file selector, not an editor, in the body render area', async () => {
+    const { $ } = await editPage(editModel(carchEditFile), tenantRequest(carchEditFile));
+    const body = '#mura-content-body-render > #mura-content-body-inner';
+    expect($(`${body} > #assocFileContainer #assocFileSelectorContainer [data-name="newfile"]`)).toHaveLength(1);
+    expect($('#mura-content-body-render textarea[name="body"]')).toHaveLength(0);
+    expect(controlsNamed(sectionModel($, body), 'newfile').map(([, type]) => type)).toEqual(['file', 'text']);
+  });
+
+  it.each([
+    ['no lock', '', 'hidden', false],
+    ["the session user's file lock", 'own', 'shown', true],
+    ["someone else's file lock", 'other', 'else', false],
+  ] as const)('notes %s', async (_label, holder, notice, hasFileLock) => {
+    const req = tenantRequest(carchEditFile);
+    const lockId = holder === '' ? '' : holder === 'own' ? req.session.mura.userID : USER_IDS.qaEditor;
+    const { $, html } = await editPage(lockedModel(carchEditFile, lockId, 'file'), req);
+    expect(html).toContain(`siteManager.hasFileLock=${String(hasFileLock)};`);
+    const youLocked = $('#assocFileContainer #msg-file-locked');
+    expect(youLocked).toHaveLength(1);
+    expect(youLocked.attr('style')).toBe(notice === 'shown' ? undefined : 'display:none;');
+    expect($('#assocFileContainer #msg-file-locked-else')).toHaveLength(notice === 'else' ? 1 : 0);
+    expect($('#assocFileContainer > .mura-file-selector')).toHaveLength(notice === 'else' ? 1 : 0);
+    expect($('#assocFileContainer #assocFileSelectorContainer')).toHaveLength(notice === 'else' ? 0 : 1);
+    if (notice === 'else') {
+      expect($('#msg-file-locked-else').text()).toContain(`${LOCK_HOLDER.fname} ${LOCK_HOLDER.lname}`);
+    }
+  });
+});
+
+describe('carch.edit page variants', () => {
+  it("prints a new Link's URL field in the body render area", async () => {
+    const { $ } = await editPage(editModel(carchEditNewPage), tenantRequest(carchEditNewPage, { type: 'Link' }));
+    const body = sectionModel($, '#mura-content-body-render > #mura-content-body-inner');
+    expect(body.controls.filter((c) => c.name === 'body').map((c) => [c.tag, c.type, c.value])).toEqual([
+      ['input', 'text', ''],
+    ]);
+    expect($('#mura-content-body-render input#url[name="body"][required="true"]')).toHaveLength(1);
+    expect(sectionModel($, '#contentForm').controls.some((c) => c.name === 'filename')).toBe(false);
+  });
+
+  it('replaces the Basic panel of a builder Form with the form builder', async () => {
+    const { $ } = await editPage(FORM_MODEL, tenantRequest(FORM_MODEL));
+    expect($('#mura-content-body-render #mura-templatebuilder')).toHaveLength(1);
+    expect(controlsNamed(sectionModel($, '#mura-content-body-render'), 'body')).toEqual([
+      ['body', 'textarea', '{"form":{"name":"Contact \\"Us\\"","fields":{}},"datasets":{}}'],
+    ]);
+    expect($('textarea#mura-formdata[name="body"]')).toHaveLength(1);
+    expect($('#panel-summary, #panel-assoc')).toHaveLength(0);
+    const { view } = await run(modelContext(FORM_MODEL, tenantRequest(FORM_MODEL)));
+    const head = toString(view?.htmlHead ?? raw(''));
+    expect(head).toBe(toString(headFormBuilder()));
+    for (const script of ['jquery.jsonform.js', 'jquery.templatebuilder.0.7.js', 'jquery-ui-minigrid-0.7.js']) {
+      expect(head).toContain(`/${script}" type="text/javascript"></script>`);
+    }
+  });
+
+  it.each([
+    ['its usage rows', true],
+    ['the not-used notice', false],
+  ] as const)('reports the usage of a stored Component with %s', async (_label, used) => {
+    const usage = {
+      contentid: CONTENT_IDS.aboutUs,
+      contenthistid: CONTENT_HIST_IDS.aboutUs,
+      type: 'Page',
+      parentid: ROOT_CONTENT_ID,
+      siteid: TENANT,
+      moduleid: CONTENT_MODULE_ID,
+      display: 1,
+      approved: 1,
+      displaystart: '',
+      displaystop: '',
+      lastupdate: '2026-06-30 09:15:00',
+      verdict: 'editor',
+      crumbdata: structuredClone(carchEditExistingPage.rc.crumbData),
+    };
+    const model = editModel(COMPONENT_MODEL, { rsUsage: used ? [usage] : [] });
+    const { $, ctx } = await editPage(model, tenantRequest(model));
+    const panel = sectionModel($, '#panel-usagereport');
+    expect($('#panel-usagereport #table__usage__report')).toHaveLength(used ? 1 : 0);
+    if (used) {
+      const [table] = panel.tables;
+      expect(table?.rows).toHaveLength(1);
+      expect(table?.rows[0]?.[1]).toBe(ctx.rb.rbKey('sitemanager.yes'));
+      expect(panel.links.map((link) => link.href)).toEqual(
+        expect.arrayContaining([expect.stringContaining('muraAction=carch.edit')]),
+      );
+    } else {
+      const typeLabel = ctx.rb.rbKey('sitemanager.content.type.Component').toLowerCase();
+      expect($('#panel-usagereport .help-block-empty').text()).toBe(
+        ctx.rb.messageFormat(ctx.rb.rbKey('sitemanager.content.fields.nousage'), typeLabel),
+      );
+    }
+  });
+});
+
