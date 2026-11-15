@@ -129,8 +129,8 @@ export async function startMigrationDouble(opts: MigrationDoubleOptions = {}): P
   function openWindow(input: WindowOpenInput, res: ServerResponse): void {
     if (!answerable(res)) return;
     sequence += 1;
-    // Readable ids rather than contract CfIds: the gateway treats window ids as opaque strings.
-    const windowId = `win-${String(sequence).padStart(4, '0')}`;
+    // A contract CfId that stays readable: the open sequence fills the last group.
+    const windowId = `00000000-0000-0000-${String(sequence).padStart(16, '0')}`;
     windows.push({ ...input, windowId, openedAt: performance.now() });
     sendJson(res, 201, { windowId, state: 'open', phase: 'executing' } satisfies Schemas['WindowOpenResponse']);
   }
