@@ -15,14 +15,14 @@ import type { TenantDb } from '@opt2/platform/tenancy';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims, type Actor, type DomainDeps } from '../domain/context.js';
 import type { ContentRepository } from '../repo/repository.js';
 import { registerCommentsProxyRoutes } from './comments-proxy.js';
-import { registerFeedRoutes } from './feed.js';
+import { FEED_PATHS, registerFeedRoutes } from './feed.js';
 import { registerFileRoutes } from './files.js';
 import { registerContentLinksRoutes } from './internal-content-links.js';
 import { registerFileLookupRoutes } from './internal-file-lookup.js';
-import { registerJsonApiRoutes } from './jsonapi.js';
+import { JSON_API_PREFIXES, registerJsonApiRoutes } from './jsonapi.js';
 import { registerMigrationObjectRoutes } from './migration-objects.js';
-import { registerRenderRoutes } from './render.js';
-import { registerVariationRoutes } from './variation.js';
+import { RENDER_PREFIXES, registerRenderRoutes } from './render.js';
+import { VARIATION_PATH, registerVariationRoutes } from './variation.js';
 import { registerCarchRoutes } from './v1/carch.js';
 import { registerCategoryRoutes } from './v1/ccategory.js';
 import { registerChainRoutes } from './v1/cchain.js';
@@ -48,6 +48,12 @@ export interface RouteDeps {
   clock: Clock;
   db?: TenantDb;
 }
+
+/**
+ * handleAPIRequest leads these modules serve, which legacy matches with CFML's case-insensitive `eq` (contentServer.cfc:610-668)
+ * and the shared route key matches in any case; `app.ts` passes them to createService as `noCasePathPrefixes`.
+ */
+export const LEGACY_API_PREFIXES: readonly string[] = Object.freeze([...JSON_API_PREFIXES, ...FEED_PATHS, ...RENDER_PREFIXES, VARIATION_PATH]);
 
 /** Shared context every strategies-content route module receives from `registerRoutes`. */
 export interface ContentRouteContext {

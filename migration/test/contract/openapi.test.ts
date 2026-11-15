@@ -1,30 +1,57 @@
-// Provider contract of the migration service: the document, the routes the registrars declare against it, the operations no
-// registrar serves, and every declared answer of each served operation through the real modules, with their outbound calls.
+// Provider contract of the migration service: the document, the routes the registrars declare against it, every declared answer
+// of each operation (through the real modules, or over stubbed window, gate and transition services where those need
+// PostgreSQL), and the cut-over calls the package sends the gateway.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { INVOCATION_HEADER, collectRouteMatrix } from '@opt2/platform/auth';
+import { INVOCATION_HEADER, collectRouteMatrix, transportForPath } from '@opt2/platform/auth';
+import { GATE_PHASES, GATE_STATES } from '@opt2/platform/migration-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { assertResponseMatchesOpenApi, createThrowawaySchema, findOperation, mintServiceToken, pgAvailable } from '@opt2/platform/testing';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
+import { loadConfig } from '../../src/config.js';
+import { createGatewayClient, type CutoverStatus, type InflightClearRequest, type InflightRow } from '../../src/cutover/index.js';
+import type { components } from '../../src/generated/openapi.js';
+import { loadUnitCatalog } from '../../src/owners/index.js';
 import { createBackgroundState } from '../../src/quiesce/index.js';
+import {
+  GATES_ROUTES,
+  MIGRATION_ROUTES,
+  TRANSITION_ROUTES,
+  WINDOW_ROUTES,
+  registerGatesRoutes,
+  registerTransitionRoutes,
+  registerWindowRoutes,
+  type GatesRouteDeps,
+  type TransitionRouteDeps,
+  type WindowRouteDeps,
+} from '../../src/routes/index.js';
 import { SCHEDULER_KEYS, importSchedulerRequest, updateSchedulerKey } from '../../src/scheduler/index.js';
+import { TransitionInProgressError, TransitionNotFoundError } from '../../src/transition/index.js';
+import { LeaseUnavailableError, WindowNotFoundError, WindowRefusedError, WindowStateError } from '../../src/windows/index.js';
+import { createMutableClock } from '../helpers/env.js';
 import {
   ABSENT_OPERATIONS,
   REGISTERED_OPERATIONS,
   buildRouteApp,
+  contractClient,
   defaultBoundaryState,
+  jsonAnswer,
   memoryMigrationDb,
   postgresMigrationDb,
+  producerContract,
+  type ContractCall,
   type Effects,
   type MigrationDb,
   type OpenApiDoc,
+  type Responder,
   type RouteApp,
 } from '../helpers/route-app.js';
 
 type Json = Record<string, unknown>;
+type Schemas = components['schemas'];
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
 const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
@@ -65,6 +92,44 @@ function fastifyUrl(path: string): string {
 /** The contract path of a registered url without path parameters: `::` is a literal colon. */
 function contractPathOf(url: string): string {
   return url.replace(/::/g, ':');
+}
+
+/** The contract template of any registered url: `::` is a literal colon, and `:name` or `:name(<pattern>)` is `{name}`. */
+function toOpenApiTemplate(url: string): string {
+  let template = '';
+  let i = 0;
+  while (i < url.length) {
+    if (url.startsWith('::', i)) {
+      template += ':';
+      i += 2;
+      continue;
+    }
+    const param = /^:(\w+)/.exec(url.slice(i));
+    if (param === null) {
+      template += url.charAt(i);
+      i += 1;
+      continue;
+    }
+    i += param[0].length;
+    // A pattern runs to its balanced close; escapes and character classes may hold parentheses, colons and slashes.
+    if (url[i] === '(') {
+      let depth = 0;
+      let inClass = false;
+      for (; i < url.length; i += 1) {
+        const char = url.charAt(i);
+        if (char === '\\') i += 1;
+        else if (inClass) inClass = char !== ']';
+        else if (char === '[') inClass = true;
+        else if (char === '(') depth += 1;
+        else if (char === ')' && --depth === 0) {
+          i += 1;
+          break;
+        }
+      }
+    }
+    template += `{${param[1] ?? ''}}`;
+  }
+  return template;
 }
 
 /** Authority of `unit` under v0002, read from the committed groups and version files. */
@@ -118,6 +183,17 @@ interface ResponseCase {
   outbound?: readonly string[];
   verify?(body: Json, t: RouteApp): void;
 }
+
+/** Injects the request of case `c` and checks the answer against the contract; returns the status and the parsed body. */
+async function sendCase(app: RouteApp['app'], c: Pick<ResponseCase, 'method' | 'url' | 'as' | 'payload'>): Promise<{ status: number; body: Json }> {
+  const { method, url, as, payload } = c;
+  const headers = { ...(await headersOf(as)), ...(payload === undefined ? {} : { 'content-type': 'application/json' }) };
+  const res = await app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload: JSON.stringify(payload) }) });
+  const path = url.split('?')[0] ?? url;
+  const body = assertResponseMatchesOpenApi(DOC, { method, path, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+  return { status: res.statusCode, body: body as Json };
+}
+
 
 /** Live checkpoints of `owner` at `horizon` for every live site's tenant. */
 function checkpointsAt(t: RouteApp, owner: string, horizon: string): void {
@@ -422,9 +498,27 @@ const CASES: readonly ResponseCase[] = [
   { operationId: 'faultClear', status: 404, title: 'for a fault the registry does not know', method: 'DELETE', url: UNKNOWN_FAULT_URL, as: OPERATOR },
 ];
 
-/** `<operationId> <status>` of every answer the contract declares for a served operation. */
-function declaredAnswers(): string[] {
-  return SERVED.flatMap(({ operationId, operation }) =>
+/** One route declaration in comparable form, `requires` sorted. */
+function declaration(operationId: unknown, transport: unknown, requires: unknown, isPublic: boolean, siteCheck: boolean) {
+  return {
+    operationId: String(operationId),
+    transport,
+    requires: Array.isArray(requires) ? [...(requires as string[])].sort() : requires,
+    public: isPublic,
+    siteCheck,
+  };
+}
+
+/** The declaration a contract operation requires of its route. */
+function contractDeclaration({ operationId, operation }: ContractOperation): ReturnType<typeof declaration> {
+  return declaration(operationId, operation['x-opt2-transport'], operation['x-opt2-requires'], operation['x-opt2-public'] === true, operation['x-opt2-site-check'] !== false);
+}
+
+const byId = (a: { operationId: string }, b: { operationId: string }): number => a.operationId.localeCompare(b.operationId);
+
+/** `<operationId> <status>` of every answer the contract declares for `operations`. */
+function declaredAnswers(operations: readonly ContractOperation[]): string[] {
+  return operations.flatMap(({ operationId, operation }) =>
     Object.keys((operation.responses ?? {}) as Json).map((status) => `${operationId} ${status}`),
   ).sort();
 }
@@ -434,17 +528,18 @@ describe('document', () => {
     expect({ openapi: DOC.openapi, version: DOC.info.version, sha: DOC.info['x-source-sha'] }).toEqual({ openapi: '3.1.0', version: '1.0.0', sha: PIN.sha });
   });
 
-  it('gives every operation a unique id, the service transport and exactly one of x-opt2-requires and x-opt2-public', () => {
+  it('gives every operation a unique id, the service transport on a path outside every managed prefix and exactly one of x-opt2-requires and x-opt2-public', () => {
     const ids = OPERATIONS.map(({ operationId }) => operationId);
     expect(new Set(ids).size).toBe(ids.length);
-    for (const { operationId, operation } of OPERATIONS) {
+    for (const { operationId, path, operation } of OPERATIONS) {
       const requires = operation['x-opt2-requires'];
       const declaresRoles = Array.isArray(requires) && requires.length > 0;
-      expect({ operationId, transport: operation['x-opt2-transport'], declaresOne: declaresRoles !== (operation['x-opt2-public'] === true) }).toEqual({
+      expect({
         operationId,
-        transport: 'service',
-        declaresOne: true,
-      });
+        transport: operation['x-opt2-transport'],
+        pathTransport: transportForPath(path),
+        declaresOne: declaresRoles !== (operation['x-opt2-public'] === true),
+      }).toEqual({ operationId, transport: 'service', pathTransport: 'service', declaresOne: true });
     }
   });
 });
@@ -461,22 +556,10 @@ describe('served operations', () => {
   });
 
   it('registers exactly the contract operations outside the absent set, each with its declared transport, roles and site check', () => {
-    /** One declaration in comparable form, `requires` sorted. */
-    const declaration = (operationId: unknown, transport: unknown, requires: unknown, isPublic: boolean, siteCheck: boolean) => ({
-      operationId: String(operationId),
-      transport,
-      requires: Array.isArray(requires) ? [...(requires as string[])].sort() : requires,
-      public: isPublic,
-      siteCheck,
-    });
-    const byId = (a: { operationId: string }, b: { operationId: string }) => a.operationId.localeCompare(b.operationId);
     const registered = collectRouteMatrix(t.app).routes.map((route) =>
       declaration(findOperation(DOC, route.method, contractPathOf(route.url)).operation.operationId, route.transport, route.requires, route.public === true, route.siteCheck),
     );
-    const expected = SERVED.map(({ operationId, operation }) =>
-      declaration(operationId, operation['x-opt2-transport'], operation['x-opt2-requires'], operation['x-opt2-public'] === true, operation['x-opt2-site-check'] !== false),
-    );
-    expect(registered.sort(byId)).toEqual(expected.sort(byId));
+    expect(registered.sort(byId)).toEqual(SERVED.map(contractDeclaration).sort(byId));
   });
 
   it('leaves exactly the absent set unserved', () => {
@@ -504,7 +587,7 @@ describe('served operations', () => {
   });
 
   it('has one answer case for every status the contract declares for a served operation', () => {
-    expect([...new Set(CASES.map(({ operationId, status }) => `${operationId} ${status}`))].sort()).toEqual(declaredAnswers());
+    expect([...new Set(CASES.map(({ operationId, status }) => `${operationId} ${status}`))].sort()).toEqual(declaredAnswers(SERVED));
   });
 });
 
@@ -541,20 +624,457 @@ describe.each(BACKENDS)('declared answers over $name', ({ available, open }) => 
     });
 
     it.each(CASES)('$operationId $status $title', async (c) => {
-      const { status, method, url, as, payload, outbound } = c;
+      const { status, outbound } = c;
       await c.arrange?.(t);
       t.resetEffects();
-      const headers = { ...(await headersOf(as)), ...(payload === undefined ? {} : { 'content-type': 'application/json' }) };
-      const res = await t.app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload: JSON.stringify(payload) }) });
-      const path = url.split('?')[0] ?? url;
-      const body = assertResponseMatchesOpenApi(DOC, { method, path, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+      const res = await sendCase(t.app, c);
 
-      expect(res.statusCode).toBe(status);
+      expect(res.status).toBe(status);
       if (outbound !== undefined) expect(t.calls.map(({ req, operationId }) => `${req.service} ${operationId}`)).toEqual(outbound);
       if (status === 401 || status === 403) {
         expect(t.effects()).toEqual(NO_EFFECTS);
       }
-      c.verify?.(body as Json, t);
+      c.verify?.(res.body, t);
     });
+  });
+});
+
+const CATALOG = loadUnitCatalog(loadConfig().paths.tableOwnership);
+const STUBBED_OPERATIONS = OPERATIONS.filter(({ operationId }) => (ABSENT_OPERATIONS as readonly string[]).includes(operationId));
+
+const WINDOW_ID = '9C1D7E2F-3A4B-4C5D-8E9F0A1B2C3D4E5F';
+const TRANSITION_ID = '1A2B3C4D-5E6F-4A7B-8C9D0E1F2A3B4C5D';
+const ACTIVE_TRANSITION_ID = 'A1B2C3D4-E5F6-4789-ABCDEF0123456789';
+const WINDOWS_URL = '/internal/v1/windows';
+const WINDOW_URL = `${WINDOWS_URL}/${WINDOW_ID}`;
+const GATES_URL = '/internal/v1/gates';
+const TRANSITIONS_URL = '/internal/v1/transitions';
+const AT = '2026-06-30T12:00:00.000Z';
+
+const OPEN_REQUEST: Schemas['WindowOpenRequest'] = {
+  routeKey: 'fixture:people/persons/{id}/archive@post',
+  units: ['people.person_archive', 'timesheets.blackout'],
+  scope: { keys: { userid: 'A1B2C3D4-E5F6-4789-ABCDEF0123456789' } },
+  requestId: 'contract-suite-request',
+};
+const COMPLETE_REQUEST: Schemas['WindowCompleteRequest'] = { forwarded: true, legacyStatus: 200 };
+const PENDING_WINDOW: Schemas['WriteWindow'] = {
+  windowId: WINDOW_ID,
+  routeKey: OPEN_REQUEST.routeKey,
+  units: OPEN_REQUEST.units,
+  scope: OPEN_REQUEST.scope,
+  state: 'import-pending',
+  phase: 'import-pending',
+  phases: [
+    { phase: 'quiet', at: AT },
+    { phase: 'executing', at: AT },
+    { phase: 'importing', at: AT },
+    { phase: 'import-pending', at: AT },
+  ],
+  rowsImported: 0,
+  outcome: 'pending',
+};
+const RESOLVED_WINDOW: Schemas['WriteWindow'] = {
+  ...PENDING_WINDOW,
+  state: 'closed',
+  phases: [...PENDING_WINDOW.phases, { phase: 'closed', at: AT }],
+  rowsImported: 2,
+  outcome: 'resolved',
+};
+const STARTED_TRANSITION: Schemas['Transition'] = {
+  transitionId: TRANSITION_ID,
+  fromVersion: 'v0001',
+  toVersion: 'v0002',
+  state: 'running',
+  step: 1,
+  units: [],
+  frozenRoutes: [],
+  startedAt: AT,
+};
+const COMPLETED_TRANSITION: Schemas['Transition'] = {
+  ...STARTED_TRANSITION,
+  state: 'completed',
+  step: 8,
+  units: OPEN_REQUEST.units,
+  frozenRoutes: [OPEN_REQUEST.routeKey],
+  reconciliation: { report: 'opt2/reports/reconciliation/post-cutover.json', differences: 0 },
+  finishedAt: AT,
+};
+
+/** The window, lease, owner-gate and transition services the stubbed registrars call. */
+const stubs = {
+  open: vi.fn<WindowRouteDeps['windows']['open']>(),
+  complete: vi.fn<WindowRouteDeps['windows']['complete']>(),
+  get: vi.fn<WindowRouteDeps['windows']['get']>(),
+  resolve: vi.fn<WindowRouteDeps['windows']['resolve']>(),
+  leases: vi.fn<GatesRouteDeps['leases']>(),
+  ownerGates: vi.fn<GatesRouteDeps['ownerGates']>(),
+  start: vi.fn<TransitionRouteDeps['transitions']['start']>(),
+  transition: vi.fn<TransitionRouteDeps['transitions']['get']>(),
+};
+type Stubs = typeof stubs;
+
+const stubCalls = (): number => Object.values(stubs).reduce((sum, stub) => sum + stub.mock.calls.length, 0);
+
+/** `extraRoutes` of the route composition: the window, gates and transition registrars over the stubs. */
+function registerStubbedRoutes(app: RouteApp['app']): void {
+  const { open, complete, get, resolve, leases, ownerGates, start, transition } = stubs;
+  registerWindowRoutes(app, { windows: { open, complete, get, resolve } });
+  registerGatesRoutes(app, { catalog: CATALOG, leases, ownerGates });
+  registerTransitionRoutes(app, { transitions: { start, get: transition } });
+}
+
+/** One request against an operation served over the stubs; `status` is the declared answer it must produce. */
+interface StubbedCase extends Pick<ResponseCase, 'operationId' | 'status' | 'title' | 'method' | 'url' | 'as' | 'payload'> {
+  arrange?(s: Stubs): void;
+  verify?(body: Json, s: Stubs): void;
+}
+
+const STUBBED_CASES: readonly StubbedCase[] = [
+  {
+    operationId: 'windowOpen',
+    status: 201,
+    title: 'opening the window for the validated request',
+    method: 'POST',
+    url: WINDOWS_URL,
+    as: GATEWAY,
+    payload: OPEN_REQUEST,
+    arrange: (s) => s.open.mockResolvedValue({ windowId: WINDOW_ID, state: 'open', phase: 'executing' }),
+    verify: (body, s) => {
+      expect(body).toEqual({ windowId: WINDOW_ID, state: 'open', phase: 'executing' });
+      expect(s.open.mock.calls).toEqual([[OPEN_REQUEST]]);
+    },
+  },
+  {
+    operationId: 'windowOpen',
+    status: 400,
+    title: 'for a request without a scope',
+    method: 'POST',
+    url: WINDOWS_URL,
+    as: GATEWAY,
+    payload: { routeKey: OPEN_REQUEST.routeKey, units: OPEN_REQUEST.units, requestId: OPEN_REQUEST.requestId },
+  },
+  { operationId: 'windowOpen', status: 401, title: 'without a credential', method: 'POST', url: WINDOWS_URL, as: 'none', payload: OPEN_REQUEST },
+  { operationId: 'windowOpen', status: 403, title: 'for programs-sites', method: 'POST', url: WINDOWS_URL, as: PROGRAMS_SITES, payload: OPEN_REQUEST },
+  {
+    operationId: 'windowOpen',
+    status: 503,
+    title: 'when the open is refused after giving back what it took',
+    method: 'POST',
+    url: WINDOWS_URL,
+    as: GATEWAY,
+    payload: OPEN_REQUEST,
+    arrange: (s) => s.open.mockRejectedValue(new WindowRefusedError(WINDOW_ID, 'owner-unavailable', new Error('people cannot be reached'))),
+  },
+  {
+    operationId: 'windowOpen',
+    status: 503,
+    title: 'when another holder keeps the units leased',
+    method: 'POST',
+    url: WINDOWS_URL,
+    as: OPERATOR,
+    payload: OPEN_REQUEST,
+    arrange: (s) => s.open.mockRejectedValue(new LeaseUnavailableError(OPEN_REQUEST.units, WINDOW_ID, [TRANSITION_ID])),
+  },
+  {
+    operationId: 'windowGet',
+    status: 200,
+    title: 'with the stored window',
+    method: 'GET',
+    url: WINDOW_URL,
+    as: OPERATOR,
+    arrange: (s) => s.get.mockResolvedValue(PENDING_WINDOW),
+    verify: (body, s) => {
+      expect(body).toEqual(PENDING_WINDOW);
+      expect(s.get.mock.calls).toEqual([[WINDOW_ID]]);
+    },
+  },
+  { operationId: 'windowGet', status: 401, title: 'without a credential', method: 'GET', url: WINDOW_URL, as: 'none' },
+  { operationId: 'windowGet', status: 403, title: 'for programs-sites', method: 'GET', url: WINDOW_URL, as: PROGRAMS_SITES },
+  {
+    operationId: 'windowGet',
+    status: 404,
+    title: 'for an id that names no window',
+    method: 'GET',
+    url: WINDOW_URL,
+    as: GATEWAY,
+    arrange: (s) => s.get.mockRejectedValue(new WindowNotFoundError(WINDOW_ID)),
+  },
+  {
+    operationId: 'windowComplete',
+    status: 200,
+    title: 'closing the window once the legacy changes are imported',
+    method: 'POST',
+    url: `${WINDOW_URL}:complete`,
+    as: GATEWAY,
+    payload: COMPLETE_REQUEST,
+    arrange: (s) => s.complete.mockResolvedValue({ state: 'closed' }),
+    verify: (body, s) => {
+      expect(body).toEqual({ state: 'closed' });
+      expect(s.complete.mock.calls).toEqual([[WINDOW_ID, COMPLETE_REQUEST]]);
+    },
+  },
+  {
+    operationId: 'windowComplete',
+    status: 200,
+    title: 'leaving the window import-pending when the import fails',
+    method: 'POST',
+    url: `${WINDOW_URL}:complete`,
+    as: GATEWAY,
+    payload: COMPLETE_REQUEST,
+    arrange: (s) => s.complete.mockResolvedValue({ state: 'import-pending' }),
+    verify: (body) => expect(body).toEqual({ state: 'import-pending' }),
+  },
+  {
+    operationId: 'windowComplete',
+    status: 400,
+    title: 'for a report without forwarded',
+    method: 'POST',
+    url: `${WINDOW_URL}:complete`,
+    as: GATEWAY,
+    payload: { legacyStatus: 200 },
+  },
+  { operationId: 'windowComplete', status: 401, title: 'without a credential', method: 'POST', url: `${WINDOW_URL}:complete`, as: 'none', payload: COMPLETE_REQUEST },
+  { operationId: 'windowComplete', status: 403, title: 'for programs-sites', method: 'POST', url: `${WINDOW_URL}:complete`, as: PROGRAMS_SITES, payload: COMPLETE_REQUEST },
+  {
+    operationId: 'windowResolve',
+    status: 200,
+    title: 'resolving an import-pending window with the operator as actor',
+    method: 'POST',
+    url: `${WINDOW_URL}:resolve`,
+    as: OPERATOR,
+    arrange: (s) => s.resolve.mockResolvedValue(RESOLVED_WINDOW),
+    verify: (body, s) => {
+      expect(body).toEqual(RESOLVED_WINDOW);
+      expect(s.resolve.mock.calls).toEqual([[WINDOW_ID, { actor: 'operator' }]]);
+    },
+  },
+  { operationId: 'windowResolve', status: 401, title: 'without a credential', method: 'POST', url: `${WINDOW_URL}:resolve`, as: 'none' },
+  { operationId: 'windowResolve', status: 403, title: 'for the gateway', method: 'POST', url: `${WINDOW_URL}:resolve`, as: GATEWAY },
+  {
+    operationId: 'windowResolve',
+    status: 404,
+    title: 'for an id that names no window',
+    method: 'POST',
+    url: `${WINDOW_URL}:resolve`,
+    as: OPERATOR,
+    arrange: (s) => s.resolve.mockRejectedValue(new WindowNotFoundError(WINDOW_ID)),
+  },
+  {
+    operationId: 'windowResolve',
+    status: 409,
+    title: 'for a window that is not import-pending',
+    method: 'POST',
+    url: `${WINDOW_URL}:resolve`,
+    as: OPERATOR,
+    arrange: (s) => s.resolve.mockRejectedValue(new WindowStateError(WINDOW_ID, 'closed', 'resolve')),
+  },
+  {
+    operationId: 'gatesList',
+    status: 200,
+    title: "with the lease and each owner's gate row of every named unit",
+    method: 'GET',
+    url: `${GATES_URL}?units=${OPEN_REQUEST.units.join(',')}`,
+    as: OPERATOR,
+    arrange: (s) => {
+      s.leases.mockResolvedValue([{ unit: 'people.person_archive', holderId: WINDOW_ID, kind: 'window', acquiredAt: new Date(AT) }]);
+      s.ownerGates.mockImplementation((_owner, units) =>
+        Promise.resolve(units.map((unit) => (unit === 'people.person_archive' ? { unit, state: 'closed', holderId: WINDOW_ID, phase: 'executing' } : { unit, state: 'open', holderId: null, phase: 'quiet' }))),
+      );
+    },
+    verify: (body, s) => {
+      const [archive, blackout] = OPEN_REQUEST.units.map((unit) => CATALOG.unit(unit));
+      expect(body).toEqual({
+        units: [
+          {
+            unit: 'people.person_archive',
+            owner: archive?.owner,
+            lease: { holderId: WINDOW_ID, kind: 'window', acquiredAt: AT },
+            gate: { state: 'closed', holderId: WINDOW_ID, phase: 'executing' },
+          },
+          { unit: 'timesheets.blackout', owner: blackout?.owner, gate: { state: 'open', holderId: null, phase: 'quiet' } },
+        ],
+      });
+      expect(s.leases.mock.calls).toEqual([[OPEN_REQUEST.units]]);
+      expect(s.ownerGates.mock.calls.sort()).toEqual(
+        [
+          [archive?.owner, ['people.person_archive']],
+          [blackout?.owner, ['timesheets.blackout']],
+        ].sort(),
+      );
+    },
+  },
+  { operationId: 'gatesList', status: 400, title: 'for a unit the ownership file does not name', method: 'GET', url: `${GATES_URL}?units=people.unknown_table`, as: OPERATOR },
+  { operationId: 'gatesList', status: 401, title: 'without a credential', method: 'GET', url: GATES_URL, as: 'none' },
+  { operationId: 'gatesList', status: 403, title: 'for the gateway', method: 'GET', url: GATES_URL, as: GATEWAY },
+  {
+    operationId: 'transitionStart',
+    status: 202,
+    title: 'starting the transition in the background for the operator',
+    method: 'POST',
+    url: TRANSITIONS_URL,
+    as: OPERATOR,
+    payload: { toVersion: 'v0002' },
+    arrange: (s) => s.start.mockResolvedValue(STARTED_TRANSITION),
+    verify: (body, s) => {
+      expect(body).toEqual(STARTED_TRANSITION);
+      expect(s.start.mock.calls).toEqual([[{ to: 'v0002', requestedBy: 'operator' }]]);
+    },
+  },
+  { operationId: 'transitionStart', status: 400, title: 'for a version id outside vNNNN', method: 'POST', url: TRANSITIONS_URL, as: OPERATOR, payload: { toVersion: '2' } },
+  { operationId: 'transitionStart', status: 401, title: 'without a credential', method: 'POST', url: TRANSITIONS_URL, as: 'none', payload: { toVersion: 'v0002' } },
+  { operationId: 'transitionStart', status: 403, title: 'for the gateway', method: 'POST', url: TRANSITIONS_URL, as: GATEWAY, payload: { toVersion: 'v0002' } },
+  {
+    operationId: 'transitionStart',
+    status: 409,
+    title: 'while another transition is in progress',
+    method: 'POST',
+    url: TRANSITIONS_URL,
+    as: OPERATOR,
+    payload: { toVersion: 'v0002' },
+    arrange: (s) => s.start.mockRejectedValue(new TransitionInProgressError(ACTIVE_TRANSITION_ID)),
+  },
+  {
+    operationId: 'transitionGet',
+    status: 200,
+    title: 'with the completed transition',
+    method: 'GET',
+    url: `${TRANSITIONS_URL}/${TRANSITION_ID}`,
+    as: OPERATOR,
+    arrange: (s) => s.transition.mockResolvedValue(COMPLETED_TRANSITION),
+    verify: (body, s) => {
+      expect(body).toEqual(COMPLETED_TRANSITION);
+      expect(s.transition.mock.calls).toEqual([[TRANSITION_ID]]);
+    },
+  },
+  { operationId: 'transitionGet', status: 401, title: 'without a credential', method: 'GET', url: `${TRANSITIONS_URL}/${TRANSITION_ID}`, as: 'none' },
+  { operationId: 'transitionGet', status: 403, title: 'for the gateway', method: 'GET', url: `${TRANSITIONS_URL}/${TRANSITION_ID}`, as: GATEWAY },
+  {
+    operationId: 'transitionGet',
+    status: 404,
+    title: 'for an id that names no transition',
+    method: 'GET',
+    url: `${TRANSITIONS_URL}/${TRANSITION_ID}`,
+    as: OPERATOR,
+    arrange: (s) => s.transition.mockRejectedValue(new TransitionNotFoundError(TRANSITION_ID)),
+  },
+];
+
+describe('declared answers over stubbed window, gate and transition services', () => {
+  let t: RouteApp;
+
+  beforeAll(async () => {
+    t = await buildRouteApp({ db: memoryMigrationDb().db, extraRoutes: registerStubbedRoutes });
+  });
+
+  afterAll(async () => {
+    await t?.close();
+  });
+
+  beforeEach(() => {
+    for (const stub of Object.values(stubs)) stub.mockReset().mockRejectedValue(new Error('the case did not arrange this stub'));
+  });
+
+  it('serves every contract operation, each with its declared transport, roles and site check, once the stubbed registrars join the composition', () => {
+    const registered = collectRouteMatrix(t.app).routes.map((route) => {
+      const template = toOpenApiTemplate(route.url);
+      const match = OPERATIONS.find(({ method, path }) => method === route.method && path === template);
+      return declaration(match?.operationId ?? `${route.method} ${template}`, route.transport, route.requires, route.public === true, route.siteCheck);
+    });
+    expect(registered.sort(byId)).toEqual(OPERATIONS.map(contractDeclaration).sort(byId));
+  });
+
+  it('registers the stubbed operations from the MIGRATION_ROUTES entries buildApp registers, at their contract method and path', () => {
+    const stubbed = [...WINDOW_ROUTES, ...GATES_ROUTES, ...TRANSITION_ROUTES];
+    expect(stubbed.map(({ operationId }) => operationId).sort()).toEqual([...ABSENT_OPERATIONS]);
+    for (const entry of stubbed) {
+      expect(MIGRATION_ROUTES).toContain(entry);
+      expect({ operationId: findOperation(DOC, entry.method, entry.path).operation.operationId, template: toOpenApiTemplate(entry.url) }).toEqual({
+        operationId: entry.operationId,
+        template: entry.path,
+      });
+    }
+  });
+
+  it("declares the platform's gate states and phases for each owner gate row", () => {
+    type GateSchema = { properties: Record<'state' | 'phase', { enum: unknown[] }> };
+    const gatesResponse = (DOC.components?.schemas as Record<string, { properties: { units: { items: { properties: { gate: GateSchema } } } } }>).GatesResponse;
+    const gate = gatesResponse?.properties.units.items.properties.gate.properties;
+    expect({ states: gate?.state.enum, phases: gate?.phase.enum }).toEqual({ states: [...GATE_STATES], phases: [...GATE_PHASES, null] });
+  });
+
+  it('has one answer case for every status the contract declares for a stubbed operation', () => {
+    expect([...new Set(STUBBED_CASES.map(({ operationId, status }) => `${operationId} ${status}`))].sort()).toEqual(declaredAnswers(STUBBED_OPERATIONS));
+  });
+
+  it.each(STUBBED_CASES)('$operationId $status $title', async (c) => {
+    c.arrange?.(stubs);
+    t.resetEffects();
+    const res = await sendCase(t.app, c);
+
+    expect(res.status).toBe(c.status);
+    expect(t.effects()).toEqual(NO_EFFECTS);
+    if (c.arrange === undefined) expect(stubCalls()).toBe(0);
+    c.verify?.(res.body, stubs);
+  });
+});
+
+describe('gateway client against the gateway contract', () => {
+  const ROUTE = OPEN_REQUEST.routeKey;
+  const BUDGET = { timeoutMs: 1000, intervalMs: 10 };
+  const ORPHAN: InflightRow = { instanceId: 'gw-0', route: ROUTE, side: 'legacy', count: 1, oldestStartedAt: AT };
+  const CLEAR: InflightClearRequest = { side: 'legacy', evidence: { kind: 'legacy-restart', holderId: WINDOW_ID, at: AT }, instanceIds: ['gw-0'] };
+  /** The gateway's status at `epoch`: one live instance that has seen it, and a dead one's orphaned legacy write on ROUTE. */
+  const statusAt = (epoch: number): CutoverStatus => ({
+    tableVersion: 'v0002',
+    previous: 'v0001',
+    epoch,
+    groupAuthority: {},
+    frozen: [ROUTE],
+    instances: [
+      { instanceId: 'gw-1', seenEpoch: epoch, heartbeatAt: AT, live: true },
+      { instanceId: 'gw-0', seenEpoch: epoch - 1, heartbeatAt: AT, live: false },
+    ],
+    acknowledgedEpoch: epoch,
+    inflight: [ORPHAN],
+    sessionMode: 'legacy-primary',
+  });
+  const respond: Responder = (req) => {
+    if (req.path === '/internal/v1/cutover/activate') return jsonAnswer(200, { tableVersion: 'v0002', epoch: 8 });
+    if (req.path === '/internal/v1/inflight:clear-orphans') return jsonAnswer(200, { cleared: 1 });
+    return jsonAnswer(200, statusAt(8));
+  };
+
+  it('sends each cut-over call contract-valid through the caller its operation admits, and reads each answer', async () => {
+    const calls: ContractCall[] = [];
+    const gateway = createGatewayClient({
+      migrationClient: contractClient('migration', respond, calls),
+      operatorClient: contractClient('operator', respond, calls),
+      clock: createMutableClock(AT),
+      sleep: () => Promise.resolve(),
+    });
+
+    expect([
+      await gateway.status(),
+      await gateway.activate('v0002'),
+      await gateway.freeze([ROUTE]),
+      await gateway.unfreeze([ROUTE]),
+      await gateway.awaitEpoch(8, BUDGET),
+      await gateway.awaitInflightDrained([ROUTE], BUDGET),
+      await gateway.clearOrphans(CLEAR),
+    ]).toEqual([statusAt(8), { tableVersion: 'v0002', epoch: 8 }, statusAt(8), statusAt(8), statusAt(8), { orphans: [ORPHAN] }, { cleared: 1 }]);
+    expect(calls.map(({ caller, operationId, status }) => [caller, operationId, status])).toEqual([
+      ['migration', 'cutoverStatus', 200],
+      ['operator', 'cutoverActivate', 200],
+      ['operator', 'cutoverFreeze', 200],
+      ['operator', 'cutoverUnfreeze', 200],
+      ['migration', 'cutoverStatus', 200],
+      ['migration', 'cutoverStatus', 200],
+      ['migration', 'inflightClearOrphans', 200],
+    ]);
+    for (const { caller, req } of calls) {
+      const requires = findOperation(producerContract('gateway'), req.method, req.path).operation['x-opt2-requires'];
+      expect(requires).toContain(caller === 'operator' ? 'platform.operator' : 'platform.migration');
+    }
   });
 });

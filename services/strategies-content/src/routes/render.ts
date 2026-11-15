@@ -44,7 +44,7 @@ export type RenderQuery = Readonly<Record<string, string | readonly string[] | u
 type RenderRoute = { Params: { size: string }; Querystring: RenderQuery };
 
 /** handleAPIRequest's file endpoints, compared without case as CFML `eq` compares (contentServer.cfc:599, 606). */
-const RENDER_PREFIXES = ['/_api/render/', '/tasks/render/'] as const;
+export const RENDER_PREFIXES = ['/_api/render/', '/tasks/render/'] as const;
 
 const ROUTE: { opt2: Opt2RouteConfig } = Object.freeze({ opt2: Object.freeze({ public: true, transport: 'service' }) });
 
