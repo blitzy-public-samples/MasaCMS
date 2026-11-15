@@ -1,8 +1,8 @@
-/** domain/changesets over a throwaway `content` schema: the cchangesets list, save, delete, assignments and removeItem, publish and rollback. */
+/** domain/changesets: bean values, write order over the recording pool, and the cchangesets operations, publish and rollback over a throwaway `content` schema. */
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
-import { pgAvailable } from '@opt2/platform/testing';
+import { TENANT_A, pgAvailable } from '@opt2/platform/testing';
 import {
   CHANGESET_LIST_NEXT_N,
   CHANGESET_LIST_UNBUILT,
@@ -14,16 +14,23 @@ import {
   newChangesetBean,
   publish,
   readChangeset,
+  readChangesetInTx,
   removeItem,
   rollback,
   saveChangeset,
+  saveChangesetInTx,
   setChangesetValues,
   type ChangesetBean,
 } from '../../src/domain/changesets.js';
 import { saveContent, saveDraft, type ContentInput } from '../../src/domain/content.js';
+import { CONTENT_CONFIG_DEFAULTS, actorFromClaims, type DomainDeps } from '../../src/domain/context.js';
 import { deleteMarkers } from '../../src/domain/trash.js';
 import { wddx2cfml, type WddxStruct } from '../../src/domain/wddx.js';
+import { createContentRepository } from '../../src/repo/repository.js';
+import { TEST_CLOCK, createRecordingDb, type RecordedStatement, type RecordingDb } from '../helpers/app.js';
 import { ADMIN, END, HOME, NOW, SITE, SITE_ID, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
+import { IDS, at, changesetRow } from '../helpers/seed.js';
+import { SUBJECT_CLAIMS, SUBJECT_USER_IDS, subjectSessionId } from '../helpers/tokens.js';
 
 const CHANGESET_TRASH = readFileSync(new URL('../fixtures/legacy-trash/changeset-trash.wddx', import.meta.url), 'utf8');
 const NOW_MINUTE = new Date(2026, 5, 30, 10, 15, 0, 0);
@@ -66,6 +73,143 @@ describe('change-set beans', () => {
     expect(PUBLISH_EVENTS_UNBUILT).toHaveLength(3);
   });
 });
+
+describe('change-set writes over the recording pool', () => {
+  const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
+  const S2 = actorFromClaims(
+    { iss: 'opt2-local-identity', aud: 'opt2-local', sub: SUBJECT_USER_IDS.s2, sid: subjectSessionId('s2'), epoch: 0, iat: 0, exp: 0, ...SUBJECT_CLAIMS.s2, roles: [...SUBJECT_CLAIMS.s2.roles] },
+    'Admin User',
+  );
+  const DUE = IDS.changesets.scheduledDue;
+  const STORED = changesetRow({ changesetid: DUE, name: 'Due Release', publishdate: at('2026-06-30T08:00:00') });
+  const SECONDS = new Date(2026, 6, 1, 12, 34, 56, 789);
+  const MINUTE = new Date(2026, 6, 1, 12, 34, 0, 0);
+  const CHANGESET_SELECT = /^SELECT \* FROM "content"\."changeset" WHERE /;
+  const TRACKED_WRITE = /^(INSERT INTO|UPDATE|DELETE FROM) "content"\."(changeset|changeset_category_assign|changeset_tag_assign|trash)" /;
+  const locked = (table: string): RegExp => new RegExp(`^SELECT \\* FROM "content"\\."${table}" WHERE .* FOR UPDATE$`);
+  const assignment = (n: number, values: { categoryid: string } | { tag: string }) => ({
+    tenant_id: TENANT_A.tenantId,
+    assignmentid: cfId('K', n),
+    changesetid: DUE,
+    siteid: TENANT_A.siteId,
+    ...values,
+  });
+
+  const deps = (db: RecordingDb): DomainDeps => ({
+    db,
+    repository: createContentRepository({ clock: TEST_CLOCK, schema: db.schema }),
+    clock: TEST_CLOCK,
+    config: CONTENT_CONFIG_DEFAULTS,
+  });
+
+  /** `<verb> <table>` of each change-set, assignment and trash write, in statement order. */
+  const trackedWrites = (db: RecordingDb): string[] =>
+    db.writes().flatMap(({ sql }) => {
+      const match = TRACKED_WRITE.exec(sql);
+      return match === null ? [] : [`${match[1]} ${match[2]}`];
+    });
+
+  /** The values the first write starting with `prefix` binds: an INSERT's columns, or an UPDATE's SET list. */
+  function boundValues(db: RecordingDb, prefix: string): Record<string, unknown> {
+    const statement: RecordedStatement | undefined = db.writes().find(({ sql }) => sql.startsWith(prefix));
+    if (statement === undefined) throw new Error(`no write starts with ${prefix}`);
+    const insert = /^INSERT INTO \S+ \((.+?)\) VALUES \((.+?)\)/.exec(statement.sql);
+    const pairs =
+      insert === null
+        ? (/ SET (.+?) WHERE /.exec(statement.sql)?.[1] ?? '').split(', ').map((pair) => pair.split(' = '))
+        : (insert[1] ?? '').split(', ').map((column, i) => [column, (insert[2] ?? '').split(', ')[i] ?? '']);
+    return Object.fromEntries(pairs.map(([column = '', placeholder = '']) => [column.replace(/"/g, ''), statement.params[Number(placeholder.slice(1)) - 1]]));
+  }
+
+  it('inserts a bean saved without an id under a new CF UUID, its dates to the minute and created and lastupdate at the clock’s now', async () => {
+    const db = createRecordingDb();
+    const bean: ChangesetBean = {
+      ...newChangesetBean(S2, TEST_CLOCK, {
+        siteid: S2.siteId,
+        name: 'Autumn',
+        publishdate: SECONDS,
+        remotepubdate: new Date(2026, 6, 2, 8, 0, 59, 999),
+        closedate: new Date(2026, 6, 3, 23, 59, 1, 0),
+        categoryid: `${cfId('C', 1)},${cfId('C', 2)}`,
+        tags: 'promo,sale',
+      }),
+      changesetid: '',
+    };
+    const saved = await withGatedTenant(db, S2.tenantId, (tx) => saveChangesetInTx(tx, deps(db).repository, bean, S2));
+    expect(saved).toMatchObject({ errors: {}, lastupdateby: 'Admin User', lastupdatebyid: SUBJECT_USER_IDS.s2 });
+    expect(saved.changesetid).toMatch(CF_UUID);
+    expect(trackedWrites(db)).toEqual([
+      'INSERT INTO changeset',
+      'INSERT INTO changeset_category_assign',
+      'INSERT INTO changeset_category_assign',
+      'INSERT INTO changeset_tag_assign',
+      'INSERT INTO changeset_tag_assign',
+    ]);
+    expect(boundValues(db, 'INSERT INTO "content"."changeset" ')).toMatchObject({
+      tenant_id: TENANT_A.tenantId,
+      changesetid: saved.changesetid,
+      name: 'Autumn',
+      publishdate: MINUTE,
+      remotepubdate: new Date(2026, 6, 2, 8, 0, 0, 0),
+      closedate: new Date(2026, 6, 3, 23, 59, 0, 0),
+      created: TEST_CLOCK.now(),
+      lastupdate: TEST_CLOCK.now(),
+      lastupdateby: 'Admin User',
+    });
+    expect(db.writes().every((statement) => statement.tenantId === TENANT_A.tenantId)).toBe(true);
+  });
+
+  it('updates a stored change set, then deletes each assignment table’s rows before inserting its new ones', async () => {
+    const db = createRecordingDb();
+    db.respond(CHANGESET_SELECT, [STORED]);
+    db.respond(/^UPDATE "content"\."changeset" SET /, [STORED]);
+    db.respond(locked('changeset_category_assign'), [assignment(1, { categoryid: cfId('C', 1) }), assignment(2, { categoryid: cfId('C', 2) })]);
+    db.respond(locked('changeset_tag_assign'), [assignment(3, { tag: 'old' })]);
+    const repository = deps(db).repository;
+    const saved = await withGatedTenant(db, S2.tenantId, async (tx) => {
+      const read = await readChangesetInTx(tx, repository, { changesetId: DUE }, S2, TEST_CLOCK);
+      return saveChangesetInTx(tx, repository, { ...read, name: 'Due Release v2', publishdate: SECONDS, categoryid: cfId('C', 3), tags: 'fresh,new' }, S2);
+    });
+    expect(saved).toMatchObject({ changesetid: DUE, isnew: 0, errors: {} });
+    expect(trackedWrites(db)).toEqual([
+      'UPDATE changeset',
+      'DELETE FROM changeset_category_assign',
+      'DELETE FROM changeset_category_assign',
+      'INSERT INTO changeset_category_assign',
+      'DELETE FROM changeset_tag_assign',
+      'INSERT INTO changeset_tag_assign',
+      'INSERT INTO changeset_tag_assign',
+    ]);
+    const set = boundValues(db, 'UPDATE "content"."changeset" ');
+    expect(set).toMatchObject({ name: 'Due Release v2', publishdate: MINUTE, lastupdate: TEST_CLOCK.now(), lastupdatebyid: SUBJECT_USER_IDS.s2 });
+    expect(set).not.toHaveProperty('created');
+    expect(boundValues(db, 'INSERT INTO "content"."changeset_category_assign" ')).toMatchObject({ changesetid: DUE, categoryid: cfId('C', 3) });
+  });
+
+  it('throws a deleted change set in as object class changeset before deleting its row and assignments', async () => {
+    const db = createRecordingDb();
+    db.respond(CHANGESET_SELECT, [STORED]);
+    db.respond(/^DELETE FROM "content"\."changeset" /, [STORED]);
+    db.respond(locked('changeset_category_assign'), [assignment(1, { categoryid: cfId('C', 1) })]);
+    db.respond(locked('changeset_tag_assign'), [assignment(2, { tag: 'old' })]);
+    const deleted = await deleteChangeset(deps(db), S2, DUE);
+    expect(trackedWrites(db)).toEqual(['INSERT INTO trash', 'DELETE FROM changeset', 'DELETE FROM changeset_category_assign', 'DELETE FROM changeset_tag_assign']);
+    expect(deleted.trash).toMatchObject({ objectid: DUE, objectclass: 'changeset', objectlabel: 'Due Release', siteid: TENANT_A.siteId, deletedby: 'Admin User' });
+    expect(deleted.deleted).toMatchObject({ changesetid: DUE });
+  });
+
+  it('binds the keyword, the date range ending the day after the stop date and page 2 as LIMIT 20 OFFSET 20', async () => {
+    const db = createRecordingDb();
+    db.respond(/^SELECT count\(\*\)::integer AS total FROM \(SELECT \* FROM "content"\."changeset" WHERE /, [{ total: 25 }]);
+    db.respond(/^SELECT \* FROM "content"\."changeset" WHERE .* LIMIT \$\d+ OFFSET \$\d+$/, [STORED]);
+    const listed = await listChangesets(deps(db), S2, { siteid: S2.siteId, keywords: 'Due', startdate: '06/01/2026', stopdate: '06/30/2026', page: '2' });
+    expect(listed).toMatchObject({ recordCount: 25, pageIndex: 2, nextN: 20, stopdate: new Date(2026, 6, 1) });
+    expect(listed.changesets).toEqual([expect.objectContaining({ changesetid: DUE, name: 'Due Release', isnew: 1 })]);
+    const page = db.statements.find(({ sql }) => / LIMIT \$\d+ OFFSET \$\d+$/.test(sql));
+    expect(page?.params).toEqual([TENANT_A.tenantId, TENANT_A.siteId, new Date(2026, 5, 1), new Date(2026, 6, 1), expect.stringContaining('Due'), 20, 20]);
+  });
+});
+
 
 describe.skipIf(!(await pgAvailable()))('domain/changesets', () => {
   let fx: ContentFixture;
@@ -198,5 +342,16 @@ describe.skipIf(!(await pgAvailable()))('domain/changesets', () => {
     expect(missing.deleted).toBeNull();
     expect(missing.trash).toMatchObject({ objectclass: 'changeset', siteid: ADMIN.siteId });
     expect(missing.trash?.objectid).not.toBe(cfId('S', 8));
+  });
+
+  it('publishes a Link version without leaving a row Masa’s start-up URL conversion would rewrite', async () => {
+    const CS4 = cfId('S', 4);
+    await saveChangeset(fx.deps, ADMIN, { changesetid: CS4, siteid: SITE_ID, name: 'Links' });
+    const link = await saveDraft(fx.deps, ADMIN, SITE, { siteid: SITE_ID, parentid: HOME, type: 'Link', title: 'Docs', body: 'https://example.org/docs', changesetid: CS4 });
+    expect((await publish(fx.deps, ADMIN, SITE, CS4)).published).toBe(true);
+    const [active] = await content('contentid = $1 AND active = 1', [link.bean.contentId()]);
+    expect(active).toMatchObject({ type: 'Link', approved: 1, body: 'https://example.org/docs', filename: 'docs' });
+    // onApplicationStart_include.cfm:896-899 under SQL Server's case-insensitive, trailing-space-blind comparison.
+    expect(await content("lower(rtrim(type)) IN ('file', 'link') AND active = 1 AND body IS NULL AND filename IS NOT NULL")).toEqual([]);
   });
 });

@@ -1,7 +1,7 @@
-/** Content stats and ratings: the stats bean's defaults, setters and value struct, its load/save, the comment stat and the rating reads. */
+/** Content stats and ratings: the stats bean's defaults, setters and value struct, its load/save, the comment stat, the rating reads and the JSON API `stats` findOne route. */
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { UnitNotAuthoritativeError, closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
@@ -17,7 +17,10 @@ import {
   type ContentStats,
 } from '../../src/domain/stats.js';
 import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
-import { CONTENT_UNITS } from '../../src/repo/tables.js';
+import { CONTENT_UNITS, UNIT_OF } from '../../src/repo/tables.js';
+import { TEST_CLOCK, buildTestApp, createRecordingDb, type RecordingDb, type TestApp } from '../helpers/app.js';
+import { IDS, seedRecordingDb } from '../helpers/seed.js';
+import { contentHeaders, type ContentSubject } from '../helpers/tokens.js';
 
 const cfId = (prefix: string, n: number): string => `${prefix}${String(n).padStart(7, '0')}-AAAA-BBBB-CCCCDDDDEEEEFFFF`;
 const NOW = new Date(2026, 5, 30, 10, 15, 42, 123);
@@ -34,6 +37,24 @@ const lowerKeys = (values: object): Record<string, unknown> =>
   Object.fromEntries(Object.entries(values).map(([key, value]) => [key.toLowerCase(), value]));
 
 describe('STATS_DEFAULTS and statsValues', () => {
+  it('STATS_DEFAULTS holds the contentStatsBean init values: zero counts and versions, empty keys and lock', () => {
+    expect(STATS_DEFAULTS).toEqual({
+      contentID: '',
+      siteID: '',
+      views: 0,
+      rating: 0,
+      totalVotes: 0,
+      upVotes: 0,
+      downVotes: 0,
+      comments: 0,
+      disableComments: 0,
+      majorVersion: 0,
+      minorVersion: 0,
+      lockID: '',
+      lockType: '',
+    });
+  });
+
   it('reproduce the recorded getContentStats struct of an item without a stats row', () => {
     const values = statsValues({ ...STATS_DEFAULTS, contentID: HOME_ID, siteID: 'default' });
     expect(lowerKeys(values)).toEqual(RECORDED_NO_ROW_JSON);
@@ -265,4 +286,165 @@ describe.skipIf(!(await pgAvailable()))('domain/stats over a throwaway content s
     expect(top.every((row) => !('fileid' in row))).toBe(true);
     expect(await inA((tx) => getTopRated(tx, repo, { siteId: SITE, threshold: 3 }))).toEqual([]);
   });
+});
+
+const STATS_TABLE = /"content"\."content_stats"/;
+const STORED_ID = cfId('M', 1);
+const STORED_ROW = Object.freeze({
+  tenant_id: TENANT_A.tenantId,
+  contentid: STORED_ID,
+  siteid: SITE,
+  views: 12,
+  rating: 3.5,
+  totalvotes: 4,
+  upvotes: 3,
+  downvotes: 1,
+  comments: 2,
+  disablecomments: 1,
+  majorversion: 2,
+  minorversion: 1,
+  lockid: cfId('U', 9),
+  locktype: 'node',
+});
+const STORED_STATS: ContentStats = {
+  contentID: STORED_ID,
+  siteID: SITE,
+  views: 12,
+  rating: 3.5,
+  totalVotes: 4,
+  upVotes: 3,
+  downVotes: 1,
+  comments: 2,
+  disableComments: 1,
+  majorVersion: 2,
+  minorVersion: 1,
+  lockID: cfId('U', 9),
+  lockType: 'node',
+};
+
+/** The verb and table a write statement names, e.g. `UPDATE "content"."content_stats"`. */
+const writeTarget = (sql: string): string => /^(INSERT INTO|UPDATE|DELETE FROM) (\S+)/.exec(sql)?.slice(1, 3).join(' ') ?? sql;
+
+describe('domain/stats over the recording database', () => {
+  const memoryRepo = createContentRepository({ clock: TEST_CLOCK });
+  let db: RecordingDb;
+  const inMemory = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> => withTenant(db, TENANT_A.tenantId, fn);
+  /** Answers every content_stats statement with the stored row, and its UPDATE with `updated`. */
+  const storeRow = (updated: object = STORED_ROW): void =>
+    db.respond(STATS_TABLE, (_params, sql) => [{ ...(/^UPDATE /.test(sql) ? updated : STORED_ROW) }]);
+
+  beforeEach(() => {
+    db = createRecordingDb();
+    seedRecordingDb(db);
+  });
+
+  it('loadStats of a node without a stats row answers the defaults keyed to it with one tenant read and no write', async () => {
+    const stats = await inMemory((tx) => loadStats(tx, memoryRepo, IDS.content.pageOne, SITE));
+    expect(stats).toEqual({ ...STATS_DEFAULTS, contentID: IDS.content.pageOne, siteID: SITE });
+    expect(db.statements.filter((s) => STATS_TABLE.test(s.sql)).map((s) => s.tenantId)).toEqual([TENANT_A.tenantId]);
+    expect(db.writes()).toEqual([]);
+  });
+
+  it('loadStats overlays a stored row on the defaults as a loaded bean, which statsValues keys as getAllValues does, and writes nothing', async () => {
+    storeRow();
+    const stats = await inMemory((tx) => loadStats(tx, memoryRepo, STORED_ID, SITE));
+    expect(stats).toEqual({ ...STORED_STATS, isNew: 0 });
+    expect(statsValues(stats)).toEqual({ ...STORED_STATS, isNew: 0 });
+    expect(Object.keys(statsValues(stats))).toEqual([...Object.keys(STATS_DEFAULTS), 'isNew']);
+    expect(db.writes()).toEqual([]);
+  });
+
+  it('saveStatsInTx inserts a missing row in one content_stats write, under the unit write gate and logged in the changelog', async () => {
+    expect(await inMemory((tx) => saveStatsInTx(tx, memoryRepo, STORED_STATS))).toEqual(STORED_STATS);
+    const writes = db.writes();
+    expect(writes.map(({ sql }) => writeTarget(sql))).toEqual(['INSERT INTO "content"."content_stats"', 'INSERT INTO "content"."changelog"']);
+    expect(writes[0]?.params).toEqual([TENANT_A.tenantId, STORED_ID, SITE, 12, 3.5, 4, 3, 1, 2, 1, 2, 1, cfId('U', 9), 'node']);
+    expect(writes[1]?.params.slice(1, 3)).toEqual(['content_stats', 'insert']);
+    const gate = db.statements.findIndex(
+      (s) => /"unit_gate" .*FOR SHARE$/.test(s.sql) && JSON.stringify(s.params).includes(UNIT_OF.content_stats),
+    );
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(db.statements.indexOf(writes[0] as (typeof db.statements)[number]));
+  });
+
+  it('saveStatsInTx updates a stored row in one content_stats write, storing an empty lock as NULL, logged as an update', async () => {
+    storeRow({ ...STORED_ROW, views: 13, lockid: null, locktype: null });
+    const changed: ContentStats = { ...STORED_STATS, views: 13, lockID: '', lockType: '', isNew: 0 };
+    expect(await inMemory((tx) => saveStatsInTx(tx, memoryRepo, changed))).toEqual(changed);
+    const writes = db.writes();
+    expect(writes.map(({ sql }) => writeTarget(sql))).toEqual(['UPDATE "content"."content_stats"', 'INSERT INTO "content"."changelog"']);
+    expect(writes[0]?.params.slice(0, 11)).toEqual([13, 3.5, 4, 3, 1, 2, 1, 2, 1, null, null]);
+    expect(writes[1]?.params.slice(1, 3)).toEqual(['content_stats', 'update']);
+  });
+
+  it('saveStatsInTx writes nothing while legacy holds the stats unit', async () => {
+    db.setGate(UNIT_OF.content_stats, 'legacy');
+    await expect(inMemory((tx) => saveStatsInTx(tx, memoryRepo, STORED_STATS))).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
+    expect(db.writes()).toEqual([]);
+  });
+});
+
+describe('JSON API stats findOne route', () => {
+  const node = IDS.content.pageOne;
+  const api = `http://localhost/index.cfm/_api/json/v1/${SITE}`;
+  let t: TestApp;
+
+  const getStats = async (subject: ContentSubject): Promise<{ status: number; body: unknown }> => {
+    t.db.clear();
+    const res = await t.app.inject({ method: 'GET', url: `/_api/json/v1/${SITE}/stats/${node}`, headers: await contentHeaders(subject, { site: SITE }) });
+    return { status: res.statusCode, body: JSON.parse(res.body) as unknown };
+  };
+
+  beforeAll(async () => {
+    const db = createRecordingDb();
+    seedRecordingDb(db);
+    t = await buildTestApp({ db });
+  });
+
+  afterAll(async () => {
+    await t?.close();
+  });
+
+  it.each<ContentSubject>(['s2', 'site-admin', 'editor'])(
+    'answers %s the recorded bean defaults of a node without a stats row in the envelope, writing nothing',
+    async (subject) => {
+      expect(await getStats(subject)).toEqual({
+        status: 200,
+        body: {
+          apiversion: 'v1',
+          method: 'findOne',
+          data: {
+            ...RECORDED_NO_ROW_JSON,
+            contentid: node,
+            siteid: SITE,
+            id: node,
+            links: {
+              entities: api,
+              all: `${api}/stats`,
+              properties: `${api}/stats/properties`,
+              self: `${api}/stats/${node}`,
+              permissions: `${api}/stats/${node}/permissions`,
+              content: `${api}/content/${node}`,
+              site: `${api}/site`,
+            },
+            entityname: 'stats',
+          },
+        },
+      });
+      expect(t.db.statements.some((s) => STATS_TABLE.test(s.sql))).toBe(true);
+      expect(t.db.writes()).toEqual([]);
+    },
+  );
+
+  it.each<ContentSubject>(['anonymous', 'member', 'system-user'])(
+    'answers %s, who lacks the content module, the legacy authorization error without reading stats',
+    async (subject) => {
+      expect(await getStats(subject)).toEqual({
+        status: 401,
+        body: { apiversion: 'v1', method: 'findOne', error: { code: 'invalid_request', message: 'Insufficient Account Permissions' } },
+      });
+      expect(t.db.statements.some((s) => STATS_TABLE.test(s.sql))).toBe(false);
+      expect(t.db.writes()).toEqual([]);
+    },
+  );
 });
