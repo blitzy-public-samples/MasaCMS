@@ -1,10 +1,10 @@
-/** Every registered strategies-content route against contracts/openapi.yaml: its declaration, and its responses through `app.inject`. */
+/** strategies-content against contracts/openapi.yaml: the document, every registered route's declaration, and responses through `app.inject`. */
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { Roles, collectRouteMatrix, moduleRole, type RouteMatrixEntry } from '@opt2/platform/auth';
-import { buildPushBody, encodeEnvelope, type EventEnvelope } from '@opt2/platform/events';
+import { Roles, collectRouteMatrix, moduleRole, transportForPath, type RouteMatrixEntry } from '@opt2/platform/auth';
+import { buildPushBody, encodeEnvelope, pushPath, type EventEnvelope } from '@opt2/platform/events';
 import { WRITE_POSITION_HEADER_LC } from '@opt2/platform/migration-kit';
 import {
   TENANT_A,
@@ -17,6 +17,7 @@ import {
   type InjectResponse,
 } from '@opt2/platform/testing';
 import {
+  CONTENT_SUBSCRIPTIONS,
   GROUP_CHANGED_SUBSCRIPTION,
   GROUP_CHANGED_TOPIC,
   MEMBERSHIP_CHANGED_SUBSCRIPTION,
@@ -26,50 +27,123 @@ import {
   SITE_CHANGED_SUBSCRIPTION,
   SITE_CHANGED_TOPIC,
 } from '../../src/events/consumers.js';
+import { FEED_AUTO_IMPORT_PATH, PUBLISH_SCHEDULED_CHANGESETS_PATH } from '../../src/jobs/index.js';
 import { mappings } from '../../src/migration/mappings/index.js';
 import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
-import { FAKE_XID, SERVICE, TEST_CLOCK, buildContentApp, serviceHeaders, userHeaders, type ContentTestApp } from '../helpers/app.js';
-import { tasksHeaders } from '../helpers/tokens.js';
+import {
+  FAKE_XID,
+  SERVICE,
+  TEST_CLOCK,
+  buildContentApp,
+  buildTestApp,
+  serviceHeaders,
+  userHeaders,
+  type ContentTestApp,
+  type TestApp,
+} from '../helpers/app.js';
+import { FILE_BYTES, IDS, feedRow, seedMemoryStorage, seedRecordingDb } from '../helpers/seed.js';
+import { contentHeaders, tasksHeaders } from '../helpers/tokens.js';
 
 type Json = Record<string, unknown>;
 
 interface OpenApiDoc {
+  openapi: string;
+  info: Json;
   paths: Record<string, Record<string, Json>>;
+  components: { parameters: Record<string, Json> };
+  'x-opt2-entity-access': Json;
+}
+
+/** One contract operation and its declaration, keyed `METHOD path`. */
+interface ContractOperation {
+  key: string;
+  method: string;
+  path: string;
+  operationId: string;
+  requires: unknown;
+  public: unknown;
+  transport: unknown;
+  /** Its `x-opt2-route-keys` and `x-opt2-legacy-actions`. */
+  legacyNames: string[];
 }
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
-const HTTP_METHODS = ['get', 'post', 'put', 'delete', 'patch'] as const;
+const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
+const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch', 'head', 'options'] as const;
+const TRANSPORTS: readonly unknown[] = ['service', 'pubsub-push', 'cloud-tasks'];
 
-/** The contract operations the service's source registers a route for. */
-const SERVED_OPERATIONS = [
-  'healthz',
-  'getHeaderPrompts',
-  'lookupFileExtensions',
-  'lookupContentLinks',
-  'commentsProxyGet',
-  'commentsProxyPost',
-  'migrationApply',
-  'migrationExport',
-  'migrationChanges',
-  'migrationPosition',
-  'migrationWatermarkGet',
-  'migrationWatermarkPost',
-  'migrationGate',
-  'migrationPutObject',
-  'migrationGetObject',
-  'migrationDeleteObject',
-  'getFileDownloadUrl',
-  'getLocalContentFile',
-  'pushSiteChanged',
-  'pushGroupChanged',
-  'pushPermissionChanged',
-  'pushMembershipChanged',
-  'jobPublishScheduledChangesets',
-  'jobFeedAutoImport',
-  'queuePause',
-  'queueResume',
-  'queueEnsure',
-] as const;
+// The rater save carries in the inventory, but rating writes stay on legacy (domain/stats.ts) and v0002 keeps its route
+// legacy, so no route module serves it; app.test.ts and routes-registry.test.ts exempt the same operation. Serving it fails
+// the 'serves none' test below until the name is removed here.
+/** Contract operations no route serves yet. */
+const UNSERVED_OPERATIONS: readonly string[] = ['raterSaveRatePost'];
+
+/** Legacy-served, decision-list and halted actions this service must neither declare nor register. */
+const NOT_BUILT = ['processAsyncObject', 'swagger', 'declareEntity', 'undeclareEntity', 'checkSchema', 'cropimage', 'rotateimage', 'flipimage', 'upload=image'];
+const NOT_BUILT_NAMES = new RegExp(NOT_BUILT.join('|'), 'gi');
+const NOT_BUILT_NAME = new RegExp(NOT_BUILT.join('|'), 'i');
+
+const operationAt = (item: Record<string, Json>, verb: string): Json | undefined => item[verb];
+
+const OPERATIONS: readonly ContractOperation[] = Object.entries(OPENAPI.paths).flatMap(([path, item]) =>
+  HTTP_METHODS.flatMap((verb) => {
+    const op = operationAt(item, verb);
+    if (op === undefined) return [];
+    const method = verb.toUpperCase();
+    const names = [op['x-opt2-route-keys'], op['x-opt2-legacy-actions']].flatMap((list) => (Array.isArray(list) ? list.map(String) : []));
+    return [
+      {
+        key: `${method} ${path}`,
+        method,
+        path,
+        operationId: String(op.operationId),
+        requires: op['x-opt2-requires'],
+        public: op['x-opt2-public'],
+        transport: op['x-opt2-transport'],
+        legacyNames: names,
+      },
+    ];
+  }),
+);
+
+/** Names of the `x-opt2-wildcard` path parameters of `template`'s path item and operations, `$ref`s resolved. */
+function wildcardNames(template: string): Set<string> {
+  const item = OPENAPI.paths[template] ?? {};
+  const params = [item.parameters, ...HTTP_METHODS.map((verb) => operationAt(item, verb)?.parameters)].flatMap((list) =>
+    Array.isArray(list) ? (list as Json[]) : [],
+  );
+  const resolved = params.map((param) =>
+    typeof param.$ref === 'string' ? (OPENAPI.components.parameters[param.$ref.replace('#/components/parameters/', '')] ?? {}) : param,
+  );
+  return new Set(resolved.filter((param) => param.in === 'path' && param['x-opt2-wildcard'] === true).map((param) => String(param.name)));
+}
+
+/** A Fastify url in contract form: escaped `::` as `:`, `:name` as `{name}`, a trailing `*` as the contract's wildcard parameter there. */
+function contractPath(url: string): string {
+  const path = url.replaceAll('::', '\0').replace(/:(\w+)/g, '{$1}').replaceAll('\0', ':');
+  if (!path.endsWith('/*')) return path;
+  const prefix = path.slice(0, -1);
+  const template = Object.keys(OPENAPI.paths).find((candidate) => {
+    const name = /^\{(\w+)\}$/.exec(candidate.slice(prefix.length))?.[1];
+    return candidate.startsWith(prefix) && name !== undefined && wildcardNames(candidate).has(name);
+  });
+  return template ?? path;
+}
+
+/** Registered routes of `app` keyed `METHOD path` in contract form, without HEAD twins of GET routes the contract does not declare. */
+function registeredRoutes(app: TestApp['app']): Map<string, RouteMatrixEntry> {
+  const declared = new Set(OPERATIONS.map((op) => op.key));
+  const keyed = new Map<string, RouteMatrixEntry>(collectRouteMatrix(app).routes.map((route) => [`${route.method} ${contractPath(route.url)}`, route]));
+  for (const key of [...keyed.keys()]) {
+    if (key.startsWith('HEAD ') && keyed.has(key.replace(/^HEAD /, 'GET ')) && !declared.has(key)) keyed.delete(key);
+  }
+  return keyed;
+}
+
+/** Distinct sorted role names of a declaration. */
+function roleSet(roles: unknown): string[] {
+  return [...new Set(Array.isArray(roles) ? roles.map(String) : [])].sort();
+}
 
 const SITE_A = TENANT_A.siteId;
 const SITE_B = TENANT_B.siteId;
@@ -91,6 +165,7 @@ const OBJECT_BYTES = Buffer.from('legacy file-store bytes');
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
 let t: ContentTestApp;
+let full: TestApp;
 
 /** The request a test sends. */
 interface Request {
@@ -124,74 +199,130 @@ function flat(params: readonly unknown[]): unknown[] {
   return params.flatMap((value) => (Array.isArray(value) ? (value as unknown[]) : [value]));
 }
 
-/** The served operations as Fastify would register them: path parameters as `:name`, unless the contract names the Fastify path. */
-function servedRoutes(): Record<string, unknown>[] {
-  const routes: Record<string, unknown>[] = [];
-  for (const [template, item] of Object.entries(OPENAPI.paths)) {
-    for (const method of HTTP_METHODS) {
-      const operation = item[method] as Json | undefined;
-      if (operation === undefined || !(SERVED_OPERATIONS as readonly unknown[]).includes(operation.operationId)) continue;
-      const fastifyPath = operation['x-opt2-fastify-path'];
-      const requires = operation['x-opt2-requires'];
-      routes.push({
-        method: method.toUpperCase(),
-        url: typeof fastifyPath === 'string' ? fastifyPath : template.replace(/\{(\w+)\}/g, ':$1'),
-        transport: operation['x-opt2-transport'],
-        ...(Array.isArray(requires) ? { requires: [...(requires as string[])].sort() } : {}),
-        ...(operation['x-opt2-public'] === true ? { public: true } : {}),
-      });
-    }
-  }
-  return routes.sort(byRoute);
-}
-
-function byRoute(a: Record<string, unknown>, b: Record<string, unknown>): number {
-  return `${String(a.method)} ${String(a.url)}` < `${String(b.method)} ${String(b.url)}` ? -1 : 1;
-}
-
-/** A registered route in the comparable form of servedRoutes. */
-function registered(route: RouteMatrixEntry): Record<string, unknown> {
-  return {
-    method: route.method,
-    url: route.url,
-    transport: route.transport,
-    ...(route.requires === undefined ? {} : { requires: [...route.requires].sort() }),
-    ...(route.public === true ? { public: true } : {}),
-  };
-}
+/** identity's admin-session state and CSRF token issue, which the admin raw views call for every render. */
+const ADMIN_STATE_PATH = '/v1/sessions/current/admin-state';
+const CSRF_TOKENS_PATH = '/v1/csrf/tokens';
 
 beforeAll(async () => {
   t = await buildContentApp();
+  full = await buildTestApp();
+  seedMemoryStorage(full.storage);
+  for (const method of ['GET', 'POST'] as const) {
+    full.client.on('identity', method, ADMIN_STATE_PATH, () => ({ status: 200, headers: {}, body: {} }));
+  }
+  full.client.on('identity', 'POST', CSRF_TOKENS_PATH, (req) => ({
+    status: 200,
+    headers: {},
+    body: { tokens: (req.json as { contexts: string[] }).contexts.map((context) => ({ context, csrf_token: 'T', csrf_token_expires: '260630235959000' })) },
+  }));
 });
 
 afterAll(async () => {
   await t?.close();
+  await full?.close();
 });
 
 beforeEach(() => {
   t.db.reset();
   t.publisher.clear();
+  full.db.reset();
+  seedRecordingDb(full.db);
+  full.client.clear();
 });
 
-describe('route declarations', () => {
-  it('names every served operation exactly once in the contract', () => {
-    const operationIds = Object.values(OPENAPI.paths).flatMap((item) =>
-      HTTP_METHODS.flatMap((method) => (item[method] === undefined ? [] : [item[method]?.operationId])),
-    );
-    expect(SERVED_OPERATIONS.map((id) => operationIds.filter((candidate) => candidate === id).length)).toEqual(SERVED_OPERATIONS.map(() => 1));
+describe('contract document', () => {
+  it('is OpenAPI 3.1.0 at version 1.0.0 carrying the pinned source SHA', () => {
+    expect({ openapi: OPENAPI.openapi, version: OPENAPI.info.version, sha: OPENAPI.info['x-source-sha'] }).toEqual({
+      openapi: '3.1.0',
+      version: '1.0.0',
+      sha: PIN.sha,
+    });
   });
 
-  it('registers exactly the served operations, each with its contract transport and roles', () => {
-    expect(collectRouteMatrix(t.app).routes.map(registered).sort(byRoute)).toEqual(servedRoutes());
+  it('declares on every operation exactly one of a role list or public access, and a known transport', () => {
+    const faults = OPERATIONS.filter((op) => {
+      const declaresRoles = Array.isArray(op.requires) && op.requires.length > 0;
+      const roleFormOk = declaresRoles || op.requires === undefined;
+      return declaresRoles === (op.public === true) || !roleFormOk || !TRANSPORTS.includes(op.transport);
+    }).map((op) => ({ operation: op.key, requires: op.requires, public: op.public, transport: op.transport }));
+    expect(faults).toEqual([]);
+  });
+
+  it('declares each operation with the transport its path takes', () => {
+    const faults = OPERATIONS.filter((op) => op.transport !== transportForPath(op.path)).map((op) => ({
+      operation: op.key,
+      declared: op.transport,
+      path: transportForPath(op.path),
+    }));
+    expect(faults).toEqual([]);
+  });
+
+  it('declares one Pub/Sub push operation for the Pub/Sub invoker per consumed subscription', () => {
+    const pushes = OPERATIONS.filter((op) => op.path.startsWith('/internal/v1/events/'));
+    expect(pushes).toHaveLength(4);
+    expect(pushes.map((op) => op.path).sort()).toEqual(CONTENT_SUBSCRIPTIONS.map((subscription) => pushPath(subscription)).sort());
+    expect(pushes.map((op) => [op.method, op.transport, op.requires])).toEqual(pushes.map(() => ['POST', 'pubsub-push', ['service:pubsub-invoker']]));
+  });
+
+  it('declares both site-monitor job steps as Cloud Tasks deliveries for the tasks invoker', () => {
+    const jobs = [PUBLISH_SCHEDULED_CHANGESETS_PATH, FEED_AUTO_IMPORT_PATH].map((path) => OPERATIONS.find((op) => op.key === `POST ${path}`));
+    expect(jobs.map((op) => ({ transport: op?.transport, invoker: roleSet(op?.requires).includes('service:tasks-invoker') }))).toEqual([
+      { transport: 'cloud-tasks', invoker: true },
+      { transport: 'cloud-tasks', invoker: true },
+    ]);
+  });
+
+  it('names none of the legacy-served, decision-list or halted actions in an operation or the entity access table', () => {
+    const named = OPERATIONS.flatMap((op) =>
+      [op.path, op.operationId, ...op.legacyNames].flatMap((text) => (text.match(NOT_BUILT_NAMES) ?? []).map((hit) => `${op.key}: ${hit}`)),
+    );
+    const entityAccess = JSON.stringify(OPENAPI['x-opt2-entity-access']).match(NOT_BUILT_NAMES) ?? [];
+    expect({ named, entityAccess }).toEqual({ named: [], entityAccess: [] });
+  });
+});
+
+describe('route parity', () => {
+  it('registers exactly the contract operations, apart from the unserved ones', () => {
+    const registered = registeredRoutes(full.app);
+    const declared = new Set(OPERATIONS.filter((op) => !UNSERVED_OPERATIONS.includes(op.operationId)).map((op) => op.key));
+    expect([...registered.keys()].filter((key) => !declared.has(key)).sort(), 'routes registered but not in contract').toEqual([]);
+    expect([...declared].filter((key) => !registered.has(key)).sort(), 'contract operations no route registers').toEqual([]);
+  });
+
+  it('serves none of the unserved operations, each of which the contract still declares', () => {
+    const registered = registeredRoutes(full.app);
+    const unserved = OPERATIONS.filter((op) => UNSERVED_OPERATIONS.includes(op.operationId));
+    expect(unserved.map((op) => op.operationId).sort()).toEqual([...UNSERVED_OPERATIONS].sort());
+    expect(unserved.filter((op) => registered.has(op.key)).map((op) => op.key)).toEqual([]);
+  });
+
+  it('registers every route with its contract roles, public access and transport', () => {
+    const registered = registeredRoutes(full.app);
+    const mismatches: Record<'requires' | 'public' | 'transport', Json[]> = { requires: [], public: [], transport: [] };
+    for (const op of OPERATIONS) {
+      const route = registered.get(op.key);
+      if (route === undefined) continue;
+      const [app, contract] = [roleSet(route.requires), roleSet(op.requires)];
+      if (app.join() !== contract.join()) mismatches.requires.push({ route: op.key, app, contract });
+      if (Boolean(route.public) !== Boolean(op.public)) mismatches.public.push({ route: op.key, app: route.public, contract: op.public });
+      if (route.transport !== op.transport) mismatches.transport.push({ route: op.key, app: route.transport, contract: op.transport });
+    }
+    expect(mismatches.requires, 'x-opt2-requires').toEqual([]);
+    expect(mismatches.public, 'x-opt2-public').toEqual([]);
+    expect(mismatches.transport, 'x-opt2-transport').toEqual([]);
+  });
+
+  it('registers no route for the legacy-served, decision-list or halted actions', () => {
+    expect(collectRouteMatrix(full.app).routes.filter((route) => NOT_BUILT_NAME.test(route.url)).map((route) => route.url)).toEqual([]);
   });
 });
 
 describe('healthz', () => {
-  it.each<[string, () => Promise<Record<string, string>>, string, number]>([
-    ['no credential', async () => ({}), '', 200],
-    ['an unverifiable bearer token', async () => ({ authorization: 'Bearer not-a-token' }), '', 401],
-    ['a tenant-a user naming tenant-b', () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.systemUser] }), `?siteid=${SITE_B}`, 403],
-  ])('answers %s with the contract %i', async (_label, headers, query, status) => {
+  it.each<[string, number, () => Promise<Record<string, string>>, string]>([
+    ['no credential', 200, async () => ({}), ''],
+    ['an unverifiable bearer token', 401, async () => ({ authorization: 'Bearer not-a-token' }), ''],
+    ['a tenant-a user naming tenant-b', 403, () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.systemUser] }), `?siteid=${SITE_B}`],
+  ])('answers %s with the contract %i', async (_label, status, headers, query) => {
     const res = await call({ method: 'GET', url: `/healthz${query}`, headers: await headers() });
     expect(res.statusCode).toBe(status);
   });
@@ -246,12 +377,12 @@ describe('getHeaderPrompts', () => {
     expect(paramsOf(/tapprovalrequests\.groupid/)).toEqual([]);
   });
 
-  it.each<[string, () => Promise<Record<string, string>>, string, number]>([
-    ['no credential', async () => ({}), url, 401],
-    ['a public member', () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.member] }), url, 403],
-    ['a user of another site', () => userHeaders({ sub: USER_ID, site: SITE_B, roles: [Roles.s2] }), url, 403],
-    ['a service without a user token', () => serviceHeaders('people'), url, 401],
-  ])('refuses %s with the contract %i', async (_label, headers, target, status) => {
+  it.each<[string, number, () => Promise<Record<string, string>>, string]>([
+    ['no credential', 401, async () => ({}), url],
+    ['a public member', 403, () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.member] }), url],
+    ['a user of another site', 403, () => userHeaders({ sub: USER_ID, site: SITE_B, roles: [Roles.s2] }), url],
+    ['a service without a user token', 401, () => serviceHeaders('people'), url],
+  ])('refuses %s with the contract %i', async (_label, status, headers, target) => {
     const res = await call({ method: 'GET', url: target, headers: await headers() });
     expect(res.statusCode).toBe(status);
   });
@@ -290,11 +421,11 @@ describe('lookupFileExtensions', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it.each<[string, () => Promise<Record<string, string>>, number]>([
-    ['people without a forwarded user token', () => serviceHeaders('people'), 401],
-    ['another service', () => callerFor('programs-sites', SITE_A), 403],
-    ['a browser user', () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.s2] }), 403],
-  ])('refuses %s with the contract %i', async (_label, headers, status) => {
+  it.each<[string, number, () => Promise<Record<string, string>>]>([
+    ['people without a forwarded user token', 401, () => serviceHeaders('people')],
+    ['another service', 403, () => callerFor('programs-sites', SITE_A)],
+    ['a browser user', 403, () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.s2] })],
+  ])('refuses %s with the contract %i', async (_label, status, headers) => {
     const res = await call({ method: 'POST', url, headers: { ...(await headers()), ...JSON_TYPE }, payload: { fileIds: [FILE_A] } });
     expect(res.statusCode).toBe(status);
   });
@@ -344,11 +475,11 @@ describe('lookupContentLinks', () => {
     expect(paramsOf(ACTIVE_VERSIONS)).toEqual([]);
   });
 
-  it.each<[string, () => Promise<Record<string, string>>, number]>([
-    ['no credential', () => Promise.resolve({}), 401],
-    ['another service', () => serviceHeaders('identity'), 403],
-    ['a browser user', () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.s2] }), 403],
-  ])('refuses %s with the contract %i', async (_label, headers, status) => {
+  it.each<[string, number, () => Promise<Record<string, string>>]>([
+    ['no credential', 401, () => Promise.resolve({})],
+    ['another service', 403, () => serviceHeaders('identity')],
+    ['a browser user', 403, () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.s2] })],
+  ])('refuses %s with the contract %i', async (_label, status, headers) => {
     const res = await links({ siteId: SITE_A, contentIds: [HOME] }, headers)();
     expect(res.statusCode).toBe(status);
   });
@@ -369,12 +500,12 @@ describe('comments proxy', () => {
     expect({ status: res.statusCode, type: res.headers['content-type'] }).toEqual({ status: 200, type: 'text/html;charset=UTF-8' });
   });
 
-  it.each<[string, Request['method'], string, () => Promise<Record<string, string>>, number]>([
-    ['a siteid of another site', 'GET', `?method=get&commentID=${contentId(1)}&siteid=${SITE_B}`, () => visitor(), 403],
-    ['a call without a user token', 'POST', `?method=flag&commentID=${contentId(1)}`, () => serviceHeaders('gateway'), 401],
-    ['renderCommentsPage, which stays legacy-served', 'GET', `?method=renderCommentsPage&contentID=${contentId(1)}`, () => visitor(), 500],
-    ['an argument the method does not declare', 'POST', `?method=get&commentID=${contentId(1)}&foo=1`, () => visitor(), 500],
-  ])('answers %s with the contract %i', async (_label, method, query, headers, status) => {
+  it.each<[string, number, Request['method'], string, () => Promise<Record<string, string>>]>([
+    ['a siteid of another site', 403, 'GET', `?method=get&commentID=${contentId(1)}&siteid=${SITE_B}`, () => visitor()],
+    ['a call without a user token', 401, 'POST', `?method=flag&commentID=${contentId(1)}`, () => serviceHeaders('gateway')],
+    ['renderCommentsPage, which stays legacy-served', 500, 'GET', `?method=renderCommentsPage&contentID=${contentId(1)}`, () => visitor()],
+    ['an argument the method does not declare', 500, 'POST', `?method=get&commentID=${contentId(1)}&foo=1`, () => visitor()],
+  ])('answers %s with the contract %i', async (_label, status, method, query, headers) => {
     const res = await call({ method, url: `${url}${query}`, headers: await headers() });
     expect(res.statusCode).toBe(status);
   });
@@ -448,10 +579,10 @@ describe('migration objects', () => {
     });
   });
 
-  it.each<[string, string, number]>([
-    ['a key no row records', `${TENANT_B.tenantId}/${FILE_MISSING}.png`, 404],
-    ['a key outside the contract pattern', `${TENANT_A.tenantId}/../${FILE_A}.png`, 400],
-  ])('answers %s with the contract %i', async (_label, objectKey, status) => {
+  it.each<[string, number, string]>([
+    ['a key no row records', 404, `${TENANT_B.tenantId}/${FILE_MISSING}.png`],
+    ['a key outside the contract pattern', 400, `${TENANT_A.tenantId}/../${FILE_A}.png`],
+  ])('answers %s with the contract %i', async (_label, status, objectKey) => {
     const res = await call({ method: 'GET', url: `${url}?key=${encodeURIComponent(objectKey)}`, headers: await serviceHeaders('migration') });
     expect(res.statusCode).toBe(status);
   });
@@ -477,10 +608,10 @@ describe('migration objects', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it.each<[string, () => Promise<Record<string, string>>, number]>([
-    ['no credential', async () => ({}), 401],
-    ['another service', () => serviceHeaders('people'), 403],
-  ])('refuses %s with the contract %i', async (_label, headers, status) => {
+  it.each<[string, number, () => Promise<Record<string, string>>]>([
+    ['no credential', 401, async () => ({})],
+    ['another service', 403, () => serviceHeaders('people')],
+  ])('refuses %s with the contract %i', async (_label, status, headers) => {
     const res = await call({ method: 'POST', url: putUrl(), headers: { ...(await headers()), ...OCTET_TYPE }, payload: OBJECT_BYTES });
     expect(res.statusCode).toBe(status);
   });
@@ -518,34 +649,34 @@ describe('signed file downloads', () => {
     });
   });
 
-  it.each<[string, () => void, string, number]>([
-    ['a file id no row records', () => undefined, downloadUrl(FILE_MISSING), 404],
-    ['a stored row whose rendition is not stored', seedFile, downloadUrl(FILE_A, '?variant=_small'), 404],
-    ['a file id that is not a CF UUID', () => undefined, downloadUrl('not-a-file-id'), 404],
-    ['a variant leaving the key’s directory', seedFile, downloadUrl(FILE_A, `?variant=${encodeURIComponent('_x/../y')}`), 400],
-    ['a method outside the enum', seedFile, downloadUrl(FILE_A, '?method=download'), 400],
-  ])('answers %s with the contract %i', async (_label, seed, url, status) => {
+  it.each<[string, number, () => void, string]>([
+    ['a file id no row records', 404, () => undefined, downloadUrl(FILE_MISSING)],
+    ['a stored row whose rendition is not stored', 404, seedFile, downloadUrl(FILE_A, '?variant=_small')],
+    ['a file id that is not a CF UUID', 404, () => undefined, downloadUrl('not-a-file-id')],
+    ['a variant leaving the key’s directory', 400, seedFile, downloadUrl(FILE_A, `?variant=${encodeURIComponent('_x/../y')}`)],
+    ['a method outside the enum', 400, seedFile, downloadUrl(FILE_A, '?method=download')],
+  ])('answers %s with the contract %i', async (_label, status, seed, url) => {
     seed();
     await t.storage.put(CONTENT_FILES_BUCKET, key, OBJECT_BYTES, { contentType: 'application/pdf' });
     const res = await call({ method: 'GET', url, headers: await admin() });
     expect(res.statusCode).toBe(status);
   });
 
-  it.each<[string, () => Promise<Record<string, string>>, string, number]>([
-    ['no credential', async () => ({}), SITE_A, 401],
-    ['a system user without Site Manager access', () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.systemUser] }), SITE_A, 403],
-    ['a tenant-b site admin naming tenant-a', () => userHeaders({ sub: USER_ID, site: SITE_B, roles: [Roles.siteAdmin] }), SITE_A, 403],
-  ])('refuses %s with the contract %i', async (_label, headers, site, status) => {
+  it.each<[string, number, () => Promise<Record<string, string>>, string]>([
+    ['no credential', 401, async () => ({}), SITE_A],
+    ['a system user without Site Manager access', 403, () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.systemUser] }), SITE_A],
+    ['a tenant-b site admin naming tenant-a', 403, () => userHeaders({ sub: USER_ID, site: SITE_B, roles: [Roles.siteAdmin] }), SITE_A],
+  ])('refuses %s with the contract %i', async (_label, status, headers, site) => {
     const res = await call({ method: 'GET', url: `/v1/sites/${site}/files/${FILE_A}/download-url`, headers: await headers() });
     expect(res.statusCode).toBe(status);
   });
 
-  it.each<[string, () => Promise<string>, number]>([
-    ['a tampered signature', async () => (await t.storage.signedUrl(CONTENT_FILES_BUCKET, key)).replace(/sig=[0-9a-f]/, (m) => `sig=${m.endsWith('0') ? '1' : '0'}`), 403],
-    ['an expired signature', () => t.storage.signedUrl(CONTENT_FILES_BUCKET, key, { expiresS: -1 }), 403],
-    ['a malformed signature', async () => `/opt2/files/content-files/${key}?expires=1&sig=xyz`, 403],
-    ['a signed key that stores nothing', () => t.storage.signedUrl(CONTENT_FILES_BUCKET, `${filePool}/${FILE_MISSING}.pdf`), 404],
-  ])('answers getLocalContentFile for %s with the contract %i', async (_label, signed, status) => {
+  it.each<[string, number, () => Promise<string>]>([
+    ['a tampered signature', 403, async () => (await t.storage.signedUrl(CONTENT_FILES_BUCKET, key)).replace(/sig=[0-9a-f]/, (m) => `sig=${m.endsWith('0') ? '1' : '0'}`)],
+    ['an expired signature', 403, () => t.storage.signedUrl(CONTENT_FILES_BUCKET, key, { expiresS: -1 })],
+    ['a malformed signature', 403, async () => `/opt2/files/content-files/${key}?expires=1&sig=xyz`],
+    ['a signed key that stores nothing', 404, () => t.storage.signedUrl(CONTENT_FILES_BUCKET, `${filePool}/${FILE_MISSING}.pdf`)],
+  ])('answers getLocalContentFile for %s with the contract %i', async (_label, status, signed) => {
     await t.storage.put(CONTENT_FILES_BUCKET, key, OBJECT_BYTES, { contentType: 'application/pdf' });
     const res = await call({ method: 'GET', url: await signed() });
     expect(res.statusCode).toBe(status);
@@ -588,12 +719,12 @@ describe('migration handlers over the content mappings', () => {
     },
   );
 
-  it.each<[string, string, number]>([
-    ['the changes after the start', `/internal/v1/migration/changes?tenantId=${TENANT_A.tenantId}`, 200],
-    ['a malformed changes cursor', `/internal/v1/migration/changes?tenantId=${TENANT_A.tenantId}&after=x`, 400],
-    ['an export without a unit', `/internal/v1/migration/export?tenantId=${TENANT_A.tenantId}`, 400],
-    ['an export of a unit the service does not own', `/internal/v1/migration/export?unit=people.person&tenantId=${TENANT_A.tenantId}`, 400],
-  ])('answers %s with the contract %i', async (_label, target, status) => {
+  it.each<[string, number, string]>([
+    ['the changes after the start', 200, `/internal/v1/migration/changes?tenantId=${TENANT_A.tenantId}`],
+    ['a malformed changes cursor', 400, `/internal/v1/migration/changes?tenantId=${TENANT_A.tenantId}&after=x`],
+    ['an export without a unit', 400, `/internal/v1/migration/export?tenantId=${TENANT_A.tenantId}`],
+    ['an export of a unit the service does not own', 400, `/internal/v1/migration/export?unit=people.person&tenantId=${TENANT_A.tenantId}`],
+  ])('answers %s with the contract %i', async (_label, status, target) => {
     const res = await call({ method: 'GET', url: target, headers: await migration() });
     expect(res.statusCode).toBe(status);
   });
@@ -641,10 +772,10 @@ describe('migration handlers over the content mappings', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it.each<[string, () => Promise<Record<string, string>>, number]>([
-    ['no credential', async () => ({}), 401],
-    ['the operator', () => serviceHeaders('operator'), 403],
-  ])('refuses %s with the contract %i', async (_label, headers, status) => {
+  it.each<[string, number, () => Promise<Record<string, string>>]>([
+    ['no credential', 401, async () => ({})],
+    ['the operator', 403, () => serviceHeaders('operator')],
+  ])('refuses %s with the contract %i', async (_label, status, headers) => {
     const res = await call({ method: 'GET', url: '/internal/v1/migration/position', headers: await headers() });
     expect(res.statusCode).toBe(status);
   });
@@ -721,8 +852,6 @@ describe('push subscriptions', () => {
 });
 
 describe('site-monitor job steps', () => {
-  const PUBLISH_PATH = '/internal/v1/jobs/publish-scheduled-changesets';
-  const FEED_PATH = '/internal/v1/jobs/feed-auto-import';
   const stepTask = (queue: string, step: string, tenantId: string | null = null): Json => ({
     queue,
     name: `${queue}-1782820800`,
@@ -735,8 +864,8 @@ describe('site-monitor job steps', () => {
     t.db.respond(/ AS pending FROM /, [{ pending: 1 }]);
     const res = await call({
       method: 'POST',
-      url: PUBLISH_PATH,
-      headers: { ...(await tasksHeaders(PUBLISH_PATH)), ...JSON_TYPE },
+      url: PUBLISH_SCHEDULED_CHANGESETS_PATH,
+      headers: { ...(await tasksHeaders(PUBLISH_SCHEDULED_CHANGESETS_PATH)), ...JSON_TYPE },
       payload: stepTask('content-scheduled-publish', 'publishScheduledChangesets'),
     });
     expect(res.statusCode).toBe(200);
@@ -749,8 +878,8 @@ describe('site-monitor job steps', () => {
   it('imports the remote feeds of the ?siteid= site', async () => {
     const res = await call({
       method: 'POST',
-      url: `${FEED_PATH}?siteid=${SITE_A}`,
-      headers: { ...(await tasksHeaders(FEED_PATH)), ...JSON_TYPE },
+      url: `${FEED_AUTO_IMPORT_PATH}?siteid=${SITE_A}`,
+      headers: { ...(await tasksHeaders(FEED_AUTO_IMPORT_PATH)), ...JSON_TYPE },
       payload: stepTask('content-feed-import', 'feedAutoImport'),
     });
     expect(res.statusCode).toBe(200);
@@ -758,8 +887,8 @@ describe('site-monitor job steps', () => {
   });
 
   it.each<[string, string, Json]>([
-    ['a feed step without a site', FEED_PATH, stepTask('content-feed-import', 'feedAutoImport')],
-    ['a task body carrying a tenant', PUBLISH_PATH, stepTask('content-scheduled-publish', 'publishScheduledChangesets', TENANT_A.tenantId)],
+    ['a feed step without a site', FEED_AUTO_IMPORT_PATH, stepTask('content-feed-import', 'feedAutoImport')],
+    ['a task body carrying a tenant', PUBLISH_SCHEDULED_CHANGESETS_PATH, stepTask('content-scheduled-publish', 'publishScheduledChangesets', TENANT_A.tenantId)],
   ])('answers the contract 400 to %s', async (_label, target, payload) => {
     const res = await call({ method: 'POST', url: target, headers: { ...(await tasksHeaders(target)), ...JSON_TYPE }, payload });
     expect(res.statusCode).toBe(400);
@@ -768,7 +897,7 @@ describe('site-monitor job steps', () => {
   it('refuses a user token with the contract 401', async () => {
     const res = await call({
       method: 'POST',
-      url: PUBLISH_PATH,
+      url: PUBLISH_SCHEDULED_CHANGESETS_PATH,
       headers: { ...(await userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.s2], s2: true })), ...JSON_TYPE },
       payload: stepTask('content-scheduled-publish', 'publishScheduledChangesets'),
     });
@@ -792,5 +921,182 @@ describe('queue control', () => {
   it('refuses a service that is neither migration nor operator with the contract 403', async () => {
     const res = await call({ method: 'POST', url: `/internal/v1/task-queues/${OWN_QUEUE}/pause`, headers: { ...(await serviceHeaders('programs-sites')), ...JSON_TYPE }, payload: {} });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('full app responses', () => {
+  const PAGE_ONE = IDS.content.pageOne;
+  const contentUrl = (query: string): string => `/_api/json/v1/${SITE_A}/content${query}`;
+  const visitor = () => userHeaders({ sub: '', site: SITE_A, roles: [] });
+  const FORM_TYPE = { 'content-type': 'application/x-www-form-urlencoded' } as const;
+  const pdf = Object.entries(FILE_BYTES).find(([key]) => key.endsWith(`/${IDS.files.pdf}.pdf`))?.[1];
+  const errorOf = (res: InjectResponse): unknown => (res.json() as { error: unknown }).error;
+  const hasItems = (res: InjectResponse): boolean => Array.isArray((res.json() as { data: { items?: unknown } }).data.items);
+
+  /** One request to the composition root and what its answer must hold beyond the contract. */
+  interface FullCase {
+    name: string;
+    method: 'GET' | 'POST';
+    url: string;
+    headers: () => Promise<Record<string, string>>;
+    payload?: string | Json;
+    setup?: () => void;
+    status: number;
+    // mura.json writes `\'` inside its strings, which JSON.parse rejects; RawLegacyJson declares those bytes as legacy writes them.
+    /** Checks the body unparsed against the contract. */
+    unparsed?: true;
+    verify: (res: InjectResponse) => void;
+  }
+
+  const CASES: readonly FullCase[] = [
+    {
+      name: 'answers a JSON API content findOne with the legacy envelope',
+      method: 'GET',
+      url: contentUrl(`?id=${PAGE_ONE}`),
+      headers: visitor,
+      status: 200,
+      verify: (res) => expect((res.json() as { data: unknown }).data).toBeTypeOf('object'),
+    },
+    {
+      name: 'answers a JSON API content findMany with the paged envelope',
+      method: 'GET',
+      url: contentUrl(`?id=${PAGE_ONE},${IDS.content.pageTwo}`),
+      headers: visitor,
+      status: 200,
+      verify: (res) => expect(hasItems(res)).toBe(true),
+    },
+    {
+      name: 'answers a JSON API content findQuery with the paged envelope',
+      method: 'GET',
+      url: contentUrl('?title=Page'),
+      headers: visitor,
+      status: 200,
+      verify: (res) => expect(hasItems(res)).toBe(true),
+    },
+    {
+      name: 'refuses an anonymous save without CSRF tokens with the legacy 400',
+      method: 'POST',
+      url: contentUrl(''),
+      headers: () => contentHeaders('anonymous'),
+      payload: { title: 'Unsaved' },
+      status: 400,
+      verify: (res) => expect(errorOf(res)).toEqual({ message: 'Invalid CSRF tokens', code: 'invalid_request' }),
+    },
+    {
+      name: 'refuses an unverifiable bearer token with the legacy 401 and its challenge',
+      method: 'GET',
+      url: contentUrl(''),
+      headers: async () => ({ authorization: 'Bearer not-a-token' }),
+      status: 401,
+      verify: (res) => {
+        expect(errorOf(res)).toEqual({ message: 'Invalid Access Token', code: 'invalid_token' });
+        expect(res.headers['www-authenticate']).toBe('Bearer error="invalid_access_token"');
+      },
+    },
+    {
+      name: 'challenges an anonymous REST read with Basic and the legacy 401',
+      method: 'GET',
+      url: `/_api/rest/v1/${SITE_A}/content`,
+      headers: () => contentHeaders('anonymous'),
+      status: 401,
+      verify: (res) => {
+        expect(errorOf(res)).toEqual({ message: 'Insufficient Account Permissions', code: 'invalid_request' });
+        expect(res.headers['www-authenticate']).toBe('Basic');
+      },
+    },
+    {
+      name: 'refuses a token of another tenant with the legacy 403',
+      method: 'GET',
+      url: contentUrl(`?id=${PAGE_ONE}`),
+      headers: () => contentHeaders('other-tenant'),
+      status: 403,
+      verify: (res) => expect(errorOf(res)).toEqual({ message: 'Insufficient Account Permissions', code: 'invalid_request' }),
+    },
+    {
+      name: 'answers an unknown entity with the legacy 404',
+      method: 'GET',
+      url: `/_api/json/v1/${SITE_A}/nosuchentity`,
+      headers: visitor,
+      status: 404,
+      verify: (res) => expect(errorOf(res)).toEqual({ message: 'Invalid method call', code: 'invalid_request' }),
+    },
+    {
+      name: 'answers a failed content read with the legacy 500 server_error',
+      method: 'GET',
+      url: contentUrl(`?id=${PAGE_ONE}`),
+      headers: visitor,
+      setup: () =>
+        full.db.respond(/"content"\."content"/, () => {
+          throw new Error('injected content read failure');
+        }),
+      status: 500,
+      verify: (res) => expect(errorOf(res)).toEqual({ message: 'Unhandled Exception', code: 'server_error' }),
+    },
+    {
+      name: 'streams a stored file through the legacy render route byte for byte',
+      method: 'GET',
+      url: `/_api/render/file?fileid=${IDS.files.pdf}`,
+      headers: visitor,
+      status: 200,
+      verify: (res) => expect({ type: res.headers['content-type'], bytes: res.rawPayload }).toEqual({ type: 'application/pdf; charset=UTF-8', bytes: pdf?.bytes }),
+    },
+    {
+      name: 'refuses a restricted feed to a visitor with the legacy WDDX 401',
+      method: 'GET',
+      url: `/_api/feed/v1/${SITE_A}?feedid=${IDS.feeds.local}`,
+      headers: visitor,
+      setup: () => full.db.respond(/"content"\."feed"/, [feedRow({ feedid: IDS.feeds.local, restricted: 1, restrictgroups: 'Editor' })]),
+      status: 401,
+      verify: (res) => {
+        expect(res.headers['content-type']).toBe('application/rss+xml; charset=UTF-8');
+        expect(res.body).toContain('<string>Insufficient Account Permissions</string>');
+      },
+    },
+    {
+      name: 'fails a rendered feed closed with the legacy 503, as its site settings live in programs-sites',
+      method: 'GET',
+      url: `/_api/feed/v1/${SITE_A}?feedid=${IDS.feeds.local}`,
+      headers: visitor,
+      status: 503,
+      verify: (res) => expect(errorOf(res)).toEqual({ message: 'Unhandled Exception', code: 'server_error' }),
+    },
+    {
+      name: 'answers the Site Manager tree as the legacy JSON of carch.loadsitemanager',
+      method: 'GET',
+      url: `/v1/raw/carch/loadsitemanager?siteid=${SITE_A}&topid=${IDS.content.root}&moduleid=${IDS.modules.content}`,
+      headers: () => contentHeaders('site-admin'),
+      status: 200,
+      unparsed: true,
+      verify: (res) => expect({ type: res.headers['content-type'], lead: res.body.slice(0, 9) }).toEqual({ type: 'application/json;charset=utf-8', lead: '{"perm":"' }),
+    },
+    {
+      name: 'saves a category behind a validated CSRF token with the AdminWriteResult redirect',
+      method: 'POST',
+      url: `/v1/sites/${SITE_A}/categories`,
+      headers: async () => ({ ...(await contentHeaders('site-admin')), ...FORM_TYPE }),
+      payload: `action=update&categoryid=${IDS.categories.pooledChild}&name=Renamed&csrf_token=T&csrf_token_expires=E`,
+      setup: () => {
+        full.client.csrfValid = true;
+      },
+      status: 200,
+      verify: (res) => {
+        expect(res.json()).toEqual({ saved: true, errors: {}, redirect: { circuit: 'cCategory', action: 'list', params: [['siteid', SITE_A]] } });
+        expect(full.client.csrfConsumes).toHaveLength(1);
+      },
+    },
+  ];
+
+  it.each(CASES)('$name', async (c) => {
+    c.setup?.();
+    const res = await full.app.inject({ method: c.method, url: c.url, headers: await c.headers(), ...(c.payload === undefined ? {} : { payload: c.payload }) });
+    expect(res.statusCode, res.body).toBe(c.status);
+    assertResponseMatchesOpenApi(OPENAPI, {
+      method: c.method,
+      path: c.url.split('?')[0] ?? c.url,
+      status: res.statusCode,
+      contentType: res.headers['content-type'],
+      body: c.unparsed === true ? res.rawPayload : res.body,
+    });
+    c.verify(res);
   });
 });
