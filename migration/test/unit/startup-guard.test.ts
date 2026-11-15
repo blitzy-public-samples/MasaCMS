@@ -1,7 +1,8 @@
-// Unit tests for the start-up guard, using fake SQL scopes and recorded steps in place of SQL Server and the gateway.
+// Unit tests for the start-up guard, using fake SQL scopes, the in-memory legacy database and recorded steps in place of
+// SQL Server and the gateway.
 import { readFileSync } from 'node:fs';
 
-import type { Request } from 'mssql';
+import type { Request, Transaction } from 'mssql';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -14,6 +15,8 @@ import {
   StartupGuardFrozenError,
   type StartupGuardSteps,
 } from '../../src/legacy/startup-guard.js';
+import { createFakeLegacyDb, type FakeLegacyDb, type Row } from '../helpers/fake-legacy-db.js';
+import { contentRow, defineFixtureTables, startupMatchRow, TABLES } from '../helpers/fixtures.js';
 
 const MASA_APP_START = new URL('../../../core/appcfc/onApplicationStart_include.cfm', import.meta.url);
 const FULL_SEQUENCE = ['freezeLegacyBound', 'commit', 'runReloadWindow', 'remainingStartupRows', 'unfreeze'];
@@ -49,6 +52,23 @@ function recordedSteps(failures: Partial<Record<keyof StartupGuardSteps, Error>>
     unfreeze: step('unfreeze', undefined),
   };
   return { calls, steps };
+}
+
+/** Fake legacy database whose live `tcontent` holds `rows`, committed. */
+function contentDb(rows: readonly Row[]): FakeLegacyDb {
+  const db = createFakeLegacyDb();
+  defineFixtureTables(db, ['tcontent']);
+  db.seed(TABLES.tcontent.qualified, rows);
+  return db;
+}
+
+/** Inserts `row` into `tcontent` through `tx`, one bound input per column. */
+async function insertContent(tx: Transaction, row: Row): Promise<void> {
+  const columns = Object.keys(row);
+  const request = tx.request();
+  for (const column of columns) request.input(column, row[column]);
+  const values = columns.map((column) => `@${column}`).join(', ');
+  await request.query(`INSERT INTO ${TABLES.tcontent.qualified} (${columns.join(', ')}) VALUES (${values})`);
 }
 
 describe('start-up predicate', () => {
@@ -89,6 +109,35 @@ describe('countStartupRows', () => {
     const failure = new Error('connection lost');
 
     await expect(countStartupRows(fakeScope([], failure).scope)).rejects.toBe(failure);
+  });
+});
+
+describe('countStartupRows on the fake legacy database', () => {
+  it.each<[string, Row]>([
+    ['a Page', { Type: 'Page' }],
+    ['a File with a body', { Body: '<p>Report</p>' }],
+    ['an inactive File', { Active: 0 }],
+    ['a File without a filename', { Filename: null }],
+  ])('does not count %s', async (_label, overrides) => {
+    const db = contentDb([contentRow(), startupMatchRow(overrides)]);
+
+    await expect(countStartupRows(await db.live())).resolves.toBe(0);
+  });
+
+  it.each(['File', 'Link'])('counts an active %s with a NULL body and a filename', async (type) => {
+    const db = contentDb([contentRow(), startupMatchRow({ Type: type })]);
+
+    await expect(countStartupRows(await db.live())).resolves.toBe(1);
+  });
+
+  it("counts a batch's uncommitted matching row through the batch's own transaction", async () => {
+    const db = contentDb([contentRow()]);
+
+    await db.transaction(async (tx) => {
+      await insertContent(tx, startupMatchRow());
+      await expect(countStartupRows(tx)).resolves.toBe(1);
+    });
+    await expect(countStartupRows(await db.live())).resolves.toBe(1);
   });
 });
 
