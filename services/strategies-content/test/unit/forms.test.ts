@@ -30,7 +30,7 @@ import {
   updateResponse,
 } from '../../src/domain/forms.js';
 import { formBeanJson, renderCformResponse } from '../../src/legacy/admin-render-forms.js';
-import { wddxStructGet, type WddxStruct } from '../../src/domain/wddx.js';
+import { wddx2cfml, wddxStructGet, type WddxStruct } from '../../src/domain/wddx.js';
 import { DEFAULT_ROW_BATCH_SIZE } from '../../src/repo/repository.js';
 import { ADMIN, NOW, SITE_ID, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
 
@@ -144,6 +144,33 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
     expect(written.questions).toHaveLength(3);
     const row = await readResponse(fx.deps, ADMIN, createdId);
     expect(wddxStructGet(responseValues(row ?? { data: '' }) as WddxStruct, 'NAME')).toBe('Bobby');
+    const stored = await fx.rows('form_response_question', 'responseid = $1', [createdId], 'lower(formfield)');
+    expect(stored.map((q) => [q.formfield, q.formvalue])).toEqual([
+      ['comments', 'c2'],
+      ['Email', 'b2@x.com'],
+      ['name', 'Bobby'],
+    ]);
+    expect((await fx.rows('form_response_packet', 'responseid = $1', [createdId])).map((p) => p.data)).toEqual([FORM_UPDATE.replace(RID, createdId)]);
+  });
+
+  it('neutralises <script and <form openers, then script> and form> closers, after the trim, as REReplaceNoCase ALL does', async () => {
+    const neutralised = {
+      opener: '<noscript action="x">in</noscript>',
+      bare: '<nonoscript>x</noscript>',
+      script: 'a<noscript src=y></noscript>b',
+    };
+    const written = await updateResponse(fx.deps, ADMIN, {
+      formid: cfId('F', 7),
+      siteid: SITE_ID,
+      fieldnames: 'opener,bare,script',
+      opener: '<FORM action="x">in</Form>',
+      bare: ' <form>x</form> ',
+      script: 'a<Script src=y></SCRIPT>b',
+    });
+    expect(written.questions.map((q) => [q.formfield, q.formvalue, q.pollvalue])).toEqual(Object.entries(neutralised).map(([field, value]) => [field, value, value]));
+    const packet = wddx2cfml(written.packet.data ?? '') as WddxStruct;
+    expect(Object.keys(neutralised).map((field) => wddxStructGet(packet, field))).toEqual(Object.values(neutralised));
+    await deleteResponse(fx.deps, ADMIN, written.responseId);
   });
 
   it('stores a non-image attachment, refuses an image and deletes the file with the response', async () => {
@@ -168,6 +195,25 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
     const after = await fx.inTenant((tx) => fx.repo.files.readFileAll(tx, fileId), TENANT_UMBRELLA.tenantId);
     expect(after).toMatchObject({ deleted: 1 });
     await deleteResponse(fx.deps, ADMIN, text.responseId);
+  });
+
+  it('deleteResponse without deleteFiles removes the packet and question rows and leaves the attachment file undeleted', async () => {
+    const written = await updateResponse(
+      fx.deps,
+      ADMIN,
+      { formid: cfId('F', 8), siteid: SITE_ID, fieldnames: 'attachment1,note', attachment1: 'kept.pdf', note: 'n' },
+      [part('attachment1', 'kept.pdf')],
+    );
+    const fileId = String(wddxStructGet(written.info, 'attachment1'));
+    const storedCounts = async (): Promise<number[]> => [
+      (await fx.rows('form_response_packet', 'responseid = $1', [written.responseId])).length,
+      (await fx.rows('form_response_question', 'responseid = $1', [written.responseId])).length,
+    ];
+    expect(await storedCounts()).toEqual([1, 2]);
+    const deletion = await deleteResponse(fx.deps, ADMIN, written.responseId, false);
+    expect(deletion.attachmentFileIds).toEqual([fileId]);
+    expect(await storedCounts()).toEqual([0, 0]);
+    expect(await fx.inTenant((tx) => fx.repo.files.readFileAll(tx, fileId), TENANT_UMBRELLA.tenantId)).toMatchObject({ deleted: 0 });
   });
 
   it('lists fields and filters with an unwildcarded keyword', async () => {
