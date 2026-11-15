@@ -2,7 +2,9 @@ import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 import { UsageError } from '../../src/lib/cli.js';
 import { REPO_ROOT } from '../../src/lib/paths.js';
 import { readPin } from '../../src/lib/pin.js';
@@ -184,10 +186,14 @@ function osvPrints(report: unknown, code: number): Step {
   return exited(code, JSON.stringify(report));
 }
 
-function reportPathOf(args: readonly string[]): string {
-  const value = args[args.indexOf('--report-path') + 1];
-  if (!args.includes('--report-path') || value === undefined) throw new Error(`no --report-path in ${args.join(' ')}`);
+function flagValue(args: readonly string[], flag: string): string {
+  const value = args[args.indexOf(flag) + 1];
+  if (!args.includes(flag) || value === undefined) throw new Error(`no ${flag} in ${args.join(' ')}`);
   return value;
+}
+
+function reportPathOf(args: readonly string[]): string {
+  return flagValue(args, '--report-path');
 }
 
 /** gitleaks scan that writes `findings` as its JSON report and exits `code`. */
@@ -195,6 +201,37 @@ function gitleaksWrites(findings: unknown, code: number): Step {
   return async (args) => {
     await writeFile(reportPathOf(args), JSON.stringify(findings), 'utf8');
     return exited(code);
+  };
+}
+
+// Fields gitleaks 8.30.1 IsNew compares against a baseline entry under --redact (Match, Secret, Fingerprint, Tags, SymlinkFile are not).
+const BASELINE_MATCH_FIELDS = [
+  'RuleID',
+  'Description',
+  'StartLine',
+  'EndLine',
+  'StartColumn',
+  'EndColumn',
+  'File',
+  'Commit',
+  'Author',
+  'Email',
+  'Date',
+  'Message',
+  'Entropy',
+] as const;
+
+/** gitleaks scan that drops each of `findings` matching an entry of the `--baseline-path` file in the checkout, writes the rest and exits 1 when any remain. */
+function gitleaksAppliesBaseline(findings: readonly Record<string, unknown>[]): Step {
+  return async (args) => {
+    const baseline: Record<string, unknown>[] = JSON.parse(
+      await readFile(path.join(REPO_ROOT, flagValue(args, '--baseline-path')), 'utf8'),
+    );
+    const fresh = findings.filter(
+      (finding) => !baseline.some((entry) => BASELINE_MATCH_FIELDS.every((field) => entry[field] === finding[field])),
+    );
+    await writeFile(reportPathOf(args), JSON.stringify(fresh), 'utf8');
+    return exited(fresh.length > 0 ? 1 : 0);
   };
 }
 
@@ -270,6 +307,58 @@ function jsonParseMessage(text: string): string {
   throw new Error(`${text} is valid JSON`);
 }
 
+/** Parsed JSON of a committed fixture under test/fixtures/security/. */
+async function readFixture<T = unknown>(name: string): Promise<T> {
+  return JSON.parse(await readFile(fileURLToPath(new URL(`../fixtures/security/${name}`, import.meta.url)), 'utf8')) as T;
+}
+
+/** Shell text with backslash-newline continuations joined and whitespace runs collapsed to single spaces. */
+function normaliseShell(text: string): string {
+  return text.replace(/\\\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** `run:` script of the one step in security.yml job `job` whose script contains `marker`. */
+async function workflowRun(job: string, marker: string): Promise<string> {
+  const text = await readFile(path.join(REPO_ROOT, '.github/workflows/security.yml'), 'utf8');
+  const workflow = parseYaml(text) as { jobs: Record<string, { steps?: { run?: string }[] }> };
+  const runs = (workflow.jobs[job]?.steps ?? []).flatMap((step) => (step.run?.includes(marker) === true ? [step.run] : []));
+  expect(runs, `${job} steps running ${marker}`).toHaveLength(1);
+  return runs[0] ?? '';
+}
+
+/** Command tokens, enumerated lockfiles and per-lockfile flag of the workflow's osv-scanner scan step. */
+async function workflowOsvScan(): Promise<{ tokens: string[]; lockfiles: string[]; lockfileFlag: string | undefined }> {
+  const run = await workflowRun('osv-scanner', ' scan source ');
+  const command = run.split('\n').map(normaliseShell).find((line) => line.includes(' scan source ')) ?? '';
+  return {
+    tokens: command.split(' '),
+    lockfiles: normaliseShell(/lockfiles=\(([^)]*)\)/.exec(run)?.[1] ?? '').split(' '),
+    lockfileFlag: /args\+=\("(-[\w-]+)=\$lockfile"\)/.exec(run)?.[1],
+  };
+}
+
+const REPORT_OUTPUT_FLAGS = ['--report-format', '--report-path'];
+
+/** Leading positionals and options of gitleaks arguments, a flag taking the next token unless it is a flag; report-output flags are dropped. */
+function gitleaksScanShape(args: readonly string[]): { positionals: string[]; options: Record<string, string | true> } {
+  const positionals: string[] = [];
+  const options: Record<string, string | true> = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index] ?? '';
+    const next = args[index + 1];
+    if (!token.startsWith('-')) {
+      positionals.push(token);
+    } else if (next !== undefined && !next.startsWith('-')) {
+      options[token] = next;
+      index += 1;
+    } else {
+      options[token] = true;
+    }
+  }
+  for (const flag of REPORT_OUTPUT_FLAGS) delete options[flag];
+  return { positionals, options };
+}
+
 describe('pinned tools and scanned files', () => {
   it('requires osv-scanner 2.7.0 and gitleaks 8.30.1 and fails production advisories from CVSS 7.0', () => {
     expect(OSV_SCANNER_VERSION).toBe('2.7.0');
@@ -289,6 +378,25 @@ describe('pinned tools and scanned files', () => {
     for (const lockfile of OPT2_LOCKFILES) expect(existsSync(path.join(REPO_ROOT, lockfile)), lockfile).toBe(true);
     expect(OPT2_LOCKFILES).not.toContain('package-lock.json');
     expect(OPT2_LOCKFILES).not.toContain('core/modules/v1/cta/package-lock.json');
+  });
+
+  it('lists exactly the platform, gateway, web, migration, harness, seed and eleven service lockfiles', () => {
+    const services = [
+      'identity',
+      'people',
+      'programs-sites',
+      'strategies-content',
+      'communications',
+      'reporting',
+      'surveys',
+      'timesheets',
+      'finance',
+      'e-signature',
+      'stub',
+    ].map((name) => `services/${name}`);
+    const packages = ['platform', 'gateway', 'web', 'migration', 'harness', 'legacy-fixtures/seed', ...services];
+    expect(new Set(OPT2_LOCKFILES)).toEqual(new Set(packages.map((dir) => `${dir}/package-lock.json`)));
+    for (const lockfile of OPT2_LOCKFILES) expect(lockfile).not.toMatch(/^(core\/|admin\/|node_modules)/);
   });
 
   it('lists the lockfile of every services/* package', async () => {
@@ -336,6 +444,42 @@ describe('tool arguments', () => {
       '1',
       '--no-banner',
     ]);
+  });
+});
+
+describe('.github/workflows/security.yml', () => {
+  it('runs osv-scanner with the osvArgs vector over the same lockfiles, passing each as --lockfile=<path>', async () => {
+    const { tokens, lockfiles, lockfileFlag } = await workflowOsvScan();
+    expect(path.basename(tokens[0]?.replaceAll('"', '') ?? '')).toMatch(/^osv-scanner/);
+    expect(tokens).toContain('"${args[@]}"');
+    const flags = tokens.slice(1, tokens.indexOf('"${args[@]}"'));
+    expect(lockfileFlag).toBeDefined();
+    expect([...flags, ...lockfiles.flatMap((lockfile) => [lockfileFlag, lockfile])]).toEqual(osvArgs(lockfiles));
+    expect(lockfiles).toHaveLength(new Set(lockfiles).size);
+    expect(new Set(lockfiles)).toEqual(new Set(OPT2_LOCKFILES));
+  });
+
+  it('never passes the legacy root or CTA lockfile to osv-scanner', async () => {
+    const { tokens, lockfiles } = await workflowOsvScan();
+    for (const legacy of ['package-lock.json', 'core/modules/v1/cta/package-lock.json']) {
+      expect(osvArgs()).not.toContain(legacy);
+      expect(lockfiles).not.toContain(legacy);
+      expect(tokens.map((token) => token.replace(/^--lockfile=/, ''))).not.toContain(legacy);
+    }
+  });
+
+  it('fails production advisories at FAILING_CVSS or a failing database severity, counting only all-dev groups as dev', async () => {
+    const filter = normaliseShell(await workflowRun('osv-scanner', 'jq -r'));
+    expect(filter).toContain(`(.max_severity | tonumber? // 0) >= ${FAILING_CVSS.toFixed(1)}`);
+    expect(filter).toContain(`IN(${FAILING_DATABASE_SEVERITIES.map((severity) => JSON.stringify(severity)).join(', ')})`);
+    expect(filter).toContain('($groups | length) == 0 or any($groups[]; . != "dev")');
+  });
+
+  // The workflow leaves out gitleaksArgs' --report-format/--report-path, which only say where the JSON report goes.
+  it('runs gitleaks with the subcommand, scan root and options of gitleaksArgs apart from the report output', async () => {
+    const [binary = '', ...args] = normaliseShell(await workflowRun('gitleaks', '--baseline-path')).split(' ');
+    expect(path.basename(binary.replaceAll('"', ''))).toBe('gitleaks');
+    expect(gitleaksScanShape(args)).toEqual(gitleaksScanShape(gitleaksArgs('/state/security/gitleaks.json')));
   });
 });
 
@@ -417,6 +561,17 @@ describe('parseOsvReport', () => {
 
   it('reads one advisory per package group with its lockfile, severity and production flag', () => {
     expect(parseOsvReport(osvSample(ROOT), ROOT)).toEqual([ADVISORY_0001, ADVISORY_0002, ADVISORY_0003]);
+  });
+
+  it('fails only the production HIGH advisory of the committed fixture, not its dev-only CRITICAL or production LOW', async () => {
+    const advisories = parseOsvReport(await readFixture('osv-report.sample.json'));
+    expect(advisories.map(({ ids, lockfile, score, severity, production }) => ({ ids, lockfile, score, severity, production }))).toEqual([
+      { ids: ['OSV-FIXTURE-0001'], lockfile: 'services/people/package-lock.json', score: 7.5, severity: 'HIGH', production: true },
+      { ids: ['OSV-FIXTURE-0003'], lockfile: 'services/people/package-lock.json', score: 3.1, severity: 'LOW', production: true },
+      { ids: ['OSV-FIXTURE-0002'], lockfile: 'platform/package-lock.json', score: 9.8, severity: 'CRITICAL', production: false },
+    ]);
+    expect(advisories.filter(isFailing).map((advisory) => advisory.ids)).toEqual([['OSV-FIXTURE-0001']]);
+    for (const advisory of advisories) expect(OPT2_LOCKFILES).toContain(advisory.lockfile);
   });
 
   it('resolves absolute source paths against the repository root by default', () => {
@@ -639,6 +794,27 @@ describe('runSecurityScan', () => {
     expect(await readFile(result.summaryPath, 'utf8')).not.toContain('REDACTED');
   });
 
+  it('exits 1 on the committed fixtures with one production failure and only the secret outside the committed baseline', async () => {
+    const gitleaksFindings = await readFixture<Record<string, unknown>[]>('gitleaks-report.sample.json');
+    const { result, gitleaksReport } = await scan({
+      osvScan: osvPrints(await readFixture('osv-report.sample.json'), 1),
+      gitleaksScan: gitleaksAppliesBaseline(gitleaksFindings),
+    });
+    expect(gitleaksFindings).toHaveLength(2);
+    expect(result.code).toBe(1);
+    expect(result.summary).toMatchObject({
+      dependencies: {
+        advisories: { ...NO_COUNTS, CRITICAL: 1, HIGH: 1, LOW: 1 },
+        production: { ...NO_COUNTS, HIGH: 1, LOW: 1 },
+      },
+      secrets: { findings: 1, items: [{ ruleId: 'generic-api-key', file: 'services/people/src/config.ts', line: 12 }] },
+      verdict: 'findings',
+      exitCode: 1,
+    });
+    expect(result.summary.dependencies.failing.map((advisory) => advisory.ids)).toEqual([['OSV-FIXTURE-0001']]);
+    expect(JSON.parse(await readFile(gitleaksReport, 'utf8'))).toEqual([gitleaksFindings[1]]);
+  });
+
   const devOnly = () => ({ results: [{ source: { path: 'services/people/package-lock.json' }, packages: [PACKAGE_0002] }] });
   const unscoredHigh = (repoRoot: string) => ({
     results: [
@@ -688,6 +864,24 @@ describe('runSecurityScan', () => {
       { osvVersion: exited(0, 'osv-scanner version: 2.6.1\n') },
       'osv-scanner: wrong version 2.6.1, expected 2.7.0',
       { osvScanner: '2.6.1', gitleaks: '8.30.1' },
+    ],
+    [
+      'osv-scanner is a later patch release',
+      { osvVersion: exited(0, OSV_VERSION_OUTPUT.replace('2.7.0', '2.7.1')) },
+      'osv-scanner: wrong version 2.7.1, expected 2.7.0',
+      { osvScanner: '2.7.1', gitleaks: '8.30.1' },
+    ],
+    [
+      'gitleaks is an earlier release',
+      { gitleaksVersion: exited(0, '8.29.0\n') },
+      'gitleaks: wrong version 8.29.0, expected 8.30.1',
+      { osvScanner: '2.7.0', gitleaks: '8.29.0' },
+    ],
+    [
+      'gitleaks is a later minor release',
+      { gitleaksVersion: exited(0, 'v8.31.0\n') },
+      'gitleaks: wrong version 8.31.0, expected 8.30.1',
+      { osvScanner: '2.7.0', gitleaks: '8.31.0' },
     ],
     [
       'gitleaks prints no version',
