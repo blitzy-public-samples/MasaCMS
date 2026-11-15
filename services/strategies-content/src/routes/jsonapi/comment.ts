@@ -173,11 +173,12 @@ function relationUnavailable(name: string): LegacyServiceUnavailableError {
   );
 }
 
-/** beanFeed over the site's comments (the feed's `siteID in (contentPoolID)` scope), or those of `ids`, in SQL in one actor-tenant transaction. */
+/** beanFeed over the site's comments (the feed's `siteID in (contentPoolID)` scope), or those of `ids`, in SQL in one transaction in the call's tenant. */
 function siteFeed(ctx: Ctx, call: JsonApiCall, options: BeanFeedOptions, ids?: readonly string[]): Promise<BeanFeedResult<FeedRow>> {
   const { db, repository } = ctx.domain;
   const spec = repository.comments.commentFeedSpec(ids === undefined ? { siteId: call.siteId } : { siteId: call.siteId, commentIds: ids });
-  return withTenant(db, call.actor.tenantId, (tx) => beanFeedQuery(repository.beanFeed.source<FeedRow>((fn) => fn(tx), spec), call, options));
+  // An anonymous actor carries no tenant of its own.
+  return withTenant(db, call.tenantId, (tx) => beanFeedQuery(repository.beanFeed.source<FeedRow>((fn) => fn(tx), spec), call, options));
 }
 
 /** What the comment's values need beyond its row: the site scheme setURL prefixes. */

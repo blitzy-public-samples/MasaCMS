@@ -5,6 +5,7 @@
  * text are @opt2/platform/legacy-compat's.
  */
 import {
+  acfKeyOrder,
   cfEq,
   cfIsNumeric,
   cfListAppend,
@@ -583,18 +584,25 @@ export function contentImages(view: ApiEntityView, ctx: JsonApiRequestContext): 
   return images;
 }
 
-/** packageIteratorArray's default base URL (318-336): the endpoint plus every URL and form param but pageIndex, raw. */
+/**
+ * packageIteratorArray's default base URL (318-336): the endpoint plus every URL and form param but pageIndex, raw, in
+ * the order ACF iterates the `params` struct structAppend fills from url, then form, each in its own iteration order.
+ */
 function defaultBaseUrl(ctx: JsonApiRequestContext, method: string): string {
   const params: Struct = {};
   for (const [key, value] of Object.entries(ctx.url)) setNoCase(params, key, value);
   for (const [key, value] of Object.entries(ctx.form)) setNoCase(params, key, value);
-  if (getNoCase(params, 'method') === undefined) setNoCase(params, 'method', method);
+  const assigned = [...acfKeyOrder(Object.keys(ctx.url).map((key) => ['set', key])), ...acfKeyOrder(Object.keys(ctx.form).map((key) => ['set', key]))];
+  if (getNoCase(params, 'method') === undefined) {
+    setNoCase(params, 'method', method);
+    assigned.push('method');
+  }
   if (method.includes('.')) setNoCase(params, 'method', method);
   if (cfEq(text(getNoCase(params, 'method')), 'undefined')) setNoCase(params, 'method', method);
 
   let baseUrl = `${ctx.endpoint}/?`;
-  for (const [key, value] of Object.entries(params)) {
-    if (!cfEq(key, 'pageIndex')) baseUrl += `&${key.toLowerCase()}=${text(value)}`;
+  for (const key of acfKeyOrder(assigned.map((name) => ['set', name]))) {
+    if (!cfEq(key, 'pageIndex')) baseUrl += `&${key.toLowerCase()}=${text(getNoCase(params, key))}`;
   }
   return baseUrl;
 }

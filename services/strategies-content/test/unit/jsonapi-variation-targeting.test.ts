@@ -506,7 +506,8 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
     expect(wire(result, 'findAll')).toEqual({
       apiversion: 'v1',
       data: collection(stored(), {
-        self: `${ENDPOINT}/?&method=findall&siteid=${SITE}&entityname=variationTargeting&expanddepth=1&pageIndex=1`,
+        // Base URL params in ACF's struct iteration order.
+        self: `${ENDPOINT}/?&method=findall&expanddepth=1&siteid=${SITE}&entityname=variationTargeting&pageIndex=1`,
       }),
       method: 'findAll',
     });

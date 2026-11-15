@@ -618,9 +618,11 @@ describe('serializeCollection', () => {
     });
   });
 
+  // Params go out in ACF's struct iteration order (oracle: findCrumbArray?id=…&entityname=content&fields=title links
+  // self as `?&fields=title&expanddepth=1&method=findCrumbArray&id=…&entityname=content`).
   it('builds the default base URL from url then form, without pageIndex, with the method rules', () => {
     const ctx = context(OWN, { PageIndex: '1', Method: 'undefined', a: '1' }, { form: { a: '2', b: 'x/y' }, method: 'findMany' });
-    expect((serializeCollection([], page(0, 5), ctx)['links'] as Struct)['self']).toBe(`${base}/?&method=findmany&a=2&b=x/y&pageIndex=0`);
+    expect((serializeCollection([], page(0, 5), ctx)['links'] as Struct)['self']).toBe(`${base}/?&a=2&b=x/y&method=findmany&pageIndex=0`);
     const kept = context(OWN, { method: 'findQuery' }, { method: 'findMany' });
     expect((serializeCollection([], page(0, 5), kept)['links'] as Struct)['self']).toBe(`${base}/?&method=findQuery&pageIndex=0`);
     const dotted = context(OWN, { method: 'findQuery' });
@@ -631,7 +633,7 @@ describe('serializeCollection', () => {
 
   it('renders booleans in URLs and refuses complex values as CFML does', async () => {
     const flagged = context(OWN, { flag: true }, { method: 'findAll' });
-    expect((serializeCollection([], page(0, 5), flagged)['links'] as Struct)['self']).toBe(`${base}/?&flag=true&method=findall&pageIndex=0`);
+    expect((serializeCollection([], page(0, 5), flagged)['links'] as Struct)['self']).toBe(`${base}/?&method=findall&flag=true&pageIndex=0`);
     const complex = contentView({ contentid: { nested: true } }, OWN);
     await expect(contentEntityLinks(complex, context(OWN, {}))).rejects.toThrow('Complex object types');
   });

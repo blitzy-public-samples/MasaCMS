@@ -256,8 +256,9 @@ describe.skipIf(!(await pgAvailable()))('JSON API content handler', () => {
       expect(wire(await on('findAll', { url: { countOnly: 'true' } }))).toEqual({ count: '3' });
       const data = wire(await on('findAll'));
       expect(data).toMatchObject({ totalitems: 3, entityname: 'content' });
-      // getFilteredValues params url.expanddepth before packageIteratorArray reads the URL scope.
-      expect((data['links'] as Struct)['self']).toBe(`${EP}/?&entityname=content&expanddepth=1&method=findall&pageIndex=1`);
+      // getFilteredValues params url.expanddepth before packageIteratorArray reads the URL scope, whose params go out in
+      // ACF's struct iteration order.
+      expect((data['links'] as Struct)['self']).toBe(`${EP}/?&expanddepth=1&method=findall&entityname=content&pageIndex=1`);
     });
 
     it('findQuery filters by the query string under /content/ paging links, counts, and lets domain errors through', async () => {
