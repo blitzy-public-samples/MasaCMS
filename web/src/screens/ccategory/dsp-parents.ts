@@ -1,7 +1,7 @@
 // Parent Category options of `ccategory/dsp_parents.cfm`, the edit form's `parentID` select (server-only).
 import { cfEq } from '@/lib/cfml';
 import { html, raw, type SafeHtml } from '@/lib/html';
-import type { CategoryNode } from './dsp-nest';
+import type { CategoryNode, CategoryTreeNode } from './dsp-nest';
 
 /** Attributes of `<cf_dsp_parents>`. */
 export interface CategoryParentsInput {
@@ -29,4 +29,19 @@ export function renderCategoryParents(input: CategoryParentsInput): SafeHtml {
 <option value="${raw(node.categoryID)}" ${cfEq(node.categoryID, actualParentID) && raw('selected')}>${indent}${node.name}</option>
 ${renderCategoryParents({ ...input, nodes: node.children, nestLevel: nestLevel + 1 })}`,
     )}`;
+}
+
+/** The options of {@link renderCategoryParents} under camelCase attribute names, `nestLevel` 1 as `edit.cfm` passes it. */
+export function renderParentOptions(input: {
+  readonly nodes: readonly CategoryTreeNode[];
+  readonly categoryId: string;
+  readonly actualParentId: string;
+  readonly nestLevel?: number;
+}): SafeHtml {
+  return renderCategoryParents({
+    nodes: input.nodes,
+    categoryID: input.categoryId,
+    actualParentID: input.actualParentId,
+    nestLevel: input.nestLevel ?? 1,
+  });
 }

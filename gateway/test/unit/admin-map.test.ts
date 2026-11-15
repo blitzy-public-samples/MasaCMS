@@ -1,7 +1,7 @@
 // Tests the admin response-mode lookup and the web request mapAdminToWeb builds for each mode.
 import { Buffer } from 'node:buffer';
 import { routeKeyForRequest, type RouteKeyResult, type VariantDeclaration } from '@opt2/platform/legacy-compat';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   AdminMappingError,
   ORIGINAL_URL_HEADER,
@@ -15,6 +15,8 @@ import { loadInventoryFacts, loadVariants } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths } from '../../src/cutover/paths.js';
 import type { InventoryFacts, RouteFacts } from '../../src/cutover/types.js';
 import { bodyParamsFrom } from '../../src/dispatcher/body.js';
+import { buildTestGateway, type TestGateway } from '../helpers/app.js';
+import { cutoverTable, entry } from '../helpers/versions.js';
 
 const URLENCODED = 'application/x-www-form-urlencoded';
 const BOUNDARY = 'opt2-admin-map';
@@ -170,6 +172,7 @@ describe('createResponseModes over the committed inventory', () => {
 
   it.each<[string, AdminResponseMode, string | undefined]>([
     ['admin:cusers.list', 'page', 'text/html'],
+    ['admin:cperm.main', 'page', 'text/html'],
     ['admin:carch.loaddiff', 'fragment', 'text/html'],
     ['admin:carch.loadsitemanager', 'json', 'application/json'],
     ['admin:carch.downloaddata', 'download', 'application/msexcel'],
@@ -216,7 +219,7 @@ function expectedTarget(
 
 describe('mapAdminToWeb by response mode', () => {
   it.each(BY_MODE)('maps a %s GET of %s to %s with the query verbatim and the original URL', (mode, action, webPath, contentType) => {
-    const query = `muraAction=${action}&siteid=default&q=a+b%2Fc%C3%A9&x=%7E&flag`;
+    const query = `muraAction=${action}&siteid=default&q=a+b%2Fc%C3%A9&x=a%20b&x=%7E&flag&x=c`;
     const url = `/admin/?${query}`;
     const { target } = route(committed, url);
     expect(target).toStrictEqual(expectedTarget(mode, `${webPath}?${query}`, 'GET', url, contentType));
@@ -471,5 +474,33 @@ describe('mapAdminToWeb rejections', () => {
     expect(error).toBeInstanceOf(Error);
     expect(error.name).toBe('AdminMappingError');
     expect(error.message).toBe('cannot map admin route admin:x.y to web: reason');
+  });
+});
+
+describe('admin request through the gateway to web', () => {
+  const PERM_URL = '/admin/?muraAction=cPerm.main&siteid=tenant-a';
+  let gateway: TestGateway | undefined;
+
+  afterEach(async () => {
+    await gateway?.close();
+    gateway = undefined;
+  });
+
+  it.each<[string, Record<string, string>]>([
+    ['without an original-URL header', {}],
+    ['replacing a forged original-URL header', { [ORIGINAL_URL_HEADER]: '/evil' }],
+  ])('sends a target page action to its web page handler with the browser URL, %s', async (_label, headers) => {
+    gateway = await buildTestGateway({
+      version: cutoverTable({
+        tableVersion: 'v9001',
+        entries: [entry({ route: 'admin:cperm.main', owningService: 'web', state: 'target', kind: 'read' })],
+      }),
+    });
+    const res = await gateway.app.inject({ method: 'GET', url: PERM_URL, headers });
+    expect(res.statusCode).toBe(200);
+    expect(gateway.legacy.requests.filter((req) => !req.path.startsWith('/gateway/legacy-bridge/'))).toHaveLength(0);
+    const echoes = gateway.web.echoes();
+    expect(echoes).toHaveLength(1);
+    expect(echoes[0]).toMatchObject({ method: 'GET', url: '/admin/cperm/main?muraAction=cPerm.main&siteid=tenant-a', originalUrl: PERM_URL });
   });
 });

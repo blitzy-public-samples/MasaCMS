@@ -1,0 +1,21 @@
+{
+  "total": {
+    "lines": { "total": 170, "covered": 158, "skipped": 0, "pct": 92.94 },
+    "statements": { "total": 200, "covered": 184, "skipped": 0, "pct": 92 },
+    "functions": { "total": 32, "covered": 30, "skipped": 0, "pct": 93.75 },
+    "branches": { "total": 100, "covered": 85, "skipped": 0, "pct": 85 },
+    "branchesTrue": { "total": 0, "covered": 0, "skipped": 0, "pct": 100 }
+  },
+  "/workspace/opt2/services/people/src/app.ts": {
+    "lines": { "total": 100, "covered": 96, "skipped": 0, "pct": 96 },
+    "functions": { "total": 20, "covered": 19, "skipped": 0, "pct": 95 },
+    "statements": { "total": 120, "covered": 114, "skipped": 0, "pct": 95 },
+    "branches": { "total": 60, "covered": 52, "skipped": 0, "pct": 86.66 }
+  },
+  "/workspace/opt2/services/people/src/domain/archive.ts": {
+    "lines": { "total": 70, "covered": 62, "skipped": 0, "pct": 88.57 },
+    "functions": { "total": 12, "covered": 11, "skipped": 0, "pct": 91.66 },
+    "statements": { "total": 80, "covered": 70, "skipped": 0, "pct": 87.5 },
+    "branches": { "total": 40, "covered": 33, "skipped": 0, "pct": 82.5 }
+  }
+}

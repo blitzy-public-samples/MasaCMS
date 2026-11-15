@@ -1,0 +1,41 @@
+{
+  "header": {
+    "cloc_url": "github.com/AlDanial/cloc",
+    "cloc_version": "1.98",
+    "elapsed_seconds": 1.25,
+    "n_files": 893,
+    "n_lines": 188695,
+    "files_per_second": 714.4,
+    "lines_per_second": 150956
+  },
+  "ColdFusion CFScript": {
+    "nFiles": 307,
+    "blank": 14210,
+    "comment": 9120,
+    "code": 95807
+  },
+  "ColdFusion": {
+    "nFiles": 568,
+    "blank": 7980,
+    "comment": 3410,
+    "code": 51044
+  },
+  "SQL": {
+    "nFiles": 6,
+    "blank": 310,
+    "comment": 120,
+    "code": 4504
+  },
+  "TypeScript": {
+    "nFiles": 12,
+    "blank": 260,
+    "comment": 90,
+    "code": 1840
+  },
+  "SUM": {
+    "blank": 22760,
+    "comment": 12740,
+    "code": 153195,
+    "nFiles": 893
+  }
+}
