@@ -1,11 +1,10 @@
 // Seam checks run against a scripted gateway, owner exports and clock: no socket, emulator or real timer is used.
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { INVOCATION_HEADER, Roles, loadLocalSigningKeys, verifyLocalServiceToken } from '@opt2/platform/auth';
-import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, CSRF_HEADER_TOKEN } from '@opt2/platform/legacy-compat';
 import {
   MAX_EXPORT_LIMIT,
   MIGRATION_PATH_PREFIX,
@@ -19,7 +18,7 @@ import {
 } from '@opt2/platform/migration-kit';
 import { QUEUES } from '@opt2/platform/tasks';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
-import { TENANT_A, TENANT_B, TENANT_UMBRELLA, registryPayloads, writeTestSecrets } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, registryPayloads, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
 
 import {
   DEFAULT_POLL_INTERVAL_MS,
@@ -61,7 +60,13 @@ const SERVICE_BY_ORIGIN: Readonly<Record<string, string>> = Object.fromEntries(
 const EXPORT_PATH = `${MIGRATION_PATH_PREFIX}/export`;
 const FIXTURE_API = '/legacy-fixtures/cfml/api.cfm';
 const TRACEPARENT = /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/;
-const CSRF_HEADER = CSRF_HEADER_TOKEN.toLowerCase();
+// Wire names are spelled as Cloud Run and legacy Masa spell them, so the suite needs no platform subpath beyond its
+// declared ones and fails if the harness ever sends another name.
+const INVOCATION_HEADER = 'x-serverless-authorization';
+const CSRF_FIELD_TOKEN = 'csrf_token';
+const CSRF_FIELD_EXPIRES = 'csrf_token_expires';
+const CSRF_HEADER = 'x-csrf_token';
+const FIXTURES_UNAVAILABLE_FILE = fileURLToPath(new URL('../fixtures/reporting/fixtures-unavailable.json', import.meta.url));
 const CSRF_EXPIRES = '260630120000000';
 const INVOCATION_CREDENTIAL = 'Bearer FIXTURE-invocation-credential';
 const SESSION_COOKIES = ['CFID=FIXTURE-cfid; Path=/; HttpOnly', 'CFTOKEN=FIXTURE-cftoken; Path=/; HttpOnly'];
@@ -1086,11 +1091,8 @@ describe('fixtures unavailable', () => {
     ['runSeam1', runSeam1],
     ['runSeam2', runSeam2],
   ] as const)('%s reports skipped: fixtures unavailable without a request', async (_name, run) => {
-    const reason = 'CREATE SCHEMA permission denied in muradb_c64';
-    await writeFile(
-      path.join(stateRoot, 'fixtures.json'),
-      JSON.stringify({ available: false, reason, checkedAt: '2026-06-30T07:00:00.000Z' }),
-    );
+    await copyFile(FIXTURES_UNAVAILABLE_FILE, path.join(stateRoot, 'fixtures.json'));
+    const { reason } = JSON.parse(await readFile(FIXTURES_UNAVAILABLE_FILE, 'utf8')) as FixtureStatus;
     const { fetch, requests } = fakeFetch([]);
 
     const result = await run({ env: { OPT2_STATE_DIR: stateRoot, OPT2_GATEWAY_URL: GATEWAY }, fetch });
@@ -1158,14 +1160,14 @@ describe('readOwnerExport', () => {
       [PEOPLE_URL, EXPORT_PATH, { ...query, after: 'FIXTURE-cursor-1' }],
     ]);
 
-    const { publicKey } = await loadLocalSigningKeys(stateRoot);
+    const { invocationVerifier } = testVerifier('people');
     for (const request of requests) {
       expect(Object.keys(request.headers)).toEqual([INVOCATION_HEADER]);
       const credential = request.headers[INVOCATION_HEADER] ?? '';
       expect(credential.startsWith('Bearer ')).toBe(true);
-      const identity = await verifyLocalServiceToken(credential.slice('Bearer '.length), { publicKey, audience: 'people' });
+      const identity = await invocationVerifier.verify(credential);
       expect(identity).toEqual({ name: 'migration', roles: harnessCallerRoles('migration') });
-      expect(identity.roles).toContain(Roles.platformMigration);
+      expect(identity.roles).toContain('platform.migration');
     }
   });
 

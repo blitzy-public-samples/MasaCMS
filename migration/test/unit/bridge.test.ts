@@ -1,6 +1,6 @@
-// Unit tests for the legacy-bridge client, using an injected capturing fetch, or a local HTTP server for its default transport,
-// in place of the CFML bridge pages.
-import { createHash, randomBytes } from 'node:crypto';
+// Unit tests for the legacy-bridge client, using an injected capturing fetch, a local HTTP server for its default transport,
+// or the bridge double, in place of the CFML bridge pages.
+import { createHash } from 'node:crypto';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -20,9 +20,12 @@ import {
   type BridgeClient,
   type BridgeRequestOptions,
   type ScheduledTaskDefinition,
-} from '../../src/legacy/bridge.js';
+} from '../../src/legacy/index.js';
+import { formatWireTime, startBridgeDouble, type BridgeDouble } from '../helpers/bridge-double.js';
+import { TEST_BRIDGE_KEY, testEnv } from '../helpers/env.js';
+import { FILE_BYTES as FIXTURE_FILE_BYTES, FIXTURE_FILES, SITE_MONITOR_TASK } from '../helpers/fixtures.js';
 
-const KEY = randomBytes(32).toString('hex');
+const KEY = TEST_BRIDGE_KEY;
 const ORIGIN = 'http://127.0.0.1:20080';
 const BRIDGE_PATH = '/gateway/legacy-bridge/cfml';
 const USER_AGENT = 'opt2-legacy-bridge-bot';
@@ -424,6 +427,7 @@ describe('bridge client requests', () => {
       const controller = new AbortController();
 
       await expect(invoke(client, { signal: controller.signal })).resolves.toEqual(answer);
+      const nowSeconds = Math.floor(Date.now() / 1000);
 
       const request = onlyRequest(fake);
       expect(`${request.url.origin}${request.url.pathname}`).toBe(`${ORIGIN}${BRIDGE_PATH}/${page}.cfm`);
@@ -445,6 +449,8 @@ describe('bridge client requests', () => {
       const { exp, nonce, ...claims } = verifiedAssertion(request);
       expect(claims).toEqual({ aud: 'legacy-bridge', op, sid: '', sub: '', siteId });
       expect(Number.isInteger(exp)).toBe(true);
+      expect(exp).toBeGreaterThan(nowSeconds);
+      expect(exp - nowSeconds).toBeLessThanOrEqual(60);
       expect(nonce).toMatch(/^[0-9a-f]{32}$/);
       expect(request.url.searchParams.get('siteid')).toBe(siteId === '' ? null : siteId);
     },
@@ -757,6 +763,35 @@ describe('bridge client assertions and addressing', () => {
     expect(values.map((value) => verifyBridgeAssertion(value, KEY, store).ok)).toEqual([true, true]);
   });
 
+  it('signs single-use assertions, so a second verification of one header against the same nonce store is a replay', async () => {
+    const fake = capturingFetch();
+    const client = createBridgeClient({ origin: ORIGIN, key: KEY, fetch: fake.fetch });
+    const store = new MemoryNonceStore();
+
+    await client.purgeCache('tenant-a');
+    await client.purgeCache('tenant-a');
+
+    const [first, second] = fake.requests.map((request) => request.headers[BRIDGE_ASSERTION_HEADER] ?? '');
+    expect(verifyBridgeAssertion(first ?? '', KEY, store).ok).toBe(true);
+    expect(verifyBridgeAssertion(first ?? '', KEY, store)).toEqual({ ok: false, reason: 'replay' });
+    expect(verifyBridgeAssertion(second ?? '', KEY, store).ok).toBe(true);
+  });
+
+  it('signs assertions that still verify 59 seconds after the call and are rejected as expired after 61 seconds', async () => {
+    const now = new Date('2026-06-30T12:00:00.000Z');
+    vi.useFakeTimers({ now, toFake: ['Date'] });
+    const fake = capturingFetch();
+    const client = createBridgeClient({ origin: ORIGIN, key: KEY, fetch: fake.fetch });
+
+    await client.siteRefresh('tenant-a');
+    const value = onlyRequest(fake).headers[BRIDGE_ASSERTION_HEADER] ?? '';
+
+    vi.setSystemTime(now.getTime() + 59_000);
+    expect(verifyBridgeAssertion(value, KEY, new MemoryNonceStore())).toMatchObject({ ok: true, payload: { op: 'site.refresh' } });
+    vi.setSystemTime(now.getTime() + 61_000);
+    expect(verifyBridgeAssertion(value, KEY, new MemoryNonceStore())).toEqual({ ok: false, reason: 'expired' });
+  });
+
   it('signs with its own key, so a verifier holding another key rejects the assertion', async () => {
     const fake = capturingFetch();
     const client = createBridgeClient({ origin: ORIGIN, key: KEY, fetch: fake.fetch });
@@ -1040,3 +1075,135 @@ describe('bridge client default transport', () => {
     expect(received).toHaveLength(1);
   });
 });
+
+describe('bridge client against the bridge double', () => {
+  const IMAGE = FIXTURE_FILES.image;
+  const IMAGE_NAME = IMAGE.names[0] ?? '';
+  let double: BridgeDouble;
+
+  beforeAll(async () => {
+    double = await startBridgeDouble();
+  });
+
+  afterAll(async () => {
+    await double.close();
+  });
+
+  beforeEach(() => {
+    double.calls.length = 0;
+    double.rejected.length = 0;
+  });
+
+  afterEach(() => {
+    double.setFileStore('fileDir');
+  });
+
+  it.each<{ label: string; invoke: (client: BridgeClient) => Promise<unknown>; op: string; siteId: string; expected: () => object }>([
+    {
+      label: 'getCursor',
+      invoke: (client) => client.getCursor(),
+      op: 'jobs.getCursor',
+      siteId: '',
+      expected: () => ({ job: 'getCursor', lastMonitored: formatWireTime(double.cursor.lastMonitored) }),
+    },
+    {
+      label: 'schedulerDescribe',
+      invoke: (client) => client.schedulerDescribe(),
+      op: 'scheduler.describe',
+      siteId: '',
+      expected: () => ({
+        ping: false,
+        siteMonitorTask: SITE_MONITOR_TASK,
+        tasks: expect.arrayContaining([expect.objectContaining({ task: SITE_MONITOR_TASK, interval: '900', requestTimeOut: '600' })]),
+      }),
+    },
+    {
+      label: "filesList('tenant-a')",
+      invoke: (client) => client.filesList('tenant-a'),
+      op: 'files.list',
+      siteId: 'tenant-a',
+      expected: () => ({ fileStore: 'fileDir', files: [] }),
+    },
+  ])('$label succeeds because the bridge guard accepts its assertion for $op', async ({ invoke, op, siteId, expected }) => {
+    const result = await invoke(createBridgeClient({ origin: double.origin, key: KEY }));
+
+    expect(result).toMatchObject({ ...expected(), serverTime: expect.any(String) });
+    expect(double.rejected).toEqual([]);
+    expect(double.calls).toHaveLength(1);
+    expect(double.calls[0]).toMatchObject({ op, status: 200, assertion: { aud: 'legacy-bridge', op, siteId } });
+  });
+
+  it('filesGet returns the stored bytes the bridge hashed into X-Opt2-Sha256', async () => {
+    const client = createBridgeClient({ origin: double.origin, key: KEY });
+    const bytes = FIXTURE_FILE_BYTES[IMAGE_NAME];
+
+    const file = await client.filesGet(IMAGE.siteId, IMAGE_NAME);
+
+    expect(bytes).toBeDefined();
+    expect(file.bytes.equals(bytes ?? Buffer.alloc(0))).toBe(true);
+    expect(file.sha256).toBe(createHash('sha256').update(file.bytes).digest('hex'));
+    expect(double.calls[0]?.assertion).toMatchObject({ op: 'files.get', siteId: IMAGE.siteId });
+  });
+
+  it('rejects a client signing with another key as BridgeError carrying the guard 403 and the op', async () => {
+    // Application.cfc refuses an unverifiable assertion with endEmpty(403), so the bridge never answers 401.
+    const client = createBridgeClient({ origin: double.origin, key: `${KEY}-other` });
+
+    const error = await rejectionOf(client.getCursor());
+
+    expect(error).toBeInstanceOf(BridgeError);
+    expect(error).toMatchObject({ name: 'BridgeError', status: 403, op: 'jobs.getCursor', body: '' });
+    expect(double.rejected).toMatchObject([{ reason: 'signature', query: { job: 'getCursor' } }]);
+    expect(double.calls).toEqual([]);
+  });
+
+  it('maps an injected 500 to BridgeError with status, op and the JSON error body, then answers the next call normally', async () => {
+    const client = createBridgeClient({ origin: double.origin, key: KEY });
+    double.failNext('jobs.getCursor', 500);
+
+    const error = await rejectionOf(client.getCursor());
+
+    expect(error).toBeInstanceOf(BridgeError);
+    expect(error).toMatchObject({
+      name: 'BridgeError',
+      status: 500,
+      op: 'jobs.getCursor',
+      body: { error: 'serverError', message: 'injected failure', serverTime: expect.any(String) },
+    });
+    await expect(client.getCursor()).resolves.toMatchObject({ job: 'getCursor' });
+  });
+
+  it('lists no files from a store other than fileDir', async () => {
+    // files.cfm answers 409 unsupportedFileStore only for get, put and delete; list reports the store with no files.
+    double.setFileStore('s3');
+
+    await expect(createBridgeClient({ origin: double.origin, key: KEY }).filesList(IMAGE.siteId)).resolves.toMatchObject({
+      fileStore: 's3',
+      files: [],
+    });
+  });
+
+  it.each<[string, string, (client: BridgeClient) => Promise<unknown>]>([
+    ['filesGet', 'files.get', (client) => client.filesGet(IMAGE.siteId, IMAGE_NAME)],
+    ['filesPut', 'files.put', (client) => client.filesPut(IMAGE.siteId, IMAGE_NAME, FILE_BYTES, FILE_SHA)],
+    ['filesDelete', 'files.delete', (client) => client.filesDelete(IMAGE.siteId, { fileId: IMAGE.fileId })],
+  ])('rejects %s on an s3 store with UnsupportedFileStoreError', async (_label, op, invoke) => {
+    double.setFileStore('s3');
+
+    const error = await rejectionOf(invoke(createBridgeClient({ origin: double.origin, key: KEY })));
+
+    expect(error).toBeInstanceOf(UnsupportedFileStoreError);
+    expect(error).toMatchObject({ status: 409, op, body: { error: 'unsupportedFileStore', message: 's3' } });
+  });
+
+  it('bridgeClientFromEnv builds a client of LEGACY_ORIGIN and OPT2_BRIDGE_HMAC_KEY that the bridge accepts', async () => {
+    const client = bridgeClientFromEnv(testEnv({ LEGACY_ORIGIN: double.origin }));
+
+    await expect(client.getCursor()).resolves.toMatchObject({ job: 'getCursor' });
+    await expect(client.siteRefresh('tenant-a')).resolves.toMatchObject({ refreshed: true, siteExists: true });
+
+    expect(double.rejected).toEqual([]);
+    expect(double.calls.map((call) => call.assertion.op)).toEqual(['jobs.getCursor', 'site.refresh']);
+  });
+});
+
