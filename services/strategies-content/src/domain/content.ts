@@ -2627,6 +2627,22 @@ export function deleteVersion(
   return withGatedTenant(deps.db, actor.tenantId, (tx) => deleteVersionInTx(scopeOf(tx, deps, actor, site, opts), args.contentHistId, args.siteId));
 }
 
+/** contentManager.delete, answering the version bean it reads first, which its plugin event leaves in the caller's rc as `contentBean`. */
+function deleteVersionWithBean(
+  deps: ContentDeps,
+  actor: Actor,
+  site: ContentSaveSite,
+  args: { contentHistId: string; siteId: string },
+  opts: Pick<SaveContentOptions, 'requestId'>,
+): Promise<LegacyContentBean> {
+  return withGatedTenant(deps.db, actor.tenantId, async (tx) => {
+    const scope = scopeOf(tx, deps, actor, site, opts);
+    const version = await readBean(scope, { siteId: args.siteId, contentHistId: args.contentHistId });
+    await deleteVersionInTx(scope, args.contentHistId, args.siteId);
+    return version;
+  });
+}
+
 /**
  * contentManager.delete of one version inside the caller's transaction `tx`, as an approval-chain activation deletes its
  * source version and a change-set publish deletes the superseded version of an item with an approval request.
@@ -2646,13 +2662,24 @@ export function deleteVersionInTransaction(
  * contentManager.deleteHistAll (contentManager.cfc:1874-1954): the version history except the active, pending-approval
  * and pending-change-set versions; files only removed versions use are deleted.
  */
-export function deleteHistAll(
+export async function deleteHistAll(
   deps: ContentDeps,
   actor: Actor,
   site: ContentSaveSite,
   args: { contentId: string; siteId: string },
   opts: Pick<SaveContentOptions, 'requestId'> = {},
 ): Promise<void> {
+  await deleteHistAllWithBean(deps, actor, site, args, opts);
+}
+
+/** contentManager.deleteHistAll, answering the active bean its plugin event leaves in the caller's rc as `contentBean`. */
+function deleteHistAllWithBean(
+  deps: ContentDeps,
+  actor: Actor,
+  site: ContentSaveSite,
+  args: { contentId: string; siteId: string },
+  opts: Pick<SaveContentOptions, 'requestId'>,
+): Promise<LegacyContentBean> {
   return withGatedTenant(deps.db, actor.tenantId, async (tx) => {
     const scope = scopeOf(tx, deps, actor, site, opts);
     const repo = deps.repository;
@@ -2675,6 +2702,7 @@ export function deleteHistAll(
     await deleteFilesIfNotUsed(scope, deletedFiles, deletedVersions);
     const removed = await repo.content.deleteHistAll(tx, args, scope.write);
     await deleteFilesIfNotUsed(scope, removed.extendFileIds, removed.versions.map((row) => row.contenthistid ?? ''));
+    return current;
   });
 }
 
@@ -2778,8 +2806,11 @@ export interface DeleteAllArgs {
   markers?: Partial<DeleteMarkers>;
 }
 
+/** A deleteAll result with the item's active bean, which legacy's plugin event leaves in the caller's rc as `contentBean`. */
+type DeleteAllStep = { aborted: true } | { aborted: false; topId: string; bean: LegacyContentBean };
+
 /** One deleteAll call of the recursion, sharing the request's markers and trash counter. */
-async function deleteAllInTx(scope: WriteScope, args: DeleteAllArgs, markers: DeleteMarkers, counter: TrashRequestCounter, pool: readonly PoolCategory[]): Promise<DeleteAllResult> {
+async function deleteAllInTx(scope: WriteScope, args: DeleteAllArgs, markers: DeleteMarkers, counter: TrashRequestCounter, pool: readonly PoolCategory[]): Promise<DeleteAllStep> {
   const repo = scope.deps.repository;
   if (cfEq(args.contentId, HOME_ID)) return { aborted: true };
   for (const childId of await repo.content.activeChildIds(scope.tx, { parentId: args.contentId })) {
@@ -2787,7 +2818,7 @@ async function deleteAllInTx(scope: WriteScope, args: DeleteAllArgs, markers: De
   }
   const current = await readBean(scope, { siteId: args.siteId, contentId: args.contentId });
   for (const [key, value] of deleteMarkerAssignments(markers)) current.setValue(key, value);
-  if (cfEq(current.contentId(), HOME_ID)) return { aborted: false, topId: current.contentId() };
+  if (cfEq(current.contentId(), HOME_ID)) return { aborted: false, topId: current.contentId(), bean: current };
   if (current.number('islocked') !== 1) {
     const values = await contentTrashValues(scope, current, pool);
     await throwIn(
@@ -2819,8 +2850,8 @@ async function deleteAllInTx(scope: WriteScope, args: DeleteAllArgs, markers: De
     );
     await deleteFilesIfNotUsed(scope, removed.extendFileIds, removed.versions.map((row) => row.contenthistid ?? ''));
   }
-  if (args.topId !== undefined) return { aborted: false, topId: cfEq(args.topId, current.contentId()) ? current.text('parentid') : args.topId };
-  return { aborted: false, topId: current.text('parentid') };
+  if (args.topId !== undefined) return { aborted: false, topId: cfEq(args.topId, current.contentId()) ? current.text('parentid') : args.topId, bean: current };
+  return { aborted: false, topId: current.text('parentid'), bean: current };
 }
 
 /**
@@ -2834,6 +2865,18 @@ export async function deleteAll(
   args: DeleteAllArgs,
   opts: Pick<SaveContentOptions, 'requestId' | 'rbKey' | 'memberships'> = {},
 ): Promise<DeleteAllResult> {
+  const step = await deleteAllWithBean(deps, actor, site, args, opts);
+  return step.aborted ? step : { aborted: false, topId: step.topId };
+}
+
+/** {@link deleteAll} with the top item's active bean. */
+async function deleteAllWithBean(
+  deps: ContentDeps,
+  actor: Actor,
+  site: ContentSaveSite,
+  args: DeleteAllArgs,
+  opts: Pick<SaveContentOptions, 'requestId' | 'rbKey' | 'memberships'>,
+): Promise<DeleteAllStep> {
   if (cfEq(args.contentId, HOME_ID)) return { aborted: true };
   const pool = await listPoolCategories(deps, actor);
   const memberships = opts.memberships ?? (await loadMemberships(deps, actor));
@@ -3456,7 +3499,7 @@ async function carchMultiFileUpload(
 
 /**
  * carch.update (carch.cfc:336-450) and its update.cfm view: the branch's writes, then legacy's outcome and session writes.
- * Writes commit as they happen, so an error legacy raises afterwards (`rc.contentBean` after a delete) follows them.
+ * Writes commit as they happen, so an error legacy raises afterwards follows them.
  */
 export async function carchUpdate(
   deps: ContentDeps,
@@ -3488,18 +3531,21 @@ export async function carchUpdate(
   const allowAction = inList(['author', 'editor'], cfText(perm));
   const isAction = (name: string): boolean => allowAction && cfEq(cfText(rcValue(rc, 'action')), name);
 
+  // Each delete manager wraps rc in its plugin event and sets `contentBean` on it, so a delete continues with that bean;
+  // a branch that does not run leaves rc.contentBean undefined.
+  let bean: LegacyContentBean | undefined;
   if (isAction('deleteall') && (await input.validateCsrf(`${contentId}deleteall`))) {
-    const deleted = await deleteAll(deps, actor, site, { contentId, siteId, ...(given(rc, 'topid') ? { topId: dataText(rc, 'topid') } : {}) }, prepared);
+    const deleted = await deleteAllWithBean(deps, actor, site, { contentId, siteId, ...(given(rc, 'topid') ? { topId: dataText(rc, 'topid') } : {}) }, prepared);
     if (deleted.aborted) return answer({ kind: 'abort' });
     rc.set('topid', deleted.topId);
+    bean = deleted.bean;
   }
   if (isAction('deletehistall') && (await input.validateCsrf(`${contentId}deletehistall`))) {
-    await deleteHistAll(deps, actor, site, { contentId, siteId }, prepared);
+    bean = await deleteHistAllWithBean(deps, actor, site, { contentId, siteId }, prepared);
   }
   if (isAction('delete') && (await input.validateCsrf(`${cfText(rcScopeValue(rc, 'contenthistid'))}delete`))) {
-    await deleteVersion(deps, actor, site, { contentHistId: dataText(rc, 'contenthistid'), siteId }, prepared);
+    bean = await deleteVersionWithBean(deps, actor, site, { contentHistId: dataText(rc, 'contenthistid'), siteId }, prepared);
   }
-  let bean: LegacyContentBean | undefined;
   if (isAction('add')) bean = await carchAdd(deps, actor, site, rc, input, prepared);
   const contentBean = (): LegacyContentBean => {
     if (bean === undefined) throw new UndefinedLegacyElementError('Element RC.contentBean is undefined in ARGUMENTS.');

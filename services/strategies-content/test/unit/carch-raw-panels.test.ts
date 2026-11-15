@@ -1111,11 +1111,15 @@ describe('update', () => {
       expect(ran(CONTENT_DELETE).map(({ params }) => flat(params))).toEqual([[TENANT_A.tenantId, rows.findIndex((row) => row.contenthistid === deleted) + 1]]);
     });
 
-    it('consumes the deleteall context and deletes the node, then fails on the missing bean as legacy does', async () => {
+    it('consumes the deleteall context; a valid token deletes and redirects to the list with the bean deleteAll leaves in rc, a refused one fails on the unset bean', async () => {
       seedTree();
+      identity.csrfValid = () => false;
+      const refused = await raw('update', { form: { contentid: NODE, action: 'deleteall', ...TOKEN } });
+      expect([refused.statusCode, (thrown as Error).message, contexts(), writes()]).toEqual([500, 'Element RC.contentBean is undefined in ARGUMENTS.', [`${NODE}deleteall`], []]);
+      consumed.length = 0;
+      identity.csrfValid = () => true;
       const res = await raw('update', { form: { contentid: NODE, action: 'deleteall', ...TOKEN } });
-      expect(res.statusCode).toBe(500);
-      expect((thrown as Error).message).toBe('Element RC.contentBean is undefined in ARGUMENTS.');
+      expect([res.statusCode, res.headers.location]).toEqual([302, `./?muraAction=cArch.list&topid=${HOME}&siteid=${SITE}&startrow=1&moduleid=${SITE_TREE}`]);
       expect(contexts()).toEqual([`${NODE}deleteall`]);
       expect(writes().length).toBeGreaterThan(0);
     });

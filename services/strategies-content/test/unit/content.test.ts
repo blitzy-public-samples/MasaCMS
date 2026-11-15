@@ -518,8 +518,9 @@ describe.skipIf(!PG)('carch.update branches', () => {
     expect((await tree().versions(FILE_NODE)).map((row) => row.contenthistid)).toEqual([IDS.hist.fileNodeActive]);
   });
 
-  it('trashes a deleteall, then fails on rc.contentBean as legacy does; the home page aborts', async () => {
-    await expect(carch(S2, { contentid: RESTRICTED, action: 'deleteall' })).rejects.toThrow(UNDEFINED_CONTENT_BEAN);
+  it('trashes a deleteall and returns to cArch.list with the bean deleteAll leaves in rc; the home page aborts', async () => {
+    const result = await carch(S2, { contentid: RESTRICTED, action: 'deleteall' });
+    expect(result.outcome).toMatchObject({ kind: 'redirect', action: 'cArch.list', params: { topid: ROOT, siteid: SITE_ID, startrow: '1', moduleid: SITE_TREE }, path: './' });
     expect(await tree().versions(RESTRICTED)).toEqual([]);
     expect(await tree().rows('trash', 'objectid = $1', [RESTRICTED])).toEqual([expect.objectContaining({ objectclass: 'content', objectlabel: 'Restricted' })]);
     expect(await carch(S2, { contentid: ROOT, action: 'deleteall' })).toEqual({ outcome: { kind: 'abort' }, sessionEffects: [] });

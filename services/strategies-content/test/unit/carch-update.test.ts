@@ -117,13 +117,14 @@ describe.skipIf(!(await pgAvailable()))('carch.update', () => {
     expect(failed.outcome).toMatchObject({ kind: 'ajax', location: null });
   });
 
-  it('runs a delete branch, then fails on rc.contentBean as legacy does unless keep-editing redirects it', async () => {
+  it('runs a delete branch, then continues with the bean its manager leaves in rc as contentBean', async () => {
     const victim = await save({ parentid: HOME, type: 'Page', title: 'Victim', approved: 1 });
-    await expect(carch({ contentid: victim.bean.contentId(), action: 'deleteall' })).rejects.toThrow('Element RC.contentBean is undefined in ARGUMENTS.');
+    const deleted = await carch({ contentid: victim.bean.contentId(), action: 'deleteall' });
+    expect(deleted.outcome).toMatchObject({ kind: 'redirect', action: 'cArch.list', params: { topid: HOME }, path: './' });
     expect(await content('contentid = $1', [victim.bean.contentId()])).toHaveLength(0);
 
     const draft = await saveDraft(fx.deps, ADMIN, SITE, { siteid: SITE_ID, contentid: pageId, contenthistid: await activeHistId(pageId), parentid: HOME, type: 'Page', title: 'Gone' });
-    const removed = await carch({ contentid: pageId, contenthistid: draft.bean.contentHistId(), action: 'delete', murakeepediting: true });
+    const removed = await carch({ contentid: pageId, contenthistid: draft.bean.contentHistId(), action: 'delete' });
     expect(removed.outcome).toMatchObject({ kind: 'redirect', action: 'cArch.hist', params: { contentid: pageId } });
     expect(await content('contenthistid = $1', [draft.bean.contentHistId()])).toHaveLength(0);
     const cleared = await carch({ contentid: pageId, action: 'deletehistall', murakeepediting: true, returnURL: '//evil.example/x' });
