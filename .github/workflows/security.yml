@@ -1,0 +1,149 @@
+name: security
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  authz:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - gateway
+          - migration
+          - services/identity
+          - services/people
+          - services/programs-sites
+          - services/strategies-content
+          - services/communications
+          - services/reporting
+          - services/surveys
+          - services/timesheets
+          - services/finance
+          - services/e-signature
+          - services/stub
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22.23.4
+      - name: Install npm
+        run: npm install -g npm@11.21.0
+      - name: Verify toolchain
+        run: |
+          test "$(node -v)" = "v22.23.4"
+          test "$(npm -v)" = "11.21.0"
+      - name: Install
+        working-directory: ${{ matrix.package }}
+        run: npm ci
+      - name: Authorisation matrix
+        working-directory: ${{ matrix.package }}
+        run: npm run test:security
+
+  osv-scanner:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Download osv-scanner
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/osv-scanner_linux_amd64" https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64
+          curl -fsSLo "$RUNNER_TEMP/osv-scanner_SHA256SUMS" https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_SHA256SUMS
+          cd "$RUNNER_TEMP"
+          grep -E '[[:space:]]\*?osv-scanner_linux_amd64$' osv-scanner_SHA256SUMS | sha256sum -c -
+          chmod +x osv-scanner_linux_amd64
+      - name: Scan OPT-2 lockfiles
+        run: |
+          lockfiles=(
+            platform/package-lock.json
+            gateway/package-lock.json
+            web/package-lock.json
+            migration/package-lock.json
+            harness/package-lock.json
+            legacy-fixtures/seed/package-lock.json
+            services/identity/package-lock.json
+            services/people/package-lock.json
+            services/programs-sites/package-lock.json
+            services/strategies-content/package-lock.json
+            services/communications/package-lock.json
+            services/reporting/package-lock.json
+            services/surveys/package-lock.json
+            services/timesheets/package-lock.json
+            services/finance/package-lock.json
+            services/e-signature/package-lock.json
+            services/stub/package-lock.json
+          )
+          args=()
+          for lockfile in "${lockfiles[@]}"; do
+            if ! test -f "$lockfile"; then
+              echo "::error::missing $lockfile"
+              exit 1
+            fi
+            args+=("--lockfile=$lockfile")
+          done
+          set +e
+          "$RUNNER_TEMP/osv-scanner_linux_amd64" scan source --format json "${args[@]}" > "$RUNNER_TEMP/osv.json"
+          rc=$?
+          set -e
+          # 0: no advisories, 1: advisories found; anything else is a tool error.
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+            echo "::error::osv-scanner exited $rc"
+            exit "$rc"
+          fi
+      - name: Fail on HIGH/CRITICAL production advisories
+        run: |
+          # npm devOptional (["dev","optional"]) can ship in production, so only all-"dev" groups count as dev, matching harness/src/security/scan.ts.
+          findings="$(jq -r '
+            .results[]? as $result
+            | $result.packages[]?
+            | select((.dependency_groups // []) as $groups | ($groups | length) == 0 or any($groups[]; . != "dev"))
+            | select(
+                any(.groups[]?; (.max_severity | tonumber? // 0) >= 7.0)
+                or any(.vulnerabilities[]?; .database_specific.severity? | strings | ascii_upcase | IN("HIGH", "CRITICAL"))
+              )
+            | [$result.source.path, "\(.package.name)@\(.package.version)", ([.vulnerabilities[]?.id] | join(","))]
+            | @tsv
+          ' "$RUNNER_TEMP/osv.json")"
+          if [ -n "$findings" ]; then
+            printf '%s\n' "$findings"
+            echo "::error::HIGH/CRITICAL advisories in production dependencies"
+            exit 1
+          fi
+          echo "No HIGH/CRITICAL advisories in production dependencies"
+
+  gitleaks:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # Kept out of the workspace, which the scan reads.
+      - name: Download gitleaks
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLO https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          curl -fsSLO https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
+          grep -E '[[:space:]]gitleaks_8.30.1_linux_x64\.tar\.gz$' gitleaks_8.30.1_checksums.txt | sha256sum -c -
+          tar -xzf gitleaks_8.30.1_linux_x64.tar.gz -C "$RUNNER_TEMP" gitleaks
+      # Subcommand, scan root and flags match harness/src/security/scan.ts; baseline entries depend on them.
+      - name: Scan for secrets
+        run: >-
+          "$RUNNER_TEMP/gitleaks" dir .
+          --config harness/security/gitleaks.toml
+          --baseline-path harness/security/gitleaks-baseline.json
+          --redact --no-banner --exit-code 1
