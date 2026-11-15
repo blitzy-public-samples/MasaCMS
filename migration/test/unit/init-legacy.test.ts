@@ -1,11 +1,9 @@
-// Unit tests for the opt2_sync batch and init-legacy, using an in-memory live pool in place of SQL Server.
+// Unit tests for the opt2_sync batch and init-legacy, run against the in-memory legacy database fake.
 import { readFileSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import type { ConnectionPool } from 'mssql';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -15,16 +13,25 @@ import {
   type InitLegacyLogger,
   type InitLegacyResult,
 } from '../../src/legacy/init-legacy.js';
-import type { LegacyDb } from '../../src/legacy/legacy-db.js';
 import { OPT2_SYNC_SQL_PATH } from '../../src/paths.js';
+import { createTestDirs, type TestDirs } from '../helpers/env.js';
+import {
+  connectionLost,
+  createFakeLegacyDb,
+  sqlError,
+  type FakeLegacyDb,
+  type LegacyColumnDef,
+  type Row,
+} from '../helpers/fake-legacy-db.js';
 
 const sqlText = readFileSync(OPT2_SYNC_SQL_PATH, 'utf8');
 
-const RESULT: InitLegacyResult = { schema: 'opt2_sync', table: 'opt2_sync.projector_checkpoint' };
+const LIVE = 'muradb';
+const CHECKPOINT_TABLE = 'opt2_sync.projector_checkpoint';
+const RESULT: InitLegacyResult = { schema: 'opt2_sync', table: CHECKPOINT_TABLE };
 const SCHEMA_GUARD = /IF\s+SCHEMA_ID\(N'opt2_sync'\)\s+IS\s+NULL\s+EXEC\(N'CREATE\s+SCHEMA\s+opt2_sync'\)/i;
 const TABLE_GUARD =
   /IF\s+OBJECT_ID\(N'opt2_sync\.projector_checkpoint',\s*N'U'\)\s+IS\s+NULL\s+CREATE\s+TABLE\s+opt2_sync\.projector_checkpoint\s*\(/i;
-const READY_SQL = /\bsys\.tables\b[\s\S]*'opt2_sync'[\s\S]*'projector_checkpoint'/i;
 const CHECKPOINT_COLUMNS = [
   'owner',
   'tenant_id',
@@ -56,15 +63,25 @@ const PERMISSION_REFUSALS: [number, string][] = [
   [2760, 'The specified schema name "opt2_sync" either does not exist or you do not have permission to use it.'],
   [15247, 'User does not have permission to perform this action.'],
 ];
-const SEEDED_CHECKPOINT = {
+const MASA_COLUMNS: LegacyColumnDef[] = [
+  { name: 'SiteID', type: 'nvarchar', length: 25, nullable: false },
+  { name: 'Title', type: 'nvarchar', length: 255 },
+];
+const MASA_ROWS: Record<string, Row[]> = {
+  'dbo.tsettings': [{ SiteID: 'default', Title: 'Default' }],
+  'dbo.tcontent': [{ SiteID: 'default', Title: 'Home' }],
+};
+const SEEDED_CHECKPOINT: Row = {
   owner: 'people',
   tenant_id: '00000000-0000-4000-8000-00000000000a',
-  cursor_xid: '1001',
+  cursor_xid: 1001,
   cursor_seq: 4,
-  applied_horizon: '1002',
+  applied_horizon: 1002,
   batch_id: 'batch-0001',
   rows_applied: 3,
   updated_at: new Date('2026-01-02T03:04:05.678Z'),
+  pending_effects: null,
+  ready_horizon: null,
 };
 
 /** Items of the parenthesised list after `CREATE TABLE opt2_sync.projector_checkpoint`, split at top-level commas. */
@@ -88,60 +105,37 @@ function checkpointTableItems(text: string): string[] {
   throw new Error('CREATE TABLE opt2_sync.projector_checkpoint has no closing parenthesis');
 }
 
-/** SQL Server driver error with `message` and the given `number` or `originalError` fields. */
-function sqlError(message: string, fields: { number?: number; originalError?: unknown }): Error {
-  return Object.assign(new Error(message), { name: 'RequestError', ...fields });
+/** A fake legacy server whose live database holds two Masa tables with one row each. */
+function masaLegacy(): FakeLegacyDb {
+  return createFakeLegacyDb({
+    database: LIVE,
+    tables: Object.keys(MASA_ROWS).map((qualified) => ({ qualified, columns: MASA_COLUMNS })),
+    rows: MASA_ROWS,
+  });
 }
 
-/** Resolves on the next event-loop turn, as a driver round trip would. */
-function roundTrip(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
+/** Rows `sql` returns on the live database. */
+async function select<T>(fake: FakeLegacyDb, sql: string): Promise<T[]> {
+  const pool = await fake.live();
+  return (await pool.request().query<T>(sql)).recordset;
 }
 
-/** Live legacy pool stand-in recording batches and queries; the guarded 005 statements create opt2_sync once. */
-function fakeLegacy() {
-  const state = {
-    schema: false,
-    table: false,
-    emptyRecordset: false,
-    checkpointRows: [] as Record<string, unknown>[],
-    nextBatchFailure: undefined as { error: unknown } | undefined,
-  };
-  const batch = vi.fn(async (text: string) => {
-    await roundTrip();
-    const failure = state.nextBatchFailure;
-    state.nextBatchFailure = undefined;
-    if (failure !== undefined) throw failure.error;
-    if (SCHEMA_GUARD.test(text)) state.schema = true;
-    if (TABLE_GUARD.test(text)) state.table = true;
-    return { recordset: [], recordsets: [], rowsAffected: [], output: {} };
-  });
-  const query = vi.fn(async (sql: string) => {
-    await roundTrip();
-    if (!READY_SQL.test(sql)) throw new Error(`Unexpected query: ${sql}`);
-    const recordset = state.emptyRecordset ? [] : [{ n: state.table ? 1 : 0 }];
-    return { recordset, recordsets: [recordset], rowsAffected: [recordset.length], output: {} };
-  });
-  const request = vi.fn(() => ({ batch, query }));
-  const live = vi.fn(async () => {
-    await roundTrip();
-    return { request } as unknown as ConnectionPool;
-  });
+/** Schemas, tables, columns and primary keys of the live database, as its catalog views report them. */
+async function catalogOf(fake: FakeLegacyDb) {
   return {
-    state,
-    batch,
-    query,
-    live,
-    legacy: { live } satisfies Pick<LegacyDb, 'live'>,
-    /** The next batch rejects with `error`, whatever its type, before touching any object. */
-    failNextBatch(error: unknown): void {
-      state.nextBatchFailure = { error };
-    },
-    /** Inserts a checkpoint row; the table must already exist. */
-    seedCheckpoint(row: Record<string, unknown>): void {
-      if (!state.table) throw new Error('opt2_sync.projector_checkpoint does not exist');
-      state.checkpointRows.push(row);
-    },
+    schemas: await select<{ name: string }>(fake, 'SELECT name FROM sys.schemas ORDER BY name'),
+    tables: await select<{ schema_name: string; name: string; object_id: number; create_date: Date }>(
+      fake,
+      'SELECT s.name AS schema_name, t.name, t.object_id, t.create_date FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id ORDER BY s.name, t.name',
+    ),
+    columns: await select<Record<string, unknown>>(
+      fake,
+      'SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION',
+    ),
+    keys: await select<{ object_id: number; name: string | null; is_primary_key: boolean }>(
+      fake,
+      'SELECT object_id, name, is_primary_key FROM sys.indexes ORDER BY object_id',
+    ),
   };
 }
 
@@ -217,54 +211,91 @@ describe('initLegacy', () => {
     ['without options', undefined],
     ['with options that set no sqlPath', {}],
   ])(
-    '%s sends 005_opt2_sync.sql once, unchanged, as a batch on the live pool and logs readiness once',
+    '%s sends 005_opt2_sync.sql once, unchanged, as a batch on the live database and logs readiness once',
     async (_label, options) => {
-      const fake = fakeLegacy();
+      const fake = masaLegacy();
       const logger = fakeLogger();
 
-      await expect(initLegacy({ legacy: fake.legacy, logger }, options)).resolves.toEqual(RESULT);
-      expect(fake.live).toHaveBeenCalledTimes(1);
-      expect(fake.batch).toHaveBeenCalledExactlyOnceWith(sqlText);
-      expect(fake.query).not.toHaveBeenCalled();
+      await expect(initLegacy({ legacy: fake, logger }, options)).resolves.toEqual(RESULT);
+      expect(fake.statements).toEqual([{ database: LIVE, sql: sqlText, params: {}, txId: null, at: expect.any(Number) }]);
+      expect(fake.rows(CHECKPOINT_TABLE)).toEqual([]);
       expect(logger.info).toHaveBeenCalledExactlyOnceWith('opt2_sync ready');
     },
   );
 
   it('makes opt2SyncReady turn from false to true', async () => {
-    const fake = fakeLegacy();
+    const fake = masaLegacy();
 
-    await expect(opt2SyncReady(fake.legacy)).resolves.toBe(false);
-    await initLegacy({ legacy: fake.legacy, logger: fakeLogger() });
-    await expect(opt2SyncReady(fake.legacy)).resolves.toBe(true);
-    expect(fake.state).toMatchObject({ schema: true, table: true });
-    expect(fake.query).toHaveBeenCalledTimes(2);
-    expect(fake.batch).toHaveBeenCalledTimes(1);
+    await expect(opt2SyncReady(fake)).resolves.toBe(false);
+    await initLegacy({ legacy: fake, logger: fakeLogger() });
+    await expect(opt2SyncReady(fake)).resolves.toBe(true);
+    expect(fake.statements.map((statement) => statement.database)).toEqual([LIVE, LIVE, LIVE]);
   });
 
-  it('succeeds again on an initialised database and leaves existing checkpoint rows intact', async () => {
-    const fake = fakeLegacy();
-    await initLegacy({ legacy: fake.legacy, logger: fakeLogger() });
-    fake.seedCheckpoint(SEEDED_CHECKPOINT);
+  it('adds only the opt2_sync schema and its checkpoint table, keyed on (owner, tenant_id), and leaves Masa tables intact', async () => {
+    const fake = masaLegacy();
+    const before = await catalogOf(fake);
+
+    await initLegacy({ legacy: fake, logger: fakeLogger() });
+    const after = await catalogOf(fake);
+    const [checkpoint] = after.tables.filter((table) => table.schema_name === 'opt2_sync');
+
+    expect(after.schemas.filter((schema) => !before.schemas.some((known) => known.name === schema.name))).toEqual([
+      { name: 'opt2_sync' },
+    ]);
+    expect(after.tables.filter((table) => table.schema_name !== 'opt2_sync')).toEqual(before.tables);
+    expect(checkpoint).toMatchObject({ name: 'projector_checkpoint' });
+    expect(after.columns.filter((column) => column.TABLE_SCHEMA !== 'opt2_sync')).toEqual(before.columns);
+    expect(
+      after.columns
+        .filter((column) => column.TABLE_SCHEMA === 'opt2_sync')
+        .map((column) => [column.TABLE_NAME, column.COLUMN_NAME, column.DATA_TYPE, column.IS_NULLABLE]),
+    ).toEqual([
+      ['projector_checkpoint', 'owner', 'nvarchar', 'NO'],
+      ['projector_checkpoint', 'tenant_id', 'char', 'NO'],
+      ['projector_checkpoint', 'cursor_xid', 'decimal', 'NO'],
+      ['projector_checkpoint', 'cursor_seq', 'bigint', 'NO'],
+      ['projector_checkpoint', 'applied_horizon', 'decimal', 'NO'],
+      ['projector_checkpoint', 'batch_id', 'nvarchar', 'NO'],
+      ['projector_checkpoint', 'rows_applied', 'int', 'NO'],
+      ['projector_checkpoint', 'updated_at', 'datetime2', 'NO'],
+      ['projector_checkpoint', 'pending_effects', 'nvarchar', 'YES'],
+      ['projector_checkpoint', 'ready_horizon', 'decimal', 'YES'],
+    ]);
+    expect(after.keys.filter((key) => key.object_id === checkpoint?.object_id)).toEqual([
+      { object_id: checkpoint?.object_id, name: 'PK_opt2_sync_projector_checkpoint', is_primary_key: true },
+    ]);
+    for (const [table, rows] of Object.entries(MASA_ROWS)) expect(fake.rows(table)).toEqual(rows);
+  });
+
+  it('succeeds again on an initialised database without recreating the table or touching its rows', async () => {
+    const fake = masaLegacy();
+    await initLegacy({ legacy: fake, logger: fakeLogger() });
+    fake.seed(CHECKPOINT_TABLE, [SEEDED_CHECKPOINT]);
+    const catalog = await catalogOf(fake);
+    const rows = fake.rows(CHECKPOINT_TABLE);
     const logger = fakeLogger();
 
-    await expect(initLegacy({ legacy: fake.legacy, logger })).resolves.toEqual(RESULT);
-    expect(fake.state.checkpointRows).toEqual([SEEDED_CHECKPOINT]);
-    expect(fake.batch.mock.calls).toEqual([[sqlText], [sqlText]]);
+    await expect(initLegacy({ legacy: fake, logger })).resolves.toEqual(RESULT);
+    expect(await catalogOf(fake)).toEqual(catalog);
+    expect(fake.rows(CHECKPOINT_TABLE)).toEqual(rows);
+    expect(rows).toEqual([expect.objectContaining({ owner: 'people', tenant_id: SEEDED_CHECKPOINT.tenant_id })]);
+    expect(fake.statements.filter((statement) => statement.sql === sqlText)).toHaveLength(2);
     expect(logger.info).toHaveBeenCalledExactlyOnceWith('opt2_sync ready');
-    await expect(opt2SyncReady(fake.legacy)).resolves.toBe(true);
+    await expect(opt2SyncReady(fake)).resolves.toBe(true);
   });
 
   const tableDenied = "CREATE TABLE permission denied in database 'muradb'.";
   const refusals: [string, unknown, number, string][] = [
     ...PERMISSION_REFUSALS.map(([number, message]): [string, unknown, number, string] => [
-      `error ${String(number)} in number`,
-      sqlError(message, { number }),
+      `SQL Server error ${String(number)}`,
+      sqlError(number, message),
       number,
       message,
     ]),
     [
-      'error 262 in originalError.info.number',
-      sqlError(tableDenied, { originalError: { info: { number: 262, message: tableDenied } } }),
+      'error 262 carried only in originalError.info.number',
+      Object.assign(new Error(tableDenied), { name: 'RequestError', originalError: { info: { number: 262 } } }),
       262,
       tableDenied,
     ],
@@ -274,78 +305,64 @@ describe('initLegacy', () => {
   it.each(refusals)(
     'rejects with Opt2SyncUnavailableError for %s, logs nothing and leaves opt2_sync absent',
     async (_label, refusal, sqlErrorNumber, reason) => {
-      const fake = fakeLegacy();
+      const fake = masaLegacy();
       const logger = fakeLogger();
-      fake.failNextBatch(refusal);
+      fake.failNext((statement) => statement.sql === sqlText, refusal);
 
-      const error = await refusalOf(initLegacy({ legacy: fake.legacy, logger }));
+      const error = await refusalOf(initLegacy({ legacy: fake, logger }));
 
-      expect(error.name).toBe('Opt2SyncUnavailableError');
-      expect(error.sqlErrorNumber).toBe(sqlErrorNumber);
-      expect(error.reason).toBe(reason);
+      expect(error).toMatchObject({ name: 'Opt2SyncUnavailableError', sqlErrorNumber, reason, cause: refusal });
       expect(error.reason).not.toBe('');
       expect(error.message).toContain(reason);
-      expect(error.cause).toBe(refusal);
       expect(logger.info).not.toHaveBeenCalled();
-      expect(fake.state).toMatchObject({ schema: false, table: false });
-      await expect(opt2SyncReady(fake.legacy)).resolves.toBe(false);
+      expect(fake.statements.map((statement) => statement.sql)).toEqual([sqlText]);
+      await expect(opt2SyncReady(fake)).resolves.toBe(false);
+      await expect(select(fake, "SELECT SCHEMA_ID(N'opt2_sync') AS id")).resolves.toEqual([{ id: null }]);
     },
   );
 
   it.each([
-    [
-      'an unlisted SQL Server error number',
-      sqlError("There is already an object named 'projector_checkpoint' in the database.", { number: 2714 }),
-    ],
-    ['an error without a number', new Error('Connection lost - read ECONNRESET')],
-    ['an error whose originalError has no info', sqlError('Request failed to complete', { originalError: {} })],
+    ['an unlisted SQL Server error number', sqlError(2714)],
+    ['a lost connection', connectionLost()],
+    ['an error whose originalError has no info', Object.assign(new Error('Request failed'), { originalError: {} })],
     ['a thrown string', 'socket hang up'],
     ['a thrown null', null],
   ])('propagates %s unchanged and logs nothing', async (_label, thrown) => {
-    const fake = fakeLegacy();
+    const fake = masaLegacy();
     const logger = fakeLogger();
-    fake.failNextBatch(thrown);
+    fake.failNext((statement) => statement.sql === sqlText, thrown);
 
-    await expect(initLegacy({ legacy: fake.legacy, logger })).rejects.toBe(thrown);
+    await expect(initLegacy({ legacy: fake, logger })).rejects.toBe(thrown);
     expect(logger.info).not.toHaveBeenCalled();
+    await expect(opt2SyncReady(fake)).resolves.toBe(false);
   });
 });
 
 describe('initLegacy sqlPath option', () => {
-  let dir = '';
+  let dirs: TestDirs | undefined;
 
   beforeAll(async () => {
-    dir = await mkdtemp(path.join(os.tmpdir(), 'opt2-init-legacy-'));
+    dirs = await createTestDirs();
   });
 
   afterAll(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await dirs?.cleanup();
   });
 
   it.each([
     ['a path string', (file: string): string | URL => file],
     ['a file URL', (file: string): string | URL => pathToFileURL(file)],
-  ])('reads and executes the batch file given as %s', async (label, locate) => {
-    const file = path.join(dir, `${label.replaceAll(' ', '-')}.sql`);
-    const text = `-- ${label} override, übersicht\r\nSELECT 1 AS n;\r\n`;
+  ])('reads the batch file given as %s and executes its text', async (label, locate) => {
+    if (dirs === undefined) throw new Error('Test directories were not created');
+    const file = path.join(dirs.stateDir, `${label.replaceAll(' ', '-')}.sql`);
+    const text = `-- copy given as ${label}, übersicht\r\n${sqlText}`;
     await writeFile(file, text, 'utf8');
-    const fake = fakeLegacy();
+    const fake = masaLegacy();
     const logger = fakeLogger();
 
-    await expect(initLegacy({ legacy: fake.legacy, logger }, { sqlPath: locate(file) })).resolves.toEqual(RESULT);
-    expect(fake.batch).toHaveBeenCalledExactlyOnceWith(text);
+    await expect(initLegacy({ legacy: fake, logger }, { sqlPath: locate(file) })).resolves.toEqual(RESULT);
+    expect(fake.statements.map((statement) => statement.sql)).toEqual([text]);
+    await expect(opt2SyncReady(fake)).resolves.toBe(true);
     expect(logger.info).toHaveBeenCalledExactlyOnceWith('opt2_sync ready');
-  });
-});
-
-describe('opt2SyncReady', () => {
-  it('returns false when the readiness query returns no row', async () => {
-    const fake = fakeLegacy();
-    fake.state.table = true;
-    fake.state.emptyRecordset = true;
-
-    await expect(opt2SyncReady(fake.legacy)).resolves.toBe(false);
-    expect(fake.query).toHaveBeenCalledTimes(1);
-    expect(fake.batch).not.toHaveBeenCalled();
   });
 });
