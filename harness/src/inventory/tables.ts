@@ -257,7 +257,7 @@ function tableName(schema: string, name: string): string {
 }
 
 /** Lookup key of a table name as a write, override or live row spells it. */
-function tableKey(name: string): string {
+export function tableKey(name: string): string {
   return name
     .toLowerCase()
     .replace(/^dbo\./, '')
