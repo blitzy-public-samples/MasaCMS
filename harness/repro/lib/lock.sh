@@ -82,11 +82,11 @@ let doc;
 try { doc = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); } catch { process.exit(0); }
 const processes = doc !== null && typeof doc === "object" ? doc.processes : undefined;
 if (processes === null || typeof processes !== "object" || Array.isArray(processes)) process.exit(0);
-for (const entry of Object.values(processes)) {
-  if (entry !== null && typeof entry === "object" && Number.isInteger(entry.pid) && entry.pid > 0) {
-    process.stdout.write(`${entry.pid}\n`);
-  }
-}
+const pids = Object.values(processes)
+  .filter((entry) => entry !== null && typeof entry === "object" && Number.isInteger(entry.pid) && entry.pid > 0)
+  .map((entry) => `${entry.pid}\n`);
+// One write: the reader stops at the first live pid, and a later write to its closed pipe would raise EPIPE.
+process.stdout.write(pids.join(""));
 ' -- "$1"
 }
 
