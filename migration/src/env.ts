@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { baseEnvSchema, envPort, envUrl, loadEnv, optionalEnvString, requiredEnvString, z } from '@opt2/platform/service-kit';
+import { baseEnvSchema, envPort, envUrl, loadEnv, optionalEnvString, requiredEnvString, z, type LoadedEnv } from '@opt2/platform/service-kit';
 
 const SQL_SERVER_TYPES = new Set(['mssql', 'sqlserver', 'microsoft sql server']);
 
@@ -35,8 +35,8 @@ export const migrationEnvSchema = baseEnvSchema.extend({
   }
 });
 
-/** Parsed migration environment. */
-export type MigrationEnv = z.infer<typeof migrationEnvSchema>;
+/** Parsed migration environment as `loadEnv` returns it, the adapter modes resolved, so it is a service-kit `BaseEnv`. */
+export type MigrationEnv = LoadedEnv<typeof migrationEnvSchema>;
 
 /** Parses `source`; throws `EnvValidationError` naming every invalid or missing variable, never its value. */
 export function loadMigrationEnv(source: NodeJS.ProcessEnv = process.env): MigrationEnv {

@@ -60,7 +60,7 @@ export const REGISTERED_OPERATIONS = Object.freeze([
   ...SCHEDULER_ROUTES,
 ]);
 
-/** Contract operations this composition does not serve: no registrar of theirs is composed here, and the service has no `server.ts` composing them yet. */
+/** Contract operations this composition does not serve: no registrar of theirs is composed here; the `buildApp` suites cover their routes. */
 export const ABSENT_OPERATIONS = Object.freeze([
   'gatesList',
   'transitionGet',
