@@ -34,16 +34,17 @@ interface Gateway {
   close(): Promise<void>;
 }
 
-/** Builds the gateway; fastify loads here so the http instrumentation, when started, patches it. */
+/** Builds the gateway over its own reply-from agent; fastify loads here so the http instrumentation, when started, patches it. */
 async function startGateway(legacy: HttpDouble): Promise<Gateway> {
   const { default: Fastify } = await import('fastify');
   const { default: replyFrom } = await import('@fastify/reply-from');
   const { forwardToLegacy } = await import('../../src/dispatcher/forward-legacy.js');
+  const { replyFromOptions } = await import('../../src/dispatcher/response-head.js');
   type Request = Parameters<typeof forwardToLegacy>[0];
   type Reply = Parameters<typeof forwardToLegacy>[1];
 
   const app = Fastify();
-  await app.register(replyFrom);
+  await app.register(replyFrom, replyFromOptions());
   let overrides: Partial<LegacyForwardContext> = {};
   const forward = (request: Request, reply: Reply, fields: Partial<LegacyForwardContext> = {}): Promise<Reply> =>
     forwardToLegacy(request, reply, {

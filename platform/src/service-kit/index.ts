@@ -1,4 +1,4 @@
-/** Public surface of `@opt2/platform/service-kit`: the kit's own exports, plus the Fastify types and zod they are used with. */
+/** Public surface of `@opt2/platform/service-kit`: the kit's own exports, plus the Fastify types, zod, and undici's `Agent` and `Dispatcher` types they are used with. */
 export { systemClock, fixedClock, isClock, type Clock } from './clock.js';
 export {
   baseEnvSchema,
@@ -52,6 +52,7 @@ export {
   recordOutcomeReason,
   sendLegacyResponse,
   LEGACY_POST_LIMIT_BYTES,
+  SERVICE_MAX_HEADER_SIZE,
   UNMATCHED_ROUTE,
   type CreateServiceOptions,
   type LegacyParamsOptions,
@@ -79,3 +80,4 @@ export type {
   RouteShorthandOptions,
 } from 'fastify';
 export { z } from 'zod';
+export { Agent, type Dispatcher } from 'undici';

@@ -12,6 +12,7 @@ import type { SessionMode } from '../session/mode.js';
 import { LEGACY_CALLEE, replyFromCallee } from './callee-span.js';
 import { failClosed, neverSent, type FailContext } from './fail-closed.js';
 import { HOP_BY_HOP_HEADERS, forwardedHeaders } from './headers.js';
+import { recordResponseHead, writeUpstreamHead, type RawResponseHead, type ResponseHeadSlot } from './response-head.js';
 import { settlingRelay } from './settling-relay.js';
 
 /** Legacy's status and headers; a `set-cookie` header is always a list. */
@@ -176,15 +177,23 @@ function streamToClient(request: FastifyRequest, res: ServerResponse, body: Read
 }
 
 /**
- * Writes legacy's status, the reply's headers and `body` to the client as they are.
+ * Writes legacy's status, the reply's headers and `body` to the client as they are; with legacy's recorded `head`, in its
+ * reason phrase, header order and spelling. `received` is reply-from's parsed copy of legacy's headers.
  * Bypasses Fastify's send, whose onSend hooks add gateway headers and whose Buffer path adds a content type and length.
  */
-function sendAsLegacy(request: FastifyRequest, reply: FastifyReply, body: Readable | Buffer): void {
+function sendAsLegacy(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  body: Readable | Buffer,
+  head: RawResponseHead | undefined,
+  received: IncomingHttpHeaders,
+): void {
   const headers: OutgoingHttpHeaders = Object.fromEntries(
     Object.entries(reply.getHeaders()).filter((entry): entry is [string, string | number | string[]] => entry[1] !== undefined),
   );
   // Before hijack, so a header Node rejects throws while the reply can still answer the 503.
-  reply.raw.writeHead(reply.statusCode, headers);
+  if (head === undefined) reply.raw.writeHead(reply.statusCode, headers);
+  else writeUpstreamHead(reply.raw, reply.statusCode, head, received, headers);
   reply.hijack();
   if (Buffer.isBuffer(body)) {
     reply.raw.end(body);
@@ -225,6 +234,8 @@ export async function forwardToLegacy(
   };
   /** Settlement of a request that never reached legacy, which its 503 waits for. */
   let notSentSettlement: Promise<void> | undefined;
+  /** Legacy's final response head as sent, recorded by reply-from's dispatcher when it is the gateway's. */
+  const legacyHead: ResponseHeadSlot = {};
 
   /** Runs `beforeSend`; a rejection is logged and reported, so legacy's response does not leave. */
   async function runBeforeSend(upstream: LegacyUpstream): Promise<BeforeSendOutcome> {
@@ -244,6 +255,7 @@ export async function forwardToLegacy(
       return;
     }
     const upstream = upstreamOf(res);
+    const received = res.headers as IncomingHttpHeaders;
     if (ctx.mode === 'stream') {
       const before = await runBeforeSend(upstream);
       if (before.failed) {
@@ -253,7 +265,7 @@ export async function forwardToLegacy(
         return;
       }
       replaceSetCookies(reply, ctx.sessionMode, upstream, before.setCookies);
-      sendAsLegacy(request, reply, res.stream);
+      sendAsLegacy(request, reply, res.stream, legacyHead.head, received);
       return;
     }
     const body = await collect(res.stream);
@@ -265,7 +277,7 @@ export async function forwardToLegacy(
       return;
     }
     replaceSetCookies(reply, ctx.sessionMode, upstream, before.setCookies);
-    sendAsLegacy(request, reply, body);
+    sendAsLegacy(request, reply, body, legacyHead.head, received);
   }
 
   const url = request.url;
@@ -315,7 +327,9 @@ export async function forwardToLegacy(
 
   let forwarded: FastifyReply;
   try {
-    forwarded = replyFromCallee(reply, LEGACY_CALLEE, `${ctx.legacyOrigin.replace(/\/+$/, '')}${path}`, options);
+    forwarded = recordResponseHead(legacyHead, () =>
+      replyFromCallee(reply, LEGACY_CALLEE, `${ctx.legacyOrigin.replace(/\/+$/, '')}${path}`, options),
+    );
   } catch (error) {
     // reply-from rejects a path it cannot parse before anything is sent to legacy.
     request.log.warn({ error: serializeError(error) }, 'legacy forward rejected before sending');

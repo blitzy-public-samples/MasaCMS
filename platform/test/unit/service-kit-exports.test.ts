@@ -1,6 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as undici from 'undici';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z as zod } from 'zod';
 import * as clock from '../../src/service-kit/clock.js';
@@ -81,11 +82,13 @@ const VALUE_EXPORTS = {
       'recordOutcomeReason',
       'sendLegacyResponse',
       'LEGACY_POST_LIMIT_BYTES',
+      'SERVICE_MAX_HEADER_SIZE',
       'UNMATCHED_ROUTE',
     ],
   ],
   './event-scope.js': [eventScope, ['recordEventScope']],
   './csrf-hook.js': [csrfHook, ['csrfPreHandler', 'csrfTokenFrom', 'CSRF_CONSUME_PATH', 'IDENTITY_SERVICE']],
+  undici: [undici, ['Agent']],
 } as const satisfies Record<string, readonly [Record<string, unknown>, readonly string[]]>;
 
 const reexported = Object.entries(VALUE_EXPORTS).flatMap(([from, [module, names]]) =>

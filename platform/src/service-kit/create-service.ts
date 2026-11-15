@@ -2,11 +2,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { open, rm } from 'node:fs/promises';
-import { maxHeaderSize, type IncomingMessage } from 'node:http';
+import type { IncomingMessage } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parse as parseQuery } from 'node:querystring';
-import { Transform, type Readable } from 'node:stream';
+import { Transform, type Duplex, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
@@ -24,9 +24,11 @@ import {
   type Opt2AuthContext,
 } from '../auth/index.js';
 import {
+  LEGACY_BAD_REQUEST_RESPONSE,
   LEGACY_ERROR_PAGE_HTML,
   LEGACY_ERROR_STATUS_TEXT,
   LEGACY_HTML_CONTENT_TYPE,
+  LEGACY_REQUEST_HEAD_LIMIT_BYTES,
   LegacyApiError,
   LegacyServiceUnavailableError,
   cfNumberString,
@@ -57,6 +59,12 @@ export const LEGACY_POST_LIMIT_BYTES = 100 * 1024 * 1024;
 
 /** Largest POST Content-Length the legacy servlet container accepts; it answers a larger one with its Post Size page. */
 export const LEGACY_MAX_POST_CONTENT_LENGTH = 20 * 1024 * 1024 + 1;
+
+/**
+ * Default request-head limit (Node `maxHeaderSize`): legacy's, plus 64 KiB for what the gateway adds to a head it
+ * forwards (user and invocation tokens, `X-Forwarded-*`, trace context, request id), so a head the gateway admits is admitted here.
+ */
+export const SERVICE_MAX_HEADER_SIZE = LEGACY_REQUEST_HEAD_LIMIT_BYTES + 64 * 1024;
 
 /** Log `route` of a request no route matched or the router rejected; never its path, which can carry session ids, secrets or PII. */
 export const UNMATCHED_ROUTE = '(unmatched)';
@@ -90,6 +98,8 @@ export interface CreateServiceOptions<E extends BaseEnv = BaseEnv> {
   containerRefusesTarget?: (request: FastifyRequest) => boolean;
   /** Whether a request skips the start-up scan, as a path naming no template does, whose 404 a scan fault leaves standing on legacy. */
   skipsStartupScan?: (request: FastifyRequest) => boolean;
+  /** Request-head limit, also the path-parameter limit; defaults to {@link SERVICE_MAX_HEADER_SIZE}. A head over it gets legacy's bare 400. */
+  maxHeaderSize?: number;
 }
 
 /** Process runtime of one service, decorated as `app.opt2`. */
@@ -598,6 +608,7 @@ async function openPool(env: BaseEnv, schema: string, logger: Logger): Promise<T
 /** Builds a service's Fastify instance with auth, context, parsers, legacy headers and errors, health, logging and shutdown; routes come after. */
 export async function createService<E extends BaseEnv>(options: CreateServiceOptions<E>): Promise<FastifyInstance> {
   const { name, version, env, clock = systemClock, surfaceOf = defaultSurfaceOf, noCasePathPrefixes = [] } = options;
+  const { maxHeaderSize = SERVICE_MAX_HEADER_SIZE } = options;
   if (options.pool !== undefined && options.schema !== undefined) {
     throw new TypeError('createService accepts either pool or schema, not both');
   }
@@ -627,11 +638,12 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     requestIdHeader: false,
     genReqId: (req) => requestIdFrom(req.headers),
     bodyLimit: LEGACY_POST_LIMIT_BYTES,
+    http: { maxHeaderSize },
     // In-flight requests finish on close instead of getting Fastify's non-legacy 503.
     return503OnClosing: false,
     // Routes answer only the methods they register; a route serving HEAD declares it.
     exposeHeadRoutes: false,
-    // Legacy caps no path parameter, so only the request line the HTTP parser admits bounds one; ColdFusion session ids exceed Fastify's 100.
+    // Legacy caps no path parameter, so only the request head the HTTP parser admits bounds one; ColdFusion session ids exceed Fastify's 100.
     routerOptions: { ignoreTrailingSlash: true, maxParamLength: maxHeaderSize },
     // Merged onto Fastify's Ajv defaults; admits multi-type schemas without strict-mode warnings, and an
     // `additionalProperties: false` schema rejects an unknown property instead of Fastify's default of stripping it.
@@ -641,6 +653,12 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
       answerFrameworkError(error, request, reply, surfaceOf);
     },
     ...(rewriteUrl === undefined ? {} : { rewriteUrl }),
+  });
+  // A head over the limit gets legacy's bare 400; ahead of Fastify's listener, which answers every other client error and leaves a destroyed socket alone.
+  app.server.prependListener('clientError', (error: NodeJS.ErrnoException, socket: Duplex) => {
+    if (error.code !== 'HPE_HEADER_OVERFLOW' || socket.destroyed) return;
+    if (socket.writable) socket.write(LEGACY_BAD_REQUEST_RESPONSE);
+    socket.destroy();
   });
 
   let closing: Promise<void> | undefined;

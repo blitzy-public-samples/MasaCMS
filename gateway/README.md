@@ -13,7 +13,7 @@ The gateway is the strangler-fig front door of OPT-2. Every browser and API requ
 |---|---|
 | `state=target`, API, fixture, job or `/opt2/**` family | The owning service, from `OPT2_SERVICE_URLS` |
 | `state=target`, admin family | `web`, by the action's inventoried response mode: `page` → `/admin/<circuit>/<action>`; `fragment`, `json`, `download` → `/admin-raw/<circuit>/<action>`; `redirect` → `/admin-actions/<circuit>/<action>` |
-| `state=legacy`, or no entry | Masa at `LEGACY_ORIGIN`: `Host` preserved, `X-Forwarded-*` added, request and response bytes unchanged except the session mapping below |
+| `state=legacy`, or no entry | Masa at `LEGACY_ORIGIN`: `Host` preserved, `X-Forwarded-*` added, request and response bytes unchanged except the session mapping below. Request heads are admitted up to legacy's own 1 MiB limit; a head within the size of the gateway's added forwarding headers (`X-Forwarded-*`, trace context) below that limit reaches legacy over it and gets legacy's own bare 400 |
 | `/gateway/legacy-bridge/**` | 404, answered by the gateway |
 | `/opt2/svc/<service>/…` | The web service-call relay (see [Internal API](#internal-api)) |
 

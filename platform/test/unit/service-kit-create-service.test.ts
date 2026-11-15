@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
-import { createServer, maxHeaderSize, request as httpRequest, type IncomingMessage } from 'node:http';
+import { createServer, request as httpRequest, type IncomingMessage } from 'node:http';
 import { createRequire } from 'node:module';
 import { connect, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -45,6 +45,7 @@ import { currentRequestContext, throwIfRequestAborted } from '../../src/service-
 import {
   LEGACY_MAX_POST_CONTENT_LENGTH,
   LEGACY_POST_LIMIT_BYTES,
+  SERVICE_MAX_HEADER_SIZE,
   abandonOnDisconnect,
   createService,
   defaultSurfaceOf,
@@ -495,7 +496,7 @@ describe('path parameters', () => {
   // ACF's `<appname>_<CFID>_<CFTOKEN>` session id, assembled from low-entropy parts.
   const CF_SESSION_ID = `MURA${'C'.repeat(64)}_1621_${'b'.repeat(16)}-D0000000-0000-0000-0000000000000001`;
   const LONG_ID = 'x'.repeat(300);
-  const LONGEST_ID = 'x'.repeat(maxHeaderSize);
+  const LONGEST_ID = 'x'.repeat(SERVICE_MAX_HEADER_SIZE);
   const PLAIN = '/internal/v1/sessions/:sid/state';
   const PATTERN = '/internal/v1/sessions/:sid(.+)::end';
 
@@ -504,8 +505,8 @@ describe('path parameters', () => {
     { label: 'a ColdFusion session id', sid: CF_SESSION_ID, length: 126, route: PATTERN, url: `/internal/v1/sessions/${CF_SESSION_ID}:end` },
     { label: 'a long id', sid: LONG_ID, length: 300, route: PLAIN, url: `/internal/v1/sessions/${LONG_ID}/state` },
     { label: 'a long id', sid: LONG_ID, length: 300, route: PATTERN, url: `/internal/v1/sessions/${LONG_ID}:end` },
-    { label: 'an id at the header limit', sid: LONGEST_ID, length: maxHeaderSize, route: PLAIN, url: `/internal/v1/sessions/${LONGEST_ID}/state` },
-    { label: 'an id at the header limit', sid: LONGEST_ID, length: maxHeaderSize, route: PATTERN, url: `/internal/v1/sessions/${LONGEST_ID}:end` },
+    { label: 'an id at the header limit', sid: LONGEST_ID, length: SERVICE_MAX_HEADER_SIZE, route: PLAIN, url: `/internal/v1/sessions/${LONGEST_ID}/state` },
+    { label: 'an id at the header limit', sid: LONGEST_ID, length: SERVICE_MAX_HEADER_SIZE, route: PATTERN, url: `/internal/v1/sessions/${LONGEST_ID}:end` },
   ])('routes $label of $length characters to $route with the parameter intact', async ({ sid, length, route, url }) => {
     expect(sid).toHaveLength(length);
     const { app } = await build();
@@ -2131,7 +2132,7 @@ describe('request log line', () => {
     { label: 'a legacy session id parameter', url: `/x/${SESSION_ID}/state`, status: 200, route: '/x/:sid/state', warnings: [], leaks: [CFID, CFTOKEN] },
     {
       label: "a session id parameter over the router's limit",
-      url: `/x/${SESSION_ID}_${'0'.repeat(maxHeaderSize)}/state`,
+      url: `/x/${SESSION_ID}_${'0'.repeat(SERVICE_MAX_HEADER_SIZE)}/state`,
       status: 404,
       route: UNMATCHED_ROUTE,
       warnings: [],

@@ -6,6 +6,7 @@ export * from './date-text.js';
 export * from './masa-locale.js';
 export * from './serializer.js';
 export * from './headers.js';
+export * from './request-head.js';
 export * from './envelope.js';
 export * from './errors.js';
 export * from './cookies.js';

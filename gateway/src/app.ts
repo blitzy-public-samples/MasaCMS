@@ -1,6 +1,7 @@
 // Composition root of the gateway: service-kit plus the cut-over, session, admin and dispatcher modules; never listens.
 import { randomUUID } from 'node:crypto';
 import replyFrom from '@fastify/reply-from';
+import { LEGACY_REQUEST_HEAD_LIMIT_BYTES } from '@opt2/platform/legacy-compat';
 import {
   LEGACY_POST_LIMIT_BYTES,
   baseEnvSchema,
@@ -31,6 +32,7 @@ import { createSessionBarrier } from './dispatcher/barrier.js';
 import { registerEdgeRoute, type DispatcherDeps } from './dispatcher/dispatch.js';
 import { createMatcher, type MatcherDeps } from './dispatcher/match.js';
 import { RELAY_SERVICES, registerRelayRoutes, type RelayDeps } from './dispatcher/relay.js';
+import { replyFromOptions } from './dispatcher/response-head.js';
 import { createSiteRegistry } from './dispatcher/site-registry.js';
 import { createWriteWindowClient } from './dispatcher/write-window.js';
 import { createBridgeClient, createSiteListClient, type BridgeClient } from './session/bridge-client.js';
@@ -168,6 +170,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     surfaceOf,
     // Legacy answers its own start-up scan failures; the gateway relays the request.
     legacyStartupScan: false,
+    // Clients reach legacy through the gateway, so it admits exactly the request heads legacy admits.
+    maxHeaderSize: LEGACY_REQUEST_HEAD_LIMIT_BYTES,
     // createService takes an injected pool or the schema whose pool it opens, never both; `shutdown()` ends either.
     ...(options.db === undefined ? { schema: SCHEMA } : { pool: options.db }),
   });
@@ -177,7 +181,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const migrationClient = options.migrationClient ?? client;
 
   // Forwarders pass absolute legacy and service URLs, so reply-from has no base.
-  await app.register(replyFrom);
+  await app.register(replyFrom, replyFromOptions());
 
   const state = createCutoverState({ db, clock, paths, instanceId, logger: app.log, variants });
   const inflight = createInflightStore({ db, instanceId, unitsOf: (route) => state.active()?.entryFor(route)?.units });
