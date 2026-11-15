@@ -2,24 +2,30 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import * as cheerio from 'cheerio';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { formatDateField } from '@/lib/dates';
 import { CORE_VERSION } from '@/lib/env';
 import { isSafeHtml, toString } from '@/lib/html';
 import { renderFeedCategoriesImportNest, type CategoryAssignRow } from '@/screens/cfeed/categories-import-nest';
 import type { FeedCategoryNode } from '@/screens/cfeed/categories-nest';
 import { cfeedAjaxScripts } from '@/screens/cfeed/js';
+import { CONTENT_HIST_IDS } from '../../fixtures/strategies-content/carch';
+import { CATEGORY_IDS } from '../../fixtures/strategies-content/categories';
 import { fragmentModel } from '../../helpers/dom-model';
+import { useTestEnv } from '../../helpers/env';
 
 const here = import.meta.dirname ?? __dirname;
 const JS_CFM = path.resolve(here, '../../../../admin/core/views/cfeed/js.cfm');
 
 const DATE_KEY_FORMAT = 'MM/DD/YYYY';
-const HIST_ID = 'B3000000-0000-0000-0000000000000001';
-const OTHER_HIST_ID = 'B3000000-0000-0000-0000000000000002';
-const CAT_ID = 'C3000000-0000-0000-0000000000000001';
-const CHILD_ID = 'C3000000-0000-0000-0000000000000002';
-const CAT_TRIM = 'C3000000000000000000000000000001';
-const CHILD_TRIM = 'C3000000000000000000000000000002';
+const HIST_ID = CONTENT_HIST_IDS.newsArticle;
+const OTHER_HIST_ID = CONTENT_HIST_IDS.newsArticleDraft;
+const CAT_ID = CATEGORY_IDS.topicsEvents;
+const CHILD_ID = CATEGORY_IDS.topicsEventsLocal;
+const CAT_TRIM = '5C000000000540008000000000000003';
+const CHILD_TRIM = '5C000000000540008000000000000004';
+const FEATURE_START = new Date(2026, 5, 30, 14, 5);
+const FEATURE_STOP = new Date(2026, 6, 15, 9, 30);
 const ONCHANGE =
   `onchange="javascript: this.selectedIndex==3?toggleDisplay2('editDates${CAT_TRIM}',true):` +
   `toggleDisplay2('editDates${CAT_TRIM}',false);"`;
@@ -82,11 +88,22 @@ function options(markup: string, name: string): [string, string][] {
 /** The markup of one `<li>` item of the tree, wrapped as legacy wraps it. */
 const item = (li: string): string => `\n<li>\n<ul>\n<li>${li}\n</li>\n</ul>\n</li>\n`;
 
+let restore: () => void;
+
+beforeEach(() => {
+  restore = useTestEnv();
+});
+
+afterEach(() => {
+  restore();
+});
+
 describe('cfeedAjaxScripts', () => {
   it('matches cfeed/js.cfm', () => {
     const markup = cfeedAjaxScripts();
     expect(isSafeHtml(markup)).toBe(true);
     expect(toString(markup)).toBe(legacyOutput());
+    expect(toString(cfeedAjaxScripts())).toBe(toString(markup));
 
     const $ = cheerio.load(toString(markup), null, false);
     const scripts = $('script').toArray().map((el) => [$(el).attr('src'), $(el).attr('type'), $(el).attr('language')]);
@@ -95,6 +112,7 @@ describe('cfeedAjaxScripts', () => {
       [`assets/js/feed.min.js?coreversion=${CORE_VERSION}`, 'text/javascript', 'javascript1.2'],
       [`assets/js/searchParams.js?coreversion=${CORE_VERSION}`, 'text/javascript', undefined],
     ]);
+    for (const [src] of scripts) expect(src).toMatch(/\?coreversion=7\.6\.1$/);
   });
 });
 
@@ -161,6 +179,21 @@ describe('renderFeedCategoriesImportNest', () => {
   });
 
   it.each<[string, Date | string, Date | string, Record<string, string | string[]>]>([
+    [
+      'an afternoon start and a morning stop',
+      FEATURE_START,
+      FEATURE_STOP,
+      {
+        featureStart: formatDateField(FEATURE_START, DATE_KEY_FORMAT),
+        starthour: ['2'],
+        startMinute: ['5'],
+        startDayPart: ['PM'],
+        featureStop: formatDateField(FEATURE_STOP, DATE_KEY_FORMAT),
+        stophour: ['9'],
+        stopMinute: ['30'],
+        stopDayPart: [],
+      },
+    ],
     [
       'an afternoon ODBC start and an ISO stop past midnight',
       "{ts '2026-03-05 14:07:00'}",

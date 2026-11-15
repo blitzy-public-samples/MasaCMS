@@ -1,0 +1,17 @@
+{
+  "durationMs": 1080000,
+  "evidence": [
+    "opt2/reports/rollback-rehearsal.md"
+  ],
+  "finishedAt": "2026-06-30T04:53:50.000Z",
+  "name": "Rollback",
+  "result": "unmet",
+  "stage": 8,
+  "startedAt": "2026-06-30T04:35:50.000Z",
+  "unmet": [
+    {
+      "item": "rollback:archive-to-blackout",
+      "reason": "fixtures unavailable"
+    }
+  ]
+}
