@@ -1,9 +1,11 @@
 // cArch.update against admin/core/controllers/carch.cfc update() and carch/update.cfm over strategies-content's raw
 // update: the relayed redirects and aborted bodies, the rejected save's editor inside the layout, the close document,
-// the session values the service reports, and the action served through the real raw handler and registry.
+// the session values the service reports, the gate, fail-closed relays, and the action served through the real raw
+// handler and registry.
+import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { secure } from '@/lib/access-gate';
-import { setServiceClientForTests } from '@/lib/gateway-client';
+import { runGate, secure } from '@/lib/access-gate';
+import { GatewayUnavailableError, setServiceClientForTests } from '@/lib/gateway-client';
 import { handleAdminRaw } from '@/lib/handlers';
 import { encodeJs, toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
@@ -14,8 +16,10 @@ import { renderEditView } from '@/screens/carch/edit';
 import { CONTENT_MODULE_ID, ROOT_CONTENT_ID } from '@/screens/carch/model';
 import { updateScreen } from '@/screens/carch/update';
 import { findScreen, type RawBody, type ScreenContext, type ScreenRequestBody } from '@/screens/registry';
+import { CONTENT_HIST_IDS, CONTENT_IDS } from '../../fixtures/strategies-content/carch';
 import { promptCountsZero } from '../../fixtures/strategies-content/prompts';
-import { adminS2Request, siteRecordFor } from '../../helpers/admin-request';
+import { writeResultRaw, writeResultReRender } from '../../fixtures/strategies-content/write-results';
+import { adminS2Request, anonymousRequest, siteAdminRequest, siteRecordFor } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import {
   fakeGatewayClient,
@@ -95,6 +99,23 @@ function updateRequest(rc: Readonly<Record<string, string>>, muraValues: Struct 
     rc: { siteid: SITE, ...rc },
     session: { muraValues },
   });
+}
+
+const TENANT = 'tenant-a';
+const ABOUT_US_ID = CONTENT_IDS.aboutUs;
+const ABOUT_US_HIST_ID = CONTENT_HIST_IDS.aboutUs;
+const ABOUT_US_FIELDS = {
+  siteid: TENANT,
+  action: 'add',
+  contenthistid: ABOUT_US_HIST_ID,
+  contentid: ABOUT_US_ID,
+  title: 'About Us',
+  ...CSRF_FIELDS,
+} as const;
+
+/** The tenant-a site admin on `cArch.update` with `rc` posted and `headers` sent. */
+function tenantRequest(rc: Readonly<Record<string, string>>, headers?: Headers): AdminRequest {
+  return siteAdminRequest(TENANT, { circuit: 'cArch', item: 'update', rc: { siteid: TENANT, ...rc }, headers });
 }
 
 /** `fields` as the URL-encoded body web received. */
@@ -252,6 +273,120 @@ describe('carch.update relayed answers', () => {
   it('fails on a redirect without a Location', async () => {
     const ctx = contextOf(updateRequest({ action: 'add' }), { [GET_ROUTE]: { status: 302 } });
     await expect(updateScreen.render(ctx, undefined)).rejects.toThrow(/HTTP 302 but no Location/);
+  });
+
+  it.each([
+    ['as fields', {}],
+    ['as fields and headers', { 'X-csrf_token': 'HEADERTOKEN', 'X-csrf_token_expires': '261231235959000' }],
+  ])('posts the save once with the CSRF pair %s, unchanged', async (_label, csrfHeaders) => {
+    const req = tenantRequest(ABOUT_US_FIELDS, new Headers(csrfHeaders));
+    const ctx = contextOf(req, { [POST_ROUTE]: { status: 200, body: 'success' } }, formBody(ABOUT_US_FIELDS));
+
+    await updateScreen.render(ctx, undefined);
+
+    const calls = updateCalls(ctx.gateway);
+    expect(calls).toHaveLength(1);
+    const [call] = calls;
+    expect(call).toMatchObject({ method: 'POST', query: { siteid: TENANT } });
+    // The rc as carch before() leaves it: every posted field under its posted name and value, plus its defaults.
+    expect(call?.form).toEqual({ ...ctx.req.rc });
+    expect(call?.form).toMatchObject(ABOUT_US_FIELDS);
+    const sentCsrf = Object.entries(call?.headers ?? {}).filter(([name]) => name.startsWith('x-csrf_token'));
+    expect(Object.fromEntries(sentCsrf)).toEqual(
+      Object.fromEntries(Object.entries(csrfHeaders).map(([name, value]) => [name.toLowerCase(), value])),
+    );
+  });
+
+  it.each([
+    [
+      'the edit form after a preview or keep-editing save',
+      { preview: '1', type: 'Page', parentid: ROOT_CONTENT_ID, topid: ROOT_CONTENT_ID },
+      `./?muraAction=cArch.edit&contenthistid=${ABOUT_US_HIST_ID}&contentid=${ABOUT_US_ID}&type=Page` +
+        `&parentid=${ROOT_CONTENT_ID}&topid=${ROOT_CONTENT_ID}&siteid=${TENANT}&moduleid=${CONTENT_MODULE_ID}` +
+        '&preview=1&startrow=1&return=&compactDisplay=false',
+    ],
+    [
+      'the version history after a save that returns to it',
+      { return: 'hist', type: 'Page', parentid: ROOT_CONTENT_ID },
+      `/admin/index.cfm?muraAction=cArch.hist&contentid=${ABOUT_US_ID}&siteid=${TENANT}&startrow=1` +
+        `&moduleid=${CONTENT_MODULE_ID}&parentid=${ROOT_CONTENT_ID}&type=Page&compactDisplay=false`,
+    ],
+    [
+      'the change set assignments after a save to a change set',
+      { return: 'changesets', changesetid: 'C1000000-0000-0000-0000000000000001' },
+      `./?muraAction=cChangesets.assignments&changesetID=C1000000-0000-0000-0000000000000001&siteid=${TENANT}`,
+    ],
+    [
+      'the sanitized returnURL',
+      { returnURL: `/admin/?muraAction=cArch.search&siteid=${TENANT}&keywords=about` },
+      `/admin/?muraAction=cArch.search&siteid=${TENANT}&keywords=about`,
+    ],
+    ['the saved page on the front end', { frontend: 'true' }, 'http://localhost/tenant-a/about-us/'],
+    [
+      'the Site Manager after an add',
+      { topid: ROOT_CONTENT_ID },
+      `./?muraAction=cArch.list&topid=${ROOT_CONTENT_ID}&siteid=${TENANT}&startrow=1&moduleid=${CONTENT_MODULE_ID}`,
+    ],
+  ])('relays the redirect to %s at its exact location', async (_label, rc, location) => {
+    const fields = { ...ABOUT_US_FIELDS, ...rc };
+    const ctx = contextOf(
+      tenantRequest(fields),
+      { [POST_ROUTE]: { status: 302, headers: { Location: location } } },
+      formBody(fields),
+    );
+
+    await expect(updateScreen.render(ctx, undefined)).resolves.toEqual({
+      status: 302,
+      contentType: HTML_TYPE,
+      body: '',
+      headers: { ...REDIRECT_HEADERS, location },
+    });
+  });
+
+  const QQ_ANSWER: RawBody = { status: 200, contentType: HTML_TYPE, body: '{success:true}' };
+
+  it.each<[string, Readonly<Record<string, string>>, RawBody]>([
+    ['the ajax save', { ajaxrequest: 'true' }, writeResultRaw],
+    ['a fine-uploader file part', { qqfile: 'report.pdf' }, QQ_ANSWER],
+  ])('relays the answer to %s with its status, content type and bytes', async (_label, rc, answer) => {
+    const fields = { ...ABOUT_US_FIELDS, ...rc };
+    const text = answer.body;
+    if (typeof text !== 'string') throw new TypeError('the relayed answer is no text');
+    const ctx = contextOf(
+      tenantRequest(fields),
+      { [POST_ROUTE]: { status: answer.status ?? 200, headers: { 'Content-Type': answer.contentType }, body: text } },
+      formBody(fields),
+    );
+
+    await expect(updateScreen.render(ctx, undefined)).resolves.toEqual({
+      status: answer.status,
+      contentType: answer.contentType,
+      body: Buffer.from(text),
+    });
+  });
+
+  it.each<[string, (gateway: FakeGatewayClient) => void]>([
+    ['answers 503', (gateway) => gateway.setRoute(POST_ROUTE, { status: 503, body: { error: 'unavailable' } })],
+    ['refuses the connection', (gateway) => gateway.failWith()],
+  ])('fails closed with GatewayUnavailableError after one attempt when the gateway %s', async (_label, breakIt) => {
+    const ctx = contextOf(tenantRequest(ABOUT_US_FIELDS), {}, formBody(ABOUT_US_FIELDS));
+    breakIt(ctx.gateway);
+
+    await expect(updateScreen.render(ctx, undefined)).rejects.toBeInstanceOf(GatewayUnavailableError);
+    expect(updateCalls(ctx.gateway)).toHaveLength(1);
+  });
+});
+
+describe('carch.update gate', () => {
+  it('sends an anonymous user through secure() whatever roles rc names, and lets the site admin through', async () => {
+    const roles = { s2: '1', isS2: 'true', roles: 's2,site-admin' };
+    const anonymous = anonymousRequest({ circuit: 'cArch', item: 'update', rc: { ...ABOUT_US_FIELDS, ...roles } });
+
+    const decision = await runGate(anonymous, updateScreen.gate);
+
+    expect(decision).toEqual(secure(anonymous));
+    expect(decision.kind === 'redirect' ? decision.location : '').toMatch(/^\.\/\?muraAction=cLogin\.main&returnURL=/);
+    await expect(runGate(tenantRequest(ABOUT_US_FIELDS), updateScreen.gate)).resolves.toEqual({ kind: 'allow' });
   });
 });
 
@@ -484,6 +619,24 @@ describe('carch.update rejected save', () => {
     expect(body).toContain(`name="contenthistid" value="${HOME_HIST_ID}"`);
   });
 
+  it('re-renders the tenant-a editor with the save’s validation message in its error alert', async () => {
+    const fields = { ...ABOUT_US_FIELDS, title: '' };
+    const ctx = contextOf(
+      tenantRequest(fields),
+      { [POST_ROUTE]: { status: 200, headers: { 'Content-Type': JSON_TYPE }, body: writeResultReRender } },
+      formBody(fields),
+    );
+
+    const { body } = await updateScreen.render(ctx, undefined);
+
+    if (typeof body !== 'string') throw new TypeError('the re-render is no document text');
+    const $ = cheerio.load(body);
+    expect($('div.alert.alert-error').text()).toContain("The 'Title' field is required");
+    expect($('#contentForm')).toHaveLength(1);
+    expect($('#contentForm input[name="contenthistid"]').val()).toBe(ABOUT_US_HIST_ID);
+    expect(ctx.req.rc).toMatchObject({ contentHistID: ABOUT_US_HIST_ID, contentID: ABOUT_US_ID });
+  });
+
   it('fails when the rejected save carries no content bean', async () => {
     const ctx = contextOf(updateRequest({ ...HOME_RC }), { [GET_ROUTE]: unaborted(ERRORS, {}) });
     await expect(updateScreen.render(ctx, undefined)).rejects.toThrow(/contentBean is not a struct/);
@@ -575,6 +728,7 @@ describe('carch.update close document', () => {
     expect(answered).toEqual({ contentType: HTML_TYPE, setCookies: [SERVICE_COOKIE] });
     if (typeof body !== 'string') throw new TypeError('the close document is no text');
     expect(body).toMatch(/^\n<!DOCTYPE html PUBLIC/);
+    expect(body).toContain('frontEndProxy = new Porthole.WindowProxy(');
     expect(body).toContain(`var cmd={cmd:'setLocation',location:encodeURIComponent("${encodeJs(href)}")};`);
     expect(body).toContain(`location.href="${encodeJs(href)}";`);
     expect(ctx.req.session.mura.editBean).toBeUndefined();
@@ -690,6 +844,17 @@ describe('carch.update through the raw handler', () => {
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({ openSectionList: ROOT_CONTENT_ID });
     expect(saved[0]?.mura).not.toHaveProperty('editBean');
+  });
+
+  it('sends an anonymous save to the login form without calling the service', async () => {
+    const form = { siteid: SITE, action: 'add', contentid: '', parentid: ROOT_CONTENT_ID, ...CSRF_FIELDS };
+    const request = await adminRequest('/admin-raw/carch/update', { form });
+
+    const response = await handleAdminRaw(request, { circuit: 'carch', action: 'update' });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toMatch(/^\.\/\?muraAction=cLogin\.main&returnURL=/);
+    expect(updatePosts()).toEqual([]);
   });
 
   it('answers 404 for an approval, which stays on legacy, without calling the service', async () => {

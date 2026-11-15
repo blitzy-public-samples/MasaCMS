@@ -2,9 +2,12 @@
 // compact-display close document and the rejected save re-rendered inside the layout, over strategies-content.
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
+import type { components } from '@/generated/clients/strategies-content';
+import { GatewayDenialError, GatewayUnavailableError, type GatewayResponse } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
 import { CFEED_RC_DEFAULTS, cfeedGate } from '@/screens/cfeed/before';
+import { renderFeedEdit } from '@/screens/cfeed/edit';
+import { feedEditModelFrom } from '@/screens/cfeed/edit-model';
 import { cfeedUpdateScreen } from '@/screens/cfeed/update';
 import type { RawBody, ScreenContext, ScreenRequestBody } from '@/screens/registry';
 import { makeAdminRequest } from '../../helpers/admin-request';
@@ -34,6 +37,7 @@ const REDIRECT_HEADERS = {
 const NO_CACHE = { 'cache-control': 'no-cache, no-store, must-revalidate', expires: '06 Nov 1994 08:37:34 GMT' };
 
 type Row = Record<string, unknown>;
+type WriteResult = components['schemas']['AdminWriteResult'];
 
 /** A new Local feed bean's `getAllValues()` after `set(rc)` of an add posted without a language. */
 const SUBMITTED_BEAN: Row = {
@@ -223,6 +227,8 @@ describe('cfeed.update', () => {
     const expected = { ...CFEED_RC_DEFAULTS, ...ctx.req.rc };
     await render(ctx);
     const call = serviceCall(ctx.gateway);
+    // The owner validates the posted pair, so web asks identity for no token of its own.
+    expect(ctx.gateway.calls).toEqual([call]);
     expect(call.method).toBe('POST');
     expect(call.query).toEqual({ siteid: 'default' });
     expect(call.form).toEqual(expected);
@@ -241,6 +247,33 @@ describe('cfeed.update', () => {
     expect(call.form).toBeUndefined();
     expect(call.query).toEqual(expected);
     expect(call.query).toMatchObject({ ...rc, siteid: 'default', restricted: '0', orderno: '0' });
+  });
+
+  it('posts without a siteid query when the request names no site', async () => {
+    const rc = { type: 'Local', feedID: FEED_ID, action: 'update', name: 'News', ...CSRF_FIELDS };
+    const ctx = context(rc, 'POST', { status: 302, headers: { Location: LIST_LOCATION } });
+    // The admin set-up leaves rc.siteid unset while the session holds no site.
+    const unsited = Object.fromEntries(Object.entries(ctx.req.rc).filter(([name]) => name !== 'siteid'));
+    ctx.req = { ...ctx.req, rc: unsited, relayScopes: { posted: unsited, scanned: unsited } };
+    await render(ctx);
+    const call = serviceCall(ctx.gateway);
+    expect(call.query).toBeUndefined();
+    expect(call.form).toEqual({ ...CFEED_RC_DEFAULTS, ...unsited });
+  });
+
+  it('reads the first of repeated Content-Type values', async () => {
+    const ctx = context({ action: '', feedID: FEED_ID, ...CSRF_FIELDS }, 'POST', { status: 200 });
+    const answer: GatewayResponse<Buffer> = {
+      status: 200,
+      ok: true,
+      headers: { 'content-type': [HTML_TYPE, 'application/json'] },
+      body: Buffer.from(CLOSE_DOCUMENT),
+      setCookies: [],
+    };
+    const raw = vi.fn().mockResolvedValue(answer);
+    ctx.gateway = { ...ctx.gateway, strategiesContent: { ...ctx.gateway.strategiesContent, raw } };
+    await expect(render(ctx)).resolves.toEqual({ status: 200, contentType: HTML_TYPE, body: answer.body });
+    expect(raw).toHaveBeenCalledOnce();
   });
 
   it('relays the compact-display close document byte for byte', async () => {
@@ -288,6 +321,7 @@ describe('cfeed.update', () => {
       expect($('.alert-error span').text()).toBe(`${LANG_ERROR} `);
       const form = $('form[name=form1]');
       expect(form.attr('action')).toBe('./?muraAction=cFeed.update&siteid=default');
+      expect(form.attr('id')).toBe('feedFrm');
       expect(form.find('input[name=action]').val()).toBe('add');
       expect(form.find('input[name=type]').val()).toBe('Local');
       expect(form.find('input[name=name]').val()).toBe('News');
@@ -297,6 +331,16 @@ describe('cfeed.update', () => {
       expect(menu.map((_i, el) => $(el).attr('href')).get()).toEqual([LIST_LOCATION]);
       // The CSRF pair is a fresh one for the feed, not the posted one.
       expect(form.find('input[name=csrf_token]').val()).not.toBe(CSRF_FIELDS.csrf_token);
+    });
+
+    it("embeds renderFeedEdit's update view and the cfeed scripts for the defaulted request", async () => {
+      const ctx = context(ADD, 'POST', REJECTED);
+      const markup = markupOf(await render(ctx));
+      const model = feedEditModelFrom(REJECTED.body as WriteResult, ctx.req);
+      const view = await renderFeedEdit(ctx.req, ctx, model, { fuseaction: 'update' });
+      expect(view.ajax).toBeDefined();
+      expect(markup).toContain(String(view.ajax));
+      expect(markup).toContain(String(view.body));
     });
 
     it('re-renders in the compact layout without the cache headers when rc.compactDisplay is true', async () => {
@@ -371,6 +415,7 @@ describe('cfeed.update', () => {
       const $ = cheerio.load(markupOf(answer));
       expect($('.alert-error span').text()).toBe(`${LANG_ERROR} `);
       expect($('form[name=form1] input[name=channelLink]').val()).toBe(channelLink);
+      expect($('#feedFrm')).toHaveLength(0);
       for (const field of ['viewalllink', 'viewalllabel', 'cssclass']) {
         expect($(`input[name=${field}]`)).toHaveLength(n);
       }
