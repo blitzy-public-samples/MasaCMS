@@ -1,0 +1,17 @@
+{
+  "durationMs": 1860000,
+  "evidence": [
+    "opt2/reports/baseline.json"
+  ],
+  "finishedAt": "2026-06-30T01:31:43.000Z",
+  "name": "Legacy baseline",
+  "result": "timing-variance",
+  "stage": 1,
+  "startedAt": "2026-06-30T01:00:43.000Z",
+  "unmet": [
+    {
+      "item": "baseline:beanFeedSecurity.repeated-sanitization",
+      "reason": "timing-variance: persisted after one re-run"
+    }
+  ]
+}
