@@ -9,7 +9,13 @@ import { FEED_AUTO_IMPORT_PATH, PUBLISH_SCHEDULED_CHANGESETS_PATH } from '../../
 import { CHANGESET, CONTENT } from '../../src/repo/tables.js';
 import { TEST_CLOCK, buildTestApp, type TestApp } from '../helpers/app.js';
 import { IDS, at, changesetRow, contentRow, feedRow } from '../helpers/seed.js';
+import { underSleptClock } from '../helpers/slept-clock.js';
 import { contentHeaders, serviceHeaders, tasksHeaders } from '../helpers/tokens.js';
+
+// The gate polls sleep through node:timers/promises; inside underSleptClock each sleep moves the faked Date instead of waiting.
+vi.mock('node:timers/promises', async (importOriginal) =>
+  (await import('../helpers/slept-clock.js')).sleptTimersPromises(await importOriginal<typeof import('node:timers/promises')>()),
+);
 
 type Row = Record<string, unknown>;
 
@@ -239,25 +245,6 @@ async function post(url: string, body: TaskWireBody, headers?: Record<string, st
   return t.app.inject({ method: 'POST', url, headers: { ...credential, 'content-type': 'application/json' }, payload: body });
 }
 
-/** Runs `send` while stepping the faked wall clock 1 s per macrotask, so a gate wait spends its budget at once. */
-async function underSteppedDate<R>(send: () => Promise<R>): Promise<{ result: R; elapsedMs: number }> {
-  vi.useFakeTimers({ toFake: ['Date'] });
-  try {
-    const started = Date.now();
-    let settled = false;
-    const pending = send().finally(() => {
-      settled = true;
-    });
-    while (!settled) {
-      await new Promise((resolve) => setImmediate(resolve));
-      vi.setSystemTime(Date.now() + 1_000);
-    }
-    return { result: await pending, elapsedMs: Date.now() - started };
-  } finally {
-    vi.useRealTimers();
-  }
-}
-
 beforeAll(async () => {
   t = await buildTestApp();
 });
@@ -440,7 +427,7 @@ describe('unit gates', () => {
     t.db.setGate(unit, state);
     const headers = await tasksHeaders(url.split('?')[0] ?? url);
 
-    const { result: res, elapsedMs } = await underSteppedDate(() => post(url, body(), headers));
+    const { result: res, elapsedMs } = await underSleptClock(() => post(url, body(), headers));
 
     expect(res.statusCode).toBe(unavailable.status);
     expect(res.body).toBe(unavailable.body);

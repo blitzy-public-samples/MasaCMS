@@ -27,6 +27,12 @@ import {
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { registerFileLookupRoutes } from '../../src/routes/internal-file-lookup.js';
+import { underSleptClock } from '../helpers/slept-clock.js';
+
+// The gate polls sleep through node:timers/promises; inside underSleptClock each sleep moves the faked Date instead of waiting.
+vi.mock('node:timers/promises', async (importOriginal) =>
+  (await import('../helpers/slept-clock.js')).sleptTimersPromises(await importOriginal<typeof import('node:timers/promises')>()),
+);
 
 type ContractOperation = Record<string, unknown>;
 
@@ -267,23 +273,12 @@ describe.skipIf(!(await pgAvailable()))('lookupFileExtensions', () => {
       const headers = await peopleHeaders();
       const holderId = `window-${randomUUID()}`;
       await closeGates(handle.app, { units: [FILE_UNIT], holderId, phase, allowLegacy: true });
-      // Only Date is faked, so the gate's 30 s budget elapses in steps while its polls and the database run in real time.
-      vi.useFakeTimers({ toFake: ['Date'] });
       try {
-        const started = Date.now();
-        let settled = false;
-        const pending = lookup(headers, { fileIds: [UMBRELLA_PHOTO] }).finally(() => {
-          settled = true;
-        });
-        while (!settled) {
-          await sleep(25);
-          vi.setSystemTime(Date.now() + 1_000);
-        }
-        const res = await pending;
+        // The gate's 30 s budget elapses only through its poll sleeps, while the database runs in real time.
+        const { result: res, elapsedMs } = await underSleptClock(() => lookup(headers, { fileIds: [UMBRELLA_PHOTO] }));
         expect(res.statusCode).toBe(503);
-        expect(Date.now() - started).toBeGreaterThanOrEqual(GATE_WAIT_MS);
+        expect(elapsedMs).toBeGreaterThanOrEqual(GATE_WAIT_MS);
       } finally {
-        vi.useRealTimers();
         await openGates(handle.app, { units: [FILE_UNIT], holderId, state: 'legacy' });
       }
     },
