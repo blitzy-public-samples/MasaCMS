@@ -83,6 +83,7 @@ describe('updateCategory', () => {
       csrf_token: CSRF_PAIR.token,
       csrf_token_expires: CSRF_PAIR.expires,
     });
+    expect(Object.keys(call?.form ?? {}).filter((name) => /tenant|pool/i.test(name))).toEqual([]);
     expect(ctx.gateway.calls).toHaveLength(1);
   });
 
@@ -125,12 +126,16 @@ describe('updateCategory', () => {
     await expect(updateCategory(ctx)).rejects.toThrow('Element RC.categoryBean is undefined in ARGUMENTS.');
   });
 
-  it('fails without writing when rc.action is undefined', async () => {
+  it('relays a request without rc.action, so the owner checks its token before failing it', async () => {
     const form = Object.fromEntries(Object.entries(ADD_FORM).filter(([name]) => name !== 'action'));
-    const gateway = categoryGateway({ [SAVE_ROUTE]: written({ redirect: listRedirectResult }) });
-    const ctx = contextFor(updateRequest(form), gateway);
-    await expect(updateCategory(ctx)).rejects.toThrow('Element RC.action is undefined in ARGUMENTS.');
-    expect(ctx.gateway.calls).toEqual([]);
+    const ctx = contextFor(updateRequest(form), categoryGateway({ [SAVE_ROUTE]: { status: 500 } }));
+    await expect(updateCategory(ctx)).rejects.toThrow('saveCategory answered HTTP 500');
+    expect(ctx.gateway.calls).toHaveLength(1);
+    expect(ctx.gateway.calls[0]?.form).toMatchObject({
+      csrf_token: CSRF_PAIR.token,
+      csrf_token_expires: CSRF_PAIR.expires,
+    });
+    expect(ctx.gateway.calls[0]?.form).not.toHaveProperty('action');
   });
 
   it.each([{ status: 401 as const }, { status: 403 as const }])(

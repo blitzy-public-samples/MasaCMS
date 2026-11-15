@@ -23,13 +23,12 @@ const RERENDERS = new WeakMap<ScreenContext, CcategoryEditData>();
 /**
  * `update()`: posts every rc field, the CSRF pair included, for the owner to validate and run `rc.action`. The owner's
  * redirect answers with the list; otherwise the bean and its errors are kept for the view.
- * @throws TypeError When `rc.action` is undefined, or the owner returns no bean (a rejected token), as legacy fails.
- * @throws GatewayDenialError When strategies-content answers 401 or 403; any other non-2xx answer throws `Error`.
+ * @throws TypeError When the owner returns no bean (a rejected token), as legacy fails.
+ * @throws GatewayDenialError When strategies-content answers 401 or 403; any other non-2xx answer, such as the owner
+ * failing a request without `rc.action` after its token check, throws `Error`.
  */
 export async function updateCategory(ctx: ScreenContext): Promise<PageControllerRedirect | undefined> {
   const { rc } = ctx.req;
-  // Legacy reads `rc.action` after either branch, so a request without one fails without writing.
-  if (rc.action === undefined) throw new TypeError('Element RC.action is undefined in ARGUMENTS.');
   const response = await ctx.gateway.strategiesContent.call('post', '/v1/sites/{siteid}/categories', {
     params: { siteid: rc.siteid ?? '' },
     form: Object.entries(relayContext(ctx.req)),

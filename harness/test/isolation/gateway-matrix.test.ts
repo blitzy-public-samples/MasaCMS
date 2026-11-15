@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { adminUnavailableResponse, apiUnavailableResponse } from '@opt2/platform/legacy-compat';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, crossTenantPairs, type TenantFixture } from '@opt2/platform/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { FIXTURES_UNAVAILABLE, type FixtureStatus } from '../../src/golden/catalogue.js';
+import { FIXTURES_UNAVAILABLE, readFixtureStatus, type FixtureStatus } from '../../src/golden/catalogue.js';
 import { SEED_CONFIG_PATH, SEED_CREDENTIALS_FILE, originBaseUrl } from '../../src/golden/session.js';
 import {
   ACTORS,
@@ -41,8 +42,9 @@ const API = '/legacy-fixtures/cfml/api.cfm';
 const HOME_ID = '00000000000000000000000000000000001';
 const CHECKED_AT = '2026-06-30T12:00:00.000Z';
 const AVAILABLE: FixtureStatus = { available: true, reason: null, checkedAt: CHECKED_AT };
-const UNAVAILABLE_REASON = 'CREATE SCHEMA permission denied in muradb';
+const UNAVAILABLE_FIXTURE = new URL('../fixtures/reporting/fixtures-unavailable.json', import.meta.url);
 const ALL_KEYS: readonly TenantKey[] = ['a', 'b', 'umbrella'];
+const CASE_RESULTS: readonly CaseResult[] = ['pass', 'violation', 'inconclusive', 'skipped'];
 
 function fixtureText(name: string): string {
   return fs.readFileSync(new URL(`../fixtures/${name}`, import.meta.url), 'utf8');
@@ -207,6 +209,10 @@ const forbidden = (): Response => errorEnvelope(403, 'Insufficient Account Permi
 const notFound = (): Response => errorEnvelope(404, 'Not Found');
 const conflict = (): Response => errorEnvelope(409, 'Conflict');
 const serverError = (): Response => raw(SERVER_ERROR, 500);
+const unavailable = (): Response => {
+  const { status, headers, body } = apiUnavailableResponse();
+  return new Response(body, { status, headers });
+};
 
 function jsonApiList(site: string, entity: string, items: Row[]): Row {
   return {
@@ -606,17 +612,30 @@ afterEach(() => {
   fs.rmSync(stateDir, { recursive: true, force: true });
 });
 
-function writeFixtureStatus(available: boolean, reason: string | null): void {
-  const status = { available, reason, checkedAt: CHECKED_AT };
-  fs.writeFileSync(path.join(stateDir, 'fixtures.json'), `${JSON.stringify(status)}\n`);
+function writeAvailableFixtures(): void {
+  fs.writeFileSync(path.join(stateDir, 'fixtures.json'), `${JSON.stringify(AVAILABLE)}\n`);
+}
+
+function copyUnavailableFixtures(): void {
+  fs.copyFileSync(UNAVAILABLE_FIXTURE, path.join(stateDir, 'fixtures.json'));
 }
 
 function familiesOf(...ids: FamilyId[]): RouteFamily[] {
   return ROUTE_FAMILIES.filter((family) => ids.includes(family.id));
 }
 
-function run(fake: FakeGateway, deps: GatewayIsolationDeps = {}): Promise<GatewayIsolationResult> {
-  return runGatewayIsolation({ env, fetch: fake.fetch, fixtures: AVAILABLE, ...deps });
+/** Deps that leave the fixture status to `<state>/fixtures.json`. */
+const FROM_STATE_DIR: GatewayIsolationDeps = { fixtures: undefined };
+
+/** Runs the matrix over `fake` and checks what every run keeps: the built case list and gateway-only requests. */
+async function run(fake: FakeGateway, deps: GatewayIsolationDeps = {}): Promise<GatewayIsolationResult> {
+  const full: GatewayIsolationDeps = { env, fetch: fake.fetch, fixtures: AVAILABLE, ...deps };
+  const result = await runGatewayIsolation(full);
+  const built = buildCases(full.families ?? ROUTE_FAMILIES, { fixtures: full.fixtures ?? readFixtureStatus(env) });
+  expect(result.cases.map((c) => c.id)).toStrictEqual(built.map((c) => c.id));
+  expect(result.cases.filter((c) => !CASE_RESULTS.includes(c.result))).toStrictEqual([]);
+  expect(disciplineProblems(fake.calls, full.baseUrl ?? originBaseUrl('gateway', env))).toStrictEqual([]);
+  return result;
 }
 
 function caseOf(result: GatewayIsolationResult, id: string): IsolationCase {
@@ -721,6 +740,15 @@ describe('buildCases', () => {
     expect(cases).toHaveLength(70);
   });
 
+  it('names its family, acting tenant and a different owning tenant in every case', () => {
+    for (const available of [true, false]) {
+      for (const c of buildCases(ROUTE_FAMILIES, { fixtures: { available } })) {
+        expect(c.id).toBe(`${c.family}:${c.kind}:${c.actor}->${c.owner}`);
+        expect(c.actor).not.toBe(c.owner);
+      }
+    }
+  });
+
   it('starts every case inconclusive and not run, GET for reads and POST for writes', () => {
     const cases = buildCases(ROUTE_FAMILIES, { fixtures: { available: true } });
     for (const c of cases) {
@@ -807,7 +835,7 @@ describe('isLegacyRefusal', () => {
   const notFoundError = { code: 'invalid_request', message: 'Not Found' };
   const CSRF_MESSAGE = 'Invalid CSRF tokens';
 
-  it.each<[string, { status: number; text: string }, RefusalOptions, boolean]>([
+  const rows: [string, { status: number; text: string }, RefusalOptions, boolean][] = [
     ['a 401 insufficient-permissions envelope', { status: 401, text: UNAUTHORIZED }, {}, true],
     ['a 401 invalid-token envelope', { status: 401, text: INVALID_TOKEN }, {}, true],
     ['a 403 error envelope', withError(403, notFoundError), {}, true],
@@ -822,6 +850,9 @@ describe('isLegacyRefusal', () => {
     ['a 400 CSRF refusal on a fixture route', { status: 400, text: INVALID_CSRF }, { fixture: true }, false],
     ['a 401 carrying the CSRF message', withError(401, { code: 'invalid_request', message: CSRF_MESSAGE }), {}, false],
     ['a 500 server error', { status: 500, text: SERVER_ERROR }, { fixture: true }, false],
+    ['a 503 legacy unavailable envelope', { status: 503, text: apiUnavailableResponse().body }, { fixture: true }, false],
+    ['a 503 legacy unavailable page', { status: 503, text: adminUnavailableResponse().body }, {}, false],
+    ['a 401 plain-text body', { status: 401, text: 'Unauthorized' }, {}, false],
     ['a 200 success envelope', { status: 200, text: JSON.stringify(SUCCESS) }, {}, false],
     ['a 302 without a body', { status: 302, text: '' }, {}, false],
     ['a 403 HTML page', { status: 403, text: '<html><body>Forbidden</body></html>' }, {}, false],
@@ -830,24 +861,25 @@ describe('isLegacyRefusal', () => {
     ['a 403 envelope whose params is a list', withError(403, notFoundError, { params: [] }), {}, false],
     ['a 403 error without a message', withError(403, { code: 'invalid_request' }), {}, false],
     ['a 403 JSON list', body(403, [notFoundError]), {}, false],
-  ])('%s is %s', (_name, result, opts, expected) => {
-    expect(isLegacyRefusal(result, opts)).toBe(expected);
-  });
+  ];
+
+  it.each(rows.map(([name, result, opts, refusal]) => ({ name, result, opts, refusal })))(
+    'treats $name as a legacy refusal: $refusal',
+    ({ result, opts, refusal }) => {
+      expect(isLegacyRefusal(result, opts)).toBe(refusal);
+    },
+  );
 });
 
 describe('runGatewayIsolation', () => {
   it('passes every case through the fixture routes when the gateway refuses every cross-tenant probe', async () => {
-    writeFixtureStatus(true, null);
+    writeAvailableFixtures();
     const world = buildWorld();
     const fake = fakeGateway(world);
-    const result = await runGatewayIsolation({ env, fetch: fake.fetch });
+    const result = await run(fake, FROM_STATE_DIR);
 
     expect(notResult(result, 'pass')).toStrictEqual([]);
     expect(result).toMatchObject({ crossTenantReads: 0, crossTenantWrites: 0, surveyGrantOnly: true });
-    expect(result.cases.map((c) => c.id)).toStrictEqual(
-      buildCases(ROUTE_FAMILIES, { fixtures: { available: true } }).map((c) => c.id),
-    );
-    expect(disciplineProblems(fake.calls, originBaseUrl('gateway', env))).toStrictEqual([]);
 
     const reserved = [
       world.rows.user.find((row) => row.username === RESERVED_USERNAME)?.userid,
@@ -873,9 +905,9 @@ describe('runGatewayIsolation', () => {
   });
 
   it('runs /v1/ routes and skips the surveys family unrequested when fixtures.json is unavailable', async () => {
-    writeFixtureStatus(false, UNAVAILABLE_REASON);
+    copyUnavailableFixtures();
     const fake = fakeGateway(buildWorld());
-    const result = await runGatewayIsolation({ env, fetch: fake.fetch });
+    const result = await run(fake, FROM_STATE_DIR);
 
     const surveys = result.cases.filter((c) => c.family === 'surveys');
     expect(surveys).toHaveLength(9);
@@ -887,13 +919,12 @@ describe('runGatewayIsolation', () => {
       expect(fake.calls.some((call) => call.url.pathname.startsWith(`/v1/${family}/`))).toBe(true);
     }
     expect(result).toMatchObject({ crossTenantReads: 0, crossTenantWrites: 0, surveyGrantOnly: false });
-    expect(disciplineProblems(fake.calls, GATEWAY)).toStrictEqual([]);
   });
 
   it('sends each /v1/ write with the CSRF pair issued for the id it writes, as the services consume it', async () => {
-    writeFixtureStatus(false, UNAVAILABLE_REASON);
+    copyUnavailableFixtures();
     const fake = fakeGateway(buildWorld());
-    await runGatewayIsolation({ env, fetch: fake.fetch });
+    await run(fake, FROM_STATE_DIR);
 
     const header = (call: GatewayCall, name: string): string | undefined =>
       Object.entries(call.headers).find(([key]) => key.toLowerCase() === name)?.[1];
@@ -1492,9 +1523,12 @@ describe('runGatewayIsolation', () => {
     expect(outcome).toMatchObject({ crossTenantReads: 0, crossTenantWrites: 0 });
   });
 
-  it('never passes a probe the gateway answers with a server error', async () => {
+  it.each([
+    ['a 500 server error', serverError],
+    ['a 503 legacy unavailable envelope', unavailable],
+  ])('never passes a probe the gateway answers with %s', async (_name, answer) => {
     const world = buildWorld();
-    world.refusal = serverError;
+    world.refusal = answer;
     const result = await run(fakeGateway(world));
 
     expect(idsWhere(result, 'pass')).toStrictEqual([
@@ -1522,9 +1556,12 @@ describe('runGatewayIsolation', () => {
       }
       return undefined;
     };
-    const failure = run(fakeGateway(buildWorld(), unreachable), { families: familiesOf('content') });
+    const fake = fakeGateway(buildWorld(), unreachable);
+    const failure = run(fake, { families: familiesOf('content') });
 
     await expect(failure).rejects.toBeInstanceOf(HttpRequestError);
     await expect(failure).rejects.toThrow(/ECONNREFUSED.*\/_api\/json\/v1\/tenant-b\/content/);
+    expect(fake.calls.length).toBeGreaterThan(0);
+    expect(disciplineProblems(fake.calls, GATEWAY)).toStrictEqual([]);
   });
 });
