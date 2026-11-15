@@ -4,11 +4,11 @@ import {
   type RouteKeyOptions,
   type RouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
-import { routeKeyCaseOptions } from '@opt2/platform/testing';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { loadCatalogue, type Step } from '../../src/golden/catalogue.js';
+import { defaultRouteKeyOptions } from '../../src/golden/route-key-options.js';
 import { basicAuth } from '../../src/golden/session.js';
-import { inventoryRouteKeyForRequest, loadInventoryVariants } from '../../src/inventory/route-keys.js';
+import { inventoryRouteKeyForRequest } from '../../src/inventory/route-keys.js';
 
 /** Neutral CF UUID standing in for path segments and id-valued placeholders. */
 const NEUTRAL_ID = '00000000-0000-0000-0000000000000000';
@@ -110,7 +110,7 @@ function keyRequest(shape: RequestShape): RouteKeyRequest {
 /** Every request the committed catalogue's steps send: each matrix combination, the step and each candidate. */
 async function keyedRequests(): Promise<KeyedRequest[]> {
   const catalogue = await loadCatalogue();
-  const options: RouteKeyOptions = { ...routeKeyCaseOptions, variants: (await loadInventoryVariants()).variants };
+  const options: RouteKeyOptions = defaultRouteKeyOptions();
   const keyed: KeyedRequest[] = [];
   for (const scenario of catalogue.scenarios) {
     for (const step of scenario.steps) {

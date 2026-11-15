@@ -29,6 +29,7 @@ const FILE_DAO = 'core/mura/content/file/fileDAO.cfc';
 const EVENTS_HANDLER = 'core/mura/Handler/standardEventsHandler.cfc';
 const SERVLET_EVENT = 'core/mura/servletEvent.cfc';
 const FIXTURE_API = 'legacy-fixtures/cfml/api.cfm';
+const FIXTURE_AUTH = 'legacy-fixtures/cfml/lib/auth.cfc';
 const API_ROOT = '/_api/json/v1/default';
 const FORM_TYPE = 'application/x-www-form-urlencoded';
 const MULTIPART_TYPE = 'multipart/form-data; boundary=opt2-route-key-case';
@@ -513,6 +514,31 @@ export const routeKeyConflictCases: readonly RouteKeyConflictCase[] = deepFreeze
     `${FIXTURE_API}:16,21-23`,
     request('POST', `/legacy-fixtures/cfml/api.cfm/people/persons/${ID}/archive`, {
       headers: { 'X-HTTP-Method-Override': '' },
+    }),
+    'fixture:people/persons/{id}/archive@post',
+  ),
+  conflict(
+    'fixture-query-siteid',
+    `${FIXTURE_API}:24; ${FIXTURE_AUTH}:27-34`,
+    request('POST', `/legacy-fixtures/cfml/api.cfm/people/persons/${ID}/archive`, { query: { siteid: 'tenant-a' } }),
+    'fixture:people/persons/{id}/archive@post',
+  ),
+  conflict(
+    'fixture-form-siteid-overwrites-query',
+    `${FIXTURE_API}:24-25; ${FIXTURE_AUTH}:27-34`,
+    request('POST', `/legacy-fixtures/cfml/api.cfm/people/persons/${ID}/archive`, {
+      query: { siteid: 'tenant-b' },
+      form: { siteid: 'tenant-a', effectiveFrom: '2026-05-13' },
+    }),
+    'fixture:people/persons/{id}/archive@post',
+  ),
+  conflict(
+    'fixture-json-body-siteid-overwrites-form',
+    `${FIXTURE_API}:24-34; ${FIXTURE_AUTH}:27-34`,
+    request('POST', `/legacy-fixtures/cfml/api.cfm/people/persons/${ID}/archive`, {
+      form: { siteid: 'tenant-b' },
+      jsonBody: { siteid: 'tenant-a' },
+      headers: { 'Content-Type': 'application/json' },
     }),
     'fixture:people/persons/{id}/archive@post',
   ),

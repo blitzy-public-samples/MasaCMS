@@ -88,8 +88,8 @@ export interface DispatcherDeps {
   barrier: Pick<SessionBarrier, 'declare' | 'record' | 'release' | 'awaitForSession' | 'awaitPositions' | 'awaitOwners'>;
   resolver: SessionResolver;
   tokenCache: Pick<TokenCache, 'get'>;
-  /** Identity's record of the admin site a session selected, read for site-less requests web serves. */
-  identity: Pick<IdentityClient, 'adminSite'>;
+  /** Identity's record of a session's selected admin site and login snapshot, read for site-less web and fixture requests. */
+  identity: Pick<IdentityClient, 'adminSite' | 'snapshot'>;
   stateCheck: Pick<SessionStateChecker, 'check'>;
   hydrator: Hydrator;
   csrf: CsrfContinuity;
@@ -423,11 +423,20 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     if (check.state !== 'active') await deps.invalidation.afterTargetLogout(named, { userAgent });
   };
 
-  /** The site a request's user token is for: its `siteid`, else for a request web serves the session's selected site, else `default`. */
+  /** The session user's `siteID`; '' for a missing or ended session. */
+  const userSiteOf = async (sessionId: string): Promise<string> => {
+    const siteId = (await deps.identity.snapshot(sessionId))?.loginSnapshot.user.siteID;
+    return typeof siteId === 'string' ? siteId : '';
+  };
+
+  /** A request's user-token site: its `siteid`, else the session's selected site for web or user's site for a fixture, else `default`. */
   const tokenSiteOf = async (result: RoutedOutcome['result'], destination: TargetDestination, sessionId: string): Promise<string> => {
     if (result.siteId !== undefined && result.siteId !== '') return result.siteId;
+    let selected = '';
     // Web's admin set-up, which also serves the OPT-2 screens, fills a missing rc.siteid from session.siteid (admin/Application.cfc:384-412).
-    const selected = result.family === 'admin' || destination.isWeb ? await deps.identity.adminSite(sessionId) : '';
+    if (result.family === 'admin' || destination.isWeb) selected = await deps.identity.adminSite(sessionId);
+    // The fixture's resolveSite falls back to the session user's siteID (legacy-fixtures/cfml/lib/auth.cfc:27-31).
+    else if (result.family === 'fixture') selected = await userSiteOf(sessionId);
     return selected === '' ? DEFAULT_SITE_ID : selected;
   };
 

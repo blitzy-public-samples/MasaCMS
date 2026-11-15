@@ -29,6 +29,7 @@ import type {
   GroupsFile,
   InventoryDoc,
   InventoryFacts,
+  LoadedInventoryFacts,
   OwnershipDoc,
   RouteFacts,
   SourcePin,
@@ -592,7 +593,7 @@ describe('loadInventoryFacts', () => {
   const csrfOf = (routeFacts: RouteFacts | undefined) =>
     Object.fromEntries(Object.entries(routeFacts ?? {}).filter(([key]) => key.startsWith('csrf')));
   /** The facts of a fixture inventory written beside the fixture inputs. */
-  const fixtureFacts = async (doc: unknown): Promise<InventoryFacts> => {
+  const fixtureFacts = async (doc: unknown): Promise<LoadedInventoryFacts> => {
     const file = join(await mkdtemp(join(dir, 'facts-')), 'legacy-inventory.json');
     await writeFile(file, json(doc));
     return loadInventoryFacts({ ...paths, inventoryFile: file });
@@ -667,6 +668,28 @@ describe('loadInventoryFacts', () => {
 
   it("includes an entry point's own session effect", () => {
     expect(facts.get('admin:clogin.logout')?.sessionEffects).toContain('logout');
+  });
+
+  /** An API route of the fixture inventory keyed `routeKey`. */
+  const apiRoute = (routeKey: string, kind = 'api-entity-method') => ({
+    ...INVENTORY.routes[1],
+    id: routeKey,
+    routeKey,
+    kind,
+    family: routeKey.slice(0, routeKey.indexOf(':')),
+  });
+
+  it.each([
+    ['nothing without remote-function keys', [], {}],
+    [
+      'each entity once over both families, sorted',
+      [apiRoute('rest:comment.~flag'), apiRoute('api:comment.~flag'), apiRoute('api:comment.~delete'), apiRoute('api:user.~pollstate')],
+      { comment: ['delete', 'flag'], user: ['pollstate'] },
+    ],
+    ['nothing from generic entity methods or other route kinds', [apiRoute('api:comment.save'), apiRoute('api:comment.~flag', 'api-method')], {}],
+  ])('derives entity remote functions: %s', async (_label, routes, expected) => {
+    const doc = withValue(INVENTORY, ['routes'], [...INVENTORY.routes, ...routes]);
+    expect((await fixtureFacts(doc)).entityRemoteFunctions).toStrictEqual(expected);
   });
 
   it('merges the write sets of every item carrying a key, deduplicated and sorted', () => {

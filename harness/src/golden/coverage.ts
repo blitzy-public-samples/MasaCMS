@@ -15,7 +15,7 @@ import {
 import { z } from '@opt2/platform/service-kit';
 import { CATALOGUE_PATH, isRehearsalScenario, loadCatalogue, type Scenario, type Step } from './catalogue.js';
 import { GoldenConfigError, MissingSecretError } from './errors.js';
-import { defaultRouteKeyOptions } from './route-key-options.js';
+import { INVENTORY_PATH, defaultRouteKeyOptions } from './route-key-options.js';
 import {
   SEED_CONFIG_PATH,
   basicAuth,
@@ -29,16 +29,13 @@ import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '.
 import { repoPath, stateDir, type EnvLike } from '../lib/paths.js';
 import { readJson, stableStringify } from '../lib/report.js';
 
-export { VARIANTS_PATH, defaultRouteKeyOptions } from './route-key-options.js';
+export { INVENTORY_PATH, VARIANTS_PATH, defaultRouteKeyOptions } from './route-key-options.js';
 
 /** Neutral CF UUID standing in for path segments and id-like placeholder values. */
 export const NEUTRAL_ID = '00000000-0000-0000-0000000000000000';
 
 /** Cut-over version whose entries the gate checks by default. */
 export const DEFAULT_VERSION_PATH: string = repoPath('gateway/cutover/versions/v0002.json');
-
-/** Committed legacy inventory holding the admin controllers. */
-export const INVENTORY_PATH: string = repoPath('opt2/inventory/legacy-inventory.json');
 
 /** Finding kinds, in the order {@link checkCoverage} reports them. */
 export const FINDING_KINDS = [

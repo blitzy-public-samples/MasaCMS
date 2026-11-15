@@ -54,7 +54,10 @@ function sourceOf(overrides: Record<string, string | undefined> = {}): NodeJS.Pr
   return Object.fromEntries(Object.entries(source).filter(([, value]) => value !== undefined));
 }
 
-/** The matcher with no active version and app.ts's route-key options for `env` and `siteExists`. */
+/** Inventory facts naming no remote function. */
+const NO_REMOTE_FUNCTIONS = { entityRemoteFunctions: {} };
+
+/** The matcher with no active version and app.ts's route-key options for `env` and `siteExists`, without remote functions. */
 function matcherFor(env: GatewayEnv, siteExists?: (siteId: string) => boolean): Matcher {
   return createMatcher({
     state: { active: () => undefined },
@@ -62,7 +65,7 @@ function matcherFor(env: GatewayEnv, siteExists?: (siteId: string) => boolean): 
     modes: createResponseModes({ get: () => undefined, routes: () => [] }),
     env,
     clock: fixedClock('2026-06-30T12:00:00Z'),
-    routeKeyOptions: routeKeyOptionsOf(env, siteExists),
+    routeKeyOptions: routeKeyOptionsOf(env, NO_REMOTE_FUNCTIONS, siteExists),
   });
 }
 
@@ -188,12 +191,17 @@ describe('route-key wiring of the reload key', () => {
     await expect(keyOf(matcher, `/?${FIXTURE_RELOAD_KEY}`)).resolves.toBe('page:render');
   });
 
-  it('passes no site registry unless one is given', () => {
+  it('passes the inventory remote functions, and no site registry unless one is given', () => {
     const env = loadEnv(gatewayEnvSchema, sourceOf());
     const siteExists = (siteId: string): boolean => siteId === 'default';
+    const entityRemoteFunctions = { comment: ['flag'] };
 
-    expect(routeKeyOptionsOf(env)).toEqual({ appReloadKey: 'appreload' });
-    expect(routeKeyOptionsOf(env, siteExists)).toEqual({ appReloadKey: 'appreload', siteExists });
+    expect(routeKeyOptionsOf(env, { entityRemoteFunctions })).toEqual({ appReloadKey: 'appreload', entityRemoteFunctions });
+    expect(routeKeyOptionsOf(env, { entityRemoteFunctions }, siteExists)).toEqual({
+      appReloadKey: 'appreload',
+      entityRemoteFunctions,
+      siteExists,
+    });
   });
 });
 

@@ -222,7 +222,7 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
       adoptAfterLegacy: vi.fn(async (_input, o): Promise<SessionResolution> => ({ kind: 'none', setCookies: [...o.setCookies] })),
     },
     tokenCache: { get: vi.fn(async () => 'user-token-1') },
-    identity: { adminSite: vi.fn(async () => '') },
+    identity: { adminSite: vi.fn(async () => ''), snapshot: vi.fn(async () => undefined) },
     stateCheck: {
       check: vi.fn(async () => ({ state: 'active' as const, epoch: 3, userId: 'U', siteId: 'default', epochChanged: false })),
     },

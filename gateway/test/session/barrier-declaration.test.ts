@@ -210,7 +210,10 @@ describe.skipIf(!live)('a target write declared in gateway.session_barrier again
         adoptAfterLegacy: async () => session,
       },
       tokenCache: { get: async () => 'user-token-1' },
-      identity: { adminSite: () => Promise.reject(new Error('unexpected identity call')) },
+      identity: {
+        adminSite: () => Promise.reject(new Error('unexpected identity call')),
+        snapshot: () => Promise.reject(new Error('unexpected identity call')),
+      },
       stateCheck: {
         check: async () => ({ state: 'active' as const, epoch: 3, userId: 'U', siteId: 'default', epochChanged: false }),
       },

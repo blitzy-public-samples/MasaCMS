@@ -11,6 +11,7 @@ import {
   type RouteKeyResult,
   type VariantCondition,
   type VariantDeclaration,
+  entityRemoteFunctionsFromKeys,
   matchRouteKey,
   normaliseRouteKey,
   routeKeyForEntryPoint,
@@ -794,6 +795,84 @@ describe('remote CFC proxies, fixtures and path families', () => {
     });
     expect(result.params).toMatchObject({ q: '1', note: 'form', amount: '5' });
   });
+
+  const ARCHIVE = `/legacy-fixtures/cfml/api.cfm/people/persons/${UUID}/archive`;
+  it.each<{ name: string; url: string; extra?: Partial<RouteKeyRequest>; siteId: string | undefined; key?: string }>([
+    { name: 'a query siteid', url: `${ARCHIVE}?siteid=tenant-a`, siteId: 'tenant-a' },
+    { name: 'a form siteid over the query one', url: `${ARCHIVE}?siteid=tenant-b`, extra: { form: { SiteID: 'tenant-a' } }, siteId: 'tenant-a' },
+    {
+      name: 'a JSON body siteid over the form one',
+      url: ARCHIVE,
+      extra: { form: { siteid: 'tenant-b' }, jsonBody: { siteid: 'tenant-a' }, headers: JSON_TYPE },
+      siteId: 'tenant-a',
+    },
+    { name: 'a numeric JSON siteid, as its string', url: ARCHIVE, extra: { jsonBody: { siteid: 7 }, headers: JSON_TYPE }, siteId: '7' },
+    {
+      name: 'a complex JSON siteid over the query one, as no site',
+      url: `${ARCHIVE}?siteid=tenant-b`,
+      extra: { jsonBody: { siteid: { id: 'tenant-a' } }, headers: JSON_TYPE },
+      siteId: undefined,
+    },
+    { name: 'an empty siteid', url: `${ARCHIVE}?siteid=`, siteId: '' },
+    { name: 'no siteid', url: ARCHIVE, siteId: undefined },
+    { name: 'an unrouted fixture path', url: '/legacy-fixtures/cfml/api.cfm/people?siteid=tenant-a', siteId: 'tenant-a', key: 'fixture:!notfound@post' },
+  ])('reads the fixture request site from $name, leaving the key unchanged', ({ url, extra, siteId, key }) => {
+    const result = resultOf('POST', url, extra);
+    expect(result.key).toBe(key ?? 'fixture:people/persons/{id}/archive@post');
+    expect(result.siteId).toBe(siteId);
+    expect(Object.hasOwn(result, 'siteId')).toBe(siteId !== undefined);
+  });
+});
+
+describe('legacy bridge spellings', () => {
+  const BRIDGE_ROUTE = 'bridge:/gateway/legacy-bridge/**';
+
+  it.each<[string, string, RouteKeyOptions?]>([
+    ['/gateway//legacy-bridge/cfml/session.cfm?op=describe', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['//gateway/legacy-bridge/cfml/session.cfm?op=describe', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['/gateway/legacy-bridge;x/cfml/session.cfm?op=describe', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['/gateway///legacy-bridge//cfml//jobs.cfm?job=getCursor', 'bridge:/gateway/legacy-bridge/cfml/jobs.cfm'],
+    ['/gateway/legacy-bridge', 'bridge:/gateway/legacy-bridge'],
+    ['/gateway//legacy-bridge', 'bridge:/gateway/legacy-bridge'],
+    ['/gateway/legacy-bridge;jsessionid=1', 'bridge:/gateway/legacy-bridge'],
+    ['/gateway;a/legacy-bridge/', 'bridge:/gateway/legacy-bridge/'],
+    ['/gateway/;/legacy-bridge/cfml/session.cfm', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['/gateway/./legacy-bridge/cfml/session.cfm', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['/gateway/%2E/legacy-bridge/cfml/session.cfm', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['/gateway/x/../legacy-bridge/cfml/session.cfm', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['/gateway/x/..;y/legacy-bridge/cfml/session.cfm', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['/opt2/../gateway/legacy-bridge/cfml/session.cfm', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['/_api/../gateway/legacy-bridge/cfml/session.cfm', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['/index.cfm/../gateway/legacy-bridge/cfml/session.cfm', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['/gateway\\legacy-bridge\\cfml\\session.cfm', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['/gateway/legacy-bridge/cfml/..', 'bridge:/gateway/legacy-bridge/cfml/..'],
+    ['/gateway/legacy-bridge/cfml//session.cfm', 'bridge:/gateway/legacy-bridge/cfml//session.cfm'],
+    ['/GATEWAY//Legacy-Bridge/CFML/Session.cfm', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['/Gateway/Legacy-Bridge', 'bridge:/gateway/legacy-bridge'],
+    ['/gateway//legacy-bridge/cfml/session.cfm?appreload', 'bridge:/gateway/legacy-bridge/cfml/session.cfm'],
+    ['//masa/gateway/legacy-bridge/cfml/session.cfm', 'bridge:/gateway/legacy-bridge/cfml/session.cfm', { context: '/masa' }],
+  ])('keys %s as %s, under the bridge entry', (url, key, opts) => {
+    const result = resultOf('GET', url, {}, opts);
+    expect([result.family, result.key]).toEqual(['bridge', key]);
+    expect(matchRouteKey(result, [BRIDGE_ROUTE])).toBe(BRIDGE_ROUTE);
+  });
+
+  it.each([
+    '/gateway/legacy-bridgex/cfml/session.cfm',
+    '/gateway//legacy-bridgex/',
+    '/gateway/other',
+    '/legacy-bridge/cfml/session.cfm',
+    '/x/gateway/legacy-bridge/cfml/session.cfm',
+    '/gateway/x/../other/legacy-bridge/',
+    '/index.cfm/gateway/legacy-bridge/cfml/session.cfm',
+    '//index.cfm/gateway//legacy-bridge/cfml/session.cfm',
+    '/./index.cfm/gateway/legacy-bridge/cfml/session.cfm',
+    '/index.cfm;x/gateway/legacy-bridge/cfml/session.cfm',
+  ])('keys %s outside the bridge', (url) => {
+    const result = resultOf('GET', url);
+    expect(result.family).not.toBe('bridge');
+    expect(matchRouteKey(result, [BRIDGE_ROUTE])).toBeUndefined();
+  });
 });
 
 describe('public pages', () => {
@@ -1280,5 +1359,50 @@ describe('routeKeyForEntryPoint', () => {
 describe('normaliseRouteKey', () => {
   it('trims and lower-cases an authored key', () => {
     expect(normaliseRouteKey('  Admin:cUsers.Update{Type=2,Action=Add}\n')).toBe('admin:cusers.update{type=2,action=add}');
+  });
+});
+
+describe('entityRemoteFunctionsFromKeys', () => {
+  it.each<[string, string[], Record<string, string[]>]>([
+    ['nothing from no keys', [], {}],
+    ['one entry for both families', ['rest:comment.~flag', 'api:comment.~flag'], { comment: ['flag'] }],
+    [
+      'distinct names per entity, entities and names sorted',
+      ['api:user.~pollstate', 'api:comment.~flag', 'rest:comment.~delete', 'api:comment.~flag'],
+      { comment: ['delete', 'flag'], user: ['pollstate'] },
+    ],
+    [
+      'normalised keys',
+      ['  API:User.~PollState\n', 'rest:FileBrowser.~CKEditor_Quick_Upload'],
+      { filebrowser: ['ckeditor_quick_upload'], user: ['pollstate'] },
+    ],
+    [
+      'nothing from other keys',
+      [
+        'api:comment.save',
+        'api:comment.findone',
+        'api:!invalidmethodcall',
+        'api:pollstate',
+        'api:comment.~flag{x}',
+        'feed:comment.~flag',
+        'admin:ccomments.markasspam',
+        'cfc:/core/mura/remote.cfc?method=dothing',
+      ],
+      {},
+    ],
+  ])('derives %s', (_label, keys, expected) => {
+    const derived = entityRemoteFunctionsFromKeys(keys);
+    expect(derived).toStrictEqual(expected);
+    expect(Object.keys(derived)).toEqual(Object.keys(expected));
+    expect(Object.isFrozen(derived)).toBe(true);
+  });
+
+  it.each([
+    [`${API}/?method=comment.flag`, 'api:!invalidmethodcall', 'api:comment.~flag'],
+    ['/_api/rest/v1/default/?method=comment.markAsSpam', 'rest:!invalidmethodcall', 'rest:comment.~markasspam'],
+  ])('lets routeKeyForRequest key POST %s, otherwise %s, as %s', (url, unregistered, key) => {
+    const entityRemoteFunctions = entityRemoteFunctionsFromKeys(['rest:comment.~flag', 'api:comment.~markasspam']);
+    expect(keyOf('POST', url)).toBe(unregistered);
+    expect(keyOf('POST', url, {}, { entityRemoteFunctions })).toBe(key);
   });
 });

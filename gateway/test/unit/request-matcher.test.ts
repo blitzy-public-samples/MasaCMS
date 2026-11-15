@@ -32,6 +32,7 @@ import {
   type Matcher,
   type MatcherDeps,
 } from '../../src/dispatcher/match.js';
+import { committedIndex } from '../helpers/versions.js';
 
 const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const NOW = '2026-06-30T12:00:00Z';
@@ -317,6 +318,30 @@ describe('createMatcher bare destinations', () => {
     const outcome = await matchOf(matcherWith({ active: () => index }), '/gateway/legacy-bridge/cfml/session.cfm?op=describe');
     expect(outcome.entry?.route).toBe('bridge:/gateway/legacy-bridge/**');
     expect(outcome.destination).toStrictEqual({ kind: 'bare', status: 404 });
+  });
+
+  it.each([
+    '/gateway//legacy-bridge/cfml/session.cfm?op=describe',
+    '//gateway/legacy-bridge/cfml/session.cfm?op=describe',
+    '/gateway/legacy-bridge;x/cfml/session.cfm?op=describe',
+    '/gateway///legacy-bridge//cfml//jobs.cfm?job=getCursor',
+    '/gateway/legacy-bridge',
+    '/gateway/./legacy-bridge/cfml/session.cfm',
+    '/gateway\\legacy-bridge/cfml/session.cfm',
+    '/GATEWAY/Legacy-Bridge/cfml/session.cfm',
+  ])('answers 404 under the committed v0001 table for the bridge spelling %s', async (url) => {
+    const v0001 = await committedIndex('v0001');
+    const outcome = await matchOf(matcherWith({ active: () => v0001 }), url);
+    expect(outcome.result?.family).toBe('bridge');
+    expect(outcome.entry?.route).toBe('bridge:/gateway/legacy-bridge/**');
+    expect(outcome.destination).toStrictEqual({ kind: 'bare', status: 404 });
+  });
+
+  it('sends /index.cfm/gateway/legacy-bridge/..., a front-controller page, to legacy under v0001', async () => {
+    const v0001 = await committedIndex('v0001');
+    const outcome = await matchOf(matcherWith({ active: () => v0001 }), '/index.cfm/gateway/legacy-bridge/cfml/session.cfm');
+    expect(outcome.result?.key).toBe('page:render');
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
   });
 
   it('answers 404 for a signed file URL when storage is not the local adapter, without reading the key', async () => {

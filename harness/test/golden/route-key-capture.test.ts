@@ -155,6 +155,21 @@ const VARIANT_CASES: KeyCase[] = [
     step: { name: 'poll', method: 'POST', route: '/_api/json/v1/default/content/', body: { method: 'user.pollState' } },
     key: 'api:user.~pollstate',
   },
+  {
+    label: 'a dotted JSON API method naming an inventoried comment remote function',
+    step: { name: 'flag', method: 'POST', route: '/_api/json/v1/default/?method=comment.flag' },
+    key: 'api:comment.~flag',
+  },
+  {
+    label: 'its REST twin',
+    step: { name: 'flag', method: 'POST', route: '/_api/rest/v1/default/?method=comment.flag' },
+    key: 'rest:comment.~flag',
+  },
+  {
+    label: 'a dotted form method naming an inventoried file browser remote function',
+    step: { name: 'browse', method: 'POST', route: '/_api/json/v1/default/', form: { method: 'filebrowser.browse' } },
+    key: 'api:filebrowser.~browse',
+  },
 ];
 
 // One request carries one body, so the table's form-plus-JSON-body cases have no catalogue step.

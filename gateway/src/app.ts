@@ -26,7 +26,7 @@ import { loadInventoryFacts, loadTableOwnership, loadVariants } from './cutover/
 import { resolveGatewayPaths } from './cutover/paths.js';
 import { registerCutoverRoutes } from './cutover/routes.js';
 import { createCutoverState } from './cutover/state.js';
-import type { OwnershipUnit, RoutingIndex } from './cutover/types.js';
+import type { LoadedInventoryFacts, OwnershipUnit, RoutingIndex } from './cutover/types.js';
 import { createSessionBarrier } from './dispatcher/barrier.js';
 import { registerEdgeRoute, type DispatcherDeps } from './dispatcher/dispatch.js';
 import { createMatcher, type MatcherDeps } from './dispatcher/match.js';
@@ -91,12 +91,14 @@ export const gatewayEnvSchema = gatewayVariables.superRefine(
 /** Parsed gateway environment. */
 export type GatewayEnv = Readonly<LoadedEnv<typeof gatewayEnvSchema>>;
 
-/** Route-key settings legacy configures: the reload key, and the verified site registry when one is given. */
+/** Route-key settings legacy configures: the reload key, the entities' remote functions, and the verified site registry when given. */
 export function routeKeyOptionsOf(
   env: Pick<GatewayEnv, 'MURA_APPRELOADKEY'>,
+  facts: Pick<LoadedInventoryFacts, 'entityRemoteFunctions'>,
   siteExists?: (siteId: string) => boolean,
 ): NonNullable<MatcherDeps['routeKeyOptions']> {
-  return siteExists === undefined ? { appReloadKey: env.MURA_APPRELOADKEY } : { appReloadKey: env.MURA_APPRELOADKEY, siteExists };
+  const options = { appReloadKey: env.MURA_APPRELOADKEY, entityRemoteFunctions: facts.entityRemoteFunctions };
+  return siteExists === undefined ? options : { ...options, siteExists };
 }
 
 const NO_OWNERS: ReadonlySet<string> = new Set();
@@ -197,7 +199,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const siteList = createSiteListClient({ legacyOrigin, hmacKey: env.OPT2_BRIDGE_HMAC_KEY, clock });
   const sites =
     options.startBackground === false ? undefined : createSiteRegistry({ list: () => siteList.listSites(), logger: app.log });
-  const routeKeyOptions = routeKeyOptionsOf(env, sites?.siteExists);
+  const routeKeyOptions = routeKeyOptionsOf(env, facts, sites?.siteExists);
   const matcher = createMatcher({ state, variants, modes, env, clock, routeKeyOptions });
   const windows = createWriteWindowClient({ client: migrationClient, facts });
   const relay: RelayDeps = {

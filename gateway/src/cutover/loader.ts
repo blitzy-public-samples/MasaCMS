@@ -2,7 +2,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Ajv2020, type AnySchemaObject, type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js';
-import { ROUTE_FAMILIES, normaliseRouteKey } from '@opt2/platform/legacy-compat';
+import { ROUTE_FAMILIES, entityRemoteFunctionsFromKeys, normaliseRouteKey } from '@opt2/platform/legacy-compat';
 import type { GatewayPaths } from './paths.js';
 import type {
   Authority,
@@ -15,9 +15,9 @@ import type {
   ExceptionsDoc,
   GroupsFile,
   InventoryDoc,
-  InventoryFacts,
   InventoryRouteKind,
   InventoryWritingItem,
+  LoadedInventoryFacts,
   OwnershipDoc,
   ResponseMode,
   RouteFacts,
@@ -566,10 +566,17 @@ type CollectedFacts = Omit<RouteFacts, 'csrfValidation' | 'csrfContext' | 'write
   sessionEffects: Set<SessionEffect>;
 };
 
+/** Remote-function names by entity, sorted and deduplicated over the API entity-method routes of both families. */
+export function entityRemoteFunctionsOf(inventory: Pick<InventoryDoc, 'routes'>): Readonly<Record<string, readonly string[]>> {
+  return entityRemoteFunctionsFromKeys(
+    inventory.routes.flatMap((route) => (route.kind === 'api-entity-method' && route.routeKey !== null ? [route.routeKey] : [])),
+  );
+}
+
 /** Route facts per inventoried key, unioned over the entry points and table writers that carry it; the strongest CSRF fact wins. */
 export async function loadInventoryFacts(
   paths: Pick<GatewayPaths, 'inventoryFile' | 'tableOwnershipFile' | 'sourcePinFile'>,
-): Promise<InventoryFacts> {
+): Promise<LoadedInventoryFacts> {
   const inventory = await loadInventory(paths);
   const collected = new Map<string, CollectedFacts>();
   const factsFor = (routeKey: string): CollectedFacts => {
@@ -627,6 +634,7 @@ export async function loadInventoryFacts(
   return {
     get: (routeKey) => byRoute.get(normaliseRouteKey(routeKey)),
     routes: () => [...byRoute.keys()],
+    entityRemoteFunctions: entityRemoteFunctionsOf(inventory),
   };
 }
 

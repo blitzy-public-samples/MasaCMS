@@ -1,8 +1,17 @@
-// Token site of OPT-2 requests through the real matcher and edge dispatcher, against stand-in web and stub services.
+// Token site of OPT-2 and fixture requests through the real matcher and edge dispatcher, against stand-in web, stub and people services.
 import { Buffer } from 'node:buffer';
 import replyFrom from '@fastify/reply-from';
+import { apiUnavailableResponse } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
-import { LEGACY_POST_LIMIT_BYTES, createService, loadEnv, systemClock, type FastifyInstance } from '@opt2/platform/service-kit';
+import {
+  IDENTITY_SERVICE,
+  LEGACY_POST_LIMIT_BYTES,
+  ServiceUnavailableError,
+  createService,
+  loadEnv,
+  systemClock,
+  type FastifyInstance,
+} from '@opt2/platform/service-kit';
 import { testVerifier } from '@opt2/platform/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createResponseModes } from '../src/admin/response-modes.js';
@@ -10,6 +19,7 @@ import { buildRoutingIndex } from '../src/cutover/loader.js';
 import type { CutoverEntry, EntryKind, InventoryFacts, OwningService, RoutingIndex } from '../src/cutover/types.js';
 import { registerEdgeRoute, type DispatcherDeps } from '../src/dispatcher/dispatch.js';
 import { createMatcher } from '../src/dispatcher/match.js';
+import type { SessionSnapshot } from '../src/session/identity-client.js';
 import type { SessionResolution } from '../src/session/resolve.js';
 import { sendBytes, startHttpDouble, type HttpDouble } from './helpers/http-double.js';
 
@@ -17,6 +27,7 @@ const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const SESSION_ID = 'S1';
 const EPOCH = 3;
 const URLENCODED = 'application/x-www-form-urlencoded';
+const ARCHIVE = '/legacy-fixtures/cfml/api.cfm/people/persons/00532E14-B51F-226C-36938FA3E4A6396C/archive';
 const SILENT = createLogger({ service: 'gateway', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
 const NO_FACTS: InventoryFacts = { get: () => undefined, routes: () => [] };
 
@@ -36,6 +47,7 @@ const INDEX: RoutingIndex = buildRoutingIndex(
       entry('opt2:/opt2/admin/reporting/**', 'web', 'read'),
       entry('opt2:/opt2/admin-actions/reporting/**', 'web', 'write'),
       entry('opt2:/opt2/stub/**', 'stub', 'read'),
+      entry('fixture:people/persons/{id}/archive@post', 'people', 'write'),
     ],
   },
   { sourceSha: SHA, variants: [] },
@@ -51,6 +63,7 @@ interface Harness {
   app: FastifyInstance;
   web: HttpDouble;
   stub: HttpDouble;
+  people: HttpDouble;
   deps: DispatcherDeps;
 }
 
@@ -64,7 +77,8 @@ afterEach(async () => {
 async function harness(): Promise<Harness> {
   const web = await startHttpDouble((_req, res) => sendBytes(res, 200, 'web-body', { 'content-type': 'text/html' }));
   const stub = await startHttpDouble((_req, res) => sendBytes(res, 200, 'stub-body', { 'content-type': 'text/plain' }));
-  const urls = { web: web.url, stub: stub.url };
+  const people = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'application/json' }));
+  const urls = { web: web.url, stub: stub.url, people: people.url };
   const app = await createService({
     name: 'gateway',
     version: '1.0.0',
@@ -122,7 +136,7 @@ async function harness(): Promise<Harness> {
       adoptAfterLegacy: async () => ({ kind: 'none', setCookies: [] }),
     },
     tokenCache: { get: vi.fn(async (_sessionId: string, siteId: string | undefined) => `tok:${siteId ?? ''}`) },
-    identity: { adminSite: vi.fn(async () => '') },
+    identity: { adminSite: vi.fn(async () => ''), snapshot: vi.fn(async () => undefined) },
     stateCheck: {
       check: async () => ({ state: 'active' as const, epoch: EPOCH, userId: 'U', siteId: 'default', epochChanged: false }),
     },
@@ -163,9 +177,14 @@ async function harness(): Promise<Harness> {
   await app.ready();
   closers.push(async () => {
     await app.opt2.shutdown();
-    await Promise.all([web.close(), stub.close()]);
+    await Promise.all([web.close(), stub.close(), people.close()]);
   });
-  return { app, web, stub, deps };
+  return { app, web, stub, people, deps };
+}
+
+/** Identity's snapshot of the session, its user's `siteID` as given. */
+function snapshotOf(siteID: string): SessionSnapshot {
+  return { sessionId: SESSION_ID, epoch: EPOCH, loginSnapshot: { user: { userID: 'U', siteID }, roles: [] }, csrfSecretKey: 'K', usedTokens: [] };
 }
 
 describe('OPT-2 user token site', () => {
@@ -236,5 +255,48 @@ describe('OPT-2 user token site', () => {
       'Bearer tok:tenant-b',
       'Bearer tok:tenant-b',
     ]);
+  });
+});
+
+describe('fixture user token site', () => {
+  const FROM = 'effectiveFrom=2026-05-13';
+  it.each<[string, string, [contentType: string, payload: string] | undefined, string | null, string, boolean]>([
+    ['a form siteid', ARCHIVE, [URLENCODED, `siteid=tenant-a&${FROM}`], 'tenant-b', 'tenant-a', false],
+    ['a query siteid', `${ARCHIVE}?siteid=tenant-a`, [URLENCODED, FROM], 'tenant-b', 'tenant-a', false],
+    ['a form siteid over the query one', `${ARCHIVE}?siteid=tenant-b`, [URLENCODED, 'siteid=tenant-a'], 'tenant-b', 'tenant-a', false],
+    [
+      'a JSON body siteid over the query one',
+      `${ARCHIVE}?siteid=tenant-b`,
+      ['application/json', '{"siteid":"tenant-a"}'],
+      'tenant-b',
+      'tenant-a',
+      false,
+    ],
+    ['a request without a site, for the session user site', ARCHIVE, [URLENCODED, FROM], 'tenant-b', 'tenant-b', true],
+    ['an empty siteid, for the session user site', ARCHIVE, [URLENCODED, `siteid=&${FROM}`], 'tenant-b', 'tenant-b', true],
+    ['a request without a site, for default when the user has no site', ARCHIVE, undefined, '', 'default', true],
+    ['a request without a site, for default when identity holds no snapshot', ARCHIVE, undefined, null, 'default', true],
+  ])('mints the token of %s', async (_label, url, body, userSite, site, readsSnapshot) => {
+    const h = await harness();
+    vi.mocked(h.deps.identity.snapshot).mockResolvedValue(userSite === null ? undefined : snapshotOf(userSite));
+    const res = await h.app.inject(
+      body === undefined ? { method: 'POST', url } : { method: 'POST', url, headers: { 'content-type': body[0] }, payload: body[1] },
+    );
+    expect(res.statusCode).toBe(200);
+    expect(h.deps.tokenCache.get).toHaveBeenCalledExactlyOnceWith(SESSION_ID, site, EPOCH);
+    expect(h.deps.identity.snapshot).toHaveBeenCalledTimes(readsSnapshot ? 1 : 0);
+    if (readsSnapshot) expect(h.deps.identity.snapshot).toHaveBeenCalledWith(SESSION_ID);
+    expect(h.deps.identity.adminSite).not.toHaveBeenCalled();
+    expect(h.people.requests.map((r) => r.headers.authorization)).toEqual([`Bearer tok:${site}`]);
+  });
+
+  it('fails closed with the API 503, calling no service, when identity cannot report the session user', async () => {
+    const h = await harness();
+    vi.mocked(h.deps.identity.snapshot).mockRejectedValueOnce(new ServiceUnavailableError(IDENTITY_SERVICE, new Error('down')));
+    const res = await h.app.inject({ method: 'POST', url: ARCHIVE });
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toBe(apiUnavailableResponse().body);
+    expect(h.deps.tokenCache.get).not.toHaveBeenCalled();
+    expect(h.people.requests).toHaveLength(0);
   });
 });

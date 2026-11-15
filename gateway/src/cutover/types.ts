@@ -107,6 +107,12 @@ export interface InventoryFacts {
   routes(): string[];
 }
 
+/** Inventory facts as loaded, with the entity remote functions the route key resolves. */
+export interface LoadedInventoryFacts extends InventoryFacts {
+  /** Remote-function names by entity, from the inventoried `<family>:<entity>.~<function>` keys. */
+  readonly entityRemoteFunctions: Readonly<Record<string, readonly string[]>>;
+}
+
 /** Lookup over an active cut-over version and the groups behind its unit authority. */
 export interface RoutingIndex {
   readonly table: CutoverTable;

@@ -193,6 +193,8 @@ interface NormalisedPath {
   indexAt: number;
   /** `path` as the root front controller reads it: urlDecoded once more (contentServer.cfc:167). */
   rootPath: string;
+  /** The decoded path as the container and the legacy forwarder serve it, without the context and keeping `index.cfm`. */
+  served: string;
 }
 
 interface BaseRoute {
@@ -226,6 +228,8 @@ const REST_HEADER_PARAMS: ReadonlyArray<readonly [string, string]> = [
 ];
 /** The params legacy's REST credential block deletes; the only names {@link REST_CONSUMED_PARAMS_HEADER} may remove. */
 const REST_CREDENTIAL_PARAMS: ReadonlySet<string> = new Set(['client_id', 'client_secret', 'access_token', 'refresh_token']);
+/** A remote-function key, `<api|rest>:<entity>.~<function>` (jsonApiUtility.cfc:1165,1450). */
+const REMOTE_FUNCTION_KEY = /^(?:api|rest):(\w+)\.~(\w+)$/;
 
 // ---- CFML semantics ----
 
@@ -386,26 +390,46 @@ function percentDecode(s: string, cfml: boolean): string | undefined {
   return out;
 }
 
+/** `path` without the normalised context `ctx` ('' for none), matched case-insensitively. */
+function withoutContext(path: string, ctx: string): string {
+  if (ctx.length > 1 && (path.toLowerCase() === ctx.toLowerCase() || startsNoCase(path, `${ctx}/`))) {
+    return path.slice(ctx.length) || '/';
+  }
+  return path;
+}
+
+/** A decoded path as the legacy forwarder's URL parser and the container serve it: `\` separates, `;` params drop, empty and dot segments resolve. */
+function servedPath(decoded: string): string {
+  const items = decoded.split(/[/\\]/).map((item) => item.split(';', 1)[0] ?? '');
+  const segments: string[] = [];
+  for (const item of items) {
+    if (item === '..') segments.pop();
+    else if (item !== '' && item !== '.') segments.push(item);
+  }
+  const last = items[items.length - 1] ?? '';
+  const directory = segments.length > 0 && (last === '' || last === '.' || last === '..');
+  return `/${segments.join('/')}${directory ? '/' : ''}`;
+}
+
 /** URL-decoded path without the context and the first `index.cfm` segment (contentServer.cfc:141-165). */
 function normalisePath(rawPath: string, context: string): NormalisedPath {
   const decoded = percentDecode(rawPath, false);
   let path = decoded ?? rawPath;
   if (!path.startsWith('/')) path = `/${path}`;
   const ctx = context && context !== '/' ? `/${listToArray(context, '/').join('/')}` : '';
-  if (ctx.length > 1 && (path.toLowerCase() === ctx.toLowerCase() || startsNoCase(path, `${ctx}/`))) {
-    path = path.slice(ctx.length) || '/';
-  }
+  path = withoutContext(path, ctx);
+  const served = withoutContext(servedPath(decoded ?? rawPath), ctx);
   // A path the container rejects never reaches CFML, so it gets no second decode.
   const rootPath = (p: string): string => (decoded === undefined ? p : percentDecode(p, true));
   const parts = path.split('/');
   const at = parts.findIndex((p, i) => i > 0 && p.toLowerCase() === 'index.cfm');
-  if (at < 0) return { path, indexAt: -1, rootPath: rootPath(path) };
+  if (at < 0) return { path, indexAt: -1, rootPath: rootPath(path), served };
   const indexAt = parts.slice(0, at).filter((p) => p !== '').length;
   const wasLast = at === parts.length - 1;
   parts.splice(at, 1);
   let stripped = parts.join('/') || '/';
   if (wasLast && !stripped.endsWith('/')) stripped += '/';
-  return { path: stripped, indexAt, rootPath: rootPath(stripped) };
+  return { path: stripped, indexAt, rootPath: rootPath(stripped), served };
 }
 
 
@@ -843,16 +867,18 @@ function fixtureHttpMethod(req: RouteKeyRequest): string {
   return (override === undefined || override === '' ? req.method : override).toUpperCase();
 }
 
-/** Fixture front controller paths `api.cfm/<module>/<resource>[/<id>][/<action>…]`. */
+/** Fixture front controller paths `api.cfm/<module>/<resource>[/<id>][/<action>…]`; its site is the merged simple `siteid`. */
 function fixtureRoute(c: RouteContext): BaseRoute {
   const { req } = c;
   const params = append(queryThenForm(req), isPlainObject(req.jsonBody) ? jsonMap(req.jsonBody) : new Map());
   const items = listToArray(c.path.slice(FIXTURE_PREFIX.length), '/');
   const httpMethod = fixtureHttpMethod(req);
   const method = httpMethod.toLowerCase();
-  if (items.length < 2) return { family: 'fixture', body: `!notfound@${method}`, params, httpMethod };
-  const body = items.map((s, i) => (i < 2 ? s : i === 2 || isFixtureId(s) ? '{id}' : s)).join('/');
-  return { family: 'fixture', body: `${body}@${method}`, params, httpMethod };
+  const body = items.length < 2 ? '!notfound' : items.map((s, i) => (i < 2 ? s : i === 2 || isFixtureId(s) ? '{id}' : s)).join('/');
+  const route: BaseRoute = { family: 'fixture', body: `${body}@${method}`, params, httpMethod };
+  const siteId = params.get('siteid');
+  if (typeof siteId === 'string') route.siteId = siteId;
+  return route;
 }
 
 /**
@@ -893,8 +919,8 @@ function opt2Route(req: RouteKeyRequest, path: string): BaseRoute {
   return route;
 }
 
-/** First matching rule of the shared precedence; `rootPath` is the path the root front controller reads. */
-function baseRoute(c: RouteContext, indexAt: number, rootPath: string): BaseRoute {
+/** First matching rule of the shared precedence; `rootPath` is the path the root front controller reads, `served` the one served. */
+function baseRoute(c: RouteContext, indexAt: number, rootPath: string, served: string): BaseRoute {
   const { req, path, segments } = c;
   const first = nth(segments, 1).toLowerCase();
   // The root index.cfm is the front controller, which serves only API and page requests (contentServer.cfc:779-799).
@@ -902,10 +928,10 @@ function baseRoute(c: RouteContext, indexAt: number, rootPath: string): BaseRout
   const root: RouteContext = { ...c, path: rootPath, segments: listToArray(rootPath, '/') };
   const rootFirst = nth(root.segments, 1).toLowerCase();
   const rootApi = rootFirst === '_api' || rootFirst === 'tasks';
-  if (!frontController) {
-    if (first === 'opt2') return opt2Route(req, path);
-    if (startsNoCase(path, BRIDGE_PREFIX)) return { family: 'bridge', body: path, params: queryThenForm(req) };
-  }
+  if (!frontController && startsNoCase(path, BRIDGE_PREFIX)) return { family: 'bridge', body: path, params: queryThenForm(req) };
+  // Any other spelling served from the bridge directory is the bridge too, keyed on its served path.
+  if (startsNoCase(`${served}/`, BRIDGE_PREFIX)) return { family: 'bridge', body: served, params: queryThenForm(req) };
+  if (!frontController && first === 'opt2') return opt2Route(req, path);
   if (first === '_api' || first === 'tasks' || (frontController && rootApi)) return apiRoute(root);
   if (frontController) return pageRoute(c, false);
   const adminLength = adminPrefixLength(c, indexAt);
@@ -994,13 +1020,30 @@ export function normaliseRouteKey(s: string): string {
   return s.trim().toLowerCase();
 }
 
+/**
+ * {@link RouteKeyOptions.entityRemoteFunctions} from route keys: per entity, the sorted distinct function names of its
+ * normalised `<api|rest>:<entity>.~<function>` keys, entities sorted; other keys are ignored.
+ */
+export function entityRemoteFunctionsFromKeys(routeKeys: Iterable<string>): Readonly<Record<string, readonly string[]>> {
+  const byEntity = new Map<string, Set<string>>();
+  for (const routeKey of routeKeys) {
+    const [, entity, name] = REMOTE_FUNCTION_KEY.exec(normaliseRouteKey(routeKey)) ?? [];
+    if (entity === undefined || name === undefined) continue;
+    byEntity.set(entity, (byEntity.get(entity) ?? new Set<string>()).add(name));
+  }
+  const entries = [...byEntity]
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([entity, names]) => [entity, Object.freeze([...names].sort())] as const);
+  return Object.freeze(Object.fromEntries(entries));
+}
+
 /** Route key of a live request under the shared precedence. */
 export function routeKeyForRequest(req: RouteKeyRequest, opts: RouteKeyOptions = {}): RouteKeyResult {
   const resolved = resolveOptions(opts);
   // The JSON API reads a present override even when empty (jsonApiUtility.cfc:995-999, 1157-1161, 1198-1202).
   const apiMethod = (header(req.headers, 'X-HTTP-Method-Override') ?? req.method).toUpperCase();
-  const { path, indexAt, rootPath } = normalisePath(req.path, resolved.context);
-  const route = baseRoute({ req, path, segments: listToArray(path, '/'), httpMethod: apiMethod, opts: resolved }, indexAt, rootPath);
+  const { path, indexAt, rootPath, served } = normalisePath(req.path, resolved.context);
+  const route = baseRoute({ req, path, segments: listToArray(path, '/'), httpMethod: apiMethod, opts: resolved }, indexAt, rootPath, served);
   const httpMethod = route.httpMethod ?? apiMethod;
   const baseKey = `${route.family}:${route.body}`.toLowerCase();
   const params = simpleParams(route.params);
