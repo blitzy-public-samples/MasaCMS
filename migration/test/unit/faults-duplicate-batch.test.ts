@@ -351,6 +351,7 @@ beforeEach(() => {
       counts: new Map(sorted.map((tenantId) => [tenantId, byTenant.get(tenantId)?.length ?? 0])),
       rows: (tenantId) => [...(byTenant.get(tenantId) ?? [])].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)),
       orphans: new Map(),
+      objects: new Map(),
       dispose: () => {
         read.disposed = true;
         return Promise.resolve();
