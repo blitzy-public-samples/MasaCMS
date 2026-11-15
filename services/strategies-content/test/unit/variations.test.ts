@@ -1,10 +1,20 @@
-/** Variation targeting: the `variations` gate, the bean read, the in-transaction and JSON API saves, the delete and the script model. */
+/** Variation targeting: the `variations` gate of the domain, the resource route and the JSON API entity; the bean read, saves, delete and script model. */
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { LegacyApiError, isCfUuid } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { withTenant, type QueryConfig, type QueryResult, type QueryResultRow, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
-import { TENANT_A, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import {
+  TENANT_A,
+  assertResponseMatchesOpenApi,
+  createThrowawaySchema,
+  fixedClock,
+  pgAvailable,
+  type InjectResponse,
+  type ThrowawaySchema,
+} from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims, type Actor, type DomainDeps } from '../../src/domain/context.js';
 import {
   deleteVariationTargeting,
@@ -15,7 +25,11 @@ import {
   variationsEnabled,
 } from '../../src/domain/variations.js';
 import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
-import { CONTENT_UNITS } from '../../src/repo/tables.js';
+import { CONTENT_UNITS, type VariationTargetingRow } from '../../src/repo/tables.js';
+import { VARIATION_PATH } from '../../src/routes/variation.js';
+import { buildTestApp, createRecordingDb, type RecordedStatement, type RecordingDb, type TestApp } from '../helpers/app.js';
+import { seedRecordingDb } from '../helpers/seed.js';
+import { contentHeaders } from '../helpers/tokens.js';
 
 const cfId = (prefix: string, n: number): string => `${prefix}${String(n).padStart(7, '0')}-AAAA-BBBB-CCCCDDDDEEEEFFFF`;
 const NOW = new Date(2026, 5, 30, 10, 15, 42, 123);
@@ -31,6 +45,7 @@ function actor(roles: string[], s2 = false): Actor {
 
 const contentEditor = actor(['system-user', 'm:000']);
 const variationOnly = actor(['system-user', 'm:099']);
+const siteAdmin = actor(['system-user', 'site-admin']);
 const superUser = actor(['s2'], true);
 
 /** A db or repository whose every use fails the test: the gated paths must not reach it. */
@@ -75,6 +90,198 @@ describe('JSON API save access', () => {
     const call = saveVariationTargeting(offlineDeps(true), variationOnly, { contentid: cfId('C', 1), siteid: SITE, initjs: 'x' });
     await expect(call).rejects.toBeInstanceOf(LegacyApiError);
     await expect(call).rejects.toMatchObject({ type: 'authorization' });
+  });
+});
+
+const TARGETING_TABLE = '"content"."variation_targeting"';
+const TARGETING_BY_CONTENT = /^SELECT \* FROM "content"\."variation_targeting" WHERE tenant_id = \$1 AND contentid = ANY/;
+const TARGETING_BY_ID = /^SELECT \* FROM "content"\."variation_targeting" WHERE "tenant_id" = \$1 AND "targetingid" = \$2/;
+const TARGETING_BATCH = /INNER JOIN "content"\."variation_targeting" t ON/;
+const TARGETING_UPDATE = /^UPDATE "content"\."variation_targeting" /;
+const TARGETING_DELETE = /^DELETE FROM "content"\."variation_targeting" /;
+const VARIATION_ITEMS = /FROM "content"\."content" tcontent WHERE .*lower\(rtrim\(tcontent\.type\)\) = lower\(rtrim\(\$2::text\)\)/;
+
+const STORED_CONTENT = 'A0B1C2D3-0001-4A5B-8C7D9E0F1A2B3C4D';
+const STORED: VariationTargetingRow = {
+  tenant_id: TENANT_A.tenantId,
+  targetingid: 'A0B1C2D3-0002-4A5B-8C7D9E0F1A2B3C4D',
+  contentid: STORED_CONTENT,
+  siteid: SITE,
+  initjs: 'stored()',
+  targetingjs: '[".stored"]',
+};
+
+describe('domain/variations over the recording database', () => {
+  let db: RecordingDb;
+  let repository: ContentRepository;
+  let recorded: DomainDeps;
+
+  /** Statements that wrote `content.variation_targeting`. */
+  const targetingWrites = (): RecordedStatement[] => db.writes().filter((statement) => statement.sql.includes(TARGETING_TABLE));
+
+  beforeEach(() => {
+    db = createRecordingDb();
+    seedRecordingDb(db);
+    repository = createContentRepository({ clock: fixedClock(NOW), schema: db.schema });
+    recorded = { db, repository, clock: fixedClock(NOW), config: { ...CONTENT_CONFIG_DEFAULTS, variations: true } };
+  });
+
+  it('readVariationTargeting of content without a row returns a new bean under a new CF UUID with empty scripts, writing nothing', async () => {
+    const bean = await readVariationTargeting(recorded, contentEditor, { contentId: cfId('C', 1), siteId: SITE });
+    expect(bean).toMatchObject({ contentid: cfId('C', 1), siteid: SITE, initjs: '', targetingjs: '', isNew: 1 });
+    expect(isCfUuid(bean.targetingid)).toBe(true);
+    expect(db.statements.filter((statement) => TARGETING_BY_CONTENT.test(statement.sql)).map((statement) => statement.params)).toEqual([
+      [TENANT_A.tenantId, [cfId('C', 1), cfId('C', 1).toLowerCase()], SITE],
+    ]);
+    expect(db.writes()).toEqual([]);
+  });
+
+  it.each<[string, VariationTargetingRow | null, RegExp]>([
+    ['inserts a row when the content has none', null, /^INSERT INTO "content"\."variation_targeting" /],
+    ['updates the row the content already has', STORED, TARGETING_UPDATE],
+  ])('saveVariationTargetingInTx, loading by contentid and siteid, %s', async (_label, stored, write) => {
+    if (stored !== null) {
+      db.respond(TARGETING_BY_CONTENT, [stored]);
+      db.respond(TARGETING_BY_ID, [stored]);
+      db.respond(TARGETING_UPDATE, [{ ...stored, initjs: 'next()' }]);
+    }
+    const saved = await withGatedTenant(db, TENANT_A.tenantId, (tx) =>
+      saveVariationTargetingInTx(tx, repository, { contentid: STORED_CONTENT, siteid: SITE, initjs: 'next()' }, contentEditor),
+    );
+    expect(saved).toMatchObject({ contentid: STORED_CONTENT, siteid: SITE, initjs: 'next()', targetingjs: stored?.targetingjs ?? '', isNew: 0 });
+    expect(isCfUuid(saved.targetingid)).toBe(true);
+    const writes = targetingWrites();
+    expect(writes.map((statement) => write.test(statement.sql))).toEqual([true]);
+    expect(writes[0]?.params).toContain(stored?.targetingid ?? saved.targetingid);
+  });
+
+  it.each<[string, Actor]>([
+    ['the Content module role (m:000)', contentEditor],
+    ['site-admin', siteAdmin],
+    ['s2', superUser],
+  ])('deleteVariationTargeting deletes a stored row for %s', async (_label, deleter) => {
+    db.respond(TARGETING_BY_ID, [STORED]);
+    db.respond(TARGETING_DELETE, [STORED]);
+    await expect(deleteVariationTargeting(recorded, deleter, STORED.targetingid)).resolves.toEqual({
+      targetingid: STORED.targetingid,
+      contentid: STORED_CONTENT,
+      siteid: SITE,
+      initjs: 'stored()',
+      targetingjs: '[".stored"]',
+      isNew: 0,
+    });
+    const deletes = db.writes().filter((statement) => TARGETING_DELETE.test(statement.sql));
+    expect(deletes.map((statement) => statement.params)).toEqual([[TENANT_A.tenantId, STORED.targetingid]]);
+  });
+
+  // The entity is registered under the Content module (jsonApiUtility.cfc:105), so m:099 alone grants nothing.
+  it.each<[string, () => Promise<unknown>]>([
+    ['save', () => saveVariationTargeting(recorded, variationOnly, { contentid: STORED_CONTENT, siteid: SITE, initjs: 'x' })],
+    ['delete', () => deleteVariationTargeting(recorded, variationOnly, STORED.targetingid)],
+  ])('refuses a %s by the Variation module role (m:099) without m:000, s2 or site-admin, writing nothing', async (_label, call) => {
+    db.respond(TARGETING_BY_ID, [STORED]);
+    const refusal: unknown = await call().catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(LegacyApiError);
+    expect(refusal).toMatchObject({ type: 'authorization' });
+    expect(db.writes()).toEqual([]);
+  });
+
+  it('variationScriptModel answers the site’s live Variation items by title with their targeting scripts, reading only', async () => {
+    const variationB = 'A0B1C2D3-0003-4A5B-8C7D9E0F1A2B3C4D';
+    db.respond(VARIATION_ITEMS, [
+      { contentid: STORED_CONTENT, menutitle: 'Alpha', responsechart: null },
+      { contentid: variationB, menutitle: 'Beta', responsechart: null },
+    ]);
+    db.respond(TARGETING_BATCH, [{ requested_index: 0, ...STORED }]);
+    await expect(variationScriptModel(recorded, contentEditor, { siteId: SITE, contentType: 'Page' })).resolves.toEqual({
+      siteId: SITE,
+      contentType: 'Page',
+      variations: [
+        { contentid: STORED_CONTENT, title: 'Alpha', initjs: 'stored()', targetingjs: '[".stored"]' },
+        { contentid: variationB, title: 'Beta', initjs: '', targetingjs: '' },
+      ],
+    });
+    expect(db.statements.filter((statement) => VARIATION_ITEMS.test(statement.sql)).map((statement) => statement.params)).toEqual([[SITE, 'Variation']]);
+    expect(db.writes()).toEqual([]);
+  });
+});
+
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+
+type Setting = 'off' | 'on';
+
+describe('the composed app with MURA_VARIATIONS off and on', () => {
+  const apps: Partial<Record<Setting, TestApp>> = {};
+
+  /** A GET as the gateway relays an editor of tenant-a, checked against the contract. */
+  async function get(setting: Setting, url: string): Promise<InjectResponse> {
+    const t = apps[setting];
+    if (t === undefined) throw new Error(`no ${setting} app`);
+    t.db.clear();
+    const res = await t.app.inject({ method: 'GET', url, headers: await contentHeaders('editor') });
+    // The JSON API `{path}` is a wildcard (x-opt2-wildcard), which the contract matcher reads as one segment.
+    const path = (url.split('?')[0] ?? url).replace(/^(\/_api\/json\/v1\/[^/]+\/)(.+)$/, (_match, head: string, tail: string) => head + encodeURIComponent(tail));
+    assertResponseMatchesOpenApi(OPENAPI, {
+      method: 'GET',
+      path,
+      status: res.statusCode,
+      contentType: res.headers['content-type'],
+      body: res.body,
+    });
+    return res;
+  }
+
+  beforeAll(async () => {
+    apps.off = await buildTestApp();
+    apps.on = await buildTestApp({ env: { MURA_VARIATIONS: 'true' } });
+    for (const t of [apps.off, apps.on]) {
+      seedRecordingDb(t.db);
+      t.db.respond(TARGETING_BY_ID, [STORED]);
+    }
+  });
+
+  afterAll(async () => {
+    await apps.off?.close();
+    await apps.on?.close();
+  });
+
+  const UNMATCHED = { status: 200, type: 'text/html;charset=UTF-8', body: '' };
+
+  it.each<[string, Setting, string, { status: number; type: string; body: unknown }]>([
+    ['the empty unmatched page with the setting off', 'off', `${VARIATION_PATH}?siteid=${SITE}`, UNMATCHED],
+    ['the empty unmatched page with the setting on and no url siteid', 'on', VARIATION_PATH, UNMATCHED],
+    [
+      'the legacy 503 with the setting on and the token site, as only the CFML runtime generates the script',
+      'on',
+      `${VARIATION_PATH}?siteid=${SITE}`,
+      { status: 503, type: 'application/json;charset=utf-8', body: expect.stringContaining('"code":"server_error"') },
+    ],
+  ])('GET /_api/resource/variation answers %s', async (_label, setting, url, expected) => {
+    const res = await get(setting, url);
+    expect({ status: res.statusCode, type: res.headers['content-type'], body: res.body }).toEqual(expected);
+  });
+
+  // Unregistered, legacy still loads the entity's bean and refuses with `authorization` rather than an unknown-entity
+  // error (oracle), so that is the answer with the setting off.
+  it('refuses JSON API variationTargeting with the authorization error while the setting is off, reading nothing', async () => {
+    const res = await get('off', `/_api/json/v1/${SITE}/variationTargeting/${STORED.targetingid}`);
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body)).toEqual({
+      apiversion: 'v1',
+      method: 'findOne',
+      error: { message: 'Insufficient Account Permissions', code: 'invalid_request' },
+    });
+    expect(apps.off?.db.statements.some((statement) => statement.sql.includes(TARGETING_TABLE))).toBe(false);
+  });
+
+  it('serves JSON API variationTargeting findOne of a stored row while the setting is on', async () => {
+    const res = await get('on', `/_api/json/v1/${SITE}/variationTargeting/${STORED.targetingid}`);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      apiversion: 'v1',
+      method: 'findOne',
+      data: { targetingid: STORED.targetingid, contentid: STORED_CONTENT, siteid: SITE, initjs: 'stored()', targetingjs: '[".stored"]', isnew: 0 },
+    });
   });
 });
 

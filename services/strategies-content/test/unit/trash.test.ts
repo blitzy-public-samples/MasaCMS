@@ -1,7 +1,7 @@
-/** domain/trash: throwIn's ttrash row rules and changelog over a throwaway `content` schema, the shared captured change-set packet, and the no-op takeOut. */
+/** domain/trash: ttrash value rules, throwIn's statements on a recording db and its rows over a throwaway `content` schema, the shared captured change-set packet, and the no-op takeOut. */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { UserClaims } from '@opt2/platform/auth';
 import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
@@ -19,10 +19,12 @@ import {
   trashObjectSubType,
   trashObjectType,
   type TrashEntry,
+  type TrashObjectClass,
 } from '../../src/domain/trash.js';
-import { WddxNumber, cfStruct, wddx2cfml, wddxStruct, wddxStructGet, type WddxStruct, type WddxValue } from '../../src/domain/wddx.js';
+import { WddxNumber, cfStruct, cfml2wddx, wddx2cfml, wddxNumber, wddxStruct, wddxStructGet, type WddxStruct, type WddxValue } from '../../src/domain/wddx.js';
 import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
+import { TEST_CLOCK, createRecordingDb, type RecordedStatement } from '../helpers/app.js';
 
 const CHANGESET_TRASH = readFileSync(new URL('../fixtures/legacy-trash/changeset-trash.wddx', import.meta.url), 'utf8');
 const cfId = (prefix: string, n: number): string => `${prefix}${String(n).padStart(7, '0')}-AAAA-BBBB-CCCCDDDDEEEEFFFF`;
@@ -95,10 +97,111 @@ describe('trash value rules', () => {
     ]);
   });
 
-  it('takeOut is a no-op and names what restore would add', () => {
+  it('takeOut is a no-op with or without fromMuraTrash and names what restore would add', () => {
+    expect(takeOut(wddxStruct([['contentID', 'C']]))).toBeUndefined();
     expect(takeOut(wddxStruct([['fromMuraTrash', true]]))).toBeUndefined();
     expect(takeOut({ fromMuraTrash: true })).toBeUndefined();
     expect(TAKEOUT_UNBUILT).toEqual(['fileManager.restoreVersion', 'child restore']);
+  });
+});
+
+/** An INSERT's bound values keyed by its unquoted column list. */
+function boundRow(statement: RecordedStatement | undefined): Record<string, unknown> {
+  const columns = /^INSERT INTO \S+ \(([^)]*)\) VALUES /.exec(statement?.sql ?? '')?.[1]?.split(', ') ?? [];
+  return Object.fromEntries(columns.map((column, i) => [column.replace(/"/g, ''), statement?.params[i]]));
+}
+
+describe('domain/trash throwIn statements (recording db)', () => {
+  const db = createRecordingDb();
+  const repository = createContentRepository({ clock: TEST_CLOCK });
+  const SIXTY_CHAR_NAME = `${'Firstname'.repeat(3)} ${'Lastname'.repeat(4)}`;
+  const inTenantA = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> => db.withTenant(TENANT_A.tenantId, fn);
+
+  /** A deleted bean's entry built as each manager's delete hands it to throwIn. */
+  function entryFor(objectClass: TrashObjectClass, assignments: Array<[string, WddxValue]>, idKey: string, labelKey: string): TrashEntry {
+    const markers = deleteMarkers(TEST_CLOCK.now());
+    const values = cfStruct([...assignments, ...deleteMarkerAssignments(markers)]);
+    return {
+      objectClass,
+      objectId: text(values, idKey),
+      parentId: deletedParentId(values),
+      siteId: text(values, 'siteID'),
+      label: text(values, labelKey),
+      objectType: trashObjectType(values, objectClass),
+      objectSubType: trashObjectSubType(values),
+      values,
+      ...markers,
+    };
+  }
+
+  beforeEach(() => {
+    db.reset();
+  });
+
+  it.each<[TrashObjectClass, Array<[string, WddxValue]>, string, string, [string, string, string]]>([
+    [
+      'content',
+      [['contentID', cfId('F', 1)], ['parentID', cfId('F', 0)], ['siteID', SITE], ['type', 'Folder'], ['subType', 'Blog'], ['title', 'News & <Views>']],
+      'contentID',
+      'title',
+      [cfId('F', 0), 'Folder', 'Blog'],
+    ],
+    [
+      'changeset',
+      [['CHANGESETID', cfId('S', 1)], ['SITEID', SITE], ['NAME', 'Spring launch'], ['PUBLISHED', wddxNumber(0)]],
+      'changesetID',
+      'name',
+      ['NA', 'changeset', 'Default'],
+    ],
+    [
+      'category',
+      [['CATEGORYID', cfId('K', 1)], ['PARENTID', cfId('K', 0)], ['SITEID', SITE], ['NAME', 'Sports'], ['ISACTIVE', wddxNumber(1)]],
+      'categoryID',
+      'name',
+      [cfId('K', 0), 'category', 'Default'],
+    ],
+    [
+      'feed',
+      [['FEEDID', cfId('R', 1)], ['SITEID', SITE], ['NAME', 'Headlines'], ['TYPE', 'Local'], ['ISLOCKED', wddxNumber(0)]],
+      'feedID',
+      'name',
+      ['NA', 'Local', 'Default'],
+    ],
+  ])('inserts one %s trash row with its bound columns and one changelog row, and the packet decodes to the values', async (objectClass, assignments, idKey, labelKey, [parentid, objecttype, objectsubtype]) => {
+    const entry = entryFor(objectClass, assignments, idKey, labelKey);
+    const result = await inTenantA((tx) => throwIn(tx, repository, entry, actor(SIXTY_CHAR_NAME), createTrashCounter()));
+
+    const writes = db.writes();
+    expect(writes.map((statement) => /^INSERT INTO (\S+) /.exec(statement.sql)?.[1])).toEqual(['"content"."trash"', '"content"."changelog"']);
+    const row = boundRow(writes[0]);
+    expect(SIXTY_CHAR_NAME).toHaveLength(60);
+    expect(row).toEqual({
+      tenant_id: TENANT_A.tenantId,
+      objectid: entry.objectId,
+      parentid,
+      siteid: SITE,
+      objectclass: objectClass,
+      objectlabel: entry.label,
+      objecttype,
+      objectsubtype,
+      objectstring: cfml2wddx(entry.values),
+      deleteddate: TEST_CLOCK.now(),
+      deletedby: SIXTY_CHAR_NAME.slice(0, 50),
+      deleteid: entry.deleteId,
+      orderno: 1,
+    });
+    expect(wddx2cfml(row.objectstring as string)).toEqual(entry.values);
+    expect(result).toEqual(row);
+    expect(boundRow(writes[1])).toMatchObject({ tenant_id: TENANT_A.tenantId, table: 'trash', op: 'insert', actor_user_id: CLAIMS.sub, actor_service: 'strategies-content' });
+  });
+
+  it('writes nothing and returns null when the object id is already in the trash', async () => {
+    const entry = entryFor('content', [['contentID', cfId('F', 2)], ['siteID', SITE], ['title', 'Again']], 'contentID', 'title');
+    db.respond(/FROM "content"\."trash" .* FOR UPDATE$/, (params) => [{ objectid: params[1] }]);
+    const result = await inTenantA((tx) => throwIn(tx, repository, entry, actor('Admin User'), createTrashCounter()));
+    expect(result).toBeNull();
+    expect(db.writes()).toEqual([]);
+    expect(db.statements.find((statement) => / FOR UPDATE$/.test(statement.sql) && statement.sql.includes('"content"."trash"'))?.params).toEqual([TENANT_A.tenantId, entry.objectId]);
   });
 });
 

@@ -8555,7 +8555,7 @@ components:
           schema:
             $ref: '#/components/schemas/QueueControlResult'
     FeedOk:
-      description: The RSS document; `text/xml` when the User-Agent contains `Mozilla`.
+      description: The RSS document, `text/xml;charset=UTF-8` for every User-Agent; an empty `text/html` page without a url `feedid` or for a feed version other than RSS 2.0 and RSS 0.920.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -8565,9 +8565,9 @@ components:
         text/xml:
           schema:
             $ref: '#/components/schemas/RssFeed'
-        application/rss+xml:
+        text/html;charset=UTF-8:
           schema:
-            $ref: '#/components/schemas/RssFeed'
+            $ref: '#/components/schemas/LegacyHtml'
     FeedBadRequest:
       description: 'WDDX error: `Insufficient parameters`, `Invalid method call`, `Bad Request` or `Invalid CSRF tokens`.'
       headers:
