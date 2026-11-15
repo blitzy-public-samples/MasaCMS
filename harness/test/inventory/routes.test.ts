@@ -16,8 +16,9 @@ import {
 import type { RouteEntryPoint, RouteKeyOptions, VariantDeclaration } from '@opt2/platform/legacy-compat';
 import { memorySourceTree, openSourceTree, parseCfmlComponent } from '../../src/inventory/closure.js';
 import type { CfmlComponent, ComponentIndex, SourceTree } from '../../src/inventory/closure.js';
-import { decide } from '../../src/inventory/disposition.js';
+import { decide, loadDecisionList, loadExceptions } from '../../src/inventory/disposition.js';
 import type { DispositionContext, DispositionFacts } from '../../src/inventory/disposition.js';
+import { isHttpReachable } from '../../src/inventory/frontend.js';
 import { inventoryRouteKey } from '../../src/inventory/route-keys.js';
 import {
   API_AREA,
@@ -857,6 +858,10 @@ async function writeTree(dir: string, files: Readonly<Record<string, string>>): 
 
 const GUARD_FIXTURE = fileURLToPath(new URL('../fixtures/Application.cfc', import.meta.url));
 
+function inventoryFixture(name: string): string {
+  return fileURLToPath(new URL(`../fixtures/inventory/${name}`, import.meta.url));
+}
+
 /** Rule inputs for `decide`: every written table retired, no decision-list or exceptions entries. */
 const DISPOSITION_CONTEXT: DispositionContext = {
   ownership: { sourceSha: SHA, units: [], tables: [{ table: '*', owner: 'retired', ruleSteps: [1], targets: [] }] },
@@ -1192,6 +1197,17 @@ describe('parseJsonApi and assertPinnedRegistry', () => {
     ]);
   });
 
+  it('reports a publicMethods name the platform list lacks instead of keying it', async () => {
+    const listed = `publicMethods = "${PUBLIC_METHOD_LIST}"`;
+    const source = archiveTree({ [JSON_API_PATH]: replaceOnce(JSON_API, listed, `publicMethods = "${PUBLIC_METHOD_LIST},bogusMethod"`) });
+    const reg = parseJsonApi(source);
+    expect(reg.publicMethods.at(-1)).toBe('bogusMethod');
+    expect(PUBLIC_METHODS).not.toContain('bogusMethod');
+    const finding = `- publicMethods: parsed [${[...PUBLIC_METHODS, 'bogusMethod'].join(', ')}], platform [${PUBLIC_METHODS.join(', ')}]`;
+    expect(() => assertPinnedRegistry(reg)).toThrow(finding);
+    await expect(extractFrom(source)).rejects.toThrow(finding);
+  });
+
   it.each([
     ['no publicMethods list', `publicMethods = "${PUBLIC_METHOD_LIST}"`, `methods = "${PUBLIC_METHOD_LIST}"`, 'init sets no publicMethods'],
     ['no request-mode default', 'param name="request.muraAPIRequestMode" default="json";', 'param name="request.mode" default="json";', 'processRequest sets no request.muraAPIRequestMode default'],
@@ -1427,6 +1443,18 @@ describe('JSON API entity and method entries', () => {
         }
       }
     }
+  });
+
+  it('keys entity-generic methods as <entity>.<method>, so saves of different entities never share a key', () => {
+    const keys = ['api:content.findone', 'api:user.save', 'api:user.delete', 'api:group.save', 'api:content.save'];
+    expect(keys.map((id) => entryOf(id).routeKey)).toEqual(keys);
+    expect(entryOf('api:user.save').routeKey).not.toBe(entryOf('api:content.save').routeKey);
+  });
+
+  it.each(['login', 'logout', 'generateCSRFTokens', 'processAsyncObject', 'swagger'])('keys the non-generic public method %s by its name', (name) => {
+    const key = `api:${name.toLowerCase()}`;
+    expect(PUBLIC_METHODS).toContain(name);
+    expect(entryOf(key)).toMatchObject({ kind: 'api-method', routeKey: key, method: name, entity: null, reachable: true });
   });
 
   it('bind persistence calls on the addressed entity to its component, or note why they cannot run', () => {
@@ -1667,6 +1695,28 @@ describe('SOAP v1 entries', () => {
         legacyWrite: false,
       });
     }
+  });
+
+  it('agree with isHttpReachable that the core/mura guard blocks direct requests to the SOAP components', () => {
+    for (const file of [SOAP_USER, SOAP_FEED]) {
+      expect(isHttpReachable(tree, file), file).toBe(false);
+      expect(entryOf(`rte:soap:${path.posix.basename(file, '.cfc')}`).reachable, file).toBe(false);
+    }
+    expect(isHttpReachable(archiveTree({ [MURA_GUARD]: undefined }), SOAP_USER)).toBe(true);
+  });
+
+  it('retire the SOAP components at step 1 under the mini decision list, exceptions list and table ownership', async () => {
+    const ctx: DispositionContext = {
+      ownership: JSON.parse(await readFile(inventoryFixture('mini-table-ownership.json'), 'utf8')) as DispositionContext['ownership'],
+      decisionList: await loadDecisionList(inventoryFixture('mini-decision-list.json')),
+      exceptions: await loadExceptions(inventoryFixture('mini-exceptions-list.json')),
+      findings: [],
+    };
+    expect(ctx.ownership.sourceSha).toBe(SHA);
+    for (const id of ['rte:soap:feed', 'rte:soap:user']) {
+      expect(decide(factsOf(entryOf(id)), ctx)).toMatchObject({ disposition: 'retired', dispositionStep: 1, owners: [], withheld: false, legacyWrite: false });
+    }
+    expect(ctx.findings).toEqual([]);
   });
 
   it.each([
