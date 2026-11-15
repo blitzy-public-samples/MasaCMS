@@ -6,12 +6,16 @@ import { QUEUES, TaskTenantMismatchError, registerTaskRoute, type TaskContext } 
 import type { TenantDb, TenantTx } from '@opt2/platform/tenancy';
 import { performReminder, type ReminderDeps, type ReminderResult } from '../domain/reminders.js';
 import type { ReminderTaskPayload } from '../domain/survey-tasks.js';
+import type { components } from '../generated/openapi.js';
 import { findScheduledTask } from '../repo/queries.js';
 import type { CommunicationsRepository } from '../repo/repository.js';
 import type { ScheduledTaskRow } from '../repo/tables.js';
 
 /** Fastify path of the queue's target `/internal/v1/tasks/reminders/{scheduledTaskId}`. */
 export const REMINDER_TASK_PATH = QUEUES['communications-reminders'].targetPath.replace(/\{(\w+)\}/g, ':$1');
+
+/** The contract's `TaskIgnoredResult`: a permanently invalid task acknowledged without acting, so no queue retries it. */
+export type ReminderTaskIgnored = components['schemas']['TaskIgnoredResult'];
 
 // Reminders send no mail (the fixture's remind callback only stamps sent_at), so the route takes no mail ports.
 /** Runtime handles of the reminder route; `logger` and `client` default to the service's own. */
@@ -43,7 +47,7 @@ function pathTaskId(request: FastifyRequest): string | undefined {
   return (request.params as { scheduledTaskId?: string }).scheduledTaskId;
 }
 
-/** Registers POST `REMINDER_TASK_PATH` on the cloud-tasks transport; answers the contract's `ReminderTaskResult`. */
+/** Registers POST `REMINDER_TASK_PATH` on the cloud-tasks transport; answers the contract's `ReminderTaskResult`, or `TaskIgnoredResult`. */
 export function registerReminderTaskRoute(app: FastifyInstance, options: ReminderTaskRouteOptions): void {
   const deps: ReminderDeps = {
     db: options.db,
@@ -56,6 +60,7 @@ export function registerReminderTaskRoute(app: FastifyInstance, options: Reminde
     scope: 'tenant',
     db: options.db,
     findStored: findStoredReminder,
+    ignored: (reason): ReminderTaskIgnored => ({ ignored: true, reason }),
     handler: async ({ request, tenantId, taskName, stored }: TaskContext<ScheduledTaskRow>): Promise<ReminderResult> => {
       // The URL and the payload name one task; a task naming two is refused like one naming another tenant's row.
       if (stored === undefined || pathTaskId(request) !== stored.scheduled_task_id) {

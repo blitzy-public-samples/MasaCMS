@@ -17,7 +17,7 @@ import { SURVEY_SCHEDULED_TOPIC, surveyScheduledConsumer, surveyScheduledSchema 
 import { findScheduledTask } from '../../src/repo/queries.js';
 import type { CommunicationsRepository } from '../../src/repo/repository.js';
 import type { ScheduledTaskRow } from '../../src/repo/tables.js';
-import { REMINDER_TASK_PATH, registerReminderTaskRoute } from '../../src/tasks/reminder.js';
+import { REMINDER_TASK_PATH, registerReminderTaskRoute, type ReminderTaskIgnored } from '../../src/tasks/reminder.js';
 
 vi.mock('../../src/domain/login-mail.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/domain/login-mail.js')>();
@@ -212,6 +212,14 @@ describe('reminder task route', () => {
     expect(options.scope).toBe('tenant');
     expect(options.db).toBe(db);
   });
+
+  it.each(['malformed-body', 'no-tenant', 'not-visible', 'mismatch'] as const)(
+    'acknowledges a task refused as %s with the contract TaskIgnoredResult',
+    (reason) => {
+      const { ignored } = registered();
+      expect(ignored?.(reason)).toEqual({ ignored: true, reason } satisfies ReminderTaskIgnored);
+    },
+  );
 
   it.each([
     ['a non-object payload', null],

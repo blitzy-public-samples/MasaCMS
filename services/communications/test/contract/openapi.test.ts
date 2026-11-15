@@ -21,12 +21,14 @@ import {
   type InjectResponse,
   type TenantlessEnvelope,
 } from '@opt2/platform/testing';
+import { portTaskName } from '../../src/domain/survey-tasks.js';
 import { LOGIN_MAIL_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION, SURVEY_SCHEDULED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { LOGIN_MAIL_TOPIC } from '../../src/events/login-mail.js';
 import { SURVEY_SCHEDULED_TOPIC } from '../../src/events/survey-scheduled.js';
 import { ADOPT_PATH, CANCEL_ADOPTED_PATH } from '../../src/routes/adoption.js';
 import { FIXTURE_CATCH_ALL } from '../../src/routes/fixture.js';
 import { SCHEDULED_TASKS_PATH } from '../../src/routes/scheduled-tasks.js';
+import { SURVEY_LAUNCH_DONE_PATH } from '../../src/routes/survey-launch-done.js';
 import { REMINDER_TASK_PATH } from '../../src/tasks/reminder.js';
 import { buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 import { SAMPLE_IDS, envelopeFor, loginMailPayload, siteChangedPayload, surveyScheduledPayload } from '../helpers/payloads.js';
@@ -366,6 +368,10 @@ const TENANT_A_MESSAGES = `${FIXTURE}/messages?siteid=${SITE_A}`;
 const V1_TEMPLATES = `/v1/templates?siteid=${SITE_A}`;
 const V1_MESSAGES = `/v1/messages?siteid=${SITE_A}`;
 const SCHEDULED_TASKS = `${SCHEDULED_TASKS_PATH}?sourceType=survey&sourceId=${SURVEY_ID}`;
+const LAUNCH_DONE = SURVEY_LAUNCH_DONE_PATH.replace(':surveyId', SURVEY_ID);
+// The queue task the seeded schedule's version-1 launch runs under, which surveys reports.
+const LAUNCH_QUEUE_TASK_NAME = portTaskName(LAUNCH_TASK_NAME, 1);
+const LAUNCH_DONE_BODY = { tenantId: TENANT_A.tenantId, queueTaskName: LAUNCH_QUEUE_TASK_NAME, scheduleVersion: 1 };
 const SWEEP_TASK = { queue: SWEEP_QUEUE, name: `${SWEEP_QUEUE}-1782820800`, tenantId: null, payload: null };
 const ADOPT_BODY = { tasks: [{ name: LAUNCH_TASK_NAME, siteId: SITE_A, scheduleTime: '2026-07-01T09:00:00.000', scheduleVersion: 1 }] };
 const CHANGED_DOMAINS = [`${SITE_A}.opt2.test`, `mail.${SITE_A}.opt2.test`];
@@ -882,6 +888,73 @@ const CASES: Record<string, Case[]> = {
       status: 403,
     },
   ],
+  markSurveyLaunchTaskDone: [
+    {
+      name: "records the seeded survey's launch task done for surveys",
+      method: 'POST',
+      url: LAUNCH_DONE,
+      as: 'service:surveys',
+      seed: ['schedule'],
+      payload: LAUNCH_DONE_BODY,
+      status: 200,
+      writes: true,
+      verify: ({ body }, ctx) => {
+        expect(record(body)).toEqual({ applied: true });
+        expect(ctx.db.rows('scheduled_task').filter((row) => row.kind === 'survey-launch').map((row) => row.status)).toEqual(['done']);
+      },
+    },
+    {
+      name: 'answers a launch task no longer scheduled applied false',
+      method: 'POST',
+      url: LAUNCH_DONE,
+      as: 'service:surveys',
+      seed: ['schedule'],
+      setup: async (ctx) => {
+        const headers = await headersFor('service:surveys');
+        const res = await ctx.app.inject({ method: 'POST', url: LAUNCH_DONE, headers, payload: LAUNCH_DONE_BODY });
+        expect(res.statusCode, res.body).toBe(200);
+      },
+      payload: LAUNCH_DONE_BODY,
+      status: 200,
+      verify: ({ body }) => expect(record(body)).toEqual({ applied: false }),
+    },
+    {
+      name: 'answers a body naming a tenant the launch task is not visible under with the legacy 404',
+      method: 'POST',
+      url: LAUNCH_DONE,
+      as: 'service:surveys',
+      seed: ['schedule'],
+      payload: { ...LAUNCH_DONE_BODY, tenantId: TENANT_B.tenantId },
+      status: 404,
+    },
+    {
+      name: 'answers a body without a schedule version as invalidParameters',
+      method: 'POST',
+      url: LAUNCH_DONE,
+      as: 'service:surveys',
+      payload: { tenantId: TENANT_A.tenantId, queueTaskName: LAUNCH_QUEUE_TASK_NAME },
+      status: 400,
+      verify: ({ body }) => expect(errorOf(body)).toEqual(INVALID_PARAMETERS),
+    },
+    {
+      name: 'refuses another workload with the legacy 403',
+      method: 'POST',
+      url: LAUNCH_DONE,
+      as: 'service:people',
+      payload: LAUNCH_DONE_BODY,
+      status: 403,
+    },
+    {
+      name: 'answers a caller without an invocation credential with the legacy 401',
+      method: 'POST',
+      url: LAUNCH_DONE,
+      headers: async () => ({
+        authorization: `Bearer ${await mintUserToken({ sub: SAMPLE_IDS.userId, site: SITE_A, roles: ['surveys.manager'] })}`,
+      }),
+      payload: LAUNCH_DONE_BODY,
+      status: 401,
+    },
+  ],
   runSurveyReminderTask: [
     {
       name: 'runs the stored reminder and reports it sent to surveys',
@@ -898,14 +971,17 @@ const CASES: Record<string, Case[]> = {
       },
     },
     {
-      name: 'refuses a body naming a tenant the stored task is not visible under as badRequest',
+      name: 'acknowledges a body naming a tenant the stored task is not visible under as ignored, calling no one',
       method: 'POST',
       url: reminderUrl,
       as: 'service:tasks-invoker',
       seed: ['schedule'],
       payload: (seeded) => reminderBody(seeded, TENANT_B.tenantId),
-      status: 400,
-      verify: (_answer, ctx) => expect(ctx.client.requestsTo('surveys')).toEqual([]),
+      status: 200,
+      verify: ({ body }, ctx) => {
+        expect(record(body)).toEqual({ ignored: true, reason: 'not-visible' });
+        expect(ctx.client.requestsTo('surveys')).toEqual([]);
+      },
     },
   ],
   migrationApply: [
@@ -1248,9 +1324,9 @@ const FAMILIES: ReadonlyArray<{ family: string; prefix: string; count: number; d
   { family: 'fixture', prefix: '/legacy-fixtures/cfml/api.cfm/', count: 12, declaration: { transport: 'service', requires: [], public: true } },
   { family: '/v1', prefix: '/v1/', count: 5, declaration: { transport: 'service', requires: [SENDER], public: false } },
   {
-    family: 'scheduled-task listing',
+    family: 'scheduled-task listing and launch closing',
     prefix: SCHEDULED_TASKS_PATH,
-    count: 1,
+    count: 2,
     declaration: { transport: 'service', requires: ['service:surveys'], public: false },
   },
   {
@@ -1300,6 +1376,7 @@ const EXPECTED_ROUTES: readonly string[] = [
   'POST /v1/messages',
   'GET /v1/messages/{messageId}',
   `GET ${SCHEDULED_TASKS_PATH}`,
+  'POST /internal/v1/scheduled-tasks/survey-launches/{surveyId}/done',
   `POST ${QUEUES[REMINDER_QUEUE].targetPath}`,
   'POST /internal/v1/migration/apply',
   'GET /internal/v1/migration/export',

@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { GateClosedError, ensureUnitGates } from '@opt2/platform/migration-kit';
@@ -55,6 +55,9 @@ const SURVEY_EVENT = 'AAAAAAAA-BBBB-CCCC-DDDD000000000003';
 const SURVEY_FOLD = 'AAAAAAAA-BBBB-CCCC-DDDD000000000004';
 const SURVEY_RETRY = 'AAAAAAAA-BBBB-CCCC-DDDD000000000005';
 const SURVEY_HELD = 'AAAAAAAA-BBBB-CCCC-DDDD000000000006';
+const SURVEY_READOPT = 'AAAAAAAA-BBBB-CCCC-DDDD000000000007';
+const SURVEY_LEAKED = 'AAAAAAAA-BBBB-CCCC-DDDD000000000008';
+const SURVEY_RAN = 'AAAAAAAA-BBBB-CCCC-DDDD000000000009';
 const EVENT_TASK_ID = 'EEEEEEEE-0000-0000-0000000000000001';
 const HELD_TASK_ID = 'EEEEEEEE-0000-0000-0000000000000002';
 
@@ -64,13 +67,14 @@ const REMINDER_A2 = `opt2-survey-${SURVEY_A}-reminder-2`;
 const LAUNCH_B = `opt2-survey-${SURVEY_B}-launch`;
 const LAUNCH_EVENT = `opt2-survey-${SURVEY_EVENT}-launch`;
 
-/** In-memory task port: creates are idempotent by queue and name and can be made to fail, deletes of absent tasks report `deleted: false`. */
+/** In-memory task port: creates are idempotent by queue and name, both calls can be made to fail, deletes of absent tasks report `deleted: false`. */
 class MemoryTaskPort implements TaskPort {
   readonly kind = 'local' as const;
   readonly live = new Map<string, CreateTaskInput>();
   readonly creates: CreateTaskInput[] = [];
   readonly deletes: Array<{ queue: string; name: string }> = [];
   failCreate = false;
+  failDelete = false;
 
   create(input: CreateTaskInput): Promise<CreateTaskResult> {
     if (this.failCreate) return Promise.reject(new Error('task port unavailable'));
@@ -82,6 +86,7 @@ class MemoryTaskPort implements TaskPort {
   }
 
   delete(queue: string, name: string): Promise<DeleteTaskResult> {
+    if (this.failDelete) return Promise.reject(new Error('task port unavailable'));
     this.deletes.push({ queue, name });
     return Promise.resolve({ name, deleted: this.live.delete(`${queue}/${name}`) });
   }
@@ -352,6 +357,126 @@ describe.skipIf(!(await pgAvailable()))('scheduler hand-off routes', () => {
     expect([...port.live.keys()]).toEqual([`surveys-launch/${portTaskName(LAUNCH_EVENT, 1)}`]);
 
     expect((await post(CANCEL_ADOPTED_PATH, {})).json()).toEqual({ cancelled: 0 });
+  });
+
+  /** Waits until `count` sessions wait on a lock in a statement naming this schema. */
+  async function lockWaiters(count: number): Promise<void> {
+    await vi.waitFor(
+      async () => {
+        const { rows: found } = await handle.adminPool.query<{ n: number }>(
+          "SELECT count(*)::integer AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND position($1 in query) > 0",
+          [handle.schema],
+        );
+        expect(found[0]?.n).toBe(count);
+      },
+      { timeout: 10_000, interval: 20 },
+    );
+  }
+
+  it('leaves a launch that ran while its cancellation waited on the row done, uncounted and with its queue task', async () => {
+    const name = `opt2-survey-${SURVEY_RAN}-launch`;
+    await post(ADOPT_PATH, { tasks: [task(name, TENANT_A.siteId, '2026-07-07T09:00:00.000')] });
+    const repository = createCommunicationsRepository({ clock: fixedClock(NOW), schema: handle.schema });
+
+    // The launch completes in a transaction that holds the row until the cancellation waits on it.
+    const { pending } = await withTenant(handle.app, TENANT_A.tenantId, async (tx) => {
+      const { rows: found } = await tx.query<{ scheduled_task_id: string }>(
+        `SELECT scheduled_task_id FROM ${handle.schema}.scheduled_task WHERE task_name = $1`,
+        [name],
+      );
+      await repository.setScheduledTaskStatus(tx, found[0]?.scheduled_task_id ?? '', 'done', { origin: 'target' });
+      const cancellation = post(CANCEL_ADOPTED_PATH, { names: [name] });
+      await lockWaiters(1);
+      return { pending: cancellation };
+    });
+
+    expect((await pending).json()).toEqual({ cancelled: 0 });
+    expect((await rows(TENANT_A.tenantId)).filter((row) => row.task_name === name).map((row) => row.status)).toEqual(['done']);
+    expect(port.deletes).toEqual([]);
+    expect([...port.live.keys()].filter((key) => key.includes(SURVEY_RAN))).toEqual([`surveys-launch/${portTaskName(name, 1)}`]);
+  });
+
+  it('re-adopts a cancelled task under the next queue task name each time, queued and stamped', async () => {
+    const name = `opt2-survey-${SURVEY_READOPT}-launch`;
+    const body = { tasks: [task(name, TENANT_A.siteId, '2026-07-05T09:00:00.000')] };
+    const stored = () =>
+      withTenant(handle.app, TENANT_A.tenantId, async (tx) => {
+        const { rows: found } = await tx.query<{ status: string; queue_task_name: string; enqueued: boolean }>(
+          `SELECT status, queue_task_name, enqueued_at IS NOT NULL AS enqueued FROM ${handle.schema}.scheduled_task WHERE task_name = $1`,
+          [name],
+        );
+        return found;
+      });
+    await post(ADOPT_PATH, body);
+    const generations: unknown[] = [];
+    for (let i = 0; i < 2; i += 1) {
+      await post(CANCEL_ADOPTED_PATH, { names: [name] });
+      generations.push((await post(ADOPT_PATH, body)).json(), await stored());
+    }
+
+    expect(generations).toEqual([
+      { adopted: 1, existing: 0, scheduledImmediately: 0 },
+      [{ status: 'scheduled', queue_task_name: `${portTaskName(name, 1)}-r1`, enqueued: true }],
+      { adopted: 1, existing: 0, scheduledImmediately: 0 },
+      [{ status: 'scheduled', queue_task_name: `${portTaskName(name, 1)}-r2`, enqueued: true }],
+    ]);
+    expect(port.creates.map((created) => created.name)).toEqual(['-v1', '-v1-r1', '-v1-r2'].map((suffix) => `${name}${suffix}`));
+    expect(port.deletes.map((deleted) => deleted.name)).toEqual(['-v1', '-v1-r1'].map((suffix) => `${name}${suffix}`));
+    expect(port.live.get(`surveys-launch/${name}-v1-r2`)).toMatchObject({
+      url: `${SERVICE_URLS.surveys}/internal/v1/tasks/surveys/${SURVEY_READOPT}/launch`,
+      body: { surveyId: SURVEY_READOPT, siteId: TENANT_A.siteId, scheduleVersion: 1 },
+      scheduleTime: new Date(2026, 6, 5, 9, 0, 0, 0),
+      tenantId: TENANT_A.tenantId,
+    });
+  });
+
+  it('deletes and stamps the queue task a failed cancellation left under a legacy gate, then re-adopts under the next name', async () => {
+    const name = `opt2-survey-${SURVEY_LEAKED}-launch`;
+    const body = { tasks: [task(name, TENANT_A.siteId, '2026-07-06T09:00:00.000')] };
+    const setGates = (state: 'open' | 'legacy') =>
+      withMetadata(handle.app, (tx) => tx.query(`UPDATE ${handle.schema}.unit_gate SET state = $1, holder_id = NULL, phase = 'quiet'`, [state]));
+    const lastSeq = () =>
+      withTenant(handle.app, TENANT_A.tenantId, async (tx) => {
+        const { rows: found } = await tx.query<{ seq: string }>(`SELECT coalesce(max(seq), 0)::text AS seq FROM ${handle.schema}.changelog`);
+        return found[0]?.seq ?? '0';
+      });
+    const taskChangesAfter = (seq: string) =>
+      withTenant(handle.app, TENANT_A.tenantId, async (tx) => {
+        const { rows: found } = await tx.query<{ columns: string[]; origin: string; actor_service: string }>(
+          `SELECT columns, origin, actor_service FROM ${handle.schema}.changelog WHERE "table" = 'scheduled_task' AND seq > $1 ORDER BY seq`,
+          [seq],
+        );
+        return found;
+      });
+    await post(ADOPT_PATH, body);
+    // Restoration hands the units back to legacy before it cancels, and the gates stay legacy until the next adoption.
+    await setGates('legacy');
+    try {
+      port.failDelete = true;
+      try {
+        expect((await post(CANCEL_ADOPTED_PATH, { names: [name] })).json()).toEqual({ cancelled: 1 });
+      } finally {
+        port.failDelete = false;
+      }
+      const before = await lastSeq();
+
+      const again = await post(ADOPT_PATH, body);
+
+      expect(again.json()).toEqual({ adopted: 1, existing: 0, scheduledImmediately: 0 });
+      expect(port.deletes.map((deleted) => deleted.name)).toEqual([portTaskName(name, 1)]);
+      expect([...port.live.keys()].filter((key) => key.includes(SURVEY_LEAKED))).toEqual([`surveys-launch/${portTaskName(name, 1)}-r1`]);
+      expect(await taskChangesAfter(before)).toEqual([
+        { columns: ['dequeued_at'], origin: 'target', actor_service: 'communications' },
+        expect.objectContaining({
+          columns: expect.arrayContaining(['queue_task_name', 'status', 'enqueued_at', 'dequeued_at']),
+          origin: 'migration-feed',
+          actor_service: 'platform.migration',
+        }),
+        { columns: ['enqueued_at'], origin: 'target', actor_service: 'communications' },
+      ]);
+    } finally {
+      await setGates('open');
+    }
   });
 
   it('adopts a run time repeated by daylight saving at its later offset, so it has not passed after the earlier one', async () => {

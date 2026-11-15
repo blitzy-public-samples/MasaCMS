@@ -1,5 +1,5 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Registry of the communications route modules: fixture, `/v1/`, scheduled-task listing and scheduler hand-off routes. */
+/** Registry of the communications route modules: fixture, `/v1/`, scheduled-task listing and closing, and scheduler hand-off routes. */
 import type { BaseEnv, Clock, FastifyInstance } from '@opt2/platform/service-kit';
 import type { TaskPort } from '@opt2/platform/tasks';
 import { siteForTenant, tenantForRegisteredSite, type TenantDb } from '@opt2/platform/tenancy';
@@ -13,6 +13,7 @@ import type { CommunicationsRepository } from '../repo/repository.js';
 import { registerAdoptionRoutes } from './adoption.js';
 import { registerFixtureRoutes } from './fixture.js';
 import { registerScheduledTaskRoutes } from './scheduled-tasks.js';
+import { registerSurveyLaunchDoneRoute } from './survey-launch-done.js';
 import { registerV1Routes } from './v1.js';
 
 /** Runtime dependencies `app.ts` passes to the route registry: database, repository, clock, environment, mail ports and task port. */
@@ -59,5 +60,6 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await registerFixtureRoutes(app, ctx);
   await registerV1Routes(app, ctx);
   await registerScheduledTaskRoutes(app, ctx);
+  await registerSurveyLaunchDoneRoute(app, ctx);
   await registerAdoptionRoutes(app, ctx);
 }

@@ -1,14 +1,14 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Survey create, list and detail on the fixture routes, then the `surveys-launch` task route: outcomes, tenant re-check, gate and credential. */
+/** Survey create, list and detail on the fixture routes, then the `surveys-launch` task route: outcomes, communications' record, tenant re-check, gate and credential. */
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LEGACY_ERROR_MAP, isCfUuid } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_MAP, apiUnavailableResponse, isCfUuid } from '@opt2/platform/legacy-compat';
 import { GATE_WAIT_MS } from '@opt2/platform/migration-kit';
-import { TaskTenantMismatchError, taskWireBody, type TaskWireBody } from '@opt2/platform/tasks';
+import { taskWireBody, type TaskIgnoredReason, type TaskWireBody } from '@opt2/platform/tasks';
 import { TENANT_A, TENANT_B, mintTasksInvokerToken } from '@opt2/platform/testing';
 import { SURVEY_STATUS } from '../../src/domain/surveys.js';
-import { LAUNCH_TASK_PATH, type LaunchTaskResult } from '../../src/tasks/launch.js';
-import { buildTestApp, headersFor, type RecordingDb, type TestApp } from '../helpers/app.js';
+import { LAUNCH_TASK_PATH, launchDonePath, type LaunchTaskIgnored, type LaunchTaskResult } from '../../src/tasks/launch.js';
+import { buildTestApp, headersFor, type ClientReply, type RecordingDb, type TestApp } from '../helpers/app.js';
 
 const FIXTURE_SURVEYS = '/legacy-fixtures/cfml/api.cfm/surveys/surveys';
 const MANAGER = 'surveys.manager';
@@ -21,6 +21,7 @@ const LAUNCH_AT = '2026-07-01T09:00:00';
 const REOPEN_AFTER_MS = 300;
 // envelope.cfc's notFound row, which the fixture answers for an unknown survey.
 const FIXTURE_NOT_FOUND = { code: 'invalid_request', message: 'Not Found' };
+const COMMUNICATIONS_UNAVAILABLE: ClientReply = { status: 503, headers: {}, body: JSON.parse(apiUnavailableResponse().body) as unknown };
 
 type FixtureSurvey = {
   survey_id: string;
@@ -145,6 +146,22 @@ describe('surveys fixture CRUD and the surveys-launch task', () => {
     return { surveyId: created.survey_id, scheduleVersion: scheduled.schedule.schedule_version as number };
   }
 
+  /** Communications' `markSurveyLaunchTaskDone` calls the app made, as its service client received them. */
+  function launchDoneCalls() {
+    return t.client.requests.filter((req) => req.service === 'communications' && req.method === 'POST');
+  }
+
+  /** The `markSurveyLaunchTaskDone` call a run tenant-a launch task of `surveyId` makes, under the task's queue name. */
+  function launchDoneCall(surveyId: string, scheduleVersion: number) {
+    return {
+      service: 'communications',
+      method: 'POST',
+      path: launchDonePath(surveyId),
+      json: { tenantId: TENANT_A.tenantId, queueTaskName: `opt2-survey-${surveyId}-launch`, scheduleVersion },
+      userToken: null,
+    };
+  }
+
   describe('fixture survey collection', () => {
     it('creates a DRAFT survey of the token site with a CF UUID in one audited tenant-a transaction', async () => {
       const before = writeTransactions(t.db).length;
@@ -243,6 +260,7 @@ describe('surveys fixture CRUD and the surveys-launch task', () => {
       expect(surveyChangelog(t.db).slice(changelogBefore)).toEqual([
         expect.objectContaining({ tenant_id: TENANT_A.tenantId, op: 'update' }),
       ]);
+      expect(launchDoneCalls()).toEqual([launchDoneCall(surveyId, scheduleVersion)]);
     });
 
     it('answers a repeated launch with the stored LAUNCHED status and writes nothing', async () => {
@@ -256,6 +274,7 @@ describe('surveys fixture CRUD and the surveys-launch task', () => {
       expect(repeat.statusCode).toBe(200);
       expect(repeat.json()).toEqual({ applied: false, status: SURVEY_STATUS.LAUNCHED } satisfies LaunchTaskResult);
       expect(writeTransactions(t.db)).toHaveLength(writesBefore);
+      expect(launchDoneCalls()).toEqual([launchDoneCall(surveyId, scheduleVersion), launchDoneCall(surveyId, scheduleVersion)]);
     });
 
     it('answers a task of an older schedule version with the stored status and writes nothing', async () => {
@@ -270,29 +289,93 @@ describe('surveys fixture CRUD and the surveys-launch task', () => {
       expect(res.json()).toEqual({ applied: false, status: SURVEY_STATUS.SCHEDULED } satisfies LaunchTaskResult);
       expect(writeTransactions(t.db)).toHaveLength(writesBefore);
       expect(storedSurvey(t.db, surveyId)).toMatchObject({ status: SURVEY_STATUS.SCHEDULED, launched_at: null });
+      expect(launchDoneCalls()).toEqual([]);
     });
 
-    it.each<[string, (surveyId: string, scheduleVersion: number) => Promise<InjectRequest>]>([
-      ['a body naming tenant-b for a tenant-a survey', (id, scheduleVersion) => launchRequest(id, { tenantId: TENANT_B.tenantId, scheduleVersion })],
+    it.each<[string, (surveyId: string) => void]>([
+      ['answers HTTP 503', (id) => t.client.respond('communications', 'POST', launchDonePath(id), COMMUNICATIONS_UNAVAILABLE)],
+      ['answers HTTP 500', (id) => t.client.respond('communications', 'POST', launchDonePath(id), { status: 500, headers: {}, body: {} })],
+      ['is unreachable', () => t.client.unavailable()],
+    ])('answers the legacy 503 when communications %s after the launch, then reports again on the retry', async (_name, fail) => {
+      const { surveyId, scheduleVersion } = await scheduledSurvey();
+      fail(surveyId);
+
+      const blocked = await t.app.inject(await launchRequest(surveyId, { tenantId: TENANT_A.tenantId, scheduleVersion }));
+
+      expect(blocked.statusCode).toBe(503);
+      expect((blocked.json() as ErrorEnvelope).error).toEqual({
+        message: LEGACY_ERROR_MAP.server_error.message,
+        code: LEGACY_ERROR_MAP.server_error.code,
+      });
+      expect(storedSurvey(t.db, surveyId)).toMatchObject({ status: SURVEY_STATUS.LAUNCHED, launched_at: t.clock.now() });
+
+      t.client.reset();
+      const retried = await t.app.inject(await launchRequest(surveyId, { tenantId: TENANT_A.tenantId, scheduleVersion }));
+
+      expect(retried.statusCode).toBe(200);
+      expect(retried.json()).toEqual({ applied: false, status: SURVEY_STATUS.LAUNCHED } satisfies LaunchTaskResult);
+      expect(launchDoneCalls()).toEqual([launchDoneCall(surveyId, scheduleVersion), launchDoneCall(surveyId, scheduleVersion)]);
+    });
+
+    it('answers the launch result when communications holds no launch task of that name', async () => {
+      const { surveyId, scheduleVersion } = await scheduledSurvey();
+      t.client.respond('communications', 'POST', launchDonePath(surveyId), { status: 404, headers: {}, body: {} });
+
+      const res = await t.app.inject(await launchRequest(surveyId, { tenantId: TENANT_A.tenantId, scheduleVersion }));
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ applied: true, status: SURVEY_STATUS.LAUNCHED } satisfies LaunchTaskResult);
+      expect(launchDoneCalls()).toEqual([launchDoneCall(surveyId, scheduleVersion)]);
+    });
+
+    it.each<[string, TaskIgnoredReason, string[], (surveyId: string, scheduleVersion: number) => Promise<InjectRequest>]>([
+      [
+        'a body naming tenant-b for a tenant-a survey',
+        'not-visible',
+        [TENANT_B.tenantId],
+        (id, scheduleVersion) => launchRequest(id, { tenantId: TENANT_B.tenantId, scheduleVersion }),
+      ],
+      [
+        'a body naming no tenant',
+        'no-tenant',
+        [],
+        async (id, scheduleVersion) => {
+          const request = await launchRequest(id, { tenantId: TENANT_A.tenantId, scheduleVersion });
+          return { ...request, payload: { ...request.payload, tenantId: null } };
+        },
+      ],
+      [
+        'a body outside the task wire body',
+        'malformed-body',
+        [],
+        async (id, scheduleVersion) => {
+          const request = await launchRequest(id, { tenantId: TENANT_A.tenantId, scheduleVersion });
+          return { ...request, payload: { ...request.payload, queue: '' } };
+        },
+      ],
       [
         'a task URL naming another survey than its payload',
+        'mismatch',
+        [TENANT_A.tenantId],
         async (id, scheduleVersion) => ({
           ...(await launchRequest(id, { tenantId: TENANT_A.tenantId, scheduleVersion })),
           url: LAUNCH_TASK_PATH.replace(':surveyId', UNKNOWN_SURVEY_ID),
         }),
       ],
-      ['a payload outside LaunchPayload', (id) => launchRequest(id, { tenantId: TENANT_A.tenantId, scheduleVersion: 0 })],
-    ])("refuses %s as the platform's task tenant mismatch", async (_name, buildRequest) => {
+      ['a payload outside LaunchPayload', 'not-visible', [TENANT_A.tenantId], (id) => launchRequest(id, { tenantId: TENANT_A.tenantId, scheduleVersion: 0 })],
+    ])('acknowledges %s as ignored (%s) and launches nothing, so the queue stops retrying it', async (_name, reason, tenants, buildRequest) => {
       const { surveyId, scheduleVersion } = await scheduledSurvey();
       const writesBefore = writeTransactions(t.db).length;
-      const mismatch = new TaskTenantMismatchError(TENANT_A.tenantId, `opt2-survey-${surveyId}-launch`);
+      const transactionsBefore = t.db.transactions.length;
+      const callsBefore = t.client.requests.length;
 
       const res = await t.app.inject(await buildRequest(surveyId, scheduleVersion));
 
-      const spec = LEGACY_ERROR_MAP[mismatch.type];
-      expect(res.statusCode).toBe(spec.status);
-      expect((res.json() as ErrorEnvelope).error).toEqual({ message: spec.message, code: spec.code });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ignored: true, reason } satisfies LaunchTaskIgnored);
+      expect([...new Set(t.db.transactions.slice(transactionsBefore).map((tx) => tx.tenantId))]).toEqual(tenants);
       expect(writeTransactions(t.db)).toHaveLength(writesBefore);
+      expect(t.client.requests).toHaveLength(callsBefore);
       expect(storedSurvey(t.db, surveyId)).toMatchObject({ status: SURVEY_STATUS.SCHEDULED, launched_at: null });
     });
 

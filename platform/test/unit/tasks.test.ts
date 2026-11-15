@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, collectRouteMatrix, recordedRoutes, transportForPath } from '../../src/auth/index.js';
-import { LegacyApiError } from '../../src/legacy-compat/index.js';
+import { LegacyApiError, LegacyServiceUnavailableError } from '../../src/legacy-compat/index.js';
 import { createLogger } from '../../src/logging/index.js';
 import { ServiceUnavailableError, UnknownServiceError } from '../../src/service-kit/client.js';
 import { currentRequestContext } from '../../src/service-kit/context.js';
@@ -616,8 +616,8 @@ function memoryTenantDb(): TenantDb & { readonly tenants: string[] } {
 
 const apps: FastifyInstance[] = [];
 
-/** A createService app for `service` with the test signer's auth, the fixed clock and a silent logger. */
-async function taskServiceApp(service: string): Promise<FastifyInstance> {
+/** A createService app for `service` with the test signer's auth, the fixed clock and a logger writing into `lines`. */
+async function taskServiceApp(service: string, lines: string[] = []): Promise<FastifyInstance> {
   const app = await createService({
     name: service,
     version: '1.0.0',
@@ -633,7 +633,7 @@ async function taskServiceApp(service: string): Promise<FastifyInstance> {
     }),
     verifierOverride: testVerifier(service),
     clock: TASK_CLOCK,
-    logger: createLogger({ service, version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+    logger: createLogger({ service, version: '1.0.0', env: 'local', destination: { write: (line: string) => void lines.push(line) } }),
   });
   apps.push(app);
   return app;
@@ -901,19 +901,79 @@ describe('registerTaskRoute', () => {
     expect(seen[0]?.contextTenant).toBe(TENANT_A.tenantId);
   });
 
+  /** A tenant handler refusing every task it runs as a tenant mismatch, as a route refuses a URL naming another row. */
+  const refusingHandler = () =>
+    vi.fn(async (ctx: TaskContext<StoredSurvey>) => {
+      throw new TaskTenantMismatchError(ctx.tenantId, ctx.taskName);
+    });
+
+  const LAUNCH_HEADERS = { [CLOUD_TASKS_HEADERS.taskName]: 'surveys-launch-A1B2', [CLOUD_TASKS_HEADERS.queueName]: 'surveys-launch' };
+
+  const PERMANENT_REFUSALS = [
+    ['names no tenant', launchBody(null), 'no-tenant', [], undefined, 0, BAD_REQUEST],
+    ['names a tenant that cannot see the stored row', launchBody(TENANT_B.tenantId), 'not-visible', [TENANT_B.tenantId], TENANT_B.tenantId, 0, BAD_REQUEST],
+    ['is malformed', { ...(launchBody(TENANT_A.tenantId) as object), name: '' }, 'malformed-body', [], undefined, 0, INVALID_PARAMETERS],
+    ['is refused by its handler as a tenant mismatch', launchBody(TENANT_A.tenantId), 'mismatch', [TENANT_A.tenantId], TENANT_A.tenantId, 1, BAD_REQUEST],
+  ] as const;
+
+  it.each(PERMANENT_REFUSALS)(
+    'keeps the legacy 400 for a tenant task that %s when the route sets no ignored body',
+    async (_label, body, _reason, tenants, _tenant, handlerCalls, error) => {
+      const app = await taskServiceApp('surveys');
+      const db = memoryTenantDb();
+      const handler = refusingHandler();
+      registerTaskRoute<StoredSurvey>(app, LAUNCH_ROUTE, { scope: 'tenant', db, findStored: findSurvey, handler });
+      const response = await postTask(app, LAUNCH_PATH, body, LAUNCH_HEADERS);
+      expect(response.statusCode).toBe(400);
+      expect(errorOf(response)).toStrictEqual(error);
+      expect(db.tenants).toStrictEqual(tenants);
+      expect(handler).toHaveBeenCalledTimes(handlerCalls);
+    },
+  );
+
+  it.each(PERMANENT_REFUSALS)(
+    'acknowledges a tenant task that %s with the route ignored body and a warning naming it',
+    async (_label, body, reason, tenants, tenantId, handlerCalls) => {
+      const lines: string[] = [];
+      const app = await taskServiceApp('surveys', lines);
+      const db = memoryTenantDb();
+      const handler = refusingHandler();
+      const ignored = vi.fn((why: string) => ({ ignored: why }));
+      registerTaskRoute<StoredSurvey>(app, LAUNCH_ROUTE, { scope: 'tenant', db, findStored: findSurvey, handler, ignored });
+      const response = await postTask(app, LAUNCH_PATH, body, LAUNCH_HEADERS);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toStrictEqual({ ignored: reason });
+      expect(ignored).toHaveBeenCalledExactlyOnceWith(reason);
+      expect(db.tenants).toStrictEqual(tenants);
+      expect(handler).toHaveBeenCalledTimes(handlerCalls);
+      const warnings = lines
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((line) => line.severity === 'WARNING')
+        .map(({ message, tenantId: logged }) => ({ message, tenantId: logged }));
+      expect(warnings).toStrictEqual([{ message: `Task surveys-launch/surveys-launch-A1B2 ignored: ${reason}`, tenantId }]);
+    },
+  );
+
   it.each([
-    ['names no tenant', null, []],
-    ['names a tenant that cannot see the stored row', TENANT_B.tenantId, [TENANT_B.tenantId]],
-  ])('answers 400 badRequest to a tenant task whose body %s', async (_label, tenantId, tenants) => {
+    ['no credential', async (): Promise<Record<string, string>> => ({}), 401, 0],
+    [
+      'a handler failure the queue must retry',
+      async () => ({ authorization: `Bearer ${await mintTasksInvokerToken({ audience: 'surveys' })}` }),
+      503,
+      1,
+    ],
+  ])('keeps answering %s with %i on a route that sets an ignored body', async (_label, headersOf, status, handlerCalls) => {
     const app = await taskServiceApp('surveys');
     const db = memoryTenantDb();
-    const handler = vi.fn();
-    registerTaskRoute<StoredSurvey>(app, LAUNCH_ROUTE, { scope: 'tenant', db, findStored: findSurvey, handler });
-    const response = await postTask(app, LAUNCH_PATH, launchBody(tenantId));
-    expect(response.statusCode).toBe(400);
-    expect(errorOf(response)).toStrictEqual(BAD_REQUEST);
-    expect(db.tenants).toStrictEqual(tenants);
-    expect(handler).not.toHaveBeenCalled();
+    const handler = vi.fn(async () => {
+      throw new LegacyServiceUnavailableError('surveys gate closed', 'auto', 'gate-closed');
+    });
+    const ignored = vi.fn((why: string) => ({ ignored: why }));
+    registerTaskRoute<StoredSurvey>(app, LAUNCH_ROUTE, { scope: 'tenant', db, findStored: findSurvey, handler, ignored });
+    const response = await app.inject({ method: 'POST', url: LAUNCH_PATH, headers: await headersOf(), payload: launchBody(TENANT_A.tenantId) as object });
+    expect(response.statusCode).toBe(status);
+    expect(handler).toHaveBeenCalledTimes(handlerCalls);
+    expect(ignored).not.toHaveBeenCalled();
   });
 });
 

@@ -2,9 +2,16 @@
 /** Scheduler hand-off of the fixture's `opt2-survey-*` ACF tasks: adoption as scheduled-task rows and queue tasks, and cancellation on restoration. */
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import { requestMigrationAuthority, withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
-import { registeredTenants, tenantIdForSite, type TenantTx } from '@opt2/platform/tenancy';
+import { registeredTenants, tenantIdForSite, withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import type { components } from '../generated/openapi.js';
-import { RECOVERY_BATCH_SIZE, findScheduledTaskByName, listAdoptedScheduledTasks, taskCursor, type BatchCursor } from '../repo/queries.js';
+import {
+  RECOVERY_BATCH_SIZE,
+  cancelledAdoptionsAwaitingDequeue,
+  findScheduledTaskByName,
+  listAdoptedScheduledTasks,
+  taskCursor,
+  type BatchCursor,
+} from '../repo/queries.js';
 import { OWNER, type NewAdoptedScheduledTask } from '../repo/repository.js';
 import type { ScheduledTaskRow } from '../repo/tables.js';
 import {
@@ -14,7 +21,14 @@ import {
   withLegacyRunTime,
   type SurveyScheduleDeps,
 } from './survey-schedule.js';
-import { SURVEY_TASK_QUEUES, kindOfLegacyTaskName, parseLocalTimestamp, portTaskName, taskTarget } from './survey-tasks.js';
+import {
+  SURVEY_TASK_QUEUES,
+  kindOfLegacyTaskName,
+  parseLocalTimestamp,
+  portTaskName,
+  reactivatedPortTaskName,
+  taskTarget,
+} from './survey-tasks.js';
 
 /** Body of `adoptScheduledTasks`: the fixture ACF tasks as captured before their deletion. */
 export type AdoptRequest = components['schemas']['AdoptScheduledTasksRequest'];
@@ -104,6 +118,7 @@ function planAdoption(input: AdoptedTaskInput, now: Date, serviceUrls: Record<st
       taskName: input.name,
       queue,
       queueTaskName: portTaskName(input.name, input.scheduleVersion),
+      reactivatedQueueTaskName: (current) => reactivatedPortTaskName(input.name, input.scheduleVersion, current),
       kind: parts.kind,
       sourceType: SURVEY_SOURCE_TYPE,
       sourceId: parts.surveyId,
@@ -135,6 +150,18 @@ function countExisting(result: TenantAdoption, row: ScheduledTaskRow): void {
   if (row.status === 'scheduled' && row.enqueued_at === null) {
     result.toEnqueue.set(row.scheduled_task_id, withLegacyRunTime(row));
   }
+}
+
+/** Deletes and stamps the queue tasks the cancellations of the planned names left undeleted; a failed delete stays unstamped. */
+async function dequeueCancelledAdoptions(
+  deps: SurveyScheduleDeps,
+  tenantId: string,
+  plans: readonly PlannedAdoption[],
+  ctx: WriteContext,
+): Promise<void> {
+  const names = plans.map((plan) => plan.task.taskName);
+  const rows = await withTenant(deps.db, tenantId, (tx) => cancelledAdoptionsAwaitingDequeue(tx, names));
+  await dequeueScheduledTasks(deps, tenantId, rows, { context: ctx });
 }
 
 /** Adopts one tenant's tasks in `tx`; a queue task name an event-scheduled row already holds counts as present. */
@@ -176,9 +203,11 @@ async function adoptInTenant(
 
 /**
  * Adopts the captured tasks under `tenantIdForSite(siteId)`, once per task name, one transaction per tenant; a run time
- * that has passed is scheduled at the clock's now. After each tenant commits, its new rows and its present rows without a
- * queue task are queued; a failed queue call is logged and left for `scheduledTaskRecovery`.
- * Throws `LegacyApiError('invalidParameters')` before any write when a task's name, site or run time is invalid.
+ * that has passed is scheduled at the clock's now. Before each tenant's transaction, queue tasks that cancellations of
+ * these names left undeleted are deleted. After each tenant commits, its new rows and its present rows without a queue
+ * task are queued; a failed queue call is logged and left for `scheduledTaskRecovery`.
+ * Throws `LegacyApiError('invalidParameters')` before any write when a task's name, site or run time is invalid, and
+ * LegacyServiceUnavailableError, adopting nothing more in that tenant, when such a queue task could not be deleted.
  */
 export async function adoptScheduledTasks(deps: SurveyScheduleDeps, request: AdoptRequest): Promise<AdoptResult> {
   const now = deps.clock.now();
@@ -186,6 +215,8 @@ export async function adoptScheduledTasks(deps: SurveyScheduleDeps, request: Ado
   const contexts = handOffContexts();
   const result: AdoptResult = { adopted: 0, existing: 0, scheduledImmediately: 0 };
   for (const [tenantId, group] of groups) {
+    // A row still without dequeued_at is refused by the adoption, so a failed delete answers 503 and the migration retries.
+    await dequeueCancelledAdoptions(deps, tenantId, group.plans, contexts.stamps);
     const done = await withGatedTenant(deps.db, tenantId, (tx) => adoptInTenant(deps, tx, group.plans, contexts.rows));
     result.adopted += done.adopted;
     result.existing += done.existing;
@@ -208,7 +239,8 @@ async function cancelInTenant(
   for (;;) {
     const batch = await listAdoptedScheduledTasks(tx, names, after === undefined ? {} : { after });
     for (const row of batch) {
-      const updated = await deps.repository.setScheduledTaskStatus(tx, row.scheduled_task_id, 'cancelled', ctx);
+      // From `scheduled` only: a task that ran or was superseded since the listing keeps that status and is not dequeued.
+      const updated = await deps.repository.setScheduledTaskStatus(tx, row.scheduled_task_id, 'cancelled', ctx, 'scheduled');
       if (updated !== null) {
         cancelled.push(updated);
       }

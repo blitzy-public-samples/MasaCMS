@@ -76,11 +76,21 @@ const LOCAL_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3
 const LEGACY_TASK_NAME =
   /^opt2-survey-(?<surveyId>[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16})-(?:launch|reminder-(?<n>[1-9][0-9]*))$/;
 const MS_PER_MINUTE = 60_000;
+// Base names end in `-v<version>`, so only a reactivation's name ends in `-r<generation>`.
+const REACTIVATION_SUFFIX = /-r([1-9][0-9]*)$/;
 
 /** Queue task name of a legacy task name in a schedule version; throws `InvalidTaskNameError` outside `TASK_NAME_PATTERN`. */
 export function portTaskName(taskName: string, scheduleVersion: number): string {
   // Cloud Tasks keeps deleted names as tombstones, so every schedule version needs names of its own.
   const name = `${taskName}-v${String(scheduleVersion)}`;
+  assertTaskName(name);
+  return name;
+}
+
+/** Queue task name of a cancelled adoption adopted again: `portTaskName` plus `-r<k>`, one generation past `previous`; throws `InvalidTaskNameError` outside `TASK_NAME_PATTERN`. */
+export function reactivatedPortTaskName(taskName: string, scheduleVersion: number, previous: string): string {
+  const generation = BigInt(REACTIVATION_SUFFIX.exec(previous)?.[1] ?? '0');
+  const name = `${portTaskName(taskName, scheduleVersion)}-r${String(generation + 1n)}`;
   assertTaskName(name);
   return name;
 }

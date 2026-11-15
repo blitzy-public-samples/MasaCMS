@@ -159,12 +159,20 @@ describe('reschedule supersession', () => {
   });
 
   describe('surveys-launch task', () => {
+    /** Communications' `markSurveyLaunchTaskDone` calls, as the queue task names and schedule versions they report. */
+    function launchDoneReports(): unknown[] {
+      return t.client.requests
+        .filter((req) => req.service === 'communications' && req.method === 'POST')
+        .map((req) => ({ path: req.path, json: req.json, userToken: req.userToken }));
+    }
+
     it('answers a task of the first schedule applied false and leaves the survey SCHEDULED without a write', async () => {
       const mark = t.db.transactions.length;
       const res = await deliverLaunchTask(1);
       expect([res.statusCode, res.json()]).toEqual([200, { applied: false, status: 'SCHEDULED' }]);
       expect(writesSince(mark)).toEqual([]);
       expect(storedSurvey()).toMatchObject({ status: 'SCHEDULED', launched_at: null });
+      expect(launchDoneReports()).toEqual([]);
     });
 
     it('launches the survey on the task of the current schedule', async () => {
@@ -173,14 +181,23 @@ describe('reschedule supersession', () => {
       expect([res.statusCode, res.json()]).toEqual([200, { applied: true, status: 'LAUNCHED' }]);
       expect(writesSince(mark).map((tx) => tx.tenantId)).toEqual([TENANT_A.tenantId]);
       expect(storedSurvey()).toMatchObject({ status: 'LAUNCHED' });
+      expect(launchDoneReports()).toEqual([
+        {
+          path: `/internal/v1/scheduled-tasks/survey-launches/${surveyId}/done`,
+          json: { tenantId: TENANT_A.tenantId, queueTaskName: launchTaskName(surveyId), scheduleVersion: 2 },
+          userToken: null,
+        },
+      ]);
     });
 
     it('keeps a late task of the first schedule superseded after the current launch', async () => {
       expect((await deliverLaunchTask(2)).statusCode).toBe(200);
       const mark = t.db.transactions.length;
+      const reported = launchDoneReports().length;
       const late = await deliverLaunchTask(1);
       expect([late.statusCode, late.json()]).toEqual([200, { applied: false, status: 'LAUNCHED' }]);
       expect(writesSince(mark)).toEqual([]);
+      expect(launchDoneReports()).toHaveLength(reported);
     });
   });
 

@@ -4,13 +4,13 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apiUnavailableResponse, legacyErrorResponse } from '@opt2/platform/legacy-compat';
-import { CLOUD_TASKS_HEADERS, TaskTenantMismatchError, taskWireBody, type CreateTaskInput, type TaskWireBody } from '@opt2/platform/tasks';
+import { CLOUD_TASKS_HEADERS, taskWireBody, type CreateTaskInput, type TaskIgnoredReason, type TaskWireBody } from '@opt2/platform/tasks';
 import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, mintTasksInvokerToken, pushTo } from '@opt2/platform/testing';
 import { reminderSentPath } from '../../src/domain/reminders.js';
 import { SURVEY_SCHEDULED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import { SURVEY_SCHEDULED_TOPIC } from '../../src/events/survey-scheduled.js';
 import { SCHEDULED_TASK, type ScheduledTaskRow, type ScheduledTaskStatus } from '../../src/repo/tables.js';
-import { REMINDER_TASK_PATH } from '../../src/tasks/reminder.js';
+import { REMINDER_TASK_PATH, type ReminderTaskIgnored } from '../../src/tasks/reminder.js';
 import { REMINDER_SENT_MATCH, buildTestApp, createRecordingDb, type Row, type TestApp } from '../helpers/app.js';
 import { SAMPLE_IDS, envelopeFor, surveyScheduledPayload } from '../helpers/payloads.js';
 
@@ -205,15 +205,16 @@ describe('reminder task rejection', () => {
     payload: { ...(body.payload as Record<string, unknown>), ...patch },
   });
 
-  it.each<[string, Mutation]>([
-    ["another tenant's body", (body) => ({ body: { ...body, tenantId: TENANT_B.tenantId } })],
-    ['a body without a tenant', (body) => ({ body: { ...body, tenantId: null } })],
-    ['an unknown scheduled task', (body) => ({ body: withPayload(body, { scheduledTaskId: UNKNOWN_TASK_ID }) })],
-    ["another survey's id", (body) => ({ body: withPayload(body, { surveyId: OTHER_SURVEY_ID }) })],
-    ["the launch task's row", (body, launchId) => ({ body: withPayload(body, { scheduledTaskId: launchId }) })],
-    ['a malformed payload', (body) => ({ body: withPayload(body, { n: 0 }) })],
-    ['a path naming another task', (_body, launchId) => ({ path: REMINDER_TASK_PATH.replace(':scheduledTaskId', launchId) })],
-  ])('refuses %s as badRequest, with no surveys call or write', async (_case, mutate) => {
+  it.each<[string, TaskIgnoredReason, Mutation]>([
+    ["another tenant's body", 'not-visible', (body) => ({ body: { ...body, tenantId: TENANT_B.tenantId } })],
+    ['a body without a tenant', 'no-tenant', (body) => ({ body: { ...body, tenantId: null } })],
+    ['a body outside the task wire body', 'malformed-body', (body) => ({ body: { ...body, name: '' } })],
+    ['an unknown scheduled task', 'not-visible', (body) => ({ body: withPayload(body, { scheduledTaskId: UNKNOWN_TASK_ID }) })],
+    ["another survey's id", 'not-visible', (body) => ({ body: withPayload(body, { surveyId: OTHER_SURVEY_ID }) })],
+    ["the launch task's row", 'not-visible', (body, launchId) => ({ body: withPayload(body, { scheduledTaskId: launchId }) })],
+    ['a malformed payload', 'not-visible', (body) => ({ body: withPayload(body, { n: 0 }) })],
+    ['a path naming another task', 'mismatch', (_body, launchId) => ({ path: REMINDER_TASK_PATH.replace(':scheduledTaskId', launchId) })],
+  ])('acknowledges %s as ignored (%s), with no surveys call or write, so the queue stops retrying it', async (_case, reason, mutate) => {
     const ctx = await scheduled(1);
     const task = reminderTask(ctx);
     const launch = ctx.db.rows(SCHEDULED_TASK.table).find((row) => row.kind === 'survey-launch');
@@ -222,8 +223,8 @@ describe('reminder task rejection', () => {
 
     const { status, body } = await deliver(ctx, task, mutate(taskWireBody(task), String(launch.scheduled_task_id)));
 
-    expect(status).toBe(400);
-    expect(body).toEqual(legacyErrorBody(new TaskTenantMismatchError(TENANT_A.tenantId, task.name).type));
+    expect(status).toBe(200);
+    expect(body).toEqual({ ignored: true, reason } satisfies ReminderTaskIgnored);
     expect(ctx.client.requestsTo('surveys')).toEqual([]);
     expect(writesSince(ctx, mark)).toEqual([]);
     expect(storedRow(ctx, taskIdOf(task))?.status).toBe('scheduled');

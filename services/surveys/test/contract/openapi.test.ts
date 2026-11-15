@@ -907,14 +907,17 @@ const CASES: Record<string, Case[]> = {
       },
     },
     {
-      name: 'answers a task naming a tenant the survey is not visible under as badRequest',
+      name: 'acknowledges a task naming a tenant the survey is not visible under as ignored, launching nothing',
       method: 'POST',
       url: ({ surveyId }) => `/internal/v1/tasks/surveys/${surveyId}/launch`,
       as: 'service:tasks-invoker',
       payload: (seeded) => launchTask(seeded, TENANT_B.tenantId),
       seed: 'scheduled',
-      status: 400,
-      verify: (_answer, ctx, seeded) => expect(storedStatus(ctx, seeded)).toBe('SCHEDULED'),
+      status: 200,
+      verify: ({ body }, ctx, seeded) => {
+        expect(record(body)).toEqual({ ignored: true, reason: 'not-visible' });
+        expect(storedStatus(ctx, seeded)).toBe('SCHEDULED');
+      },
     },
     {
       name: 'refuses a service invocation credential on the cloud-tasks route before the handler',

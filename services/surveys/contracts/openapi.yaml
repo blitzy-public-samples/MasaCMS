@@ -1066,17 +1066,19 @@ paths:
               $ref: '#/components/schemas/LaunchTaskWireBody'
       responses:
         '200':
-          description: The launch outcome; a stale schedule version or an earlier launch answers `applied` false.
+          description: The launch outcome; a stale schedule version or an earlier launch answers `applied` false. A malformed task body, no tenant, a tenant under which the survey is not visible, or a URL naming another survey answers `TaskIgnoredResult` without acting, so Cloud Tasks does not retry it.
           headers:
             X-Opt2-Write-Position:
               $ref: '#/components/headers/XOpt2WritePosition'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LaunchResult'
+                oneOf:
+                  - $ref: '#/components/schemas/LaunchResult'
+                  - $ref: '#/components/schemas/TaskIgnoredResult'
         '400':
           $ref: '#/components/responses/BadRequest'
-          description: A malformed task body, or a tenant under which the survey is not visible.
+          description: A request body that is not JSON; a JSON task body that is invalid answers 200 `TaskIgnoredResult`.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1086,7 +1088,7 @@ paths:
           description: The launch failed, so Cloud Tasks retries the task.
         '503':
           $ref: '#/components/responses/Unavailable'
-          description: A unit gate is closed, so Cloud Tasks retries the task.
+          description: A unit gate is closed or communications did not record the launch task done, so Cloud Tasks retries the task.
   /internal/v1/surveys/{surveyId}/reminders/{n}/sent:
     parameters:
       - $ref: '#/components/parameters/SurveyId'
@@ -3044,6 +3046,24 @@ components:
           type: boolean
         status:
           $ref: '#/components/schemas/SurveyStatus'
+    TaskIgnoredResult:
+      type: object
+      description: A task acknowledged without acting because no retry can make it valid, and why.
+      required:
+        - ignored
+        - reason
+      additionalProperties: false
+      properties:
+        ignored:
+          type: boolean
+          const: true
+        reason:
+          type: string
+          enum:
+            - malformed-body
+            - no-tenant
+            - not-visible
+            - mismatch
     SweepTaskWireBody:
       description: Task wire body of the `surveys-outbox-sweep` chain, which names no tenant.
       allOf:

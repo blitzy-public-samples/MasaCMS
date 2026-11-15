@@ -6,6 +6,7 @@ import { ensureUnitGates, qualified } from '@opt2/platform/migration-kit';
 import { tenantIdForSite, withMetadata, type QueryConfig, type QueryResultRow, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
+  cancelledAdoptionsAwaitingDequeue,
   getMessageDetail,
   listAdoptedScheduledTasks,
   listMessages,
@@ -173,6 +174,15 @@ const CASES: readonly PlanCase[] = [
           scheduleVersion: 2,
         },
       ]),
+  },
+  {
+    read: 'cancelled adoptions awaiting a dequeue, by name',
+    table: 'scheduled_task',
+    nth: 0,
+    // The adopted-name key and the unstamped-task index both bound it; the planner picks the smaller.
+    index: null,
+    ordered: false,
+    run: (tx) => cancelledAdoptionsAwaitingDequeue(tx, ADOPTED_NAMES),
   },
   ...BATCH_READS.flatMap(([read, table, index, cond, run]): PlanCase[] => [
     { read: `${read} first batch`, table, nth: 0, index, ordered: true, run: (tx) => run(tx) },

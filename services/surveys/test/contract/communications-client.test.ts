@@ -1,5 +1,5 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Consumer contract of surveys on communications' scheduled-task list, the only read of a survey's task state (seam 2). */
+/** Consumer contract of surveys on communications (seam 2): the scheduled-task list, the only read of a survey's task state, and the launch-done report. */
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -11,11 +11,15 @@ import {
   serviceRole,
   type AuthResult,
 } from '@opt2/platform/auth';
-import { currentRequestContext, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
+import { currentRequestContext, type FastifyInstance, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
+import { CLOUD_TASKS_HEADERS, queueDefinition, targetUrl, taskWireBody } from '@opt2/platform/tasks';
 import {
   ContractAssertionError,
+  TENANT_A,
+  assertRequestMatchesOpenApi,
   assertResponseMatchesOpenApi,
   findOperation,
+  mintTasksInvokerToken,
   testSigningKeys,
   testVerifier,
   type OperationMatch,
@@ -75,6 +79,7 @@ const ownDoc = await loadContract('../../contracts/openapi.yaml');
 const COMMUNICATIONS = 'communications';
 const SELF = 'surveys';
 const SITE = 'tenant-a';
+const LAUNCH_QUEUE = 'surveys-launch';
 const CSRF_HEADERS = { 'x-csrf_token': 'CSRF-TOKEN', 'x-csrf_token_expires': '260630140509000' };
 /** A launch a day after TEST_CLOCK with reminders 1 h and 2 h later, the schedule the recorder's default records describe. */
 const SCHEDULE = { launchAt: '2026-07-01T12:00:00', reminders: [{ offsetMinutes: 60 }, { offsetMinutes: 120 }] };
@@ -179,6 +184,31 @@ function assertAdmitted(match: OperationMatch, roles: readonly string[]): void {
 /** Validates communications' answer against the operation's declared response. */
 function assertReplyMatches(doc: OpenApiDoc, { req, res }: Exchange): void {
   assertResponseMatchesOpenApi(doc, { method: req.method, path: req.path, status: res.status, contentType: 'application/json', body: res.body });
+}
+
+/** What communications' service transport verifies for a call `app` made: the forwarded user token, if any, and surveys' own invocation credential. */
+async function admissionOf(app: FastifyInstance, call: Exchange): Promise<AuthResult> {
+  const invocation = await app.opt2.auth.invocationMinter.headersFor({
+    name: call.req.service,
+    url: app.opt2.env.OPT2_SERVICE_URLS[call.req.service],
+  });
+  const transport = createServiceTransport({
+    userVerifier: testVerifier().userVerifier,
+    invocationVerifier: createLocalInvocationVerifier({ publicKey: (await testSigningKeys()).publicKey, callee: call.req.service }),
+  });
+  const authorization = call.userToken === undefined ? {} : { authorization: `Bearer ${call.userToken}` };
+  return transport.authenticate({ headers: { ...invocation, ...authorization }, path: call.req.path }, { optional: false });
+}
+
+/** Records every call `app` makes in `exchanges`, with the user token its service client would forward. */
+function recordExchanges(testApp: TestApp, exchanges: Exchange[]): void {
+  testApp.app.opt2.client.request = async <T>(req: ServiceRequest): Promise<ServiceResponse<T>> => {
+    const res = await testApp.client.request<T>(req);
+    // As the service client does: an unset userToken forwards the request context's verified token.
+    const userToken = req.userToken === undefined ? currentRequestContext()?.userToken : (req.userToken ?? undefined);
+    exchanges.push({ req, res, userToken });
+    return res;
+  };
 }
 
 /** Every check of one call against `doc`: declared literal path, query, admission and reply. */
@@ -296,31 +326,10 @@ describe('surveys as a consumer of communications scheduled tasks', () => {
     return { url, headers, response, calls: exchanges.slice(start).filter((call) => call.req.service === COMMUNICATIONS) };
   }
 
-  /** What communications' service transport verifies for a call: the forwarded user token and surveys' own invocation credential. */
-  async function admissionOf(call: Exchange): Promise<AuthResult> {
-    const { app } = testApp;
-    const invocation = await app.opt2.auth.invocationMinter.headersFor({
-      name: call.req.service,
-      url: app.opt2.env.OPT2_SERVICE_URLS[call.req.service],
-    });
-    const transport = createServiceTransport({
-      userVerifier: testVerifier().userVerifier,
-      invocationVerifier: createLocalInvocationVerifier({ publicKey: (await testSigningKeys()).publicKey, callee: call.req.service }),
-    });
-    const authorization = call.userToken === undefined ? {} : { authorization: `Bearer ${call.userToken}` };
-    return transport.authenticate({ headers: { ...invocation, ...authorization }, path: call.req.path }, { optional: false });
-  }
-
   beforeAll(async () => {
     testApp = await buildTestApp();
-    const { app, client } = testApp;
-    app.opt2.client.request = async <T>(req: ServiceRequest): Promise<ServiceResponse<T>> => {
-      const res = await client.request<T>(req);
-      // As the service client does: an unset userToken forwards the request context's verified token.
-      const userToken = req.userToken === undefined ? currentRequestContext()?.userToken : (req.userToken ?? undefined);
-      exchanges.push({ req, res, userToken });
-      return res;
-    };
+    const { app } = testApp;
+    recordExchanges(testApp, exchanges);
 
     const created = await inject('POST', `${FIXTURE_BASE}?siteid=${SITE}`, { title: 'Pulse' });
     const surveyId = (created.response.json() as { data: { survey_id: string } }).data.survey_id;
@@ -328,7 +337,7 @@ describe('surveys as a consumer of communications scheduled tasks', () => {
     scheduled = (schedule.response.json() as { data: ScheduledSurvey }).data;
     fixture = await inject('GET', `${FIXTURE_BASE}/${surveyId}/tasks?siteid=${SITE}`);
     v1 = await inject('GET', `/v1/surveys/${surveyId}/tasks?siteid=${SITE}`);
-    admitted = await admissionOf(onlyCall(fixture));
+    admitted = await admissionOf(app, onlyCall(fixture));
     roles = [...new Set([...(admitted.user?.roles ?? []), ...(admitted.service?.roles ?? [])])];
   });
 
@@ -469,5 +478,150 @@ describe('surveys as a consumer of communications scheduled tasks', () => {
 
       expect(() => assertCallMatches(doc, call, roles)).toThrow(finding);
     });
+  });
+});
+
+/** The operation's `application/json` request body schema, references resolved; the document's own object, so a mutation edits it. */
+function requestSchemaOf(doc: OpenApiDoc, match: OperationMatch): Json {
+  const body = deref(doc, match.operation.requestBody);
+  const media = isRecord(body) && isRecord(body.content) ? body.content['application/json'] : undefined;
+  const schema = deref(doc, isRecord(media) ? media.schema : undefined);
+  if (!isRecord(schema)) throw new Error(`${match.template} declares no application/json request body schema`);
+  return schema;
+}
+
+/** Every check of the launch-done report against `doc`: its operation, path and body, admission and reply. */
+function assertLaunchDoneMatches(doc: OpenApiDoc, call: Exchange, roles: readonly string[]): void {
+  const match = findOperation(doc, call.req.method, call.req.path);
+  expect(match.operation.operationId).toBe('markSurveyLaunchTaskDone');
+  assertRequestMatchesOpenApi(doc, { method: call.req.method, path: call.req.path, contentType: 'application/json', body: call.req.json });
+  assertAdmitted(match, roles);
+  assertReplyMatches(doc, call);
+}
+
+/** Changes to communications' contract that each must break the launch-done report surveys sends. */
+const LAUNCH_DONE_MUTATIONS: Mutation[] = [
+  [
+    'the operation moved to another path',
+    (doc, { template }) => {
+      doc.paths[template.replace('/survey-launches/', '/launches/')] = doc.paths[template];
+      delete doc.paths[template];
+    },
+    /no operation for POST/,
+  ],
+  [
+    'queueTaskName renamed',
+    (doc, match) => {
+      const body = requestSchemaOf(doc, match);
+      const properties = body.properties as Json;
+      properties.taskName = properties.queueTaskName;
+      delete properties.queueTaskName;
+      body.required = (body.required as string[]).map((name) => (name === 'queueTaskName' ? 'taskName' : name));
+    },
+    /required property 'taskName'/,
+  ],
+  [
+    'a new required body field',
+    (doc, match) => {
+      const body = requestSchemaOf(doc, match);
+      body.required = [...(body.required as string[]), 'siteId'];
+    },
+    /required property 'siteId'/,
+  ],
+  [
+    'a required role surveys does not carry',
+    (_doc, { operation }) => {
+      operation['x-opt2-requires'] = [serviceRole('reporting')];
+    },
+    /requires service:reporting/,
+  ],
+  [
+    'the 200 outcome renamed',
+    (doc, match) => {
+      const result = okSchemaOf(doc, match);
+      const properties = result.properties as Json;
+      properties.recorded = properties.applied;
+      delete properties.applied;
+      result.required = ['recorded'];
+    },
+    /required property 'recorded'/,
+  ],
+];
+
+describe("surveys as the caller of communications' launch-done report", () => {
+  let testApp: TestApp;
+  let surveyId: string;
+  let call: Exchange;
+  let roles: string[];
+
+  beforeAll(async () => {
+    testApp = await buildTestApp();
+    const { app } = testApp;
+    const exchanges: Exchange[] = [];
+    recordExchanges(testApp, exchanges);
+    const headers = { ...(await headersFor(Roles.surveysManager, { site: SITE })), ...CSRF_HEADERS, 'content-type': 'application/json' };
+    const asManager = (url: string, body: unknown) => app.inject({ method: 'POST', url, headers, payload: JSON.stringify(body) });
+    const created = await asManager(`${FIXTURE_BASE}?siteid=${SITE}`, { title: 'Pulse' });
+    expect(created.statusCode, created.body).toBe(200);
+    surveyId = (created.json() as { data: { survey_id: string } }).data.survey_id;
+    const scheduled = await asManager(`${FIXTURE_BASE}/${surveyId}/schedule?siteid=${SITE}`, SCHEDULE);
+    expect(scheduled.statusCode, scheduled.body).toBe(200);
+
+    // The launch task as communications queues it and the local tasks adapter delivers it.
+    const queue = queueDefinition(LAUNCH_QUEUE);
+    const url = new URL(targetUrl(queue, app.opt2.env.OPT2_SERVICE_URLS, { surveyId }));
+    const task = taskWireBody({
+      queue: LAUNCH_QUEUE,
+      name: `opt2-survey-${surveyId}-launch-v1`,
+      scheduleTime: testApp.clock.now(),
+      url: url.href,
+      deadlineS: queue.deadlineS,
+      tenantId: TENANT_A.tenantId,
+      body: { surveyId, siteId: SITE, scheduleVersion: 1 },
+    });
+    const start = exchanges.length;
+    const launched = await app.inject({
+      method: 'POST',
+      url: url.pathname,
+      headers: {
+        authorization: `Bearer ${await mintTasksInvokerToken({ audience: SELF })}`,
+        [CLOUD_TASKS_HEADERS.taskName]: task.name,
+        [CLOUD_TASKS_HEADERS.queueName]: task.queue,
+      },
+      payload: { ...task },
+    });
+    expect(launched.statusCode, launched.body).toBe(200);
+    const calls = exchanges.slice(start).filter((exchange) => exchange.req.service === COMMUNICATIONS);
+    expect(calls).toHaveLength(1);
+    call = calls[0] as Exchange;
+    const admitted = await admissionOf(app, call);
+    roles = [...new Set([...(admitted.user?.roles ?? []), ...(admitted.service?.roles ?? [])])];
+  });
+
+  afterAll(async () => {
+    await testApp?.app.close();
+  });
+
+  it('reports the queue task the launch ran under, with its tenant and schedule version and no user token', () => {
+    expect(call.req).toEqual({
+      service: COMMUNICATIONS,
+      method: 'POST',
+      path: `/internal/v1/scheduled-tasks/survey-launches/${surveyId}/done`,
+      json: { tenantId: TENANT_A.tenantId, queueTaskName: `opt2-survey-${surveyId}-launch-v1`, scheduleVersion: 1 },
+      userToken: null,
+    });
+    expect(call.userToken).toBeUndefined();
+  });
+
+  it("sends a report communications' contract declares, admits under surveys' invocation credential and answers as the reply", () => {
+    expect(roles).toContain(serviceRole(SELF));
+    expect(() => assertLaunchDoneMatches(commsDoc, call, roles)).not.toThrow();
+  });
+
+  it.each(LAUNCH_DONE_MUTATIONS)('rejects a communications contract with %s', (_change, mutate, finding) => {
+    const doc = structuredClone(commsDoc);
+    mutate(doc, findOperation(doc, call.req.method, call.req.path));
+
+    expect(() => assertLaunchDoneMatches(doc, call, roles)).toThrow(finding);
   });
 });

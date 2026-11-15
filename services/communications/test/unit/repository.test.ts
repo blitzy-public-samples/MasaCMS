@@ -9,9 +9,11 @@ import {
   requestMigrationAuthority,
   withGatedTenant,
 } from '@opt2/platform/migration-kit';
+import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { tenantIdForSite, withMetadata, type TenantTx } from '@opt2/platform/tenancy';
 import { newRequestContext, runWithRequestContext } from '@opt2/platform/service-kit';
 import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { findScheduledTask } from '../../src/repo/queries.js';
 import {
   OWNER,
   SCHEMA,
@@ -28,6 +30,8 @@ const NOW = new Date(2026, 5, 30, 14, 5, 9, 123);
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 const MISSING_ID = '00000000-0000-0000-0000000000000000';
 const EVENT_ID = '0b9c7a52-3f2e-4c1d-9a8b-1c2d3e4f5a6b';
+const V1 = 'opt2-survey-S1-launch-v1';
+const R1 = `${V1}-r1`;
 const TEMPLATE: NewTemplate = { siteId: 'tenant-a', name: 'Welcome', subject: 'Hello', bodyText: 'Text', bodyHtml: '<p>Html</p>' };
 const MESSAGE: NewMessage = {
   siteId: 'tenant-a',
@@ -251,9 +255,9 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
     expect(launch?.created_at.getTime()).toBe(NOW.getTime());
     expect(taskId).toMatch(CF_UUID);
     expect(reminder).toMatchObject({ kind: 'survey-reminder', queue: 'communications-reminders', reminder_n: 1, origin: 'adopted' });
-    expect((await inTenant((tx) => repository.stampEnqueued(tx, taskId)))?.enqueued_at?.getTime()).toBe(NOW.getTime());
+    expect((await inTenant((tx) => repository.stampEnqueued(tx, taskId, V1)))?.enqueued_at?.getTime()).toBe(NOW.getTime());
     expect(await inTenant((tx) => repository.setScheduledTaskStatus(tx, taskId, 'superseded'))).toMatchObject({ status: 'superseded' });
-    expect((await inTenant((tx) => repository.stampDequeued(tx, taskId)))?.dequeued_at?.getTime()).toBe(NOW.getTime());
+    expect((await inTenant((tx) => repository.stampDequeued(tx, taskId, V1)))?.dequeued_at?.getTime()).toBe(NOW.getTime());
     expect(ops(await changelog())).toEqual([
       'insert scheduled_task',
       'insert scheduled_task',
@@ -265,12 +269,27 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
 
   it.each([
     ['setScheduledTaskStatus', (tx: TenantTx) => repository.setScheduledTaskStatus(tx, MISSING_ID, 'done')],
-    ['stampEnqueued', (tx: TenantTx) => repository.stampEnqueued(tx, MISSING_ID)],
-    ['stampDequeued', (tx: TenantTx) => repository.stampDequeued(tx, MISSING_ID)],
+    ['setScheduledTaskStatus from scheduled', (tx: TenantTx) => repository.setScheduledTaskStatus(tx, MISSING_ID, 'cancelled', {}, 'scheduled')],
+    ['stampEnqueued', (tx: TenantTx) => repository.stampEnqueued(tx, MISSING_ID, V1)],
+    ['stampDequeued', (tx: TenantTx) => repository.stampDequeued(tx, MISSING_ID, V1)],
   ])('%s answers null for an absent task', async (_name, write) => {
     expect(await inTenant(write)).toBeNull();
     expect(await changelog()).toEqual([]);
   });
+
+  it.each(['done', 'superseded', 'cancelled'] as const)(
+    'setScheduledTaskStatus from scheduled answers null for a %s task and writes nothing',
+    async (current) => {
+      const [task] = await inTenant((tx) => repository.insertScheduledTasks(tx, [launchTask()]));
+      const taskId = task?.scheduled_task_id ?? '';
+      const before = await inTenant((tx) => repository.setScheduledTaskStatus(tx, taskId, current));
+      const changes = await changelog();
+
+      expect(await inTenant((tx) => repository.setScheduledTaskStatus(tx, taskId, 'cancelled', {}, 'scheduled'))).toBeNull();
+      expect(await inTenant((tx) => findScheduledTask(tx, taskId))).toEqual(before);
+      expect(await changelog()).toEqual(changes);
+    },
+  );
 
   it('rolls the row and its changelog row back together', async () => {
     await expect(
@@ -298,7 +317,7 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
     await expect(inTenant((tx) => repository.setScheduledTaskStatus(tx, taskId, 'cancelled'))).rejects.toBeInstanceOf(
       UnitNotAuthoritativeError,
     );
-    await expect(inTenant((tx) => repository.stampEnqueued(tx, taskId))).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
+    await expect(inTenant((tx) => repository.stampEnqueued(tx, taskId, V1))).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
     await expect(inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]))).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
   });
 
@@ -372,16 +391,21 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
     expect(ops(await changelog())).toEqual(['insert scheduled_task']);
   });
 
-  it('reactivates a cancelled adoption in place with the new schedule and cleared stamps', async () => {
+  it('reactivates a cancelled adoption in place under the resolved queue task name, with the new schedule and cleared stamps', async () => {
     const [adopted] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]));
     const taskId = adopted?.row.scheduled_task_id ?? '';
     await inTenant(async (tx) => {
-      await repository.stampEnqueued(tx, taskId);
+      await repository.stampEnqueued(tx, taskId, V1);
       await repository.setScheduledTaskStatus(tx, taskId, 'cancelled');
-      await repository.stampDequeued(tx, taskId);
+      await repository.stampDequeued(tx, taskId, V1);
     });
+    const resolvedFrom: string[] = [];
     const next = {
       queueTaskName: 'opt2-survey-S1-launch-v2',
+      reactivatedQueueTaskName: (current: string): string => {
+        resolvedFrom.push(current);
+        return 'opt2-survey-S1-launch-v2-r1';
+      },
       scheduleTime: new Date(2026, 6, 2, 9, 0, 0),
       targetRoute: '/internal/v1/tasks/surveys/S1/launch?v=2',
       scheduleVersion: 2,
@@ -389,13 +413,14 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
 
     const [reactivated] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask(next)]));
 
+    expect(resolvedFrom).toEqual(['opt2-survey-S1-launch-v1']);
     expect(reactivated).toMatchObject({
       created: true,
       row: {
         scheduled_task_id: taskId,
         origin: 'adopted',
         status: 'scheduled',
-        queue_task_name: next.queueTaskName,
+        queue_task_name: 'opt2-survey-S1-launch-v2-r1',
         target_route: next.targetRoute,
         schedule_version: 2,
         enqueued_at: null,
@@ -413,13 +438,89 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
     ]);
   });
 
+  /** An adoption under `V1`, cancelled, dequeued and reactivated under `R1`; cancelled once more when `cancelled`. */
+  async function reactivatedAdoption(cancelled: boolean): Promise<ScheduledTaskRow> {
+    const [adopted] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]));
+    const taskId = adopted?.row.scheduled_task_id ?? '';
+    await inTenant(async (tx) => {
+      await repository.setScheduledTaskStatus(tx, taskId, 'cancelled');
+      await repository.stampDequeued(tx, taskId, V1);
+    });
+    await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask({ reactivatedQueueTaskName: () => R1 })]));
+    if (cancelled) {
+      await inTenant((tx) => repository.setScheduledTaskStatus(tx, taskId, 'cancelled'));
+    }
+    return (await inTenant((tx) => findScheduledTask(tx, taskId))) as ScheduledTaskRow;
+  }
+
+  it.each([
+    ['stampEnqueued', 'the queue task a reactivation replaced', false, V1],
+    ['stampDequeued', 'the queue task a reactivation replaced', true, V1],
+    ['stampEnqueued', 'the queue task of a cancelled task', true, R1],
+    ['stampDequeued', 'the queue task of a scheduled task', false, R1],
+  ] as const)('%s for %s answers null and writes nothing', async (stamp, _label, cancelled, actedOn) => {
+    const before = await reactivatedAdoption(cancelled);
+    const changes = await changelog();
+
+    expect(await inTenant((tx) => repository[stamp](tx, before.scheduled_task_id, actedOn))).toBeNull();
+    expect(await inTenant((tx) => findScheduledTask(tx, before.scheduled_task_id))).toEqual(before);
+    expect(await changelog()).toEqual(changes);
+  });
+
+  it('stamps the queue task a reactivated adoption holds, on enqueue and once cancelled again on dequeue', async () => {
+    const reactivated = await reactivatedAdoption(false);
+    const taskId = reactivated.scheduled_task_id;
+
+    const enqueued = await inTenant((tx) => repository.stampEnqueued(tx, taskId, R1));
+    await inTenant((tx) => repository.setScheduledTaskStatus(tx, taskId, 'cancelled'));
+    const dequeued = await inTenant((tx) => repository.stampDequeued(tx, taskId, R1));
+
+    expect(reactivated).toMatchObject({ status: 'scheduled', queue_task_name: R1, enqueued_at: null, dequeued_at: null });
+    expect(enqueued?.enqueued_at?.getTime()).toBe(NOW.getTime());
+    expect(dequeued).toMatchObject({ status: 'cancelled', queue_task_name: R1 });
+    expect(dequeued?.dequeued_at?.getTime()).toBe(NOW.getTime());
+  });
+
+  it.each([
+    ['an enqueued', true],
+    ['a never enqueued', false],
+  ])('refuses to reactivate %s cancelled adoption without dequeued_at with the legacy 503, leaving the row as it was', async (_label, enqueued) => {
+    const [adopted] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]));
+    const taskId = adopted?.row.scheduled_task_id ?? '';
+    const cancelled = await inTenant(async (tx) => {
+      if (enqueued) {
+        await repository.stampEnqueued(tx, taskId, V1);
+      }
+      return repository.setScheduledTaskStatus(tx, taskId, 'cancelled');
+    });
+    const before = await changelog();
+    const resolvedFrom: string[] = [];
+    const next = {
+      reactivatedQueueTaskName: (current: string): string => {
+        resolvedFrom.push(current);
+        return `${current}-r1`;
+      },
+    };
+
+    const refused = inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask(next)]));
+
+    await expect(refused).rejects.toBeInstanceOf(LegacyServiceUnavailableError);
+    await expect(refused).rejects.toMatchObject({ reason: 'queue-task-not-dequeued' });
+    expect(resolvedFrom).toEqual([]);
+    expect(await inTenant((tx) => findScheduledTask(tx, taskId))).toEqual(cancelled);
+    expect(await changelog()).toEqual(before);
+  });
+
   it('returns the written instant of a local time repeated by daylight saving, on insert and on reactivation', async () => {
     const scheduleTime = new Date('2026-11-01T06:30:00.000Z');
     const [inserted, reactivated, walls] = await inTimeZone('America/New_York', async () => {
       const [event] = await inTenant((tx) => repository.insertScheduledTasks(tx, [launchTask({ scheduleTime })]));
       const [adopted] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask({ queueTaskName: 'opt2-survey-S1-launch-v2' })]));
       const adoptedId = adopted?.row.scheduled_task_id ?? '';
-      await inTenant((tx) => repository.setScheduledTaskStatus(tx, adoptedId, 'cancelled'));
+      await inTenant(async (tx) => {
+        await repository.setScheduledTaskStatus(tx, adoptedId, 'cancelled');
+        await repository.stampDequeued(tx, adoptedId, 'opt2-survey-S1-launch-v2');
+      });
       const [again] = await inTenant((tx) =>
         repository.adoptScheduledTasks(tx, [adoptedTask({ queueTaskName: 'opt2-survey-S1-launch-v3', scheduleTime })]),
       );
@@ -444,7 +545,10 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
     );
     const [adopted] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]));
     const adoptedId = adopted?.row.scheduled_task_id ?? '';
-    await inTenant((tx) => repository.setScheduledTaskStatus(tx, adoptedId, 'cancelled'));
+    await inTenant(async (tx) => {
+      await repository.setScheduledTaskStatus(tx, adoptedId, 'cancelled');
+      await repository.stampDequeued(tx, adoptedId, V1);
+    });
 
     const [reactivated] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask({ targetRoute: route })]));
 

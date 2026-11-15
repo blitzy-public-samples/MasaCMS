@@ -4,9 +4,9 @@ import { createHash, randomInt, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DEAD_LETTER_REASON_ATTRIBUTE, INBOX_TABLE, dlqTopicName, type DeadLetterReason } from '@opt2/platform/events';
-import { cfUuid, errorSpec } from '@opt2/platform/legacy-compat';
+import { cfUuid } from '@opt2/platform/legacy-compat';
 import { CHANGELOG_TABLE, closeGates, openGates } from '@opt2/platform/migration-kit';
-import { CLOUD_TASKS_HEADERS, QUEUES, TaskTenantMismatchError, taskWireBody, type CreateTaskInput } from '@opt2/platform/tasks';
+import { CLOUD_TASKS_HEADERS, QUEUES, taskWireBody, type CreateTaskInput } from '@opt2/platform/tasks';
 import { withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import {
   PLATFORM_TABLE_GROUPS,
@@ -53,7 +53,7 @@ import {
   type TrashRow,
 } from '../../src/repo/tables.js';
 import { SCHEDULED_TASKS_PATH, toScheduledTask } from '../../src/routes/scheduled-tasks.js';
-import { REMINDER_TASK_PATH } from '../../src/tasks/reminder.js';
+import { REMINDER_TASK_PATH, type ReminderTaskIgnored } from '../../src/tasks/reminder.js';
 import { TEST_CLOCK, buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
 import { envelopeFor, loginMailPayload } from '../helpers/payloads.js';
 
@@ -471,7 +471,7 @@ describe.skipIf(!PG_READY)('communications isolation (requires PG_HOST)', () => 
       expect(res.body).not.toContain(foreign.scheduled_task_id);
     });
 
-    it('refuses a tenant B reminder task naming the tenant A reminder and writes nothing', async () => {
+    it('acknowledges a tenant B reminder task naming the tenant A reminder as ignored and writes nothing', async () => {
       const app = running();
       const foreign = setUp(tenantATask, 'tenant A reminder');
       const ref = { queue: REMINDER_QUEUE, surveyId: sourceId, scheduledTaskId: foreign.scheduled_task_id };
@@ -503,9 +503,9 @@ describe.skipIf(!PG_READY)('communications isolation (requires PG_HOST)', () => 
         payload: { ...taskWireBody(task) },
       });
 
-      const refusal = errorSpec(new TaskTenantMismatchError(TENANT_B.tenantId, task.name).type);
-      expect(res.statusCode).toBe(refusal.status);
-      expect(res.json()).toMatchObject({ error: { code: refusal.code, message: refusal.message } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ignored: true, reason: 'not-visible' } satisfies ReminderTaskIgnored);
+      expect(res.body).not.toContain(foreign.scheduled_task_id);
       expect(before.task?.status).toBe('scheduled');
       expect(await storedTask(TENANT_A, foreign.scheduled_task_id)).toEqual(before.task);
       expect(await countsOf(MESSAGE.table)).toEqual(before.messages);

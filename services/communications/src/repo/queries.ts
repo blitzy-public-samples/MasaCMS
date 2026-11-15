@@ -94,6 +94,7 @@ const LOGIN_MAIL: MessageSource = 'login-mail';
 const QUEUED: MessageState = 'queued';
 const SCHEDULED: ScheduledTaskStatus = 'scheduled';
 const SUPERSEDED: ScheduledTaskStatus = 'superseded';
+const CANCELLED: ScheduledTaskStatus = 'cancelled';
 const DEQUEUE_PENDING: readonly ScheduledTaskStatus[] = ['superseded', 'cancelled'];
 const ADOPTED: ScheduledTaskOrigin = 'adopted';
 const ADOPTED_SCHEDULED = `origin = '${ADOPTED}' AND status = '${SCHEDULED}'`;
@@ -129,8 +130,10 @@ interface SchemaReads {
   readonly messageByEventId: string;
   readonly currentTasks: string;
   readonly taskByName: string;
+  readonly lockedTaskByName: string;
   readonly adoptedTasks: BatchReads;
   readonly adoptedTasksNamed: BatchReads;
+  readonly cancelledAdoptionsUndequeued: string;
   readonly queuedLoginMail: BatchReads;
   readonly unstampedTasks: BatchReads;
 }
@@ -143,6 +146,7 @@ function prepareReads(schema: string): SchemaReads {
   const message = qualified(schema, MESSAGE.table);
   const status = qualified(schema, DELIVERY_STATUS.table);
   const task = qualified(schema, SCHEDULED_TASK.table);
+  const taskByName = `SELECT * FROM ${task} WHERE queue = $1 AND queue_task_name = $2`;
   return Object.freeze({
     repository: createRepository({ owner: OWNER, schema, tables: OWNED_TABLES }),
     countTemplates: `SELECT count(*)::integer AS total FROM ${template} WHERE ${SITE_MATCH}`,
@@ -155,10 +159,14 @@ function prepareReads(schema: string): SchemaReads {
     currentTasks:
       `SELECT * FROM ${task} WHERE source_type = $1 AND source_id = $2 AND status <> $3` +
       ` AND schedule_version = (SELECT max(schedule_version) FROM ${task} WHERE source_type = $1 AND source_id = $2) ${TASK_ORDER}`,
-    taskByName: `SELECT * FROM ${task} WHERE queue = $1 AND queue_task_name = $2`,
+    taskByName,
+    lockedTaskByName: `${taskByName} FOR UPDATE`,
     // Constants are literals so the partial indexes' predicates are provable from the statement text.
     adoptedTasks: batchReads(`SELECT * FROM ${task} WHERE ${ADOPTED_SCHEDULED}`, TASK_KEY, 1),
     adoptedTasksNamed: batchReads(`SELECT * FROM ${task} WHERE ${ADOPTED_SCHEDULED} AND task_name = ANY($1::text[])`, TASK_KEY, 2),
+    cancelledAdoptionsUndequeued:
+      `SELECT * FROM ${task} WHERE origin = '${ADOPTED}' AND status = '${CANCELLED}' AND dequeued_at IS NULL` +
+      ' AND task_name = ANY($1::text[])',
     queuedLoginMail: batchReads(
       `SELECT * FROM ${message} WHERE source = '${LOGIN_MAIL}' AND state = '${QUEUED}' AND created < $1`,
       MESSAGE_KEY,
@@ -278,6 +286,16 @@ export function findScheduledTaskByName(tx: TenantTx, name: QueueTaskName): Prom
   );
 }
 
+/** The scheduled task of one queue task, locked FOR UPDATE until `tx` ends; null when the tenant has none. */
+export function lockScheduledTaskByName(tx: TenantTx, name: QueueTaskName): Promise<ScheduledTaskRow | null> {
+  const reads = readsFor(tx);
+  return reads.repository.read(
+    tx,
+    SCHEDULED_TASK.unit,
+    async () => (await tx.query<ScheduledTaskRow>(reads.lockedTaskByName, [name.queue, name.queueTaskName])).rows[0] ?? null,
+  );
+}
+
 /** The batch limit; throws RangeError unless it is an integer from 1 to MAX_RECOVERY_BATCH_SIZE. */
 function batchLimit(limit: number = RECOVERY_BATCH_SIZE): number {
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RECOVERY_BATCH_SIZE) {
@@ -313,6 +331,16 @@ export async function listAdoptedScheduledTasks(
     taskNames === undefined
       ? readBatch<ScheduledTaskRow>(tx, reads.adoptedTasks, [], limit, batch.after)
       : readBatch<ScheduledTaskRow>(tx, reads.adoptedTasksNamed, [[...taskNames]], limit, batch.after),
+  );
+}
+
+/** Cancelled adopted tasks of the fixture task names in `taskNames` whose queue task is not confirmed deleted (no `dequeued_at`), in no set order. */
+export function cancelledAdoptionsAwaitingDequeue(tx: TenantTx, taskNames: readonly string[]): Promise<ScheduledTaskRow[]> {
+  const reads = readsFor(tx);
+  return reads.repository.read(
+    tx,
+    SCHEDULED_TASK.unit,
+    async () => (await tx.query<ScheduledTaskRow>(reads.cancelledAdoptionsUndequeued, [[...taskNames]])).rows,
   );
 }
 

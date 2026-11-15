@@ -3,7 +3,7 @@
 import { createRepository, qualified, type Repository, type WriteContext } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import type { Clock } from '@opt2/platform/service-kit';
-import { cfUuid } from '@opt2/platform/legacy-compat';
+import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-compat';
 import {
   DELIVERY_STATUS,
   MESSAGE,
@@ -32,6 +32,8 @@ export const SCHEMA = 'communications';
 const STATUS_SPACING_MS = 10;
 const ADOPTED: ScheduledTaskOrigin = 'adopted';
 const ADVISORY_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
+const ENQUEUE_DUE: ReadonlySet<ScheduledTaskStatus> = new Set<ScheduledTaskStatus>(['scheduled']);
+const DEQUEUE_DUE: ReadonlySet<ScheduledTaskStatus> = new Set<ScheduledTaskStatus>(['superseded', 'cancelled']);
 
 /** Columns a new or reactivated task `scheduledTaskId` takes from its schedule: `scheduled`, not yet enqueued or dequeued. */
 function scheduleColumns(
@@ -101,6 +103,8 @@ export interface NewScheduledTask {
   taskName: string;
   queue: ScheduledTaskQueue;
   queueTaskName: string;
+  /** Queue task name of a cancelled adoption adopted again, from the tombstoned name it holds; absent keeps `queueTaskName`. */
+  reactivatedQueueTaskName?: (currentQueueTaskName: string) => string;
   kind: ScheduledTaskKind;
   sourceType: string;
   sourceId: string;
@@ -134,14 +138,23 @@ export interface CommunicationsWrites {
   appendDeliveryStatus(tx: TenantTx, input: NewDeliveryStatus, ctx?: WriteContext): Promise<DeliveryStatusRow>;
   /** Inserts every event task as `scheduled`, not yet enqueued or dequeued, and adopts adopted ones by name; returns the rows in input order. */
   insertScheduledTasks(tx: TenantTx, tasks: readonly NewScheduledTask[], ctx?: WriteContext): Promise<ScheduledTaskRow[]>;
-  /** Adopts each task once per task name: inserts it, reactivates a cancelled adoption, or returns the existing row; in input order. */
+  /**
+   * Adopts each task once per task name: inserts it, reactivates a cancelled adoption, or returns the existing row; in input order.
+   * Throws LegacyServiceUnavailableError for a cancelled adoption without `dequeued_at`, whose queue task may still exist.
+   */
   adoptScheduledTasks(tx: TenantTx, tasks: readonly NewAdoptedScheduledTask[], ctx?: WriteContext): Promise<AdoptedScheduledTask[]>;
-  /** Sets a task's `status`; null when the task is absent. */
-  setScheduledTaskStatus(tx: TenantTx, taskId: string, status: ScheduledTaskStatus, ctx?: WriteContext): Promise<ScheduledTaskRow | null>;
-  /** Stamps `enqueued_at` now, once the task port has created the queue task; null when the task is absent. */
-  stampEnqueued(tx: TenantTx, taskId: string, ctx?: WriteContext): Promise<ScheduledTaskRow | null>;
-  /** Stamps `dequeued_at` now, once the queue task was removed or delivered; null when the task is absent. */
-  stampDequeued(tx: TenantTx, taskId: string, ctx?: WriteContext): Promise<ScheduledTaskRow | null>;
+  /** Sets a task's `status`; null when the task is absent or, given `expected`, its locked row is in another status. */
+  setScheduledTaskStatus(
+    tx: TenantTx,
+    taskId: string,
+    status: ScheduledTaskStatus,
+    ctx?: WriteContext,
+    expected?: ScheduledTaskStatus,
+  ): Promise<ScheduledTaskRow | null>;
+  /** Stamps `enqueued_at` now, once the task port has created `queueTaskName`; null unless the task still holds it and is `scheduled`. */
+  stampEnqueued(tx: TenantTx, taskId: string, queueTaskName: string, ctx?: WriteContext): Promise<ScheduledTaskRow | null>;
+  /** Stamps `dequeued_at` now, once the task port has removed `queueTaskName`; null unless the task still holds it, superseded or cancelled. */
+  stampDequeued(tx: TenantTx, taskId: string, queueTaskName: string, ctx?: WriteContext): Promise<ScheduledTaskRow | null>;
 }
 
 /** The platform repository of schema `communications`, its `base` for migration handlers, and the domain writes. */
@@ -159,6 +172,7 @@ export function createCommunicationsRepository({ clock, schema = SCHEMA }: Commu
   const lockMessageSql = `SELECT * FROM ${qualified(schema, MESSAGE.table)} WHERE message_id = $1 FOR UPDATE`;
   const lastStatusSql = `SELECT max(recorded_at) AS last FROM ${qualified(schema, DELIVERY_STATUS.table)} WHERE message_id = $1`;
   const adoptedByNameSql = `SELECT * FROM ${qualified(schema, SCHEDULED_TASK.table)} WHERE origin = '${ADOPTED}' AND task_name = $1 FOR UPDATE`;
+  const lockTaskSql = `SELECT * FROM ${qualified(schema, SCHEDULED_TASK.table)} WHERE scheduled_task_id = $1 FOR UPDATE`;
 
   /** Recorded time of the message's next status, as the fixture's `nextInstant` computes it. */
   async function nextInstant(tx: TenantTx, messageId: string): Promise<Date> {
@@ -281,8 +295,18 @@ export function createCommunicationsRepository({ clock, schema = SCHEMA }: Commu
     if (current.status !== 'cancelled') {
       return { row: current, created: false };
     }
+    if (current.dequeued_at === null) {
+      // Reactivation moves the row to another queue task, so a queue task its cancellation did not delete would be on no row.
+      throw new LegacyServiceUnavailableError(
+        `Adopted task ${current.task_name}: queue task ${current.queue_task_name} on ${current.queue} is not confirmed deleted`,
+        'auto',
+        'queue-task-not-dequeued',
+      );
+    }
     // Restoration cancelled this adoption; the name keeps one adopted row, so the same row is scheduled again.
-    const row = await updateScheduledTask(tx, current.scheduled_task_id, scheduleColumns(task, current.scheduled_task_id), ctx);
+    const columns = scheduleColumns(task, current.scheduled_task_id);
+    const queueTaskName = task.reactivatedQueueTaskName?.(current.queue_task_name) ?? columns.queue_task_name;
+    const row = await updateScheduledTask(tx, current.scheduled_task_id, { ...columns, queue_task_name: queueTaskName }, ctx);
     // The instant written, as insertScheduledTask returns it.
     return { row: { ...(row as ScheduledTaskRow), schedule_time: task.scheduleTime }, created: true };
   }
@@ -327,20 +351,58 @@ export function createCommunicationsRepository({ clock, schema = SCHEMA }: Commu
     return base.update<ScheduledTaskRow>(tx, SCHEDULED_TASK.table, { scheduled_task_id: taskId }, { ...patch, updated_at: clock.now() }, ctx);
   }
 
-  function setScheduledTaskStatus(
+  /** The task's row, locked FOR UPDATE until `tx` ends; undefined when it is absent. */
+  function lockTask(tx: TenantTx, taskId: string): Promise<ScheduledTaskRow | undefined> {
+    return base.read(tx, SCHEDULED_TASK.unit, async () => (await tx.query<ScheduledTaskRow>(lockTaskSql, [taskId])).rows[0]);
+  }
+
+  async function setScheduledTaskStatus(
     tx: TenantTx,
     taskId: string,
     status: ScheduledTaskStatus,
     ctx: WriteContext = {},
+    expected?: ScheduledTaskStatus,
   ): Promise<ScheduledTaskRow | null> {
+    // Checked on the locked row, so a status another transaction committed after the caller's read is never overwritten.
+    if (expected !== undefined && (await lockTask(tx, taskId))?.status !== expected) {
+      return null;
+    }
     return updateScheduledTask(tx, taskId, { status }, ctx);
   }
 
-  function stampEnqueued(tx: TenantTx, taskId: string, ctx: WriteContext = {}): Promise<ScheduledTaskRow | null> {
+  /** Locks the task and answers whether it still holds `queueTaskName` in a status of `due`. */
+  async function holdsQueueTask(
+    tx: TenantTx,
+    taskId: string,
+    queueTaskName: string,
+    due: ReadonlySet<ScheduledTaskStatus>,
+  ): Promise<boolean> {
+    // A reactivation moves the same row to a new queue task, so a port call on an earlier one must not stamp it.
+    const current = await lockTask(tx, taskId);
+    return current !== undefined && current.queue_task_name === queueTaskName && due.has(current.status);
+  }
+
+  async function stampEnqueued(
+    tx: TenantTx,
+    taskId: string,
+    queueTaskName: string,
+    ctx: WriteContext = {},
+  ): Promise<ScheduledTaskRow | null> {
+    if (!(await holdsQueueTask(tx, taskId, queueTaskName, ENQUEUE_DUE))) {
+      return null;
+    }
     return updateScheduledTask(tx, taskId, { enqueued_at: clock.now() }, ctx);
   }
 
-  function stampDequeued(tx: TenantTx, taskId: string, ctx: WriteContext = {}): Promise<ScheduledTaskRow | null> {
+  async function stampDequeued(
+    tx: TenantTx,
+    taskId: string,
+    queueTaskName: string,
+    ctx: WriteContext = {},
+  ): Promise<ScheduledTaskRow | null> {
+    if (!(await holdsQueueTask(tx, taskId, queueTaskName, DEQUEUE_DUE))) {
+      return null;
+    }
     return updateScheduledTask(tx, taskId, { dequeued_at: clock.now() }, ctx);
   }
 

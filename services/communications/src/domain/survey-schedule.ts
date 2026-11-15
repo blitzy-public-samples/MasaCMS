@@ -87,7 +87,8 @@ export function applySurveyScheduled(deps: SurveyScheduleDeps): ConsumerDefiniti
       if (row.status !== 'scheduled') {
         continue;
       }
-      const updated = await deps.repository.setScheduledTaskStatus(tx, row.scheduled_task_id, 'superseded', SCHEDULE_CONTEXT);
+      // From `scheduled` only: a task that ran or was cancelled since the listing keeps that status and is not dequeued.
+      const updated = await deps.repository.setScheduledTaskStatus(tx, row.scheduled_task_id, 'superseded', SCHEDULE_CONTEXT, 'scheduled');
       if (updated !== null) {
         superseded.push(updated);
       }
@@ -115,9 +116,22 @@ async function registeredSite(deps: SurveyScheduleDeps, tenantId: string): Promi
   return siteId;
 }
 
+/** Deletes the queue task an enqueue created after its row moved on from it, which no row tracks; a failed delete is logged. */
+async function deleteUntrackedTask(deps: SurveyScheduleDeps, tenantId: string, row: ScheduledTaskRow): Promise<void> {
+  try {
+    await deps.taskPort.delete(row.queue, row.queue_task_name, { tenantId });
+  } catch (error) {
+    deps.logger.error(
+      { tenantId, error: serializeError(error) },
+      `scheduled task ${row.queue_task_name} on ${row.queue}: created after its row moved on, and its delete failed`,
+    );
+  }
+}
+
 /**
- * Creates each row's queue task under `tenantId`, then stamps `enqueued_at`; an existing task name counts as created.
- * A failed row is logged and left for `scheduledTaskRecovery`.
+ * Creates each row's queue task under `tenantId`, then stamps `enqueued_at` unless the row no longer holds that task
+ * scheduled, in which case the task is deleted again; an existing task name counts as created. A failed row is logged
+ * and left for `scheduledTaskRecovery`.
  */
 export async function enqueueScheduledTasks(
   deps: SurveyScheduleDeps,
@@ -141,7 +155,13 @@ export async function enqueueScheduledTasks(
         deadlineS: QUEUES[row.queue].deadlineS,
         tenantId,
       });
-      await withGatedTenant(deps.db, tenantId, (tx) => deps.repository.stampEnqueued(tx, row.scheduled_task_id, opts.context ?? PORT_CONTEXT));
+      const stamped = await withGatedTenant(deps.db, tenantId, (tx) =>
+        deps.repository.stampEnqueued(tx, row.scheduled_task_id, row.queue_task_name, opts.context ?? PORT_CONTEXT),
+      );
+      if (stamped === null) {
+        // A cancel or supersede may have deleted this name before the create landed, and a delete leaves no tombstone then.
+        await deleteUntrackedTask(deps, tenantId, row);
+      }
     } catch (error) {
       deps.logger.error(
         { tenantId, error: serializeError(error) },
@@ -152,19 +172,24 @@ export async function enqueueScheduledTasks(
 }
 
 /**
- * Deletes each row's queue task under `tenantId`, then stamps `dequeued_at`; an absent task counts as deleted.
- * A failed row is logged and left for `scheduledTaskRecovery`.
+ * Deletes each row's queue task under `tenantId`, then stamps `dequeued_at` unless `opts.stamp` is false or the row no
+ * longer holds that task superseded or cancelled; an absent task counts as deleted. A failed row is logged and left for
+ * `scheduledTaskRecovery`.
  */
 export async function dequeueScheduledTasks(
   deps: SurveyScheduleDeps,
   tenantId: string,
   rows: readonly ScheduledTaskRow[],
-  opts: Pick<ScheduledTaskPortOptions, 'context'> = {},
+  opts: Pick<ScheduledTaskPortOptions, 'context'> & { stamp?: boolean } = {},
 ): Promise<void> {
   for (const row of rows) {
     try {
       await deps.taskPort.delete(row.queue, row.queue_task_name, { tenantId });
-      await withGatedTenant(deps.db, tenantId, (tx) => deps.repository.stampDequeued(tx, row.scheduled_task_id, opts.context ?? PORT_CONTEXT));
+      if (opts.stamp !== false) {
+        await withGatedTenant(deps.db, tenantId, (tx) =>
+          deps.repository.stampDequeued(tx, row.scheduled_task_id, row.queue_task_name, opts.context ?? PORT_CONTEXT),
+        );
+      }
     } catch (error) {
       deps.logger.error(
         { tenantId, error: serializeError(error) },
@@ -174,14 +199,19 @@ export async function dequeueScheduledTasks(
   }
 }
 
-/** Repairs the tenant's unstamped rows older than `cutoff`, batch by batch: enqueues `scheduled` rows and dequeues superseded or cancelled ones. */
-async function recoverTenant(deps: SurveyScheduleDeps, tenantId: string, siteId: string, cutoff: Date): Promise<void> {
+/**
+ * Repairs the tenant's unstamped rows older than `cutoff`, batch by batch: enqueues `scheduled` rows and dequeues superseded
+ * or cancelled ones; with `open` false it only deletes the latter's queue tasks.
+ */
+async function recoverTenant(deps: SurveyScheduleDeps, tenantId: string, siteId: string, cutoff: Date, open: boolean): Promise<void> {
   let after: BatchCursor | undefined;
   for (;;) {
     const batchRead = after === undefined ? {} : { after };
     const batch = await withTenant(deps.db, tenantId, (tx) => unstampedScheduledTasksOlderThan(tx, cutoff, batchRead));
-    await enqueueScheduledTasks(deps, tenantId, batch.filter((row) => row.status === 'scheduled').map(withLegacyRunTime), { siteId });
-    await dequeueScheduledTasks(deps, tenantId, batch.filter((row) => DEQUEUE_DUE.has(row.status)));
+    if (open) {
+      await enqueueScheduledTasks(deps, tenantId, batch.filter((row) => row.status === 'scheduled').map(withLegacyRunTime), { siteId });
+    }
+    await dequeueScheduledTasks(deps, tenantId, batch.filter((row) => DEQUEUE_DUE.has(row.status)), { stamp: open });
     const last = batch.at(-1);
     if (batch.length < RECOVERY_BATCH_SIZE || last === undefined) {
       return;
@@ -195,17 +225,16 @@ export function scheduledTaskRecovery(deps: SurveyScheduleDeps): RecoveryHook {
   return {
     name: SCHEDULED_TASK_RECOVERY_HOOK,
     async run(ctx) {
-      // Queue tasks act for the unit, so none is created or deleted while it is not target-authoritative and open.
+      // Creates and stamps act for the unit, so they wait for an open gate; a superseded or cancelled row's queue task must
+      // never run, so it is deleted in every gate state.
       const [gate] = await readGates(deps.db, [SCHEDULED_TASK.unit]);
-      if (gate?.state !== 'open') {
-        return;
-      }
+      const open = gate?.state === 'open';
       const cutoff = new Date(ctx.clock.now().getTime() - SCHEDULED_TASK_RECOVERY_AGE_MS);
       // Case-folded as withTenant folds them, so one tenant is never recovered twice in a sweep.
       const tenants = new Map((await registeredTenants(deps.db)).map(({ tenantId, siteId }) => [tenantId.toLowerCase(), siteId]));
       for (const [tenantId, siteId] of tenants) {
         try {
-          await recoverTenant(deps, tenantId, siteId, cutoff);
+          await recoverTenant(deps, tenantId, siteId, cutoff, open);
         } catch (error) {
           ctx.logger.error({ tenantId, error: serializeError(error) }, 'scheduled-task recovery failed for the tenant in this sweep');
         }

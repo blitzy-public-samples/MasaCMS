@@ -3,11 +3,14 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { outboxRuntimeFor } from '@opt2/platform/outbox';
 import type { CreateTaskInput } from '@opt2/platform/tasks';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
-import { TENANT_A, TENANT_B, assertRequestMatchesOpenApi, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, assertRequestMatchesOpenApi, assertResponseMatchesOpenApi, fixedClock } from '@opt2/platform/testing';
+import { SCHEDULED_TASK_RECOVERY_AGE_MS, scheduledTaskRecovery, type SurveyScheduleDeps } from '../../src/domain/survey-schedule.js';
 import { parseLocalTimestamp, portTaskName } from '../../src/domain/survey-tasks.js';
 import { RECOVERY_BATCH_SIZE } from '../../src/repo/queries.js';
+import { createCommunicationsRepository } from '../../src/repo/repository.js';
 import { ADOPT_PATH, CANCEL_ADOPTED_PATH } from '../../src/routes/adoption.js';
 import { buildTestApp, createRecordingDb, headersFor, type Row, type TestApp } from '../helpers/app.js';
 
@@ -263,6 +266,236 @@ describe('scheduler hand-off routes', () => {
       expect(res.json()).toEqual({ cancelled: RECOVERY_BATCH_SIZE + 1 });
       expect(liveSurveyTasks(t)).toEqual([]);
     });
+  });
+
+  describe('re-adoption', () => {
+    // A passed launch and a future reminder; the fake port keeps deleted names, as Cloud Tasks keeps tombstones.
+    const PAIR = { tasks: ADOPT_BODY.tasks.slice(0, 2) };
+    const DEQUEUE_STAMP = /^UPDATE "communications"\."scheduled_task" SET "dequeued_at" = /;
+
+    /** Queue task names of the pair in `generation`, by task name. */
+    const names = (generation: string): string[] => [LAUNCH_A, REMINDER_A1].map((name) => `${portTaskName(name, 1)}${generation}`);
+
+    /** Adopted rows as `[task_name, status, queue_task_name, enqueued]`, by task name. */
+    function adoptedNames(t: TestApp): unknown[][] {
+      return t.db
+        .rows('scheduled_task')
+        .map((row) => [row.task_name, row.status, row.queue_task_name, row.enqueued_at instanceof Date])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    }
+
+    /** Committed `dequeued_at` stamps. */
+    function dequeueStamps(t: TestApp): number {
+      return t.db.transactions
+        .filter((tx) => tx.outcome === 'commit')
+        .flatMap((tx) => tx.statements)
+        .filter(({ text }) => DEQUEUE_STAMP.test(text)).length;
+    }
+
+    /** Adopts the pair, then cancels it while every queue delete fails, so both rows keep their live `-v1` task unstamped. */
+    async function cancelLeavingTasks(t: TestApp): Promise<void> {
+      await post(t, ADOPT_PATH, PAIR);
+      t.taskPort.failDelete(2);
+      expect((await post(t, CANCEL_ADOPTED_PATH, {})).json()).toEqual({ cancelled: 2 });
+      expect(liveSurveyTasks(t).map(({ name }) => name)).toEqual(names(''));
+      expect(dequeueStamps(t)).toBe(0);
+    }
+
+    it('deletes and stamps the queue tasks a failed cancellation left, then queues each task again under the next name', async () => {
+      const t = await build();
+      await cancelLeavingTasks(t);
+
+      const again = await post(t, ADOPT_PATH, PAIR);
+
+      expect(again.json()).toEqual({ adopted: 2, existing: 0, scheduledImmediately: 1 });
+      expect(t.taskPort.deleted.map(({ name }) => name).sort()).toEqual(names(''));
+      expect(dequeueStamps(t)).toBe(2);
+      expect(liveSurveyTasks(t).map(({ name }) => name)).toEqual(names('-r1'));
+      expect(adoptedNames(t)).toEqual([
+        [LAUNCH_A, 'scheduled', `${portTaskName(LAUNCH_A, 1)}-r1`, true],
+        [REMINDER_A1, 'scheduled', `${portTaskName(REMINDER_A1, 1)}-r1`, true],
+      ]);
+    });
+
+    it('answers the legacy 503 when such a delete fails again, keeping the row under its name until a retry deletes it', async () => {
+      const t = await build();
+      await cancelLeavingTasks(t);
+      t.taskPort.failDelete(1);
+
+      const refused = await post(t, ADOPT_PATH, PAIR);
+
+      expect(refused.statusCode).toBe(503);
+      expect(adoptedNames(t)).toEqual([
+        [LAUNCH_A, 'cancelled', portTaskName(LAUNCH_A, 1), true],
+        [REMINDER_A1, 'cancelled', portTaskName(REMINDER_A1, 1), true],
+      ]);
+      // The other delete went through, so only the row whose task is still live keeps no dequeued_at.
+      const undeleted = liveSurveyTasks(t).map(({ name }) => name);
+      expect(undeleted).toHaveLength(1);
+      expect(t.db.rows('scheduled_task').filter((row) => row.dequeued_at === null).map((row) => row.queue_task_name)).toEqual(undeleted);
+      expect(surveyTasks(t)).toHaveLength(2);
+
+      const retried = await post(t, ADOPT_PATH, PAIR);
+
+      expect(retried.json()).toEqual({ adopted: 2, existing: 0, scheduledImmediately: 1 });
+      expect(t.taskPort.deleted.map(({ name }) => name).sort()).toEqual(names(''));
+      expect(liveSurveyTasks(t).map(({ name }) => name)).toEqual(names('-r1'));
+    });
+
+    it('queues a cancelled task again as a live task under a fresh name, with the first adoption target and schedule', async () => {
+      const t = await build();
+      await post(t, ADOPT_PATH, PAIR);
+      const first = surveyTasks(t);
+      await post(t, CANCEL_ADOPTED_PATH, {});
+
+      const again = await post(t, ADOPT_PATH, PAIR);
+
+      expect(again.json()).toEqual({ adopted: 2, existing: 0, scheduledImmediately: 1 });
+      expect(liveSurveyTasks(t)).toEqual(first.map((created) => ({ ...created, name: `${created.name}-r1` })));
+      expect(adoptedNames(t)).toEqual([
+        [LAUNCH_A, 'scheduled', `${portTaskName(LAUNCH_A, 1)}-r1`, true],
+        [REMINDER_A1, 'scheduled', `${portTaskName(REMINDER_A1, 1)}-r1`, true],
+      ]);
+    });
+
+    it('takes the next generation on each later re-adoption and cancels under the name in use', async () => {
+      const t = await build();
+      await post(t, ADOPT_PATH, PAIR);
+      await post(t, CANCEL_ADOPTED_PATH, {});
+      await post(t, ADOPT_PATH, PAIR);
+      await post(t, CANCEL_ADOPTED_PATH, {});
+
+      const again = await post(t, ADOPT_PATH, PAIR);
+      const repeated = await post(t, ADOPT_PATH, PAIR);
+
+      expect([again.json(), repeated.json()]).toEqual([
+        { adopted: 2, existing: 0, scheduledImmediately: 1 },
+        { adopted: 0, existing: 2, scheduledImmediately: 0 },
+      ]);
+      expect(t.taskPort.deleted.map(({ name }) => name).sort()).toEqual([...names(''), ...names('-r1')].sort());
+      expect(liveSurveyTasks(t).map(({ name }) => name)).toEqual(names('-r2'));
+      expect(adoptedNames(t).map((row) => row[2])).toEqual(names('-r2'));
+    });
+
+    /** A future launch, so neither adoption below schedules it immediately. */
+    const LAUNCH = { tasks: [task(LAUNCH_A, TENANT_A.siteId, FUTURE)] };
+    const LAUNCH_V1 = portTaskName(LAUNCH_A, 1);
+
+    /** A pause for one port call: `held` settles once the call waits, `release` lets it finish. */
+    function portPause(): { held: Promise<void>; hold: () => Promise<void>; release: () => void } {
+      let reached!: () => void;
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return {
+        held,
+        hold: () => {
+          reached();
+          return released;
+        },
+        release,
+      };
+    }
+
+    /** Runs the recovery hook as the outbox sweep would at `at`, its repository stamping with the same clock. */
+    async function recoverAt(t: TestApp, at: number): Promise<void> {
+      const clock = fixedClock(at);
+      const { logger } = t.app.opt2;
+      const deps: SurveyScheduleDeps = {
+        db: t.db,
+        repository: createCommunicationsRepository({ clock, schema: t.db.schema }),
+        clock,
+        logger,
+        taskPort: t.taskPort,
+        serviceUrls: t.env.OPT2_SERVICE_URLS,
+      };
+      await scheduledTaskRecovery(deps).run({ service: t.env.OPT2_SERVICE_NAME, runtime: outboxRuntimeFor(t.db.schema), clock, logger });
+    }
+
+    it('stamps a cleanup delete overtaken by a second re-adoption on no later queue task, so its failed cancellation is repaired', async () => {
+      const t = await build();
+      await post(t, ADOPT_PATH, LAUNCH);
+      t.taskPort.failDelete(1);
+      await post(t, CANCEL_ADOPTED_PATH, {});
+      const pause = portPause();
+      const remove = t.taskPort.delete.bind(t.taskPort);
+      let first = true;
+      vi.spyOn(t.taskPort, 'delete').mockImplementation(async (queue, name, opts) => {
+        if (first && name === LAUNCH_V1) {
+          first = false;
+          await pause.hold();
+        }
+        return remove(queue, name, opts);
+      });
+      const delayed = post(t, ADOPT_PATH, LAUNCH);
+      await pause.held;
+
+      const overtaking = await post(t, ADOPT_PATH, LAUNCH);
+      pause.release();
+      const late = await delayed;
+
+      expect([overtaking.json(), late.json()]).toEqual([
+        { adopted: 1, existing: 0, scheduledImmediately: 0 },
+        { adopted: 0, existing: 1, scheduledImmediately: 0 },
+      ]);
+      expect(rowNamed(t, LAUNCH_A)).toMatchObject({ status: 'scheduled', queue_task_name: `${LAUNCH_V1}-r1`, dequeued_at: null });
+      t.taskPort.failDelete(1);
+      await post(t, CANCEL_ADOPTED_PATH, {});
+      expect(rowNamed(t, LAUNCH_A)).toMatchObject({ status: 'cancelled', queue_task_name: `${LAUNCH_V1}-r1`, dequeued_at: null });
+      expect((await post(t, ADOPT_PATH, LAUNCH)).json()).toEqual({ adopted: 1, existing: 0, scheduledImmediately: 0 });
+      expect(liveSurveyTasks(t).map(({ name }) => name)).toEqual([`${LAUNCH_V1}-r2`]);
+    });
+
+    it.each([
+      ['landing before', false],
+      ['landing after', true],
+    ])(
+      'leaves a reactivated task unstamped when the create of its earlier queue task returns late, %s the cancellation deletes it, so recovery creates it',
+      async (_label, landsLate) => {
+        const t = await build();
+        const pause = portPause();
+        const create = t.taskPort.create.bind(t.taskPort);
+        vi.spyOn(t.taskPort, 'create').mockImplementation(async (input) => {
+          if (input.name !== LAUNCH_V1) {
+            return create(input);
+          }
+          // Held before the create, the cancellation's delete finds no task, so the late create leaves one no row tracks.
+          if (landsLate) {
+            await pause.hold();
+          }
+          const result = await create(input);
+          if (!landsLate) {
+            await pause.hold();
+          }
+          return result;
+        });
+        const delayed = post(t, ADOPT_PATH, LAUNCH);
+        await pause.held;
+        expect((await post(t, CANCEL_ADOPTED_PATH, {})).json()).toEqual({ cancelled: 1 });
+        t.taskPort.failCreate(1);
+
+        const overtaking = await post(t, ADOPT_PATH, LAUNCH);
+        pause.release();
+        const late = await delayed;
+
+        expect([overtaking.json(), late.json()]).toEqual([
+          { adopted: 1, existing: 0, scheduledImmediately: 0 },
+          { adopted: 1, existing: 0, scheduledImmediately: 0 },
+        ]);
+        expect(rowNamed(t, LAUNCH_A)).toMatchObject({ status: 'scheduled', queue_task_name: `${LAUNCH_V1}-r1`, enqueued_at: null });
+        expect(liveSurveyTasks(t)).toEqual([]);
+        expect(t.taskPort.deleted.map(({ name }) => name)).toEqual([LAUNCH_V1]);
+
+        await recoverAt(t, (rowNamed(t, LAUNCH_A)?.created_at as Date).getTime() + SCHEDULED_TASK_RECOVERY_AGE_MS + 1);
+
+        expect(rowNamed(t, LAUNCH_A)?.enqueued_at).toBeInstanceOf(Date);
+        expect(liveSurveyTasks(t).map(({ name }) => name)).toEqual([`${LAUNCH_V1}-r1`]);
+      },
+    );
   });
 
   describe('rejection', () => {

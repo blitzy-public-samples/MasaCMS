@@ -17,6 +17,7 @@ import {
   z,
   type Clock,
   type FastifyInstance,
+  type FastifyReply,
   type FastifyRequest,
   type ServiceClient,
 } from '../service-kit/index.js';
@@ -34,6 +35,9 @@ export class TaskTenantMismatchError extends LegacyApiError {
   }
 }
 
+/** Why a tenant task route acknowledged a task that no retry can make valid. */
+export type TaskIgnoredReason = 'malformed-body' | 'no-tenant' | 'not-visible' | 'mismatch';
+
 /** Tenant handling of a task route: `tenant` re-checks the body's tenant against the stored row, `system` refuses any tenant. */
 export type TaskRouteOptions<S = unknown> =
   | {
@@ -42,6 +46,8 @@ export type TaskRouteOptions<S = unknown> =
       /** The row the task acts on as visible under the body's tenant, or null when it is not. */
       findStored: (tx: TenantTx, payload: unknown, ctx: { taskName: string; queue: string }) => Promise<S | null>;
       handler: TaskHandler<S>;
+      /** 200 body answering a permanently invalid task instead of the legacy 400, which every queue retries; omitted, the 400 stays. */
+      ignored?: (reason: TaskIgnoredReason) => unknown;
     }
   | { scope: 'system'; handler: TaskHandler };
 
@@ -69,6 +75,27 @@ function wireBodyOf(raw: unknown): TaskWireBody {
   }
 }
 
+/** A permanent refusal of one task: why, the error it answers without an `ignored` body, and the task the log names. */
+interface TaskRefusal {
+  reason: TaskIgnoredReason;
+  error: LegacyApiError;
+  queue: string;
+  taskName: string;
+  tenantId: string | null;
+}
+
+/** Throws the refusal's error unless `ignored` is set; then logs it and answers 200 with the ignored body, so no queue retries the task. */
+function refuseTask(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  ignored: ((reason: TaskIgnoredReason) => unknown) | undefined,
+  { reason, error, queue, taskName, tenantId }: TaskRefusal,
+): FastifyReply {
+  if (ignored === undefined) throw error;
+  request.log.warn(tenantId === null ? {} : { tenantId }, `Task ${queue}/${taskName} ignored: ${reason}`);
+  return reply.code(200).send(ignored(reason));
+}
+
 /** Registers a POST task route on the `cloud-tasks` transport; throws `TypeError` for a path outside the managed task families. */
 export function registerTaskRoute<S>(app: FastifyInstance, path: string, opts: TaskRouteOptions<S>): void {
   if (transportForPath(path) !== 'cloud-tasks') {
@@ -78,7 +105,21 @@ export function registerTaskRoute<S>(app: FastifyInstance, path: string, opts: T
   }
   const opt2: Opt2RouteConfig = { transport: 'cloud-tasks', requires: [TASKS_INVOKER_ROLE] };
   app.post(path, { config: { opt2 } }, async (request, reply) => {
-    const body = wireBodyOf(request.body);
+    const ignored = opts.scope === 'tenant' ? opts.ignored : undefined;
+    let body: TaskWireBody;
+    try {
+      body = wireBodyOf(request.body);
+    } catch (error) {
+      if (!(error instanceof LegacyApiError)) throw error;
+      // A malformed body is named by the Cloud Tasks headers, which both adapters always send.
+      return refuseTask(request, reply, ignored, {
+        reason: 'malformed-body',
+        error,
+        queue: headerOf(request, CLOUD_TASKS_HEADERS.queueName) || 'unknown',
+        taskName: headerOf(request, CLOUD_TASKS_HEADERS.taskName) || 'unknown',
+        tenantId: null,
+      });
+    }
     const taskName = headerOf(request, CLOUD_TASKS_HEADERS.taskName) || body.name;
     const queue = headerOf(request, CLOUD_TASKS_HEADERS.queueName) || body.queue;
     const base = {
@@ -97,14 +138,25 @@ export function registerTaskRoute<S>(app: FastifyInstance, path: string, opts: T
       if (body.tenantId !== null) throw new TaskTenantMismatchError(body.tenantId, taskName);
       result = await opts.handler({ ...base, tenantId: null });
     } else {
-      if (body.tenantId === null) throw new TaskTenantMismatchError(null, taskName);
+      if (body.tenantId === null) {
+        const error = new TaskTenantMismatchError(null, taskName);
+        return refuseTask(request, reply, ignored, { reason: 'no-tenant', error, queue, taskName, tenantId: null });
+      }
       const tenantId = assertTenantId(body.tenantId);
       const stored = await withTenant(opts.db, tenantId, (tx) => opts.findStored(tx, body.payload, { taskName, queue }));
       // Invisible under the body's tenant: the body never chooses a tenant on its own.
-      if (stored === null) throw new TaskTenantMismatchError(tenantId, taskName);
+      if (stored === null) {
+        const error = new TaskTenantMismatchError(tenantId, taskName);
+        return refuseTask(request, reply, ignored, { reason: 'not-visible', error, queue, taskName, tenantId });
+      }
       const context = currentRequestContext();
       if (context !== undefined) context.tenantId = tenantId;
-      result = await opts.handler({ ...base, tenantId, stored });
+      try {
+        result = await opts.handler({ ...base, tenantId, stored });
+      } catch (error) {
+        if (!(error instanceof TaskTenantMismatchError)) throw error;
+        return refuseTask(request, reply, ignored, { reason: 'mismatch', error, queue, taskName, tenantId });
+      }
     }
 
     if (reply.sent) return reply;

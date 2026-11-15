@@ -10,6 +10,7 @@ import {
   parseLocalTimestamp,
   planSurveyTasks,
   portTaskName,
+  reactivatedPortTaskName,
   taskPayload,
   taskTarget,
   type SurveyTaskPayloadSource,
@@ -79,6 +80,25 @@ describe('portTaskName', () => {
     ['501 characters', 'x'.repeat(498)],
   ])('rejects a name with %s', (_label, name) => {
     expect(() => portTaskName(name, 1)).toThrow(InvalidTaskNameError);
+  });
+});
+
+describe('reactivatedPortTaskName', () => {
+  it.each([
+    ['the first adoption', launchName(), 1, `${launchName()}-v1`, `${launchName()}-v1-r1`],
+    ['a reactivation', launchName(), 1, `${launchName()}-v1-r1`, `${launchName()}-v1-r2`],
+    ['a ninth reactivation', reminderName(3), 12, `${reminderName(3)}-v12-r9`, `${reminderName(3)}-v12-r10`],
+    ['another schedule version', launchName(), 2, `${launchName()}-v1-r2`, `${launchName()}-v2-r3`],
+  ])('names the next generation after %s', (_label, name, version, previous, expected) => {
+    const reactivated = reactivatedPortTaskName(name, version, previous);
+    expect(reactivated).toBe(expected);
+    expect(reactivated).toMatch(TASK_NAME_PATTERN);
+  });
+
+  it('rejects a name the generation suffix takes past 500 characters', () => {
+    const name = 'x'.repeat(495);
+    expect(portTaskName(name, 1)).toHaveLength(498);
+    expect(() => reactivatedPortTaskName(name, 1, portTaskName(name, 1))).toThrow(InvalidTaskNameError);
   });
 });
 

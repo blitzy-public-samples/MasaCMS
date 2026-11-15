@@ -6,6 +6,7 @@ import { UnitReadBlockedError, ensureUnitGates, withGatedTenant } from '@opt2/pl
 import { OutsideTenantTransactionError, tenantIdForSite, withMetadata, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
+  cancelledAdoptionsAwaitingDequeue,
   findMessage,
   findMessageByEventId,
   findScheduledTask,
@@ -16,6 +17,7 @@ import {
   listMessages,
   listScheduledTasksBySource,
   listTemplates,
+  lockScheduledTaskByName,
   MAX_RECOVERY_BATCH_SIZE,
   messageCursor,
   queuedLoginMailOlderThan,
@@ -342,6 +344,29 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
     expect([wrongQueue, unknown]).toEqual([null, null]);
   });
 
+  it('locks the scheduled task of a queue task until its transaction ends', async () => {
+    await inTenant(tenantA, (tx) => insertTask(tx, { id: 1, kind: 'survey-launch', version: 4 }));
+    const queueTaskName = `opt2-survey-${SURVEY_ID}-launch-v4`;
+    const lockElsewhere = () =>
+      inTenant(tenantA, (other) =>
+        other.query(`SELECT 1 FROM ${handle.schema}.scheduled_task WHERE scheduled_task_id = $1 FOR UPDATE NOWAIT`, [cfId(1)]),
+      );
+
+    const [locked, wrongQueue, contended] = await inTenant(tenantA, async (tx) => [
+      await lockScheduledTaskByName(tx, { queue: 'surveys-launch', queueTaskName }),
+      await lockScheduledTaskByName(tx, { queue: 'communications-reminders', queueTaskName }),
+      await lockElsewhere().then(
+        () => 'acquired',
+        (err: { code?: string }) => err.code,
+      ),
+    ]);
+
+    expect(locked).toMatchObject({ scheduled_task_id: cfId(1), queue_task_name: queueTaskName });
+    // 55P03 lock_not_available: the row stays locked while the reading transaction is open.
+    expect([wrongQueue, contended]).toEqual([null, '55P03']);
+    expect((await lockElsewhere()).rowCount).toBe(1);
+  });
+
   it('lists adopted tasks still scheduled, optionally by fixture task name', async () => {
     await inTenant(tenantA, async (tx) => {
       await insertTask(tx, { id: 3, n: 2, origin: 'adopted', createdAt: at(2) });
@@ -358,6 +383,26 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
 
     expect(ids(every)).toEqual([1, 3].map(cfId));
     expect(ids(named)).toEqual([cfId(3)]);
+    expect(none).toEqual([]);
+  });
+
+  it('lists the named cancelled adoptions whose queue task is not confirmed deleted', async () => {
+    const reminder = (n: number): string => `opt2-survey-${SURVEY_ID}-reminder-${n}`;
+    await inTenant(tenantA, async (tx) => {
+      await insertTask(tx, { id: 1, n: 2, origin: 'adopted', status: 'cancelled' });
+      await insertTask(tx, { id: 2, n: 1, origin: 'adopted', status: 'cancelled', enqueuedAt: null });
+      await insertTask(tx, { id: 3, n: 3, origin: 'adopted', status: 'cancelled', dequeuedAt: at(1) });
+      await insertTask(tx, { id: 4, n: 4, origin: 'adopted' });
+      await insertTask(tx, { id: 5, n: 5, status: 'cancelled' });
+      await insertTask(tx, { id: 6, n: 6, origin: 'adopted', status: 'cancelled' });
+    });
+
+    const [named, none] = await inTenant(tenantA, async (tx) => [
+      await cancelledAdoptionsAwaitingDequeue(tx, [1, 2, 3, 4, 5].map(reminder)),
+      await cancelledAdoptionsAwaitingDequeue(tx, []),
+    ]);
+
+    expect(ids(named).sort()).toEqual([1, 2].map(cfId));
     expect(none).toEqual([]);
   });
 
@@ -554,12 +599,13 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
       await listScheduledTasksBySource(tx, { sourceType: 'survey', sourceId: SURVEY_ID }),
       await findScheduledTask(tx, cfId(4)),
       await findScheduledTaskByName(tx, { queue: 'surveys-launch', queueTaskName }),
+      await lockScheduledTaskByName(tx, { queue: 'surveys-launch', queueTaskName }),
       await listAdoptedScheduledTasks(tx),
       await queuedLoginMailOlderThan(tx, at(10)),
       await unstampedScheduledTasksOlderThan(tx, at(10)),
     ]);
 
-    expect(seen).toEqual([{ items: [], total: 0 }, null, { items: [], total: 0 }, null, null, null, [], null, null, [], [], []]);
+    expect(seen).toEqual([{ items: [], total: 0 }, null, { items: [], total: 0 }, null, null, null, [], null, null, null, [], [], []]);
     expect(await inTenant(tenantB, (tx) => getMessageDetail(tx, cfId(2)))).toMatchObject({ message: { tenant_id: tenantB } });
     for (const table of ['message_template', 'message', 'delivery_status', 'scheduled_task']) {
       const { rows } = await handle.appPool.query<{ n: number }>(`SELECT count(*)::integer AS n FROM ${handle.schema}.${table}`);
@@ -601,6 +647,7 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
     const taskReads: Array<(tx: TenantTx) => Promise<unknown>> = [
       (tx) => listScheduledTasksBySource(tx, { sourceType: 'survey', sourceId: SURVEY_ID }),
       (tx) => findScheduledTask(tx, cfId(1)),
+      (tx) => lockScheduledTaskByName(tx, { queue: 'surveys-launch', queueTaskName: `opt2-survey-${SURVEY_ID}-launch-v1` }),
       (tx) => listAdoptedScheduledTasks(tx),
     ];
     for (const read of taskReads) {

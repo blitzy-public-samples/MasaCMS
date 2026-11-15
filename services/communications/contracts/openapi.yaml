@@ -625,6 +625,46 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /internal/v1/scheduled-tasks/survey-launches/{surveyId}/done:
+    parameters:
+      - $ref: '#/components/parameters/SurveyId'
+    post:
+      operationId: markSurveyLaunchTaskDone
+      summary: Records a survey's launch task `done` once surveys has run it; a task no longer scheduled changes nothing.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:surveys
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SurveyLaunchDoneRequest'
+      responses:
+        '200':
+          description: The outcome; a task already done, superseded or cancelled answers `applied` false.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SurveyLaunchDoneResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+          description: No launch task of that queue task name, survey and schedule version is visible under the body's tenant.
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /internal/v1/tasks/reminders/{scheduledTaskId}:
     parameters:
       - $ref: '#/components/parameters/ScheduledTaskId'
@@ -651,17 +691,19 @@ paths:
               $ref: '#/components/schemas/ReminderTaskWireBody'
       responses:
         '200':
-          description: The task's outcome.
+          description: The task's outcome. A malformed task body, no tenant, a tenant under which the scheduled task is not visible, or a URL naming another task answers `TaskIgnoredResult` without acting, so Cloud Tasks does not retry it.
           headers:
             X-Opt2-Write-Position:
               $ref: '#/components/headers/XOpt2WritePosition'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ReminderTaskResult'
+                oneOf:
+                  - $ref: '#/components/schemas/ReminderTaskResult'
+                  - $ref: '#/components/schemas/TaskIgnoredResult'
         '400':
           $ref: '#/components/responses/BadRequest'
-          description: A malformed task body, or a tenant under which the scheduled task is not visible.
+          description: A request body that is not JSON; a JSON task body that is invalid answers 200 `TaskIgnoredResult`.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1393,6 +1435,13 @@ components:
       in: path
       required: true
       description: Id of the scheduled-task row the reminder task runs.
+      schema:
+        $ref: '#/components/schemas/CfUuid'
+    SurveyId:
+      name: surveyId
+      in: path
+      required: true
+      description: Id of the survey the launch task launched.
       schema:
         $ref: '#/components/schemas/CfUuid'
     MigrationTenantId:
@@ -2314,6 +2363,43 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ScheduledTask'
+    TenantId:
+      type: string
+      description: Tenant UUID.
+      format: uuid
+      pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
+    QueueTaskName:
+      type: string
+      description: Cloud Tasks task id a scheduled task runs under.
+      minLength: 1
+      maxLength: 500
+      pattern: '^[A-Za-z0-9_-]{1,500}$'
+    SurveyLaunchDoneRequest:
+      type: object
+      description: A launch task surveys ran; tenant, survey and schedule version are re-checked against the stored task.
+      required:
+        - tenantId
+        - queueTaskName
+        - scheduleVersion
+      additionalProperties: false
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        queueTaskName:
+          $ref: '#/components/schemas/QueueTaskName'
+        scheduleVersion:
+          type: integer
+          description: Schedule version the launch task belongs to.
+          minimum: 1
+    SurveyLaunchDoneResult:
+      type: object
+      description: Whether the launch task was recorded `done`.
+      required:
+        - applied
+      additionalProperties: false
+      properties:
+        applied:
+          type: boolean
     TaskWireBody:
       type: object
       description: JSON body both task adapters post; `tenantId` is null on system tasks.
@@ -2394,6 +2480,24 @@ components:
             - sent
             - already-sent
             - superseded
+    TaskIgnoredResult:
+      type: object
+      description: A task acknowledged without acting because no retry can make it valid, and why.
+      required:
+        - ignored
+        - reason
+      additionalProperties: false
+      properties:
+        ignored:
+          type: boolean
+          const: true
+        reason:
+          type: string
+          enum:
+            - malformed-body
+            - no-tenant
+            - not-visible
+            - mismatch
     AdoptScheduledTasksRequest:
       type: object
       description: Fixture survey ACF tasks to adopt, as captured before their deletion.

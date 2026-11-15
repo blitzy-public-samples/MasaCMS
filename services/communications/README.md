@@ -107,6 +107,7 @@ Used by the OPT-2 screens at `/opt2/admin/communications/*` (templates, sends, d
 | Method | Path | Transport | Requires | Does |
 |---|---|---|---|---|
 | `GET` | `/internal/v1/scheduled-tasks?sourceType=survey&sourceId={surveyId}` | `service` | `service:surveys`, with the forwarded user token | The survey's tasks of its current schedule version, in the token's tenant; read by surveys' `{id}/tasks` |
+| `POST` | `/internal/v1/scheduled-tasks/survey-launches/{surveyId}/done` | `service` | `service:surveys` | Marks the launch task surveys ran `done`, matched by queue task name, survey and schedule version under the body's tenant; a done, superseded or cancelled task changes nothing |
 | `POST` | `/internal/v1/tasks/reminders/{scheduledTaskId}` | `cloud-tasks` (queue `communications-reminders`) | `service:tasks-invoker` | Reports the reminder sent to surveys, then marks the task `done`; a done, superseded or cancelled task changes nothing |
 | `POST` | `/internal/v1/migration/apply` | `service` | `platform.migration` | Applies one batch of canonical legacy rows, once per batch id |
 | `GET` | `/internal/v1/migration/export` | `service` | `platform.migration` | One page of a unit's rows in canonical legacy form |
@@ -114,7 +115,7 @@ Used by the OPT-2 screens at `/opt2/admin/communications/*` (templates, sends, d
 | `GET` | `/internal/v1/migration/position` | `service` | `platform.migration` | Write position and outbox and inbox drain counts |
 | `GET`, `POST` | `/internal/v1/migration/watermark` | `service` | `platform.migration` | Reads or records feed watermarks |
 | `POST` | `/internal/v1/migration/gate` | `service` | `platform.migration` | Closes, re-phases, opens or reads the unit gates |
-| `POST` | `/internal/v1/migration/adopt-scheduled-tasks` | `service` | `platform.migration` | Recreates the fixture's paused `opt2-survey-*` ACF tasks as queue tasks and `scheduled_task` rows (`origin = adopted`), once per task name; a passed run time is scheduled immediately (AAP 0.4.2) |
+| `POST` | `/internal/v1/migration/adopt-scheduled-tasks` | `service` | `platform.migration` | Recreates the fixture's paused `opt2-survey-*` ACF tasks as queue tasks and `scheduled_task` rows (`origin = adopted`), once per task name; a passed run time is scheduled immediately (AAP 0.4.2). A cancelled task adopted again is queued as `<name>-v<scheduleVersion>-r<generation>`, because its earlier queue task name stays a tombstone; a queue task its cancellation failed to delete is deleted first, and while that delete fails the call answers the legacy 503 and the row keeps its name |
 | `POST` | `/internal/v1/migration/cancel-adopted-scheduled-tasks` | `service` | `platform.migration` | Cancels the named, or every, still-scheduled adopted task and deletes its queue task, when the surveys units return to legacy |
 | `POST` | `/internal/v1/events/communications.programs-sites.site.changed.v1` | `pubsub-push` | `service:pubsub-invoker` (local push key locally) | Site registry ([Events](#events)) |
 | `POST` | `/internal/v1/events/communications.identity.login-mail.requested.v1` | `pubsub-push` | `service:pubsub-invoker` (local push key locally) | Login mail |
@@ -134,7 +135,7 @@ Used by the OPT-2 screens at `/opt2/admin/communications/*` (templates, sends, d
 
 ## Seam 2: survey schedule to Cloud Tasks
 
-For each schedule version, the consumer creates one launch task on `surveys-launch`, which calls surveys' `QUEUES['surveys-launch'].targetPath` (`/internal/v1/tasks/surveys/{surveyId}/launch`), and one task per reminder on `communications-reminders`, each recorded in `communications.scheduled_task`. Task names are deterministic, the fixture's ACF name suffixed with `-v<scheduleVersion>`, so creating a task twice is a no-op. A newer `scheduleVersion` marks the earlier version's tasks still `scheduled` as `superseded` and deletes them from the queue; tasks already `done` or `cancelled` keep their status and history. Survey data changes only through surveys' OpenAPI.
+For each schedule version, the consumer creates one launch task on `surveys-launch`, which calls surveys' `QUEUES['surveys-launch'].targetPath` (`/internal/v1/tasks/surveys/{surveyId}/launch`), and one task per reminder on `communications-reminders`, each recorded in `communications.scheduled_task`. Task names are deterministic, the fixture's ACF name suffixed with `-v<scheduleVersion>`, so creating a task twice is a no-op. A newer `scheduleVersion` marks the earlier version's tasks still `scheduled` as `superseded` and deletes them from the queue; tasks already `done` or `cancelled` keep their status and history. A run task becomes `done`: the reminder task closes its own row after surveys' reminder-sent call, and surveys reports each launch it ran on `/internal/v1/scheduled-tasks/survey-launches/{surveyId}/done`. Survey data changes only through surveys' OpenAPI.
 
 ## Configuration
 

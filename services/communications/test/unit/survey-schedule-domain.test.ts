@@ -1,7 +1,7 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Seam 2 consumer effect, queue side effects and recovery hook against a throwaway `communications` schema and an in-memory task port. */
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { consumeEnvelope, type ConsumerDefinition, type DestinationResult, type EventEnvelope } from '@opt2/platform/events';
 import { createLogger } from '@opt2/platform/logging';
 import { UnitNotAuthoritativeError, ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
@@ -29,9 +29,10 @@ import {
   type SurveyScheduleDeps,
 } from '../../src/domain/survey-schedule.js';
 import type { SurveyScheduledPayload } from '../../src/generated/events/surveys.survey.scheduled.v1.js';
+import { portTaskName, reactivatedPortTaskName } from '../../src/domain/survey-tasks.js';
 import { RECOVERY_BATCH_SIZE } from '../../src/repo/queries.js';
-import { createCommunicationsRepository } from '../../src/repo/repository.js';
-import { UNITS, type ScheduledTaskRow } from '../../src/repo/tables.js';
+import { createCommunicationsRepository, type NewAdoptedScheduledTask } from '../../src/repo/repository.js';
+import { UNITS, type ScheduledTaskRow, type ScheduledTaskStatus } from '../../src/repo/tables.js';
 
 const NOW = new Date(2026, 5, 30, 12, 0, 0, 0);
 const TOPIC = 'surveys.survey.scheduled.v1';
@@ -43,6 +44,9 @@ interface LogLine {
   message: string;
   tenantId?: string;
 }
+
+/** One consumed delivery and its destination result. */
+type Delivery = () => Promise<DestinationResult | undefined>;
 
 /** In-memory task port: creates are idempotent by queue and name, deletes report NOT_FOUND, and either call can be made to fail. */
 class MemoryTaskPort implements TaskPort {
@@ -164,6 +168,7 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
   });
 
   beforeEach(async () => {
+    await ensureUnitGates(handle.app, UNITS);
     await setGate('open');
     port = new MemoryTaskPort();
     logs = [];
@@ -279,14 +284,45 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
     expect(port.deletes).toEqual([]);
   });
 
-  it('supersedes the earlier version, deletes its queue tasks and keeps a done task', async () => {
+  /** Waits until `count` sessions wait on a lock in a statement naming this schema. */
+  async function lockWaiters(count: number): Promise<void> {
+    await vi.waitFor(
+      async () => {
+        const { rows: found } = await handle.adminPool.query<{ n: number }>(
+          "SELECT count(*)::integer AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND position($1 in query) > 0",
+          [handle.schema],
+        );
+        expect(found[0]?.n).toBe(count);
+      },
+      { timeout: 10_000, interval: 20 },
+    );
+  }
+
+  it.each<[string, (taskId: string, supersede: Delivery) => ReturnType<Delivery>]>([
+    [
+      'done before the delivery',
+      async (taskId, supersede) => {
+        await withGatedTenant(handle.app, TENANT_A.tenantId, (tx) => deps.repository.setScheduledTaskStatus(tx, taskId, 'done'));
+        return supersede();
+      },
+    ],
+    [
+      'done while the supersede waits on its row',
+      async (taskId, supersede) => {
+        const { pending } = await withTenant(handle.app, TENANT_A.tenantId, async (tx) => {
+          await deps.repository.setScheduledTaskStatus(tx, taskId, 'done');
+          const delivery = supersede();
+          await lockWaiters(1);
+          return { pending: delivery };
+        });
+        return pending;
+      },
+    ],
+  ])('supersedes the earlier version, deletes its queue tasks and keeps a task %s', async (_label, complete) => {
     await consume(envelope(schedule(survey, 1, [60, 120])));
     const [launch] = await rows();
-    await withGatedTenant(handle.app, TENANT_A.tenantId, (tx) =>
-      deps.repository.setScheduledTaskStatus(tx, launch?.scheduled_task_id ?? '', 'done'),
-    );
 
-    expect(await consume(envelope(schedule(survey, 2, [30])))).toBe('applied');
+    expect(await complete(launch?.scheduled_task_id ?? '', () => consume(envelope(schedule(survey, 2, [30]))))).toBe('applied');
 
     const stored = await rows();
     expect(stored.map((row) => [row.schedule_version, row.kind, row.status, row.dequeued_at !== null])).toEqual([
@@ -329,6 +365,7 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
     await port.create({ queue: task.queue, name: task.queue_task_name, scheduleTime: NOW, url: SERVICE_URLS.surveys, deadlineS: 60 });
 
     await enqueueScheduledTasks(deps, TENANT_A.tenantId, [task], { siteId: TENANT_A.siteId });
+    await withGatedTenant(handle.app, TENANT_A.tenantId, (tx) => deps.repository.setScheduledTaskStatus(tx, task.scheduled_task_id, 'superseded'));
     await dequeueScheduledTasks(deps, TENANT_A.tenantId, [task]);
     await dequeueScheduledTasks(deps, TENANT_A.tenantId, [task]);
 
@@ -337,6 +374,83 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
     expect(stamped?.dequeued_at).not.toBeNull();
     expect(port.deletes.map((entry) => entry.name)).toEqual([task.queue_task_name, task.queue_task_name]);
     expect(logs.filter((line) => line.severity === 'ERROR')).toHaveLength(1);
+  });
+
+  /** Adopts this survey's launch without a queue task; `readopt` adopts it again, reactivating it once cancelled and dequeued. */
+  async function adoptedLaunch(): Promise<{ row: ScheduledTaskRow; readopt: () => Promise<void> }> {
+    const taskName = `opt2-survey-${survey}-launch`;
+    const adoption: NewAdoptedScheduledTask = {
+      taskName,
+      queue: 'surveys-launch',
+      queueTaskName: portTaskName(taskName, 1),
+      reactivatedQueueTaskName: (current) => reactivatedPortTaskName(taskName, 1, current),
+      kind: 'survey-launch',
+      sourceType: SURVEY_SOURCE_TYPE,
+      sourceId: survey,
+      scheduleTime: new Date(2026, 6, 1, 9, 0, 0),
+      targetRoute: `/internal/v1/tasks/surveys/${survey}/launch`,
+      scheduleVersion: 1,
+    };
+    const adopt = () => withGatedTenant(handle.app, TENANT_A.tenantId, (tx) => deps.repository.adoptScheduledTasks(tx, [adoption]));
+    const [adopted] = await adopt();
+    return {
+      row: adopted?.row as ScheduledTaskRow,
+      readopt: async () => {
+        await adopt();
+      },
+    };
+  }
+
+  /** Makes the next create first commit `status` on `row`, dequeue it and run `after`, as a cancel or supersede overtaking it would. */
+  function overtakeNextCreate(row: ScheduledTaskRow, status: ScheduledTaskStatus, after: () => Promise<void> = async () => undefined): void {
+    const create = port.create.bind(port);
+    vi.spyOn(port, 'create').mockImplementationOnce(async (input) => {
+      await withGatedTenant(handle.app, TENANT_A.tenantId, (tx) =>
+        deps.repository.setScheduledTaskStatus(tx, row.scheduled_task_id, status, {}, 'scheduled'),
+      );
+      await dequeueScheduledTasks(deps, TENANT_A.tenantId, [row]);
+      await after();
+      return create(input);
+    });
+  }
+
+  it.each<[string, ScheduledTaskStatus, boolean]>([
+    ['cancellation', 'cancelled', false],
+    ['supersede', 'superseded', false],
+    ['cancellation and re-adoption', 'cancelled', true],
+  ])('deletes a queue task created after a %s of its row', async (_label, status, reactivate) => {
+    const { row, readopt } = await adoptedLaunch();
+    overtakeNextCreate(row, status, reactivate ? readopt : undefined);
+
+    await enqueueScheduledTasks(deps, TENANT_A.tenantId, [row], { siteId: TENANT_A.siteId });
+
+    expect(port.creates.map((task) => task.name)).toEqual([row.queue_task_name]);
+    expect(port.deletes).toEqual([row.queue_task_name, row.queue_task_name].map((name) => ({ queue: row.queue, name, tenantId: TENANT_A.tenantId })));
+    expect([...port.live.keys()].filter((key) => key.includes(survey))).toEqual([]);
+    expect((await rows()).map((stored) => [stored.status, stored.queue_task_name, stored.enqueued_at, stored.dequeued_at !== null])).toEqual([
+      reactivate ? ['scheduled', `${row.queue_task_name}-r1`, null, false] : [status, row.queue_task_name, null, true],
+    ]);
+    expect(logs.filter((line) => line.severity === 'ERROR')).toEqual([]);
+
+    // A reactivated row's own queue task is still created and stamped by the next enqueue.
+    await enqueueScheduledTasks(deps, TENANT_A.tenantId, (await rows()).filter((stored) => stored.status === 'scheduled'), { siteId: TENANT_A.siteId });
+    expect([...port.live.keys()].filter((key) => key.includes(survey))).toEqual(reactivate ? [`${row.queue}/${row.queue_task_name}-r1`] : []);
+    expect((await rows()).every((stored) => (stored.status === 'scheduled' ? stored.enqueued_at : stored.dequeued_at) !== null)).toBe(true);
+  });
+
+  it('logs a failed delete of a queue task created after a cancellation of its row, keeping the row as the cancel stamped it', async () => {
+    const { row } = await adoptedLaunch();
+    overtakeNextCreate(row, 'cancelled', async () => {
+      port.failDelete = true;
+    });
+
+    await enqueueScheduledTasks(deps, TENANT_A.tenantId, [row], { siteId: TENANT_A.siteId });
+
+    expect([...port.live.keys()]).toEqual([`${row.queue}/${row.queue_task_name}`]);
+    expect((await rows()).map((stored) => [stored.status, stored.enqueued_at, stored.dequeued_at !== null])).toEqual([['cancelled', null, true]]);
+    expect(logs.filter((line) => line.severity === 'ERROR').map((line) => [line.tenantId, line.message])).toEqual([
+      [TENANT_A.tenantId, `scheduled task ${row.queue_task_name} on ${row.queue}: created after its row moved on, and its delete failed`],
+    ]);
   });
 
   it('takes the launch site from the registry, and leaves the row of an unregistered tenant unstamped', async () => {
@@ -373,7 +487,7 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
     expect(logs.filter((line) => line.severity === 'ERROR').map((line) => line.tenantId)).toEqual([TENANT_A.tenantId, unregistered]);
   });
 
-  it('repairs side effects left unstamped longer than the recovery age, and only while the unit gate is open', async () => {
+  it('repairs side effects left unstamped longer than the recovery age while the unit gate is open', async () => {
     port.failCreate = true;
     await consume(envelope(schedule(survey, 1, [60])));
     port.failDelete = true;
@@ -387,12 +501,8 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
     expect(hook.name).toBe(SCHEDULED_TASK_RECOVERY_HOOK);
     expect(await unstamped()).toBe(3);
     await hook.run(recoveryContext(SCHEDULED_TASK_RECOVERY_AGE_MS - 1));
-    for (const state of ['closed', 'legacy'] as const) {
-      await setGate(state);
-      await hook.run(recoveryContext(SCHEDULED_TASK_RECOVERY_AGE_MS + 1));
-    }
-    await setGate('open');
     expect(await unstamped()).toBe(3);
+    expect(port.deletes).toEqual([]);
 
     await hook.run(recoveryContext(SCHEDULED_TASK_RECOVERY_AGE_MS + 1));
 
@@ -402,6 +512,61 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
     ]);
     expect(port.deletes.map((entry) => entry.name).sort()).toEqual([`opt2-survey-${survey}-launch-v1`, `opt2-survey-${survey}-reminder-1-v1`]);
   });
+
+  it.each(['legacy', 'closed', 'missing'] as const)(
+    'deletes leaked queue tasks of superseded and cancelled rows under a %s gate, stamping and enqueueing only once it opens',
+    async (state) => {
+      await consume(envelope(schedule(survey, 1, [60])));
+      const [, reminder] = await rows();
+      await withGatedTenant(handle.app, TENANT_A.tenantId, (tx) =>
+        deps.repository.setScheduledTaskStatus(tx, reminder?.scheduled_task_id ?? '', 'cancelled'),
+      );
+      port.failCreate = true;
+      port.failDelete = true;
+      await consume(envelope(schedule(survey, 2, [])));
+      port.failCreate = false;
+      const created = port.creates.length;
+      const live = (): string[] => [...port.live.keys()].filter((key) => key.includes(survey)).sort();
+      const leaked = [`communications-reminders/opt2-survey-${survey}-reminder-1-v1`, `surveys-launch/opt2-survey-${survey}-launch-v1`];
+      const hook = scheduledTaskRecovery(deps);
+      const errors = (): string[] => logs.filter((line) => line.severity === 'ERROR').map((line) => line.message);
+      if (state === 'missing') {
+        await withMetadata(handle.app, (tx) => tx.query(`DELETE FROM ${handle.schema}.unit_gate WHERE unit = $1`, ['communications.scheduled_task']));
+      } else {
+        await setGate(state);
+      }
+      expect(live()).toEqual(leaked);
+      logs = [];
+
+      await hook.run(recoveryContext(SCHEDULED_TASK_RECOVERY_AGE_MS + 1));
+      expect(live()).toEqual(leaked);
+      expect(errors()).toHaveLength(2);
+      port.failDelete = false;
+      logs = [];
+
+      await hook.run(recoveryContext(SCHEDULED_TASK_RECOVERY_AGE_MS + 1));
+      expect(live()).toEqual([]);
+      expect(port.creates).toHaveLength(created);
+      expect((await rows()).map((row) => [row.schedule_version, row.status, row.enqueued_at !== null, row.dequeued_at])).toEqual([
+        [1, 'superseded', true, null],
+        [1, 'cancelled', true, null],
+        [2, 'scheduled', false, null],
+      ]);
+      // A refused or timed-out stamp would be logged as a dequeue left for recovery.
+      expect(errors()).toEqual([]);
+
+      await ensureUnitGates(handle.app, UNITS);
+      await setGate('open');
+      await hook.run(recoveryContext(SCHEDULED_TASK_RECOVERY_AGE_MS + 1));
+      expect((await rows()).map((row) => [row.status, row.status === 'scheduled' ? row.enqueued_at !== null : row.dequeued_at !== null])).toEqual([
+        ['superseded', true],
+        ['cancelled', true],
+        ['scheduled', true],
+      ]);
+      expect(port.creates.slice(created).map((task) => task.name)).toEqual([`opt2-survey-${survey}-launch-v2`]);
+      expect(live()).toEqual([`surveys-launch/opt2-survey-${survey}-launch-v2`]);
+    },
+  );
 
   it('recovers every batch of a tenant', async () => {
     port.failCreate = true;

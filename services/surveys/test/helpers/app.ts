@@ -239,6 +239,7 @@ export interface ClientRecorder {
 }
 
 type ScheduledTaskList = components['schemas']['ScheduledTaskList'];
+type SurveyLaunchDoneResult = components['schemas']['SurveyLaunchDoneResult'];
 
 interface ClientRoute {
   service: string;
@@ -256,6 +257,9 @@ function pathPattern(template: string): RegExp {
     .join('');
   return new RegExp(`^${source}$`);
 }
+
+/** Communications' `markSurveyLaunchTaskDone` path, whatever the survey. */
+const LAUNCH_DONE_PATH = pathPattern('/internal/v1/scheduled-tasks/survey-launches/{surveyId}/done');
 
 function pathOnly(path: string): string {
   const query = path.indexOf('?');
@@ -342,6 +346,9 @@ export function createClientRecorder(handlers: ClientRecorderHandlers = {}): Cli
     const path = pathOnly(req.path);
     if (req.service === IDENTITY_SERVICE && req.method === 'POST' && path === CSRF_CONSUME_PATH) {
       return { status: 200, headers: {}, body: { valid: csrf } };
+    }
+    if (req.service === COMMUNICATIONS && req.method === 'POST' && LAUNCH_DONE_PATH.test(path)) {
+      return { status: 200, headers: {}, body: { applied: true } satisfies SurveyLaunchDoneResult };
     }
     const sourceId = queryParam(req, 'sourceId');
     if (

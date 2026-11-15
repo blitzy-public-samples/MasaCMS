@@ -42,6 +42,7 @@ import type { ScheduledTaskRow } from '../../src/repo/tables.js';
 import { ADOPT_PATH, CANCEL_ADOPTED_PATH } from '../../src/routes/adoption.js';
 import { FIXTURE_PREFIX } from '../../src/routes/fixture.js';
 import { SCHEDULED_TASKS_PATH } from '../../src/routes/scheduled-tasks.js';
+import { SURVEY_LAUNCH_DONE_PATH } from '../../src/routes/survey-launch-done.js';
 import { REMINDER_TASK_PATH } from '../../src/tasks/reminder.js';
 import {
   TEST_CLOCK,
@@ -144,6 +145,7 @@ interface Expectation {
 const SURVEY_ID = SAMPLE_IDS.surveyId;
 const SWEEP_QUEUE = 'communications-outbox-sweep';
 const REMINDER_QUEUE = 'communications-reminders';
+const LAUNCH_QUEUE = 'surveys-launch';
 const ON_SITE_A = `siteid=${SITE_A}`;
 // The client recorder answers identity's CSRF consume with valid: true, so admitted fixture and /v1 writes reach their handlers.
 const CSRF_HEADERS = { 'x-csrf_token': 'authz-probe-token', 'x-csrf_token_expires': '260630120000000' } as const;
@@ -159,6 +161,8 @@ const PUSH_ROUTE: Declared = { transport: 'pubsub-push', requires: [PUBSUB_INVOK
 let messageId = '';
 /** The reminder task the survey schedule `beforeAll` delivered created on `communications-reminders`. */
 let reminderTask: CreateTaskInput | undefined;
+/** The launch task that schedule created on `surveys-launch`. */
+let launchTask: CreateTaskInput | undefined;
 
 /** A fixture route of auth.cfc requireAny('communications.sender'), which grants no S2 bypass. */
 function fixtureSenderRoute(request: ProbeRequest | (() => ProbeRequest)): Expectation {
@@ -268,6 +272,16 @@ const SUPERSEDED_DELIVERY: ProbeRequest = {
   },
 };
 
+/** Surveys' report that the stored launch task ran, under the queue task name it ran as. */
+function launchDoneRequest(): ProbeRequest {
+  if (launchTask === undefined) throw new TypeError('beforeAll created no launch task');
+  return {
+    method: 'POST',
+    url: SURVEY_LAUNCH_DONE_PATH.replace(':surveyId', SURVEY_ID),
+    payload: { tenantId: TENANT_A.tenantId, queueTaskName: launchTask.name, scheduleVersion: 1 },
+  };
+}
+
 /** The stored reminder's task as Cloud Tasks delivers it: its target path and wire body. */
 function reminderTaskRequest(): ProbeRequest {
   if (reminderTask === undefined) throw new TypeError('beforeAll created no reminder task');
@@ -356,6 +370,13 @@ const EXPECTED: Readonly<Record<string, Expectation>> = {
     allow: ['service:surveys'],
     deny401: NO_INVOCATION,
     send: sendScheduledTasks,
+  },
+  // Surveys alone, under its invocation credential; the body's tenant is re-checked against the stored launch row.
+  'POST /internal/v1/scheduled-tasks/survey-launches/:surveyId/done': {
+    declared: { transport: 'service', requires: ['service:surveys'] },
+    request: launchDoneRequest,
+    allow: ['service:surveys'],
+    deny401: NO_INVOCATION,
   },
   'POST /internal/v1/task-queues/:queue/ensure': queueControl('ensure'),
   'POST /internal/v1/task-queues/:queue/pause': queueControl('pause'),
@@ -535,6 +556,7 @@ beforeAll(async () => {
   const scheduled = await pushTo(t.app, SURVEY_SCHEDULED_SUBSCRIPTION, surveyScheduledEnvelope());
   expect(scheduled.statusCode, scheduled.body).toBe(204);
   reminderTask = t.taskPort.byQueue(REMINDER_QUEUE)[0];
+  launchTask = t.taskPort.byQueue(LAUNCH_QUEUE)[0];
   matrix = collectRouteMatrix(t.app);
 });
 
