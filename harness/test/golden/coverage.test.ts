@@ -61,6 +61,11 @@ const DATASET_FILE = path.join('seed', 'dataset.json');
 const CREDENTIALS_FILE = path.join('secrets', SEED_CREDENTIALS_FILE);
 const MISUSE_CATALOGUE = fileURLToPath(new URL('../fixtures/golden/catalogue.reserved-misuse.yaml', import.meta.url));
 const SAMPLE_SEED_CONFIG = fileURLToPath(new URL('../fixtures/golden/seed-config.sample.json', import.meta.url));
+const VALID_CATALOGUE = fileURLToPath(new URL('../fixtures/golden/catalogue.valid.yaml', import.meta.url));
+const SAMPLE_VERSION = fileURLToPath(new URL('../fixtures/golden/version-v0002.sample.json', import.meta.url));
+const MINI_INVENTORY = fileURLToPath(new URL('../fixtures/inventory/mini-inventory.json', import.meta.url));
+/** Covers of the valid sample catalogue's GS-ID-01, for which the sample version holds no entries. */
+const LOGIN_COVERS = ['admin:clogin.main', 'admin:clogin.login', 'admin:home.redirect', 'admin:clogin.logout'];
 
 /** Reserved person `n` of the sample seed configuration. */
 function samplePerson(n: number): string {
@@ -623,6 +628,94 @@ describe('checkCoverage seed selections', () => {
   });
 });
 
+describe('checkCoverage on the sample fixtures', () => {
+  let state: string;
+
+  beforeEach(async () => {
+    state = await mkdtemp(path.join(os.tmpdir(), 'opt2-golden-coverage-fixtures-'));
+  });
+
+  afterEach(async () => {
+    await rm(state, { recursive: true, force: true });
+  });
+
+  /** The sample catalogue, version, inventory and seed configuration, seed stores reading the temp state. */
+  function load(): Promise<CoverageInputs> {
+    return loadCoverageInputs(
+      { catalogue: VALID_CATALOGUE, version: SAMPLE_VERSION, inventory: MINI_INVENTORY, seedConfig: SAMPLE_SEED_CONFIG },
+      { OPT2_STATE_DIR: state },
+    );
+  }
+
+  it('reports the uncovered job, legacy-write and carried action, entry-less covers and unseeded refs', async () => {
+    expect(checkCoverage(await load())).toEqual([
+      ...LOGIN_COVERS.map((cover) => ({ kind: 'unknown-cover', scenario: 'GS-ID-01', cover })),
+      { kind: 'uncovered-target', route: 'sitemonitor:run', owningService: 'programs-sites' },
+      { kind: 'uncovered-legacy-write', route: 'admin:carch.update{upload=image}' },
+      { kind: 'uncovered-admin-action', routeKey: 'admin:cusers.listusers' },
+      {
+        kind: 'unresolved-seed-ref',
+        scenario: 'GS-CO-05',
+        message: `GS-CO-05: seed dataset ${path.join(state, DATASET_FILE)} does not exist`,
+      },
+      {
+        kind: 'unresolved-seed-ref',
+        scenario: 'GS-PE-01',
+        message: `\${user:tenant-a:site-admin} has no username in ${path.join(state, CREDENTIALS_FILE)}`,
+      },
+    ]);
+  });
+
+  it('asks no cover of legacy reads, static entries, or withheld and legacy-served actions', async () => {
+    const loaded = await load();
+    const found = checkCoverage({ ...loaded, scenarios: loaded.scenarios.map((s) => ({ ...s, covers: [] })) });
+    expect(found.filter((f) => f.kind.startsWith('uncovered-'))).toEqual([
+      { kind: 'uncovered-target', route: 'admin:cusers.update{type=2,action=add}', owningService: 'people' },
+      { kind: 'uncovered-target', route: 'api:content.findone', owningService: 'strategies-content' },
+      { kind: 'uncovered-target', route: 'sitemonitor:run', owningService: 'programs-sites' },
+      { kind: 'uncovered-legacy-write', route: 'admin:carch.update{upload=image}' },
+      { kind: 'uncovered-admin-action', routeKey: 'admin:cusers.listusers' },
+      { kind: 'uncovered-admin-action', routeKey: 'admin:cusers.update{type=2,action=add}' },
+    ]);
+  });
+
+  it('reports nothing once steps cover every gap and the seed refs resolve', async () => {
+    await seedStores(state, {
+      [DATASET_FILE]: {
+        businessDate: '2026-06-30',
+        masa: { content: [{ contentid: 'FIXTURE-PAGE-0001', siteID: 'tenant-a', type: 'Page' }] },
+      },
+      [CREDENTIALS_FILE]: { roles: { 'tenant-a': { 'site-admin': 'site.admin' } } },
+    });
+    const loaded = await load();
+    const upload = step({
+      name: 'upload',
+      method: 'POST',
+      route: '/admin/?muraAction=cArch.update',
+      multipart: {
+        fields: { siteid: 'tenant-a' },
+        files: [{ field: 'newFile', fixture: 'image-png', filename: 'photo.png', contentType: 'image/png' }],
+      },
+    });
+    const found = checkCoverage({
+      ...loaded,
+      entries: [
+        ...loaded.entries,
+        ...LOGIN_COVERS.map((route) => ({ route, owningService: 'identity', state: 'legacy' as const, kind: 'read' as const })),
+        { route: 'admin:cusers.listusers', owningService: 'people', state: 'target', kind: 'read' },
+      ],
+      scenarios: [
+        ...loaded.scenarios.map((s) =>
+          s.id === 'GS-PE-01' ? { ...s, steps: [...s.steps, LIST_USERS], covers: [...s.covers, 'admin:cusers.listusers'] } : s,
+        ),
+        { id: 'GS-PS-07', steps: [step({ name: 'monitor', route: '/index.cfm/_api/sitemonitor/' })], covers: ['sitemonitor:run'] },
+        { id: 'GS-CO-07', steps: [upload], covers: ['admin:carch.update{upload=image}'] },
+      ],
+    });
+    expect(found).toEqual([]);
+  });
+});
+
 describe('countByKind', () => {
   it('lists every kind, zero when absent', () => {
     const findings: CoverageFinding[] = [
@@ -694,6 +787,42 @@ describe('coverageRouteKey', () => {
   ])('keys %s on the scopes start-up script protection leaves, as the gateway does', (_title, request, key) => {
     expect(coverageRouteKey(request, OPTIONS)).toBe(key);
     expect(coverageRouteKeys(request, OPTIONS)).toEqual([key]);
+  });
+
+  it.each<[string, Step, string]>([
+    [
+      'an admin update posting its variant parameters and a placeholder id',
+      step({
+        name: 'create',
+        method: 'POST',
+        route: '/admin/?muraAction=cUsers.update',
+        form: { type: '2', action: 'Add', userid: '${create.data.id}' },
+      }),
+      'admin:cusers.update{type=2,action=add}',
+    ],
+    [
+      'a JSON API read of a placeholder id',
+      step({ name: 'read', route: '/_api/json/v1/tenant-a/content/${create.data.id}' }),
+      'api:content.findone',
+    ],
+    [
+      'a JSON API read whose placeholder site legacy rejects as unknown',
+      step({ name: 'read', route: '/_api/json/v1/${seed.site.siteid}/content/${create.data.id}' }),
+      'api:!invalidparameters',
+    ],
+  ])('keys %s as routeKeyForRequest keys its round trip, without network', (_title, request, key) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('no network in route keying'));
+    try {
+      const converted = toRouteKeyRequest(request, OPTIONS);
+      const roundTripped = toRouteKeyRequest(fromRouteKeyRequest(converted), OPTIONS);
+      expect(roundTripped).toEqual(converted);
+      expect(JSON.stringify(roundTripped)).not.toContain('${');
+      expect(routeKeyForRequest(roundTripped, OPTIONS).key).toBe(key);
+      expect(coverageRouteKey(request, OPTIONS)).toBe(key);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it('keys only the first matrix combination', () => {
@@ -1016,6 +1145,22 @@ describe('main', () => {
     });
     expect((await report()).findings).toEqual([finding]);
     expect(stderr()).toEqual(['uncovered-target api:content.findone strategies-content\n']);
+  });
+
+  it('exits 1 on the unedited sample version and catalogue, listing each finding', async () => {
+    const run = await cli(['--version', SAMPLE_VERSION, '--catalogue', VALID_CATALOGUE, '--seed-config', SAMPLE_SEED_CONFIG]);
+    const { findings } = await report();
+    expect(run.code).toBe(1);
+    expect(run.exits).toEqual([1]);
+    expect(run.line).toMatchObject({ ok: false, code: 1, findings: findings.length, byKind: countByKind(findings) });
+    expect(findings).toEqual(
+      expect.arrayContaining([
+        ...LOGIN_COVERS.map((cover) => ({ kind: 'unknown-cover', scenario: 'GS-ID-01', cover })),
+        { kind: 'uncovered-target', route: 'sitemonitor:run', owningService: 'programs-sites' },
+        { kind: 'uncovered-legacy-write', route: 'admin:carch.update{upload=image}' },
+      ]),
+    );
+    expect(stderr()).toHaveLength(findings.length);
   });
 
   it('reads the reserved identities from --seed-config', async () => {
