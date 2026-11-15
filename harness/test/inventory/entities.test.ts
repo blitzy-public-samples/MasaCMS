@@ -15,8 +15,15 @@ import {
   mergeLive,
   ormEntityIndex,
 } from '../../src/inventory/entities.js';
-import type { EntityClass, EntityEntry, EntityExtraction, LiveEntities } from '../../src/inventory/entities.js';
-import type { FetchLike } from '../../src/lib/http.js';
+import type {
+  EntityClass,
+  EntityEntry,
+  EntityExtraction,
+  FetchLiveEntitiesDeps,
+  LiveEntities,
+} from '../../src/inventory/entities.js';
+
+type FetchLike = NonNullable<FetchLiveEntitiesDeps['fetch']>;
 
 const ORM_VERSIONED = 'core/mura/bean/beanORMVersioned.cfc';
 const FIXTURE_BASE = 'core/mura/fixture/fixtureBase.cfc';
