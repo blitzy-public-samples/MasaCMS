@@ -1,6 +1,7 @@
 // The ccategory controller `before()` and the carried category manager actions for the screen registry (server-only).
 import type { GateDecision, ScreenGate } from '@/lib/access-gate';
-import { assignContext, tokenServesSite, type AdminRequest } from '@/lib/request-context';
+import { administersRequestedSite, assignContext, servesRequestedSite } from '@/lib/request-context';
+import { MODULE_IDS } from '@/shell/nav';
 import type { PageScreen, Rc, ScreenContext, ScreenDefinition } from '../registry';
 import { loadCcategoryEdit, renderCcategoryEdit, type CcategoryEditData } from './edit';
 import { loadCcategoryList, renderCcategoryList, type CcategoryListData } from './list';
@@ -10,21 +11,10 @@ export { ccategorySecondaryMenu } from './secondary-menu';
 
 const ALLOW: GateDecision = Object.freeze({ kind: 'allow' });
 
-const CATEGORY_MODULE_ID = '00000000000000000000000000000000010';
-const SITE_MANAGER_MODULE_ID = '00000000000000000000000000000000000';
-
-// identity mints site-admin and m:<NNN> for the token's site, while legacy checks them for getSite(rc.siteid), which
-// answers `default` for an empty id; so they count only when the token serves that site. S2 is global.
-/** Whether the token's site roles apply to the site `before()` checks. */
-function servesRequestedSite(req: AdminRequest): boolean {
-  return req.user !== undefined && tokenServesSite(req.user, req.rc['siteid'] || 'default');
-}
-
 /** ccategory `before()`: S2, the site's private-pool Admin, or Categories plus Site Manager; else `secure()`. */
 export const ccategoryGate: ScreenGate = (req, { secure }) =>
-  req.isS2 ||
-  (servesRequestedSite(req) &&
-    (req.isSiteAdmin || (req.modulePerm(CATEGORY_MODULE_ID) && req.modulePerm(SITE_MANAGER_MODULE_ID))))
+  administersRequestedSite(req) ||
+  (servesRequestedSite(req) && req.modulePerm(MODULE_IDS.categories) && req.modulePerm(MODULE_IDS.content))
     ? ALLOW
     : secure();
 
