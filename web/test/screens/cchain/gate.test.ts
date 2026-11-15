@@ -1,8 +1,10 @@
-// The cchain before() gate of admin/core/controllers/cchain.cfc: S2 or the private-pool Admin of getSite(rc.siteid).
+// The cchain before() of admin/core/controllers/cchain.cfc: the S2 or private-pool Admin gate of getSite(rc.siteid),
+// then its rc param defaults.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { secure, type GateDecision } from '@/lib/access-gate';
-import type { AdminRequest } from '@/lib/request-context';
-import { cchainGate } from '@/screens/cchain';
+import type { AdminRequest, RequestContext } from '@/lib/request-context';
+import { CCHAIN_RC_DEFAULTS, cchainGate, withCchainDefaults } from '@/screens/cchain';
+import { APPROVAL_CHAIN_IDS } from '../../fixtures/strategies-content/approval-chains';
 import {
   adminS2Request,
   anonymousRequest,
@@ -15,6 +17,18 @@ import { REQUESTED_SITE_CASES } from '../../helpers/requested-site';
 
 const LIST = { circuit: 'cchain', item: 'list' } as const;
 const ALLOW: GateDecision = { kind: 'allow' };
+
+/** The `param name='arguments.rc.<name>' default=''` list of cchain `before()`. */
+const BEFORE_PARAMS = {
+  chainid: '',
+  name: '',
+  description: '',
+  userid: '',
+  groupid: '',
+  requestid: '',
+  actionid: '',
+  actiontype: '',
+} as const;
 
 let restore: () => void;
 
@@ -61,5 +75,19 @@ describe('cchainGate', () => {
     expect(await gate(req)).toEqual(
       administers ? { decision: ALLOW, secureCalls: 0 } : { decision: secure(req), secureCalls: 1 },
     );
+  });
+});
+
+describe('cchain rc defaults', () => {
+  it('holds the before() params as empty strings', () => {
+    expect(CCHAIN_RC_DEFAULTS).toEqual(BEFORE_PARAMS);
+  });
+
+  it.each<[string, RequestContext]>([
+    ['a bare rc', { siteid: 'tenant-a' }],
+    ['present values', { siteid: 'tenant-a', chainid: APPROVAL_CHAIN_IDS.standard, groupid: 'A,B', name: 'Legal' }],
+    ['an explicit empty chainid', { siteid: 'tenant-a', chainid: '' }],
+  ])('fills only what %s lacks', (_case, rc) => {
+    expect({ ...withCchainDefaults(rc) }).toEqual({ ...BEFORE_PARAMS, ...rc });
   });
 });
