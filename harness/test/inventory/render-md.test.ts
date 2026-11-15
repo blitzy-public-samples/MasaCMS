@@ -1,4 +1,7 @@
+import * as fs from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import type { GeneratedFinding, InventoryVariant, LegacyInventory } from '../../src/inventory/generate.js';
 import {
   INVENTORY_TITLE,
   renderInventoryMarkdown,
@@ -469,3 +472,272 @@ describe('renderInventoryMarkdown', () => {
     ]);
   });
 });
+
+const fixture = JSON.parse(
+  await fs.readFile(fileURLToPath(new URL('../fixtures/inventory/mini-inventory.json', import.meta.url)), 'utf8'),
+) as LegacyInventory;
+
+const SECTION_HEADINGS: readonly string[] = [
+  '## Counts',
+  '## Admin controllers',
+  '## Route families',
+  '## JSON API entities and methods',
+  '## OAuth, SOAP and fixture routes',
+  '## Public front end',
+  '## Site monitor',
+  '## Tables',
+  '## Relations and stored procedures',
+  '## Findings',
+];
+
+// Lines between `heading` and the next section heading.
+function section(lines: readonly string[], heading: string): string[] {
+  const start = lines.indexOf(heading);
+  if (start < 0) throw new Error(`no section ${heading}`);
+  const next = lines.findIndex((l, i) => i > start && l.startsWith('## '));
+  return lines.slice(start + 1, next < 0 ? undefined : next);
+}
+
+// Ids of the item rows, in row order.
+function rowIds(lines: readonly string[]): string[] {
+  return lines.flatMap((l) => /^\| `([^`]+)` \|/.exec(l)?.[1] ?? []);
+}
+
+function byId<T extends { id: string }>(items: readonly T[], id: string): T {
+  const item = items.find((i) => i.id === id);
+  if (item === undefined) throw new Error(`no item ${id}`);
+  return item;
+}
+
+function variantOf(inv: LegacyInventory, id: string): InventoryVariant {
+  return byId(
+    inv.controllers.flatMap((c) => c.actions.flatMap((a) => a.variants)),
+    id,
+  );
+}
+
+describe('renderInventoryMarkdown over the mini inventory fixture', () => {
+  it('returns body lines only, leaving the title and Source SHA line to writeMarkdown', () => {
+    const { title, lines } = renderInventoryMarkdown(fixture);
+    expect(title).toBe(INVENTORY_TITLE);
+    expect(lines.every((l) => typeof l === 'string')).toBe(true);
+    expect(lines.some((l) => l.startsWith('# Legacy inventory') || l.startsWith('Source SHA:'))).toBe(false);
+  });
+
+  it('renders every section heading once, in the committed order', () => {
+    const { lines } = renderInventoryMarkdown(fixture);
+    const at = SECTION_HEADINGS.map((h) => lines.indexOf(h));
+    expect(at.every((index, i) => index > (at[i - 1] ?? -1))).toBe(true);
+    expect(lines.filter((l) => l.startsWith('## '))).toHaveLength(SECTION_HEADINGS.length);
+  });
+
+  it('shows every count of inventory.counts, with the live status in the header line', () => {
+    const { lines } = renderInventoryMarkdown(fixture);
+    const expected: string[] = [];
+    for (const [name, value] of Object.entries(fixture.counts)) {
+      if (name === 'liveStatus') continue;
+      const items: [string, unknown][] = typeof value === 'object' && value !== null ? Object.entries(value) : [['—', value]];
+      for (const [item, n] of items) expected.push(`| ${name} | ${item} | ${n === null ? 'pending-run' : String(n)} |`);
+    }
+    const rows = section(lines, '## Counts').filter((l) => l.startsWith('| ') && !/^\| (Section|---) \|/.test(l));
+    expect(rows.sort()).toEqual(expected.sort());
+    expect(lines[0]).toBe(
+      `Extracted from: git archive ${fixture.sourceSha} · generator: ${fixture.generatedBy} · live fields: ${fixture.counts.liveStatus}`,
+    );
+  });
+
+  it('renders the people roster variants with owner, disposition, CSRF and response mode', () => {
+    const controllers = section(renderInventoryMarkdown(fixture).lines, '## Admin controllers');
+    expect(rowOf(controllers, 'ctl:cusers.update{type=2,action=add}')).toEqual([
+      '`ctl:cusers.update{type=2,action=add}`',
+      '`admin:cusers.update{type=2,action=add}`',
+      'people',
+      'carry (5)',
+      'validates `rc.userid`',
+      'redirect',
+    ]);
+    expect(rowOf(controllers, 'ctl:cusers.update{type=2,action=delete}').slice(2, 4)).toEqual([
+      'spans identity, people',
+      'decision (3, withheld)',
+    ]);
+  });
+
+  it('renders legacy-served communications actions and JSON API entity methods in their own sections', () => {
+    const { lines } = renderInventoryMarkdown(fixture);
+    expect(rowOf(section(lines, '## Admin controllers'), 'ctl:cemail.list').slice(2)).toEqual([
+      'communications',
+      'legacy-served (4)',
+      'none',
+      'page (text/html)',
+    ]);
+    const api = section(lines, '## JSON API entities and methods');
+    expect(rowOf(api, 'api:content.findone').slice(1, 4)).toEqual(['`api:content.findone`', 'strategies-content', 'carry (5)']);
+    expect(rowIds(section(lines, '## Route families'))).toEqual([]);
+    expect(rowIds(section(lines, '## OAuth, SOAP and fixture routes'))).toEqual([]);
+  });
+
+  it('lists every table with its owners, rule steps and writer count', () => {
+    const inv = structuredClone(fixture);
+    const memb = byId(inv.tables, 'tbl:tusersmemb');
+    inv.tables.push({
+      ...structuredClone(memb),
+      id: 'tbl:tcontent',
+      table: 'tcontent',
+      owningService: 'strategies-content',
+      owners: ['strategies-content'],
+      ownershipOwner: 'strategies-content',
+      ruleSteps: [1],
+      hasSiteId: true,
+      writers: [...memb.writers, ...memb.writers, ...memb.writers],
+    });
+    const tables = section(renderInventoryMarkdown(inv).lines, '## Tables');
+    expect(byId(fixture.tables, 'tbl:tusers').ownershipOwner).toBe('split');
+    expect(rowOf(tables, 'tbl:tusers')).toEqual(['`tbl:tusers`', 'bootstrap', 'yes', 'yes', 'identity, people', '1', 'carry (5)', '1']);
+    expect(rowOf(tables, 'tbl:tusersmemb').slice(2)).toEqual(['no', 'yes', 'identity', '2', 'carry (5)', '1']);
+    expect(rowOf(tables, 'tbl:tcontent').slice(4)).toEqual(['strategies-content', '1', 'carry (5)', '3']);
+    expect(rowIds(tables)).toEqual(['tbl:tusers', 'tbl:tusersmemb', 'tbl:tcontent']);
+  });
+
+  it('escapes a pipe inside a cell without adding a column', () => {
+    const inv = structuredClone(fixture);
+    variantOf(inv, 'ctl:cemail.list').csrfContext = 'rc.siteid | rc.emailid';
+    const row = rowOf(section(renderInventoryMarkdown(inv).lines, '## Admin controllers'), 'ctl:cemail.list');
+    expect(row).toHaveLength(6);
+    expect(row[4]).toBe('none `rc.siteid \\| rc.emailid`');
+  });
+
+  it('flags a corrected action inline with its expected disposition', () => {
+    const inv = structuredClone(fixture);
+    variantOf(inv, 'ctl:cusers.listusers').correction = {
+      expected: { disposition: 'legacy-served' },
+      computed: { disposition: 'carry', owningService: 'people' },
+      step: 5,
+      basis: 'area owner people is a migrated service',
+    };
+    const row = rowOf(section(renderInventoryMarkdown(inv).lines, '## Admin controllers'), 'ctl:cusers.listusers');
+    expect(row[3]).toBe('carry (5) (corrected; expected legacy-served)');
+  });
+
+  it('flags an unclassified gate on its circuit through the generator finding only', () => {
+    const inv = structuredClone(fixture);
+    const cemail = byId(inv.controllers, 'ctl:cemail');
+    const gate = { ...cemail.requiredRole, classification: null, pattern: null, unclassified: true };
+    cemail.requiredRole = gate;
+    cemail.gates = [{ ...gate, actions: null }];
+    expect(renderInventoryMarkdown(inv).lines).toEqual(renderInventoryMarkdown(fixture).lines);
+
+    const finding: GeneratedFinding = {
+      kind: 'unclassified-gate',
+      id: 'ctl:cemail',
+      source: gate.source,
+      detail: 'before() gate of cemail for every action matches no extractor pattern',
+    };
+    inv.findings.push(finding);
+    const last = section(renderInventoryMarkdown(inv).lines, '## Findings').at(-1) ?? '';
+    expect(cells(last)).toEqual(['unclassified-gate', '`ctl:cemail`', '`admin/core/controllers/cemail.cfc:83-85`', finding.detail]);
+  });
+
+  it('flags unkeyed entries with an empty route-key cell and a findings row', () => {
+    const inv = structuredClone(fixture);
+    variantOf(inv, 'ctl:cemail.list').routeKey = '';
+    const route = byId(inv.routes, 'api:content.findone');
+    route.routeKey = null;
+    inv.findings.push({ kind: 'unkeyed-entry', id: route.id, source: route.source, detail: `${route.kind} route has no platform route key` });
+    const { lines } = renderInventoryMarkdown(inv);
+    expect(rowOf(section(lines, '## Admin controllers'), 'ctl:cemail.list')[1]).toBe('—');
+    expect(rowOf(section(lines, '## JSON API entities and methods'), route.id)[1]).toBe('—');
+    expect(section(lines, '## Findings')).toContain(
+      '| unkeyed-entry | `api:content.findone` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:2292-2384` | api-entity-method route has no platform route key |',
+    );
+  });
+
+  it('renders the decision-list mismatches of the fixture as findings rows', () => {
+    const findings = section(renderInventoryMarkdown(fixture).lines, '## Findings');
+    const mismatches = findings.filter((l) => l.startsWith('| decision-list-mismatch |')).map((l) => cells(l).slice(1, 3));
+    expect(mismatches).toEqual([
+      ['`ctl:clogin.login`', '`admin/core/controllers/clogin.cfc:101-113`'],
+      ['`fe:doaction=login`', '`core/mura/Handler/standardEventsHandler.cfc:540-554`'],
+    ]);
+  });
+
+  it('flags only the fixture items that carry a correction', () => {
+    const { lines } = renderInventoryMarkdown(fixture);
+    const flagged = lines.filter((l) => l.includes('(corrected; expected')).map((l) => /`([^`]+)`/.exec(l)?.[1]);
+    expect(flagged).toEqual(['ctl:clogin.login', 'fe:doaction=login', 'job:sitemonitor.cache-purge']);
+    const findingRows = section(lines, '## Findings').filter((l) => /^\| [a-z-]+ \| `/.test(l));
+    expect(findingRows.map((l) => cells(l)[0])).toEqual(fixture.findings.map((f) => f.kind));
+  });
+
+  it('renders a live procedure check and empty optional facts', () => {
+    const inv = structuredClone(fixture);
+    inv.storedProcedureCheck.live = {
+      procedures: 0,
+      triggers: 0,
+      databaseTriggers: 0,
+      functions: 0,
+      total: 0,
+      excludedSchemas: ['synthetic'],
+      takenBeforeFixtures: true,
+      checkedAt: '2026-06-30T00:00:00.000Z',
+      objects: [],
+    };
+    inv.relations = [];
+    inv.coreMuraActionSearch = { ...inv.coreMuraActionSearch, filesMentioning: 0, files: [], dispatcher: null };
+    byId(inv.frontEnd, 'fe:doaction=login').windowed = false;
+    byId(inv.tables, 'tbl:tusersmemb').ruleSteps = [];
+    const { lines } = renderInventoryMarkdown(inv);
+    expect(section(lines, '## Relations and stored procedures')).toEqual([
+      '',
+      '- Relations: 0',
+      '- Stored procedures: static 0, live 0; foreign keys: static 0',
+      '',
+    ]);
+    expect(lines).toContain('Search for `muraAction` in `core/** excluding core/vendor`: 0 handlers; 0 files mention it.');
+    expect(rowOf(section(lines, '## Public front end'), 'fe:doaction=login')[5]).toBe('no');
+    expect(rowOf(section(lines, '## Tables'), 'tbl:tusersmemb')[5]).toBe('—');
+  });
+
+  it('renders no flags once corrections and findings are cleared', () => {
+    const inv = structuredClone(fixture);
+    const steps = inv.scheduledJobs.flatMap((j) => j.steps);
+    const variants = inv.controllers.flatMap((c) => c.actions.flatMap((a) => a.variants));
+    for (const item of [...variants, ...inv.frontEnd, ...inv.routes, ...inv.tables, ...inv.scheduledJobs, ...steps]) {
+      item.correction = null;
+    }
+    inv.findings = [];
+    const { lines } = renderInventoryMarkdown(inv);
+    expect(lines.filter((l) => l.includes('(corrected;'))).toEqual([]);
+    expect(section(lines, '## Findings')).toEqual(['', 'None.']);
+  });
+
+  it('is deterministic and leaves its input unchanged', () => {
+    const before = structuredClone(fixture);
+    const first = renderInventoryMarkdown(fixture);
+    expect(renderInventoryMarkdown(fixture)).toEqual(first);
+    expect(fixture).toEqual(before);
+  });
+
+  it('keeps the inventory row order and orders counts independently of key order', () => {
+    const reverseKeys = (o: object): object => Object.fromEntries(Object.entries(o).reverse());
+    const inv = structuredClone(fixture);
+    inv.controllers.reverse();
+    inv.tables.reverse();
+    inv.findings.reverse();
+    inv.counts = Object.fromEntries(
+      Object.entries(reverseKeys(inv.counts)).map(([k, v]) => [k, typeof v === 'object' && v !== null ? reverseKeys(v) : v]),
+    ) as LegacyInventory['counts'];
+    const original = renderInventoryMarkdown(fixture).lines;
+    const reversed = renderInventoryMarkdown(inv).lines;
+    expect(section(reversed, '## Counts')).toEqual(section(original, '## Counts'));
+    expect(rowIds(section(reversed, '## Admin controllers'))).toEqual([
+      'ctl:cusers.listusers',
+      'ctl:cusers.update{type=2,action=add}',
+      'ctl:cusers.update{type=2,action=delete}',
+      'ctl:clogin.login',
+      'ctl:cemail.list',
+    ]);
+    expect(rowIds(section(reversed, '## Tables'))).toEqual(['tbl:tusersmemb', 'tbl:tusers']);
+    expect([...reversed].sort()).toEqual([...original].sort());
+  });
+});
+
