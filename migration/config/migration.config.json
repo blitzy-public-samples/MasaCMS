@@ -38,7 +38,7 @@
     { "name": "projector-delay", "defaultDelayMs": 3000 },
     { "name": "forced-reinit" }
   ],
-  "reconciliationPoints": ["after-backfill", "after-feed-{n}", "after-fault-{fault}", "post-cutover", "rollback-before", "rollback-after"],
+  "reconciliationPoints": ["after-backfill", "after-feed-{n}", "after-fault-{fault}", "checkpoint", "post-cutover", "rollback-before", "rollback-after"],
   "rollbackSet": {
     "routeKeys": [
       "admin:cusers.update{type=2,action=add}",

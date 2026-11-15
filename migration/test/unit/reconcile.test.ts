@@ -242,6 +242,7 @@ describe('resolvePoint', () => {
     ['after-feed-3', { kind: 'after-feed', feedN: 3, legacySource: 'snapshot', expectedTableVersion: 'v0001', rollback: false }],
     ['after-fault-duplicate-batch', { kind: 'after-fault', fault: 'duplicate-batch', legacySource: 'snapshot', expectedTableVersion: 'v0001', rollback: false }],
     ['after-fault-window-import-interrupted', { kind: 'after-fault', fault: 'window-import-interrupted', legacySource: 'live', expectedTableVersion: 'v0001', rollback: false }],
+    ['checkpoint', { kind: 'checkpoint', legacySource: 'snapshot', expectedTableVersion: 'v0001', rollback: false }],
     ['post-cutover', { kind: 'post-cutover', legacySource: 'live', expectedTableVersion: 'v0002', rollback: false }],
     ['rollback-before', { kind: 'rollback-before', legacySource: 'live', expectedTableVersion: 'v0002', rollback: true }],
     ['rollback-after', { kind: 'rollback-after', legacySource: 'live', expectedTableVersion: 'v0003', rollback: true }],

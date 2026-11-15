@@ -93,6 +93,8 @@ type TenantObjects = ReadonlyMap<string, readonly ObjectEntry[]>;
 
 /** Snapshot kind of `S0`, the seeded state the backfill applies. */
 const BACKFILL_SNAPSHOT_KIND: SnapshotKind = 'seed';
+/** Kind of Sk, the snapshot the `checkpoint` point compares against. */
+const CHECKPOINT_SNAPSHOT_KIND: SnapshotKind = 'checkpoint';
 
 /** Version whose `rollbackRefs` name the roster group set R that the rollback points reconcile. */
 const ROLLBACK_VERSION = 'v0003';
@@ -345,6 +347,7 @@ function defaultUnits(ctx: Pick<ReconcileContext, 'catalog' | 'config'>, point: 
 async function pointSnapshot(ctx: Pick<ReconcileContext, 'db'>, point: ResolvedPoint): Promise<SnapshotRecord> {
   let snapshot: SnapshotRecord | null;
   if (point.kind === 'after-backfill') snapshot = await latestSnapshotOfKind(ctx, BACKFILL_SNAPSHOT_KIND);
+  else if (point.kind === 'checkpoint') snapshot = await latestSnapshotOfKind(ctx, CHECKPOINT_SNAPSHOT_KIND);
   // `after-feed-<n>` is named by the sequence of the snapshot the feed applied (S0, seq 0, is the backfill's), so
   // snapshot n, not n + 1, is the state the target was brought to.
   else if (point.feedN !== undefined) snapshot = await getSnapshot(ctx, point.feedN);

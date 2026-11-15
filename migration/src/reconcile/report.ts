@@ -23,7 +23,7 @@ export type Measure = (typeof MEASURES)[number];
 export type LegacySource = 'snapshot' | 'live';
 
 /** Family of a reconciliation point name. */
-export type PointKind = 'after-backfill' | 'after-feed' | 'after-fault' | 'post-cutover' | 'rollback-before' | 'rollback-after';
+export type PointKind = 'after-backfill' | 'after-feed' | 'after-fault' | 'checkpoint' | 'post-cutover' | 'rollback-before' | 'rollback-after';
 
 /** A validated point name with its legacy source and the cut-over version expected to be active. */
 export interface ResolvedPoint {
@@ -47,14 +47,15 @@ const PENDING = 'pending-run';
 const ZERO_DIFFERENCE = 'zero-difference';
 const FEED_POINT = /^after-feed-([1-9]\d*)$/;
 const FAULT_PREFIX = 'after-fault-';
-const EXACT_KINDS: ReadonlySet<string> = new Set<PointKind>(['after-backfill', 'post-cutover', 'rollback-before', 'rollback-after']);
-const TAIL_POINTS = ['post-cutover', 'rollback-before', 'rollback-after'];
+const EXACT_KINDS: ReadonlySet<string> = new Set<PointKind>(['after-backfill', 'checkpoint', 'post-cutover', 'rollback-before', 'rollback-after']);
+const TAIL_POINTS = ['checkpoint', 'post-cutover', 'rollback-before', 'rollback-after'];
 
 /** `config.reconciliationPoints` spelling of each kind. */
 const PATTERN_OF: Readonly<Record<PointKind, string>> = {
   'after-backfill': 'after-backfill',
   'after-feed': 'after-feed-{n}',
   'after-fault': 'after-fault-{fault}',
+  checkpoint: 'checkpoint',
   'post-cutover': 'post-cutover',
   'rollback-before': 'rollback-before',
   'rollback-after': 'rollback-after',
@@ -66,6 +67,8 @@ const POINT_DEFAULTS: Readonly<Record<PointKind, { expectedTableVersion: string;
   'after-backfill': { expectedTableVersion: 'v0001', legacySource: 'snapshot' },
   'after-feed': { expectedTableVersion: 'v0001', legacySource: 'snapshot' },
   'after-fault': { expectedTableVersion: 'v0001', legacySource: 'snapshot' },
+  // Checkpoint Ck of test-all.sh, verified against its checkpoint snapshot Sk before cut-over.
+  checkpoint: { expectedTableVersion: 'v0001', legacySource: 'snapshot' },
   'post-cutover': { expectedTableVersion: 'v0002', legacySource: 'live' },
   'rollback-before': { expectedTableVersion: 'v0002', legacySource: 'live' },
   'rollback-after': { expectedTableVersion: 'v0003', legacySource: 'live' },
@@ -378,7 +381,7 @@ export async function regenerateSummary(target: ReportTarget, config: Pick<Migra
   return (await writeMarkdownReport(target, `${RECONCILIATION_DIR}/${SUMMARY_FILE}`, markdown)).path;
 }
 
-/** Sort rank of a point: backfill, feeds by number, faults in configured order, cut-over, rollback, then the rest. */
+/** Sort rank of a point: backfill, feeds by number, faults in configured order, checkpoint, cut-over, rollback, then the rest. */
 function rankOf(point: string, faults: readonly string[]): [number, number] {
   if (point === 'after-backfill') return [0, 0];
   const feed = FEED_POINT.exec(point);

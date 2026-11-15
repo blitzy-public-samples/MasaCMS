@@ -372,6 +372,21 @@ describe('runReconcile', () => {
     expect(written).toMatchObject({ point, snapshotSeq: seq, legacyDatabase: database, legacySource: 'snapshot' });
   });
 
+  it('reads the checkpoint point from the latest checkpoint snapshot, not the latest snapshot', async () => {
+    const snapshots = [
+      { seq: 0, kind: 'seed' },
+      { seq: 1, kind: 'checkpoint' },
+      { seq: 2, kind: 'feed' },
+    ];
+    const result = await runReconcile(contextOf({ snapshots }), { point: 'checkpoint', units: ['people.person'] }, fakeSources({}, calls));
+
+    const database = `${LIVE_DB}_opt2_snap_1`;
+    expect(calls.legacyRowDatabases).toEqual([database]);
+    expect(result.reportPath).toBe(path.join(reportsDir, RECONCILIATION_DIR, 'checkpoint.json'));
+    const written = JSON.parse(await readFile(result.reportPath, 'utf8')) as Record<string, unknown>;
+    expect(written).toMatchObject({ point: 'checkpoint', snapshotSeq: 1, legacyDatabase: database, legacySource: 'snapshot' });
+  });
+
   it('reads the live database for a live fault point and records the latest snapshot sequence', async () => {
     const ctx = contextOf({ snapshots: [{ seq: 0, kind: 'seed' }, { seq: 4, kind: 'feed' }] });
     const result = await runReconcile(ctx, { point: 'after-fault-window-import-interrupted', units: ['people.person'] }, fakeSources({}, calls));
@@ -387,6 +402,7 @@ describe('runReconcile', () => {
     ['an empty unit list', { point: 'post-cutover', units: [] }, [{ seq: 0, kind: 'seed' }]],
     ['a missing feed snapshot', { point: 'after-feed-3', units: ['people.person'] }, [{ seq: 0, kind: 'seed' }]],
     ['no backfill snapshot', { point: 'after-backfill', units: ['people.person'] }, [{ seq: 0, kind: 'feed' }]],
+    ['no checkpoint snapshot', { point: 'checkpoint', units: ['people.person'] }, [{ seq: 0, kind: 'seed' }]],
     ['no snapshot at all', { point: 'after-fault-duplicate-batch', units: ['people.person'] }, []],
     ['a snapshot not ready', { point: 'after-feed-1', units: ['people.person'] }, [{ seq: 1, kind: 'feed', state: 'creating' }]],
   ])('rejects %s with ReconcileUsageError', async (_name, options, snapshots) => {
