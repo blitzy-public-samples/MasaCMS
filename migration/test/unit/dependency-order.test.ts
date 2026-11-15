@@ -1,6 +1,5 @@
-// Unit tests for the dependency order of the legacy tables, over inline inventories and a fake unit catalog.
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
+// Unit tests for the dependency order of the legacy tables, over the fixture inventory and catalog and over inline inventories.
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { parseProgramTable } from '@opt2/platform/migration-kit';
@@ -19,7 +18,7 @@ import {
   parentOf,
   toMigrationOrderReport,
   writeMigrationOrderReport,
-} from '../../src/order/dependency-order.js';
+} from '../../src/order/index.js';
 import type {
   DependencyOrder,
   OrderCatalog,
@@ -28,11 +27,14 @@ import type {
   OrderRelationKind,
   TableRef,
   TenantFrom,
-} from '../../src/order/dependency-order.js';
-import { UnitCatalogError, UnknownLegacyTableError } from '../../src/owners/units.js';
-import type { DataOwner, LegacyTableOwner, Unit } from '../../src/owners/units.js';
-import { resolveReportTarget } from '../../src/reports/write-report.js';
-import type { ReportClock, ReportTarget } from '../../src/reports/write-report.js';
+} from '../../src/order/index.js';
+import { UnitCatalogError, UnknownLegacyTableError } from '../../src/owners/index.js';
+import type { DataOwner, LegacyTableOwner, Unit } from '../../src/owners/index.js';
+import { resolveReportTarget } from '../../src/reports/index.js';
+import type { ReportClock, ReportTarget } from '../../src/reports/index.js';
+import { TEST_SOURCE_SHA, createTestDirs } from '../helpers/env.js';
+import type { TestDirs } from '../helpers/env.js';
+import { FIXTURE_CATALOG, FIXTURE_INVENTORY, PROGRAM_SITES, writeInventoryFile } from '../helpers/fixtures.js';
 
 /** One ownership entry of the fake catalog; a table migrates when it has owners. */
 interface FakeTable {
@@ -89,7 +91,6 @@ function ownedBy(owner: DataOwner, keyColumns: Readonly<Record<string, readonly 
   return Object.fromEntries(Object.entries(keyColumns).map(([table, keys]) => [table, { owner, owners: [owner], keyColumns: keys }]));
 }
 
-const PIN_SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const CLOCK: ReportClock = { now: () => new Date('2026-03-04T05:06:07.000Z') };
 const INTEREST_SOURCE: NonNullable<OrderRelation['source']> = { path: 'core/mura/user/userDAO.cfc', lines: [40, 44] };
 
@@ -218,7 +219,7 @@ const LEGACY_FORM_TABLES: Readonly<Record<string, FakeTable>> = {
 
 /** An inventory as `opt2/inventory/legacy-inventory.json` records it, with keys the order does not read. */
 const LEGACY_FORM = {
-  sourceSha: PIN_SHA,
+  sourceSha: TEST_SOURCE_SHA,
   tables: [
     { table: 'tsettings', hasSiteId: true, rowCount: 3 },
     { table: 'Program_N.grant', hasSiteId: null, hasSiteIdLive: false },
@@ -276,32 +277,57 @@ const LEGACY_FORM_PARSED: OrderInventory = {
   ],
 };
 
-const tempDirs: string[] = [];
+/** Table, owner and tenant source of each entry of the fixture order, in order. */
+const FIXTURE_ENTRIES: readonly (readonly [string, DataOwner | 'split', TenantFrom])[] = [
+  ['tsettings', 'programs-sites', 'siteID'],
+  ['synthetic.person_archive', 'people', 'siteID'],
+  ['synthetic.program_site', 'programs-sites', 'siteID'],
+  ['Program_1.blackout', 'timesheets', 'parent'],
+  ['Program_2.blackout', 'timesheets', 'parent'],
+  ['timagesizes', 'programs-sites', 'siteID'],
+  ['tmailinglist', 'communications', 'siteID'],
+  ['tmailinglistmembers', 'communications', 'siteID'],
+  ['tusers', 'split', 'siteID'],
+  ['tcontent', 'strategies-content', 'siteID'],
+  ['tfiles', 'strategies-content', 'siteID'],
+];
 
-function makeTempDir(): string {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'opt2-dependency-order-'));
-  tempDirs.push(dir);
-  return dir;
+/** Child and parent table pairs of a fixture relation; `Program_N` sides become one pair per fixture program. */
+function concretePairs(child: string, parent: string): [string, string][] {
+  const programTable = (table: string, programId: number): string => table.replace(/^Program_N\./, `Program_${String(programId)}.`);
+  if (!child.startsWith('Program_N.') && !parent.startsWith('Program_N.')) return [[child, parent]];
+  return PROGRAM_SITES.map(({ program_id }) => [programTable(child, program_id), programTable(parent, program_id)]);
 }
 
-/** Writes `text` as `name` in a fresh temp directory and returns its path. */
-function writeTempFile(name: string, text: string): string {
-  const file = path.join(makeTempDir(), name);
+const cleanups: (() => Promise<void>)[] = [];
+
+/** Fresh test directories, removed after the test. */
+async function testDirs(): Promise<TestDirs> {
+  const dirs = await createTestDirs();
+  cleanups.push(dirs.cleanup);
+  return dirs;
+}
+
+/** Writes `text` as `name` in the state directory of fresh test directories and returns its path. */
+async function writeTempFile(name: string, text: string): Promise<string> {
+  const file = path.join((await testDirs()).stateDir, name);
   writeFileSync(file, text, 'utf8');
   return file;
 }
 
-/** Report target over `reports/` in a fresh temp directory, its SHA read from a temp source-pin file. */
-function makeReportTarget(): ReportTarget {
+/** Report target over the reports directory of fresh test directories, its SHA read from a source-pin file beside it. */
+async function makeReportTarget(): Promise<ReportTarget> {
+  const dirs = await testDirs();
   const pin = {
-    sha: PIN_SHA,
+    sha: TEST_SOURCE_SHA,
     subject: 'pin',
     repository: 'https://example.invalid/masa.git',
     confirmedAt: '2026-01-01T00:00:00Z',
     confirmCommand: 'check-pin',
   };
-  const sourceShaFile = writeTempFile('source-pin.json', JSON.stringify(pin));
-  return resolveReportTarget({ reportsDir: path.join(path.dirname(sourceShaFile), 'reports'), sourceShaFile });
+  const sourceShaFile = path.join(dirs.stateDir, 'source-pin.json');
+  writeFileSync(sourceShaFile, JSON.stringify(pin), 'utf8');
+  return resolveReportTarget({ reportsDir: dirs.reportsDir, sourceShaFile });
 }
 
 function readReport(target: ReportTarget): Record<string, unknown> {
@@ -324,8 +350,8 @@ function positions(order: DependencyOrder): Map<string, number> {
   return new Map(order.entries.map((entry) => [entry.table, entry.position]));
 }
 
-afterEach(() => {
-  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
 describe('compareTableNames', () => {
@@ -338,6 +364,112 @@ describe('compareTableNames', () => {
     ['tsettings', 'tsettings', 0],
   ])('orders %s against %s as %i: case-insensitive code units, then exact form', (a, b, sign) => {
     expect(Math.sign(compareTableNames(a, b))).toBe(sign);
+  });
+});
+
+describe('buildDependencyOrder over the fixture inventory and catalog', () => {
+  const order = buildDependencyOrder({ inventory: FIXTURE_INVENTORY, catalog: FIXTURE_CATALOG });
+
+  it('orders the fixture tables from tsettings, recording owner and tenant source of each', () => {
+    expect(order.order[0]).toBe(SITE_ROOT_TABLE);
+    expect(EXPECTED_HEAD[0]).toBe('tsettings');
+    expect(order.entries.map((entry) => [entry.table, entry.owner, entry.tenantFrom])).toEqual(FIXTURE_ENTRIES);
+  });
+
+  it('places the parent of every fixture relation before its child, except across the deferred back-reference', () => {
+    const at = positions(order);
+    const deferred = new Set(order.deferred.map(({ relationId }) => relationId));
+    for (const { id, child, parent } of FIXTURE_INVENTORY.relations) {
+      for (const [childTable, parentTable] of concretePairs(child.table, parent.table)) {
+        const [first, second] = deferred.has(id) ? [childTable, parentTable] : [parentTable, childTable];
+        expect(at.get(first), `${id}: ${first} before ${second}`).toBeLessThan(at.get(second) ?? 0);
+      }
+    }
+  });
+
+  it('gives the same result on every call', () => {
+    expect(summary(buildDependencyOrder({ inventory: FIXTURE_INVENTORY, catalog: FIXTURE_CATALOG }))).toEqual(summary(order));
+  });
+
+  it('orders tables that depend on tsettings alone by compareTableNames', () => {
+    const siblings = order.entries.filter((entry) => entry.parents.join() === SITE_ROOT_TABLE).map((entry) => entry.table);
+    expect(siblings).toEqual(['synthetic.person_archive', 'synthetic.program_site', 'timagesizes', 'tmailinglist', 'tusers']);
+    expect([...siblings].sort(compareTableNames)).toEqual(siblings);
+  });
+
+  // EXPECTED_HEAD is the planned head and the computed order governs, so only its lead is pinned to the head.
+  it('keeps every planned head table the fixture holds behind tsettings', () => {
+    const planned = EXPECTED_HEAD.filter((table) => order.order.includes(table));
+    expect(planned).toEqual(['tsettings', 'tusers', 'tcontent', 'synthetic.program_site']);
+    for (const table of planned.slice(1)) expect(order.order.indexOf(table), table).toBeGreaterThan(0);
+  });
+
+  it('folds Program_N.blackout into one entry per fixture program, each behind synthetic.program_site', () => {
+    const programTables = order.order.filter((table) => parseProgramTable(table) !== null);
+    expect(programTables).toEqual(PROGRAM_SITES.map(({ program_id }) => `Program_${String(program_id)}.blackout`));
+    expect(order.order.filter((table) => table.startsWith('Program_N'))).toEqual([]);
+    expect(new Set(order.order).size).toBe(order.order.length);
+    for (const table of programTables) expect(order.order.indexOf(PROGRAM_SITE_TABLE)).toBeLessThan(order.order.indexOf(table));
+    expect(FIXTURE_CATALOG.isMigratable(PROGRAM_SITE_TABLE)).toBe(false);
+  });
+
+  it('leaves out decision-list and retired tables even when relations name them', () => {
+    const inventory: OrderInventory = {
+      tables: FIXTURE_INVENTORY.tables,
+      relations: [
+        ...FIXTURE_INVENTORY.relations,
+        relation('dao:reminder.content', 'daoJoin', 'tcontenteventreminders.contentId', 'tcontent.ContentID'),
+        relation('dao:content.globals', 'daoJoin', 'tcontent.appreload', 'tglobals.appreload'),
+      ],
+    };
+    expect([FIXTURE_CATALOG.legacyTableOwner('tcontenteventreminders'), FIXTURE_CATALOG.legacyTableOwner('tglobals')]).toEqual([
+      'decision-list',
+      'retired',
+    ]);
+    const result = buildDependencyOrder({ inventory, catalog: FIXTURE_CATALOG });
+    expect(result.order).toEqual(order.order);
+    expect(result.entries.flatMap((entry) => entry.parents)).not.toContain('tglobals');
+    expect(result.parentOf('tcontenteventreminders')).toBeNull();
+  });
+
+  it.each(['Program_1.blackout', 'Program_2.blackout'])('inherits the tenant of %s through the program fold', (table) => {
+    expect(parentOf(order, table)).toStrictEqual({
+      id: `implicit:programFold:${table}`,
+      kind: 'programFold',
+      child: { table, column: 'legacy_program_id' },
+      parent: { table: PROGRAM_SITE_TABLE, column: 'program_id' },
+    });
+  });
+
+  it.each(FIXTURE_ENTRIES.filter(([, , tenantFrom]) => tenantFrom === 'siteID').map(([table]) => table))(
+    'gives %s no inherited parent because its rows carry their own site',
+    (table) => {
+      expect(parentOf(order, table)).toBeNull();
+    },
+  );
+
+  it('defers tcontent.FileID to break the tcontent/tfiles cycle', () => {
+    expect(order.deferred).toStrictEqual([
+      {
+        table: 'tcontent',
+        column: 'FileID',
+        references: { table: 'tfiles', column: 'fileID' },
+        relationId: 'rel:tcontent.FileID->tfiles.fileID',
+      },
+    ]);
+    expect(order.relaxed).toEqual([]);
+    expect(order.cycles).toEqual([['tcontent', 'tfiles']]);
+  });
+
+  // The unit catalog raises its own error for a table the ownership file does not list.
+  it('propagates the catalog error for a relation naming a table the ownership file does not list', () => {
+    const inventory: OrderInventory = {
+      tables: FIXTURE_INVENTORY.tables,
+      relations: [...FIXTURE_INVENTORY.relations, relation('dao:mystery.content', 'daoJoin', 'tmystery.ContentID', 'tcontent.ContentID')],
+    };
+    expect(() => buildDependencyOrder({ inventory, catalog: FIXTURE_CATALOG })).toThrow(
+      new UnknownLegacyTableError('tmystery'),
+    );
   });
 });
 
@@ -566,6 +698,53 @@ describe('buildDependencyOrder cycles', () => {
     expect(result.parentOf(second)?.parent.table).toBe(first);
   });
 
+  const ring: OrderInventory = {
+    tables: unsited('tc', 'tb', 'ta'),
+    relations: [
+      relation('r:a.b', 'daoJoin', 'ta.b_id', 'tb.id'),
+      relation('r:b.c', 'daoJoin', 'tb.c_id', 'tc.id'),
+      relation('r:c.a', 'daoJoin', 'tc.a_id', 'ta.id'),
+    ],
+  };
+  const selfReference: OrderInventory = {
+    tables: unsited('tnode'),
+    relations: [relation('dao:node.parent', 'daoJoin', 'tnode.ParentID', 'tnode.NodeID')],
+  };
+
+  it.each<[string, OrderInventory, OrderCatalog, readonly string[], readonly string[], readonly (readonly string[])[]]>([
+    [
+      'the fixture tcontent/tfiles pair',
+      FIXTURE_INVENTORY,
+      FIXTURE_CATALOG,
+      FIXTURE_ENTRIES.map(([table]) => table),
+      ['tcontent.FileID'],
+      [['tcontent', 'tfiles']],
+    ],
+    [
+      'a three-table ring',
+      ring,
+      fakeCatalog(ownedBy('surveys', { ta: ['id'], tb: ['id'], tc: ['id'] })),
+      ['ta', 'tc', 'tb'],
+      ['ta.b_id'],
+      [['ta', 'tb', 'tc']],
+    ],
+    // A table's rows load in one pass, so a self-reference orders nothing and is dropped rather than deferred.
+    ['a self-reference', selfReference, fakeCatalog(ownedBy('surveys', { tnode: ['NodeID'] })), ['tnode'], [], []],
+  ])('breaks %s by deferring at most one back-reference and orders every kept relation', (_, inventory, catalog, tables, deferred, cycles) => {
+    const result = buildDependencyOrder({ inventory, catalog });
+    expect(result.order).toEqual(tables);
+    expect(result.deferred.map(({ table, column }) => `${table}.${column}`)).toEqual(deferred);
+    expect(result.relaxed).toEqual([]);
+    expect(result.cycles).toEqual(cycles);
+    const broken = new Set(result.deferred.map(({ relationId }) => relationId));
+    const at = positions(result);
+    for (const { id, child, parent } of inventory.relations.filter((rel) => !broken.has(rel.id))) {
+      for (const [childTable, parentTable] of concretePairs(child.table, parent.table)) {
+        if (childTable !== parentTable) expect(at.get(parentTable), `${id}`).toBeLessThan(at.get(childTable) ?? 0);
+      }
+    }
+  });
+
   it('throws when every back-reference of the cycle is a key column', () => {
     const catalog = fakeCatalog(ownedBy('surveys', { talpha: ['AlphaID', 'BetaID'], tbeta: ['BetaID', 'AlphaID'] }));
     const build = (): DependencyOrder => buildDependencyOrder({ inventory: PAIR_INVENTORY, catalog });
@@ -638,18 +817,24 @@ describe('buildDependencyOrder cycles', () => {
 });
 
 describe('loadOrderInventory', () => {
-  it('reads the legacy inventory form into order relations', () => {
-    const file = writeTempFile('legacy-inventory.json', JSON.stringify(LEGACY_FORM));
+  it('reads the legacy inventory form into order relations', async () => {
+    const file = await writeTempFile('legacy-inventory.json', JSON.stringify(LEGACY_FORM));
     expect(loadOrderInventory(file)).toStrictEqual(LEGACY_FORM_PARSED);
   });
 
-  it('reads a serialised order inventory back unchanged', () => {
+  it('reads a serialised order inventory back unchanged', async () => {
     const inventory: OrderInventory = {
       tables: MAIN_INVENTORY.tables,
       relations: [...MAIN_INVENTORY.relations, relation('implicit:site:tusers', 'site', 'tusers.siteID', 'tsettings.SiteID')],
     };
-    const file = writeTempFile('order-inventory.json', JSON.stringify(inventory));
+    const file = await writeTempFile('order-inventory.json', JSON.stringify(inventory));
     expect(loadOrderInventory(file)).toStrictEqual(inventory);
+  });
+
+  it('reads the fixture inventory file back as the fixture inventory, ignoring its other keys', async () => {
+    const file = await writeInventoryFile((await testDirs()).stateDir);
+    expect(Object.keys(JSON.parse(readFileSync(file, 'utf8')) as object)).toEqual(['sourceSha', 'tables', 'relations', 'scheduledJobs']);
+    expect(loadOrderInventory(file)).toStrictEqual(FIXTURE_INVENTORY);
   });
 
   it.each<[string, string | null, RegExp]>([
@@ -667,8 +852,8 @@ describe('loadOrderInventory', () => {
       '{"tables":[],"relations":[{"id":"r","kind":"orm-fk","child":{"table":"a","columns":null},"parent":{"table":"b","columns":["x"]}}]}',
       /\n {2}relations\.0: /,
     ],
-  ])('rejects %s, naming the file', (_, content, reason) => {
-    const file = content === null ? path.join(makeTempDir(), 'absent.json') : writeTempFile('inventory.json', content);
+  ])('rejects %s, naming the file', async (_, content, reason) => {
+    const file = content === null ? path.join((await testDirs()).stateDir, 'absent.json') : await writeTempFile('inventory.json', content);
     const error = (() => {
       try {
         loadOrderInventory(file);
@@ -707,8 +892,8 @@ describe('toMigrationOrderReport', () => {
 
 describe('computeDependencyOrder', () => {
   it('loads an inventory path, orders it and writes migration-order.json headed by the source SHA', async () => {
-    const inventory = writeTempFile('legacy-inventory.json', JSON.stringify(LEGACY_FORM));
-    const target = makeReportTarget();
+    const inventory = await writeTempFile('legacy-inventory.json', JSON.stringify(LEGACY_FORM));
+    const target = await makeReportTarget();
     const catalog = fakeCatalog(LEGACY_FORM_TABLES);
     const order = await computeDependencyOrder({ inventory, catalog, reportsOpts: { target, clock: CLOCK } });
 
@@ -729,12 +914,32 @@ describe('computeDependencyOrder', () => {
     const report = readReport(target);
     expect(Object.keys(report).slice(0, 4)).toEqual(['sourceSha', 'generatedBy', 'generatedAt', 'status']);
     expect(report).toEqual({
-      sourceSha: PIN_SHA,
+      sourceSha: TEST_SOURCE_SHA,
       generatedBy: 'migration/src/order/dependency-order.ts',
       generatedAt: '2026-03-04T05:06:07.000Z',
       status: 'generated',
       ...(JSON.parse(JSON.stringify(toMigrationOrderReport(order))) as Record<string, unknown>),
     });
+  });
+
+  it('orders the fixture inventory file and writes its order, deferred column and cycle into the reports directory', async () => {
+    const dirs = await testDirs();
+    const inventory = await writeInventoryFile(dirs.stateDir);
+    const target = await makeReportTarget();
+    const order = await computeDependencyOrder({ inventory, catalog: FIXTURE_CATALOG, reportsOpts: { target, clock: CLOCK } });
+    expect(summary(order)).toEqual(summary(buildDependencyOrder({ inventory: FIXTURE_INVENTORY, catalog: FIXTURE_CATALOG })));
+
+    const report = readReport(target);
+    expect(Object.keys(report).slice(0, 4)).toEqual(['sourceSha', 'generatedBy', 'generatedAt', 'status']);
+    expect(report).toEqual({
+      sourceSha: TEST_SOURCE_SHA,
+      generatedBy: 'migration/src/order/dependency-order.ts',
+      generatedAt: '2026-03-04T05:06:07.000Z',
+      status: 'generated',
+      ...(JSON.parse(JSON.stringify(toMigrationOrderReport(order))) as Record<string, unknown>),
+    });
+    expect((report.order as { table: string }[]).map(({ table }) => table)).toEqual(FIXTURE_ENTRIES.map(([table]) => table));
+    expect(report.brokenCycles).toEqual([{ tables: ['tcontent', 'tfiles'], backReferenceColumn: 'tcontent.FileID', patchedInSecondPass: true }]);
   });
 
   it.each<[string, null | undefined]>([
@@ -746,25 +951,33 @@ describe('computeDependencyOrder', () => {
   });
 
   it('passes the given generatedBy to the report', async () => {
-    const target = makeReportTarget();
+    const target = await makeReportTarget();
     await computeDependencyOrder({
       inventory: PAIR_INVENTORY,
       catalog: CYCLES_CATALOG,
       reportsOpts: { target, clock: CLOCK, generatedBy: 'opt2-migrate order' },
     });
-    expect(readReport(target)).toMatchObject({ sourceSha: PIN_SHA, generatedBy: 'opt2-migrate order', generatedAt: '2026-03-04T05:06:07.000Z' });
+    expect(readReport(target)).toMatchObject({
+      sourceSha: TEST_SOURCE_SHA,
+      generatedBy: 'opt2-migrate order',
+      generatedAt: '2026-03-04T05:06:07.000Z',
+    });
   });
 });
 
 describe('writeMigrationOrderReport', () => {
   it('writes under the reports directory with the module as generator and the system clock by default', async () => {
-    const target = makeReportTarget();
+    const target = await makeReportTarget();
     const order = buildDependencyOrder({ inventory: PAIR_INVENTORY, catalog: CYCLES_CATALOG });
     const before = Date.now();
     const written = await writeMigrationOrderReport(target, order);
     expect(written.path).toBe(path.join(target.reportsDir, MIGRATION_ORDER_REPORT));
     expect(readReport(target)).toEqual(written.report);
-    expect(written.report).toMatchObject({ sourceSha: PIN_SHA, generatedBy: 'migration/src/order/dependency-order.ts', status: 'generated' });
+    expect(written.report).toMatchObject({
+      sourceSha: TEST_SOURCE_SHA,
+      generatedBy: 'migration/src/order/dependency-order.ts',
+      status: 'generated',
+    });
     const generatedAt = Date.parse(String(written.report.generatedAt));
     expect(generatedAt).toBeGreaterThanOrEqual(before);
     expect(generatedAt).toBeLessThanOrEqual(Date.now());
