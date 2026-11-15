@@ -27,6 +27,7 @@ import {
   migrationEnvSchema,
 } from '../../src/env.js';
 import { CONFIG_PATH } from '../../src/paths.js';
+import { TEST_BRIDGE_KEY, createTestDirs, testEnv, type TestDirs } from '../helpers/env.js';
 
 const CONFIG_URL = new URL('../../config/migration.config.json', import.meta.url);
 const REPO_DIR = fileURLToPath(new URL('../../../', import.meta.url));
@@ -140,6 +141,7 @@ describe('migration.config.json', () => {
 describe('timing and batch figures', () => {
   const config = loadConfig();
 
+  // The 30 s unit-gate wait is the platform's GATE_WAIT_MS, not a key of this file, so it is asserted in the platform suite.
   it.each([
     ['batches 1,000 rows per backfill apply', config.backfill.batchRows, 1_000],
     ['gives a write window 30 s to open', config.windows.openBudgetMs, 30 * SECOND],
@@ -256,18 +258,22 @@ describe('resolved paths', () => {
 
 describe('resolveReportsDir', () => {
   const config = loadConfig();
-  let reportsDir: string;
+  let dirs: TestDirs;
 
   beforeEach(async () => {
-    reportsDir = await mkdtemp(path.join(os.tmpdir(), 'opt2-migration-reports-'));
+    dirs = await createTestDirs();
   });
 
   afterEach(async () => {
-    await rm(reportsDir, { recursive: true, force: true });
+    await dirs.cleanup();
   });
 
   it('prefers a set OPT2_REPORTS_DIR', () => {
-    expect(resolveReportsDir(config, { OPT2_REPORTS_DIR: reportsDir })).toBe(reportsDir);
+    expect(resolveReportsDir(config, { OPT2_REPORTS_DIR: dirs.reportsDir })).toBe(dirs.reportsDir);
+  });
+
+  it('takes OPT2_REPORTS_DIR from a parsed environment', () => {
+    expect(resolveReportsDir(config, testEnv({ dirs }))).toBe(dirs.reportsDir);
   });
 
   it.each([
@@ -437,6 +443,13 @@ describe('migration environment', () => {
     else delete env[key];
     return env;
   };
+
+  it('parses the shared test environment as a SQL Server source', () => {
+    const env = testEnv();
+
+    expect(env).toMatchObject({ OPT2_ENV: 'local', MURA_DBTYPE: 'mssql', OPT2_BRIDGE_HMAC_KEY: TEST_BRIDGE_KEY });
+    expect(() => assertSqlServerSource(env)).not.toThrow();
+  });
 
   it('parses a complete environment with the SQL Server defaults', () => {
     const env = loadMigrationEnv(ENV);
