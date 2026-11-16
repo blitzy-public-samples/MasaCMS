@@ -49,6 +49,7 @@ export {
   legacyParamsOf,
   legacyScopesOf,
   multipartFilesOf,
+  recordLogScope,
   recordOutcomeReason,
   sendLegacyResponse,
   LEGACY_POST_LIMIT_BYTES,
@@ -58,6 +59,8 @@ export {
   type LegacyParamsOptions,
   type Opt2Runtime,
   type Opt2RequestScope,
+  type Opt2RouteLogConfig,
+  type RequestLogScope,
   type LegacySurface,
 } from './create-service.js';
 export { recordEventScope } from './event-scope.js';

@@ -4,8 +4,7 @@ import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { fixedClock } from '@opt2/platform/service-kit';
-import type { MetadataTx, TenantDb } from '@opt2/platform/tenancy';
-import type { QueryResult, QueryResultRow } from 'pg';
+import type { MetadataTx, QueryResult, QueryResultRow, TenantDb } from '@opt2/platform/tenancy';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { MigrationContext } from '../../src/context.js';

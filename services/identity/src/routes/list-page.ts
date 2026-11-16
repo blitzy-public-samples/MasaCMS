@@ -1,4 +1,4 @@
-/** The `ListOffset` and `ListLimit` query parameters of the paged `/v1` listings, and the continuation each page answers. */
+/** The `ListOffset` and `ListLimit` query parameters of the paged listings, and the continuation each page answers. */
 import type { ListPage } from '../repo/repository.js';
 
 /** The largest `limit`, which is also its default. */

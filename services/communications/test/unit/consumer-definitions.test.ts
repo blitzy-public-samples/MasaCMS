@@ -128,7 +128,6 @@ describe.each(BINDINGS)('$label consumer definition', ({ label, producer, topic,
 const SURVEY_ID = '11111111-2222-3333-4444555566667777';
 const OTHER_SURVEY_ID = '99999999-2222-3333-4444555566667777';
 const TASK_ID = '00000012-AAAA-BBBB-CCCCDDDDEEEEFFFF';
-const OTHER_TASK_ID = '00000013-AAAA-BBBB-CCCCDDDDEEEEFFFF';
 const TASK_NAME = `opt2-survey-${SURVEY_ID}-reminder-2-v3`;
 const PAYLOAD = { scheduledTaskId: TASK_ID, surveyId: SURVEY_ID, n: 2, scheduleVersion: 3 };
 const RESULT: ReminderResult = { status: 'sent' };
@@ -158,7 +157,7 @@ function reminderRow(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRo
     reminder_n: 2,
     schedule_time: new Date(2026, 5, 30, 9, 15, 0),
     status: 'scheduled',
-    target_route: `/internal/v1/tasks/reminders/${TASK_ID}`,
+    target_route: '/internal/v1/tasks/reminders',
     schedule_version: 3,
     origin: 'event',
     enqueued_at: T0,
@@ -181,8 +180,8 @@ function registered(options: { logger?: Logger; client?: ServiceClient } = {}): 
   return routeOptions;
 }
 
-/** Task context of a delivery to `/internal/v1/tasks/reminders/<pathId>` carrying `stored`. */
-function taskContext(pathId: string | undefined, stored: ScheduledTaskRow | undefined): TaskContext<ScheduledTaskRow> {
+/** Task context of a delivery to `/internal/v1/tasks/reminders` carrying `stored`. */
+function taskContext(stored: ScheduledTaskRow | undefined): TaskContext<ScheduledTaskRow> {
   return {
     queue: 'communications-reminders',
     taskName: TASK_NAME,
@@ -191,7 +190,7 @@ function taskContext(pathId: string | undefined, stored: ScheduledTaskRow | unde
     tenantId: TENANT_A.tenantId,
     payload: PAYLOAD,
     stored,
-    request: { params: pathId === undefined ? {} : { scheduledTaskId: pathId } } as unknown as FastifyRequest,
+    request: {} as FastifyRequest,
     reply: {} as FastifyReply,
   };
 }
@@ -203,8 +202,8 @@ describe('reminder task route', () => {
     vi.mocked(performReminder).mockReset();
   });
 
-  it("is the communications-reminders queue's target path in Fastify form", () => {
-    expect(REMINDER_TASK_PATH).toBe('/internal/v1/tasks/reminders/:scheduledTaskId');
+  it("is the communications-reminders queue's fixed target path", () => {
+    expect(REMINDER_TASK_PATH).toBe('/internal/v1/tasks/reminders');
   });
 
   it('registers a tenant-scoped task route on the given database', () => {
@@ -248,13 +247,9 @@ describe('reminder task route', () => {
     expect(findScheduledTask).toHaveBeenCalledExactlyOnceWith(tx, TASK_ID);
   });
 
-  it.each([
-    ['no stored row', TASK_ID, undefined],
-    ['a path naming another task', OTHER_TASK_ID, reminderRow()],
-    ['a path without a task id', undefined, reminderRow()],
-  ])('refuses %s as a tenant mismatch without running the reminder', async (_label, pathId, stored) => {
+  it('refuses a context without its stored row as a tenant mismatch without running the reminder', async () => {
     const { handler } = registered();
-    const refused = handler(taskContext(pathId, stored));
+    const refused = handler(taskContext(undefined));
     await expect(refused).rejects.toBeInstanceOf(TaskTenantMismatchError);
     await expect(refused).rejects.toMatchObject({ tenantId: TENANT_A.tenantId, taskName: TASK_NAME });
     expect(performReminder).not.toHaveBeenCalled();
@@ -267,7 +262,7 @@ describe('reminder task route', () => {
     vi.mocked(performReminder).mockResolvedValue(RESULT);
     const stored = reminderRow();
     const { handler } = registered(options);
-    await expect(handler(taskContext(TASK_ID, stored))).resolves.toEqual(RESULT);
+    await expect(handler(taskContext(stored))).resolves.toEqual(RESULT);
     expect(performReminder).toHaveBeenCalledExactlyOnceWith({ db, repository, clock, logger, client }, stored);
   });
 });

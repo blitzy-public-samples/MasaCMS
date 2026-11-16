@@ -1,7 +1,6 @@
 // Unit tests for the persisted background suspension record and its in-process and remote APIs.
 import { fixedClock, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
-import type { MetadataTx, TenantDb } from '@opt2/platform/tenancy';
-import type { QueryResult } from 'pg';
+import type { MetadataTx, QueryResult, TenantDb } from '@opt2/platform/tenancy';
 import { describe, expect, it } from 'vitest';
 
 import type { ServiceCaller } from '../../src/context.js';

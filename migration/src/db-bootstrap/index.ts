@@ -1,9 +1,7 @@
 import { readFile } from 'node:fs/promises';
-import { AuthTypes, Connector, IpAddressTypes } from '@google-cloud/cloud-sql-connector';
 import { serviceAccountEmail } from '@opt2/platform/auth';
 import { SAFE_ERROR_TEXT, type Logger } from '@opt2/platform/logging';
-import { iamDbUser, sessionTimeZoneSetter } from '@opt2/platform/tenancy';
-import pg from 'pg';
+import { AuthTypes, Connector, iamDbUser, IpAddressTypes, pg, sessionTimeZoneSetter } from '@opt2/platform/tenancy';
 import type { MigrationConfig, OwnerName } from '../config.js';
 import { migrationsDirFor, stateDirPath } from '../paths.js';
 import { assertRoles, type Finding, type RoleAssertionInput } from './assertions.js';
@@ -69,6 +67,23 @@ export interface BootstrapSummary {
   roles: number;
   iamGrants: number;
   findings: Finding[];
+}
+
+/** Outcome of `teardown`: the OPT-2 schemas it dropped or found absent, and how many of their roles it dropped. */
+export interface TeardownSummary {
+  command: 'teardown';
+  target: 'local';
+  ok: true;
+  schemas: { dropped: string[]; absent: string[] };
+  roles: number;
+}
+
+/** Options of `teardown`; `deps` replaces the local PostgreSQL connection. */
+export interface TeardownOptions {
+  env: BootstrapEnv;
+  config: Pick<MigrationConfig, 'owners'>;
+  logger: Logger;
+  deps?: BootstrapDeps;
 }
 
 /** Options of `bootstrap`. */
@@ -149,6 +164,7 @@ const SERVER_VERSION_SQL = "SELECT current_setting('server_version_num')::int AS
 // createrole_self_grant exists from PostgreSQL 16 on.
 const SELF_GRANT_MIN_VERSION = 160000;
 const ROLES_PRESENT_SQL = 'SELECT rolname FROM pg_roles WHERE rolname = ANY($1::text[])';
+const SCHEMAS_PRESENT_SQL = 'SELECT nspname FROM pg_namespace WHERE nspname = ANY($1::text[])';
 const TRAILING_NEWLINES = /(?:\r?\n)+$/;
 
 function messageOf(error: unknown): string {
@@ -422,6 +438,43 @@ export async function bootstrap(opts: BootstrapOptions): Promise<BootstrapSummar
     return target === 'local'
       ? await bootstrapLocal(env as LocalEnv, owners, deps, logger)
       : await bootstrapCloud(env as CloudEnv, config.cloud.bootstrapAccount, owners, deps, logger);
+  } finally {
+    await deps.close?.();
+  }
+}
+
+/**
+ * Drops every OPT-2 schema with its objects and its owner, app and migrator roles from local PostgreSQL, through the
+ * local bootstrap's own reset; a repeated run drops nothing more. Reads no password file.
+ * @throws BootstrapEnvError, or a connection or statement error.
+ */
+export async function teardown(opts: TeardownOptions): Promise<TeardownSummary> {
+  const { env, config, logger } = opts;
+  const missing = missingForTarget(env, 'local');
+  if (missing.length > 0) throw new BootstrapEnvError(missing);
+  const owners = bootstrapOwners(config, 'local');
+  const names = owners.map((owner) => owner.schema);
+  const roles = owners.map((owner) => owner.roles);
+  const deps = opts.deps ?? localDeps(env as LocalEnv);
+  try {
+    const admin = await deps.connect({ kind: 'admin' });
+    try {
+      const { rows } = await admin.query(SCHEMAS_PRESENT_SQL, [names]);
+      const present = new Set(rows.map((row: { nspname: string }) => row.nspname));
+      const droppedRoles = (await presentRoles(admin, allRoleNames(roles))).size;
+      await resetLocalSchemas(admin, roles);
+      const dropped = names.filter((schema) => present.has(schema));
+      logger.info(`teardown finished: dropped ${dropped.length} schemas and ${droppedRoles} roles`);
+      return {
+        command: 'teardown',
+        target: 'local',
+        ok: true,
+        schemas: { dropped, absent: names.filter((schema) => !present.has(schema)) },
+        roles: droppedRoles,
+      };
+    } finally {
+      await admin.end();
+    }
   } finally {
     await deps.close?.();
   }

@@ -61,7 +61,7 @@ function launchTask(over: Partial<NewScheduledTask> = {}): NewScheduledTask {
     sourceType: 'survey',
     sourceId: '11111111-2222-3333-4444555566667777',
     scheduleTime: new Date(2026, 6, 1, 9, 0, 0),
-    targetRoute: '/internal/v1/tasks/surveys/S1/launch',
+    targetRoute: '/internal/v1/tasks/surveys/launch',
     scheduleVersion: 1,
     origin: 'event',
     ...over,
@@ -407,7 +407,6 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
         return 'opt2-survey-S1-launch-v2-r1';
       },
       scheduleTime: new Date(2026, 6, 2, 9, 0, 0),
-      targetRoute: '/internal/v1/tasks/surveys/S1/launch?v=2',
       scheduleVersion: 2,
     };
 
@@ -421,7 +420,7 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
         origin: 'adopted',
         status: 'scheduled',
         queue_task_name: 'opt2-survey-S1-launch-v2-r1',
-        target_route: next.targetRoute,
+        target_route: '/internal/v1/tasks/surveys/launch',
         schedule_version: 2,
         enqueued_at: null,
         dequeued_at: null,
@@ -537,25 +536,6 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
     expect(reactivated?.schedule_time.toISOString()).toBe(scheduleTime.toISOString());
     expect(walls).toEqual(['2026-11-01 01:30:00', '2026-11-01 01:30:00']);
   });
-
-  it('resolves a function target route with the row id, on insert and on reactivation', async () => {
-    const route = (scheduledTaskId: string): string => `/internal/v1/tasks/reminders/${scheduledTaskId}`;
-    const [inserted] = await inTenant((tx) =>
-      repository.insertScheduledTasks(tx, [launchTask({ queueTaskName: 'opt2-survey-S1-launch-v9', targetRoute: route })]),
-    );
-    const [adopted] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]));
-    const adoptedId = adopted?.row.scheduled_task_id ?? '';
-    await inTenant(async (tx) => {
-      await repository.setScheduledTaskStatus(tx, adoptedId, 'cancelled');
-      await repository.stampDequeued(tx, adoptedId, V1);
-    });
-
-    const [reactivated] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask({ targetRoute: route })]));
-
-    expect(inserted?.target_route).toBe(route(inserted?.scheduled_task_id ?? ''));
-    expect(reactivated?.row).toMatchObject({ scheduled_task_id: adoptedId, target_route: route(adoptedId) });
-  });
-
 
   it.each(['done', 'superseded'] as const)('returns a %s adoption unchanged', async (status) => {
     const [adopted] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]));

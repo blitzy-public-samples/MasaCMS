@@ -2499,6 +2499,9 @@ function numberHints(value: unknown, hints: Map<string, ApiKeyHint> = new Map())
   return [...hints.values()];
 }
 
+/** People statuses that render as the legacy 503 rather than an unhandled error. */
+const PEOPLE_UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+
 /**
  * findCurrentUser(): people's `readCurrentUser` of the token's own user, which skips findOne's allowAccess and allowRead,
  * with identity's membership ids as its `groupid`, plus the session's role lists (jsonApiUtility.cfc:2268-2290, 2366-2378).
@@ -2513,7 +2516,7 @@ async function findCurrentUserMethod(call: ApiCall): Promise<SerializedLegacyRes
   // userDAO.read's `groupid` is identity's membership data, which people reads from identity only for cUsers callers.
   if (caller.user !== undefined && caller.userId !== '') query.groupids = (await tokenMembershipIds(call.deps.groups, caller.user, caller.userId)).join(',');
   const response = await call.deps.client.request<unknown>({ service: 'people', method: 'GET', path: '/internal/v1/users/current', query });
-  if (response.status === 503) throw unavailable('People answered the current user read with 503', 'people-unavailable');
+  if (PEOPLE_UNAVAILABLE_STATUSES.has(response.status)) throw unavailable(`People answered the current user read with ${response.status}`, 'people-unavailable');
   const data = isRecord(response.body) ? valueOf(response.body, 'data') : undefined;
   if (response.status !== 200 || !isRecord(data)) throw new Error(`People answered the current user read with ${response.status} and no data struct`);
   assertNoHumanCheck(call);

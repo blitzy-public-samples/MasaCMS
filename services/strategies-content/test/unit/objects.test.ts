@@ -145,10 +145,11 @@ beforeEach(() => {
   deps = { db, repository: createContentRepository({ clock: TEST_CLOCK }), storage, clock: TEST_CLOCK };
 });
 
-/** Recorded writes of the manifest table and the changelog, as `<verb> <table>`; publication intents are left out. */
+/** Recorded writes of the manifest table and the changelog, as `<verb> <table>`; publication intents and their changelog rows are left out. */
 function manifestWrites(): string[] {
   return db
     .writes()
+    .filter((write) => write.params[1] !== 'staged_object')
     .map((write) => /^(INSERT INTO|UPDATE|DELETE FROM) "content"\."(file_object|changelog)"/i.exec(write.sql))
     .flatMap((match) => (match === null ? [] : [`${match[1]?.split(' ')[0]} ${match[2]}`]));
 }

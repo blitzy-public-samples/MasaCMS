@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { MappingError } from '@opt2/platform/migration-kit';
-import { loadConfig, type SeedConfig } from '../src/config.js';
+import { loadConfig, type SeedConfig } from '../../src/config.js';
 import {
   FIXTURE_TABLE_SPECS,
   emptyFixtureTables,
@@ -13,10 +13,10 @@ import {
   specForKey,
   type FixtureModule,
   type FixtureTableSpec,
-} from '../src/fixture-tables.js';
+} from '../../src/fixture-tables.js';
 
-const CONFIG_PATH = fileURLToPath(new URL('../seed.config.json', import.meta.url));
-const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const CONFIG_PATH = fileURLToPath(new URL('../../seed.config.json', import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 
 const DDL_FILES: Readonly<Record<FixtureModule, string>> = {
   people: 'people/100_person_archive.sql',

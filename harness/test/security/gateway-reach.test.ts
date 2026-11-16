@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { Roles, serviceRole, type RouteMatrixEntry } from '@opt2/platform/auth';
 import { ADMIN_NOACCESS_ACTION } from '@opt2/platform/legacy-compat';
 import { REQUEST_ID_HEADER, requestIdFrom } from '@opt2/platform/service-kit';
-import { verifySignedUrl } from '@opt2/platform/storage';
-import { ROLE_SET } from '@opt2/platform/testing';
+import { verifySignedUrl, type BucketName } from '@opt2/platform/storage';
+import { ROLE_SET, TENANT_A } from '@opt2/platform/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { CapturedLogLine } from '../../src/events/traces.js';
 import { loadInventoryVariants } from '../../src/inventory/route-keys.js';
@@ -32,8 +32,10 @@ import {
   newProbeRequestId,
   ownerRecord,
   parseRequestRecord,
+  probedSignedBuckets,
   reachAccounting,
   reachVerdicts,
+  signedFileBucketOf,
   skipReason,
   type CutoverVersion,
   type GatewayPath,
@@ -56,6 +58,7 @@ const ID = '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}';
 const FIXTURE = '/legacy-fixtures/cfml/api.cfm';
 const RECORD = `${FIXTURE}/finance/records/:id`;
 const FILE_ROUTE = '/opt2/files/finance-attachments/:tenantId/:objectName';
+const EXPORT_FILE_ROUTE = '/opt2/files/reporting-exports/:tenantId/:objectName';
 const SIGNED_QUERY = '?expires=1&sig=test';
 const FINANCE_ACTIONS = ['approve', 'edit', 'reject', 'resubmit', 'submit'];
 const RELAY_URL = '/internal/v1/relay/:service/*';
@@ -101,6 +104,8 @@ const STUB = matrixOf('stub', [
   route('GET', '/opt2/stub/opt2-authz-probe/:id'),
   route('POST', '/internal/v1/events/stub.stub.note.created.v1'),
 ]);
+
+const REPORTING = matrixOf('reporting', [route('GET', EXPORT_FILE_ROUTE, { public: true })]);
 
 const PEOPLE = matrixOf('people', [
   route('GET', `${FIXTURE}/people/persons/:userId/archive`),
@@ -265,12 +270,83 @@ describe('gatewayReach', () => {
     expect(paths[0]?.path.slice(0, -SIGNED_QUERY.length)).toMatch(unsigned);
     expect(signed).toHaveLength(1);
     expect(signed[0]).toMatch(unsigned);
+    expect(probedSignedBuckets(reach)).toEqual(['finance-attachments']);
+  });
+
+  describe('with supplied signed-file values', () => {
+    const key = Buffer.from('opt2-test-storage-key', 'utf8');
+    const expires = 2_000_000_000;
+    const object = { tenantId: TENANT_A.tenantId, objectName: '0A1B2C3D-4E5F-6A7B-8C9D0E1F2A3B4C5D.txt' };
+
+    /** Reach of `matrix` beside the gateway, with `signedFileParams` and a recording local signer. */
+    async function signedReach(
+      matrix: LoadedMatrix,
+      signedFileParams: Partial<Record<BucketName, Record<string, string>>>,
+    ): Promise<{ reach: ReachMap; sent: string[] }> {
+      const { variants } = await loadInventoryVariants();
+      const sent: string[] = [];
+      const signer = localFileSigner(key, expires);
+      const sign = (path: string): string => {
+        sent.push(path);
+        return signer(path);
+      };
+      return { reach: gatewayReach({ matrices: [gateway, matrix], version, variants, sign, signedFileParams }), sent };
+    }
+
+    it.each<[BucketName, LoadedMatrix, string]>([
+      ['finance-attachments', FINANCE, FILE_ROUTE],
+      ['reporting-exports', REPORTING, EXPORT_FILE_ROUTE],
+    ])('probes the %s file route at the supplied tenant and object, signed for that key', async (bucket, matrix, url) => {
+      const { reach: filled, sent } = await signedReach(matrix, { [bucket]: object });
+      const objectPath = `/opt2/files/${bucket}/${object.tenantId}/${object.objectName}`;
+      expect(sent).toEqual([objectPath]);
+      const paths = filled.probed.find((entry) => entry.package === matrix.package && entry.url === url)?.paths ?? [];
+      expect(paths).toHaveLength(1);
+      const path = paths[0]?.path ?? '';
+      expect(path.startsWith(`${objectPath}?`)).toBe(true);
+      // The gateway verifies the URL; the owner also requires the verified key to be `<:tenantId>/<:objectName>`.
+      expect(verifySignedUrl(path, (expires - 1) * 1000, key)).toEqual({
+        ok: true,
+        bucket,
+        key: `${object.tenantId}/${object.objectName}`,
+        expires,
+      });
+      expect(probedSignedBuckets(filled)).toEqual([bucket]);
+    });
+
+    it("fills a signed-file route with CF UUIDs when only another bucket's values are supplied", async () => {
+      const { sent } = await signedReach(FINANCE, { 'reporting-exports': object });
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatch(filledPattern(FILE_ROUTE));
+    });
+
+    it('leaves a same-named parameter of a route outside /opt2/files/ to a CF UUID', async () => {
+      const tenantRoute = '/opt2/stub/tenants/:tenantId';
+      const { reach: filled, sent } = await signedReach(matrixOf('stub', [route('GET', tenantRoute)]), {
+        'finance-attachments': object,
+      });
+      expect(sent).toEqual([]);
+      expect(filled.probed.find((entry) => entry.url === tenantRoute)?.paths[0]?.path).toMatch(filledPattern(tenantRoute));
+    });
   });
 
   it('accounts for every non-edge declared route exactly once', () => {
     expect(reachAccounting(matrices, reach)).toEqual({ missing: [], repeated: [], undeclared: [] });
     const declared = matrices.flatMap((matrix) => matrix.matrix.routes.filter((entry) => entry.edge !== true));
     expect(reach.probed.length + reach.notProbed.length).toBe(declared.length);
+  });
+});
+
+describe('signedFileBucketOf', () => {
+  it.each<[string, BucketName | undefined]>([
+    [FILE_ROUTE, 'finance-attachments'],
+    [EXPORT_FILE_ROUTE, 'reporting-exports'],
+    ['/opt2/files/content-files/:tenantId/:objectName', 'content-files'],
+    ['/opt2/files/no-such-bucket/:tenantId/:objectName', undefined],
+    ['/opt2/files/:bucket/:key', undefined],
+    ['/opt2/stub/notes/:noteId', undefined],
+  ])('reads the bucket of %s as %s', (url, bucket) => {
+    expect(signedFileBucketOf(url)).toBe(bucket);
   });
 });
 

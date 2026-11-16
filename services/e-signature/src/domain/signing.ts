@@ -1,6 +1,7 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Signature requests as esignature.cfc handles them: create, typed-name sign, the hash-chained audit append, and the chain reads and verifications. */
-import { createHash } from 'node:crypto';
+import { Buffer } from 'node:buffer';
+import { subtle } from 'node:crypto';
 import { LEGACY_ERROR_MAP, cfUuid } from '@opt2/platform/legacy-compat';
 import type { WriteContext } from '@opt2/platform/migration-kit';
 import type { Clock } from '@opt2/platform/service-kit';
@@ -209,7 +210,8 @@ export async function createSignatureRequest(
   actor: EsignatureActor,
 ): Promise<CreatedRequest> {
   const signerUserId = await poolUserId(tx, deps, actor, input.signerUserId);
-  const documentSha256 = createHash('sha256').update(input.document).digest('hex');
+  // WebCrypto hashes on the libuv threadpool, so a large document does not block the event loop.
+  const documentSha256 = Buffer.from(await subtle.digest('SHA-256', input.document)).toString('hex');
   const now = roundAt(deps.clock.now());
   const ctx = writeContext(actor);
   const request = await deps.repository.insertRequest(

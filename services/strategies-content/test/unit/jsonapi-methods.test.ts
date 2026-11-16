@@ -60,7 +60,7 @@ function callFor(method: Method, a: CallArgs = {}): JsonApiCall {
     user: { loggedIn: actor.isLoggedIn, systemUser: actor.isLoggedIn },
     allowAction: () => false,
     site: SITE.urls,
-    customImageSizes: [],
+    customImageSizes: () => Promise.resolve([]),
   };
   return {
     mode: 'json',

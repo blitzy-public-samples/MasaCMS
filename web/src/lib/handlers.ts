@@ -47,7 +47,7 @@ import {
   withSetCookies,
   type LegacyResponseContext,
 } from './responses';
-import { ensureTracing, headersToRecord, logRequest, withRequestSpan } from './telemetry';
+import { headersToRecord, logRequest, markPipelineRequest, withRequestSpan } from './telemetry';
 import { fw1RedirectTarget } from './urls';
 
 /** Path params of the admin trees: the route key's circuit and action. */
@@ -123,13 +123,22 @@ function uploadsOf(form: FormData | URLSearchParams): UploadPart[] {
   return [...form].flatMap(([field, value]) => (typeof value === 'string' ? [] : [{ field, filename: value.name }]));
 }
 
-/** The answer for an error the pipeline maps; any other error is rethrown. */
-function answerFailure<T>(error: unknown, answers: Answers<T>, context: LegacyResponseContext): T {
-  if (error instanceof LegacyServiceUnavailableError) return answers.unavailable(context);
-  if (error instanceof WebAuthError) return answers.refused(error.status);
+/** The answer for an error the pipeline maps, with the fixed reason of an expected refusal; others are rethrown. */
+function answerFailure<T>(
+  error: unknown,
+  answers: Answers<T>,
+  context: LegacyResponseContext,
+): { answer: T; denial?: string } {
+  if (error instanceof LegacyServiceUnavailableError) return { answer: answers.unavailable(context) };
+  if (error instanceof WebAuthError) return { answer: answers.refused(error.status), denial: error.reason };
   if (error instanceof GatewayDenialError) {
     const denied = deniedGate(error.status);
-    if (denied.kind === 'redirect') return answers.redirect(denied.location, [], context);
+    if (denied.kind === 'redirect') {
+      return {
+        answer: answers.redirect(denied.location, [], context),
+        denial: `${error.service} answered ${error.status}`,
+      };
+    }
   }
   throw error;
 }
@@ -140,6 +149,7 @@ function answerFailure<T>(error: unknown, answers: Answers<T>, context: LegacyRe
  * denials become `answers` and persist nothing; any other error is logged and rethrown. A staged body is then removed.
  */
 async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>, resolve: Resolve<T>): Promise<T> {
+  markPipelineRequest();
   const started = performance.now();
   const route = `${input.mode}:${input.route.circuit}.${input.route.action}`.toLowerCase();
   const requestId = requestIdFrom(headersToRecord(input.headers));
@@ -147,6 +157,7 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
   let user: WebAuth['user'];
   let statusCode = 500;
   let failure: unknown;
+  let denial: string | undefined;
   let logged = false;
   // Called in the request span, so the line carries its trace fields; again outside it only if the span never ran.
   const logOnce = (): void => {
@@ -160,6 +171,7 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
       requestId,
       userId: user?.sub || undefined,
       tenantId: user?.tid,
+      denial,
       error: failure,
     });
   };
@@ -200,16 +212,18 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
       await saveSessionWrites(gateway, auth, { ...ctx.req.sessionWrites, ...outcome.writes });
       return outcome.answer;
     } catch (error) {
-      failure = error;
-      return answerFailure(error, answers, context);
+      // An unmapped error is rethrown here and recorded as the failure by the span's handler.
+      const mapped = answerFailure(error, answers, context);
+      if (mapped.denial === undefined) failure = error;
+      else denial = mapped.denial;
+      return mapped.answer;
     } finally {
       // The screen's relays have completed and the answer holds only service replies, never the staged body.
       await received?.dispose?.();
     }
   };
   try {
-    await ensureTracing();
-    return await withRequestSpan(`${input.method} ${route}`, input.headers, async () => {
+    return await withRequestSpan(input.method, route, input.headers, async (recordStatus) => {
       try {
         const answer = await answerRequest();
         statusCode = answers.statusOf(answer);
@@ -218,6 +232,7 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
         failure = error;
         throw error;
       } finally {
+        recordStatus(statusCode);
         logOnce();
       }
     });

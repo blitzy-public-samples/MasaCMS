@@ -36,3 +36,9 @@ variable "subscriptions" {
   }))
   default = {}
 }
+
+variable "replay_subscriber_emails" {
+  description = "Service account emails that may pull every DLQ replay subscription."
+  type        = list(string)
+  default     = []
+}

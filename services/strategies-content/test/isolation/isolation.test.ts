@@ -72,6 +72,7 @@ import {
   OWNED_TABLES,
   PERMISSION_PROJECTION,
   PUBLIC_SUBMISSION_APPROVAL,
+  STAGED_OBJECT,
 } from '../../src/repo/tables.js';
 import { buildTestApp, openContentGates, withPgSchema, type TestApp } from '../helpers/app.js';
 import {
@@ -111,15 +112,13 @@ interface ColumnFacts {
   length: number | null;
 }
 
-const STAGED_OBJECT = 'staged_object';
 const NON_TENANT: readonly string[] = NON_TENANT_TABLES;
 const ALL_PLATFORM_GROUPS = Object.keys(PLATFORM_TABLE_GROUPS) as PlatformTableGroup[];
 const PLATFORM_TENANT_TABLES = ALL_PLATFORM_GROUPS.flatMap((group) => PLATFORM_TABLE_GROUPS[group].tenantOwned);
 const DEFINITIONS: ReadonlyMap<string, TableDefinition> = new Map(
   [...OWNED_TABLES, GROUP_PROJECTION, PERMISSION_PROJECTION, MEMBERSHIP_PROJECTION].map((definition) => [definition.table, definition]),
 );
-// staged_object is a tenant-owned table the content repository does not declare; files.ts writes it with plain SQL.
-const ISOLATION_TABLES: readonly string[] = [...DEFINITIONS.keys(), STAGED_OBJECT].filter((table) => !NON_TENANT.includes(table));
+const ISOLATION_TABLES: readonly string[] = [...DEFINITIONS.keys()].filter((table) => !NON_TENANT.includes(table));
 const IDENTITY_OF: ReadonlyMap<string, string> = new Map(Object.entries(IDENTITY_COLUMNS));
 const KEYLESS_MANAGED: ReadonlySet<string> = new Set(['tenant_id', 'legacy_row_hash', 'occurrence']);
 const SITE_COLUMNS: ReadonlySet<string> = new Set(['siteid', 'site_id']);
@@ -238,7 +237,7 @@ function genericRow(definition: TableDefinition): Row {
   return row;
 }
 
-/** A pending upload intent of `staged_object`, the shape `insertStagedObject` writes. */
+/** A pending upload intent of `staged_object`, the shape `files.insertStagedObject` writes. */
 function stagedObjectRow(tenant: TenantFixture): Row {
   const fileId = newId();
   return {
@@ -257,7 +256,7 @@ function stagedObjectRow(tenant: TenantFixture): Row {
 
 /** A fresh, constraint-satisfying `table` row of `tenant` without `tenant_id`; keyless rows carry their hash and occurrence 1. */
 function rowFor(table: string, tenant: TenantFixture): Row {
-  if (table === STAGED_OBJECT) return stagedObjectRow(tenant);
+  if (table === STAGED_OBJECT.table) return stagedObjectRow(tenant);
   const definition = DEFINITIONS.get(table);
   if (definition === undefined) {
     throw new TypeError(`strategies-content declares no table ${table}`);
@@ -286,14 +285,9 @@ function insertOf(tx: TenantTx, table: string, row: Row): { text: string; values
   };
 }
 
-/** Writes one fresh `table` row of `tenant` through the gated, audited content repository; staged_object as files.ts does. */
+/** Writes one fresh `table` row of `tenant` through the gated, audited content repository. */
 async function writeAs(tx: TenantTx, table: string, tenant: TenantFixture): Promise<void> {
   const row = rowFor(table, tenant);
-  if (table === STAGED_OBJECT) {
-    const { text, values } = insertOf(tx, table, row);
-    await tx.query(text, values);
-    return;
-  }
   await built().repository.platform.insert(tx, table, row, { actorService: 'strategies-content', requestId: 'isolation' });
 }
 

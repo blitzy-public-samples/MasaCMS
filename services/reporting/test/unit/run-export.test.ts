@@ -75,11 +75,11 @@ describe('export-run enqueuer', () => {
     expect(call).toMatchObject({
       queue: 'reporting-export-run',
       name: exportRunTaskName(JOB_ID),
-      url: targetUrl(QUEUE, SERVICE_URLS, { exportId: JOB_ID }),
+      url: targetUrl(QUEUE, SERVICE_URLS),
       deadlineS: QUEUE.deadlineS,
       tenantId: TENANT_A.tenantId,
     });
-    expect(call.url).toBe(`http://127.0.0.1:8116/internal/v1/tasks/exports/${JOB_ID}/run`);
+    expect(call.url).toBe('http://127.0.0.1:8116/internal/v1/tasks/exports/run');
     expect(call.scheduleTime).toEqual(CLOCK.now());
     expect(parseTaskWireBody(taskWireBody(call))).toEqual({
       queue: 'reporting-export-run',

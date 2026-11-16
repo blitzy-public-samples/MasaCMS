@@ -22,6 +22,8 @@ export const upProcessSchema = z
     command: z.union([z.string().min(1), z.tuple([z.string().min(1)], z.string())]),
     env: z.record(z.string(), z.string()).optional(),
     log: z.string().min(1).optional(),
+    /** Start time of `pid` in clock ticks after boot; teardown signals only the process that still has it. */
+    startTime: z.string().regex(/^\d+$/).optional(),
   })
   .loose();
 
@@ -58,6 +60,24 @@ export type UpStatePatch = Partial<Omit<z.infer<typeof upStateShape>, 'processes
 export interface UpStateOptions {
   env?: EnvLike;
   path?: string;
+}
+
+/** Start time of `pid` in clock ticks after boot (field 22 of `<procRoot>/<pid>/stat`); undefined once it is gone. */
+export function processStartTime(pid: number, procRoot = '/proc'): string | undefined {
+  const file = path.join(procRoot, String(pid), 'stat');
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (err) {
+    const { code } = err as NodeJS.ErrnoException;
+    if (code === 'ENOENT' || code === 'ESRCH') return undefined;
+    throw err;
+  }
+  // comm, field 2, may itself hold spaces and ')', so fields are counted from the last ')', starting at field 3.
+  const close = text.lastIndexOf(')');
+  const startTime = close < 0 ? undefined : text.slice(close + 1).trim().split(/\s+/)[19];
+  if (startTime === undefined || !/^\d+$/.test(startTime)) throw new Error(`${file} records no start time`);
+  return startTime;
 }
 
 /** Path of `up.json` in the runtime state directory, outside the checkout. */
@@ -141,7 +161,7 @@ const SNAPSHOT_FIELDS = ['seq', 'kind', 'name'] as const;
 
 /** The part of `up.json` that `read` prints; a process's env and command, and every unlisted key, stay private. */
 export interface PublicUpState {
-  processes: Record<string, Pick<UpProcessEntry, 'pid' | 'port' | 'cwd' | 'log'>>;
+  processes: Record<string, Pick<UpProcessEntry, 'pid' | 'port' | 'cwd' | 'log' | 'startTime'>>;
   ports?: Record<string, number>;
   startedAt?: string;
   fixtures?: { available: boolean; reason?: string | null; checkedAt?: string } | null;
@@ -171,7 +191,7 @@ export function redactUpState(state: UpState): PublicUpState {
     processes: Object.fromEntries(
       Object.entries(state.processes).map(([name, entry]) => [
         name,
-        definedFields({ pid: entry.pid, port: entry.port, cwd: entry.cwd, log: entry.log }),
+        definedFields({ pid: entry.pid, port: entry.port, cwd: entry.cwd, log: entry.log, startTime: entry.startTime }),
       ]),
     ),
     ports: state.ports === undefined ? undefined : Object.fromEntries(Object.entries(state.ports)),

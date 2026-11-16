@@ -123,7 +123,7 @@ export function buildCloudTask(input: CreateTaskInput, ctx: CloudTaskBuildContex
       url: input.url,
       headers,
       body: Buffer.from(JSON.stringify(taskWireBody(input))).toString('base64'),
-      // Same derivation as the cloud-tasks transport verifier, so creator and verifier agree on `aud`.
+      // The exact task URL, derived as the cloud-tasks transport verifier derives it, so creator and verifier agree on `aud`.
       oidcToken: { serviceAccountEmail: ctx.invokerEmail, audience: managedAudience(target.origin, target.pathname) },
     },
   };

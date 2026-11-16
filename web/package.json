@@ -14,12 +14,16 @@
     "generate": "npm run generate:clients && npm run generate:rb",
     "prebuild": "npm run generate",
     "build": "next build",
-    "start": "next start",
+    "start": "node server.ts",
     "dev": "next dev",
     "pretest": "npm run generate",
     "test": "vitest run --coverage",
     "test:unit": "vitest run --project unit",
-    "test:integration": "vitest run --project integration"
+    "test:integration": "vitest run --project integration",
+    "pretest:contract": "npm run generate",
+    "test:contract": "vitest run test/contract",
+    "pretest:security": "npm run generate",
+    "test:security": "vitest run test/security test/integration/access-gate-denials gate.test.ts"
   },
   "dependencies": {
     "@opt2/platform": "file:../platform",

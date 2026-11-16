@@ -1,8 +1,7 @@
 // Unit tests for the quiescence Pub/Sub adapter, using in-memory subscriptions and a stand-in GAPIC subscriber.
 import { Buffer } from 'node:buffer';
 
-import { PubSub } from '@google-cloud/pubsub';
-import { consumerOfSubscription, dlqReplaySubscriptionName, pushPath, subscriptionName } from '@opt2/platform/events';
+import { consumerOfSubscription, dlqReplaySubscriptionName, PubSub, pushPath, subscriptionName } from '@opt2/platform/events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -48,8 +47,8 @@ const subscriber = vi.hoisted(() => ({
   close: vi.fn<() => Promise<void>>(() => Promise.resolve()),
 }));
 
-vi.mock('@google-cloud/pubsub', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@google-cloud/pubsub')>();
+vi.mock('@opt2/platform/events', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@opt2/platform/events')>();
   /** GAPIC subscriber stand-in that records its options and calls instead of opening a connection. */
   class FakeSubscriberClient {
     constructor(options: unknown) {
@@ -68,12 +67,11 @@ vi.mock('@google-cloud/pubsub', async (importOriginal) => {
       return subscriber.close();
     }
   }
-  return { ...actual, v1: { ...actual.v1, SubscriberClient: FakeSubscriberClient } };
-});
-
-vi.mock('@opt2/platform/events', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@opt2/platform/events')>();
-  return { ...actual, consumerOfSubscription: vi.fn(actual.consumerOfSubscription) };
+  return {
+    ...actual,
+    consumerOfSubscription: vi.fn(actual.consumerOfSubscription),
+    v1: { ...actual.v1, SubscriberClient: FakeSubscriberClient },
+  };
 });
 
 const PROJECT = 'opt2-unit';

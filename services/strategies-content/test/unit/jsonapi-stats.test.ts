@@ -74,7 +74,7 @@ function callFor(a: CallInput): JsonApiCall & { csrfChecks: number } {
     isAggregateQuery: false,
     user: { loggedIn: who.isLoggedIn, systemUser: who.roles.includes('system-user') },
     allowAction: () => false,
-    customImageSizes: [],
+    customImageSizes: () => Promise.resolve([]),
   } as unknown as JsonApiRequestContext;
   const call = {
     mode: 'json',

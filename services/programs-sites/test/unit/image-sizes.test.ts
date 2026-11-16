@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UserClaims } from '@opt2/platform/auth';
 import { ensureUnitGates } from '@opt2/platform/migration-kit';
-import { tenantIdForSite, withMetadata, type TenantDb } from '@opt2/platform/tenancy';
+import { tenantIdForSite, withMetadata, type MetadataTx, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   applyImageSizeSet,
@@ -161,6 +161,69 @@ describe('image sizes domain without a database', () => {
     expect(await domain.deleteImageSize(db, claims, '')).toBe(false);
     expect(await domain.loadImageSize(db, claims, '')).toMatchObject({ isNew: 1, height: 'AUTO', width: 'AUTO' });
     expect(db.withTenant).not.toHaveBeenCalled();
+  });
+});
+
+describe('readSiteImageSizes', () => {
+  const ALPHA = tenantIdForSite('alpha');
+  const DEFAULT = tenantIdForSite('default');
+
+  function sizeRow(siteid: string, sizeid: string, name: string): ImageSizeRow {
+    return { tenant_id: tenantIdForSite(siteid), sizeid, siteid, name, height: '400', width: 'AUTO' };
+  }
+
+  /** A domain over a registry of `registered` sites and size rows `sizes`, recording the tenants opened. */
+  function harness(registered: readonly string[], sizes: readonly ImageSizeRow[]) {
+    const opened: string[] = [];
+    const registryTx = {
+      kind: 'metadata',
+      schema: 'programs_sites',
+      query: async () => ({ rows: [...registered].sort().map((siteId) => ({ site_id: siteId, tenant_id: tenantIdForSite(siteId) })) }),
+    } as unknown as MetadataTx;
+    const db: TenantDb = {
+      schema: 'programs_sites',
+      withMetadata: (fn) => fn(registryTx),
+      withTenant: (tenantId, fn) => {
+        opened.push(tenantId);
+        return fn({ kind: 'tenant', tenantId } as unknown as TenantTx);
+      },
+      end: async () => undefined,
+    };
+    const repo = {
+      listImageSizes: vi.fn(async (tx: TenantTx, siteId: string) => sizes.filter((row) => row.tenant_id === tx.tenantId && row.siteid === siteId)),
+    };
+    return { db, opened, repo, domain: createImageSizesDomain({ repo: repo as unknown as ProgramsSitesRepository }) };
+  }
+
+  it('lists the sizes of the registered site named ignoring case, under its stored id, in repository order and getName form', async () => {
+    const sizes = [sizeRow('alpha', SIZE_1, 'Hero Banner'), sizeRow('alpha', SIZE_2, 'carouselimage'), sizeRow('default', SIZE_3, 'other')];
+    const { db, opened, repo, domain } = harness(['default', 'alpha'], sizes);
+
+    const listed = await domain.readSiteImageSizes(db, 'ALPHA');
+
+    expect(listed).toEqual([
+      { sizeId: SIZE_1, siteId: 'alpha', name: 'hero-banner', height: '400', width: 'AUTO', isNew: 0 },
+      { sizeId: SIZE_2, siteId: 'alpha', name: 'carouselimage', height: '400', width: 'AUTO', isNew: 0 },
+    ]);
+    expect(opened).toEqual([ALPHA]);
+    expect(repo.listImageSizes).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ tenantId: ALPHA }), 'alpha');
+  });
+
+  it.each([
+    { name: 'an empty id', siteId: '' },
+    { name: 'an id that names no registered site', siteId: 'nosuch' },
+  ])('resolves $name to the default site, as getSite does', async ({ siteId }) => {
+    const { db, opened, domain } = harness(['default', 'alpha'], [sizeRow('default', SIZE_3, 'other'), sizeRow('alpha', SIZE_1, 'hero')]);
+
+    expect(await domain.readSiteImageSizes(db, siteId)).toEqual([{ sizeId: SIZE_3, siteId: 'default', name: 'other', height: '400', width: 'AUTO', isNew: 0 }]);
+    expect(opened).toEqual([DEFAULT]);
+  });
+
+  it('fails as getSite does when neither the named site nor default is registered', async () => {
+    const { db, opened, domain } = harness(['alpha'], []);
+
+    await expect(domain.readSiteImageSizes(db, 'nosuch')).rejects.toThrow("Neither site 'nosuch' nor the default site is registered");
+    expect(opened).toEqual([]);
   });
 });
 

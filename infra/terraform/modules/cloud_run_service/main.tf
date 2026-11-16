@@ -5,6 +5,9 @@ resource "google_cloud_run_v2_service" "this" {
   location = var.region
   ingress  = var.ingress
 
+  # Managed push and task endpoints Cloud Run admits as OIDC audiences besides the service URL.
+  custom_audiences = var.custom_audiences
+
   template {
     service_account = var.service_account_email
 
@@ -30,9 +33,9 @@ resource "google_cloud_run_v2_service" "this" {
         container_port = 8080
       }
 
-      # CPU stays allocated outside requests so trace export to and from the collector completes.
+      # Request-based CPU unless cpu_idle is false; both containers share the setting.
       resources {
-        cpu_idle = false
+        cpu_idle = var.cpu_idle
       }
 
       dynamic "env" {
@@ -64,7 +67,7 @@ resource "google_cloud_run_v2_service" "this" {
       args  = ["--config=/etc/otelcol-google/config.yaml"]
 
       resources {
-        cpu_idle = false
+        cpu_idle = var.cpu_idle
       }
 
       env {

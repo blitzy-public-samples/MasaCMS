@@ -99,7 +99,7 @@ function context(port: number, url: Struct, overrides: Partial<JsonApiRequestCon
     user: { loggedIn: false, systemUser: false },
     allowAction: () => true,
     site: site(port),
-    customImageSizes: [],
+    customImageSizes: () => Promise.resolve([]),
     ...overrides,
   };
 }
@@ -569,33 +569,48 @@ describe('contentEntityLinks', () => {
 describe('contentImages', () => {
   const imageSite = (overrides: Partial<LegacySiteUrlConfig> = {}) => site(OWN, overrides);
 
-  it('lists the renditions and custom sizes of an image file', () => {
+  it('lists the renditions, then the custom sizes of the entity site, of an image file', async () => {
     const view = contentView({}, OWN, { fileId: 'F1', fileExt: 'jpg', type: 'Page' });
-    const ctx = context(OWN, {}, { customImageSizes: [{ name: 'Hero' }], site: imageSite({ useSSL: true }) });
+    const customImageSizes = vi.fn(() => Promise.resolve([{ name: 'Hero' }, { name: 'carouselimage' }]));
+    const ctx = context(OWN, {}, { customImageSizes, site: imageSite({ useSSL: true }) });
     const cache = `https://localhost:${OWN}/sites/default/cache/file`;
-    expect(contentImages(view, ctx)).toEqual({
+    const images = await contentImages(view, ctx);
+    expect(images).toEqual({
       small: `${cache}/F1_small.jpg`,
       medium: `${cache}/F1_medium.jpg`,
       large: `${cache}/F1.jpg`,
       source: `${cache}/F1_source.jpg`,
       Hero: `${cache}/F1_hero.jpg`,
+      carouselimage: `${cache}/F1_carouselimage.jpg`,
     });
+    expect(Object.keys(images)).toEqual(['small', 'medium', 'large', 'source', 'Hero', 'carouselimage']);
+    expect(customImageSizes).toHaveBeenCalledExactlyOnceWith('default');
   });
 
-  it('uses the render route without direct images, the placeholder for non-image files, and {} without an image', () => {
+  it('uses the render route without direct images, the placeholder for non-image files, and {} without an image', async () => {
     const ctx = context(OWN, {}, { site: imageSite({ directImages: false, placeholderImgId: 'P1', placeholderImgExt: 'png' }) });
     const file = contentView({ fileid: 'F2', fileext: 'pdf', type: 'File' }, OWN);
-    expect(contentImages(file, ctx)['small']).toBe(`http://localhost:${OWN}/index.cfm/_api/render/small/?fileID=P1&fileEXT=png`);
-    expect(contentImages(contentView({}, OWN), context(OWN, {}))).toEqual({});
+    expect((await contentImages(file, ctx))['small']).toBe(`http://localhost:${OWN}/index.cfm/_api/render/small/?fileID=P1&fileEXT=png`);
+    expect(await contentImages(contentView({}, OWN), context(OWN, {}))).toEqual({});
+  });
+
+  it('reads no custom sizes for content without an image', async () => {
+    const customImageSizes = vi.fn(() => Promise.resolve([{ name: 'Hero' }]));
+    const data = await serializeContentEntity(contentView({ contentid: 'C', filename: 'page' }, OWN), context(OWN, {}, { customImageSizes }));
+    expect(data['images']).toEqual({});
+    expect(customImageSizes).not.toHaveBeenCalled();
   });
 
   it('images and url follow the bean site over the request site', async () => {
     const view = contentView({ contentid: 'C', siteid: 'other', filename: 'page', fileid: 'F', fileext: 'png' }, OWN, {
       site: site(OWN, { siteId: 'other', domain: 'other.test', requestDomain: 'other.test', serverPort: '', filePoolId: 'other' }),
     });
-    const data = await serializeContentEntity(view, context(OWN, { fields: 'images,url' }));
+    const customImageSizes = vi.fn(() => Promise.resolve([{ name: 'hero' }]));
+    const data = await serializeContentEntity(view, context(OWN, { fields: 'images,url' }, { customImageSizes }));
     expect(data['url']).toBe('http://other.test/page/');
     expect((data['images'] as Struct)['large']).toBe('http://other.test/sites/other/cache/file/F.png');
+    expect((data['images'] as Struct)['hero']).toBe('http://other.test/sites/other/cache/file/F_hero.png');
+    expect(customImageSizes).toHaveBeenCalledExactlyOnceWith('other');
   });
 });
 

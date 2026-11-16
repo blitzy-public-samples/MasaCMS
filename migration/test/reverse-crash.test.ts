@@ -11,8 +11,9 @@ import {
   type ChangeRow,
 } from '@opt2/platform/migration-kit';
 import { TENANT_A, pgAvailable } from '@opt2/platform/testing';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
+import { upsertCheckpoint } from '../src/reverse/apply-legacy.js';
 import { CHECKPOINT_TABLE, createProjector, readCheckpoints, type CheckpointRow, type Projector } from '../src/reverse/index.js';
 import type { ProjectorHooks, StartupGuardRunner } from '../src/reverse/projector.js';
 
@@ -36,6 +37,9 @@ const VERSION = fixtureVersion('v0201', { [FIXTURE_GROUP_IDS.communications]: 't
 const D = mailingListMemberRow({ Email: 'duplicate.delete@example.test' });
 const E = mailingListMemberRow({ Email: 'duplicate.update@example.test' });
 const E_PRIME = { ...E, fname: 'Updated' };
+
+/** The shipped batch that creates `opt2_sync.projector_checkpoint`. */
+const SYNC_SQL = readFileSync(new URL('../sql/005_opt2_sync.sql', import.meta.url), 'utf8');
 
 const encoded = (row: Row): string => encodeRow(COLUMNS, row);
 const cursorAt = (xid: number): string => formatCursor({ xid: BigInt(xid), seq: 1n });
@@ -104,11 +108,17 @@ interface MirrorRow {
   applied_horizon: string;
 }
 
-/** One projector process: a fresh context, owner doubles and operation tracker over the shared legacy fake and schema. */
+/** One projector process: a fresh context, owner doubles and operation tracker over the case's legacy fake and the shared schema. */
 interface ProjectorProcess {
   tc: TestContext;
   projector: Projector;
   owner: OwnerDoubleState;
+}
+
+/** A case's starting state: its `tmailinglistmembers` rows and, when set, the checkpoint and mirror an earlier batch committed. */
+interface Arrangement {
+  rows: readonly Row[];
+  prior?: { xid: number; horizon: number };
 }
 
 const PG_AVAILABLE = await pgAvailable();
@@ -128,18 +138,48 @@ describe.skipIf(!PG_AVAILABLE)(SUITE, () => {
   beforeAll(async () => {
     schema = await withMigrationSchema();
     if (schema === null) throw new Error(MIGRATION_SCHEMA_SKIP_REASON);
-    legacy = createFakeLegacyDb();
-    defineFixtureTables(legacy, ['tsettings', 'tmailinglistmembers']);
-    legacy.seed(TABLES.tsettings.qualified, [siteRow(TENANT_A.siteId)]);
-    legacy.seed(MEMBERS.qualified, [D, D, E, E, E]);
-    await (await legacy.live()).request().batch(readFileSync(new URL('../sql/005_opt2_sync.sql', import.meta.url), 'utf8'));
+  });
+
+  afterEach(async () => {
+    for (const tc of open) await tc.close();
+    open.clear();
   });
 
   afterAll(async () => {
-    for (const tc of open) await tc.close();
     await schema?.drop();
     schema = null;
   });
+
+  /** A fresh legacy fake holding `rows`, the `tenant-a` site and the checkpoint table, an emptied mirror, then any prior checkpoint and mirror. */
+  async function arrange({ rows, prior }: Arrangement): Promise<void> {
+    legacy = createFakeLegacyDb();
+    defineFixtureTables(legacy, ['tsettings', 'tmailinglistmembers']);
+    legacy.seed(TABLES.tsettings.qualified, [siteRow(TENANT_A.siteId)]);
+    legacy.seed(MEMBERS.qualified, rows);
+    await (await legacy.live()).request().batch(SYNC_SQL);
+    await migrationSchema().db.withMetadata(async (tx) => {
+      await tx.query(`DELETE FROM ${tx.schema}.projector_cursor`);
+      if (prior === undefined) return;
+      await tx.query(
+        `INSERT INTO ${tx.schema}.projector_cursor (owner, tenant_id, cursor, applied_horizon, batches, updated_at)
+         VALUES ($1, $2::uuid, $3, $4::numeric, 1, $5::timestamp(3))`,
+        [OWNER, TENANT_A.tenantId, cursorAt(prior.xid), String(prior.horizon), new Date()],
+      );
+    });
+    if (prior !== undefined) {
+      await upsertCheckpoint(await legacy.live(), {
+        owner: OWNER,
+        tenantId: TENANT_A.tenantId,
+        cursorXid: String(prior.xid),
+        cursorSeq: '1',
+        appliedHorizon: String(prior.horizon),
+        batchId: `arranged-${String(prior.xid)}`,
+        rowsApplied: 1,
+        pendingEffects: [],
+      });
+    }
+    legacy.clearLogs();
+  }
 
   /** Starts a process whose communications double answers `pages` in order, one per changes call. */
   async function startProcess(pages: readonly ScriptedChangesPage[], hooks: ProjectorHooks = {}): Promise<ProjectorProcess> {
@@ -190,6 +230,7 @@ describe.skipIf(!PG_AVAILABLE)(SUITE, () => {
   const requestedAfter = (owner: OwnerDoubleState): string[] => owner.changesCalls.map((call) => call.after);
 
   it('starts with the duplicated keyless rows and no checkpoint or mirror', async () => {
+    await arrange({ rows: [D, D, E, E, E] });
     expect(occurrences()).toEqual({ D: 2, E: 3, E_PRIME: 0 });
     expect(legacy.rows(MEMBERS.qualified)).toHaveLength(5);
     expect(await checkpoint()).toBeUndefined();
@@ -197,7 +238,7 @@ describe.skipIf(!PG_AVAILABLE)(SUITE, () => {
   });
 
   it('commits a keyless delete and its checkpoint together before a crash, and never repeats the delete on restart', async () => {
-    legacy.clearLogs();
+    await arrange({ rows: [D, D, E, E, E] });
     const crashing = await startProcess([PAGE_1], crashAfterFirstLegacyCommit());
     await expect(crashing.projector.runOnce()).rejects.toBeInstanceOf(ProjectorCrashed);
     expect(occurrences()).toEqual({ D: 1, E: 3, E_PRIME: 0 });
@@ -221,9 +262,10 @@ describe.skipIf(!PG_AVAILABLE)(SUITE, () => {
   });
 
   it('commits a keyless update as one delete and one insert before a crash, and inserts its after-image once over both runs', async () => {
-    legacy.clearLogs();
+    await arrange({ rows: [D, E, E, E], prior: { xid: 501, horizon: 502 } });
     const crashing = await startProcess([PAGE_2], crashAfterFirstLegacyCommit());
     await expect(crashing.projector.runOnce()).rejects.toBeInstanceOf(ProjectorCrashed);
+    expect(requestedAfter(crashing.owner)).toEqual([cursorAt(501)]);
     expect(occurrences()).toEqual({ D: 1, E: 2, E_PRIME: 1 });
     expect(await checkpoint()).toMatchObject(checkpointAt(601, 602));
     expect(await mirror()).toEqual(mirrorAt(501, 502));
@@ -241,7 +283,7 @@ describe.skipIf(!PG_AVAILABLE)(SUITE, () => {
   });
 
   it('rolls a batch back when the process dies before the SQL Server commit, then applies it exactly once', async () => {
-    legacy.clearLogs();
+    await arrange({ rows: [D, E, E, E_PRIME], prior: { xid: 601, horizon: 602 } });
     legacy.crashAt((statement) => statement.txId !== null && isCheckpointUpsert(statement));
     const crashing = await startProcess([PAGE_3]);
     const failed = await crashing.projector.runOnce();
@@ -266,6 +308,7 @@ describe.skipIf(!PG_AVAILABLE)(SUITE, () => {
   });
 
   it('never lowers the stored applied horizon for a page read below it', async () => {
+    await arrange({ rows: [D, E, E_PRIME], prior: { xid: 701, horizon: 702 } });
     const lowHorizon = await startProcess([PAGE_LOW_HORIZON]);
     expect(await lowHorizon.projector.runOnce()).toMatchObject({ rowsApplied: 0, errors: [] });
     expect(requestedAfter(lowHorizon.owner)).toEqual([cursorAt(701)]);

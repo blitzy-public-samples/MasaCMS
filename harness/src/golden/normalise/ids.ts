@@ -10,16 +10,23 @@ export interface OrdinalCounter {
 /**
  * One scenario side's id ordinals: CF UUIDs in `byId`/`next`. RFC 4122 uuids are numbered apart, so an
  * event or tenant id present on one side only never shifts the CF UUID numbering of the steps after it.
+ * Audit chain hashes (chain-hashes.ts) are numbered apart for the same reason.
  */
 export interface IdOrdinals extends OrdinalCounter {
   readonly rfc4122: OrdinalCounter;
+  readonly chainHashes: OrdinalCounter;
   /** Ordinals of each keyed id rule, by rule id; created when the side numbers its first keyed id. */
   keyed?: Map<string, OrdinalCounter>;
 }
 
 /** Fresh ordinals for one scenario side; numbering starts at 1. */
 export function createIdOrdinals(): IdOrdinals {
-  return { byId: new Map(), next: 1, rfc4122: { byId: new Map(), next: 1 } };
+  return {
+    byId: new Map(),
+    next: 1,
+    rfc4122: { byId: new Map(), next: 1 },
+    chainHashes: { byId: new Map(), next: 1 },
+  };
 }
 
 /** Candidate CF UUIDs (8-4-4-16 hex) in text, not adjoining further hex digits or hyphens; confirm with `isCfUuid`. */

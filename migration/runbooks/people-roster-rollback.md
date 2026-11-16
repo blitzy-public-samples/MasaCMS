@@ -99,14 +99,14 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 
 ## 9. Rehearse
 
-- Replay GS-PE-RH-01, GS-PE-RH-02 and GS-PE-RH-03 (create, edit, archive) through the gateway, now served by legacy; archive runs the legacy `usp_person_archived_blackout`. `--rehearsal` selects only these scenarios and requires `v0003` active.
+- Replay GS-PE-RH-01, GS-PE-RH-02 and GS-PE-RH-03 (create, edit, archive) through the gateway, now served by legacy; archive runs the legacy `usp_person_archived_blackout`. `--rehearsal` requires `v0003` active and, without `--only`, selects only these scenarios.
 - The replay uses only the reserved identities in `legacy-fixtures/seed/seed.config.json` `reserved.rehearsal` and compares against golden sets captured at `harness/repro/test-all.sh` stage 5 from the same seeded state.
 - Complete the GS-ID-09 session step opened in section 2; `test-all.sh` stage 8 runs it directly after the transition completes.
 - Run one feed pass, then compare the replays with their golden sets.
 
 | Command | Evidence |
 |---|---|
-| `npm --prefix harness run golden:replay -- --only GS-ID-09 --phase resume` | Exit 0; `${OPT2_STATE_DIR}/golden/replay/GS-ID-09.json` |
+| `npm --prefix harness run golden:replay -- --rehearsal --only GS-ID-09 --phase resume` | Exit 0; `${OPT2_STATE_DIR}/golden/replay/GS-ID-09.json` |
 | `npm --prefix harness run golden:replay -- --rehearsal` | Exit 0; `${OPT2_STATE_DIR}/golden/replay/<id>.json` per scenario |
 | `opt2-migrate feed` | JSON line; `opt2/reports/reconciliation/after-feed-<seq>.json` with `result: zero-difference` |
 | `npm --prefix harness run golden:compare` | GS-PE-RH-01/02/03 and GS-ID-09 results in `opt2/reports/parity.json` |

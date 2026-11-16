@@ -22,8 +22,6 @@ export const SURVEY_TASK_QUEUES = Object.freeze({
   'survey-reminder': 'communications-reminders',
 } as const satisfies Record<SurveyTaskKind, ScheduledTaskQueue>);
 
-// A reminder's route names its scheduled-task row, whose id exists only once the row is stored,
-// so the plan carries no URL and `taskTarget` builds it from the planned task or the row.
 /** One task of a schedule version; the plan carries no tenant, which callers take from the verified envelope or the adoption rule. */
 export interface PlannedSurveyTask {
   kind: SurveyTaskKind;
@@ -39,13 +37,6 @@ export interface PlannedSurveyTask {
   scheduleVersion: number;
   /** Reminder ordinal; absent for the launch. */
   n?: number;
-}
-
-/** What a task's target depends on; `scheduledTaskId` is required for reminders, whose route names their row. */
-export interface SurveyTaskTargetRef {
-  queue: ScheduledTaskQueue;
-  surveyId: string;
-  scheduledTaskId?: string;
 }
 
 /** A task's absolute URL, and the URL's path as `scheduled_task.target_route` stores it. */
@@ -167,11 +158,9 @@ export function planSurveyTasks(payload: SurveyScheduledPayload, opts: { now: Da
   ];
 }
 
-/** URL and route of a task from the platform queue registry; throws `UnknownTaskTargetError`, or `TypeError` for a reminder without its row id. */
-export function taskTarget(ref: SurveyTaskTargetRef, serviceUrls: Record<string, string>): SurveyTaskTarget {
-  const params: Record<string, string> = { surveyId: ref.surveyId };
-  if (ref.scheduledTaskId !== undefined) params.scheduledTaskId = ref.scheduledTaskId;
-  const url = targetUrl(QUEUES[ref.queue], serviceUrls, params);
+/** URL and route of the queue's fixed task route from the platform queue registry; throws `UnknownTaskTargetError`. */
+export function taskTarget(queue: ScheduledTaskQueue, serviceUrls: Record<string, string>): SurveyTaskTarget {
+  const url = targetUrl(QUEUES[queue], serviceUrls);
   return { url, route: new URL(url).pathname };
 }
 

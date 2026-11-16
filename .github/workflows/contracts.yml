@@ -21,7 +21,10 @@ jobs:
         package:
           - platform
           - gateway
+          - web
           - migration
+          - harness
+          - legacy-fixtures/seed
           - services/identity
           - services/people
           - services/programs-sites

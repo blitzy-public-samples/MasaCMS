@@ -8,6 +8,11 @@ export type CfQuery = LegacyQuery;
 /** A CFML simple value; a Date stands for a CF date/time object. */
 export type CfSimpleValue = string | number | boolean | Date;
 
+/** A cfquery datetime cell (java.sql.Timestamp) a bean kept as set from its row; ToString gives yyyy-mm-dd HH:nn:ss.f. */
+export class CfTimestamp {
+  constructor(readonly date: Date) {}
+}
+
 /** Options of acfSerializeJson. */
 export interface AcfSerializeJsonOptions {
   /** Emit struct keys as given, for keys legacy set by bracket or quoted name; by default keys are upper-cased as ACF does for dot-notation keys. */
@@ -82,6 +87,7 @@ export function muraJsonEncode(value: unknown): string {
   if (Array.isArray(value)) return encodeArray(value);
   if (isCfQuery(value)) return encodeQuery(value);
   if (isPlainObject(value)) return encodeStruct(value);
+  if (value instanceof CfTimestamp) return encodeCell(value.date);
   if (isSimpleValue(value)) {
     // json.cfc:261-262: numeric values, numeric strings included, are emitted raw (ACF: '007' -> 007, ' 12' -> " 12" unquoted).
     if (cfIsNumeric(value)) return cfToString(value);

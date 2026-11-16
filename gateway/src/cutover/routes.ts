@@ -132,9 +132,13 @@ export async function registerCutoverRoutes(app: FastifyInstance, { state, infli
   freezeRoute('/internal/v1/cutover/unfreeze', (routes, actor) => state.unfreeze(routes, actor));
 
   // The contract declares no HEAD operation, so Fastify's automatic HEAD sibling is not registered.
+  // Migration polls the status, so its successful requests log at debug.
   app.get(
     '/internal/v1/cutover/status',
-    { exposeHeadRoute: false, config: { opt2: { transport: 'service', requires: OPERATOR_OR_MIGRATION } } },
+    {
+      exposeHeadRoute: false,
+      config: { opt2: { transport: 'service', requires: OPERATOR_OR_MIGRATION }, opt2Log: { successLevel: 'debug' } },
+    },
     async (): Promise<CutoverStatus> => state.status(),
   );
 

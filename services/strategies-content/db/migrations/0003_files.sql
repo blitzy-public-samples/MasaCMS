@@ -1,5 +1,5 @@
 -- strategies-content file, file metadata and stored-object manifest tables; columns, nullability and constant defaults follow the live legacy catalog, with varchar and nvarchar mapped to text by the canonical type map.
-CREATE TABLE content.file (
+CREATE TABLE IF NOT EXISTS content.file (
   tenant_id uuid NOT NULL,
   fileid char(35) NOT NULL,
   contentid char(35),
@@ -27,12 +27,13 @@ CREATE TABLE content.file (
   PRIMARY KEY (tenant_id, fileid)
 );
 ALTER TABLE content.file ENABLE ROW LEVEL SECURITY; ALTER TABLE content.file FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON content.file;
 CREATE POLICY tenant_isolation ON content.file
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
-CREATE INDEX file_tenant_contentid_idx ON content.file (tenant_id, contentid);
+CREATE INDEX IF NOT EXISTS file_tenant_contentid_idx ON content.file (tenant_id, contentid);
 
-CREATE TABLE content.file_metadata (
+CREATE TABLE IF NOT EXISTS content.file_metadata (
   tenant_id uuid NOT NULL,
   alttext text,
   contenthistid char(35) DEFAULT '',
@@ -51,13 +52,14 @@ CREATE TABLE content.file_metadata (
   PRIMARY KEY (tenant_id, metaid)
 );
 ALTER TABLE content.file_metadata ENABLE ROW LEVEL SECURITY; ALTER TABLE content.file_metadata FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON content.file_metadata;
 CREATE POLICY tenant_isolation ON content.file_metadata
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
-CREATE INDEX file_metadata_tenant_fileid_idx ON content.file_metadata (tenant_id, fileid);
-CREATE INDEX file_metadata_tenant_contenthistid_idx ON content.file_metadata (tenant_id, contenthistid);
+CREATE INDEX IF NOT EXISTS file_metadata_tenant_fileid_idx ON content.file_metadata (tenant_id, fileid);
+CREATE INDEX IF NOT EXISTS file_metadata_tenant_contenthistid_idx ON content.file_metadata (tenant_id, contenthistid);
 
-CREATE TABLE content.file_object (
+CREATE TABLE IF NOT EXISTS content.file_object (
   tenant_id uuid NOT NULL,
   file_id char(35) NOT NULL,
   variant text NOT NULL,
@@ -71,7 +73,8 @@ CREATE TABLE content.file_object (
   PRIMARY KEY (tenant_id, object_key)
 );
 ALTER TABLE content.file_object ENABLE ROW LEVEL SECURITY; ALTER TABLE content.file_object FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON content.file_object;
 CREATE POLICY tenant_isolation ON content.file_object
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
-CREATE INDEX file_object_tenant_file_id_idx ON content.file_object (tenant_id, file_id);
+CREATE INDEX IF NOT EXISTS file_object_tenant_file_id_idx ON content.file_object (tenant_id, file_id);

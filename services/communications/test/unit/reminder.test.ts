@@ -57,9 +57,9 @@ function reminderTask(ctx: TestApp, version: 1 | 2 = 1): CreateTaskInput {
   return task;
 }
 
-/** The scheduled-task id a reminder task's URL names. */
+/** The scheduled-task id a reminder task's payload names. */
 function taskIdOf(task: CreateTaskInput): string {
-  return new URL(task.url).pathname.split('/').at(-1) ?? '';
+  return (task.body as { scheduledTaskId: string }).scheduledTaskId;
 }
 
 /** The committed scheduled-task row with `id`. */
@@ -67,9 +67,9 @@ function storedRow(ctx: TestApp, id: string): Row | undefined {
   return ctx.db.rows(SCHEDULED_TASK.table).find((row) => row.scheduled_task_id === id);
 }
 
-/** Delivers `task` as the local Cloud Tasks adapter does, optionally to another path or with another wire body. */
-async function deliver(ctx: TestApp, task: CreateTaskInput, opts: { path?: string; body?: TaskWireBody } = {}) {
-  const path = opts.path ?? new URL(task.url).pathname;
+/** Delivers `task` as the local Cloud Tasks adapter does, optionally with another wire body. */
+async function deliver(ctx: TestApp, task: CreateTaskInput, opts: { body?: TaskWireBody } = {}) {
+  const path = new URL(task.url).pathname;
   const res = await ctx.app.inject({
     method: 'POST',
     url: path,
@@ -144,7 +144,8 @@ describe('reminder task', () => {
     const ctx = await scheduled(1);
     const task = reminderTask(ctx);
     const id = taskIdOf(task);
-    expect(new URL(task.url).pathname).toBe(REMINDER_TASK_PATH.replace(':scheduledTaskId', id));
+    expect(new URL(task.url).pathname).toBe(REMINDER_TASK_PATH);
+    expect(storedRow(ctx, id)?.target_route).toBe(REMINDER_TASK_PATH);
     const mark = ctx.db.transactions.length;
 
     await expect(deliver(ctx, task)).resolves.toEqual({ status: 200, body: { status: 'sent' } });
@@ -199,7 +200,7 @@ describe('reminder task', () => {
 });
 
 describe('reminder task rejection', () => {
-  type Mutation = (body: TaskWireBody, launchId: string) => { body?: TaskWireBody; path?: string };
+  type Mutation = (body: TaskWireBody, launchId: string) => { body: TaskWireBody };
   const withPayload = (body: TaskWireBody, patch: Record<string, unknown>): TaskWireBody => ({
     ...body,
     payload: { ...(body.payload as Record<string, unknown>), ...patch },
@@ -213,7 +214,6 @@ describe('reminder task rejection', () => {
     ["another survey's id", 'not-visible', (body) => ({ body: withPayload(body, { surveyId: OTHER_SURVEY_ID }) })],
     ["the launch task's row", 'not-visible', (body, launchId) => ({ body: withPayload(body, { scheduledTaskId: launchId }) })],
     ['a malformed payload', 'not-visible', (body) => ({ body: withPayload(body, { n: 0 }) })],
-    ['a path naming another task', 'mismatch', (_body, launchId) => ({ path: REMINDER_TASK_PATH.replace(':scheduledTaskId', launchId) })],
   ])('acknowledges %s as ignored (%s), with no surveys call or write, so the queue stops retrying it', async (_case, reason, mutate) => {
     const ctx = await scheduled(1);
     const task = reminderTask(ctx);
@@ -276,7 +276,7 @@ describe('reminder task failure', () => {
       reminder_n: 1,
       schedule_time: new Date(2026, 6, 1, 10, 0, 0),
       status: 'scheduled',
-      target_route: REMINDER_TASK_PATH.replace(':scheduledTaskId', id),
+      target_route: REMINDER_TASK_PATH,
       schedule_version: 1,
       origin: 'event',
       enqueued_at: new Date(2026, 5, 30, 12, 0, 0),

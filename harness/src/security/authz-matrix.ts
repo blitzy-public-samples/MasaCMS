@@ -239,6 +239,14 @@ function subjectView(subject: RoleSubject): SubjectView {
 const allow = (reason: ExpectationReason): Verdict => ({ outcome: 'allow', reason });
 const deny = (status: 401 | 403, reason: ExpectationReason): Verdict => ({ outcome: 'deny', status, reason });
 
+/** A Fastify path token: an escaped colon, or a named parameter with an optional regex. */
+const PATH_PARAM = /::|:(\w+)(?:\([^)]*\))?/g;
+
+/** Whether `url` has a route param the site check reads: one named `siteid`, ignoring case. */
+function hasSiteIdParam(url: string): boolean {
+  return [...url.matchAll(PATH_PARAM)].some((match) => match[1]?.toLowerCase() === 'siteid');
+}
+
 /** The onRequest role check of the auth hooks. */
 function roleVerdict(route: RouteMatrixEntry, roles: readonly string[], hasUser: boolean): Verdict {
   if (route.public === true) {
@@ -264,15 +272,20 @@ function verdictFor(route: RouteMatrixEntry, view: SubjectView): Verdict {
     return route.public === true ? allow('public') : deny(401, 'managed-transport');
   }
   const verdict = roleVerdict(route, view.roles, view.kind === 'user');
-  // The site check runs in preHandler, after the role check, and also on public routes once a user token is verified.
-  return verdict.outcome === 'allow' && view.otherTenant && route.siteCheck ? deny(403, 'other-tenant') : verdict;
+  // The preHandler site check follows the role check, public routes included, and refuses only a supplied `siteid`
+  // other than the token's site; a path-only request supplies one exactly where the template has a `siteid` param.
+  const siteRefused = view.otherTenant && route.siteCheck && hasSiteIdParam(route.url);
+  return verdict.outcome === 'allow' && siteRefused ? deny(403, 'other-tenant') : verdict;
 }
 
 function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** Expectation of every subject on every non-edge route of `matrix`, sorted by package, url, method and subject. */
+/**
+ * Expectation of every subject on every non-edge route of `matrix` for a path-only request, sorted by package, url,
+ * method and subject.
+ */
 export function expectationsFor(matrix: LoadedMatrix, subjects: readonly RoleSubject[] = ROLE_SET): Expectation[] {
   const views = subjects.map(subjectView);
   // An edge route forwards to another route, whose owning package's matrix carries the outcome.

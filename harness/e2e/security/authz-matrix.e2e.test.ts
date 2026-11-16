@@ -12,7 +12,14 @@ import {
   type BaseEnv,
   type FastifyInstance,
 } from '@opt2/platform/service-kit';
-import { loadStorageHmacKey } from '@opt2/platform/storage';
+import {
+  BUCKETS,
+  createLocalStorageAdapter,
+  loadStorageHmacKey,
+  objectKey,
+  type BucketName,
+  type LocalStorageAdapter,
+} from '@opt2/platform/storage';
 import { ROLE_SET, TENANT_A, testVerifier, writeTestSecrets, type RoleSubject } from '@opt2/platform/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -41,6 +48,7 @@ import {
   loadCutoverVersion,
   localFileSigner,
   newProbeRequestId,
+  probedSignedBuckets,
   reachAccounting,
   reachVerdicts,
   skipReason,
@@ -96,6 +104,26 @@ const FORGED_CONTEXT_HEADERS: Readonly<Record<string, string>> = Object.freeze({
 
 /** Lifetime of the signed-file probe URLs, in seconds: they are signed once and sent within the hook bound. */
 const SIGNED_PROBE_TTL_S = HOOK_TIMEOUT_MS / 1000;
+
+/** Bytes and content type of the objects the signed-file probes download. */
+const PROBE_OBJECT_BODY = Buffer.from('opt2 authz probe\n', 'utf8');
+const PROBE_OBJECT_TYPE = 'text/plain';
+
+/** One bucket's probe object: its key, and the `:tenantId/:objectName` values the owners' signed-file routes read. */
+interface ProbeObject {
+  bucket: BucketName;
+  key: string;
+  params: { tenantId: string; objectName: string };
+}
+
+/** A fresh tenant-a object of each bucket, keyed as the owners store objects: `<RFC 4122 tenant id>/<CF UUID>.txt`. */
+function probeObjects(): ProbeObject[] {
+  const tenantId = TENANT_A.tenantId;
+  return BUCKETS.map((bucket) => {
+    const key = objectKey({ tenantId, ext: 'txt' });
+    return { bucket, key, params: { tenantId, objectName: key.slice(tenantId.length + 1) } };
+  });
+}
 
 /** Relay target filled into the gateway's `:service`: an unknown one is answered by the not-found handler, whose log names no relay route. */
 const RELAY_PROBE_SERVICE = 'identity';
@@ -255,6 +283,8 @@ describe('gateway authorisation matrix', () => {
   let diff: MatrixDiff;
   let forgedDiff: MatrixDiff;
   let probing = false;
+  let storage: LocalStorageAdapter | undefined;
+  const stored: ProbeObject[] = [];
 
   beforeAll(async () => {
     await requireTableVersion(TABLE_VERSION);
@@ -264,6 +294,7 @@ describe('gateway authorisation matrix', () => {
       loadInventoryVariants(),
       loadStorageHmacKey(stateDir()),
     ]);
+    const objects = probeObjects();
     const sign = localFileSigner(hmacKey, Math.floor(Date.now() / 1000) + SIGNED_PROBE_TTL_S);
     reach = gatewayReach({
       matrices: loaded,
@@ -271,7 +302,15 @@ describe('gateway authorisation matrix', () => {
       variants,
       sign,
       gatewayParams: { service: RELAY_PROBE_SERVICE },
+      signedFileParams: Object.fromEntries(objects.map(({ bucket, params }) => [bucket, params])),
     });
+    // The owners serve signed-file probes from the stack's local storage, so each probed bucket gets its object.
+    storage = await createLocalStorageAdapter({ stateDir: stateDir(), hmacKey });
+    const buckets = new Set(probedSignedBuckets(reach));
+    for (const object of objects.filter(({ bucket }) => buckets.has(bucket))) {
+      stored.push(object);
+      await storage.put(object.bucket, object.key, PROBE_OBJECT_BODY, { contentType: PROBE_OBJECT_TYPE });
+    }
     const expected = loaded.flatMap((matrix) => expectationsFor(matrix, ROLE_SET));
     const forgedExpected = expected
       .filter((expectation) => expectation.subject === ANONYMOUS_SUBJECT)
@@ -315,8 +354,13 @@ describe('gateway authorisation matrix', () => {
   }, HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
-    // Probes of send-login and forgot-password routes may have sent mail.
-    if (probing) await resetMailpit();
+    try {
+      const local = storage;
+      if (local !== undefined) await Promise.all(stored.map(({ bucket, key }) => local.delete(bucket, key)));
+    } finally {
+      // Probes of send-login and forgot-password routes may have sent mail.
+      if (probing) await resetMailpit();
+    }
   });
 
   it('loads one route matrix per routed package', () => {

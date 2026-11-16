@@ -249,6 +249,8 @@ paths:
         - platform.operator
       parameters:
         - $ref: '#/components/parameters/UnitsFilter'
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/PageCursor'
       responses:
         '200':
           description: Leases and gates per unit.
@@ -258,6 +260,7 @@ paths:
                 $ref: '#/components/schemas/GatesResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+          description: A malformed or unknown unit, a limit outside 1 to 500, or a cursor that names no unit of the selection.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -490,6 +493,22 @@ components:
       description: Units to list; every unit when omitted.
       schema:
         $ref: '#/components/schemas/UnitList'
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size; every remaining unit when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+    PageCursor:
+      name: cursor
+      in: query
+      required: false
+      description: The `nextCursor` of the previous page; listing continues after this unit.
+      schema:
+        $ref: '#/components/schemas/UnitId'
   responses:
     BadRequest:
       description: Malformed request.
@@ -935,6 +954,9 @@ components:
                       - importing
                       - import-pending
                       - null
+        nextCursor:
+          $ref: '#/components/schemas/UnitId'
+          description: Last unit of this page; present only when units of the selection remain after it.
     TransitionStartRequest:
       type: object
       required:

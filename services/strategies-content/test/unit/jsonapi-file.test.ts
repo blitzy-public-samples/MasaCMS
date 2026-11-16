@@ -118,7 +118,7 @@ function callOf(input: CallInput): { call: JsonApiCall; csrfCalls: () => number 
     user: { loggedIn: actor.isLoggedIn, systemUser: actor.isLoggedIn },
     allowAction: () => true,
     site: urls,
-    customImageSizes: [],
+    customImageSizes: () => Promise.resolve([]),
   };
   const params = createJsonApiParams(Object.entries({ ...url, ...(input.params ?? {}) }));
   const call: JsonApiCall = {

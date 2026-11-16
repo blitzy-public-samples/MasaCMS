@@ -34,4 +34,7 @@ export {
 export type { PoolKind, TenantRegistryEntry, RegistrySource, SiteChangedPayload, SiteChangedEvent } from './registry.js';
 export { writeGrant, hasGrant } from './grants.js';
 export type { GrantInput, GrantKey, GrantSource } from './grants.js';
-export type { Pool, PoolClient, QueryResult, QueryResultRow, QueryConfig } from 'pg';
+// The pg driver and Cloud SQL connector pinned in platform/package.json, for consumers that open their own connections.
+export { default as pg } from 'pg';
+export type { Pool, PoolClient, QueryResult, QueryResultRow, QueryConfig, ClientConfig } from 'pg';
+export { Connector, AuthTypes, IpAddressTypes } from '@google-cloud/cloud-sql-connector';

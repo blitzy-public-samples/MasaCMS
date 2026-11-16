@@ -1,11 +1,13 @@
 // Unit tests for backfill and feed applies over owner doubles: batch ids and size, the applier-killed exit, per-tenant
-// batches and watermarks, split fan-out, tenant resolution, and the refusal to write target-authoritative units.
+// batches, receipts and watermarks, split fan-out and unit selection, tenant resolution, and the refusal to write
+// target-authoritative units.
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
   APPLY_ORIGINS,
   DEFAULT_UMBRELLA_SITE_ID,
+  decodeRow,
   encodeRow,
   type ApplyRequest,
   type CanonicalColumn,
@@ -43,7 +45,7 @@ import {
 } from '../../src/apply/index.js';
 import { loadConfig } from '../../src/config.js';
 import { currentAuthority } from '../../src/cutover/index.js';
-import type { DataOwner } from '../../src/owners/index.js';
+import { OwnerCallError, type DataOwner } from '../../src/owners/index.js';
 import { MIGRATION_SCHEMA_SKIP_REASON, buildTestContext, type TestContext } from '../helpers/context.js';
 import { TEST_SOURCE_SHA, createTestDirs, type TestDirs } from '../helpers/env.js';
 import { createFakeLegacyDb, type FakeLegacyDb } from '../helpers/fake-legacy-db.js';
@@ -77,6 +79,12 @@ const text = (...names: string[]): CanonicalColumn[] => names.map((name) => ({ n
 const USER_COLUMNS: CanonicalColumn[] = [...text('UserID', 'SiteID'), { name: 'Type', type: 'i' }, ...text('Fname')];
 const IMAGE_SIZE_COLUMNS = text('sizeID', 'siteID', 'name');
 const MAILING_LIST_COLUMNS = text('MLID', 'SiteID', 'Name');
+// Columns of every tusers share: person (GroupName, Fname), user account (UserName, Type, SiteID), credential (Password), login state (LastLogin).
+const SPLIT_COLUMNS: CanonicalColumn[] = [
+  ...text('UserID', 'GroupName', 'Fname', 'UserName', 'Password'),
+  { name: 'Type', type: 'i' },
+  ...text('SiteID', 'LastLogin'),
+];
 
 // The apply wire selects no events: owners write the state events of a migration origin's applies and never a process event.
 const APPLY_FIELDS: ReadonlySet<string> = new Set([
@@ -157,6 +165,20 @@ function userRequest(ordinal: number): ApplyRequest {
     columns: USER_COLUMNS,
     rows: [userChange('tenant-a', ordinal)],
   };
+}
+
+/** A tenant-a `Type=2` tusers row over {@link SPLIT_COLUMNS}. */
+function splitUser(userId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const values = { UserID: userId, GroupName: null, Fname: 'Fixture', UserName: userId.toLowerCase(), Password: `hash-${userId}`, Type: 2, SiteID: 'tenant-a' };
+  return { ...values, LastLogin: null, ...overrides };
+}
+
+const SPLIT_GROUP = splitUser('G1', { GroupName: 'Editors', Fname: null, UserName: null, Password: null, Type: 1 });
+
+/** Rows of `unit` the `owner` double exports for `tenantId`, decoded over the exported columns. */
+async function exportedRows(doubles: OwnerDoubles, owner: DataOwner, unit: string, tenantId: string = TENANT_A): Promise<Record<string, unknown>[]> {
+  const page = await doubles.client.export(owner, { unit, tenantId });
+  return page.tables.flatMap((table) => table.rows.map((row) => decodeRow(table.columns, row.row)));
 }
 
 describe('batch identity and size', () => {
@@ -314,6 +336,64 @@ describe('createOwnerBatcher', () => {
     expect(sender.acknowledged).toBe(2);
   });
 
+  it.each<{ arrangement: string; prior: ApplyRequest[]; answer: object; userIds: string[] }>([
+    {
+      arrangement: 'sent first, with its 400, storing and receipting nothing',
+      prior: [],
+      answer: { name: 'OwnerCallError', status: 400, body: { error: { code: 'invalid_request' } } },
+      userIds: [],
+    },
+    {
+      arrangement: 'resent after a valid batch of its id, as a duplicate',
+      prior: [userRequest(0)],
+      answer: { batchId: idOf(TENANT_A, 0), duplicate: true, applied: 0, skipped: 0 },
+      userIds: ['tenant-a-00000'],
+    },
+  ])('answers a keyed tusers batch of insert rows $arrangement', async ({ prior, answer, userIds }) => {
+    const { doubles, sender } = harness();
+    for (const request of prior) await sender.apply('people', request);
+    const inserts: ApplyRequest = { ...userRequest(0), rows: [{ ...userChange('tenant-a', 1), op: 'insert' }] };
+
+    const outcome = await sender.apply('people', inserts).catch((reason: unknown) => reason);
+
+    expect(outcome).toMatchObject(answer);
+    const people = doubles.owner('people');
+    expect(people.batches.map((batch) => batch.batchId)).toEqual(prior.map((request) => request.batchId));
+    expect((people.rows.get('tusers') ?? []).map((row) => row.values.UserID)).toEqual(userIds);
+    expect([...(people.appliedBatchIds.get(TENANT_A) ?? [])]).toEqual(prior.map((request) => request.batchId));
+  });
+
+  it('applies one batch id once per tenant: both tenants write it, and each tenant answers its repeat as a duplicate', async () => {
+    const { doubles, sender } = harness();
+    const batchId = idOf(TENANT_A, 0);
+    const sites = [
+      { tenantId: TENANT_A, siteId: 'tenant-a' },
+      { tenantId: TENANT_B, siteId: 'tenant-b' },
+    ];
+    const requests = sites.map(
+      ({ tenantId, siteId }): ApplyRequest => ({ ...userRequest(0), batchId, tenantId, rows: [userChange(siteId, 0), userChange(siteId, 1)] }),
+    );
+
+    const results = [];
+    for (const request of [...requests, ...requests]) results.push(await sender.apply('people', request));
+
+    expect(results).toMatchObject([
+      { batchId, duplicate: false, applied: 2, skipped: 0 },
+      { batchId, duplicate: false, applied: 2, skipped: 0 },
+      { batchId, duplicate: true, applied: 0, skipped: 0 },
+      { batchId, duplicate: true, applied: 0, skipped: 0 },
+    ]);
+    const people = doubles.owner('people');
+    expect(people.batches.map((batch) => [batch.tenantId, batch.batchId])).toEqual([
+      [TENANT_A, batchId],
+      [TENANT_B, batchId],
+    ]);
+    expect(people.rows.get('tusers')).toHaveLength(4);
+    for (const { tenantId, siteId } of sites) {
+      expect((await exportedRows(doubles, 'people', UNITS.person, tenantId)).map((row) => row.UserID), siteId).toEqual([`${siteId}-00000`, `${siteId}-00001`]);
+    }
+  });
+
   it.each<{ table: string; columns: CanonicalColumn[]; change: ApplyChange; receivers: DataOwner[] }>([
     { table: 'tusers', columns: USER_COLUMNS, change: userChange('tenant-a', 0), receivers: ['identity', 'people'] },
     {
@@ -336,6 +416,74 @@ describe('createOwnerBatcher', () => {
       const rows = doubles.owner(owner).batches.flatMap((batch) => batch.rows.map((row) => row.row));
       expect(rows, owner).toEqual(receivers.includes(owner as DataOwner) ? [change.row] : []);
     }
+  });
+});
+
+describe('owner apply of selected units', () => {
+  const change = (op: ApplyChange['op'], values: Record<string, unknown>): ApplyChange => ({ op, row: encodeRow(SPLIT_COLUMNS, values) });
+  const feedRequest = (units: string[], rows: ApplyChange[]): ApplyRequest => ({
+    batchId: batchIdFor({ direction: 'feed', snapshotSeq: SNAPSHOT_SEQ, legacyTable: 'tusers', tenantId: TENANT_A, ordinal: 0 }),
+    origin: 'migration-feed',
+    legacyTable: 'tusers',
+    tenantId: TENANT_A,
+    columns: SPLIT_COLUMNS,
+    units,
+    rows,
+  });
+
+  it('writes only the login-state share of tusers, leaving every other unit of both owners as it was', async () => {
+    const { doubles, sender } = harness();
+    doubles.owner('identity').seedRows('tusers', TENANT_A, [splitUser('U1'), splitUser('U2'), SPLIT_GROUP], SPLIT_COLUMNS);
+    doubles.owner('people').seedRows('tusers', TENANT_A, [splitUser('U1'), splitUser('U2')], SPLIT_COLUMNS);
+    const excluded: [DataOwner, string][] = [
+      ['identity', UNITS.groupAccount],
+      ['identity', UNITS.userAccount],
+      ['identity', UNITS.credential],
+      ['people', UNITS.person],
+    ];
+    const exports = (): Promise<Record<string, unknown>[][]> => Promise.all(excluded.map(([owner, unit]) => exportedRows(doubles, owner, unit)));
+    const before = await exports();
+
+    const result = await sender.apply(
+      'identity',
+      feedRequest(
+        [UNITS.loginState],
+        [
+          change('upsert', splitUser('U1', { Fname: 'Renamed', UserName: 'renamed', Password: 'hash-new', LastLogin: '2026-06-02 08:00:00' })),
+          change('delete', splitUser('U2')),
+          change('upsert', splitUser('U3', { LastLogin: '2026-06-02 09:00:00' })),
+          change('upsert', { ...SPLIT_GROUP, GroupName: 'Writers', LastLogin: '2026-06-02 10:00:00' }),
+        ],
+      ),
+    );
+
+    expect(result).toMatchObject({ duplicate: false, applied: 3, skipped: 1 });
+    expect(await exportedRows(doubles, 'identity', UNITS.loginState)).toEqual([
+      { UserID: 'U1', LastLogin: '2026-06-02 08:00:00' },
+      { UserID: 'U3', LastLogin: '2026-06-02 09:00:00' },
+    ]);
+    expect(before.map((rows) => rows.length)).toEqual([1, 2, 2, 2]);
+    expect(await exports()).toEqual(before);
+    expect(doubles.owner('people').batches).toEqual([]);
+  });
+
+  it.each<{ owner: DataOwner; unit: string; mapped: string }>([
+    { owner: 'identity', unit: UNITS.person, mapped: UNITS.userAccount },
+    { owner: 'people', unit: UNITS.loginState, mapped: UNITS.person },
+    { owner: 'people', unit: UNITS.personArchive, mapped: UNITS.person },
+  ])('refuses $owner a tusers batch naming $unit with its 400, storing and receipting nothing', async ({ owner, unit, mapped }) => {
+    const { doubles, sender } = harness();
+    const request = feedRequest([unit], [change('upsert', splitUser('U1'))]);
+
+    const error = await sender.apply(owner, request).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(OwnerCallError);
+    expect(error).toMatchObject({ status: 400, body: { error: { code: 'invalid_request', message: `${owner} maps tusers to no unit ${unit}` } } });
+    const state = doubles.owner(owner);
+    expect(state.batches).toEqual([]);
+    expect(state.rows.get('tusers')).toBeUndefined();
+    expect(state.appliedBatchIds.size).toBe(0);
+    expect(await sender.apply(owner, { ...request, units: [mapped] })).toMatchObject({ duplicate: false, applied: 1 });
   });
 });
 

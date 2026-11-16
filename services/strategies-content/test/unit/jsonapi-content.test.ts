@@ -57,7 +57,7 @@ function callFor(method: Op, a: CallArgs = {}): JsonApiCall & { validateCsrf: Re
     user: { loggedIn: actor.isLoggedIn, systemUser: actor.isLoggedIn },
     allowAction: () => false,
     site: SITE.urls,
-    customImageSizes: [],
+    customImageSizes: () => Promise.resolve([]),
   };
   return {
     mode: 'json',
@@ -139,7 +139,7 @@ describe.skipIf(!(await pgAvailable()))('JSON API content handler', () => {
     fx = await createContentFixture('jsonapi-content-test');
     await page({ contentid: HOME, parentid: END, title: 'Home' });
     ALPHA = await page({ parentid: HOME, title: 'Alpha', filename: 'alpha' });
-    [{ contenthistid: ALPHA_FIRST_VERSION }] = (await versions(ALPHA)) as Array<{ contenthistid: string }>;
+    [{ contenthistid: ALPHA_FIRST_VERSION }] = (await versions(ALPHA)) as [{ contenthistid: string }, ...Array<{ contenthistid: string }>];
     await page({ contentid: ALPHA, parentid: HOME, title: 'Alpha', filename: 'alpha', summary: 'second' });
     BETA = await page({ parentid: ALPHA, title: 'Beta' });
     await page({ parentid: HOME, title: 'Members', restricted: 1 });

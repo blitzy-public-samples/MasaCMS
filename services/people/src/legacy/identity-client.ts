@@ -129,7 +129,7 @@ export interface IdentityClient {
   userMemberships(userId: string, siteId?: string): Promise<UserMemberships>;
   /** `getAccountMemberships`: ids of the groups the user belongs to, in `readMembershipIDs` order, whatever the caller's roles. */
   membershipGroupIds(userId: string, options?: IdentityCallOptions): Promise<string[]>;
-  /** `listSiteGroups`: the groups of the site's private (`isPublic` 0) or public (1) user pool, in identity's order. */
+  /** `listSiteGroupsV2`: every group of the site's private (`isPublic` 0) or public (1) user pool, in identity's order, read page by page. */
   siteGroups(siteId: string, isPublic: number): Promise<GroupSummary[]>;
   /** `listGroups`: every `cusers.list` group row, by `Perm` descending, then group name, read page by page. */
   userGroups(siteId: string, isPublic: number): Promise<UserGroupRow[]>;
@@ -174,7 +174,7 @@ const OPS = {
   usernameCandidates: { operationId: 'lookupUsernameCandidates', method: 'POST', path: '/internal/v1/accounts:username-candidates' },
   lookupMemberships: { operationId: 'lookupMemberships', method: 'POST', path: '/internal/v1/accounts:memberships' },
   userMemberships: { operationId: 'listUserMemberships', method: 'GET', path: '/v1/users/{userId}/memberships' },
-  siteGroups: { operationId: 'listSiteGroups', method: 'GET', path: '/internal/v1/groups' },
+  siteGroups: { operationId: 'listSiteGroupsV2', method: 'GET', path: '/internal/v2/groups' },
   userGroups: { operationId: 'listGroups', method: 'GET', path: '/v1/groups' },
   currentSession: { operationId: 'getCurrentSession', method: 'GET', path: '/v1/sessions/current' },
   adminState: { operationId: 'getAdminSessionState', method: 'GET', path: '/v1/sessions/current/admin-state' },
@@ -264,7 +264,7 @@ function accountView(record: Schemas['AccountRecord']): AccountView {
   };
 }
 
-/** One `listSiteGroups` row as a group summary. */
+/** One `listSiteGroupsV2` row as a group summary. */
 function groupSummary(group: Schemas['SiteGroup']): GroupSummary {
   return { groupId: group.UserID, groupName: group.GroupName, siteId: group.SiteID, isPublic: group.isPublic, perm: group.Perm };
 }
@@ -406,8 +406,15 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
 
     async siteGroups(siteId, isPublic) {
       const op = OPS.siteGroups;
-      const query = { siteid: siteId, ispublic: String(isPublic) };
-      return okBody(op, await send<Schemas['SiteGroupList']>(op, op.path, { query })).items.map(groupSummary);
+      const groups: GroupSummary[] = [];
+      // Every page in turn, each at identity's default size, until nextOffset ends the listing.
+      for (let offset: number | null = 0; offset !== null; ) {
+        const query: Record<string, string> = { siteid: siteId, ispublic: String(isPublic), offset: String(offset) };
+        const page: Schemas['SiteGroupPage'] = okBody(op, await send<Schemas['SiteGroupPage']>(op, op.path, { query }));
+        for (const item of page.items) groups.push(groupSummary(item));
+        offset = page.nextOffset;
+      }
+      return groups;
     },
 
     async userGroups(siteId, isPublic) {

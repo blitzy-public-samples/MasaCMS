@@ -386,11 +386,11 @@ describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
     const QUEUED_A = jobFor(DEFINITION, { format: 'csv' });
     const RUN_A = jobFor(DEFINITION, { format: 'csv' });
 
-    /** Delivers `body` to the run route of `job` as the tasks-invoker would. */
-    async function deliver(job: ExportJobRow, body: TaskWireBody): Promise<InjectResponse> {
+    /** Delivers `body` to the run route as the tasks-invoker would. */
+    async function deliver(body: TaskWireBody): Promise<InjectResponse> {
       return built().app.inject({
         method: 'POST',
-        url: RUN_QUEUE.targetPath.replace('{exportId}', job.job_id),
+        url: RUN_QUEUE.targetPath,
         headers: {
           authorization: `Bearer ${await mintTasksInvokerToken({ audience: SERVICE })}`,
           [CLOUD_TASKS_HEADERS.taskName]: body.name,
@@ -411,7 +411,7 @@ describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
       const wire = await queueRun(t, QUEUED_A);
       const before = await storedJob(TENANT_A, QUEUED_A.job_id);
 
-      const res = await deliver(QUEUED_A, { ...wire, tenantId: TENANT_B.tenantId });
+      const res = await deliver({ ...wire, tenantId: TENANT_B.tenantId });
 
       const refusal = errorSpec(new TaskTenantMismatchError(TENANT_B.tenantId, wire.name).type);
       expect(wire).toMatchObject({
@@ -433,7 +433,7 @@ describe.skipIf(!PG_READY)('reporting tenant isolation', () => {
     it("runs a tenant A job's run task under tenant A, moving the job out of queued", async () => {
       const wire = await queueRun(built(), RUN_A);
 
-      const res = await deliver(RUN_A, wire);
+      const res = await deliver(wire);
 
       const stored = await storedJob(TENANT_A, RUN_A.job_id);
       const firstClaimKey = exportAttemptKey(TENANT_A.tenantId, RUN_A.job_id, 'csv', '2');

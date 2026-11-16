@@ -1,4 +1,4 @@
-/** Cut-over activation, freeze and orphan-clear log lines as the platform logger writes them, against log-record.v1. */
+/** Cut-over activation, freeze, orphan-clear and status request log lines as the platform logger writes them, against log-record.v1. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { INVOCATION_HEADER, rolesForService } from '@opt2/platform/auth';
@@ -9,7 +9,7 @@ import type { InflightClearInput, InflightClearResult, InflightStore } from '../
 import { loadGroups, loadVariants } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths } from '../../src/cutover/paths.js';
 import { registerCutoverRoutes } from '../../src/cutover/routes.js';
-import { createCutoverState, type CutoverState } from '../../src/cutover/state.js';
+import { createCutoverState, type CutoverState, type CutoverStatus } from '../../src/cutover/state.js';
 
 type LogLine = Record<string, unknown>;
 
@@ -22,12 +22,12 @@ const ORPHAN_REQUEST_ID = 'r-orphan-1';
 /** Matches any string; `expect.any` itself is typed `any`. */
 const ANY_STRING: unknown = expect.any(String);
 
-/** A platform logger writing to memory; `lines()` parses every line written so far. */
-function captureLogger(): { logger: Logger; lines: () => LogLine[] } {
+/** A platform logger at `level` (default `info`) writing to memory; `lines()` parses every line written so far. */
+function captureLogger(level?: string): { logger: Logger; lines: () => LogLine[] } {
   const chunks: string[] = [];
   const destination: NonNullable<CreateLoggerOptions['destination']> = { write: (chunk: string) => void chunks.push(chunk) };
   return {
-    logger: createLogger({ ...BASE, destination }),
+    logger: createLogger({ ...BASE, level, destination }),
     lines: () =>
       chunks
         .join('')
@@ -176,5 +176,67 @@ describe('orphan-clear log line', () => {
       },
     ]);
     expect(JSON.stringify(lines())).not.toContain(ORPHAN_REQUEST_ID);
+  });
+});
+
+describe('status request lines', () => {
+  const apps: FastifyInstance[] = [];
+  const STATUS_ROUTE = '/internal/v1/cutover/status';
+  const STATUS = { tableVersion: 'v0002', previous: 'v0001', epoch: 4 } as unknown as CutoverStatus;
+
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((app) => app.opt2.shutdown()));
+  });
+
+  it.each<[string, string | null, number, string[][]]>([
+    ['a migration poll', 'migration', 200, [['DEBUG', 'request completed']]],
+    [
+      'a poll without a credential',
+      null,
+      401,
+      [
+        ['WARNING', 'request denied: missing-credential'],
+        ['INFO', 'request completed'],
+      ],
+    ],
+    [
+      'a poll by a caller without the role',
+      'identity',
+      403,
+      [
+        ['WARNING', 'request denied: forbidden'],
+        ['INFO', 'request completed'],
+      ],
+    ],
+  ])('logs %s at debug only when it succeeds', async (_label, caller, status, expected) => {
+    const { logger, lines } = captureLogger('debug');
+    const app = await createService({
+      name: 'gateway',
+      version: '1.0.0',
+      env: loadEnv(undefined, {
+        PORT: '8100',
+        OPT2_SERVICE_NAME: 'gateway',
+        OPT2_ENV: 'local',
+        OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+        OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+        OPT2_TOKEN_AUDIENCE: 'opt2-local',
+        TZ: 'UTC',
+      }),
+      verifierOverride: testVerifier('gateway'),
+      logger,
+    });
+    apps.push(app);
+    await registerCutoverRoutes(app, { state: only<CutoverState>({ status: () => Promise.resolve(STATUS) }), inflight: only<InflightStore>({}) });
+    await app.ready();
+
+    const headers =
+      caller === null ? {} : { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller, audience: 'gateway', roles: rolesForService(caller) })}` };
+    const res = await app.inject({ method: 'GET', url: STATUS_ROUTE, headers });
+
+    expect(res.statusCode).toBe(status);
+    expectConforming(lines());
+    const requestLines = lines().filter((line) => line.requestId !== undefined);
+    expect(requestLines.map((line) => [line.severity, line.message])).toStrictEqual(expected);
+    for (const line of requestLines) expect(line).toMatchObject({ route: STATUS_ROUTE, httpMethod: 'GET', statusCode: status });
   });
 });

@@ -169,7 +169,7 @@ export function main(argv: string[], env: EnvLike = process.env): CliOutcome {
 
 /**
  * Runs `fn` while holding the directory `<dir>/.secrets.lock`, whose one entry `<pid>.<16 hex>` names the holder.
- * A holder that is no longer running is displaced; a live holder is awaited for up to {@link LOCK_WAIT_MS}.
+ * A holder that is no longer running is displaced; each live holder is awaited for up to {@link LOCK_WAIT_MS}.
  */
 function withDirLock<T>(dir: string, fn: () => T): T {
   const lock = path.join(dir, LOCK_DIR);
@@ -179,17 +179,26 @@ function withDirLock<T>(dir: string, fn: () => T): T {
   mkdirSync(staged, { mode: 0o700 });
   try {
     writeFileSync(path.join(staged, entry), '', { mode: 0o600, flag: 'wx' });
-    const deadline = performance.now() + LOCK_WAIT_MS;
+    let watched: string | undefined;
+    let deadline = 0;
     while (!tryRename(staged, lock)) {
       const holder = lockHolder(lock);
-      if (typeof holder === 'object') {
-        displaceEntry(lock, holder.stale);
-      } else if (holder !== 'gone') {
-        if (performance.now() >= deadline) {
-          throw new Error(`secrets lock ${lock} is still held by pid ${String(holder)} after ${String(LOCK_WAIT_MS)} ms`);
-        }
-        Atomics.wait(SLEEP_CELL, 0, 0, LOCK_POLL_MS);
+      if (holder === 'gone') continue;
+      if (holder.pid === undefined) {
+        displaceEntry(lock, holder.entry);
+        continue;
       }
+      // Each acquisition publishes a new entry, so a changed one means the queue moved: the wait restarts.
+      if (holder.entry !== watched) {
+        watched = holder.entry;
+        deadline = performance.now() + LOCK_WAIT_MS;
+      }
+      if (performance.now() >= deadline) {
+        throw new Error(
+          `secrets lock ${lock} is still held by pid ${String(holder.pid)} after ${String(LOCK_WAIT_MS)} ms`,
+        );
+      }
+      Atomics.wait(SLEEP_CELL, 0, 0, LOCK_POLL_MS);
     }
   } finally {
     rmSync(staged, { recursive: true, force: true });
@@ -231,8 +240,8 @@ function tryRename(from: string, to: string): boolean {
   }
 }
 
-/** Live pid holding the lock; the entry of a holder that is not running; `'gone'` when the lock is missing or empty. */
-function lockHolder(lock: string): number | { stale: string } | 'gone' {
+/** The lock's holder entry, with its pid only while that process runs; `'gone'` when the lock is missing or empty. */
+function lockHolder(lock: string): { entry: string; pid: number | undefined } | 'gone' {
   let entries: string[];
   try {
     entries = readdirSync(lock);
@@ -243,7 +252,7 @@ function lockHolder(lock: string): number | { stale: string } | 'gone' {
   const [entry] = entries;
   if (entry === undefined) return 'gone';
   const pid = parsePid(entry.split('.', 1)[0] ?? '');
-  return pid !== undefined && isAlive(pid) ? pid : { stale: entry };
+  return { entry, pid: pid !== undefined && isAlive(pid) ? pid : undefined };
 }
 
 function parsePid(text: string): number | undefined {

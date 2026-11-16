@@ -69,14 +69,17 @@ interface CallOptions {
   form?: Row;
   actor?: Actor;
   csrf?: boolean;
+  /** The request site, which is also the API instance's; SITE by default. */
+  site?: string;
 }
 
 /** One resolved call as ../jsonapi.ts hands it over; `csrfChecks` counts validateCsrf calls. */
 function callFor(o: CallOptions): JsonApiCall & { csrfChecks: number } {
   const raw = o.raw ?? '';
   const url = o.url ?? urlScope(raw);
+  const site = o.site ?? SITE;
   const apiContext = {
-    siteId: SITE,
+    siteId: site,
     mode: 'json',
     endpoint: ENDPOINT,
     url,
@@ -85,7 +88,7 @@ function callFor(o: CallOptions): JsonApiCall & { csrfChecks: number } {
     isAggregateQuery: false,
     user: { loggedIn: (o.actor ?? ANONYMOUS).isLoggedIn, systemUser: true },
     allowAction: () => false,
-    customImageSizes: [],
+    customImageSizes: () => Promise.resolve([]),
   } as unknown as JsonApiRequestContext;
   const call = {
     mode: 'json' as const,
@@ -95,10 +98,10 @@ function callFor(o: CallOptions): JsonApiCall & { csrfChecks: number } {
     entityName: 'variationTargeting',
     ...(o.id === undefined ? {} : { id: o.id }),
     ...(o.ids === undefined ? {} : { ids: o.ids }),
-    pathInfo: [SITE, 'variationTargeting'],
+    pathInfo: [site, 'variationTargeting'],
     params: createJsonApiParams(Object.entries({ ...url, ...o.form })),
     query: { raw, params: createJsonApiParams(Object.entries(url)) },
-    siteId: SITE,
+    siteId: site,
     tenantId: TENANT_A.tenantId,
     actor: o.actor ?? ANONYMOUS,
     site: {} as JsonApiCall['site'],
@@ -272,13 +275,71 @@ describe('variationTargetingHandler', () => {
 });
 
 describe('with the variations setting off', () => {
-  it.each(METHODS)('%s refuses with authorization before any read, write or CSRF check', async (method) => {
+  const UNREGISTERED_READS: Method[] = ['findOne', 'findMany', 'findAll', 'findNew', 'findQuery'];
+
+  it.each(UNREGISTERED_READS)('%s refuses with authorization before any read or CSRF check', async (method) => {
     const call = callFor({ method, id: ABSENT_ID, actor: SUPER_USER });
     await expect(run(offline(false), method, call)).rejects.toSatisfy(
       (e: unknown) => e instanceof LegacyApiError && e.type === 'authorization',
     );
     expect(call.csrfChecks).toBe(0);
   });
+
+  it.each<[string, Actor]>([
+    ['anonymous', ANONYMOUS],
+    ['a super user', SUPER_USER],
+  ])('findProperties answers %s what it answers with the setting on', async (_label, who) => {
+    const off = await run(offline(false), 'findProperties', { id: 'properties', actor: who });
+    expect(off).toEqual(await run(offline(true), 'findProperties', { id: 'properties', actor: who }));
+    expect(off.status).toBe(200);
+  });
+
+  it.each<[string, Actor, { read: boolean; delete: boolean; save: boolean }]>([
+    ['anonymous', ANONYMOUS, { read: false, delete: false, save: false }],
+    ['the Content module', CONTENT_EDITOR, { read: false, delete: true, save: true }],
+    ['a super user', SUPER_USER, { read: false, delete: true, save: true }],
+  ])('findPermissions on the bare path answers %s without read, which AllowAccess refuses an unregistered entity', async (_label, who, expected) => {
+    const result = await run(offline(false), 'findPermissions', { id: 'permissions', actor: who });
+    expect(wire(result, 'findPermissions')).toEqual({ apiversion: 'v1', data: expected, method: 'findPermissions' });
+  });
+
+  // getEntityConfig registers the entity on the site's API instance before findProperties reads a property (oracle).
+  it.each<[string, Row, string | undefined]>([
+    ['every property', {}, undefined],
+    ['an unknown property', { properties: 'nosuch' }, 'server_error'],
+  ])(
+    'a findProperties of %s registers the entity for its site in this context only, serving reads to the Content module',
+    async (_label, form, failure) => {
+      const ctx = offline(false);
+      const OTHER_SITE = TENANT_B.siteId;
+      const thrown = (type: string) => (e: unknown) => e instanceof LegacyApiError && e.type === type;
+      const permissions = async (who: Actor, site = SITE): Promise<unknown> =>
+        (wire(await run(ctx, 'findPermissions', { id: 'permissions', actor: who, site }), 'findPermissions') as { data: unknown }).data;
+
+      expect(await permissions(CONTENT_EDITOR)).toEqual({ read: false, delete: true, save: true });
+      await expect(run(ctx, 'findNew', { id: 'new', actor: CONTENT_EDITOR })).rejects.toSatisfy(thrown('authorization'));
+
+      const properties = run(ctx, 'findProperties', { id: 'properties', form, site: SITE.toUpperCase() });
+      if (failure === undefined) await expect(properties).resolves.toMatchObject({ status: 200 });
+      else await expect(properties).rejects.toSatisfy(thrown(failure));
+
+      expect(await permissions(CONTENT_EDITOR)).toEqual({ read: true, delete: true, save: true });
+      expect(await permissions(SUPER_USER)).toEqual({ read: true, delete: true, save: true });
+      expect(await permissions(ANONYMOUS)).toEqual({ read: false, delete: false, save: false });
+      await expect(run(ctx, 'findNew', { id: 'new', actor: CONTENT_EDITOR })).resolves.toMatchObject({ status: 200 });
+      for (const method of ['findOne', 'findAll', 'findQuery', 'findMany'] as const) {
+        // Past the registration and the access check, each reads the (unusable) store.
+        await expect(run(ctx, method, { id: ABSENT_ID, ids: [ABSENT_ID], actor: CONTENT_EDITOR })).rejects.toThrow(/was used/);
+      }
+      for (const method of ['findOne', 'findAll', 'findQuery', 'findMany', 'findNew'] as const) {
+        await expect(run(ctx, method, { id: ABSENT_ID, ids: [ABSENT_ID], actor: ANONYMOUS })).resolves.toEqual({ error: 'authorization' });
+      }
+
+      expect(await permissions(CONTENT_EDITOR, OTHER_SITE)).toEqual({ read: false, delete: true, save: true });
+      await expect(run(ctx, 'findNew', { id: 'new', actor: CONTENT_EDITOR, site: OTHER_SITE })).rejects.toSatisfy(thrown('authorization'));
+      await expect(run(offline(false), 'findNew', { id: 'new', actor: CONTENT_EDITOR })).rejects.toSatisfy(thrown('authorization'));
+    },
+  );
 });
 
 describe('access refused before the store is read', () => {
@@ -317,15 +378,19 @@ describe('access refused before the store is read', () => {
     },
   );
 
-  it('save validates CSRF first: a bad token is invalidTokens even for an anonymous caller', async () => {
+  it.each([true, false])('save validates CSRF first: a bad token is invalidTokens even for an anonymous caller (variations=%s)', async (variations) => {
     const call = callFor({ method: 'save', actor: ANONYMOUS, csrf: false, form: { initjs: 'x' } });
-    expect(await run(offline(true), 'save', call)).toEqual({ error: 'invalidTokens' });
+    expect(await run(offline(variations), 'save', call)).toEqual({ error: 'invalidTokens' });
     expect(call.csrfChecks).toBe(1);
   });
 
-  it.each([ANONYMOUS, VARIATION_EDITOR])('save with valid tokens answers authorization without the Content module (%#)', async (who) => {
+  it.each<[Actor, boolean]>([
+    [ANONYMOUS, true],
+    [VARIATION_EDITOR, true],
+    [VARIATION_EDITOR, false],
+  ])('save with valid tokens answers authorization without the Content module (%#)', async (who, variations) => {
     const call = callFor({ method: 'save', actor: who, form: { initjs: 'x' } });
-    expect(await run(offline(true), 'save', call)).toEqual({ error: 'authorization' });
+    expect(await run(offline(variations), 'save', call)).toEqual({ error: 'authorization' });
     expect(call.csrfChecks).toBe(1);
   });
 });
@@ -573,14 +638,19 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
     expect(items.map((item) => item['contentid'])).toEqual(['ABC', HOME_ID]);
   });
 
-  it.each<[string, Actor, string | undefined, { read: boolean; delete: boolean; save: boolean }]>([
-    ['the Content module on a stored id', CONTENT_EDITOR, 'stored', { read: true, delete: true, save: true }],
-    ['the Content module on the bare path', CONTENT_EDITOR, 'permissions', { read: true, delete: true, save: true }],
-    ['the Content module on an absent id', CONTENT_EDITOR, ABSENT_ID, { read: true, delete: true, save: true }],
-    ['anonymous', ANONYMOUS, 'stored', { read: false, delete: false, save: false }],
-    ['the Variation module only', VARIATION_EDITOR, 'stored', { read: false, delete: false, save: false }],
-  ])('findPermissions for %s', async (_label, who, id, expected) => {
-    const result = await run(ctx, 'findPermissions', { id: id === 'stored' ? ids.first : id, actor: who });
+  /** The handlers with the `variations` setting off over the same schema. */
+  const offCtx = (): RouteContext => contextOf({ ...deps, config: { ...deps.config, variations: false } });
+
+  it.each<[string, Actor, string | undefined, boolean, { read: boolean; delete: boolean; save: boolean }]>([
+    ['the Content module on a stored id', CONTENT_EDITOR, 'stored', true, { read: true, delete: true, save: true }],
+    ['the Content module on the bare path', CONTENT_EDITOR, 'permissions', true, { read: true, delete: true, save: true }],
+    ['the Content module on an absent id', CONTENT_EDITOR, ABSENT_ID, true, { read: true, delete: true, save: true }],
+    ['anonymous', ANONYMOUS, 'stored', true, { read: false, delete: false, save: false }],
+    ['the Variation module only', VARIATION_EDITOR, 'stored', true, { read: false, delete: false, save: false }],
+    ['the Content module on a stored id, the setting off', CONTENT_EDITOR, 'stored', false, { read: false, delete: true, save: true }],
+    ['anonymous on a stored id, the setting off', ANONYMOUS, 'stored', false, { read: false, delete: false, save: false }],
+  ])('findPermissions for %s', async (_label, who, id, variations, expected) => {
+    const result = await run(variations ? ctx : offCtx(), 'findPermissions', { id: id === 'stored' ? ids.first : id, actor: who });
     expect(wire(result, 'findPermissions')).toEqual({ apiversion: 'v1', data: expected, method: 'findPermissions' });
   });
 
@@ -595,9 +665,9 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
     expect((wire(original, 'findOne') as { data: Row }).data['targetingjs']).toBe('[1]');
   });
 
-  it('delete of an absent row answers empty data to anyone without a CSRF check', async () => {
+  it.each([true, false])('delete of an absent row answers empty data to anyone without a CSRF check (variations=%s)', async (variations) => {
     const call = callFor({ method: 'delete', id: ABSENT_ID, actor: ANONYMOUS, csrf: false });
-    expect(await run(ctx, 'delete', call)).toEqual({ data: '' });
+    expect(await run(variations ? ctx : offCtx(), 'delete', call)).toEqual({ data: '' });
     expect(call.csrfChecks).toBe(0);
   });
 
@@ -617,6 +687,125 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
     expect(call.csrfChecks).toBe(1);
     const after = await run(ctx, 'findOne', { id: ids.second, actor: CONTENT_EDITOR });
     expect(wire(after, 'findOne')).toEqual({ apiversion: 'v1', data: newBeanData(ids.second), method: 'findOne' });
+  });
+
+  it('with the setting off, a super user saves and deletes as with it on', async () => {
+    const saveCall = callFor({ method: 'save', actor: SUPER_USER, form: { contentid: HOME_ID, initjs: 'off();' } });
+    const saved = await run(offCtx(), 'save', saveCall);
+    expect(saveCall.csrfChecks).toBe(1);
+    expect(saved.status).toBe(200);
+    const data = (wire(saved, 'save') as { data: Row }).data;
+    const id = String(data['targetingid']);
+    expect(data).toEqual({ ...storedData(id, { contentid: HOME_ID, initjs: 'off();', targetingjs: '' }), saveerrors: false, errors: {} });
+    const stored = await run(ctx, 'findOne', { id, actor: CONTENT_EDITOR });
+    expect((wire(stored, 'findOne') as { data: Row }).data['initjs']).toBe('off();');
+
+    const deleteCall = callFor({ method: 'delete', id, actor: SUPER_USER });
+    expect(await run(offCtx(), 'delete', deleteCall)).toEqual({ data: '' });
+    expect(deleteCall.csrfChecks).toBe(1);
+    const after = await run(ctx, 'findOne', { id, actor: CONTENT_EDITOR });
+    expect(wire(after, 'findOne')).toEqual({ apiversion: 'v1', data: newBeanData(id), method: 'findOne' });
+  });
+
+  /** Targeting and changelog rows of tenant A. */
+  async function writeCounts(): Promise<{ rows: number; changes: number }> {
+    return withTenant(handle.app, TENANT_A.tenantId, async (tx) => {
+      const count = async (table: string): Promise<number> =>
+        (await tx.query<{ n: number }>(`SELECT count(*)::integer AS n FROM ${handle.schema}.${table}`)).rows[0]?.n ?? 0;
+      return { rows: await count('variation_targeting'), changes: await count('changelog') };
+    });
+  }
+
+  const X36 = 'X'.repeat(36);
+  const X100 = 'X'.repeat(100);
+  const T40 = 'T'.repeat(40);
+  /** Stands for the stored row `ids.first` in a case's path id and params. */
+  const STORED = '<stored>';
+  /** The data of `ids.first` as stored, with `values` set on it. */
+  const storedFirst = (values: Partial<{ contentid: string; initjs: string }> = {}): Row =>
+    storedData(ids.first, { contentid: HOME_ID, initjs: 'updated();', targetingjs: '[1]', ...values });
+  /** The data of a new bean under `id`, with `values` set on it. */
+  const newBean = (id: string, values: Row = {}): Row => ({ ...newBeanData(id), ...values, links: beanLinks(id, String(values['contentid'] ?? '')) });
+
+  // The oracle's answers (save reads no `variations` setting): the bean reloaded by its primary key with the request
+  // values it holds set on it, saveerrors false and the field errors, under 403.
+  it.each<[string, { id?: string; form: Row; errors: string[]; data: (id: string) => Row }]>([
+    ['a new bean with a 36-character contentid', { form: { contentid: X36, initjs: 'a36' }, errors: ['contentid'], data: (id) => newBean(id, { contentid: X36, initjs: 'a36' }) }],
+    [
+      'a new bean with a 100-character contentid',
+      { form: { contentid: X100, initjs: 'a100', targetingjs: 't' }, errors: ['contentid'], data: (id) => newBean(id, { contentid: X100, initjs: 'a100', targetingjs: 't' }) },
+    ],
+    [
+      'a stored bean updated by path id with an overlong contentid',
+      { id: STORED, form: { contentid: X36, initjs: 'b36' }, errors: ['contentid'], data: () => storedFirst({ contentid: X36, initjs: 'b36' }) },
+    ],
+    [
+      'a stored bean its targetingid param names, with an overlong contentid',
+      { form: { targetingid: STORED, contentid: X36 }, errors: ['contentid'], data: () => storedFirst({ contentid: X36 }) },
+    ],
+    [
+      'an overlong targetingid param on a stored path id',
+      { id: STORED, form: { targetingid: T40, initjs: 'd40' }, errors: ['targetingid'], data: () => newBean(T40, { initjs: 'd40' }) },
+    ],
+    [
+      'an overlong targetingid param and contentid on a stored path id',
+      { id: STORED, form: { targetingid: T40, contentid: X36 }, errors: ['contentid', 'targetingid'], data: () => newBean(T40, { contentid: X36 }) },
+    ],
+    [
+      'a new bean with an overlong contentid and loadBy and base bean params',
+      {
+        form: { contentid: X36, isnew: '0', returnformat: 'json', cachedwithin: '5', errors: 'e', fromMuraCache: 'true', instanceid: 'I', initjs: '  padded  ' },
+        errors: ['contentid'],
+        data: (id) => newBean(id, { contentid: X36, initjs: 'padded', isnew: 0, returnformat: 'json', cachedwithin: '5' }),
+      },
+    ],
+    [
+      'a stored bean with an overlong contentid and loadBy params it does not hold',
+      { id: STORED, form: { contentid: X36, isnew: '1', returnformat: 'json' }, errors: ['contentid'], data: () => ({ ...storedFirst({ contentid: X36 }), isnew: 1 }) },
+    ],
+    ['an overlong contentid with saveErrors=no', { form: { contentid: X36, saveErrors: 'no' }, errors: ['contentid'], data: (id) => newBean(id, { contentid: X36 }) }],
+  ])('save of %s answers 403 with the field errors and writes nothing', async (_label, c) => {
+    const stored = (value: unknown): unknown => (value === STORED ? ids.first : value);
+    const form = Object.fromEntries(Object.entries(c.form).map(([key, value]) => [key, stored(value)]));
+    const before = await writeCounts();
+    const result = await run(ctx, 'save', { ...(c.id === undefined ? {} : { id: ids.first }), actor: CONTENT_EDITOR, form });
+    expect(result.status).toBe(403);
+    const data = (wire(result, 'save') as { data: Row }).data;
+    const id = String(data['targetingid']);
+    expect(data).toEqual({
+      ...c.data(id),
+      saveerrors: false,
+      errors: Object.fromEntries(c.errors.map((key) => [key, `The property named '${key}' is not valid`])),
+    });
+    expect(await writeCounts()).toEqual(before);
+    expect((wire(await run(ctx, 'findOne', { id: ids.first, actor: CONTENT_EDITOR }), 'findOne') as { data: Row }).data).toEqual(storedFirst());
+  });
+
+  // PostgreSQL text holds no NUL, which legacy stores (EX-UNSTORABLE-TEXT-VARIATIONTARGETING).
+  it.each<[string, { id?: string; form: Row }]>([
+    ['a NUL in initjs of a new bean', { form: { contentid: HOME_ID, initjs: 'a\u0000b' } }],
+    ['a NUL in targetingjs of a stored bean', { id: STORED, form: { targetingjs: 'a\u0000b' } }],
+    ['a NUL in the targetingid param that re-keys a stored path id', { id: STORED, form: { targetingid: 'T\u0000T', initjs: 'x' } }],
+  ])('save of %s answers invalidParameters and writes nothing', async (_label, c) => {
+    const before = await writeCounts();
+    const result = await run(ctx, 'save', { ...(c.id === undefined ? {} : { id: ids.first }), actor: CONTENT_EDITOR, form: c.form });
+    expect(result).toEqual({ error: 'invalidParameters' });
+    expect(await writeCounts()).toEqual(before);
+    expect((wire(await run(ctx, 'findOne', { id: ids.first, actor: CONTENT_EDITOR }), 'findOne') as { data: Row }).data).toEqual(storedFirst());
+  });
+
+  it('save of an unpaired surrogate stores U+FFFD, as node-postgres encodes it', async () => {
+    const result = await run(ctx, 'save', { actor: CONTENT_EDITOR, form: { contentid: HOME_ID, initjs: '\uD800x' } });
+    expect(result.status).toBe(200);
+    const id = String((wire(result, 'save') as { data: Row }).data['targetingid']);
+    expect((wire(await run(ctx, 'findOne', { id, actor: CONTENT_EDITOR }), 'findOne') as { data: Row }).data['initjs']).toBe('\uFFFDx');
+    expect(await run(ctx, 'delete', { id, actor: CONTENT_EDITOR })).toEqual({ data: '' });
+  });
+
+  it('save with saveErrors=true writes the invalid bean, which the char(35) column refuses, writing nothing', async () => {
+    const before = await writeCounts();
+    await expect(run(ctx, 'save', { actor: CONTENT_EDITOR, form: { contentid: X36, saveErrors: 'true' } })).rejects.toMatchObject({ code: '22001' });
+    expect(await writeCounts()).toEqual(before);
   });
 });
 

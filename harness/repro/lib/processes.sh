@@ -227,12 +227,9 @@ operator_env() {
 
 # Prints the argv of target process <name>, one word per line, relative to its package directory.
 process_command() {
-  local name=${1:?process_command needs a process name} port
+  local name=${1:?process_command needs a process name}
   case $name in
-    web)
-      port="$(process_port web)" || exit 1
-      printf '%s\n' node node_modules/next/dist/bin/next start -H 127.0.0.1 -p "$port"
-      ;;
+    web) printf '%s\n' node server.ts --hostname 127.0.0.1 ;;
     migration) printf '%s\n' node dist/cli.js serve ;;
     *)
       process_dir "$name" >/dev/null
@@ -263,7 +260,8 @@ start_process() {
   cmd_text="$(process_command "$name")" || exit 1
   mapfile -t env_lines <<<"$env_text"
   mapfile -t argv <<<"$cmd_text"
-  _opt2_require_built "$dir/${argv[1]}"
+  # Web's entry is a source file; what must be built is the Next build it serves.
+  if [[ $name == web ]]; then _opt2_require_built "$dir/.next/BUILD_ID"; else _opt2_require_built "$dir/${argv[1]}"; fi
   out="$PROCESS_OUTPUT_DIR/$name.out"
   # `env -i` keeps the caller's PORT (legacy's) and admin PG_* out. A background job of a non-interactive shell leads
   # no process group, so setsid execs in place and $! is the process, its group and its session.
@@ -282,14 +280,12 @@ _opt2_print_output_tail() {
   tail -n 50 -- "$out" >&2
 }
 
-# Waits up to <timeout-s> for GET /healthz of <name> to answer 200 (web: any status); on timeout prints its output
-# tail and dies.
+# Waits up to <timeout-s> for GET /healthz of <name> to answer 200; on timeout prints its output tail and dies.
 wait_healthy() {
-  local name=${1:?wait_healthy needs a process name} timeout=${2:?wait_healthy needs a timeout} port expect=200
+  local name=${1:?wait_healthy needs a process name} timeout=${2:?wait_healthy needs a timeout} port
   port="$(process_port "$name")" || exit 1
-  if [[ $name == web ]]; then expect=any; fi
   # wait_http dies on timeout; the subshell keeps this shell alive to print the output first.
-  if ! (wait_http "http://127.0.0.1:$port/healthz" "$timeout" "$expect"); then
+  if ! (wait_http "http://127.0.0.1:$port/healthz" "$timeout"); then
     _opt2_print_output_tail "$name"
     die "$name did not become healthy within ${timeout}s"
   fi
@@ -305,38 +301,117 @@ _opt2_pid_alive() {
   [[ ${stat%% *} != Z ]]
 }
 
-# True while process group <pgid> holds a process that is not a zombie.
-_opt2_group_alive() {
-  ps -e -o pgid=,stat= 2>/dev/null | awk -v g="$1" '$1 == g && $2 !~ /^Z/ { found = 1 } END { exit !found }'
+# _opt2_proc_env_has <pid> <KEY=value…>: true when the environment <pid> started with holds every KEY=value line; an
+# absolute path value also matches another spelling of the same path.
+_opt2_proc_env_has() {
+  local pid=$1 want line resolved
+  local -a env_lines=()
+  shift
+  mapfile -d '' -t env_lines 2>/dev/null <"/proc/$pid/environ" || return 1
+  for want in "$@"; do
+    resolved=""
+    if [[ ${want#*=} == /* ]]; then resolved="$(realpath -m -- "${want#*=}")" || resolved=""; fi
+    for line in "${env_lines[@]}"; do
+      if [[ $line == "$want" ]]; then continue 2; fi
+      if [[ -n $resolved && $line == "${want%%=*}="/* && $(realpath -m -- "${line#*=}") == "$resolved" ]]; then
+        continue 2
+      fi
+    done
+    return 1
+  done
 }
 
-# True while the kill target (`-<pgid>` or `<pid>`) has a live process.
-_opt2_kill_target_alive() {
-  if [[ $1 == -* ]]; then _opt2_group_alive "${1#-}"; else _opt2_pid_alive "$1"; fi
+# _opt2_session_owned <owned> <strays> <pid> [KEY=value…]: fills the arrays with the live members of <pid>'s session and
+# group: all owned while <pid> runs, else only those whose environment holds every KEY=value (the number may be reused).
+_opt2_session_owned() {
+  local -n _opt2_owned_into=$1 _opt2_strays_into=$2
+  local pid=$3 member leader_alive=false
+  shift 3
+  _opt2_owned_into=()
+  _opt2_strays_into=()
+  if _opt2_pid_alive "$pid"; then
+    leader_alive=true
+    _opt2_owned_into+=("$pid")
+  fi
+  while read -r member; do
+    ((member > 1 && member != pid && member != $$ && member != BASHPID)) || continue
+    if [[ $leader_alive == true ]] || { (($# > 0)) && _opt2_proc_env_has "$member" "$@"; }; then
+      _opt2_owned_into+=("$member")
+    else
+      _opt2_strays_into+=("$member")
+    fi
+  done < <(ps -e -o pid=,pgid=,sid=,stat= 2>/dev/null |
+    awk -v p="$pid" '($2 == p || $3 == p) && $4 !~ /^Z/ { print $1 }')
 }
 
-# Stops <pid> and its process group: TERM, KILL after 15 s; the single pid when it leads no group. No-op when not running.
+# _opt2_track <array> <pid…>: appends `<pid>:<start time>:<pgid>` for each running pid the array does not hold yet.
+_opt2_track() {
+  local -n _opt2_track_into=$1
+  local member start pgid
+  shift
+  for member in "$@"; do
+    [[ " ${_opt2_track_into[*]} " != *" $member:"* ]] || continue
+    start="$(_opt2_proc_start_time "$member")" || continue
+    pgid="$(_opt2_proc_stat "$member" 5)" || continue
+    _opt2_track_into+=("$member:$start:$pgid")
+  done
+}
+
+# _opt2_tracked_running <array> <entry…>: fills the array with the _opt2_track entries still running as that process.
+_opt2_tracked_running() {
+  local -n _opt2_running_into=$1
+  local entry rest start
+  shift
+  _opt2_running_into=()
+  for entry in "$@"; do
+    rest=${entry#*:}
+    _opt2_pid_alive "${entry%%:*}" || continue
+    start="$(_opt2_proc_start_time "${entry%%:*}")" || continue
+    if [[ $start == "${rest%%:*}" ]]; then _opt2_running_into+=("$entry"); fi
+  done
+}
+
+# stop_process <pid> [KEY=value…]: stops what _opt2_session_owned finds owned of <pid>'s session and group: TERM,
+# KILL after 15 s; dies when one survives SIGKILL. Sets STOPPED_PROCESS_COUNT to the number of owned processes found.
 stop_process() {
-  local pid=${1:?stop_process needs a pid} target deadline
+  local pid=${1:?stop_process needs a pid} entry leader=false deadline
+  local -a owned=() strays=() tracked=() running=()
   # Signalling group 1 would reach every process.
   if ! [[ $pid =~ ^[1-9][0-9]*$ ]] || ((pid <= 1)); then die "stop_process: '$pid' is not a pid above 1"; fi
-  _opt2_pid_alive "$pid" || return 0
-  target="-$pid"
-  if ! kill -TERM -- "$target" 2>/dev/null; then
-    target=$pid
-    kill -TERM -- "$target" 2>/dev/null || return 0
+  shift
+  STOPPED_PROCESS_COUNT=0
+  _opt2_session_owned owned strays "$pid" "$@"
+  if ((${#strays[@]} > 0)); then
+    printf 'opt2: pid(s) %s in the session of exited pid %s do not carry %s in their environment; left running\n' \
+      "${strays[*]}" "$pid" "${*:-an ownership contract}" >&2
   fi
+  ((${#owned[@]} > 0)) || return 0
+  if [[ ${owned[0]} == "$pid" ]]; then leader=true; fi
+  _opt2_track tracked "${owned[@]}"
+  STOPPED_PROCESS_COUNT=${#tracked[@]}
+  if [[ $leader == true ]]; then kill -TERM -- "-$pid" 2>/dev/null || kill -TERM -- "$pid" 2>/dev/null || true; fi
+  for entry in "${tracked[@]}"; do
+    # Whatever the group's TERM reached gets no second one, which would cut short a once-only shutdown handler.
+    if [[ $leader == true && (${entry%%:*} == "$pid" || ${entry##*:} == "$pid") ]]; then continue; fi
+    kill -TERM -- "${entry%%:*}" 2>/dev/null || true
+  done
   deadline=$((SECONDS + 15))
-  while _opt2_kill_target_alive "$target"; do
-    if ((SECONDS >= deadline)); then
-      kill -KILL -- "$target" 2>/dev/null || true
-      break
-    fi
+  while true; do
+    _opt2_session_owned owned strays "$pid" "$@"
+    _opt2_track tracked "${owned[@]}"
+    _opt2_tracked_running running "${tracked[@]}"
+    ((${#running[@]} > 0)) || return 0
+    ((SECONDS < deadline)) || break
     sleep 0.2
   done
+  # A running tracked member keeps the group number in use, so the group is still this one.
+  if [[ $leader == true && " ${running[*]} " == *":$pid "* ]]; then kill -KILL -- "-$pid" 2>/dev/null || true; fi
+  for entry in "${running[@]}"; do kill -KILL -- "${entry%%:*}" 2>/dev/null || true; done
   deadline=$((SECONDS + 5))
-  while _opt2_kill_target_alive "$target"; do
-    ((SECONDS < deadline)) || die "process $target survived SIGKILL"
+  while true; do
+    _opt2_tracked_running running "${tracked[@]}"
+    ((${#running[@]} > 0)) || return 0
+    ((SECONDS < deadline)) || die "pid(s) ${running[*]%%:*} of session $pid survived SIGKILL"
     sleep 0.2
   done
 }
@@ -356,29 +431,40 @@ start_background() {
   )
 }
 
-# tooling_record <name> started|reused [pid]: records in tooling.json whether up.sh started the tool. A `reused`
-# record keeps a `started` entry whose pid is unknown or still running, so down.sh stops what an earlier up.sh started.
+# tooling_record <name> started|reused [pid [start-time]]: records whether up.sh started the tool, with the pid's start
+# time (read when not given); `reused` keeps a started entry whose pid is unknown or still runs as recorded.
 tooling_record() {
-  local name=${1:?tooling_record needs a name} state=${2:?tooling_record needs a state} pid=${3:-}
-  local file="$OPT2_STATE_DIR/tooling.json" previous
+  local name=${1:?tooling_record needs a name} state=${2:?tooling_record needs a state} pid=${3:-} start=${4:-}
+  local file="$OPT2_STATE_DIR/tooling.json" previous previous_pid previous_start
   [[ $state == started || $state == reused ]] || die "tooling_record state must be started or reused, got '$state'"
   [[ -z $pid || $pid =~ ^[1-9][0-9]*$ ]] || die "tooling_record pid must be a positive integer, got '$pid'"
+  [[ -z $start || ($start =~ ^[0-9]+$ && -n $pid) ]] ||
+    die "tooling_record start time must be digits after a pid, got '$start'"
+  if [[ -n $pid && -z $start ]]; then start="$(_opt2_proc_start_time "$pid")" || start=""; fi
   ensure_state_dirs
   if [[ $state == reused && -f $file ]]; then
-    # Prints `started:<pid>` (pid empty when unknown) for a started entry, nothing otherwise.
+    # Prints `started:<pid>:<start time>` (each empty when unknown) for a started entry, nothing otherwise.
     # shellcheck disable=SC2016 # JavaScript source
     previous="$(node -e '
 const entry = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
-if (entry?.state === "started") process.stdout.write(`started:${Number.isInteger(entry.pid) ? entry.pid : ""}`);
+const pid = Number.isInteger(entry?.pid) ? entry.pid : "";
+const start = typeof entry?.startTime === "string" && /^\d+$/.test(entry.startTime) ? entry.startTime : "";
+if (entry?.state === "started") process.stdout.write(`started:${pid}:${pid === "" ? "" : start}`);
 ' -- "$file" "$name")" || die "cannot read $file"
-    if [[ $previous == started: ]] || { [[ $previous == started:* ]] && _opt2_pid_alive "${previous#started:}"; }; then
-      return 0
+    if [[ $previous == started:* ]]; then
+      previous=${previous#started:}
+      previous_pid=${previous%%:*}
+      previous_start=${previous#*:}
+      if [[ -z $previous_pid ]] || { _opt2_pid_alive "$previous_pid" &&
+        { [[ -z $previous_start ]] || [[ $(_opt2_proc_start_time "$previous_pid") == "$previous_start" ]]; }; }; then
+        return 0
+      fi
     fi
   fi
   # shellcheck disable=SC2016 # JavaScript source
   node -e '
 const fs = require("fs");
-const [file, name, state, pid] = process.argv.slice(1);
+const [file, name, state, pid, startTime] = process.argv.slice(1);
 let doc = {};
 try {
   doc = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -386,23 +472,46 @@ try {
   if (err.code !== "ENOENT") throw err;
 }
 if (doc === null || typeof doc !== "object" || Array.isArray(doc)) throw new Error(`${file} is not a JSON object`);
-doc[name] = { state, pid: pid === "" ? null : Number(pid), recordedAt: new Date().toISOString() };
+doc[name] = {
+  state,
+  pid: pid === "" ? null : Number(pid),
+  startTime: startTime === "" ? null : startTime,
+  recordedAt: new Date().toISOString(),
+};
 const tmp = `${file}.${process.pid}.tmp`;
 fs.writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 });
 fs.renameSync(tmp, file);
-' -- "$file" "$name" "$state" "$pid" || die "cannot update $file"
+' -- "$file" "$name" "$state" "$pid" "$start" || die "cannot update $file"
 }
 
 # --- Reused tooling (started only when not already running) ----------------------------------------------------
 
-# Waits up to <timeout-s> for `<check…>` to succeed; on timeout stops <pid>, prints <name>'s output tail and dies.
+# _opt2_stop_tool <name> <pid> <start-time>: stops a tool up.sh started unless <pid> now runs with another start time;
+# prints stopped, gone or foreign.
+_opt2_stop_tool() {
+  local name=$1 pid=$2 start=$3 actual
+  if _opt2_pid_alive "$pid"; then
+    actual="$(_opt2_proc_start_time "$pid")" || actual=""
+    if [[ -z $start || $actual != "$start" ]]; then
+      printf 'opt2: pid %s recorded for %s is not the process up.sh started (start time %s, recorded %s); left running\n' \
+        "$pid" "$name" "${actual:-unknown}" "${start:-none}" >&2
+      printf 'foreign\n'
+      return 0
+    fi
+  fi
+  stop_process "$pid" OPT2_STATE_DIR="$OPT2_STATE_DIR"
+  if ((STOPPED_PROCESS_COUNT > 0)); then printf 'stopped\n'; else printf 'gone\n'; fi
+}
+
+# Waits up to <timeout-s> for `<check…>` to succeed; on timeout stops the tool started as <pid> at <start-time>
+# (_opt2_stop_tool), prints <name>'s output tail and dies.
 _opt2_await_tool() {
-  local name=$1 pid=$2 timeout=$3 deadline
-  shift 3
+  local name=$1 pid=$2 start=$3 timeout=$4 deadline
+  shift 4
   deadline=$((SECONDS + timeout))
   until "$@"; do
     if ((SECONDS >= deadline)); then
-      stop_process "$pid"
+      _opt2_stop_tool "$name" "$pid" "$start" >/dev/null
       _opt2_print_output_tail "$name"
       die "$name did not become ready within ${timeout}s"
     fi
@@ -452,7 +561,7 @@ ensure_postgres() {
 
 # Starts the Pub/Sub emulator on localhost:OPT2_TOOL_PORT_PUBSUB_EMULATOR unless that port already accepts connections.
 ensure_pubsub_emulator() {
-  local port=$OPT2_TOOL_PORT_PUBSUB_EMULATOR pid
+  local port=$OPT2_TOOL_PORT_PUBSUB_EMULATOR pid start
   if _opt2_port_open "$port"; then
     tooling_record pubsub-emulator reused
     return 0
@@ -460,13 +569,14 @@ ensure_pubsub_emulator() {
   require_cmd gcloud
   pid="$(start_background pubsub-emulator gcloud beta emulators pubsub start --host-port="localhost:$port" \
     --project="${GOOGLE_CLOUD_PROJECT:-opt2-local}")" || exit 1
-  _opt2_await_tool pubsub-emulator "$pid" 60 _opt2_port_open "$port"
-  tooling_record pubsub-emulator started "$pid"
+  start="$(_opt2_proc_start_time "$pid")" || start=""
+  _opt2_await_tool pubsub-emulator "$pid" "$start" 60 _opt2_port_open "$port"
+  tooling_record pubsub-emulator started "$pid" "$start"
 }
 
 # Starts otelcol-contrib with otelcol-config.yaml on 127.0.0.1:OPT2_TOOL_PORT_OTLP_HTTP unless that port is open.
 ensure_otelcol() {
-  local port=$OPT2_TOOL_PORT_OTLP_HTTP pid
+  local port=$OPT2_TOOL_PORT_OTLP_HTTP pid start
   if _opt2_port_open "$port"; then
     tooling_record otelcol reused
     return 0
@@ -476,8 +586,9 @@ ensure_otelcol() {
   mkdir -p -- "$OPT2_STATE_DIR/otel"
   pid="$(start_background otelcol otelcol-contrib --config "$REPRO_DIR/otelcol-config.yaml" \
     --set="receivers::otlp::protocols::http::endpoint=127.0.0.1:$port")" || exit 1
-  _opt2_await_tool otelcol "$pid" 30 _opt2_port_open "$port"
-  tooling_record otelcol started "$pid"
+  start="$(_opt2_proc_start_time "$pid")" || start=""
+  _opt2_await_tool otelcol "$pid" "$start" 30 _opt2_port_open "$port"
+  tooling_record otelcol started "$pid" "$start"
 }
 
 # True when MURA_DBHOST:MURA_DBPORT accepts a connection and SQL Server answers SELECT 1.
@@ -489,7 +600,7 @@ _opt2_sqlserver_ready() {
 
 # Starts SQL Server (setup §2) unless it already answers on MURA_DBHOST:MURA_DBPORT.
 ensure_sqlserver() {
-  local pid
+  local pid start
   require_env MURA_DBHOST MURA_DBUSERNAME MURA_DBPASSWORD MURA_DATABASE
   if _opt2_sqlserver_ready; then
     tooling_record sqlserver reused
@@ -498,37 +609,71 @@ ensure_sqlserver() {
   # Prefix assignments reach the server's environment, keeping the SA password out of its argv.
   pid="$(ACCEPT_EULA=Y MSSQL_PID=Express MSSQL_SA_PASSWORD="$MURA_DBPASSWORD" \
     start_background sqlservr "${OPT2_SQLSERVR_CMD:-/opt/mssql/bin/sqlservr}")" || exit 1
-  _opt2_await_tool sqlserver "$pid" 120 _opt2_sqlserver_ready
-  tooling_record sqlserver started "$pid"
+  start="$(_opt2_proc_start_time "$pid")" || start=""
+  _opt2_await_tool sqlserver "$pid" "$start" 120 _opt2_sqlserver_ready
+  tooling_record sqlserver started "$pid" "$start"
 }
 
-# Stops every tool tooling.json records as started, except SQL Server, which is never stopped; Mailpit is never managed.
+# Prints the arguments joined by `, `, or `none`.
+join_or_none() {
+  local out item
+  if (($# == 0)); then
+    printf 'none'
+    return 0
+  fi
+  out=$1
+  shift
+  for item in "$@"; do out+=", $item"; done
+  printf '%s' "$out"
+}
+
+# stop_started_tooling [keep…]: stops every tool tooling.json records as started, except the named ones and SQL Server,
+# which is never stopped; Mailpit is never managed. Prints `stopped …; already gone …; left running …`.
 stop_started_tooling() {
-  local file="$OPT2_STATE_DIR/tooling.json" entries name state pid
-  [[ -f $file ]] || return 0
-  # shellcheck disable=SC2016 # JavaScript source
-  entries="$(node -e '
+  local file="$OPT2_STATE_DIR/tooling.json" entries name state pid start outcome
+  local -a stopped=() gone=() kept=()
+  if [[ -f $file ]]; then
+    # shellcheck disable=SC2016 # JavaScript source
+    entries="$(node -e '
 const doc = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
 for (const [name, entry] of Object.entries(doc)) {
   const pid = Number.isInteger(entry?.pid) ? String(entry.pid) : "";
-  process.stdout.write(`${name}\t${String(entry?.state)}\t${pid}\n`);
+  const start = typeof entry?.startTime === "string" && /^\d+$/.test(entry.startTime) ? entry.startTime : "";
+  // An empty pid with a start time would shift the tab-split fields, so a start time goes only with a pid.
+  process.stdout.write(`${name}\t${String(entry?.state)}\t${pid}\t${pid === "" ? "" : start}\n`);
 }
 ' -- "$file")" || die "cannot read $file"
-  while IFS=$'\t' read -r name state pid; do
-    [[ $state == started && $name != sqlserver ]] || continue
-    case $name in
-      postgres)
-        require_env PG_HOST PG_PORT
-        _opt2_pg_ready || continue
-        if [[ -n ${OPT2_PG_STOP_CMD:-} ]]; then
-          bash -c "$OPT2_PG_STOP_CMD" || die "OPT2_PG_STOP_CMD failed"
-        else
-          pg_ctlcluster 16 main stop || die "pg_ctlcluster 16 main stop failed"
-        fi
-        ;;
-      *)
-        if [[ -n $pid ]]; then stop_process "$pid"; fi
-        ;;
-    esac
-  done <<<"$entries"
+    while IFS=$'\t' read -r name state pid start; do
+      [[ $state == started && $name != sqlserver && " $* " != *" $name "* ]] || continue
+      case $name in
+        postgres)
+          require_env PG_HOST PG_PORT
+          if ! _opt2_pg_ready; then
+            gone+=("$name")
+            continue
+          fi
+          if [[ -n ${OPT2_PG_STOP_CMD:-} ]]; then
+            bash -c "$OPT2_PG_STOP_CMD" || die "OPT2_PG_STOP_CMD failed"
+          else
+            pg_ctlcluster 16 main stop || die "pg_ctlcluster 16 main stop failed"
+          fi
+          stopped+=("$name")
+          ;;
+        *)
+          if [[ -z $pid ]]; then
+            kept+=("$name (no pid recorded)")
+            continue
+          fi
+          outcome="$(_opt2_stop_tool "$name" "$pid" "$start")" || exit 1
+          case $outcome in
+            stopped) stopped+=("$name (pid $pid)") ;;
+            foreign) kept+=("$name (pid $pid)") ;;
+            *) gone+=("$name") ;;
+          esac
+          ;;
+      esac
+    done <<<"$entries"
+  fi
+  printf 'stopped %s; already gone %s; left running %s\n' "$(join_or_none "${stopped[@]}")" \
+    "$(join_or_none "${gone[@]}")" "$(join_or_none "${kept[@]}")"
 }

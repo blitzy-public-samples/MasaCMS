@@ -21,9 +21,22 @@ Runs stages 0-9 against the stack harness/repro/up.sh started: pin and label che
 stub, every package's tests, migration and faults, golden capture, cut-over to v0002, parity and cross-cutting suites,
 the people-roster rollback rehearsal and the reports. Each stage is recorded in ${OPT2_STATE_DIR}/test-all/stage-<n>.json
 with its output in stage-<n>.out; a failing stage stops the later ones. Takes no arguments. The stack stays up.
+A run stopped between stage 4's drain-and-suspend and stage 5's resume leaves background work suspended, and
+test-all.sh then refuses to start on that stack until harness/repro/down.sh and harness/repro/up.sh restart it.
+
+Environment:
+  required              PG_USER, PG_PASSWORD, MURA_ADMIN_PASSWORD, MASA_TEST_EDITOR_PASSWORD
+  MURA_ADMIN_USERNAME   admin login (default admin)
+  OPT2_STATE_DIR        up.json and the stage records (default $HOME/.opt2/state)
+  OPT2_PRISTINE_DIR     pristine legacy baseline (default $HOME/.opt2/pristine)
+  OPT2_REPORTS_DIR      report directory, relative to the checkout when relative (default opt2/reports)
+The stack's own settings (PORT, database and service addresses) come from up.json.
+
+Example, with the environment up.sh ran under:
+  OPT2_STATE_DIR=$HOME/.opt2/state harness/repro/test-all.sh; echo "exit $?"
 
 Exit: 0 every acceptance item met, 2 completed with acceptance items unmet (listed in opt2/reports/test-all.md),
-1 a stage failed or the run could not start.
+1 a stage failed, the run was interrupted, or it could not start.
 EOF
         exit 0
         ;;
@@ -73,19 +86,25 @@ PACKAGE_TEST_UNSET=(OPT2_SERVICE_URLS OPT2_GATEWAY_URL OPT2_MIGRATION_URL LEGACY
 
 STAGE_N=""
 STAGE_OUT=""
+# The startedAt up.sh recorded in up.json, identifying the stack this run tests.
+STACK_STARTED_AT=""
 
 # --- Stack and environment -------------------------------------------------------------------------------------
 
-# Dies unless up.sh finished recording the stack in up.json and the gateway it recorded is still running.
+# Dies unless up.sh finished recording the stack in up.json and the gateway it recorded is still running, with its
+# recorded start time when one is; sets STACK_STARTED_AT.
 require_stack() {
-  local line finished pid
+  local line finished pid start
   [[ -f $UP_FILE ]] || die "no OPT-2 stack is recorded ($UP_FILE is missing): run harness/repro/up.sh first"
   line="$(harness_run repro:up-state -- read)" || die "cannot read $UP_FILE ($line): run harness/repro/up.sh first"
   finished="$(printf '%s\n' "$line" | json_get - value.startedAt 2>/dev/null)" || finished=""
   [[ -n $finished ]] || die "up.sh did not finish recording the stack in $UP_FILE: run harness/repro/up.sh first"
+  STACK_STARTED_AT=$finished
   pid="$(printf '%s\n' "$line" | json_get - value.processes.gateway.pid 2>/dev/null)" ||
     die "$UP_FILE records no gateway: run harness/repro/up.sh first"
-  _opt2_pid_alive "$pid" || die "the gateway (pid $pid) recorded in $UP_FILE is not running: run harness/repro/up.sh first"
+  start="$(printf '%s\n' "$line" | json_get - value.processes.gateway.startTime 2>/dev/null)" || start=""
+  { _opt2_pid_alive "$pid" && _opt2_proc_start_matches "$pid" "$start"; } ||
+    die "the gateway (pid $pid) recorded in $UP_FILE is not running: run harness/repro/up.sh first"
 }
 
 # Exports STACK_ENV_KEYS from the migration process environment in up.json; legacy's port becomes PORT.
@@ -130,8 +149,6 @@ migration_skip_reason() {
 
 # --- Stage metadata and recording ------------------------------------------------------------------------------
 
-now_iso() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
-
 # meta_file <n> <kind>: path of stage n's metadata of one kind (reasons, unmet, evidence, packages, result).
 meta_file() { printf '%s/stage-%s.%s\n' "$RUN_DIR" "$1" "$2"; }
 
@@ -173,9 +190,10 @@ record_stage() {
   line="$(harness_run report:test-all -- "${args[@]}" </dev/null)" || die "recording stage $n failed: $line"
 }
 
-# record_without_run <n> <skipped|not-run> <reason>: records a stage that did not run.
+# record_without_run <n> <skipped|not-run> <reason>: records a stage that did not run, removing an earlier run's output.
 record_without_run() {
   local stamp
+  rm -f -- "$TA_DIR/stage-$1.out" || die "cannot remove the earlier run's $TA_DIR/stage-$1.out"
   stamp="$(now_iso)"
   printf '%s\n' "$3" >"$(meta_file "$1" reasons)"
   record_stage "$1" "$2" "$stamp" "$stamp"
@@ -185,39 +203,65 @@ record_without_run() {
 # --- Stage runner ----------------------------------------------------------------------------------------------
 
 # run_step <label> <cmd…>: prints `stage <n>: <label>` and runs the command in a subshell, stdout to STEP_STDOUT and
-# stderr to the stage output and stderr, both kept in stage-<n>.out; notes a failure as a stage reason. Returns its status.
+# stderr to the stage output and stderr, both kept in stage-<n>.out; notes a failure, or output it cannot write, as a
+# stage reason. Returns the command's status; 1 when its output cannot be written and it passed or did not run.
 run_step() {
-  local label=$1 status
+  local label=$1 status="" lost="" reason
+  local -a pipe=()
   shift
   printf 'stage %s: %s\n' "$STAGE_N" "$label" >&2
-  printf '\n==> [%s] stage %s: %s\n' "$(now_iso)" "$STAGE_N" "$label" >>"$STAGE_OUT"
-  set +e
-  { ( "$@" ) </dev/null 2>&1 >&3 | tee -a -- "$STAGE_OUT" >&2; status=${PIPESTATUS[0]}; } 3>"$STEP_STDOUT"
-  set -e
-  if [[ -s $STEP_STDOUT ]]; then tee -a -- "$STAGE_OUT" <"$STEP_STDOUT" >&2; fi
-  if ((status != 0)); then
+  if printf '\n==> [%s] stage %s: %s\n' "$(now_iso)" "$STAGE_N" "$label" >>"$STAGE_OUT"; then
+    set +e
+    { ( "$@" ) </dev/null 2>&1 >&3 | tee -a -- "$STAGE_OUT" >&2; pipe=("${PIPESTATUS[@]}"); } 3>"$STEP_STDOUT"
+    set -e
+    if ((${#pipe[@]} == 0)); then
+      lost=$STEP_STDOUT
+    else
+      status=${pipe[0]}
+      if ((pipe[1] != 0)); then lost="$STAGE_OUT or stderr"; fi
+      if [[ -s $STEP_STDOUT ]] && ! tee -a -- "$STAGE_OUT" <"$STEP_STDOUT" >&2; then lost="$STAGE_OUT or stderr"; fi
+    fi
+  else
+    lost=$STAGE_OUT
+  fi
+  if [[ -n $status ]] && ((status != 0)); then
     note_reason "$label exited $status"
     printf 'stage %s: %s failed (exit %s); output in %s\n' "$STAGE_N" "$label" "$status" "$STAGE_OUT" >&2
+  fi
+  if [[ -n $lost ]]; then
+    reason="$label: cannot write its output to $lost"
+    if [[ -z $status ]]; then reason+="; not run"; fi
+    note_reason "$reason"
+    printf 'stage %s: %s\n' "$STAGE_N" "$reason" >&2
+    if ((${status:-0} == 0)); then status=1; fi
   fi
   return "$status"
 }
 
 # run_stage <n> <function>: runs the stage function in an errexit subshell, so a helper's die ends only the stage, and
-# records its result; false when the stage failed.
+# records its result; false when the stage failed. The subshell leads its own process group, so stop_stage can end
+# all it started, and is awaited with wait, so a signal trap runs at once.
 run_stage() {
-  local n=$1 fn=$2 started status result="pass" file
+  local n=$1 fn=$2 status result="pass" file
   STAGE_N=$n
   STAGE_OUT="$TA_DIR/stage-$n.out"
   rm -f -- "$RUN_DIR/stage-$n".*
   : >"$STAGE_OUT"
-  started="$(now_iso)"
+  CURRENT_STARTED="$(now_iso)"
+  CURRENT_STAGE=$n
   printf 'stage %s: begin (output in %s)\n' "$n" "$STAGE_OUT" >&2
   set +e
+  set -m
   (
     set -e
     "$fn"
-  ) </dev/null
+  ) </dev/null &
+  CURRENT_PGID=$!
+  set +m
+  if [[ -n $CAUGHT_SIGNAL ]]; then stop_interrupted; fi
+  wait "$CURRENT_PGID"
   status=$?
+  CURRENT_PGID=""
   set -e
   file="$(meta_file "$n" result)"
   if ((status != 0)); then
@@ -226,9 +270,130 @@ run_stage() {
   elif [[ -s $file ]]; then
     result="$(<"$file")"
   fi
-  record_stage "$n" "$result" "$started" "$(now_iso)" "$status"
+  record_stage "$n" "$result" "$CURRENT_STARTED" "$(now_iso)" "$status"
+  CURRENT_STAGE=""
   printf 'stage %s: %s\n' "$n" "$result" >&2
   [[ $result != fail ]]
+}
+
+# --- Interruption ----------------------------------------------------------------------------------------------
+
+# The stage begun but not yet recorded, its start and process group while it runs; the first stage not yet recorded.
+CURRENT_STAGE=""
+CURRENT_STARTED=""
+CURRENT_PGID=""
+NEXT_STAGE=0
+CAUGHT_SIGNAL=""
+FINISHED=""
+# Set once the final assembly has returned; set once an assembly has rewritten test-all.{json,md}.
+REPORT_ATTEMPTED=""
+REPORT_WRITTEN=""
+# Holds STACK_STARTED_AT from the start of stage 4's drain-and-suspend until stage 5's resume; outlives the run.
+SUSPENDED_MARKER="$TA_DIR/background-suspended"
+
+# Ends the running stage's process group: SIGTERM, SIGKILL after 10 s, then up to 5 s more for it to empty.
+stop_stage() {
+  local pgid=$CURRENT_PGID i
+  [[ -n $pgid ]] || return 0
+  CURRENT_PGID=""
+  printf 'test-all: stopping stage %s (process group %s)\n' "$CURRENT_STAGE" "$pgid" >&2
+  kill -TERM -- "-$pgid" 2>/dev/null
+  for ((i = 0; i < 150; i++)); do
+    kill -0 -- "-$pgid" 2>/dev/null || return 0
+    if ((i == 100)); then kill -KILL -- "-$pgid" 2>/dev/null; fi
+    sleep 0.1
+  done
+  printf 'test-all: process group %s of stage %s outlived SIGKILL\n' "$pgid" "$CURRENT_STAGE" >&2
+}
+
+# Prints how to recover while stage 4's drain-and-suspend is in force; nothing otherwise.
+suspended_notice() {
+  [[ -e $SUSPENDED_MARKER ]] || return 0
+  printf 'test-all: %s\n' \
+    "background work of this stack is suspended, wholly or in part, since stage 4 (opt2-ops drain-and-suspend)." \
+    "do not run opt2-ops resume until legacy and target are reset to Ck and verified." \
+    "the reliable recovery is harness/repro/down.sh, then harness/repro/up.sh; until then test-all.sh refuses to start." \
+    "remove $SUSPENDED_MARKER only once background work has been resumed." >&2
+}
+
+# Dies while the suspension marker records this stack; removes one that records an earlier stack.
+check_suspended() {
+  local recorded
+  [[ -e $SUSPENDED_MARKER ]] || return 0
+  recorded="$(<"$SUSPENDED_MARKER")" || die "cannot read $SUSPENDED_MARKER"
+  if [[ $recorded == "$STACK_STARTED_AT" ]]; then
+    suspended_notice
+    die "cannot start: an earlier run left background work of the stack up.sh started at $recorded suspended"
+  fi
+  rm -f -- "$SUSPENDED_MARKER" || die "cannot remove the stale $SUSPENDED_MARKER"
+  printf 'test-all: cleared a stale suspension marker of an earlier stack (startedAt %s)\n' "${recorded:-none}" >&2
+}
+
+# finish_run <exit code> <cause> <reason for the begun stage> <reason for later stages>: once only, stops the running
+# stage, records each unrecorded stage (the begun one fail, the rest not-run), assembles the report unless an assembly
+# already rewrote it, and prints the recovery notice and the closing line. Failures are reported and passed over.
+finish_run() {
+  local code=$1 cause=$2 why=$3 later=$4 n summary report="; no report written"
+  [[ -z $FINISHED ]] || return 0
+  FINISHED=1
+  set +e +m
+  stop_stage
+  for ((n = NEXT_STAGE; n < ${#STAGE_FUNCS[@]}; n++)); do
+    if [[ $n == "$CURRENT_STAGE" ]]; then
+      printf '%s\n' "$why" >>"$(meta_file "$n" reasons)"
+      (record_stage "$n" fail "$CURRENT_STARTED" "$(now_iso)") && printf 'stage %s: fail (%s)\n' "$n" "$why" >&2
+    else
+      (record_without_run "$n" not-run "$later")
+    fi
+  done
+  if [[ -z $REPORT_WRITTEN ]]; then
+    printf 'test-all: assembling the test-all report\n' >&2
+    if summary="$(harness_run report:test-all </dev/null)"; then
+      REPORT_WRITTEN=1
+      printf '%s\n' "$summary"
+    else
+      printf 'opt2: report:test-all failed: %s\n' "$summary" >&2
+      printf 'test-all: this run did not rewrite %s or %s; any report they hold is an earlier run'\''s\n' \
+        "$REPORTS_DIR/test-all.json" "$REPORTS_DIR/test-all.md" >&2
+    fi
+  fi
+  if [[ -n $REPORT_WRITTEN ]]; then report="; see $REPORTS_DIR/test-all.md"; fi
+  suspended_notice
+  printf 'test-all: exit %s (%s)%s. The stack stays up; harness/repro/down.sh stops it.\n' "$code" "$cause" "$report" >&2
+}
+
+# Ends an interrupted run: the running stage fails naming the signal and later stages are not-run; exits 1.
+stop_interrupted() {
+  finish_run 1 "SIG$CAUGHT_SIGNAL" "interrupted by SIG$CAUGHT_SIGNAL" \
+    "stage ${CURRENT_STAGE:-$NEXT_STAGE} interrupted"
+  exit 1
+}
+
+# on_signal <name>: TERM, INT and HUP trap. Acts at once while a stage runs or after the final assembly returned;
+# otherwise once the record or assembly in progress is done. Ignored while the run is finishing.
+# shellcheck disable=SC2329 # run by trap
+on_signal() {
+  [[ -z $FINISHED ]] || return 0
+  if [[ -z $CAUGHT_SIGNAL ]]; then
+    CAUGHT_SIGNAL=$1
+    printf 'test-all: SIG%s received; stopping the run\n' "$1" >&2
+  fi
+  if [[ -n $CURRENT_PGID || -n $REPORT_ATTEMPTED ]]; then stop_interrupted; fi
+}
+
+# EXIT trap: after an unexpected failing exit, records the unrecorded stages and writes the report; keeps the status.
+# shellcheck disable=SC2329 # run by trap
+on_exit() {
+  local rc=$? at
+  set +e
+  if [[ -n $FINISHED ]] || ((rc == 0)); then return 0; fi
+  at=${CURRENT_STAGE:-$NEXT_STAGE}
+  if [[ -n $CAUGHT_SIGNAL ]]; then
+    finish_run "$rc" "SIG$CAUGHT_SIGNAL" "interrupted by SIG$CAUGHT_SIGNAL" "stage $at interrupted"
+  else
+    finish_run "$rc" "unexpected exit" "test-all.sh exited $rc before the stage was recorded" \
+      "test-all.sh exited $rc at stage $at"
+  fi
 }
 
 # package_slug <dir>: packageSlug of harness/src/reporting/speed.ts for a POSIX path, its non-empty segments joined by `-`.
@@ -360,6 +525,12 @@ stage_migration() {
   if [[ $manifest != true && $store != unsupported ]]; then
     run_step "file manifest of S$seq" "$MIGRATE" files manifest --snapshot "$seq" || return 1
   fi
+  # Written first: a failed or interrupted drain-and-suspend can leave part of the background work suspended.
+  if ! printf '%s\n' "$STACK_STARTED_AT" >"$SUSPENDED_MARKER"; then
+    rm -f -- "$SUSPENDED_MARKER" || true
+    note_reason "cannot write $SUSPENDED_MARKER, so drain-and-suspend did not run"
+    return 1
+  fi
   run_step "drain and suspend background work" "$OPT2_OPS" drain-and-suspend || return 1
   run_step "checkpoint Ck at S$seq" checkpoint_take "$seq" || return 1
   note_evidence "$RECON_DIR/summary.md" "$CK_DIR/ck.json"
@@ -377,6 +548,10 @@ stage_capture() {
   run_step "verify Ck" checkpoint_verify || return 1
   note_evidence "$CK_DIR/verify"
   run_step "resume background work" "$OPT2_OPS" resume || return 1
+  if ! rm -f -- "$SUSPENDED_MARKER"; then
+    note_reason "background work resumed, but $SUSPENDED_MARKER cannot be removed"
+    return 1
+  fi
   return "$failures"
 }
 
@@ -429,7 +604,8 @@ stage_rollback() {
     failures=1
   if run_step "transition to v0003" "$MIGRATE" transition --to v0003; then
     note_evidence "$RECON_DIR/rollback-before.json"
-    run_step "GS-ID-09 after the transition" harness_run golden:replay -- --only GS-ID-09 --phase resume || failures=1
+    run_step "GS-ID-09 after the transition" harness_run golden:replay -- --rehearsal --only GS-ID-09 --phase resume ||
+      failures=1
     if run_step "rebaseline the target copy" "$MIGRATE" rollback rebaseline; then
       run_step "golden:replay of the rehearsal scenarios (v0003)" harness_run golden:replay -- --rehearsal || failures=1
       run_step "feed" "$MIGRATE" feed || failures=1
@@ -464,14 +640,24 @@ stage_reports() {
 
 # The per-command flock ends with this shell; the run lock stays with the stack up.sh recorded.
 lock_acquire test-all
+[[ -x $REPO/harness/node_modules/.bin/tsx ]] ||
+  die "the harness package is not built ($REPO/harness/node_modules/.bin/tsx is missing):" \
+    "run harness/repro/up.sh, which builds every package, or npm ci in harness/"
 require_stack
+# The Masa settings up.sh adopted; the stack values up.json recorded still win.
+adopt_captured_server_env
 load_stack_env
 export MURA_ADMIN_USERNAME="${MURA_ADMIN_USERNAME:-admin}"
 require_env PG_USER PG_PASSWORD MURA_ADMIN_PASSWORD MASA_TEST_EDITOR_PASSWORD
 require_cmd node npm curl box psql pg_dump pg_restore
-FIXTURES_AVAILABLE="$(json_get "$FIXTURES_FILE" available 2>/dev/null)" || FIXTURES_AVAILABLE=false
+# Validates fixtures.json and OPT2_REPORTS_DIR as report assembly uses them, before any stage runs.
+INPUT_CHECK="$(harness_run report:test-all -- check </dev/null)" ||
+  die "cannot start: report:test-all check rejected $FIXTURES_FILE or $REPORTS_DIR: $INPUT_CHECK"
+FIXTURES_AVAILABLE="$(printf '%s\n' "$INPUT_CHECK" | json_get - fixtures.available)" ||
+  die "report:test-all check printed no fixture status: $INPUT_CHECK"
 [[ $FIXTURES_AVAILABLE == true ]] || FIXTURES_AVAILABLE=false
 MIGRATION_SKIP_REASON="$(migration_skip_reason)"
+check_suspended
 
 ensure_state_dirs
 mkdir -p -- "$TA_DIR"
@@ -483,8 +669,14 @@ printf 'test-all: stack of %s, legacy %s, fixtures available=%s; stage output un
 
 # --- Stages 0-9 ------------------------------------------------------------------------------------------------
 
+trap 'on_signal TERM' TERM
+trap 'on_signal INT' INT
+trap 'on_signal HUP' HUP
+trap on_exit EXIT
+
 STOPPED_AT=""
 for n in "${!STAGE_FUNCS[@]}"; do
+  if [[ -n $CAUGHT_SIGNAL ]]; then stop_interrupted; fi
   if [[ -n $STOPPED_AT ]]; then
     record_without_run "$n" not-run "stage $STOPPED_AT failed"
   elif [[ -n $MIGRATION_SKIP_REASON ]] && ((n >= 4 && n <= 8)); then
@@ -496,15 +688,27 @@ for n in "${!STAGE_FUNCS[@]}"; do
   elif ! run_stage "$n" "${STAGE_FUNCS[n]}"; then
     STOPPED_AT=$n
   fi
+  NEXT_STAGE=$((n + 1))
 done
 
 # --- Report ----------------------------------------------------------------------------------------------------
 
+if [[ -n $CAUGHT_SIGNAL ]]; then stop_interrupted; fi
 printf 'test-all: assembling the test-all report\n' >&2
-summary="$(harness_run report:test-all </dev/null)" || die "report:test-all failed: $summary"
+report_rc=0
+summary="$(harness_run report:test-all </dev/null)" || report_rc=$?
+# A signal caught during assembly waits until REPORT_WRITTEN tells finish_run whether to assemble again.
+if ((report_rc == 0)); then
+  REPORT_WRITTEN=1
+  printf '%s\n' "$summary"
+fi
+REPORT_ATTEMPTED=1
+if [[ -n $CAUGHT_SIGNAL ]]; then stop_interrupted; fi
+((report_rc == 0)) || die "report:test-all failed: $summary"
 code="$(printf '%s\n' "$summary" | json_get - exitCode)" || die "report:test-all printed no exitCode: $summary"
 [[ $code =~ ^[012]$ ]] || die "report:test-all reported exit code '$code'"
-printf '%s\n' "$summary"
+FINISHED=1
+suspended_notice
 printf 'test-all: exit %s; see %s/test-all.md. The stack stays up; harness/repro/down.sh stops it.\n' "$code" \
   "$REPORTS_DIR" >&2
 exit "$code"

@@ -1,4 +1,6 @@
-// Stored-row rules of the golden normaliser: canonical row encodings with ids and timestamps normalised, compared as multisets.
+// Stored-row rules of the golden normaliser: canonical row encodings with ids, timestamps and chain hashes normalised,
+// compared as multisets.
+import { Buffer } from 'node:buffer';
 import {
   SERIALIZED_DOCUMENT_COLUMNS,
   compareEncodings,
@@ -12,6 +14,7 @@ import {
   type MultisetDelta,
 } from '@opt2/platform/migration-kit';
 import type { RowSnapshot } from '../side-effects.js';
+import { chainEntryVerdict, chainHashValue, isChainHashField } from './chain-hashes.js';
 import { normaliseIdsInString, type IdOrdinals, type OrdinalCounter } from './ids.js';
 import type { NormaliseRules } from './rules.js';
 import { isDateOnlyField, normaliseTimestamp } from './values.js';
@@ -20,7 +23,7 @@ import { isDateOnlyField, normaliseTimestamp } from './values.js';
 export interface NormalisedTable {
   unit: string;
   legacyTable: string;
-  /** Columns of the normalised encodings; a masked `t` column is `s`, since its placeholder is not a timestamp. */
+  /** Columns of the normalised encodings; a masked `t` or chain-hash column is `s`, since its placeholder is text. */
   columns: CanonicalColumn[];
   entries: { encoding: string; count: number }[];
   /** `tableChecksum` SHA-256 over every occurrence. */
@@ -37,7 +40,7 @@ export interface RowComparison {
   checksumEqual: boolean;
 }
 
-type CellRule = 'literal' | 'ids' | 'text' | 'timestamp';
+type CellRule = 'literal' | 'ids' | 'text' | 'timestamp' | 'chain-hash';
 
 interface ColumnPlan {
   readonly name: string;
@@ -51,19 +54,21 @@ interface RowContext {
   readonly rules: NormaliseRules;
   readonly ids: boolean;
   readonly timestamps: boolean;
+  readonly chainHashes: boolean;
   readonly money: RegExp;
   readonly serialized: ReadonlySet<string>;
 }
 
-// Stored rows normalise only ids and timestamps, selected by `rows.apply`; origins, tokens and URLs inside stored
-// text stay compared, which is why normaliseText (which masks them too) is not used here. The rows rules declare no
-// volatile columns, so no other column is masked.
+// Stored rows normalise only ids, timestamps and chain-hash columns, selected by `rows.apply`; origins, tokens and URLs
+// inside stored text stay compared, which is why normaliseText (which masks them too) is not used here. The rows rules
+// declare no other volatile columns, so no other column is masked.
 function rowContext(rules: NormaliseRules): RowContext {
   const apply = new Set<string>(rules.rows.apply);
   return {
     rules,
     ids: apply.has(rules.ids.id) || apply.has(rules.ids.rfc4122.id),
     timestamps: apply.has(rules.timestamps.id),
+    chainHashes: apply.has(rules.chainHashes.id),
     money: new RegExp(rules.rows.literal.money),
     serialized: new Set(SERIALIZED_DOCUMENT_COLUMNS.map((name) => name.toLowerCase())),
   };
@@ -80,22 +85,36 @@ function planColumns(snapshot: RowSnapshot, ctx: RowContext): ColumnPlan[] {
   return snapshot.columns.map((column): ColumnPlan => {
     const dateOnly = isDateOnlyField(column.name, ctx.rules);
     let rule: CellRule = 'literal';
-    if (column.type === 't' && ctx.timestamps && !(dateOnly && literalDates)) rule = 'timestamp';
+    const hashColumn = column.type === 'b' || column.type === 's';
+    if (ctx.chainHashes && hashColumn && isChainHashField(column.name, ctx.rules.chainHashes)) rule = 'chain-hash';
+    else if (column.type === 't' && ctx.timestamps && !(dateOnly && literalDates)) rule = 'timestamp';
     // Serialized documents are compared byte-exact and never parsed; only their ids are masked.
     else if (column.type === 's') rule = ctx.serialized.has(`${table}.${column.name.toLowerCase()}`) ? 'ids' : 'text';
     return {
       name: column.name,
-      output: rule === 'timestamp' ? { name: column.name, type: 's' } : { ...column },
+      output: rule === 'timestamp' || rule === 'chain-hash' ? { name: column.name, type: 's' } : { ...column },
       rule,
       key: dateOnly && !literalDates ? undefined : column.name,
     };
   });
 }
 
-function normaliseCell(plan: ColumnPlan, value: CanonicalValue, state: IdOrdinals, ctx: RowContext): CanonicalValue {
+function normaliseCell(
+  plan: ColumnPlan,
+  value: CanonicalValue,
+  state: IdOrdinals,
+  ctx: RowContext,
+  verdict: boolean | undefined,
+): CanonicalValue {
+  if (plan.rule === 'chain-hash') {
+    const hashed = chainHashValue(plan.name, value, verdict, state.chainHashes, ctx.rules.chainHashes);
+    if (hashed !== undefined) return hashed;
+    // Bytes that are no hash compare as hex text, the column's output type.
+    if (Buffer.isBuffer(value)) return value.toString('hex');
+  }
   if (plan.rule === 'literal' || typeof value !== 'string') return value;
   if (plan.rule === 'timestamp') return normaliseTimestamp(value, ctx.rules, plan.key);
-  if (plan.rule === 'text') {
+  if (plan.rule === 'text' || plan.rule === 'chain-hash') {
     if (ctx.money.test(value)) return value;
     if (ctx.timestamps) {
       const masked = normaliseTimestamp(value, ctx.rules, plan.key);
@@ -114,10 +133,13 @@ function normaliseRow(
   ctx: RowContext,
   mask?: Mask,
 ): Record<string, CanonicalValue> {
+  const verdict = plans.some((plan) => plan.rule === 'chain-hash')
+    ? chainEntryVerdict(row, ctx.rules.chainHashes)
+    : undefined;
   // Catalog order, so ordinals follow column position within the row.
   return Object.fromEntries(
     plans.map((plan): [string, CanonicalValue] => {
-      const value = normaliseCell(plan, row[plan.name] ?? null, state, ctx);
+      const value = normaliseCell(plan, row[plan.name] ?? null, state, ctx, verdict);
       return [plan.name, mask !== undefined && plan.rule !== 'literal' && typeof value === 'string' ? mask(value) : value];
     }),
   );
@@ -139,8 +161,9 @@ function copyCounter(counter: OrdinalCounter): OrdinalCounter {
 }
 
 /**
- * Rows ordered by their provisional normalised encoding, in which ids `state` already knows keep their ordinals
- * and ids it does not know read `<id:?>`; a scratch copy of `state` absorbs the provisional assignments.
+ * Rows ordered by their provisional normalised encoding, in which ids and hashes `state` already knows keep their
+ * ordinals and those it does not know read `<id:?>` or `<hash:?>`; a scratch copy of `state` absorbs the provisional
+ * assignments.
  */
 function provisionalOrder(
   plans: readonly ColumnPlan[],
@@ -149,10 +172,15 @@ function provisionalOrder(
   state: IdOrdinals,
   ctx: RowContext,
 ): Record<string, CanonicalValue>[] {
-  const scratch: IdOrdinals = { ...copyCounter(state), rfc4122: copyCounter(state.rfc4122) };
+  const scratch: IdOrdinals = {
+    ...copyCounter(state),
+    rfc4122: copyCounter(state.rfc4122),
+    chainHashes: copyCounter(state.chainHashes),
+  };
   const cfUuids = unknownOrdinals(ctx.rules.ids.placeholder, state.next);
   const rfc4122 = unknownOrdinals(ctx.rules.ids.rfc4122.placeholder, state.rfc4122.next);
-  const mask: Mask = (s) => rfc4122(cfUuids(s));
+  const hashes = unknownOrdinals(ctx.rules.chainHashes.placeholder, state.chainHashes.next);
+  const mask: Mask = (s) => hashes(rfc4122(cfUuids(s)));
   return rows
     .map((row) => ({ row, key: encodeRow(output, normaliseRow(plans, row, scratch, ctx, mask)) }))
     .sort((a, b) => compareEncodings(a.key, b.key))
@@ -163,7 +191,7 @@ function normaliseTable(snapshot: RowSnapshot, state: IdOrdinals, ctx: RowContex
   const plans = planColumns(snapshot, ctx);
   const output = plans.map((plan) => plan.output);
   const decoded = snapshot.rows.map((encoding) => decodeRow(snapshot.columns, encoding));
-  // New ids take ordinals in the order of their rows' id-independent form, never of their random values.
+  // New ids and hashes take ordinals in the order of their rows' id-independent form, never of their random values.
   const encodings = provisionalOrder(plans, output, decoded, state, ctx).map((row) =>
     encodeRow(output, normaliseRow(plans, row, state, ctx)),
   );

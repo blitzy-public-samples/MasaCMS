@@ -55,6 +55,8 @@ locals {
     contains(local.runtime_services, n) ? ["roles/logging.logWriter", "roles/telemetry.tracesWriter"] : [],
     contains(local.db_users, n) ? ["roles/cloudsql.client", "roles/cloudsql.instanceUser"] : [],
     n == "identity" ? ["roles/firebaseauth.admin"] : [],
+    # The transition drain lists subscriptions and reads their metadata.
+    n == "migration" ? ["roles/pubsub.viewer"] : [],
   ) }
 
   account_iam = { for n in local.accounts : n => concat(
@@ -73,6 +75,7 @@ module "service_accounts" {
   display_name  = "OPT-2 ${each.key}"
   project_roles = local.project_roles[each.key]
   account_iam   = local.account_iam[each.key]
+  secret_access = sort(distinct(values(try(local.operator_secret_env[each.key], {}))))
 }
 
 module "network" {
@@ -146,9 +149,8 @@ locals {
     PG_USER            = local.db_user_names[n]
   } }
 
-  service_env = {
+  connection_env = {
     gateway = { LEGACY_ORIGIN = var.legacy_origin }
-    # MURA_DBPASSWORD comes from the operator who provides legacy connectivity; no legacy-password secret is declared.
     migration = {
       LEGACY_ORIGIN   = var.legacy_origin
       MURA_DBTYPE     = "mssql"
@@ -164,6 +166,24 @@ locals {
     }
   }
 
+  # Non-secret Masa MURA_<KEY> settings each service reads; unset keys keep Masa's settings-template default.
+  legacy_setting_readers = {
+    identity             = ["MURA_ADMINDOMAIN", "MURA_ADMINSSL", "MURA_CONTEXT", "MURA_HASHURLS", "MURA_INDEXFILEINURLS", "MURA_PORT", "MURA_SESSIONBASEDLOCKDOWN", "MURA_SITEIDINURLS", "MURA_STRICTHTML"]
+    people               = ["MURA_ADMINDOMAIN", "MURA_ADMINSSL", "MURA_CONTEXT", "MURA_EXPIREPASSWORDS", "MURA_PORT"]
+    "programs-sites"     = ["MURA_ADMINDOMAIN", "MURA_ADMINSSL", "MURA_CONTEXT", "MURA_PORT"]
+    "strategies-content" = ["MURA_ADMINDOMAIN", "MURA_ADMINSSL", "MURA_CONTEXT", "MURA_HASHURLS", "MURA_INDEXFILEINURLS", "MURA_LEGACYINDEXFILELOCATION", "MURA_PORT", "MURA_SITEDIR", "MURA_SITEIDINURLS", "MURA_VARIATIONS"]
+    web                  = ["MURA_ADMINDIR", "MURA_ADMINDOMAIN", "MURA_ADMINEMAIL", "MURA_ADMINSSL", "MURA_ALLOWAUTOUPDATES", "MURA_ASSETPATH", "MURA_CONTEXT", "MURA_COREPATH", "MURA_DBTYPE", "MURA_EXPIREPASSWORDS", "MURA_FILEASSETPATH", "MURA_FILEDELIM", "MURA_FILEDIR", "MURA_FILEMANAGERENABLED", "MURA_FMSHOWAPPLICATIONROOT", "MURA_FMSHOWSITEFILES", "MURA_FORMPOLLS", "MURA_HTMLEDITORTYPE", "MURA_INDEXFILEINAPI", "MURA_INDEXFILEINURLS", "MURA_JAVAENABLED", "MURA_KEEPMETAKEYWORDS", "MURA_LEGACYINDEXFILELOCATION", "MURA_LOCALE", "MURA_MODE", "MURA_PLUGINSPATH", "MURA_PORT", "MURA_PROXYSERVER", "MURA_PROXYUSER", "MURA_RENDERMURAALERTS", "MURA_S3ASSETS", "MURA_SECURECOOKIES", "MURA_SESSIONHISTORY", "MURA_SESSIONTIMEOUT", "MURA_SHOWUSAGETABS", "MURA_SITEDIR", "MURA_SITEIDINURLS", "MURA_STRONGPASSWORDS", "MURA_TITLE", "MURA_WEBROOT", "MURA_WINDOWDOCUMENTDOMAIN"]
+  }
+  legacy_setting_keys  = sort(distinct(flatten(values(local.legacy_setting_readers))))
+  legacy_setting_flags = ["MURA_ADMINSSL", "MURA_ALLOWAUTOUPDATES", "MURA_FILEMANAGERENABLED", "MURA_FMSHOWAPPLICATIONROOT", "MURA_FMSHOWSITEFILES", "MURA_FORMPOLLS", "MURA_HASHURLS", "MURA_INDEXFILEINAPI", "MURA_INDEXFILEINURLS", "MURA_JAVAENABLED", "MURA_KEEPMETAKEYWORDS", "MURA_LEGACYINDEXFILELOCATION", "MURA_RENDERMURAALERTS", "MURA_SECURECOOKIES", "MURA_SESSIONBASEDLOCKDOWN", "MURA_SHOWUSAGETABS", "MURA_SITEIDINURLS", "MURA_STRICTHTML", "MURA_STRONGPASSWORDS", "MURA_VARIATIONS"]
+  # Services that read Masa's MURA_APPRELOADKEY.
+  legacy_reload_key_readers = ["gateway", "web", "identity", "people", "programs-sites", "strategies-content", "migration"]
+
+  service_env = { for n in local.runtime_services : n => merge(
+    try(local.connection_env[n], {}),
+    { for k in try(local.legacy_setting_readers[n], []) : k => var.legacy_settings[k] if contains(keys(var.legacy_settings), k) },
+  ) }
+
   env = { for n in local.runtime_services : n => merge(
     local.common_env[n],
     try(local.db_env[n], {}),
@@ -175,7 +195,18 @@ locals {
     migration      = { OPT2_BRIDGE_HMAC_KEY = module.secrets["legacy-bridge-hmac"].secret_id }
     communications = { SMTP_CREDENTIAL = module.secrets["communications-smtp"].secret_id }
   }
-  secret_env = { for n in local.runtime_services : n => try(local.secret_env_by_service[n], {}) }
+
+  # Env name to existing operator secret id, per reader; null ids are left out.
+  operator_secret_env = { for n in local.runtime_services : n => { for name, id in {
+    MURA_DBPASSWORD                = n == "migration" ? var.operator_secret_ids.legacy_db_password : null
+    OPT2_IDENTITY_PLATFORM_API_KEY = n == "identity" ? var.operator_secret_ids.identity_platform_api_key : null
+    MURA_APPRELOADKEY              = contains(local.legacy_reload_key_readers, n) ? var.operator_secret_ids.legacy_reload_key : null
+  } : name => id if id != null } }
+
+  secret_env = { for n in local.runtime_services : n => merge(
+    try(local.secret_env_by_service[n], {}),
+    local.operator_secret_env[n],
+  ) }
 }
 
 # roles/run.invoker per callee: generated service calls, push delivery and task delivery on top of each fixed base.
@@ -213,9 +244,22 @@ check "topology" {
     ))
     error_message = "Every push consumer and task target must be one of the ten domain services."
   }
+
+  assert {
+    condition     = alltrue([for q in var.queues : !strcontains(q.target_path, "{")])
+    error_message = "Queue target paths must be fixed: Cloud Run admits only exact audiences."
+  }
 }
 
-# The module keeps CPU allocated on every service for its collector sidecar; scale to zero comes from min_instance_count.
+# Exact OIDC audiences per service: its push endpoints and its queues' fixed target URLs.
+locals {
+  custom_audiences = { for n in local.runtime_services : n => sort(distinct(concat(
+    [for s in var.subscriptions : "${local.urls[n]}${s.push_path}" if s.consumer == n],
+    [for q in var.queues : "${local.urls[n]}${q.target_path}" if q.target_service == n],
+  ))) }
+}
+
+# One Cloud Run service per runtime service; only migration keeps a warm instance and CPU outside requests.
 module "cloud_run" {
   source   = "../../modules/cloud_run_service"
   for_each = toset(var.cloud_run_services)
@@ -230,9 +274,11 @@ module "cloud_run" {
   otel_config_secret_id = module.secrets["otel-collector-config"].secret_id
   ingress               = each.key == "gateway" ? "INGRESS_TRAFFIC_ALL" : "INGRESS_TRAFFIC_INTERNAL_ONLY"
   min_instance_count    = local.min_instance_counts[each.key]
+  cpu_idle              = each.key != "migration"
   env                   = local.env[each.key]
   secret_env            = local.secret_env[each.key]
   invoker_members       = local.invokers[each.key]
+  custom_audiences      = local.custom_audiences[each.key]
 
   depends_on = [module.secrets, module.service_accounts]
 }
@@ -282,6 +328,7 @@ module "pubsub" {
       max_delivery_attempts   = v.max_delivery_attempts
     } if v.topic == each.key
   }
+  replay_subscriber_emails = [local.emails["migration"]]
 
   depends_on = [module.service_accounts]
 }

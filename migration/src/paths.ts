@@ -48,11 +48,17 @@ export function migrationsDirFor(packageRel: string): string {
   return repoPath(`${packageRel}/db/migrations`);
 }
 
+/** `<cutoverDirAbs>/versions`, the directory of the cut-over version files. */
+export function cutoverVersionsDir(cutoverDirAbs: string): string {
+  requireAbsolute(cutoverDirAbs, 'Cut-over directory');
+  return path.join(cutoverDirAbs, 'versions');
+}
+
 /** `<cutoverDirAbs>/versions/<version>.json`; `version` must have the form `vNNNN`. */
 export function cutoverVersionFile(cutoverDirAbs: string, version: string): string {
-  requireAbsolute(cutoverDirAbs, 'Cut-over directory');
+  const versionsDir = cutoverVersionsDir(cutoverDirAbs);
   if (!CUTOVER_VERSION.test(version)) throw new Error(`Cut-over version "${version}" does not match vNNNN`);
-  return path.join(cutoverDirAbs, 'versions', `${version}.json`);
+  return path.join(versionsDir, `${version}.json`);
 }
 
 /** Path under the runtime state directory, which must be absolute. */

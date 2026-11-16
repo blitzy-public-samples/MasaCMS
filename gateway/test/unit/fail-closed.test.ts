@@ -1,8 +1,16 @@
-// Fail closed end to end: a callee that refuses, times out or answers 502/503/504 yields legacy's 503 and never reaches legacy.
+// Fail closed end to end: a callee that refuses, times out or answers 502/503/504 yields legacy's 503 and never reaches legacy;
+// a fixture route's 503 is the fixture envelope naming the method api.cfm reads from its path.
 // The fail-closed helpers themselves are covered case by case in dispatcher-fail-closed.test.ts.
 import type { InjectOptions } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { adminUnavailableResponse, apiUnavailableResponse, type LegacyUnavailableResponse } from '@opt2/platform/legacy-compat';
+import {
+  LEGACY_JSON_CONTENT_TYPE,
+  adminUnavailableResponse,
+  apiUnavailableResponse,
+  etag,
+  legacyHeaders,
+  type LegacyUnavailableResponse,
+} from '@opt2/platform/legacy-compat';
 import { buildTestGateway, type TestGateway } from '../helpers/app.js';
 import { BRIDGE_SESSION_PATH } from '../helpers/legacy-origin.js';
 import type { TargetMode } from '../helpers/target-double.js';
@@ -146,5 +154,60 @@ describe('target-bound requests fail closed', () => {
         expect(legacy.requests.filter((req) => req.path !== BRIDGE_SESSION_PATH)).toEqual([]);
       },
     );
+  });
+});
+
+/** The fixture envelope's 503 for `method` as envelope.cfc `fail` writes it: its literal body, that body's ETag and the legacy headers. */
+function fixtureUnavailable(method: string): { body: string; headers: Record<string, string> } {
+  const body = `{"apiversion":"v1","method":"${method}","error":{"code":"server_error","message":"Unhandled Exception"}}`;
+  return { body, headers: lowerCased({ 'Content-Type': LEGACY_JSON_CONTENT_TYPE, ETag: etag(body), ...legacyHeaders() }) };
+}
+
+describe('fixture routes fail closed in the fixture envelope naming the method api.cfm reads from the path', () => {
+  const FIXTURE = '/legacy-fixtures/cfml/api.cfm';
+  const RECORD_ID = '00532E14-B51F-226C-36938FA3E4A6396C';
+  const ATTACHMENT_ID = 'A1B2C3D4-E5F6-0718-293A4B5C6D7E8F90';
+  let gateway: TestGateway | undefined;
+
+  afterEach(async () => {
+    await gateway?.close();
+    gateway = undefined;
+  });
+
+  /** A version routing each fixture key to finance, the owner every case's request reaches. */
+  const fixtureVersion = cutoverTable({
+    tableVersion: 'v0902',
+    entries: [
+      'fixture:finance/records@get',
+      'fixture:finance/rollups@get',
+      'fixture:finance/records/{id}/submit@get',
+      'fixture:finance/records/{id}/attachments/{id}@get',
+      'fixture:finance/records/{id}/attachments/x/y@get',
+      'fixture:nosuch/things@get',
+    ].map((route) => entry({ route, owningService: 'finance', state: 'target', kind: 'read' })),
+  });
+
+  it.each([
+    ['a resource', `${FIXTURE}/finance/records`, 'finance.records'],
+    ['an action after the id', `${FIXTURE}/finance/records/${RECORD_ID}/submit`, 'finance.records.submit'],
+    ['a tail that is no CF UUID', `${FIXTURE}/finance/records/${RECORD_ID}/attachments/42`, 'finance.records.attachments.42'],
+    ['a CF UUID tail, which is an id', `${FIXTURE}/finance/records/${RECORD_ID}/attachments/${ATTACHMENT_ID}`, 'finance.records.attachments'],
+    ['mixed-case segments', `${FIXTURE}/Finance/Records/${RECORD_ID}/Submit`, 'finance.records.submit'],
+    ['a percent-encoded segment', `${FIXTURE}/finance/rec%6Frds`, 'finance.records'],
+    ['a query string carrying a method', `${FIXTURE}/finance/rollups?siteid=tenant-a&method=list`, 'finance.rollups'],
+    ['a query string turning the data namespace off', `${FIXTURE}/finance/rollups?siteid=tenant-a&useDataNamespace=false`, 'finance.rollups'],
+    ['more than five segments', `${FIXTURE}/finance/records/${RECORD_ID}/attachments/x/y`, 'invalid'],
+    ['a module api.cfm does not dispatch', `${FIXTURE}/nosuch/things`, 'invalid'],
+  ])('names, for %s (%s), the fixture method %s in the fixture 503', { timeout: CASE_TIMEOUT_MS }, async (_case, url, method) => {
+    gateway = await buildTestGateway({ version: fixtureVersion, services: ['finance'] });
+    await gateway.targets.finance?.setMode('503');
+    const res = await gateway.app.inject({ method: 'GET', url });
+    const expected = fixtureUnavailable(method);
+    expect(res.statusCode).toBe(503);
+    expect(res.statusMessage).toBe(SERVICE_UNAVAILABLE_TEXT);
+    expect(res.body).toBe(expected.body);
+    expect(res.headers).toMatchObject(expected.headers);
+    expect(gateway.targets.finance?.requests).toHaveLength(1);
+    expect(gateway.legacy.requests.filter((req) => req.path !== BRIDGE_SESSION_PATH)).toEqual([]);
   });
 });

@@ -12,8 +12,8 @@ import { getSchedule } from '../repo/queries.js';
 import type { SurveysRepository } from '../repo/repository.js';
 import type { SurveyScheduleRow, SurveyStatus } from '../repo/tables.js';
 
-/** Fastify path of the `surveys-launch` queue target `/internal/v1/tasks/surveys/{surveyId}/launch`. */
-export const LAUNCH_TASK_PATH = '/internal/v1/tasks/surveys/:surveyId/launch' as const;
+/** Fixed path of the `surveys-launch` queue target; the survey travels in the task payload. */
+export const LAUNCH_TASK_PATH = '/internal/v1/tasks/surveys/launch' as const;
 
 /** The contract's `LaunchPayload`, which communications copies from `surveys.survey.scheduled.v1`. */
 export interface LaunchTaskPayload {
@@ -59,11 +59,6 @@ async function findStoredLaunch(tx: TenantTx, raw: unknown): Promise<StoredLaunc
   if (!parsed.success) return null;
   const schedule = await getSchedule(tx, parsed.data.surveyId);
   return schedule === null ? null : { payload: parsed.data, schedule };
-}
-
-/** The `:surveyId` path parameter Fastify decoded from the task URL. */
-function pathSurveyId(request: FastifyRequest): string | undefined {
-  return (request.params as { surveyId?: string }).surveyId;
 }
 
 type SurveyLaunchDoneRequest = CommunicationsComponents['schemas']['SurveyLaunchDoneRequest'];
@@ -119,10 +114,8 @@ export function registerLaunchTaskRoute(app: FastifyInstance, deps: LaunchTaskDe
     findStored: findStoredLaunch,
     ignored: (reason): LaunchTaskIgnored => ({ ignored: true, reason }),
     handler: async ({ request, tenantId, taskName, stored }: TaskContext<StoredLaunch>): Promise<LaunchTaskResult> => {
-      // The URL and the payload name one survey; a task naming two is refused like one naming another tenant's survey.
-      if (stored === undefined || tenantId === null || pathSurveyId(request) !== stored.payload.surveyId) {
-        throw new TaskTenantMismatchError(tenantId, taskName);
-      }
+      // The platform passes both on a tenant route; the survey is the payload's, found under the body's tenant.
+      if (stored === undefined || tenantId === null) throw new TaskTenantMismatchError(tenantId, taskName);
       const { surveyId, scheduleVersion } = stored.payload;
       // Gated, so a closed survey gate is waited out for the gate budget before the legacy 503 that makes Cloud Tasks retry.
       const { outcome, survey } = await withGatedTenant(deps.db, tenantId, (tx) =>

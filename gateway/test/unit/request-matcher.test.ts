@@ -233,7 +233,7 @@ describe('createMatcher legacy destinations', () => {
     expect(outcome.result?.key).toBe('admin:cusers.delete');
     expect(outcome.entry).toBeUndefined();
     expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
-    expect(outcome.failContext).toStrictEqual({ surface: 'admin' });
+    expect(outcome.failContext).toStrictEqual({ surface: 'admin', route: 'admin:cusers.delete', owner: 'legacy' });
   });
 
   it.each([
@@ -278,7 +278,7 @@ describe('createMatcher unavailable destinations', () => {
     expect(outcome.result?.key).toBe('opt2:/opt2/stub/ping');
     expect(outcome.entry).toBeUndefined();
     expect(outcome.destination).toStrictEqual({ kind: 'unavailable', reason: 'no-active-version' });
-    expect(outcome.failContext).toEqual({ surface: 'api', params: { siteid: 'default' } });
+    expect(outcome.failContext).toEqual({ surface: 'api', params: { siteid: 'default' }, route: 'opt2:/opt2/stub/ping' });
   });
 
   it.each([
@@ -289,7 +289,7 @@ describe('createMatcher unavailable destinations', () => {
     expect(outcome.result?.key).toBe(key);
     expect(outcome.entry?.route).toBe(key);
     expect(outcome.destination).toStrictEqual({ kind: 'unavailable', reason: 'admin-unmapped' });
-    expect(outcome.failContext).toStrictEqual({ surface: 'admin' });
+    expect(outcome.failContext).toStrictEqual({ surface: 'admin', route: key, owner: 'web' });
   });
 
   it('propagates a failure other than an admin mapping error instead of answering unavailable', async () => {
@@ -309,6 +309,7 @@ describe('createMatcher unavailable destinations', () => {
     const urls = Object.fromEntries(Object.entries(SERVICE_URLS).filter(([name]) => name !== service));
     const outcome = await matchOf(matcherWith({ env: { OPT2_SERVICE_URLS: urls } }), url);
     expect(outcome.destination).toStrictEqual({ kind: 'unavailable', reason: 'no-service-url' });
+    expect(outcome.failContext.owner).toBe(service);
   });
 });
 
@@ -358,7 +359,7 @@ describe('createMatcher target destinations', () => {
     const outcome = await matchOf(matcherWith(), url);
     expect(outcome.entry?.route).toBe('opt2:/opt2/stub/**');
     expect(outcome.destination).toStrictEqual({ kind: 'target', service: 'stub', serviceUrl: urlOf('stub'), path: url, isWeb: false });
-    expect(outcome.failContext).toEqual({ surface: 'api', params: { a: '1,2,3' } });
+    expect(outcome.failContext).toEqual({ surface: 'api', params: { a: '1,2,3' }, route: 'opt2:/opt2/stub/**', owner: 'stub' });
   });
 
   it('marks a web-owned entry outside the admin family as web, without an admin mapping', async () => {
@@ -393,6 +394,8 @@ describe('createMatcher target destinations', () => {
       surface: 'api',
       method: 'generateCSRFTokens',
       params: { method: 'generateCSRFTokens', siteid: 'default' },
+      route: 'api:generatecsrftokens',
+      owner: 'identity',
     });
   });
 
@@ -420,7 +423,7 @@ describe('createMatcher target destinations', () => {
       method,
       forwardBody: false,
     });
-    expect(outcome.failContext).toStrictEqual({ surface: 'admin' });
+    expect(outcome.failContext).toStrictEqual({ surface: 'admin', route: 'admin:cusers.list', owner: 'web' });
   });
 
   it("maps a target json action to web's raw handler with its method, body and legacy content type", async () => {

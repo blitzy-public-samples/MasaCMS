@@ -86,7 +86,7 @@ function callFor(method: string, raw: string, entityName: string): JsonApiCall {
     isAggregateQuery: false,
     user: { loggedIn: true, systemUser: true },
     allowAction: () => false,
-    customImageSizes: [],
+    customImageSizes: () => Promise.resolve([]),
   } as unknown as JsonApiRequestContext;
   return {
     mode: 'json',

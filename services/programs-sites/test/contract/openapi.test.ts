@@ -687,6 +687,26 @@ const CASES: Record<string, Case[]> = {
       status: 403,
     },
   ],
+  listSiteCustomImageSizes: [
+    {
+      name: "lists strategies-content the tenant-a custom image sizes, the site matched ignoring case, writing nothing",
+      method: 'GET',
+      url: `/internal/v1/sites/${SITE_A.toUpperCase()}/image-sizes`,
+      as: 'service:strategies-content',
+      status: 200,
+      verify: ({ body }, ctx) => {
+        expect(body).toEqual([{ sizeID: SIZE_ID, siteID: SITE_A, name: 'hero', height: '400', width: 'AUTO', isNew: 0 }]);
+        expectNothingWritten(ctx);
+      },
+    },
+    {
+      name: 'refuses the gateway, which only strategies-content may call it as',
+      method: 'GET',
+      url: `/internal/v1/sites/${SITE_A}/image-sizes`,
+      as: 'service:gateway',
+      status: 403,
+    },
+  ],
   listUserSites: [
     {
       name: 'lists every registered site an s2 user administers',

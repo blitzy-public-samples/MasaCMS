@@ -1,7 +1,7 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** The `communications-reminders` task route: runs one stored survey reminder through `performReminder`. */
 import type { Logger } from '@opt2/platform/logging';
-import { z, type Clock, type FastifyInstance, type FastifyRequest, type ServiceClient } from '@opt2/platform/service-kit';
+import { z, type Clock, type FastifyInstance, type ServiceClient } from '@opt2/platform/service-kit';
 import { QUEUES, TaskTenantMismatchError, registerTaskRoute, type TaskContext } from '@opt2/platform/tasks';
 import type { TenantDb, TenantTx } from '@opt2/platform/tenancy';
 import { performReminder, type ReminderDeps, type ReminderResult } from '../domain/reminders.js';
@@ -11,8 +11,8 @@ import { findScheduledTask } from '../repo/queries.js';
 import type { CommunicationsRepository } from '../repo/repository.js';
 import type { ScheduledTaskRow } from '../repo/tables.js';
 
-/** Fastify path of the queue's target `/internal/v1/tasks/reminders/{scheduledTaskId}`. */
-export const REMINDER_TASK_PATH = QUEUES['communications-reminders'].targetPath.replace(/\{(\w+)\}/g, ':$1');
+/** The queue's fixed target path, `/internal/v1/tasks/reminders`; the payload names the scheduled-task row. */
+export const REMINDER_TASK_PATH = QUEUES['communications-reminders'].targetPath;
 
 /** The contract's `TaskIgnoredResult`: a permanently invalid task acknowledged without acting, so no queue retries it. */
 export type ReminderTaskIgnored = components['schemas']['TaskIgnoredResult'];
@@ -42,11 +42,6 @@ async function findStoredReminder(tx: TenantTx, raw: unknown): Promise<Scheduled
   return row?.kind === 'survey-reminder' && row.source_id === payload.data.surveyId ? row : null;
 }
 
-/** The `:scheduledTaskId` path parameter Fastify decoded from the task URL. */
-function pathTaskId(request: FastifyRequest): string | undefined {
-  return (request.params as { scheduledTaskId?: string }).scheduledTaskId;
-}
-
 /** Registers POST `REMINDER_TASK_PATH` on the cloud-tasks transport; answers the contract's `ReminderTaskResult`, or `TaskIgnoredResult`. */
 export function registerReminderTaskRoute(app: FastifyInstance, options: ReminderTaskRouteOptions): void {
   const deps: ReminderDeps = {
@@ -61,11 +56,9 @@ export function registerReminderTaskRoute(app: FastifyInstance, options: Reminde
     db: options.db,
     findStored: findStoredReminder,
     ignored: (reason): ReminderTaskIgnored => ({ ignored: true, reason }),
-    handler: async ({ request, tenantId, taskName, stored }: TaskContext<ScheduledTaskRow>): Promise<ReminderResult> => {
-      // The URL and the payload name one task; a task naming two is refused like one naming another tenant's row.
-      if (stored === undefined || pathTaskId(request) !== stored.scheduled_task_id) {
-        throw new TaskTenantMismatchError(tenantId, taskName);
-      }
+    handler: async ({ tenantId, taskName, stored }: TaskContext<ScheduledTaskRow>): Promise<ReminderResult> => {
+      // A tenant-scoped route always passes the row `findStoredReminder` found; without one, the task is refused.
+      if (stored === undefined) throw new TaskTenantMismatchError(tenantId, taskName);
       return performReminder(deps, stored);
     },
   });

@@ -259,7 +259,7 @@ async function asMigration(options: RequestOptions = {}): Promise<RequestOptions
   return { ...options, headers: { ...(await migrationHeaders()), ...options.headers } };
 }
 
-/** `options` with the CSRF headers a fixture write sends. */
+/** `options` with the CSRF headers a fixture or `/v1` write sends. */
 function withCsrf(options: RequestOptions = {}): RequestOptions {
   return { ...options, headers: { ...CSRF_HEADERS, ...options.headers } };
 }
@@ -282,7 +282,7 @@ function jsonOf<T>(response: InjectResponse): T {
 
 /** Creates a PENDING tenant-a request for {@link SIGNER_USER_ID} through `/v1` and returns its id, with the write log cleared. */
 async function createRequest(ctx: TestApp): Promise<string> {
-  const { response } = await send(ctx, 'POST', V1, await asSigner({ payload: { ...NEW_REQUEST } }));
+  const { response } = await send(ctx, 'POST', V1, await asSigner(withCsrf({ payload: { ...NEW_REQUEST } })));
   const id = jsonOf<{ request_id: string }>(response).request_id;
   ctx.db.clear();
   return id;
@@ -291,7 +291,7 @@ async function createRequest(ctx: TestApp): Promise<string> {
 /** Creates a request and signs it through `/v1`; returns its id, with the write log cleared. */
 async function signedRequest(ctx: TestApp): Promise<string> {
   const id = await createRequest(ctx);
-  jsonOf((await send(ctx, 'POST', `${V1}/${id}/sign`, await asSigner({ payload: { typedName: TYPED_NAME } }))).response);
+  jsonOf((await send(ctx, 'POST', `${V1}/${id}/sign`, await asSigner(withCsrf({ payload: { typedName: TYPED_NAME } })))).response);
   ctx.db.clear();
   return id;
 }
@@ -416,14 +416,14 @@ const cases: Record<string, (ctx: TestApp) => Promise<CaseResult>> = {
     expect(jsonOf<{ totalitems: number }>(result.response).totalitems).toBe(1);
     return result;
   },
-  createSignatureRequest: async (ctx) => send(ctx, 'POST', V1, await asSigner({ payload: { ...NEW_REQUEST, siteid: SITE } })),
+  createSignatureRequest: async (ctx) => send(ctx, 'POST', V1, await asSigner(withCsrf({ payload: { ...NEW_REQUEST, siteid: SITE } }))),
   getSignatureRequest: async (ctx) => {
     const id = await signedRequest(ctx);
     const result = await send(ctx, 'GET', `${V1}/${id}`, await asAuditor());
     expect(jsonOf<{ signature: { typed_name: string } }>(result.response).signature.typed_name).toBe(TYPED_NAME);
     return result;
   },
-  signRequest: async (ctx) => send(ctx, 'POST', `${V1}/${await createRequest(ctx)}/sign`, await asSigner({ payload: { typedName: TYPED_NAME } })),
+  signRequest: async (ctx) => send(ctx, 'POST', `${V1}/${await createRequest(ctx)}/sign`, await asSigner(withCsrf({ payload: { typedName: TYPED_NAME } }))),
   getAuditChain: async (ctx) => send(ctx, 'GET', `${V1}/${await signedRequest(ctx)}/audit`, await asAuditor()),
   verifyChain: async (ctx) => {
     const result = await send(ctx, 'GET', `${V1}/${await signedRequest(ctx)}/verify`, await asSigner());
@@ -433,7 +433,7 @@ const cases: Record<string, (ctx: TestApp) => Promise<CaseResult>> = {
   verifySuppliedChain: async (ctx) => {
     const id = await signedRequest(ctx);
     const entries = await auditItems(ctx, id);
-    const result = await send(ctx, 'POST', `${V1}/${id}/verify`, await asAuditor({ payload: { entries } }));
+    const result = await send(ctx, 'POST', `${V1}/${id}/verify`, await asAuditor(withCsrf({ payload: { entries } })));
     expect(jsonOf(result.response)).toEqual({ valid: true, entries: 2, brokenat: 0 });
     return result;
   },
@@ -540,12 +540,13 @@ const errorCases: readonly ErrorCase[] = [
   ['v1 forbidden: a create by an auditor', 403, FORBIDDEN, async (ctx) => send(ctx, 'POST', V1, await asAuditor({ payload: { ...NEW_REQUEST } }))],
   ['v1 forbidden: a siteid other than the token site', 403, FORBIDDEN, async (ctx) => send(ctx, 'GET', `${V1}?siteid=${TENANT_B.siteId}`, await asSigner())],
   ['v1 notFound: an unknown request', 404, 'Not Found', async (ctx) => send(ctx, 'GET', `${V1}/${UNKNOWN_ID}`, await asAuditor())],
-  ['v1 invalidParameters: a create without its fields', 400, 'Invalid parameters', async (ctx) => send(ctx, 'POST', V1, await asSigner({ payload: {} }))],
+  ['v1 invalidParameters: a create without its fields', 400, 'Invalid parameters', async (ctx) => send(ctx, 'POST', V1, await asSigner(withCsrf({ payload: {} })))],
+  ['v1 invalidTokens: a create without a CSRF pair', 400, 'Invalid CSRF tokens', async (ctx) => send(ctx, 'POST', V1, await asSigner({ payload: { ...NEW_REQUEST } }))],
   [
     'v1 conflict: signing a SIGNED request',
     409,
     'already-signed',
-    async (ctx) => send(ctx, 'POST', `${V1}/${await signedRequest(ctx)}/sign`, await asSigner({ payload: { typedName: TYPED_NAME } })),
+    async (ctx) => send(ctx, 'POST', `${V1}/${await signedRequest(ctx)}/sign`, await asSigner(withCsrf({ payload: { typedName: TYPED_NAME } }))),
   ],
   [
     'a fixture create while its unit is legacy-authoritative',
@@ -563,7 +564,7 @@ const errorCases: readonly ErrorCase[] = [
     async (ctx) => {
       const id = await createRequest(ctx);
       ctx.db.setGate(UNITS[0], 'legacy');
-      return send(ctx, 'POST', `${V1}/${id}/sign`, await asSigner({ payload: { typedName: TYPED_NAME } }));
+      return send(ctx, 'POST', `${V1}/${id}/sign`, await asSigner(withCsrf({ payload: { typedName: TYPED_NAME } })));
     },
   ],
   ['a migration call by a user without platform.migration', 403, FORBIDDEN, async (ctx) => send(ctx, 'GET', `${MIGRATION}/position`, await asSigner())],
@@ -586,7 +587,7 @@ describe('contract document', () => {
   });
 
   it('declares the services e-signature calls', () => {
-    // identity answers the CSRF consume of every fixture write; people the signer's pool-user read.
+    // identity answers the CSRF consume of every fixture and /v1 write; people the signer's pool-user read.
     expect(DOC['x-opt2-calls']).toEqual(['identity', 'people']);
   });
 

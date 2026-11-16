@@ -1287,7 +1287,7 @@ describe('transportForPath', () => {
     { path: '/internal/v1/events/', transport: 'service' },
     { path: '/internal/v1/events/a/b', transport: 'service' },
     { path: TASK_PATH, transport: 'cloud-tasks' },
-    { path: '/internal/v1/tasks/surveys/X/launch', transport: 'cloud-tasks' },
+    { path: '/internal/v1/tasks/surveys/launch', transport: 'cloud-tasks' },
     { path: '/internal/v1/tasks', transport: 'service' },
     { path: '/internal/v1/outbox/sweep', transport: 'cloud-tasks' },
     { path: '/internal/v1/outbox/sweep/now', transport: 'service' },
@@ -1634,6 +1634,30 @@ describe.each([
       expect(await denialOnExpiry(held, () => authenticate(authenticator, route, headers))).toEqual(INVALID_CREDENTIAL);
     });
     expect(timeouts).toEqual([GOOGLE_AUTH_TIMEOUT_MS]);
+  });
+});
+
+describe('createCloudCloudTasksTransport on the fixed survey launch route', () => {
+  const SURVEYS_URL = 'https://surveys-abc.a.run.app';
+  const LAUNCH_PATH = '/internal/v1/tasks/surveys/launch';
+  const identity = { service: { ...TASKS_INVOKER_IDENTITY.service, email: TASKS_INVOKER_EMAIL } };
+
+  /** Authenticates a launch delivery to surveys carrying a tasks-invoker OIDC token addressed to `aud`. */
+  async function launchWith(aud: string): Promise<AuthResult> {
+    const token = await signToken(googleOidcClaims({ aud, email: TASKS_INVOKER_EMAIL }), issuerKey);
+    const tasks = createCloudCloudTasksTransport({ project: PROJECT, selfUrl: SURVEYS_URL, client: googleClient });
+    return authenticate(tasks, LAUNCH_PATH, { authorization: `Bearer ${token}` });
+  }
+
+  it('accepts the token addressed to the exact task URL', async () => {
+    await expect(launchWith(`${SURVEYS_URL}${LAUNCH_PATH}`)).resolves.toEqual(identity);
+  });
+
+  it.each([
+    { given: 'the service origin', aud: SURVEYS_URL },
+    { given: "another route's URL", aud: `${SURVEYS_URL}/internal/v1/tasks/reminders` },
+  ])('refuses a token addressed to $given as invalid-credential', async ({ aud }) => {
+    expect(await denialOf(() => launchWith(aud))).toEqual(INVALID_CREDENTIAL);
   });
 });
 

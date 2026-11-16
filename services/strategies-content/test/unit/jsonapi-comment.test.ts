@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { closeGates, ensureUnitGates, openGates, qualified } from '@opt2/platform/migration-kit';
 import { withTenant, type QueryResultRow, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
-import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, pgAvailable, type TenantFixture, type ThrowawaySchema } from '@opt2/platform/testing';
 import { getComments } from '../../src/domain/comments.js';
 import { CONTENT_CONFIG_DEFAULTS, type Actor } from '../../src/domain/context.js';
 import type { JsonApiRequestContext } from '../../src/legacy/jsonapi-serializers.js';
@@ -16,6 +16,7 @@ import { createJsonApiParams, rowsSource, type JsonApiCall, type JsonApiHandlerF
 
 type Row = Record<string, unknown>;
 type Method = 'findMany' | 'findAll' | 'findQuery';
+type BeanMethod = 'findOne' | 'findNew' | 'findPermissions' | 'save';
 
 const SITE = TENANT_A.siteId;
 const OTHER_SITE = 'other-site';
@@ -81,7 +82,7 @@ function callFor(method: Method, raw: string, who: Actor, ids?: string[]): JsonA
     isAggregateQuery: false,
     user: { loggedIn: who.isLoggedIn, systemUser: who.roles.includes('system-user') },
     allowAction: () => false,
-    customImageSizes: [],
+    customImageSizes: () => Promise.resolve([]),
   } as unknown as JsonApiRequestContext;
   return {
     mode: 'json',
@@ -101,6 +102,23 @@ function callFor(method: Method, raw: string, who: Actor, ids?: string[]): JsonA
     httpMethod: 'GET',
     headers: {},
     validateCsrf: () => Promise.resolve(true),
+  };
+}
+
+/** A bean call by `who` on `tenant`'s site as the entity route resolves it: path site as the `siteid` param, `raw` as the URL. */
+function beanCall(method: BeanMethod, tenant: TenantFixture, id: string | undefined, raw = '', who: Actor = MODULE_USER): JsonApiCall {
+  const call = callFor('findAll', raw, { ...who, siteId: tenant.siteId, tenantId: tenant.tenantId });
+  return {
+    ...call,
+    routeKey: `api:comment.${method.toLowerCase()}`,
+    method,
+    ...(id === undefined ? {} : { id }),
+    pathInfo: [tenant.siteId, 'comment'],
+    params: createJsonApiParams([...Object.entries(call.apiContext.url), ['siteid', tenant.siteId]]),
+    siteId: tenant.siteId,
+    tenantId: tenant.tenantId,
+    site: { siteId: tenant.siteId, urls: { scheme: 'http' } } as unknown as JsonApiCall['site'],
+    apiContext: { ...call.apiContext, siteId: tenant.siteId, method, endpoint: `http://localhost:8080/index.cfm/_api/json/v1/${tenant.siteId}` },
   };
 }
 
@@ -180,7 +198,7 @@ async function wholeSiteContext(who: Actor): Promise<ContentRouteContext> {
 }
 
 /** The handler of `method`. */
-function handlerOf(method: Method): JsonApiHandlerFn {
+function handlerOf(method: Method | BeanMethod): JsonApiHandlerFn {
   const fn = commentHandler[method];
   if (fn === undefined) throw new Error(`commentHandler has no ${method}`);
   return fn;
@@ -339,5 +357,64 @@ describe.skipIf(!(await pgAvailable()))('JSON API comment feeds', () => {
     expect(itemIds(await outcomeOf(ctx, 'findAll', 'countOnly=true', MODULE_USER))).toBe(8);
     const reads = commentReads();
     expect(reads.map((s) => s.sql.includes('count(*)') && !s.sql.includes('LIMIT'))).toEqual([true]);
+  });
+
+  /** The `data` a bean call answered. */
+  async function beanData(call: JsonApiCall): Promise<Row> {
+    const result = await handlerOf(call.method as BeanMethod)(ctx, call);
+    return result.data as Row;
+  }
+
+  const siteOf = (data: Row): Row => ({ siteid: data['siteid'], isnew: data['isnew'] });
+
+  const NEW_BEAN_CALLS: [string, BeanMethod, string | undefined, string][] = [
+    ['comment/new', 'findOne', 'new', ''],
+    ['an unknown id', 'findOne', cfId(999), ''],
+    ['findNew', 'findNew', undefined, ''],
+    ['a failed new-comment save', 'save', undefined, ''],
+    ['a failed new-comment save without the overlay', 'save', undefined, 'saveErrors=true'],
+  ];
+  it.each([TENANT_A, TENANT_B].flatMap((tenant) => NEW_BEAN_CALLS.map((c) => [tenant.siteId, ...c, tenant] as const)))(
+    '%s: %s answers a new bean of the request site',
+    async (site, _label, method, id, raw, tenant) => {
+      expect(siteOf(await beanData(beanCall(method, tenant, id, raw)))).toEqual({ siteid: site, isnew: 1 });
+    },
+  );
+
+  it.each([
+    ['its request site', TENANT_A, cfId(1), SITE],
+    ['another site of the tenant', TENANT_A, cfId(20), OTHER_SITE],
+    ['a site other than the request site', TENANT_B, cfId(30), SITE],
+  ])('findOne of a comment stored under %s keeps its own siteid', async (_label, tenant, id, stored) => {
+    expect(siteOf(await beanData(beanCall('findOne', tenant, id)))).toEqual({ siteid: stored, isnew: 0 });
+  });
+
+  it.each([
+    ['a stored parent keeps its own siteid', TENANT_A, cfId(4), { siteid: SITE, isnew: 0 }],
+    ['a missing parent holds the request site', TENANT_B, cfId(30), { siteid: TENANT_B.siteId, isnew: 1 }],
+  ])('expand=parent: %s', async (_label, tenant, id, expected) => {
+    const data = await beanData(beanCall('findOne', tenant, id, 'expand=parent'));
+    expect(siteOf(data['parent'] as Row)).toEqual(expected);
+  });
+
+  // [label, id, whether a row loads]: an unloaded bean holds the request site.
+  const PERMISSION_IDS: [string, string, boolean][] = [
+    ['an unknown CF UUID', cfId(999), false],
+    ['an unknown 35-character id', '12345678901234567890123456789012345', false],
+    ['a non-UUID id', 'abc', false],
+    ['the comment/permissions path', 'permissions', false],
+    ['a stored comment', cfId(1), true],
+  ];
+  it.each(
+    PERMISSION_IDS.flatMap(([label, id, loads]): [string, string, string, Actor, Row][] => [
+      [label, 'public', id, PUBLIC, { read: true, delete: false, save: !loads }],
+      [label, 'module user', id, MODULE_USER, { read: true, delete: true, save: true }],
+    ]),
+  )('findPermissions of %s answers the %s what legacy answers', async (_label, _who, id, who, expected) => {
+    expect(await beanData(beanCall('findPermissions', TENANT_A, id, '', who))).toEqual(expected);
+  });
+
+  it('findPermissions without an id fails as legacy does on an undefined argument', async () => {
+    await expect(beanData(beanCall('findPermissions', TENANT_A, undefined))).rejects.toMatchObject({ name: 'LegacyApiError', type: 'server_error' });
   });
 });

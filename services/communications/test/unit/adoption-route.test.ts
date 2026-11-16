@@ -223,7 +223,7 @@ describe.skipIf(!(await pgAvailable()))('scheduler hand-off routes', () => {
         `INSERT INTO ${handle.schema}.scheduled_task (tenant_id, scheduled_task_id, task_name, queue, queue_task_name, kind, source_type,
            source_id, reminder_n, schedule_time, status, target_route, schedule_version, origin, enqueued_at, created_at, updated_at)
          VALUES ($1, $2, $3, 'surveys-launch', $4, 'survey-launch', 'survey', $5, NULL, $6, 'scheduled', $7, 1, 'event', NULL, $6, $6)`,
-        [tx.tenantId, EVENT_TASK_ID, LAUNCH_EVENT, portTaskName(LAUNCH_EVENT, 1), SURVEY_EVENT, NOW, `/internal/v1/tasks/surveys/${SURVEY_EVENT}/launch`],
+        [tx.tenantId, EVENT_TASK_ID, LAUNCH_EVENT, portTaskName(LAUNCH_EVENT, 1), SURVEY_EVENT, NOW, '/internal/v1/tasks/surveys/launch'],
       ),
     );
 
@@ -423,7 +423,7 @@ describe.skipIf(!(await pgAvailable()))('scheduler hand-off routes', () => {
     expect(port.creates.map((created) => created.name)).toEqual(['-v1', '-v1-r1', '-v1-r2'].map((suffix) => `${name}${suffix}`));
     expect(port.deletes.map((deleted) => deleted.name)).toEqual(['-v1', '-v1-r1'].map((suffix) => `${name}${suffix}`));
     expect(port.live.get(`surveys-launch/${name}-v1-r2`)).toMatchObject({
-      url: `${SERVICE_URLS.surveys}/internal/v1/tasks/surveys/${SURVEY_READOPT}/launch`,
+      url: `${SERVICE_URLS.surveys}/internal/v1/tasks/surveys/launch`,
       body: { surveyId: SURVEY_READOPT, siteId: TENANT_A.siteId, scheduleVersion: 1 },
       scheduleTime: new Date(2026, 6, 5, 9, 0, 0, 0),
       tenantId: TENANT_A.tenantId,
@@ -525,7 +525,7 @@ describe.skipIf(!(await pgAvailable()))('scheduler hand-off routes', () => {
               portTaskName(name, 1),
               SURVEY_HELD,
               '2026-11-01T01:30:00.000',
-              `/internal/v1/tasks/surveys/${SURVEY_HELD}/launch`,
+              '/internal/v1/tasks/surveys/launch',
               NOW,
             ],
           ),

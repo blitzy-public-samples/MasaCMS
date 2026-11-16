@@ -144,7 +144,7 @@ function callFor(a: CallArgs): JsonApiCall & { validateCsrf: ReturnType<typeof v
     user: { loggedIn: caller.isLoggedIn, systemUser: caller.isLoggedIn },
     allowAction: () => caller.roles.length > 0,
     site: urls(site.siteId),
-    customImageSizes: [],
+    customImageSizes: () => Promise.resolve([]),
   };
   const settings: SiteContentSettings = {
     siteId: site.siteId,

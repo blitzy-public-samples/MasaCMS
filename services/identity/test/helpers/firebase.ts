@@ -1,8 +1,14 @@
 /** Firebase doubles of the Identity Platform suites: an app signing with the platform test key, and recorded tenant listings. */
 import { cert, initializeApp, type App } from 'firebase-admin/app';
 import { getAuth, type ListTenantsResult, type Tenant } from 'firebase-admin/auth';
-import { exportPKCS8 } from 'jose';
+import { exportPKCS8 } from '@opt2/platform/auth';
 import { testSigningKeys } from '@opt2/platform/testing';
+
+/** Web API key of the Identity Platform suites, assembled at run time; its space, `&` and `=` need URL encoding. */
+export const TEST_WEB_API_KEY = ['test', 'web key', 'a&b=c'].join('-');
+
+/** The `accounts:signInWithCustomToken` URL carrying {@link TEST_WEB_API_KEY} URL-encoded. */
+export const TEST_EXCHANGE_URL = 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=test-web%20key-a%26b%3Dc';
 
 /** One recorded `listTenants` page: its tenants and, unless it is the last, the next page token. */
 export interface RecordedTenantPage {

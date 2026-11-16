@@ -75,7 +75,7 @@ describe('reschedule supersession', () => {
 
   /** Delivers the `surveys-launch` task communications would have created for `scheduleVersion`. */
   async function deliverLaunchTask(scheduleVersion: number) {
-    const url = new URL(targetUrl(LAUNCH_QUEUE, t.env.OPT2_SERVICE_URLS, { surveyId }));
+    const url = new URL(targetUrl(LAUNCH_QUEUE, t.env.OPT2_SERVICE_URLS));
     const body = taskWireBody({
       queue: LAUNCH_QUEUE.name,
       name: launchTaskName(surveyId),

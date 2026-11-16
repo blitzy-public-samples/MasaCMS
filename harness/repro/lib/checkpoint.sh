@@ -251,7 +251,7 @@ checkpoint_take() {
   require_env PG_HOST PG_PORT PG_USER PG_PASSWORD PG_DATABASE
   require_cmd psql pg_dump tar sha256sum node box
   # Taken first: restore seeks the subscriptions back to this time.
-  taken_at="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+  taken_at="$(now_iso)"
 
   log_step ck-take.1 "recreate $CK_DIR"
   ensure_state_dirs
@@ -354,7 +354,9 @@ checkpoint_restore() {
   done <<<"$fields"
 
   log_step ck-restore.1 "stop ColdFusion"
-  cf_server_registered || die "CommandBox has no server named $LEGACY_SERVER_NAME"
+  legacy_server_ours ||
+    die "CommandBox server $LEGACY_SERVER_NAME is not this checkout's: it is not registered with webroot $REPO and" \
+      "server home $(legacy_server_home)"
   box server stop name="$LEGACY_SERVER_NAME" </dev/null >&2 || die "box server stop name=$LEGACY_SERVER_NAME failed"
   wait_port_closed "$LEGACY_PORT" 120
 

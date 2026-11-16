@@ -569,7 +569,7 @@ describe("surveys as the caller of communications' launch-done report", () => {
 
     // The launch task as communications queues it and the local tasks adapter delivers it.
     const queue = queueDefinition(LAUNCH_QUEUE);
-    const url = new URL(targetUrl(queue, app.opt2.env.OPT2_SERVICE_URLS, { surveyId }));
+    const url = new URL(targetUrl(queue, app.opt2.env.OPT2_SERVICE_URLS));
     const task = taskWireBody({
       queue: LAUNCH_QUEUE,
       name: `opt2-survey-${surveyId}-launch-v1`,

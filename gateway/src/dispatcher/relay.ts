@@ -56,7 +56,7 @@ const RELAY_ROUTE_CONFIG: Opt2RouteConfig = Object.freeze({
   siteCheck: false,
 });
 
-const RELAY_FAIL_CONTEXT: FailContext = Object.freeze({ surface: 'api' });
+const RELAY_FAIL_CONTEXT: FailContext = Object.freeze({ surface: 'api', route: RELAY_ROUTE_URL });
 
 const RELAY_SERVICE_SET: ReadonlySet<string> = new Set(RELAY_SERVICES);
 

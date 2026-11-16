@@ -1,11 +1,11 @@
 // Tests over raw sockets that a legacy forward answers in legacy's own status line and header bytes, request and response heads past 16 KB included,
-// with `Connection` and framing for the client connection.
+// with `Connection` and framing for the client connection, logging only the service kit's request line.
 import { Buffer } from 'node:buffer';
 import { connect, createServer, type AddressInfo, type Socket } from 'node:net';
 import replyFrom from '@fastify/reply-from';
 import { LEGACY_ERROR_STATUS_TEXT, LEGACY_REQUEST_HEAD_LIMIT_BYTES } from '@opt2/platform/legacy-compat';
-import { createLogger } from '@opt2/platform/logging';
-import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { createLogger, type Logger } from '@opt2/platform/logging';
+import { createService, loadEnv, type Dispatcher, type FastifyInstance } from '@opt2/platform/service-kit';
 import { testVerifier } from '@opt2/platform/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { forwardToLegacy, type LegacyBeforeSend, type LegacyForwardContext } from '../../src/dispatcher/forward-legacy.js';
@@ -82,11 +82,12 @@ async function startRawLegacy(
   return { url: `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`, heads, connections: () => connections };
 }
 
-/** The gateway's service kit at legacy's head limit, forwarding every GET and HEAD to `legacyOrigin`, by default through the gateway's dispatcher. */
+/** The gateway's service kit at legacy's head limit, forwarding every GET and HEAD to `legacyOrigin`, by default through the gateway's dispatcher and silent. */
 async function startGateway(
   legacyOrigin: string,
   ctx: Pick<LegacyForwardContext, 'mode' | 'sessionMode' | 'beforeSend'>,
   viaGatewayDispatcher = true,
+  logger: Logger = SILENT,
 ): Promise<{ port: number; app: FastifyInstance }> {
   const app: FastifyInstance = await createService({
     name: 'gateway',
@@ -101,7 +102,7 @@ async function startGateway(
       TZ: 'UTC',
     }),
     verifierOverride: testVerifier('gateway'),
-    logger: SILENT,
+    logger,
     legacyStartupScan: false,
     maxHeaderSize: LEGACY_REQUEST_HEAD_LIMIT_BYTES,
   });
@@ -506,5 +507,39 @@ describe('legacy forward client connection', () => {
     await Promise.all([ended, closing]);
 
     expect(Buffer.concat(received).toString('latin1')).toBe(`${LEGACY_PLAIN}ok${CLOSING_PLAIN}ok`);
+  });
+});
+
+/** The fields of a captured log line the logging test reads. */
+interface LogLine {
+  message?: string;
+  requestId?: string;
+}
+
+describe('legacy forward logging', () => {
+  it.each(['stream', 'buffer'] as const)('%s mode: one request line per forwarded request at trace level, none from reply-from', async (mode) => {
+    const lines: LogLine[] = [];
+    const logger = createLogger({
+      service: 'gateway',
+      version: '1.0.0',
+      env: 'local',
+      level: 'trace',
+      destination: { write: (line: string) => void lines.push(JSON.parse(line) as LogLine) },
+    });
+    const origin = await startRawLegacy(() => Buffer.from(`${LEGACY_PLAIN}ok`, 'latin1'));
+    const { port } = await startGateway(origin.url, { mode, sessionMode: 'legacy-primary' }, true, logger);
+    const requestMessages = (): Array<string | undefined> =>
+      lines.filter((line) => line.requestId !== undefined).map((line) => line.message);
+
+    const answered = await exchange(port, head('GET /admin/?muraAction=clogin.main HTTP/1.1', `Host: ${HOST}`), LEGACY_PLAIN.length + 2);
+
+    expect(answered.toString('latin1')).toBe(`${LEGACY_PLAIN}ok`);
+    await vi.waitFor(() => {
+      expect(requestMessages()).toContain('request completed');
+    });
+    expect(requestMessages()).toEqual(['request completed']);
+    const options = replyFromOptions();
+    closers.push(() => (options.undici as unknown as Dispatcher).close());
+    expect(options.disableRequestLogging).toBe(true);
   });
 });

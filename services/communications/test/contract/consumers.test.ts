@@ -91,7 +91,7 @@ const PRODUCERS: Readonly<Record<ProducerTopic, Json>> = {
 const SITE = TENANT_A.siteId;
 const LAUNCH_QUEUE = 'surveys-launch';
 const REMINDER_QUEUE = 'communications-reminders';
-const LAUNCH_TEMPLATE = '/internal/v1/tasks/surveys/{surveyId}/launch';
+const LAUNCH_TEMPLATE = '/internal/v1/tasks/surveys/launch';
 const REMINDER_SENT_TEMPLATE = '/internal/v1/surveys/{surveyId}/reminders/{n}/sent';
 
 /** Every login-mail field communications re-checks, stores or sends, with the JSON type it relies on. */
@@ -383,7 +383,7 @@ function assertLaunchTaskAccepted(input: CreateTaskInput, serviceUrls: Record<st
   if (base === undefined) throw new TypeError('OPT2_SERVICE_URLS names no surveys URL');
   const url = new URL(input.url);
   expect(url.origin).toBe(new URL(base).origin);
-  expect(url.pathname).toBe(LAUNCH_TEMPLATE.replace('{surveyId}', SAMPLE_IDS.surveyId));
+  expect(url.pathname).toBe(LAUNCH_TEMPLATE);
   const match = findOperation(surveysDoc, 'POST', url.pathname);
   expect(match.template).toBe(LAUNCH_TEMPLATE);
   expect(() => assertSchemaMatches(surveysDoc, match.template, requestSchemaOf(surveysDoc, match), taskWireBody(input))).not.toThrow();
@@ -425,7 +425,7 @@ describe("communications' surveys-launch task against surveys launchSurveyTask (
         queue: task.queue,
         name: task.portName,
         scheduleTime: task.scheduleTime,
-        url: taskTarget({ queue: task.queue, surveyId: task.surveyId }, env.OPT2_SERVICE_URLS).url,
+        url: taskTarget(task.queue, env.OPT2_SERVICE_URLS).url,
         // A launch payload names no scheduled-task row.
         body: taskPayload(task, ''),
         deadlineS: task.deadlineS,
@@ -447,7 +447,7 @@ describe("communications' surveys-launch task against surveys launchSurveyTask (
     assertLaunchTaskAccepted(launch, t.env.OPT2_SERVICE_URLS);
 
     const reminderTemplate = QUEUES[REMINDER_QUEUE].targetPath;
-    expect(REMINDER_TASK_PATH.replace(/:(\w+)/g, '{$1}')).toBe(reminderTemplate);
+    expect(REMINDER_TASK_PATH).toBe(reminderTemplate);
     const reminders = t.taskPort.byQueue(REMINDER_QUEUE);
     expect(reminders).toHaveLength(payload.reminders.length);
     for (const reminder of reminders) {
@@ -539,8 +539,9 @@ describe("communications' call of surveys markReminderSent (seam 2)", () => {
       );
       const { status, body, ctx } = await runReminder((built) => built.client.respond(REMINDER_SENT_MATCH, surveysStatus, {}));
       expect(status).toBe(503);
-      const path = `/internal/v1/tasks/reminders/${String((ctx.db.rows('scheduled_task').find((row) => row.kind === 'survey-reminder') ?? {}).scheduled_task_id)}`;
-      expect(() => assertResponseMatchesOpenApi(ownDoc, { method: 'POST', path, status, contentType: 'application/json', body })).not.toThrow();
+      expect(() =>
+        assertResponseMatchesOpenApi(ownDoc, { method: 'POST', path: REMINDER_TASK_PATH, status, contentType: 'application/json', body }),
+      ).not.toThrow();
       expect(ctx.db.rows('scheduled_task').find((row) => row.kind === 'survey-reminder')?.status).toBe('scheduled');
     },
   );

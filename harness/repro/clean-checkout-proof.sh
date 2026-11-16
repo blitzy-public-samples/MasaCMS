@@ -23,6 +23,21 @@ result is recorded in opt2/reports/reproducibility.md of this checkout, then the
 clone and its state directory are left for inspection; this checkout restarts only by an explicit harness/repro/up.sh.
 Takes no arguments.
 
+Environment, passed on to the clone's commands:
+  required              PORT, MURA_DBHOST, MURA_DBPORT, MURA_DATABASE, MURA_DBUSERNAME, MURA_DBPASSWORD,
+                        MURA_ADMIN_PASSWORD, PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DATABASE and
+                        CFCONFIG_ADMINPASSWORD (up.sh); MASA_TEST_EDITOR_PASSWORD (test-all.sh)
+  MURA_ADMIN_USERNAME   admin login (default admin)
+  OPT2_CLONE_PARENT     where the clone is made (default $HOME/.opt2): absolute, outside this checkout, and with no
+                        directory named mura
+  OPT2_STATE_DIR        this checkout's state, which step 1's down.sh stops (default $HOME/.opt2/state); the clone
+                        gets <clone>.state instead
+  OPT2_PRISTINE_DIR     pristine legacy baseline, shared with the clone (default $HOME/.opt2/pristine)
+  OPT2_REPORTS_DIR      ignored: the clone writes its reports into itself
+
+Example, with the environment up.sh runs under:
+  OPT2_CLONE_PARENT=$HOME/opt2-proofs harness/repro/clean-checkout-proof.sh; echo "exit $?"
+
 Exit: 0 proof passed and the clone's stack stopped, 1 proof failed or a step could not run, 2 usage error.
 EOF
         exit 0
@@ -42,7 +57,7 @@ source "$LIB_DIR/lock.sh"
 unset OPT2_LOCK_FLOCK_HELD OPT2_REPORTS_DIR
 
 REPORT="$REPO/opt2/reports/reproducibility.md"
-CLONE_PARENT="${OPT2_CLONE_PARENT:-$HOME/.opt2}"
+OPT2_CLONE_PARENT="${OPT2_CLONE_PARENT:-$HOME/.opt2}"
 
 mapfile -t FIELD_LABELS <<'EOF'
 Clone path (`opt2-clean-<timestamp>`, outside the working tree; never a directory named `mura`)
@@ -169,6 +184,15 @@ require_cmd git sha256sum flock realpath cp
 PIN_SHA="$(json_get "$REPO/opt2/source-pin.json" sha)" ||
   die "cannot read the pinned SHA from $REPO/opt2/source-pin.json"
 [[ $PIN_SHA =~ ^[0-9a-f]{40}$ ]] || die "$REPO/opt2/source-pin.json holds no 40-character SHA ('$PIN_SHA')"
+# The clone path is fixed and checked before step 1 stops the working stack.
+_opt2_assert_outside_repo OPT2_CLONE_PARENT
+CLONE="$(realpath -m -- "$OPT2_CLONE_PARENT")/opt2-clean-$(date -u +%Y%m%dT%H%M%SZ)"
+[[ "/${CLONE,,}/" != */mura/* ]] ||
+  die "OPT2_CLONE_PARENT ($OPT2_CLONE_PARENT) resolves to a path with a directory named mura, which collides with" \
+    "ColdFusion's built-in /mura mapping (setup §1)"
+CLONE_STATE="$CLONE.state"
+[[ ! -e $CLONE && ! -e $CLONE_STATE ]] ||
+  die "$CLONE or $CLONE_STATE already exists in OPT2_CLONE_PARENT ($OPT2_CLONE_PARENT)"
 
 # --- Step 1: teardown of the working checkout ------------------------------------------------------------------
 
@@ -203,12 +227,6 @@ step_end 1 "down.sh exit 0; run lock released"
 # --- Step 2: clone ---------------------------------------------------------------------------------------------
 
 step_begin 2 "git clone --no-local the current commit"
-CLONE="$CLONE_PARENT/opt2-clean-$(date -u +%Y%m%dT%H%M%SZ)"
-_opt2_assert_outside_repo CLONE
-CLONE="$(realpath -m -- "$CLONE")"
-[[ "/${CLONE,,}/" != */mura/* ]] ||
-  die "clone path $CLONE has a directory named mura, which collides with ColdFusion's built-in /mura mapping (setup §1)"
-CLONE_STATE="$CLONE.state"
 [[ ! -e $CLONE && ! -e $CLONE_STATE ]] || die "$CLONE or $CLONE_STATE already exists"
 git clone --quiet --no-local -- "$REPO" "$CLONE" >&2 || die "git clone --no-local $REPO $CLONE failed"
 git -C "$CLONE" -c advice.detachedHead=false checkout --quiet --detach "$COMMIT" ||

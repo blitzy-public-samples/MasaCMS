@@ -1,4 +1,5 @@
 // Tests of web's request log line (log-record.v1) and request spans, over an in-memory span exporter.
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // The platform's log-record.v1 validator and activeSpanIds stand in for ajv/dist/2020 and @opentelemetry/api:
 // web resolves only eslint's ajv 6, which has no draft 2020-12, and does not depend on the OTel API.
@@ -10,6 +11,7 @@ import {
   activeSpanIds,
   flushTracing,
   shutdownTracing,
+  startSpan,
   startTracing,
   type MemorySpanExporter,
   type ReadableSpan,
@@ -20,11 +22,13 @@ import {
   createWebLogger,
   ensureTracing,
   logRequest,
+  markPipelineRequest,
   setWebLoggerForTests,
   webLogger,
   withRequestSpan,
   type RequestLogFields,
 } from '@/lib/telemetry';
+import { installRequestScope, type RequestScope } from '@/server/shared';
 import { useTestEnv } from '../helpers/env';
 
 const tracing = vi.hoisted(() => ({ exporter: undefined as MemorySpanExporter | undefined }));
@@ -139,6 +143,46 @@ describe('logRequest', () => {
     expect(line).not.toHaveProperty('error');
   });
 
+  it("claims the custom server's request scope, writing only the request's first line", () => {
+    const lines = captureLines();
+    const storage = new AsyncLocalStorage<RequestScope>();
+    installRequestScope(storage);
+    const scope: RequestScope = { pipeline: false, logged: false };
+
+    storage.run(scope, () => {
+      logRequest(REQUEST);
+      logRequest({ ...REQUEST, statusCode: 500 });
+    });
+
+    expect(scope.logged).toBe(true);
+    expect(lines).toEqual([expect.objectContaining({ statusCode: 200 })]);
+  });
+
+  it('writes an expected refusal at warning severity with its reason and no error', () => {
+    const lines = captureLines();
+
+    logRequest({ ...REQUEST, statusCode: 403, denial: 'missing-credential' });
+
+    expect(lines).toHaveLength(1);
+    const [line] = lines;
+    expect(validateLogRecord(line).errors).toEqual([]);
+    expect(line).toMatchObject({
+      ...REQUEST,
+      statusCode: 403,
+      severity: SEVERITY_BY_LEVEL.warn,
+      message: 'request denied: missing-credential',
+    });
+    expect(line).not.toHaveProperty('error');
+  });
+
+  it('writes a thrown error at error severity even beside a denial', () => {
+    const lines = captureLines();
+
+    logRequest({ ...REQUEST, statusCode: 500, denial: 'forbidden', error: new Error('boom') });
+
+    expect(lines).toEqual([expect.objectContaining({ severity: SEVERITY_BY_LEVEL.error, message: 'request' })]);
+  });
+
   it('writes a thrown error serialized at error severity', () => {
     const lines = captureLines();
     const failure = new Error('boom');
@@ -153,6 +197,20 @@ describe('logRequest', () => {
     expect(line?.error).toMatchObject({ type: 'Error', message: REDACTED, stack: expect.any(String) });
   });
 });
+
+describe('markPipelineRequest', () => {
+  it("marks the custom server's request scope as taken by the pipeline, and is a no-op outside one", () => {
+    const storage = new AsyncLocalStorage<RequestScope>();
+    installRequestScope(storage);
+    const scope: RequestScope = { pipeline: false, logged: false };
+
+    storage.run(scope, markPipelineRequest);
+    expect(() => markPipelineRequest()).not.toThrow();
+
+    expect(scope).toEqual({ pipeline: true, logged: false });
+  });
+});
+
 
 describe('webLogger', () => {
   it('memoises one logger until reset', () => {
@@ -190,14 +248,14 @@ describe('withRequestSpan', () => {
   ])('runs fn in a server span continuing the inbound trace from %s', async (_shape, headers) => {
     let inside: ReturnType<typeof activeSpanIds>;
 
-    const result = await withRequestSpan('GET /admin', headers, async () => {
+    const result = await withRequestSpan('GET', 'page:cusers.list', headers, async () => {
       inside = activeSpanIds();
       return 'rendered';
     });
 
     expect(result).toBe('rendered');
     expect(inside).toMatchObject({ traceId: INBOUND_TRACE_ID, traceSampled: true });
-    const spans = await finishedSpans('GET /admin');
+    const spans = await finishedSpans('GET page:cusers.list');
     expect(spans).toHaveLength(1);
     const [span] = spans;
     expect(span?.kind).toBe(SpanKind.SERVER);
@@ -206,14 +264,50 @@ describe('withRequestSpan', () => {
     expect(span?.parentSpanContext?.spanId).toBe(INBOUND_SPAN_ID);
   });
 
+  it('runs fn in a child of the active span, ignoring the inbound headers', async () => {
+    let outer: ReturnType<typeof activeSpanIds>;
+    let inside: ReturnType<typeof activeSpanIds>;
+
+    await startSpan('GET /opt2/admin/[module]/[screen]', SpanKind.SERVER, () => {
+      outer = activeSpanIds();
+      return withRequestSpan('GET', 'opt2:finance.records', { traceparent: TRACEPARENT }, async () => {
+        inside = activeSpanIds();
+      });
+    });
+
+    const [span] = await finishedSpans('GET opt2:finance.records');
+    expect(span?.kind).toBe(SpanKind.INTERNAL);
+    expect(span?.spanContext()).toMatchObject({ traceId: outer?.traceId, spanId: inside?.spanId });
+    expect(span?.parentSpanContext?.spanId).toBe(outer?.spanId);
+    expect(outer?.traceId).not.toBe(INBOUND_TRACE_ID);
+  });
+
+  it.each([
+    [302, SpanStatusCode.UNSET],
+    [404, SpanStatusCode.UNSET],
+    [503, SpanStatusCode.ERROR],
+  ])('records the http attributes of a request answered %i', async (status, code) => {
+    await withRequestSpan('GET', 'opt2:finance.records', { traceparent: TRACEPARENT }, async (recordStatus) => {
+      recordStatus(status);
+    });
+
+    const [span] = await finishedSpans('GET opt2:finance.records');
+    expect(span?.attributes).toEqual({
+      'http.request.method': 'GET',
+      'http.route': 'opt2:finance.records',
+      'http.response.status_code': status,
+    });
+    expect(span?.status.code).toBe(code);
+  });
+
   it('propagates a rejection and still ends the span', async () => {
     const failure = new Error('boom');
 
-    await expect(withRequestSpan('POST /admin', { traceparent: TRACEPARENT }, () => Promise.reject(failure))).rejects.toBe(
-      failure,
-    );
+    await expect(
+      withRequestSpan('POST', 'redirect:cusers.update', { traceparent: TRACEPARENT }, () => Promise.reject(failure)),
+    ).rejects.toBe(failure);
 
-    const spans = await finishedSpans('POST /admin');
+    const spans = await finishedSpans('POST redirect:cusers.update');
     expect(spans).toHaveLength(1);
     expect(spans[0]?.ended).toBe(true);
     expect(spans[0]?.status.code).toBe(SpanStatusCode.ERROR);
@@ -223,7 +317,7 @@ describe('withRequestSpan', () => {
     installEnv(overrides);
     const lines = captureLines();
 
-    const inside = await withRequestSpan('GET /admin', { traceparent: TRACEPARENT }, async () => {
+    const inside = await withRequestSpan('GET', 'page:cusers.list', { traceparent: TRACEPARENT }, async () => {
       logRequest(REQUEST);
       return activeSpanIds();
     });

@@ -146,9 +146,16 @@ type SessionValues = Required<
 /** The described user fields and role lists `setUserStruct` receives. */
 type DescribedUser = LegacyUserFields & Pick<LegacyUserStruct, 'memberships' | 'membershipids'>;
 
-/** One session effect: `known` may answer from the located row without a lock, `locked` runs on the row locked in the tenant holding it, `absent` when no row exists. */
+/** A session effect that leaves the row unchanged; `run` holds the row locked FOR SHARE, so concurrent ones never queue on it. */
+interface SharedEffect<T> {
+  applies(row: SessionRow): boolean;
+  run(tx: TenantTx, row: SessionRow): Promise<T>;
+}
+
+/** One session effect: `known` may answer from the located row without a lock, `shared` runs while it applies to the row, `locked` runs on the row locked in the tenant holding it, `absent` when no row exists. */
 interface SessionEffect<T> {
   known?(located: LocatedSession): T | undefined;
+  shared?: SharedEffect<T>;
   locked(tx: TenantTx, prior: SessionRow): Promise<T>;
   absent(): Promise<T>;
 }
@@ -275,15 +282,24 @@ function loginValues(prior: SessionRow | undefined, snapshot: LoginSnapshot, sit
   };
 }
 
-/** Runs `effect` as `known` answers the located row, else on its row locked FOR UPDATE in its tenant, else as `absent`, once more after a concurrent create. */
+/** Runs `effect` as `known` answers the located row, else as `shared` on its row locked FOR SHARE while it applies, else on its row locked FOR UPDATE in its tenant, else as `absent`, once more after a concurrent create. */
 async function sessionEffect<T>(deps: SessionDeps, sessionId: string, effect: SessionEffect<T>): Promise<T> {
   const { db, repo } = deps;
+  const { shared } = effect;
   let retried = false;
   for (;;) {
     const located = await locateSession(deps, sessionId);
     if (located !== undefined) {
       const known = effect.known?.(located);
       if (known !== undefined) return known;
+      if (shared?.applies(located.row) === true) {
+        // Its own transaction: two effects upgrading a share lock to FOR UPDATE would deadlock.
+        const answer = await withTenant(db, located.tenantId, async (tx): Promise<{ value: T } | undefined> => {
+          const row = await repo.lockSession(tx, sessionId, 'share');
+          return row !== null && shared.applies(row) ? { value: await shared.run(tx, row) } : undefined;
+        });
+        if (answer !== undefined) return answer.value;
+      }
       const outcome = await withTenant(db, located.tenantId, async (tx): Promise<T | typeof NO_ROW> => {
         const prior = await repo.lockSession(tx, sessionId, 'update');
         return prior === null ? NO_ROW : effect.locked(tx, prior);
@@ -418,11 +434,21 @@ export async function adoptLegacySession(deps: SessionDeps, describe: LegacyDesc
     epoch: nextEpoch(prior),
   });
   const adopted = (tenantId: string, epoch: number): AdoptedSession => ({ sessionId, tenantId, epoch, mode: opts.mode });
+  const sameSecret = (row: SessionRow): boolean => row.state === 'active' && row.csrf_secret === description.csrfSecretKey;
+  const unchanged = (row: SessionRow): boolean => sameSecret(row) && row.mode === opts.mode && jarRefOf(row) === row.jar_ref;
 
   return sessionEffect(deps, sessionId, {
+    shared: {
+      applies: unchanged,
+      async run(tx, row) {
+        await importTokens(tx);
+        return adopted(tx.tenantId, Number(row.epoch));
+      },
+    },
     async locked(tx, prior) {
-      if (prior.state === 'active' && prior.csrf_secret === description.csrfSecretKey) {
-        await repo.updateSession(tx, sessionId, { mode: opts.mode, jar_ref: jarRefOf(prior) });
+      if (sameSecret(prior)) {
+        // A concurrent adoption may have set the same mode and jar since the row was located.
+        if (!unchanged(prior)) await repo.updateSession(tx, sessionId, { mode: opts.mode, jar_ref: jarRefOf(prior) });
         await importTokens(tx);
         return adopted(tx.tenantId, Number(prior.epoch));
       }

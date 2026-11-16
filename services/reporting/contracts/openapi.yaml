@@ -569,17 +569,10 @@ paths:
           $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
-  /internal/v1/tasks/exports/{exportId}/run:
-    parameters:
-      - name: exportId
-        in: path
-        required: true
-        description: Id of the export job the task runs.
-        schema:
-          $ref: '#/components/schemas/CfUuid'
+  /internal/v1/tasks/exports/run:
     post:
       operationId: runExportTask
-      summary: Runs one export job through running to done or failed; a running job an interrupted delivery left is reclaimed and run again, and a done or failed job is left unchanged.
+      summary: Runs the export job its payload names through running to done or failed; a running job an interrupted delivery left is reclaimed and run again, and a done or failed job is left unchanged.
       tags:
         - tasks
       x-opt2-transport: cloud-tasks
@@ -612,7 +605,7 @@ paths:
                 $ref: '#/components/schemas/ExportTaskResult'
         '400':
           $ref: '#/components/responses/BadRequest'
-          description: A malformed task body, or a tenant under which the job is not visible.
+          description: A malformed task body, or a payload naming a job not visible under the body's tenant.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2016,7 +2009,7 @@ components:
       properties:
         jobId:
           $ref: '#/components/schemas/CfUuid'
-          description: Equal to the path's `exportId`.
+          description: Id of the export job the task runs, looked up under the wire body's `tenantId`.
         asOf:
           type: string
           format: date

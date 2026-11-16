@@ -263,7 +263,7 @@ function sendPush(who: RoleSubject, credentials: Record<string, string>): Promis
 function runTask(job: Pick<ExportJobRow, 'job_id'>, tenantId: string = TENANT_A.tenantId): ProbeRequest {
   return {
     method: 'POST',
-    url: RUN_QUEUE.targetPath.replace('{exportId}', job.job_id),
+    url: RUN_QUEUE.targetPath,
     payload: { ...queuedRun(t, job.job_id), tenantId },
   };
 }
@@ -328,7 +328,7 @@ function expectations(): Readonly<Record<string, Expectation>> {
     'POST /internal/v1/task-queues/:queue/ensure': queueControl('ensure'),
     'POST /internal/v1/task-queues/:queue/pause': queueControl('pause'),
     'POST /internal/v1/task-queues/:queue/resume': queueControl('resume'),
-    'POST /internal/v1/tasks/exports/:exportId/run': {
+    'POST /internal/v1/tasks/exports/run': {
       declared: { transport: 'cloud-tasks', requires: ['service:tasks-invoker'] },
       request: () => runTask(doneA),
       allow: ['service:tasks-invoker'],

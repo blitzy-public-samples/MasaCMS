@@ -132,6 +132,27 @@ function unavailable(reason: UnavailableReason): UnavailableDestination {
   return Object.freeze({ kind: 'unavailable', reason });
 }
 
+/** What serves a routed request: its callee, legacy, or the owner an unavailable target has; undefined without an entry. */
+function ownerOf(result: RouteKeyResult, entry: CutoverEntry | undefined, destination: RoutedOutcome['destination']): string | undefined {
+  if (destination.kind === 'target') return destination.service;
+  if (destination.kind === 'legacy') return 'legacy';
+  if (entry === undefined) return undefined;
+  // Every target admin action is web's, whatever service owns its entry.
+  return result.family === 'admin' ? 'web' : entry.owningService;
+}
+
+/** Fail context of a routed request for `url`, with the route key and owner its fail-closed line names. */
+export function routedFailContext(
+  result: RouteKeyResult,
+  entry: CutoverEntry | undefined,
+  destination: RoutedOutcome['destination'],
+  url: string,
+): FailContext {
+  const context: FailContext = { ...failContextFor(result, url), route: entry?.route ?? result.key };
+  const owner = ownerOf(result, entry, destination);
+  return owner === undefined ? context : { ...context, owner };
+}
+
 /** A halted request's entry: its unhalted key's entry on legacy, a writer as `legacy-write` so its write window still opens. */
 function haltedEntry(entry: CutoverEntry): CutoverEntry {
   return Object.freeze({ ...entry, state: 'legacy', kind: entry.kind === 'write' ? 'legacy-write' : entry.kind });
@@ -256,7 +277,7 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         result,
         entry,
         destination,
-        failContext: failContextFor(result, request.url),
+        failContext: routedFailContext(result, entry, destination, request.url),
         urlScope,
         scanFailed,
       });

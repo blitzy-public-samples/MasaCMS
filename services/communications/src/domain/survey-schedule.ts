@@ -51,7 +51,7 @@ export function withLegacyRunTime(row: ScheduledTaskRow): ScheduledTaskRow {
   return { ...row, schedule_time: legacyRunTime(row.schedule_time) };
 }
 
-/** The row of one planned task; its route is resolved from the id the repository assigns, which a reminder's route names. */
+/** The row of one planned task, routed to its queue's fixed task route. */
 function newScheduledTask(task: PlannedSurveyTask, serviceUrls: Record<string, string>): NewScheduledTask {
   return {
     taskName: task.legacyTaskName,
@@ -62,7 +62,7 @@ function newScheduledTask(task: PlannedSurveyTask, serviceUrls: Record<string, s
     sourceId: task.surveyId,
     n: task.n ?? null,
     scheduleTime: task.scheduleTime,
-    targetRoute: (scheduledTaskId) => taskTarget({ queue: task.queue, surveyId: task.surveyId, scheduledTaskId }, serviceUrls).route,
+    targetRoute: taskTarget(task.queue, serviceUrls).route,
     scheduleVersion: task.scheduleVersion,
     origin: EVENT_ORIGIN,
   };
@@ -145,12 +145,11 @@ export async function enqueueScheduledTasks(
       // A stored row keeps no site, and only a launch payload names it.
       const site = row.kind === 'survey-launch' ? (siteId ??= await registeredSite(deps, tenantId)) : '';
       const source = { kind: row.kind, surveyId: row.source_id, siteId: site, scheduleVersion: row.schedule_version, n: row.reminder_n };
-      const target = taskTarget({ queue: row.queue, surveyId: row.source_id, scheduledTaskId: row.scheduled_task_id }, deps.serviceUrls);
       await deps.taskPort.create({
         queue: row.queue,
         name: row.queue_task_name,
         scheduleTime: row.schedule_time,
-        url: target.url,
+        url: taskTarget(row.queue, deps.serviceUrls).url,
         body: taskPayload(source, row.scheduled_task_id),
         deadlineS: QUEUES[row.queue].deadlineS,
         tenantId,

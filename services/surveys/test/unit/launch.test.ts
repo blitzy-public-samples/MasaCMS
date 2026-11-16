@@ -126,18 +126,17 @@ describe('surveys fixture CRUD and the surveys-launch task', () => {
     surveyId: string,
     { tenantId, scheduleVersion }: { tenantId: string; scheduleVersion: number },
   ): Promise<InjectRequest> {
-    const path = LAUNCH_TASK_PATH.replace(':surveyId', surveyId);
     const token = await mintTasksInvokerToken({ audience: t.env.OPT2_SERVICE_NAME });
     const payload = taskWireBody({
       queue: LAUNCH_QUEUE,
       name: `opt2-survey-${surveyId}-launch`,
       scheduleTime: t.clock.now(),
-      url: `${t.env.OPT2_SERVICE_URLS[t.env.OPT2_SERVICE_NAME] ?? ''}${path}`,
+      url: `${t.env.OPT2_SERVICE_URLS[t.env.OPT2_SERVICE_NAME] ?? ''}${LAUNCH_TASK_PATH}`,
       deadlineS: 600,
       tenantId,
       body: { surveyId, siteId: TENANT_A.siteId, scheduleVersion },
     });
-    return { method: 'POST', url: path, headers: { authorization: `Bearer ${token}` }, payload };
+    return { method: 'POST', url: LAUNCH_TASK_PATH, headers: { authorization: `Bearer ${token}` }, payload };
   }
 
   async function scheduledSurvey(): Promise<{ surveyId: string; scheduleVersion: number }> {
@@ -352,15 +351,6 @@ describe('surveys fixture CRUD and the surveys-launch task', () => {
           const request = await launchRequest(id, { tenantId: TENANT_A.tenantId, scheduleVersion });
           return { ...request, payload: { ...request.payload, queue: '' } };
         },
-      ],
-      [
-        'a task URL naming another survey than its payload',
-        'mismatch',
-        [TENANT_A.tenantId],
-        async (id, scheduleVersion) => ({
-          ...(await launchRequest(id, { tenantId: TENANT_A.tenantId, scheduleVersion })),
-          url: LAUNCH_TASK_PATH.replace(':surveyId', UNKNOWN_SURVEY_ID),
-        }),
       ],
       ['a payload outside LaunchPayload', 'not-visible', [TENANT_A.tenantId], (id) => launchRequest(id, { tenantId: TENANT_A.tenantId, scheduleVersion: 0 })],
     ])('acknowledges %s as ignored (%s) and launches nothing, so the queue stops retrying it', async (_name, reason, tenants, buildRequest) => {

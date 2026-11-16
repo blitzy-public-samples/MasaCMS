@@ -1,6 +1,6 @@
 // Stage records of harness/repro/test-all.sh and the test-all report assembled from them and the stage reports.
-import { existsSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { constants, existsSync } from 'node:fs';
+import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { z } from '@opt2/platform/service-kit';
@@ -610,7 +610,7 @@ export function collectUnmet(
     }
   }
 
-  // A pending-run cell is not green, so a run that leaves one cannot report every acceptance item met.
+  // Unmet and pending-run matrix cells become unmet items.
   for (const row of matrix) {
     for (const column of MATRIX_COLUMNS) {
       const cell = row[column];
@@ -746,6 +746,13 @@ async function readSource<T>(file: string, schema: z.ZodType<T>, env: EnvLike): 
   return { path: displayPath(file, env), data: existsSync(file) ? await readJson(file, schema) : null };
 }
 
+/** Reads `${OPT2_STATE_DIR}/fixtures.json` as a {@link FixtureReport}; throws when it is unreadable or invalid. */
+function readFixtureReport(env: EnvLike): FixtureReport {
+  if (!existsSync(path.join(stateDir(env), 'fixtures.json'))) return { available: null, reason: 'fixtures.json missing' };
+  const status = readFixtureStatus(env);
+  return { available: status.available, reason: status.reason };
+}
+
 /** Reads every stage record, stage report, vitest result and the fixture status the report is built from. */
 export async function readTestAllInputs(env: EnvLike, generatedAt: string): Promise<TestAllInputs> {
   const reports = reportsDir(env);
@@ -764,11 +771,6 @@ export async function readTestAllInputs(env: EnvLike, generatedAt: string): Prom
     readSource(path.join(stateDir(env), 'security', 'summary.json'), securityInputSchema, env),
   ]);
   const fixturesFile = path.join(stateDir(env), 'fixtures.json');
-  let fixtures: FixtureReport = { available: null, reason: 'fixtures.json missing' };
-  if (existsSync(fixturesFile)) {
-    const status = readFixtureStatus(env);
-    fixtures = { available: status.available, reason: status.reason };
-  }
   return {
     records: records.map((record) => record.data),
     parity,
@@ -776,7 +778,7 @@ export async function readTestAllInputs(env: EnvLike, generatedAt: string): Prom
     isolation,
     events,
     security,
-    fixtures,
+    fixtures: readFixtureReport(env),
     generatedAt,
     evidence: {
       fixtures: displayPath(fixturesFile, env),
@@ -790,8 +792,10 @@ const RECORD_USAGE =
   'test-all record --stage <n> --result <result> --started-at <iso> --finished-at <iso> [--exit-code <n>] ' +
   '[--evidence <path>]... [--reason <text>] [--unmet <item>=<reason>]... [--package <dir>=<exitCode>]...';
 const ASSEMBLE_USAGE = 'test-all [assemble] [--exit-code] [--no-write]';
+const CHECK_USAGE = 'test-all check';
 const HELP = `${ASSEMBLE_USAGE} [--help]
 ${RECORD_USAGE} [--help]
+${CHECK_USAGE} [--help]
 
 record    Writes \${OPT2_STATE_DIR}/test-all/stage-<n>.json for one stage of harness/repro/test-all.sh. Recording
           stage 0 starts a run: it removes the records of stages 1–${LAST_STAGE} left by an earlier run.
@@ -810,13 +814,15 @@ assemble  (default) Builds test-all.json and test-all.md in OPT2_REPORTS_DIR (de
               .map(([code, meaning]) => `${code} ${meaning}`)
               .join('; ')}
             --no-write    print the summary only; write no report
+check     Validates \${OPT2_STATE_DIR}/fixtures.json, when present, and creates or confirms a writable OPT2_REPORTS_DIR.
 
 Output: one JSON summary line on stdout. Exit: 0 written (or the report's code with --exit-code), 1 a failure,
 2 usage error.
 
 Examples (from harness/):
   npm run report:test-all -- record --stage 0 --result pass --started-at 2026-06-30T10:00:00Z --finished-at 2026-06-30T10:00:42Z
-  npm run report:test-all -- --exit-code`;
+  npm run report:test-all -- --exit-code
+  npm run report:test-all -- check`;
 
 function required(flag: string, value: string | undefined): string {
   if (value === undefined || value === '') throw new UsageError(`${flag} is required`, RECORD_USAGE);
@@ -923,10 +929,26 @@ export async function assemble(argv: string[], deps: MainDeps = {}): Promise<Cli
   };
 }
 
-/** CLI entry: `record` writes one stage record; `assemble`, the default, writes the test-all report. */
+/** `check` subcommand: validates fixtures.json with {@link readFixtureReport} and ensures a writable reports directory. */
+export async function checkInputs(argv: string[], deps: MainDeps = {}): Promise<CliOutcome> {
+  parseFlags(argv, { options: {}, usage: CHECK_USAGE, help: HELP });
+  const env = deps.env ?? process.env;
+  const fixtures = readFixtureReport(env);
+  const dir = reportsDir(env);
+  try {
+    await mkdir(dir, { recursive: true });
+    await access(dir, constants.W_OK);
+  } catch (err) {
+    throw new Error(`OPT2_REPORTS_DIR ${dir} is not a writable directory: ${(err as Error).message}`, { cause: err });
+  }
+  return { summary: { fixtures, reportsDir: displayPath(dir, env) } };
+}
+
+/** CLI entry: `record` writes one stage record; `check` validates a run's inputs; `assemble`, the default, writes the report. */
 export async function main(argv: string[], deps: MainDeps = {}): Promise<CliOutcome> {
   const [command, ...rest] = argv;
   if (command === 'record') return recordStage(rest, deps);
+  if (command === 'check') return checkInputs(rest, deps);
   if (command === 'assemble') return assemble(rest, deps);
   return assemble(argv, deps);
 }

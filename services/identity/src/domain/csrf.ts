@@ -237,6 +237,9 @@ export async function importUsedTokens(
     const key = claimKey(token);
     if (!byKey.has(key)) byKey.set(key, usedAt);
   }
+  if (byKey.size === 0) return 0;
+  // A used claim never returns to pending, so keys already used need no lock and a repeat import costs this one read.
+  for (const { token } of await repo.listCsrfClaims(tx, sessionId, { state: 'used' })) byKey.delete(token);
   let imported = 0;
   // Sorted as `settleLegacy` visits keys, so the two never lock one session's claims in opposite orders.
   for (const [key, usedAt] of [...byKey.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {

@@ -8323,7 +8323,7 @@
     }
   },
   "extractedFrom": "git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f",
-  "generatedAt": "2026-11-10T22:29:54.456Z",
+  "generatedAt": "2026-11-16T19:21:07.799Z",
   "generatedBy": "harness/src/inventory/cloc.ts",
   "languages": [
     {
@@ -8422,7 +8422,7 @@
       ]
     }
   ],
-  "measuredAt": "2026-11-10T22:29:54.456Z",
+  "measuredAt": "2026-11-16T19:21:07.799Z",
   "measuredWith": "cloc 1.98",
   "provenance": "measured",
   "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
@@ -8431,18 +8431,13 @@
     "files": 1179
   },
   "unfiltered": {
-    "code": 362994,
+    "code": 368039,
     "excludes": [
-      "vendor",
+      "core/vendor",
       "node_modules",
-      ".git",
-      "package-lock.json",
-      "*.min.js",
-      "*.min.css",
-      "*.map"
+      ".git"
     ],
-    "files": 1243,
-    "notMatchD": "(^|/)(vendor|node_modules|\\.git)(/|$)",
-    "notMatchF": "(^|/)(package-lock\\.json|[^/]+\\.min\\.(js|css)|[^/]+\\.map)$"
+    "files": 1350,
+    "notMatchD": "(^|/)(core/vendor|node_modules|\\.git)(/|$)"
   }
 }

@@ -533,6 +533,26 @@ describe('restart', () => {
     expect(readUp().processes.people.pid).toBe(5555);
   });
 
+  it.each<[string, boolean, string | undefined]>([
+    ['the start time of the new pid in place of the previous one', true, '3000'],
+    ['no start time, dropping the previous one, when the new pid is already gone', false, undefined],
+  ])('records %s', async (_label, newPidListed, expected) => {
+    const doc = upDoc();
+    doc.processes.people.startTime = '1000';
+    writeUp(doc);
+    const procRoot = ownedProc();
+    if (newPidListed) writeFakeProcess(procRoot, 5555, { startTime: '3000' });
+    const spawn = fakeLoggedSpawn().inject;
+    const control = createProcessControl({ stateDir, procRoot, kill: fakeKill(1), spawn, fetch: healthy as never });
+
+    await control.restart('people', { timeoutMs: 1_000 });
+
+    const { people } = readUp().processes;
+    expect(people.pid).toBe(5555);
+    expect(people.startTime).toBe(expected);
+    expect(Object.hasOwn(people, 'startTime')).toBe(newPidListed);
+  });
+
   it('keeps up.json at mode 0600 under umask 022 and leaves no temporary file', async () => {
     writeUp(upDoc());
     chmodSync(path.join(stateDir, 'up.json'), 0o600);

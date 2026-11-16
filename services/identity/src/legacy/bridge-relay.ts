@@ -40,12 +40,13 @@ export function createBridgeRelay(client: ServiceClient): BridgeRelay {
       const json: MarkUsedRequestBody = {
         tokens: tokens.map((t) => ({ token: t.token, usedAt: formatSerializerDate(t.usedAt) })),
       };
-      // userToken stays the client default: the gateway authorises the call by identity's invocation credential.
+      // No user token: the gateway authorises the call by identity's invocation credential alone, and a forwarded one may have expired.
       const { status } = await client.request({
         service: GATEWAY_SERVICE,
         method: 'POST',
         path: `/internal/v1/legacy-sessions/${encodeURIComponent(sessionId)}:mark-used`,
         json,
+        userToken: null,
       });
       if (APPLIED_STATUSES.has(status)) return { applied: true };
       if (status === NOT_MAPPED_STATUS) return { applied: false };

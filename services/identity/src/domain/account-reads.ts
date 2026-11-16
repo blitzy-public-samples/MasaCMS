@@ -1,4 +1,4 @@
-/** Owner reads of identity's account, membership, strike and pool-group rows for people: `getAccount`, `lookupAccounts`, `lookupAccountsAllSites`, `countAccounts`, `lookupUsernameCandidates`, `lookupMemberships`, `loadLoginBlock` and `listSiteGroups`. */
+/** Owner reads of identity's account, membership, strike and pool-group rows for people: `getAccount`, `lookupAccounts`, `lookupAccountsAllSites`, `countAccounts`, `lookupUsernameCandidates`, `lookupMemberships`, `loadLoginBlock`, `listSiteGroups` and `listSiteGroupsV2`. */
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { UserClaims } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
@@ -7,7 +7,7 @@ import { localTimestamp } from '@opt2/platform/outbox';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
 import { registeredTenants, registryEntryForTenant, tenantIdForSite, withTenant, type TenantDb, type TenantRegistryEntry } from '@opt2/platform/tenancy';
 import type { components } from '../generated/openapi.js';
-import { charKey, type AccountFilter, type AccountRecordRow, type IdentityRepository, type PoolGroupRow } from '../repo/repository.js';
+import { charKey, type AccountFilter, type AccountRecordRow, type IdentityRepository, type ListPage, type ListedPage, type PoolGroupRow } from '../repo/repository.js';
 import {
   DEFAULT_STRIKE_SETTINGS,
   blockedUntil,
@@ -81,6 +81,8 @@ export interface AccountReads {
   loadLoginBlock(db: TenantDb, claims: UserClaims, userId: string, input: LoginBlockInput): Promise<LoginBlock | null>;
   /** `listSiteGroups`: the groups of the site's private or public user pool, as `getPrivateGroups`/`getPublicGroups` list them. */
   listSiteGroups(db: TenantDb, claims: UserClaims, isPublic: PoolVisibility): Promise<SiteGroup[]>;
+  /** `listSiteGroupsV2`: the `page` window of the `listSiteGroups` groups and their total. */
+  listSiteGroupsV2(db: TenantDb, claims: UserClaims, isPublic: PoolVisibility, page: ListPage): Promise<ListedPage<SiteGroup>>;
 }
 
 /** A `timestamp without time zone` value as the contract's `LocalTimestamp`. */
@@ -351,16 +353,29 @@ export function createAccountReads(deps: AccountReadsDeps): AccountReads {
     return (await readAccountsIn(db, tenants, [userId]))[0] ?? null;
   }
 
-  async function listSiteGroups(db: TenantDb, claims: UserClaims, isPublic: PoolVisibility): Promise<SiteGroup[]> {
+  /** The user pool whose groups the token site lists; null when its registry entry or the pool site's settings join gives none. */
+  async function listedGroupPool(db: TenantDb, claims: UserClaims, isPublic: PoolVisibility): Promise<{ siteId: string; tenant: string } | null> {
     const entry = await registryEntryForTenant(db, claims.tid);
     const pool = entry === null ? null : userPool(entry, isPublic);
-    if (entry === null || pool === null) return [];
+    if (entry === null || pool === null) return null;
     // Legacy inner-joins the pool site's own settings row on that pool id, so a pool site pooling elsewhere lists nothing.
     const poolEntry = pool.tenant === entry.tenantId ? entry : await registryEntryForTenant(db, pool.tenant);
     const own = poolEntry === null ? null : userPool(poolEntry, isPublic);
-    if (own === null || own.siteId.toLowerCase() !== pool.siteId.toLowerCase()) return [];
+    return own === null || own.siteId.toLowerCase() !== pool.siteId.toLowerCase() ? null : pool;
+  }
+
+  async function listSiteGroups(db: TenantDb, claims: UserClaims, isPublic: PoolVisibility): Promise<SiteGroup[]> {
+    const pool = await listedGroupPool(db, claims, isPublic);
+    if (pool === null) return [];
     const rows = await withGatedTenant(db, pool.tenant, (tx) => repo.listPoolGroups(tx, pool.siteId, isPublic), gateBudget);
     return rows.map(siteGroup);
+  }
+
+  async function listSiteGroupsV2(db: TenantDb, claims: UserClaims, isPublic: PoolVisibility, page: ListPage): Promise<ListedPage<SiteGroup>> {
+    const pool = await listedGroupPool(db, claims, isPublic);
+    if (pool === null) return { items: [], total: 0 };
+    const { items, total } = await withGatedTenant(db, pool.tenant, (tx) => repo.pagePoolGroups(tx, pool.siteId, isPublic, page), gateBudget);
+    return { items: items.map(siteGroup), total };
   }
 
   return Object.freeze({
@@ -372,5 +387,6 @@ export function createAccountReads(deps: AccountReadsDeps): AccountReads {
     lookupMemberships,
     loadLoginBlock,
     listSiteGroups,
+    listSiteGroupsV2,
   });
 }

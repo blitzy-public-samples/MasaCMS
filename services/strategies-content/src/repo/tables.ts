@@ -50,7 +50,7 @@ export type ContentUnit = (typeof CONTENT_UNITS)[number];
 // file_object carries no unit: table ownership lists it only as a new table and no cut-over group gates it, so a
 // unit of its own would stay legacy-authoritative forever; its target writes share the content.file transaction gate.
 /** Content tables without a unit: never gated or mapped from a legacy table, but still written with changelog rows. */
-export const NON_UNIT_TABLE_NAMES = ['file_object', 'group_projection', 'permission_projection', 'membership_projection'] as const;
+export const NON_UNIT_TABLE_NAMES = ['file_object', 'staged_object', 'group_projection', 'permission_projection', 'membership_projection'] as const;
 
 type NonUnitTableName = (typeof NON_UNIT_TABLE_NAMES)[number];
 type TableOfUnit<U extends string> = U extends `content.${infer T}` ? T : never;
@@ -578,6 +578,24 @@ const FILE_OBJECT_COLUMNS = [
 /** `content.file_object`: the stored-object manifest of the `content-files` bucket. */
 export const FILE_OBJECT = nonUnitTable('file_object', FILE_OBJECT_COLUMNS, ['object_key']);
 
+const STAGED_OBJECT_COLUMNS = [
+  TENANT_ID,
+  { name: 'stage_id', type: 's' },
+  { name: 'object_key', type: 's' },
+  { name: 'kind', type: 's' },
+  { name: 'file_id', type: 's' },
+  { name: 'variant', type: 's' },
+  { name: 'ext', type: 's' },
+  { name: 'size', type: 'i' },
+  { name: 'sha256', type: 's' },
+  { name: 'content_type', type: 's' },
+  { name: 'state', type: 's' },
+  { name: 'recorded_at', type: 't' },
+] as const satisfies Columns;
+
+/** `content.staged_object`: the durable publication intents of `content-files` objects. */
+export const STAGED_OBJECT = nonUnitTable('staged_object', STAGED_OBJECT_COLUMNS, ['stage_id']);
+
 const APPROVAL_CHAIN_COLUMNS = [
   TENANT_ID,
   { name: 'siteid', type: 's' },
@@ -939,6 +957,7 @@ export const UNIT_TABLES: TablesForUnits<typeof CONTENT_UNITS> = [
 export const OWNED_TABLES: readonly ContentTableDefinition[] = [
   ...UNIT_TABLES,
   FILE_OBJECT,
+  STAGED_OBJECT,
   GROUP_PROJECTION,
   PERMISSION_PROJECTION,
   MEMBERSHIP_PROJECTION,

@@ -56,6 +56,7 @@ import { ContentNotFoundError, type Actor, type SiteContentSettings } from '../d
 import type { LegacySiteUrlConfig } from '../legacy/content-urls.js';
 import { contentEntities, getContentEntityConfig, isContentEntity } from '../legacy/jsonapi-entities.js';
 import { contentApiSerializer, jsonApiEndpoint, type JsonApiRequestContext } from '../legacy/jsonapi-serializers.js';
+import { createSitesClient, type SitesClient } from '../legacy/sites-client.js';
 import type { ContentRouteContext } from './index.js';
 import {
   CONTENT_METHOD_HANDLERS,
@@ -740,6 +741,16 @@ function allowActionFor(actor: Actor): JsonApiRequestContext['allowAction'] {
   };
 }
 
+/**
+ * getCustomImageSizeIterator within one request: the first image entity's site sizes, read once and reused for every
+ * later entity, as `request.muraCustomImageIterator` is (jsonApiUtility.cfc:3574-3586).
+ */
+function requestImageSizes(sites: SitesClient): JsonApiRequestContext['customImageSizes'] {
+  // Legacy's own per-request reuse, kept for unchanged behaviour; the Minimal Change rule's caching ban does not bind this refactor.
+  let read: ReturnType<SitesClient['customImageSizes']> | undefined;
+  return (siteId) => (read ??= sites.customImageSizes(siteId));
+}
+
 /** Everything one dispatched request reads beside its resolution. */
 interface CallScope {
   request: FastifyRequest;
@@ -750,6 +761,7 @@ interface CallScope {
   tenantId: string;
   site: TenantRegistryEntry;
   apiSite: string;
+  sites: SitesClient;
 }
 
 /** The handler call of a served resolution. */
@@ -781,8 +793,7 @@ async function callOf(resolved: ResolvedJsonApiCall, scope: CallScope): Promise<
     user: { loggedIn: signedIn, systemUser: signedIn && (actor.s2 || actor.roles.includes(Roles.systemUser)) },
     allowAction: allowActionFor(actor),
     site: urls,
-    // The site's custom image sizes are programs-sites' timagesizes rows, which no event or operation open to this service carries.
-    customImageSizes: [],
+    customImageSizes: requestImageSizes(scope.sites),
   };
   const save = resolved.target.kind === 'entity' && resolved.target.operation === 'save';
   // save's and delete's `var csrfcontext=arguments.id`, save's id defaulting to `new` (jsonApiUtility.cfc:1903-1906, 3259-3262).
@@ -905,6 +916,7 @@ export function registerJsonApiRoutes(
   settings: JsonApiLegacySettings = jsonApiLegacySettings(),
 ): void {
   const snapshots = new WeakMap<FastifyRequest, Promise<TenantRegistryEntry[]>>();
+  const sites = createSitesClient(app.opt2.client);
 
   /** The request's single registry read, which the Origin echo and the resolution share. */
   function registryOf(request: FastifyRequest): Promise<TenantRegistryEntry[]> {
@@ -983,7 +995,7 @@ export function registerJsonApiRoutes(
     const apiSite = lookup(resolved.apiSiteId)?.siteId ?? resolved.apiSiteId;
     // The token's tenant; a browser call without a session token is anonymous in the verified registry's tenant of its site.
     const tenantId = user?.tid ?? site.tenantId;
-    const scope: CallScope = { request, reply, ctx, settings, tenantId, site, apiSite };
+    const scope: CallScope = { request, reply, ctx, settings, tenantId, site, apiSite, sites };
     return sendLegacyResponse(reply, await dispatch(resolved, target.fn, scope));
   }
 

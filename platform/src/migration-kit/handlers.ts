@@ -64,7 +64,7 @@ import {
 import { OUTBOX_TABLE, outboxDrainCounts, registryTenants, type OutboxDrainCounts } from '../outbox/index.js';
 import { INBOX_TABLE, isTopicName } from '../events/index.js';
 import { Roles, type Opt2RouteConfig } from '../auth/index.js';
-import { z, type FastifyInstance, type FastifyRequest } from '../service-kit/index.js';
+import { z, type FastifyInstance, type FastifyRequest, type Opt2RouteLogConfig } from '../service-kit/index.js';
 import { LegacyApiError } from '../legacy-compat/index.js';
 import { serializeError } from '../logging/index.js';
 
@@ -241,6 +241,8 @@ export interface GateResponse {
 }
 
 const ROUTE: { opt2: Opt2RouteConfig } = { opt2: { transport: 'service', requires: [Roles.platformMigration] } };
+/** Config of `GET /changes`, which the reverse projector polls, so its successful requests log at debug. */
+const POLLED_ROUTE: { opt2: Opt2RouteConfig; opt2Log: Opt2RouteLogConfig } = { ...ROUTE, opt2Log: { successLevel: 'debug' } };
 const EXPORT_CURSOR_COLUMN = '__opt2_export_key';
 const ROW_HASH_COLUMN = 'legacy_row_hash';
 const OCCURRENCE_COLUMN = 'occurrence';
@@ -1038,7 +1040,7 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     handle(request, () => exportUnit(exportQuerySchema.parse(request.query))),
   );
 
-  app.get(`${MIGRATION_PATH_PREFIX}/changes`, { config: ROUTE }, async (request): Promise<ChangesResponse> => {
+  app.get(`${MIGRATION_PATH_PREFIX}/changes`, { config: POLLED_ROUTE }, async (request): Promise<ChangesResponse> => {
     const page = await handle(request, async () => {
       const query = changesQuerySchema.parse(request.query);
       return readChanges(db, {

@@ -5,7 +5,7 @@ import { request as httpRequest, type ClientRequest } from 'node:http';
 import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import replyFrom from '@fastify/reply-from';
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
+import Fastify, { LogController, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { stripInboundAuthHeaders, type InvocationMinter, type InvocationTarget } from '@opt2/platform/auth';
 import {
@@ -14,7 +14,7 @@ import {
   apiUnavailableResponse,
   legacyHeaders,
 } from '@opt2/platform/legacy-compat';
-import { serializeError } from '@opt2/platform/logging';
+import { createLogger, fastifyLoggerOptions, serializeError, validateLogRecord, type Logger } from '@opt2/platform/logging';
 import type { WritePositions } from '@opt2/platform/migration-kit';
 import {
   MemorySpanExporter,
@@ -41,8 +41,13 @@ const USER_TOKEN = 'user-token-abc';
 const SESSION_ID = 'sess-1';
 const REQUEST_ID = 'gw-req-7';
 const SITE_HOST = 'site.example';
-const API: FailContext = { surface: 'api', method: 'findOne', params: { siteid: 'default' } };
+const API: FailContext = { surface: 'api', method: 'findOne', params: { siteid: 'default' }, route: 'api:content.findone' };
 const ADMIN: FailContext = { surface: 'admin' };
+// forwardToTarget's lines other than fail-closed ones, naming the harness's default callee and session mode.
+const NOT_RECORDED = 'target write position from people (target-primary) not recorded';
+const NOT_RELEASED = 'target write declaration for people (target-primary) not released';
+const SETTLE_FAILED = 'target forward to people (target-primary) onSettled failed';
+const UNCERTAIN = 'target exchange with people (target-primary) ended uncertainly; in-flight registration kept';
 const ACTIVE_TRACE = { traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01', tracestate: 'active=1' };
 
 /** Context fields a test sets; the harness fills the collaborators. */
@@ -78,8 +83,8 @@ interface Harness {
   setConfirm(confirm: () => Promise<void>): void;
 }
 
-/** A gateway stand-in whose catch-all forwards to `service` with the current overrides. */
-async function startHarness(service: () => HttpDouble): Promise<Harness> {
+/** A gateway stand-in whose catch-all forwards to `service` with the current overrides; `logger` replaces the `logs` capture. */
+async function startHarness(service: () => HttpDouble, logger?: Logger): Promise<Harness> {
   const minted: InvocationTarget[] = [];
   const recorded: Harness['recorded'] = [];
   const declared: Harness['declared'] = [];
@@ -99,10 +104,18 @@ async function startHarness(service: () => HttpDouble): Promise<Harness> {
     },
   };
 
-  const app = Fastify({
-    genReqId: () => REQUEST_ID,
-    logger: { level: 'warn', stream: { write: (line: string) => logs.push(JSON.parse(line) as LogLine) } },
-  });
+  const app =
+    logger === undefined
+      ? Fastify({
+          genReqId: () => REQUEST_ID,
+          logger: { level: 'warn', stream: { write: (line: string) => logs.push(JSON.parse(line) as LogLine) } },
+        })
+      : Fastify({
+          genReqId: () => REQUEST_ID,
+          // This package's own LogController: Fastify checks it by instanceof, and the platform's resolves another copy.
+          loggerInstance: fastifyLoggerOptions(logger).loggerInstance,
+          logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: 'requestId' }),
+        });
   app.removeAllContentTypeParsers();
   app.addContentTypeParser('*', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
   await app.register(replyFrom);
@@ -367,7 +380,7 @@ describe('forwardToTarget web', () => {
     expect(res.headers['set-cookie']).toEqual(cookies);
   });
 
-  it.each([
+  it.each<{ label: string; cacheHeaders: Record<string, string>; expected: string | undefined }>([
     {
       label: "Next's own Cache-Control",
       cacheHeaders: { 'cache-control': 'private, no-cache, no-store, max-age=0, must-revalidate' },
@@ -450,7 +463,7 @@ describe('forwardToTarget response', () => {
     expect(res.statusCode).toBe(201);
     expect(res.headers['x-opt2-write-position']).toBeUndefined();
     expect(harness.recorded).toEqual([]);
-    expect(harness.logs.some((line) => line.level === 50 && line.msg === 'target write position not recorded')).toBe(true);
+    expect(harness.logs.some((line) => line.level === 50 && line.msg === NOT_RECORDED)).toBe(true);
   });
 
   it.each(unconfirmed)('answers %s legacy cannot confirm with the legacy 503', async (_label, value, failure, expected) => {
@@ -464,7 +477,7 @@ describe('forwardToTarget response', () => {
     expect(res.headers['x-opt2-write-position']).toBeUndefined();
     expect(res.headers['x-up']).toBeUndefined();
     expect(harness.confirmations).toEqual([expected]);
-    expect(harness.logs.some((line) => line.level === 50 && line.msg === 'target response failed')).toBe(true);
+    expect(harness.logs.some((line) => line.level === 50 && line.msg === 'fail-closed: people response failed')).toBe(true);
     await expectSettledOnce(harness);
   });
 
@@ -521,7 +534,7 @@ describe('forwardToTarget response', () => {
     expect(upstreams[0]?.headers['set-cookie']).toEqual([deletion, 'a=1']);
     expect(upstreams[0]?.headers['x-opt2-write-position']).toBe('people=3');
     expect(harness.recorded).toEqual([[SESSION_ID, new Map([['people', '3']])]]);
-    expect(harness.logs.some((line) => line.level === 50 && line.msg === 'target forward beforeSend failed')).toBe(true);
+    expect(harness.logs.some((line) => line.level === 50 && line.msg === 'fail-closed: people response withheld: beforeSend failed')).toBe(true);
     await expectSettledOnce(harness);
   });
 
@@ -628,7 +641,7 @@ describe('forwardToTarget fail closed', () => {
       expect(harness.recorded).toEqual([]);
       expect(harness.declared).toEqual([[SESSION_ID, 'people', 0]]);
       expect(harness.released).toEqual([]);
-      const uncertain = harness.logs.filter((line) => line.msg === 'target exchange ended uncertainly; in-flight registration kept');
+      const uncertain = harness.logs.filter((line) => line.msg === UNCERTAIN);
       expect(uncertain.map((line) => line.level)).toEqual([40]);
       expect(Object.keys(uncertain[0]?.error as object).sort()).toEqual(expect.arrayContaining(['message', 'type']));
     },
@@ -675,9 +688,39 @@ describe('forwardToTarget fail closed', () => {
   });
 });
 
-describe('forwardToTarget settles only a target response that completed', () => {
-  const UNCERTAIN = 'target exchange ended uncertainly; in-flight registration kept';
+describe('forwardToTarget fail-closed line', () => {
+  it.each<[string, number | 'refused', Overrides, string, boolean]>([
+    ['a refused connection', 'refused', {}, 'fail-closed: people unavailable', true],
+    ['a service 502', 502, {}, 'fail-closed: people unavailable: answered 502', false],
+    ['a service 503', 503, {}, 'fail-closed: people unavailable: answered 503', false],
+    ['a service 504', 504, {}, 'fail-closed: people unavailable: answered 504', false],
+    ['a web 500', 500, { service: 'web', isWeb: true, path: '/admin/cusers/list' }, 'fail-closed: web answered 500', false],
+  ])('logs %s as one ERROR line naming the owner, the route key and the 503', async (_case, failure, overrides, message, hasError) => {
+    let h = harness;
+    if (failure === 'refused') {
+      const closed = await startHttpDouble((_req, res) => sendBytes(res, 200, 'never'));
+      await closed.close();
+      h = await startHarness(() => closed);
+    } else {
+      service.setHandler((_req, res) => sendBytes(res, failure, 'upstream'));
+    }
+    try {
+      h.set(overrides);
+      const res = await h.app.inject({ method: 'GET', url: '/v1/notes' });
+      expect(res.statusCode).toBe(503);
+      const lines = h.logs.filter((line) => line.msg.startsWith('fail-closed'));
+      expect(lines).toEqual([
+        expect.objectContaining({ level: 50, msg: message, route: API.route, httpMethod: 'GET', statusCode: 503 }),
+      ]);
+      if (hasError) expect(lines[0]?.error).toMatchObject({ type: expect.any(String), message: expect.any(String) });
+      else expect(lines[0]).not.toHaveProperty('error');
+    } finally {
+      if (failure === 'refused') await h.app.close();
+    }
+  });
+});
 
+describe('forwardToTarget settles only a target response that completed', () => {
   /** What one client of a listening gateway received. */
   interface ClientOutcome {
     status: number | undefined;
@@ -875,7 +918,7 @@ describe('forwardToTarget write declaration', () => {
     const res = await harness.app.inject({ method: 'POST', url: '/v1/people' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ data: 'ok' });
-    expect(harness.logs.filter((line) => line.msg === 'target write declaration not released').map((line) => line.level)).toEqual([50]);
+    expect(harness.logs.filter((line) => line.msg === NOT_RELEASED).map((line) => line.level)).toEqual([50]);
   });
 
   it('answers a failed declaration with the legacy 503 without calling the service', async () => {
@@ -886,7 +929,7 @@ describe('forwardToTarget write declaration', () => {
     expect(res.body).toBe(apiUnavailable.body);
     expect(service.requests).toHaveLength(0);
     expect(harness.released).toEqual([]);
-    expect(harness.logs.filter((line) => line.msg === 'target write declaration failed').map((line) => line.level)).toEqual([50]);
+    expect(harness.logs.filter((line) => line.msg === 'fail-closed: write declaration for people failed').map((line) => line.level)).toEqual([50]);
     await expectSettledOnce(harness);
   });
 
@@ -917,31 +960,31 @@ describe('forwardToTarget logs failures through serializeError', () => {
 
   it.each<[string, (failure: Error) => void]>([
     [
-      'invocation credential for target forward failed',
+      'fail-closed: invocation credential for people failed',
       (failure) =>
         harness.setMinter({
           headersFor: () => Promise.reject(failure),
         }),
     ],
-    ['target response failed', (failure) => harness.set({ mapSetCookies: () => Promise.reject(failure) })],
-    ['target forward onSettled failed', (failure) => harness.set({ onSettled: () => Promise.reject(failure) })],
-    ['target forward beforeSend failed', (failure) => harness.set({ beforeSend: () => Promise.reject(failure) })],
+    ['fail-closed: people response failed', (failure) => harness.set({ mapSetCookies: () => Promise.reject(failure) })],
+    [SETTLE_FAILED, (failure) => harness.set({ onSettled: () => Promise.reject(failure) })],
+    ['fail-closed: people response withheld: beforeSend failed', (failure) => harness.set({ beforeSend: () => Promise.reject(failure) })],
     [
-      'target write declaration failed',
+      'fail-closed: write declaration for people failed',
       (failure) => {
         harness.set({ sessionId: SESSION_ID, declaresWrite: true });
         harness.setDeclareFailure(failure);
       },
     ],
     [
-      'target write declaration not released',
+      NOT_RELEASED,
       (failure) => {
         harness.set({ sessionId: SESSION_ID, declaresWrite: true });
         harness.setReleaseFailure(failure);
       },
     ],
     [
-      'target write position not recorded',
+      NOT_RECORDED,
       (failure) => {
         service.setHandler((_req, res) => sendJson(res, 201, { data: 1 }, { 'x-opt2-write-position': 'people=42' }));
         harness.set({ sessionId: SESSION_ID });
@@ -956,7 +999,71 @@ describe('forwardToTarget logs failures through serializeError', () => {
     const line = harness.logs.find((record) => record.msg === message);
     expect(line?.level).toBe(50);
     expect(line?.error).toEqual(serializeError(failure));
+    expect(line).not.toHaveProperty('service');
+    expect(line).not.toHaveProperty('sessionMode');
     expect(JSON.stringify(harness.logs)).not.toContain('s3cr3t');
+  });
+});
+
+describe('forwardToTarget lines through the platform logger', () => {
+  const chunks: string[] = [];
+  let platformHarness: Harness;
+
+  beforeAll(async () => {
+    const destination = { write: (chunk: string) => void chunks.push(chunk) };
+    platformHarness = await startHarness(() => service, createLogger({ service: 'gateway', version: '1.0.0', env: 'local', level: 'warn', destination }));
+  });
+
+  afterEach(() => {
+    chunks.length = 0;
+    platformHarness.set({});
+    platformHarness.setRecordFailure(undefined);
+    platformHarness.setReleaseFailure(undefined);
+  });
+
+  afterAll(async () => {
+    await platformHarness.app.close();
+  });
+
+  /** Every record written so far. */
+  const records = (): Array<Record<string, unknown>> =>
+    chunks
+      .join('')
+      .split('\n')
+      .filter((line) => line !== '')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  const FINANCE: Overrides = { service: 'finance', mode: 'legacy-primary', sessionId: SESSION_ID };
+
+  it.each<[string, (h: Harness, failure: Error) => void]>([
+    ['target forward to finance (legacy-primary) onSettled failed', (h, failure) => h.set({ ...FINANCE, onSettled: () => Promise.reject(failure) })],
+    [
+      'target write declaration for finance (legacy-primary) not released',
+      (h, failure) => {
+        h.set({ ...FINANCE, declaresWrite: true });
+        h.setReleaseFailure(failure);
+      },
+    ],
+    [
+      'target write position from finance (legacy-primary) not recorded',
+      (h, failure) => {
+        service.setHandler((_req, res) => sendJson(res, 201, { data: 1 }, { 'x-opt2-write-position': 'finance=42' }));
+        h.set(FINANCE);
+        h.setRecordFailure(failure);
+      },
+    ],
+  ])('writes `%s` as a log-record.v1 ERROR line naming the callee and session mode', async (message, fail) => {
+    const failure = new Error('store down');
+    fail(platformHarness, failure);
+    await platformHarness.app.inject({ method: 'POST', url: '/v1/finance' });
+    await vi.waitFor(() => expect(records().some((record) => record.message === message)).toBe(true));
+    for (const record of records()) expect(validateLogRecord(record), JSON.stringify(record)).toStrictEqual({ valid: true, errors: [] });
+    expect(records().find((record) => record.message === message)).toMatchObject({
+      severity: 'ERROR',
+      service: 'gateway',
+      requestId: REQUEST_ID,
+      error: serializeError(failure),
+    });
   });
 });
 

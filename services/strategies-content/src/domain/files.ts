@@ -5,7 +5,7 @@ import { contentFileKey, type ContentFileVariant, type StoragePort } from '@opt2
 import { poolTenantFor, registryEntryForTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { CONTENT_FILES_BUCKET, type StoreObjectDeps } from '../migration/objects.js';
 import { StagedObjectMissingError, recoverStagedObjects, settleStagedObject, stageObject } from '../migration/staged-objects.js';
-import { claimStagedObject, deleteStagedObject, lockFileObjectKey, type StagedObjectEntry } from '../repo/files.js';
+import { claimStagedObject, lockFileObjectKey, type StagedObjectEntry } from '../repo/files.js';
 import type { ContentFilesDeletion, ContentRepository, Patch } from '../repo/repository.js';
 import { FILE, FILE_METADATA, type FileMetadataRow, type FileObjectRow, type FileRow } from '../repo/tables.js';
 import { writeContextFor, type Actor, type DomainDeps } from './context.js';
@@ -149,17 +149,21 @@ export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: St
   const [contentType, contentSubType] = splitMime(mime);
   const write = writeContextFor(actor, args.requestId);
   await recoverStagedObjects(deps, poolTenantId);
-  const staged = await stageObject(deps, {
-    tenant_id: poolTenantId,
-    object_key: objectKey,
-    kind: 'upload',
-    file_id: fileId,
-    variant: '',
-    ext,
-    size: args.file.bytes.length,
-    sha256: sha256Hex(args.file.bytes),
-    content_type: mime,
-  });
+  const staged = await stageObject(
+    deps,
+    {
+      tenant_id: poolTenantId,
+      object_key: objectKey,
+      kind: 'upload',
+      file_id: fileId,
+      variant: '',
+      ext,
+      size: args.file.bytes.length,
+      sha256: sha256Hex(args.file.bytes),
+      content_type: mime,
+    },
+    write,
+  );
 
   const publish = async (tx: TenantTx): Promise<StoredUpload> => {
     await lockFileObjectKey(tx, objectKey);
@@ -209,7 +213,7 @@ export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: St
       },
       write,
     );
-    await deleteStagedObject(tx, staged.stage_id);
+    await deps.repository.files.deleteStagedObject(tx, staged.stage_id, write);
     return { kind: 'stored', fileid: file.fileid, filename: file.filename ?? '', file, object };
   };
 

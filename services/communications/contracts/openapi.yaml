@@ -665,12 +665,10 @@ paths:
           $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
-  /internal/v1/tasks/reminders/{scheduledTaskId}:
-    parameters:
-      - $ref: '#/components/parameters/ScheduledTaskId'
+  /internal/v1/tasks/reminders:
     post:
       operationId: runSurveyReminderTask
-      summary: Runs one survey reminder task, then reports the reminder sent to surveys; a superseded or already-sent task changes nothing.
+      summary: Runs the survey reminder task whose payload names its scheduled-task row, then reports the reminder sent to surveys; a superseded or already-sent task changes nothing.
       x-opt2-transport: cloud-tasks
       x-opt2-requires:
         - service:tasks-invoker
@@ -691,7 +689,7 @@ paths:
               $ref: '#/components/schemas/ReminderTaskWireBody'
       responses:
         '200':
-          description: The task's outcome. A malformed task body, no tenant, a tenant under which the scheduled task is not visible, or a URL naming another task answers `TaskIgnoredResult` without acting, so Cloud Tasks does not retry it.
+          description: The task's outcome. A malformed task body, no tenant, or a payload naming no reminder of its survey visible under the body's tenant answers `TaskIgnoredResult` without acting, so Cloud Tasks does not retry it.
           headers:
             X-Opt2-Write-Position:
               $ref: '#/components/headers/XOpt2WritePosition'
@@ -1430,13 +1428,6 @@ components:
       schema:
         type: string
         minLength: 1
-    ScheduledTaskId:
-      name: scheduledTaskId
-      in: path
-      required: true
-      description: Id of the scheduled-task row the reminder task runs.
-      schema:
-        $ref: '#/components/schemas/CfUuid'
     SurveyId:
       name: surveyId
       in: path
@@ -2317,8 +2308,8 @@ components:
           description: Reminder ordinal; null for the launch task.
         targetRoute:
           type: string
-          description: Route the task calls, with its parameters filled.
-          pattern: '^/internal/v1/tasks/(surveys/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}/launch|reminders/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16})$'
+          description: Fixed route the task calls; the task payload names its survey or scheduled-task row.
+          pattern: '^/internal/v1/tasks/(surveys/launch|reminders)$'
         scheduleTime:
           $ref: '#/components/schemas/LocalTimestamp'
         status:

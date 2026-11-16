@@ -22,6 +22,7 @@ import { reportsDir, type EnvLike } from '../lib/paths.js';
 import { readJson, writeJsonReport, writeMarkdown } from '../lib/report.js';
 import { PACKAGE_NAMES, portFor, type PackageName } from '../repro/ports.js';
 import {
+  processStartTime,
   readUpState,
   writeUpState,
   type UpProcessEntry,
@@ -376,6 +377,8 @@ export interface ProcessDeps {
   sleep: (ms: number) => Promise<void>;
   readUpState: () => UpState;
   writeUpState: (patch: UpStatePatch) => unknown;
+  /** Start time of a running pid, undefined once it is gone; defaults to `processStartTime` over `/proc`. */
+  startTimeOf?: (pid: number) => string | undefined;
 }
 
 function errnoOf(err: unknown): unknown {
@@ -441,12 +444,13 @@ export async function stopProcess(
 
 /**
  * Spawns `entry.command` detached (an argv as is, a string through `/bin/sh -c`) in `entry.cwd`, output appended
- * to `entry.log` (relative to `cwd`) when set; records the new pid in up.json at once and returns it.
+ * to `entry.log` (relative to `cwd`) when set; records the new pid and its start time in up.json at once and
+ * returns the pid.
  */
 export async function startProcess(
   name: string,
   entry: UpProcessEntry,
-  deps: Pick<ProcessDeps, 'spawn' | 'writeUpState'>,
+  deps: Pick<ProcessDeps, 'spawn' | 'writeUpState' | 'startTimeOf'>,
 ): Promise<number> {
   const [command, args] =
     typeof entry.command === 'string'
@@ -470,7 +474,10 @@ export async function startProcess(
   const { pid } = child;
   if (pid === undefined) throw new Error(`${name}: cannot start ${command}`, { cause: await failed });
   child.unref();
-  deps.writeUpState({ processes: { [name]: { ...entry, pid } } });
+  const startTime = (deps.startTimeOf ?? processStartTime)(pid);
+  // The previous process's start time never describes the new pid.
+  const { startTime: _previous, ...recorded } = entry;
+  deps.writeUpState({ processes: { [name]: { ...recorded, pid, ...(startTime === undefined ? {} : { startTime }) } } });
   return pid;
 }
 

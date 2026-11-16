@@ -1,7 +1,7 @@
 /** Identity's side of the roster write protocol on the memory repo: operation steps, user closure, session effects and the people-only routes. */
 import bcrypt from 'bcryptjs';
-import { decodeJwt } from 'jose';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { decodeJwt } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-compat';
 import { OperationBlockedError } from '@opt2/platform/migration-kit';
 import { TENANT_A, TENANT_B, TENANT_LIST, fixedClock, registryPayloads } from '@opt2/platform/testing';

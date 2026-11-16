@@ -79,6 +79,7 @@ const VALUE_EXPORTS = {
       'legacyParamsOf',
       'legacyScopesOf',
       'multipartFilesOf',
+      'recordLogScope',
       'recordOutcomeReason',
       'sendLegacyResponse',
       'LEGACY_POST_LIMIT_BYTES',

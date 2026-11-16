@@ -15,6 +15,7 @@ import {
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOCAL_SECRET_FILES, loadLocalSigningKeys, localSecretPath } from '@opt2/platform/auth';
@@ -67,6 +68,15 @@ const HEX16 = '0123456789abcdef';
 const TSX = path.join(HARNESS_ROOT, 'node_modules', '.bin', 'tsx');
 const SCRIPT = 'harness/src/repro/secrets.ts';
 const execFileAsync = promisify(execFile);
+// A loaded host can take a second per fsync and tens of seconds to start a child CLI.
+const SLOW_TEST_MS = 180_000;
+const RACE_TEST_MS = 300_000;
+// Preloaded into the race's child CLIs, so how long one holds the lock does not depend on disk flush latency.
+const NO_FSYNC = `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+fs.fsyncSync = () => undefined;
+syncBuiltinESMExports();
+`;
 
 let root: string;
 let state: string;
@@ -116,8 +126,32 @@ function seedLock(dir: string, entry?: string): string {
   return lock;
 }
 
+/**
+ * Fakes the wait on `lock`: each poll advances the clock by 5 s, and each live holder, one per entry of `holds`,
+ * keeps the lock for its hold in ms before handing it on; the last leaves it empty. Returns the clock reader.
+ */
+function queueHolders(lock: string, holds: readonly number[]): () => number {
+  const queue = holds.map((hold, i) => ({ entry: `${String(process.ppid)}.${i.toString(16).padStart(16, '0')}`, hold }));
+  let clock = 0;
+  let since = 0;
+  let current = queue.shift();
+  if (current !== undefined) writeFileSync(path.join(lock, current.entry), '');
+  vi.spyOn(performance, 'now').mockImplementation(() => clock);
+  vi.spyOn(Atomics, 'wait').mockImplementation(() => {
+    clock += 5_000;
+    if (current !== undefined && clock - since >= current.hold) {
+      rmSync(path.join(lock, current.entry));
+      current = queue.shift();
+      since = clock;
+      if (current !== undefined) writeFileSync(path.join(lock, current.entry), '');
+    }
+    return 'timed-out';
+  });
+  return () => clock;
+}
+
 async function waitFor(condition: () => boolean, what: string): Promise<void> {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + RACE_TEST_MS / 2;
   while (!condition()) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -190,7 +224,7 @@ describe('secret file catalogue', () => {
   });
 });
 
-describe('ensureLocalSecrets', () => {
+describe('ensureLocalSecrets', { timeout: SLOW_TEST_MS }, () => {
   it('creates every secret under <state>/secrets with an owner-only directory and files', () => {
     const result = ensureLocalSecrets({ env });
 
@@ -414,6 +448,29 @@ describe('ensureLocalSecrets', () => {
     expect(readdirSync(lock)).toEqual([live]);
   });
 
+  it('awaits each live holder afresh and takes the lock after all, though together they kept it past the wait', () => {
+    const dir = path.join(root, 'queue');
+    const clock = queueHolders(seedLock(dir), [25_000, 25_000, 25_000]);
+
+    expect(ensureLocalSecrets({ dir })).toEqual({ dir, created: [...SECRET_FILES], kept: [] });
+    expect(clock()).toBe(75_000);
+    expectCompleteSecrets(dir);
+  });
+
+  it('gives up once one live holder keeps the lock for the whole wait, counted from when that holder took it', () => {
+    const dir = path.join(root, 'queue');
+    const lock = seedLock(dir);
+    const clock = queueHolders(lock, [25_000, 25_000, Number.POSITIVE_INFINITY]);
+
+    expect(() => ensureLocalSecrets({ dir })).toThrow(
+      `secrets lock ${lock} is still held by pid ${String(process.ppid)} after 30000 ms`,
+    );
+    // The third holder took the lock at 50 s.
+    expect(clock()).toBe(80_000);
+    expect(readdirSync(dir)).toEqual([LOCK_NAME]);
+    expect(readdirSync(lock)).toEqual([`${String(process.ppid)}.${'2'.padStart(16, '0')}`]);
+  });
+
   it('takes the lock when another waiter has already displaced the stale holder it judged', () => {
     const dir = path.join(root, 'displaced');
     const stale = `${String(exitedPid())}.${HEX16}`;
@@ -546,7 +603,7 @@ describe('ensureLocalSecrets', () => {
   });
 });
 
-describe('readSecret', () => {
+describe('readSecret', { timeout: SLOW_TEST_MS }, () => {
   it('returns the stored value of a generated secret', () => {
     const { dir } = ensureLocalSecrets({ env });
 
@@ -587,7 +644,7 @@ describe('readSecret', () => {
   });
 });
 
-describe('repro:secrets CLI', () => {
+describe('repro:secrets CLI', { timeout: SLOW_TEST_MS }, () => {
   it('prints the directory and the file names created, never a secret value', async () => {
     const { code, stdout, exit } = await runSecretsCli([]);
 
@@ -629,16 +686,25 @@ describe('repro:secrets CLI', () => {
     { label: 'leaves it stale', stale: true },
   ])('serialises processes queued on a holder that $label: one creates all, the rest keep all', async ({ stale }) => {
     const dir = path.join(root, 'race');
-    const holder = `${String(process.pid)}.${HEX16}`;
+    let holder = `${String(process.pid)}.${HEX16}`;
+    let renewals = 0;
     const exited = `${String(exitedPid())}.${HEX16}`;
     // Held by this process until every child has queued, so all of them contend for it at once.
     const lock = seedLock(dir, holder);
-    const runs = Array.from({ length: 6 }, () =>
-      execFileAsync(TSX, [path.join(REPO_ROOT, SCRIPT), '--dir', dir], { cwd: HARNESS_ROOT, encoding: 'utf8' }),
-    );
+    const hook = path.join(root, 'no-fsync.mjs');
+    writeFileSync(hook, NO_FSYNC);
+    const argv = ['--import', pathToFileURL(hook).href, path.join(REPO_ROOT, SCRIPT), '--dir', dir];
+    const runs = Array.from({ length: 6 }, () => execFileAsync(TSX, argv, { cwd: HARNESS_ROOT, encoding: 'utf8' }));
     const settled = Promise.allSettled(runs);
     try {
-      const queued = (): number => readdirSync(dir).filter((name) => name.startsWith(`.${LOCK_NAME}.`)).length;
+      const queued = (): number => {
+        // A fresh entry is a new holder to the waiters, so however long the children take to queue, none gives up.
+        renewals += 1;
+        const renewed = `${String(process.pid)}.${renewals.toString(16).padStart(16, '0')}`;
+        renameSync(path.join(lock, holder), path.join(lock, renewed));
+        holder = renewed;
+        return readdirSync(dir).filter((name) => name.startsWith(`.${LOCK_NAME}.`)).length;
+      };
       await waitFor(() => queued() === runs.length, 'every process to wait on the lock');
     } finally {
       // Renaming the entry to an exited pid leaves a stale lock that every waiter judges at the same poll.
@@ -654,7 +720,7 @@ describe('repro:secrets CLI', () => {
       runs.slice(1).map(() => ({ command: SCRIPT, ok: true, code: 0, dir, created: [], kept: [...SECRET_FILES] })),
     );
     expectCompleteSecrets(dir);
-  }, 60_000);
+  }, RACE_TEST_MS);
 
   it('exits 2 with the usage text for an unknown flag and writes nothing', async () => {
     const { code, stdout } = await runSecretsCli(['--bogus']);

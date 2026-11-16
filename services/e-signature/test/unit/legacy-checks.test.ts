@@ -1,5 +1,7 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** E-signature fixture checks against legacy-fixtures/cfml api.cfm, lib/auth.cfc resolveSite and modules/esignature.cfc. */
+import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { AuthDenial, type UserClaims } from '@opt2/platform/auth';
 import { tenantIdForSite, type MetadataTx, type QueryResult } from '@opt2/platform/tenancy';
@@ -7,6 +9,7 @@ import { TENANT_A, TENANT_B } from '@opt2/platform/testing';
 import { FixtureApiError, toFixtureError } from '../../src/legacy/envelope.js';
 import type { CreateRequestInput, SignInput, SuppliedAuditEntry } from '../../src/domain/signing.js';
 import {
+  BASE64_DECODE_SLICE,
   FIXTURE_CHECK_ORDER,
   requireFixtureLogin,
   resolveFixtureSite,
@@ -163,8 +166,8 @@ describe('requireFixtureLogin', () => {
 
 describe('validateCreateInput', () => {
   const valid = { documentName: 'doc.txt', documentBase64: 'R1MtRVMgZ29sZGVuIGRvY3VtZW50', signerUserId: 'U1' };
-  it('accepts and decodes', () => {
-    const r = validateCreateInput(valid);
+  it('accepts and decodes', async () => {
+    const r = await validateCreateInput(valid);
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.document.toString('utf8')).toBe('GS-ES golden document');
@@ -184,11 +187,11 @@ describe('validateCreateInput', () => {
     [{ ...valid, documentBase64: 'QUJD\u00a0' }],
     [{ ...valid, signerUserId: '' }],
     [{ ...valid, signerUserId: ['a'] }],
-  ])('rejects %j', (params) => {
-    expect(validateCreateInput(params)).toEqual(INVALID);
+  ])('rejects %j', async (params) => {
+    expect(await validateCreateInput(params)).toEqual(INVALID);
   });
-  it('accepts 255 chars, case-insensitive keys, whitespace in base64', () => {
-    const r = validateCreateInput({ DOCUMENTNAME: 'y'.repeat(255), documentbase64: 'QUJD\u2028RA==', SignerUserID: 'U' });
+  it('accepts 255 chars, case-insensitive keys, whitespace in base64', async () => {
+    const r = await validateCreateInput({ DOCUMENTNAME: 'y'.repeat(255), documentbase64: 'QUJD\u2028RA==', SignerUserID: 'U' });
     expect(r.ok && r.value.document.toString('hex')).toBe('41424344');
   });
   // Bytes ACF 2023 binaryDecode(input, 'base64') returned, as hex; null where it threw or decoded no byte.
@@ -223,11 +226,81 @@ describe('validateCreateInput', () => {
     ['b\u000bRs\tgHw', null],
     ['M5ReP\u0000ihf', null],
     ['2\u00e96f_mr', null],
-  ])('decodes documentBase64 %j as ACF does', (documentBase64, hex) => {
-    const r = validateCreateInput({ documentName: 'n', documentBase64, signerUserId: 'U' });
+  ])('decodes documentBase64 %j as ACF does', async (documentBase64, hex) => {
+    const r = await validateCreateInput({ documentName: 'n', documentBase64, signerUserId: 'U' });
     expect(r.ok ? r.value.document.toString('hex').toUpperCase() : null).toBe(hex);
   });
+
+  const S = BASE64_DECODE_SLICE;
+  it.each<[string, string, boolean]>([
+    ['padding opening the second slice', `${'A'.repeat(S - 2)}QQ==QUJD`, true],
+    ['line breaks on both sides of the boundary', `${'QUJD'.repeat(S / 4 - 1)}QUJ\n DQUJD`, true],
+    ['a line separator ending the first slice', `${'QUJD'.repeat(S / 4 - 1)}QUJ\u2028DQUJD`, true],
+    ['a group split by the boundary', `${'QUJD'.repeat(S / 4 - 1)}=QUJDQUJD`, true],
+    ['a no-break space opening the second slice', `${'QUJD'.repeat(S / 4)}\u00a0QUJD`, false],
+    ['an invalid character ending the first slice', `${'QUJD'.repeat(S / 4 - 1)}QUJ*QUJD`, false],
+    ['an invalid character opening the second slice', `${'QUJD'.repeat(S / 4)}*QUJD`, false],
+    ['an invalid last character in the third slice', `${'QUJD'.repeat(S / 2 + 10)}-`, false],
+    ['a trailing incomplete group after the boundary', `${'QUJD'.repeat(S / 4)}QQ`, false],
+    ['a last data character leaving bits other than 8 at the end of the second slice', `${'QUJD'.repeat(S / 2 - 1)}=QUJ`, false],
+    ['a last data character completing its group at the end of the second slice', 'QUJD'.repeat(S / 2), true],
+    ['padding and a line break after the last data character', `${'QUJD'.repeat(S / 4)}QQ==\n`, true],
+    ['pending bits dropped after the boundary', `${'QUJD'.repeat(S / 4)}Q `, true],
+  ])('decodes a documentBase64 spanning slices with %s as the synchronous decoder did', async (_label, documentBase64, decodes) => {
+    const previous = previousCfBase64Decode(documentBase64);
+    const r = await validateCreateInput({ documentName: 'n', documentBase64, signerUserId: 'U' });
+    expect(documentBase64.length).toBeGreaterThan(S);
+    expect(previous !== null && previous.length > 0).toBe(decodes);
+    expect(sha256Of(r.ok ? r.value.document : null)).toBe(decodes ? sha256Of(previous) : null);
+  });
+
+  it.each([
+    ['one slice', S, ['decoded', 'immediate']],
+    ['two slices', 2 * S, ['immediate', 'decoded']],
+  ])('runs a callback scheduled before the decode first only when documentBase64 spans slices (%s)', async (_label, units, order) => {
+    const seen: string[] = [];
+    setImmediate(() => seen.push('immediate'));
+    const r = await validateCreateInput({ documentName: 'n', documentBase64: 'QUJD'.repeat(units / 4), signerUserId: 'U' });
+    seen.push('decoded');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(seen).toEqual(order);
+    expect(r.ok && r.value.document.length).toBe((units / 4) * 3);
+  });
 });
+
+/** SHA-256 hex of `bytes`, null for none. */
+function sha256Of(bytes: Buffer | null): string | null {
+  return bytes === null ? null : createHash('sha256').update(bytes).digest('hex');
+}
+
+/** validateCreateInput's decoder before it decoded in slices, unchanged: the oracle for documents spanning slice boundaries. */
+function previousCfBase64Decode(text: string): Buffer | null {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const isJavaWhitespace = (char: string): boolean => {
+    const code = char.charCodeAt(0);
+    if (code <= 0x20) return (code >= 0x09 && code <= 0x0d) || code >= 0x1c;
+    return code >= 0x80 && ![0x00a0, 0x2007, 0x202f].includes(code) && /^[\p{Zs}\p{Zl}\p{Zp}]$/u.test(char);
+  };
+  const out = Buffer.alloc(Math.ceil((text.length * 3) / 4));
+  let length = 0;
+  let accumulator = 0;
+  let bits = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text.charAt(i);
+    if (char === '=' || isJavaWhitespace(char)) continue;
+    const value = alphabet.indexOf(char);
+    if (value < 0) return null;
+    accumulator = (accumulator << 6) | value;
+    bits += 6;
+    if (i === text.length - 1 && bits !== 8) return null;
+    if (bits >= 8) {
+      bits -= 8;
+      out[length] = (accumulator >> bits) & 0xff;
+      length += 1;
+    }
+  }
+  return out.subarray(0, length);
+}
 
 describe('validateSignInput', () => {
   it.each([

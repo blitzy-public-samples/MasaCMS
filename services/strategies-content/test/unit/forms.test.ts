@@ -31,7 +31,7 @@ import {
 } from '../../src/domain/forms.js';
 import { formBeanJson, renderCformResponse } from '../../src/legacy/admin-render-forms.js';
 import { wddx2cfml, wddxStructGet, type WddxStruct } from '../../src/domain/wddx.js';
-import { DEFAULT_ROW_BATCH_SIZE } from '../../src/repo/repository.js';
+import { DEFAULT_ROW_BATCH_SIZE, type VersionInput } from '../../src/repo/repository.js';
 import { ADMIN, NOW, SITE_ID, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
 
 const FORM = cfId('F', 1);
@@ -72,26 +72,65 @@ const packetOf = (fields: Readonly<Record<string, string>>): string =>
 /** downloaddata.cfm's `fixDelim`. */
 const fixDelim = (value: string): string => `"${value.replaceAll('"', '""').replaceAll('\r\n', ' ')}"`;
 
+/** FORM's active version. */
+const MY_FORM: VersionInput = { title: 'My Form', body: '<form></form>', responsedisplayfields: 'name^Email~name', sortby: 'Entered', sortdirection: 'desc', nextn: 10 };
+/** FORM's inactive version. */
+const MY_FORM_OLD: VersionInput = { active: 0, approved: 0, title: 'My Form old', body: '', responsedisplayfields: '', sortby: 'orderno', sortdirection: 'asc', nextn: 5 };
+/** MY_FORM with the display fields, sort and nextN the setDisplay case writes. */
+const MY_FORM_SHOWN: VersionInput = { ...MY_FORM, responsedisplayfields: 'Email^name~name', sortby: 'name', sortdirection: 'asc', nextn: 25 };
+/** OTHER_FORM's version: an ORM form typed in lower case. */
+const ANOTHER: VersionInput = { type: 'form', title: 'Another', body: '{"form":{"muraormentities":1,"formattributes":{"muraormentities":true}}}' };
+/** The entry time the captured update keeps. */
+const BOBBY_ENTERED = new Date(2026, 5, 1, 9, 30, 0, 0);
+
+/** Inserts version `cfId('H', histN)` of form `formId`, active, approved and displayed unless `fields` say otherwise. */
+const insertForm = (fx: ContentFixture, formId: string, histN: number, fields: VersionInput) =>
+  fx.inTenant((tx) =>
+    fx.repo.content.insertVersion(tx, {
+      contentid: formId, contenthistid: cfId('H', histN), siteid: SITE_ID, type: 'Form', subtype: 'Default', moduleid: '00000000000000000000000000000000004',
+      active: 1, approved: 1, display: 1, ...fields,
+    }),
+  );
+
+/** Seeds FORM's two versions and OTHER_FORM. */
+const seedForms = async (fx: ContentFixture): Promise<void> => {
+  await insertForm(fx, FORM, 1, MY_FORM);
+  await insertForm(fx, FORM, 2, MY_FORM_OLD);
+  await insertForm(fx, OTHER_FORM, 3, ANOTHER);
+};
+
 describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
   let fx: ContentFixture;
-  let createdId = '';
+
+  /** The captured create: Bob's response to `formId`, with ignored fields and a `_default` rename. */
+  const createBob = (formId: string) =>
+    updateResponse(fx.deps, ADMIN, {
+      formid: formId,
+      siteid: SITE_ID,
+      fieldnames: 'name,Email,comments,color_default,CSRF_TOKEN,siteid',
+      name: '  Bob <script>x</script> ',
+      Email: 'b@x.com',
+      comments: 'l1\r\nl2\t&<>\'"é',
+      color_default: 'red',
+      csrf_token: 'tok',
+    });
+
+  /** The captured update of response `responseId` to `formId`: Bobby, entered at BOBBY_ENTERED. */
+  const updateBob = (formId: string, responseId: string) =>
+    updateResponse(fx.deps, ADMIN, {
+      responseid: responseId,
+      formid: formId,
+      siteid: SITE_ID,
+      fieldlist: 'name,Email,comments,color',
+      entered: cfTimestampText(BOBBY_ENTERED),
+      name: 'Bobby',
+      Email: 'b2@x.com',
+      comments: 'c2',
+    });
 
   beforeAll(async () => {
     fx = await createContentFixture('forms-test');
-    await fx.inTenant(async (tx) => {
-      await fx.repo.content.insertVersion(tx, {
-        contentid: FORM, contenthistid: cfId('H', 1), siteid: SITE_ID, type: 'Form', subtype: 'Default', moduleid: '00000000000000000000000000000000004',
-        active: 1, approved: 1, display: 1, title: 'My Form', body: '<form></form>', responsedisplayfields: 'name^Email~name', sortby: 'Entered', sortdirection: 'desc', nextn: 10,
-      });
-      await fx.repo.content.insertVersion(tx, {
-        contentid: FORM, contenthistid: cfId('H', 2), siteid: SITE_ID, type: 'Form', subtype: 'Default', moduleid: '00000000000000000000000000000000004',
-        active: 0, approved: 0, display: 1, title: 'My Form old', body: '', responsedisplayfields: '', sortby: 'orderno', sortdirection: 'asc', nextn: 5,
-      });
-      await fx.repo.content.insertVersion(tx, {
-        contentid: OTHER_FORM, contenthistid: cfId('H', 3), siteid: SITE_ID, type: 'form', subtype: 'Default', moduleid: '00000000000000000000000000000000004',
-        active: 1, approved: 1, display: 1, title: 'Another', body: '{"form":{"muraormentities":1,"formattributes":{"muraormentities":true}}}',
-      });
-    });
+    await seedForms(fx);
   });
 
   afterAll(async () => {
@@ -104,17 +143,7 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
 
   it('creates a response with the captured packet bytes, ignore list and _default rename', async () => {
     expect(FORM_FIELD_IGNORE_LIST.startsWith('_P,CSSCLASS')).toBe(true);
-    const created = await updateResponse(fx.deps, ADMIN, {
-      formid: FORM,
-      siteid: SITE_ID,
-      fieldnames: 'name,Email,comments,color_default,CSRF_TOKEN,siteid',
-      name: '  Bob <script>x</script> ',
-      Email: 'b@x.com',
-      comments: 'l1\r\nl2\t&<>\'"é',
-      color_default: 'red',
-      csrf_token: 'tok',
-    });
-    createdId = created.responseId;
+    const created = await createBob(FORM);
     expect(isCfUuid(created.responseId)).toBe(true);
     expect(created.packet.data).toBe(FORM_CREATE.replace(RID, created.responseId));
     expect(created.packet.fieldlist).toBe('name,Email,comments,color');
@@ -128,29 +157,20 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
   });
 
   it('updates a response keeping entered and the packet bytes', async () => {
-    const entered = new Date(2026, 5, 1, 9, 30, 0, 0);
-    const written = await updateResponse(fx.deps, ADMIN, {
-      responseid: createdId,
-      formid: FORM,
-      siteid: SITE_ID,
-      fieldlist: 'name,Email,comments,color',
-      entered: cfTimestampText(entered),
-      name: 'Bobby',
-      Email: 'b2@x.com',
-      comments: 'c2',
-    });
-    expect(written.packet.data).toBe(FORM_UPDATE.replace(RID, createdId));
-    expect(written.packet.entered).toEqual(entered);
+    const { responseId } = await createBob(FORM);
+    const written = await updateBob(FORM, responseId);
+    expect(written.packet.data).toBe(FORM_UPDATE.replace(RID, responseId));
+    expect(written.packet.entered).toEqual(BOBBY_ENTERED);
     expect(written.questions).toHaveLength(3);
-    const row = await readResponse(fx.deps, ADMIN, createdId);
+    const row = await readResponse(fx.deps, ADMIN, responseId);
     expect(wddxStructGet(responseValues(row ?? { data: '' }) as WddxStruct, 'NAME')).toBe('Bobby');
-    const stored = await fx.rows('form_response_question', 'responseid = $1', [createdId], 'lower(formfield)');
+    const stored = await fx.rows('form_response_question', 'responseid = $1', [responseId], 'lower(formfield)');
     expect(stored.map((q) => [q.formfield, q.formvalue])).toEqual([
       ['comments', 'c2'],
       ['Email', 'b2@x.com'],
       ['name', 'Bobby'],
     ]);
-    expect((await fx.rows('form_response_packet', 'responseid = $1', [createdId])).map((p) => p.data)).toEqual([FORM_UPDATE.replace(RID, createdId)]);
+    expect((await fx.rows('form_response_packet', 'responseid = $1', [responseId])).map((p) => p.data)).toEqual([FORM_UPDATE.replace(RID, responseId)]);
   });
 
   it('neutralises <script and <form openers, then script> and form> closers, after the trim, as REReplaceNoCase ALL does', async () => {
@@ -217,9 +237,12 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
   });
 
   it('lists fields and filters with an unwildcarded keyword', async () => {
-    expect(await getFullFieldList(fx.deps, ADMIN, FORM)).toBe('comments,Email,name');
-    expect(await getCurrentFieldList(fx.deps, ADMIN, FORM)).toBe('name,Email');
-    const rc = { contentid: FORM, siteid: SITE_ID, sortBy: 'name', sortDirection: 'asc', keywords: 'Bobby', filterBy: 'name', fieldnames: 'name,Email', date1: '', date2: '' };
+    const formId = cfId('F', 10);
+    await insertForm(fx, formId, 7, MY_FORM);
+    await updateBob(formId, (await createBob(formId)).responseId);
+    expect(await getFullFieldList(fx.deps, ADMIN, formId)).toBe('comments,Email,name');
+    expect(await getCurrentFieldList(fx.deps, ADMIN, formId)).toBe('name,Email');
+    const rc = { contentid: formId, siteid: SITE_ID, sortBy: 'name', sortDirection: 'asc', keywords: 'Bobby', filterBy: 'name', fieldnames: 'name,Email', date1: '', date2: '' };
     expect(await getData(fx.deps, ADMIN, rc)).toHaveLength(1);
     expect(await getData(fx.deps, ADMIN, { ...rc, keywords: 'Bob' })).toHaveLength(0);
     expect(await getData(fx.deps, ADMIN, { ...rc, keywords: 'Bob%' })).toHaveLength(1);
@@ -229,7 +252,7 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
     expect(args.stop).toEqual(new Date(2026, 5, 30, 23, 59, 59));
     expect(args.sortDirection).toBeUndefined();
     expect(() => formResponsesArgs({ ...rc, date1: '06/01/2026' })).toThrow();
-    expect(() => formResponsesArgs({ contentid: FORM, siteid: SITE_ID, sortBy: 'Entered' })).toThrow();
+    expect(() => formResponsesArgs({ contentid: formId, siteid: SITE_ID, sortBy: 'Entered' })).toThrow();
   });
 
   it('sorts by a listed field in the requested direction, and by entry date otherwise', async () => {
@@ -247,72 +270,84 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
   });
 
   it('setDisplay through the data manager updates every version, and CSRF gates writes', async () => {
+    const formId = cfId('F', 9);
+    await insertForm(fx, formId, 5, MY_FORM);
+    await insertForm(fx, formId, 6, MY_FORM_OLD);
+    const { responseId } = await createBob(formId);
     const validated: string[] = [];
     const deny = { validateCsrfTokens: async (c: string) => (validated.push(c), false) };
-    const noop = await dataManagerAction(fx.deps, ADMIN, { siteid: SITE_ID, contentid: FORM, action: 'Delete', responseid: createdId, date1: '', date2: '' }, deny);
+    const noop = await dataManagerAction(fx.deps, ADMIN, { siteid: SITE_ID, contentid: formId, action: 'Delete', responseid: responseId, date1: '', date2: '' }, deny);
     expect(noop.outcome).toBe('none');
-    expect(validated).toEqual([createdId]);
-    expect(await readResponse(fx.deps, ADMIN, createdId)).not.toBeNull();
+    expect(validated).toEqual([responseId]);
+    expect(await readResponse(fx.deps, ADMIN, responseId)).not.toBeNull();
 
     const updated = await dataManagerAction(
       fx.deps,
       ADMIN,
       {
-        siteid: SITE_ID, contentid: FORM, formid: FORM, action: 'update', responseid: createdId, date1: '', date2: '',
+        siteid: SITE_ID, contentid: formId, formid: formId, action: 'update', responseid: responseId, date1: '', date2: '',
         fieldlist: 'name,Email,comments,color', entered: '2026-06-01 09:30:00.0', name: 'Bobby', Email: 'b2@x.com', comments: 'c2',
       },
       { validateCsrfTokens: async (c: string) => (validated.push(c), true) },
     );
     expect(updated.outcome).toBe('updated');
     expect(updated.rc).toMatchObject({ keywords: '', filterBy: '', sortBy: 'Entered', sortDirection: 'desc' });
-    expect((await readResponse(fx.deps, ADMIN, createdId))?.data).toBe(FORM_UPDATE.replace(RID, createdId));
+    expect((await readResponse(fx.deps, ADMIN, responseId))?.data).toBe(FORM_UPDATE.replace(RID, responseId));
 
     const shown = await dataManagerAction(
       fx.deps,
       ADMIN,
-      { siteid: SITE_ID, contentid: FORM, action: 'setDisplay', detailList2: 'Email^name', summaryList2: 'name', nextn: '25', sortBy: ' name ', sortDirection: 'asc', date1: '', date2: '' },
+      { siteid: SITE_ID, contentid: formId, action: 'setDisplay', detailList2: 'Email^name', summaryList2: 'name', nextn: '25', sortBy: ' name ', sortDirection: 'asc', date1: '', date2: '' },
       deny,
     );
     expect(shown.outcome).toBe('display-set');
     expect(shown.rc.action).toBe('');
     expect(shown.view).toBe('responses');
-    const versions = await fx.rows('content', 'contentid = $1', [FORM]);
+    const versions = await fx.rows('content', 'contentid = $1', [formId]);
     expect(versions.map((v) => [v.responsedisplayfields, v.sortby, v.sortdirection, v.nextn])).toEqual([
       ['Email^name~name', 'name', 'asc', 25],
       ['Email^name~name', 'name', 'asc', 25],
     ]);
-    expect(validated).toEqual([createdId, createdId]);
+    expect(validated).toEqual([responseId, responseId]);
   });
 
   it('downloads the CSV as downloaddata.cfm writes it', async () => {
-    const result = await downloadData(fx.deps, ADMIN, { siteid: SITE_ID, contentid: FORM, sortBy: 'Entered', sortDirection: 'asc', keywords: '', columns: 'fixed', date1: '', date2: '' }, { link });
+    const formId = cfId('F', 11);
+    await insertForm(fx, formId, 8, MY_FORM_SHOWN);
+    await updateBob(formId, (await createBob(formId)).responseId);
+    const result = await downloadData(fx.deps, ADMIN, { siteid: SITE_ID, contentid: formId, sortBy: 'Entered', sortDirection: 'asc', keywords: '', columns: 'fixed', date1: '', date2: '' }, { link });
     expect(result.columns).toEqual(['Email', 'name']);
     expect(result.fileName).toMatch(/^My-Form_\d{6}\.csv$/);
     expect(await text(result.body)).toBe(`DATE/TIME ENTERED,Email,name,\r\n2026-06-01 09:30:00.0,"b2@x.com","Bobby",\r\n`);
   });
 
   it('deletes the filtered responses on the response view', async () => {
+    const formId = cfId('F', 12);
+    await insertForm(fx, formId, 9, MY_FORM_SHOWN);
+    const { responseId } = await updateBob(formId, (await createBob(formId)).responseId);
     const result = await dataManagerAction(
       fx.deps,
       ADMIN,
-      { siteid: SITE_ID, contentid: FORM, action: '', date1: 'nope', hour1: '0', minute1: '0', date2: '', hour2: '23', minute2: '59', delete: '1' },
+      { siteid: SITE_ID, contentid: formId, action: '', date1: 'nope', hour1: '0', minute1: '0', date2: '', hour2: '23', minute2: '59', delete: '1' },
       { validateCsrfTokens: async () => true },
     );
     expect(result.filteredDeletions).toBe(1);
-    expect(await readResponse(fx.deps, ADMIN, createdId)).toBeNull();
+    expect(await readResponse(fx.deps, ADMIN, responseId)).toBeNull();
   });
 
   it('writes attachment links and quoted cells over each row field list, and honours the test-field restriction', async () => {
+    const formId = cfId('F', 13);
+    await insertForm(fx, formId, 10, ANOTHER);
     const fileId = cfId('A', 7);
     const restricted = await updateResponse(
       fx.deps,
       ADMIN,
-      { formid: OTHER_FORM, siteid: SITE_ID, fieldnames: 'attachmentx,quote', attachmentx: 'run.exe', quote: 'say "hi"\r\nbye' },
+      { formid: formId, siteid: SITE_ID, fieldnames: 'attachmentx,quote', attachmentx: 'run.exe', quote: 'say "hi"\r\nbye' },
       [part('attachmentx', 'run.exe'), part('test', 'evil.exe')],
     );
     expect(wddxStructGet(restricted.info, 'attachmentx')).toBe('run.exe');
-    await updateResponse(fx.deps, ADMIN, { formid: OTHER_FORM, siteid: SITE_ID, fieldnames: 'attachmentx', attachmentx: fileId });
-    const csv = await downloadData(fx.deps, ADMIN, { siteid: SITE_ID, contentid: OTHER_FORM, sortBy: 'Entered', sortDirection: 'asc', keywords: '', date1: '', date2: '' }, { link });
+    await updateResponse(fx.deps, ADMIN, { formid: formId, siteid: SITE_ID, fieldnames: 'attachmentx', attachmentx: fileId });
+    const csv = await downloadData(fx.deps, ADMIN, { siteid: SITE_ID, contentid: formId, sortBy: 'Entered', sortDirection: 'asc', keywords: '', date1: '', date2: '' }, { link });
     expect(csv.columns).toEqual(['attachmentx', 'quote']);
     const [header, ...lines] = (await text(csv.body)).split('\r\n');
     expect(header).toBe('DATE/TIME ENTERED,attachmentx,quote,');
@@ -335,28 +370,13 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
     expect((await getActiveForm(fx.deps, ADMIN, cfId('Z', 9), SITE_ID)).isNew).toBe(1);
   });
 
-  it('builds cform bean inputs and lists forms', async () => {
-    expect(isCfUuid(cformFormBean({}).formId)).toBe(true);
-    expect(cformFormBean({ FORMID: 'x' }).formId).toBe('x');
-    expect(cformFieldBean({ formID: FORM })).toMatchObject({ formId: FORM, fieldType: 'field-textfield' });
-    expect(cformFieldBean({}).formId).toBeUndefined();
-    expect(cformFieldTypeBean({ fieldtype: 'field-dropdown', fieldTypeID: 'k' })).toEqual({ fieldTypeId: 'k', fieldType: 'field-dropdown' });
-    expect(isCfUuid(cformDatasetBean({ datasetID: '', fieldID: FORM }).datasetId)).toBe(true);
-    expect(cformDatasetBean({ datasetID: 'd' })).toEqual({ datasetId: 'd', fieldId: undefined });
-    const formJson = formBeanJson(cformFormBean({ formID: FORM }));
-    expect((JSON.parse(formJson) as { formid: string }).formid).toBe(FORM);
-    expect(renderCformResponse('json', formJson).contentType).toBe(LEGACY_JSON_CONTENT_TYPE);
-    expect((await getForms(fx.deps, ADMIN, SITE_ID)).map((f) => f.title)).toEqual(['Another', 'My Form']);
-    expect((await getForms(fx.deps, ADMIN, SITE_ID, OTHER_FORM.toLowerCase())).map((f) => f.title)).toEqual(['My Form']);
-  });
-
-  // Runs after the form list above, which this suite's active form would join.
   describe('more responses than one cursor batch', () => {
     const BIG_FORM = cfId('F', 4);
+    /** BIG_FORM's version. */
+    const BIG: VersionInput = { title: 'Big Form', body: '<form></form>', responsedisplayfields: 'n^note~n', sortby: 'Entered', sortdirection: 'asc', nextn: 10 };
     const MANY = 2 * DEFAULT_ROW_BATCH_SIZE + 201;
     const FIRST_ENTERED = new Date(2026, 4, 1, 8, 0, 0, 0);
     const big = Array.from({ length: MANY }, (_, i) => ({
-      responseid: cfId('R', i + 1),
       entered: new Date(FIRST_ENTERED.getTime() + i * 1000),
       n: String(i + 1),
       note: `say "hi"\r\nrow ${i + 1} of the streamed download`,
@@ -374,6 +394,9 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
           [ADMIN.tenantId, formId, SITE_ID, rows.map((r) => r.responseid), rows.map((r) => r.fieldlist), rows.map((r) => r.data), rows.map((r) => r.entered)],
         ),
       );
+
+    /** `big` as packets whose response ids carry `prefix`. */
+    const bigPackets = (prefix: string) => big.map((row, i) => ({ ...row, responseid: cfId(prefix, i + 1), data: packetOf({ n: row.n, note: row.note }) }));
 
     /** downloaddata.cfm's bytes for `big`: over `n,note` with `columns=fixed`, else over each row's `fieldlist`. */
     const legacyCsv = (fixed: boolean): string =>
@@ -406,13 +429,8 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
     };
 
     beforeAll(async () => {
-      await fx.inTenant((tx) =>
-        fx.repo.content.insertVersion(tx, {
-          contentid: BIG_FORM, contenthistid: cfId('H', 4), siteid: SITE_ID, type: 'Form', subtype: 'Default', moduleid: '00000000000000000000000000000000004',
-          active: 1, approved: 1, display: 1, title: 'Big Form', body: '<form></form>', responsedisplayfields: 'n^note~n', sortby: 'Entered', sortdirection: 'asc', nextn: 10,
-        }),
-      );
-      await insertPackets(BIG_FORM, big.map((row) => ({ ...row, data: packetOf({ n: row.n, note: row.note }) })));
+      await insertForm(fx, BIG_FORM, 4, BIG);
+      await insertPackets(BIG_FORM, bigPackets('R'));
     });
 
     it.each([
@@ -477,14 +495,45 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
     });
 
     it('deletes the filtered responses streamed over every batch, only for a true boolean `delete`, counting them', async () => {
-      const rc = { siteid: SITE_ID, contentid: BIG_FORM, action: '', date1: '', hour1: '0', minute1: '0', date2: '', hour2: '23', minute2: '59' };
+      const formId = cfId('F', 14);
+      await insertForm(fx, formId, 11, BIG);
+      await insertPackets(formId, bigPackets('D'));
+      const rc = { siteid: SITE_ID, contentid: formId, action: '', date1: '', hour1: '0', minute1: '0', date2: '', hour2: '23', minute2: '59' };
       const csrf = { validateCsrfTokens: async () => true };
-      const remaining = async () => (await fx.rows('form_response_packet', 'formid = $1', [BIG_FORM])).length;
+      const remaining = async () => (await fx.rows('form_response_packet', 'formid = $1', [formId])).length;
       expect((await dataManagerAction(fx.deps, ADMIN, { ...rc, delete: 'maybe' }, csrf)).filteredDeletions).toBeNull();
       expect(await remaining()).toBe(MANY);
       expect((await dataManagerAction(fx.deps, ADMIN, { ...rc, delete: 'yes' }, csrf)).filteredDeletions).toBe(MANY);
       expect(await remaining()).toBe(0);
       expect((await dataManagerAction(fx.deps, ADMIN, { ...rc, delete: 'yes' }, csrf)).filteredDeletions).toBeNull();
     });
+  });
+});
+
+describe.skipIf(!(await pgAvailable()))('domain/forms listing', () => {
+  let fx: ContentFixture;
+
+  beforeAll(async () => {
+    fx = await createContentFixture('forms-list-test');
+    await seedForms(fx);
+  });
+
+  afterAll(async () => {
+    await fx?.drop();
+  });
+
+  it('builds cform bean inputs and lists forms', async () => {
+    expect(isCfUuid(cformFormBean({}).formId)).toBe(true);
+    expect(cformFormBean({ FORMID: 'x' }).formId).toBe('x');
+    expect(cformFieldBean({ formID: FORM })).toMatchObject({ formId: FORM, fieldType: 'field-textfield' });
+    expect(cformFieldBean({}).formId).toBeUndefined();
+    expect(cformFieldTypeBean({ fieldtype: 'field-dropdown', fieldTypeID: 'k' })).toEqual({ fieldTypeId: 'k', fieldType: 'field-dropdown' });
+    expect(isCfUuid(cformDatasetBean({ datasetID: '', fieldID: FORM }).datasetId)).toBe(true);
+    expect(cformDatasetBean({ datasetID: 'd' })).toEqual({ datasetId: 'd', fieldId: undefined });
+    const formJson = formBeanJson(cformFormBean({ formID: FORM }));
+    expect((JSON.parse(formJson) as { formid: string }).formid).toBe(FORM);
+    expect(renderCformResponse('json', formJson).contentType).toBe(LEGACY_JSON_CONTENT_TYPE);
+    expect((await getForms(fx.deps, ADMIN, SITE_ID)).map((f) => f.title)).toEqual(['Another', 'My Form']);
+    expect((await getForms(fx.deps, ADMIN, SITE_ID, OTHER_FORM.toLowerCase())).map((f) => f.title)).toEqual(['My Form']);
   });
 });

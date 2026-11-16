@@ -148,7 +148,7 @@ const SAMPLE_ROWS = {
       reminder_n: 1,
       schedule_time: TEST_CLOCK.now(),
       status: 'scheduled',
-      target_route: `/internal/v1/tasks/reminders/${cfUuid()}`,
+      target_route: '/internal/v1/tasks/reminders',
       schedule_version: SCHEDULE_VERSION,
       origin: 'event',
       enqueued_at: null,
@@ -323,7 +323,7 @@ function insertSampleMessage(tx: TenantTx, tenant: TenantFixture): Promise<Messa
   });
 }
 
-/** Stores reminder `n` of survey `sourceId` as the survey.scheduled consumer does, its route naming the stored row. */
+/** Stores reminder `n` of survey `sourceId` as the survey.scheduled consumer does, on the queue's fixed route. */
 async function insertReminderTask(tx: TenantTx, sourceId: string, n = 1): Promise<ScheduledTaskRow> {
   const taskName = `opt2-survey-${sourceId}-reminder-${String(n)}`;
   const serviceUrls = running().env.OPT2_SERVICE_URLS;
@@ -337,7 +337,7 @@ async function insertReminderTask(tx: TenantTx, sourceId: string, n = 1): Promis
       sourceId,
       n,
       scheduleTime: TEST_CLOCK.now(),
-      targetRoute: (scheduledTaskId) => taskTarget({ queue: REMINDER_QUEUE, surveyId: sourceId, scheduledTaskId }, serviceUrls).route,
+      targetRoute: taskTarget(REMINDER_QUEUE, serviceUrls).route,
       scheduleVersion: SCHEDULE_VERSION,
       origin: 'event',
     },
@@ -474,13 +474,12 @@ describe.skipIf(!PG_READY)('communications isolation (requires PG_HOST)', () => 
     it('acknowledges a tenant B reminder task naming the tenant A reminder as ignored and writes nothing', async () => {
       const app = running();
       const foreign = setUp(tenantATask, 'tenant A reminder');
-      const ref = { queue: REMINDER_QUEUE, surveyId: sourceId, scheduledTaskId: foreign.scheduled_task_id };
       const source = { kind: foreign.kind, surveyId: sourceId, siteId: TENANT_A.siteId, scheduleVersion: SCHEDULE_VERSION, n: foreign.reminder_n };
       const task: CreateTaskInput = {
         queue: REMINDER_QUEUE,
         name: foreign.queue_task_name,
         scheduleTime: TEST_CLOCK.now(),
-        url: taskTarget(ref, app.env.OPT2_SERVICE_URLS).url,
+        url: taskTarget(REMINDER_QUEUE, app.env.OPT2_SERVICE_URLS).url,
         body: taskPayload(source, foreign.scheduled_task_id),
         deadlineS: QUEUES[REMINDER_QUEUE].deadlineS,
         tenantId: TENANT_B.tenantId,

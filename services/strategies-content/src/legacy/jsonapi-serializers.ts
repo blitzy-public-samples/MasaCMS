@@ -43,8 +43,8 @@ export interface JsonApiRequestContext {
   /** AllowAction(entity) (1740-1829) for the entity whose links are built. */
   allowAction: (view: ApiEntityView) => boolean | Promise<boolean>;
   site: LegacySiteUrlConfig;
-  /** The site's custom image sizes, in iterator order. */
-  customImageSizes: readonly { name: string }[];
+  /** The custom image sizes, in iterator order, setImageURLs lists for an image entity of site `siteId`; read only then. */
+  customImageSizes: (siteId: string) => Promise<readonly { name: string }[]>;
   /** Stored-file lookups custom image sizes and extension-less image calls need. */
   imageLookups?: Pick<ImageUrlOptions, 'fileExtOf' | 'variantExists' | 'customImageSize'>;
 }
@@ -430,7 +430,7 @@ export async function serializeContentEntity(
   }
 
   if (listFindNoCase(CONTENT_ENTITY_NAMES, view.configName)) {
-    if (allFields || fields.includes('images')) setNoCase(vals, 'images', contentImages(view, ctx));
+    if (allFields || fields.includes('images')) setNoCase(vals, 'images', await contentImages(view, ctx));
     if (allFields || fields.includes('url')) {
       setNoCase(vals, 'url', contentUrl(siteOf(view, ctx), { filename: fieldOf(view, 'filename') }, { complete: true }));
     }
@@ -573,14 +573,14 @@ export async function contentEntityLinks(
  * getImageURL, when the content has an image or the site a placeholder, else {}. URLs keep the legacy direct or
  * `_api/render` forms, never signed URLs.
  */
-export function contentImages(view: ApiEntityView, ctx: JsonApiRequestContext): Record<string, string> {
+export async function contentImages(view: ApiEntityView, ctx: JsonApiRequestContext): Promise<Record<string, string>> {
   const site = siteOf(view, ctx);
   const row = { fileid: fieldOf(view, 'fileId'), fileext: fieldOf(view, 'fileExt'), type: fieldOf(view, 'type') };
   if (!hasImage(row, site)) return {};
   const opts = { ...ctx.imageLookups, complete: true, secure: site.useSSL };
   const images: Record<string, string> = {};
   for (const size of IMAGE_SIZES) setNoCase(images, size, contentImageUrl(site, row, { ...opts, size }));
-  for (const { name } of ctx.customImageSizes) setNoCase(images, name, contentImageUrl(site, row, { ...opts, size: name }));
+  for (const { name } of await ctx.customImageSizes(site.siteId)) setNoCase(images, name, contentImageUrl(site, row, { ...opts, size: name }));
   return images;
 }
 

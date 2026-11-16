@@ -1,6 +1,6 @@
 /** Node, module, restriction and category verdicts of permission.cfc, and the JSON API content AllowAction, over identity-fed projections. */
 import { Roles, isCoreModuleId, moduleRole } from '@opt2/platform/auth';
-import { registryEntryForTenant, withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { registryEntryForTenant, withTenant, type TenantRegistryEntry, type TenantTx } from '@opt2/platform/tenancy';
 import { SITE_TREE_MODULE_ID, type Crumb } from '../repo/content-queries.js';
 import type { GroupProjectionRow, PermissionProjectionRow } from '../repo/tables.js';
 import type { Actor, DomainDeps } from './context.js';
@@ -174,12 +174,8 @@ async function projectedGroups(deps: PermissionDeps, tenantId: string, groupIds:
   return groups;
 }
 
-/** The user pool site ids of the token's site, from its `content.tenant_registry` entry. */
-export async function sitePools(deps: PermissionDeps, actor: Actor): Promise<SitePools> {
-  const entry = await registryEntryForTenant(deps.db, actor.tenantId);
-  if (entry === null) {
-    throw new UnregisteredTenantError(actor.tenantId);
-  }
+/** The user pool site ids of a registry entry's site. */
+function poolsOf(entry: TenantRegistryEntry): SitePools {
   // settingsBean defaults an empty pool id to the site's own id.
   return {
     publicUserPoolId: entry.publicUserPoolId ?? entry.siteId,
@@ -187,21 +183,39 @@ export async function sitePools(deps: PermissionDeps, actor: Actor): Promise<Sit
   };
 }
 
+/** The user pool site ids of the token's site, from its `content.tenant_registry` entry. */
+export async function sitePools(deps: PermissionDeps, actor: Actor): Promise<SitePools> {
+  const entry = await registryEntryForTenant(deps.db, actor.tenantId);
+  if (entry === null) {
+    throw new UnregisteredTenantError(actor.tenantId);
+  }
+  return poolsOf(entry);
+}
+
+/** The ids of the groups the actor is a projected member of, read in the token's user pool tenants; empty for an anonymous actor. */
+async function membershipGroupIds(deps: PermissionDeps, actor: Actor): Promise<string[]> {
+  if (!actor.isLoggedIn || actor.userId === '') {
+    return [];
+  }
+  return distinct(
+    (await inUserPools(deps, actor.tenantId, (tx) => deps.repository.projections.groupsOfUser(tx, actor.userId))).flat(),
+  );
+}
+
 /**
  * The actor's memberships as loginByQuery lists them, read from `content.membership_projection` and `content.group_projection`
  * in the token's public and private user pool tenants; empty for an anonymous actor.
  */
 export async function loadMemberships(deps: PermissionDeps, actor: Actor): Promise<UserMemberships> {
-  if (!actor.isLoggedIn || actor.userId === '') {
-    return NO_MEMBERSHIPS;
-  }
-  const memberOf = distinct(
-    (await inUserPools(deps, actor.tenantId, (tx) => deps.repository.projections.groupsOfUser(tx, actor.userId))).flat(),
-  );
+  const memberOf = await membershipGroupIds(deps, actor);
   if (memberOf.length === 0) {
     return NO_MEMBERSHIPS;
   }
-  const groups = await projectedGroups(deps, actor.tenantId, memberOf);
+  return membershipsOf(memberOf, await projectedGroups(deps, actor.tenantId, memberOf));
+}
+
+/** The loginByQuery membership list of the groups `memberOf` over their projected `groups`. */
+function membershipsOf(memberOf: readonly string[], groups: ReadonlyMap<string, GroupProjectionRow>): UserMemberships {
   const entries: string[] = [];
   const groupIds: string[] = [];
   for (const groupId of memberOf) {
@@ -250,6 +264,17 @@ async function loadVerdictSource(
   return { memberships: held, pools, rows, groups };
 }
 
+/** Whether the actor holds a live projected group by its name in the site's pool its `isPublic` selects, as permission.cfc matches a granted group. */
+function heldByName(memberships: UserMemberships, pools: SitePools, group: GroupProjectionRow | undefined): boolean {
+  if (group === undefined || group.deleted) {
+    return false;
+  }
+  const name = group.group_name ?? '';
+  return isPublicGroup(group)
+    ? listFind(memberships.names, `${name};${pools.publicUserPoolId};1`)
+    : listFind(memberships.names, `${name};${pools.privateUserPoolId};0`);
+}
+
 /** getPermVerdict: some `type` grant on the node names a group the actor holds by name in the site's matching pool. */
 function granted(source: VerdictSource, node: NodeRef, type: string): boolean {
   const { pools, memberships, groups } = source;
@@ -262,14 +287,7 @@ function granted(source: VerdictSource, node: NodeRef, type: string): boolean {
     if (ciKey(row.content_id) !== contentKey || ciKey(row.site_id) !== siteKey || ciKey(row.type) !== type) {
       return false;
     }
-    const group = groups.get(ciKey(row.group_id));
-    if (group === undefined || group.deleted) {
-      return false;
-    }
-    const name = group.group_name ?? '';
-    return isPublicGroup(group)
-      ? listFind(memberships.names, `${name};${pools.publicUserPoolId};1`)
-      : listFind(memberships.names, `${name};${pools.privateUserPoolId};0`);
+    return heldByName(memberships, pools, groups.get(ciKey(row.group_id)));
   });
 }
 
@@ -374,6 +392,51 @@ export function getModulePerm(actor: Actor, moduleId: string): boolean {
     isS2(actor) ||
     actor.roles.includes(Roles.siteAdmin) ||
     (isCoreModuleId(moduleId) && actor.roles.includes(moduleRole(moduleId)))
+  );
+}
+
+/**
+ * getModulePerm [permission.cfc:302-362] on `siteId`, the site of a loaded bean: the token's roles on the token's site; on the
+ * token's `pool` pool site, S2, that site's private-pool `Admin` membership, or a `moduleId` grant on that site to a group held
+ * by name in its user pools. Any other site gives false.
+ */
+export async function getSiteModulePerm(
+  deps: PermissionDeps,
+  actor: Actor,
+  moduleId: string,
+  siteId: string,
+  pool: PoolScope,
+): Promise<boolean> {
+  if (ciKey(siteId) === ciKey(actor.siteId)) {
+    return getModulePerm(actor, moduleId);
+  }
+  if (isS2(actor)) {
+    return true;
+  }
+  const memberOf = await membershipGroupIds(deps, actor);
+  if (memberOf.length === 0) {
+    return false;
+  }
+  const poolSite = await withPoolTenant(deps.db, actor.tenantId, pool, async (tx, tenantId) => {
+    const entry = await registryEntryForTenant(tx, tenantId);
+    if (entry === null) {
+      throw new UnregisteredTenantError(tenantId);
+    }
+    if (ciKey(entry.siteId) !== ciKey(siteId)) {
+      return null;
+    }
+    const rows = await deps.repository.projections.permissionsForNodes(tx, { siteId, contentIds: [moduleId] });
+    return { tenantId, pools: poolsOf(entry), rows };
+  });
+  if (poolSite === null) {
+    return false;
+  }
+  // Only groups stored in the pool site's user pools carry its pool ids, so their membership entries are read there.
+  const groups = await projectedGroups(deps, poolSite.tenantId, distinct([...memberOf, ...poolSite.rows.map((row) => row.group_id)]));
+  const memberships = membershipsOf(memberOf, groups);
+  return (
+    adminMember(memberships, poolSite.pools) ||
+    poolSite.rows.some((row) => heldByName(memberships, poolSite.pools, groups.get(ciKey(row.group_id))))
   );
 }
 

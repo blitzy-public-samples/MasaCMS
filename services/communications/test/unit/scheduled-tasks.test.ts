@@ -121,8 +121,8 @@ describe('listScheduledTasks after schedule versions 1 and 2', () => {
       }),
     );
     expect(body.items.map((item) => item.targetRoute)).toEqual([
-      `/internal/v1/tasks/surveys/${SURVEY_ID}/launch`,
-      ...stored.filter((row) => row.kind === 'survey-reminder').map((row) => `/internal/v1/tasks/reminders/${row.scheduled_task_id}`),
+      '/internal/v1/tasks/surveys/launch',
+      ...stored.filter((row) => row.kind === 'survey-reminder').map(() => '/internal/v1/tasks/reminders'),
     ]);
   });
 

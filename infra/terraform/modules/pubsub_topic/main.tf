@@ -86,3 +86,16 @@ resource "google_pubsub_topic_iam_member" "dlq_consumer" {
   role    = "roles/pubsub.publisher"
   member  = "serviceAccount:${each.value.consumer_email}"
 }
+
+# Keyed by replay subscription and email so bindings stay stable when either list is reordered.
+resource "google_pubsub_subscription_iam_member" "replay_subscriber" {
+  for_each = {
+    for pair in setproduct(keys(var.subscriptions), distinct(var.replay_subscriber_emails)) :
+    "${var.subscriptions[pair[0]].dlq_replay_subscription}|${pair[1]}" => { subscription = pair[0], email = pair[1] }
+  }
+
+  project      = var.project_id
+  subscription = google_pubsub_subscription.dlq_replay[each.value.subscription].name
+  role         = "roles/pubsub.subscriber"
+  member       = "serviceAccount:${each.value.email}"
+}

@@ -8,3 +8,6 @@ export * from './transports.js';
 export * from './hooks.js';
 export * from './matrix.js';
 export { untilAborted } from './deadline.js';
+// The JOSE library pinned in platform/package.json: JWT signing, decoding and verification, and key export.
+export { SignJWT, jwtVerify, decodeJwt, decodeProtectedHeader, createLocalJWKSet, exportJWK, exportPKCS8 } from 'jose';
+export type { JWK, JSONWebKeySet } from 'jose';

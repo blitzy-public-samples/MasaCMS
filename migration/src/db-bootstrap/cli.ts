@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// `opt2-db` CLI: bootstraps every OPT-2 schema with its role chain and migrations, and prints one JSON summary line.
+// `opt2-db` CLI: bootstraps every OPT-2 schema with its role chain and migrations, or tears them down locally, and
+// prints one JSON summary line.
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -9,7 +10,7 @@ import { logFailure, safeFailure, stderrLogger, writeLine } from '../cli-diagnos
 import type { MigrateIo } from '../cli.js';
 import { loadConfig } from '../config.js';
 import { BOOTSTRAP_TARGETS, loadBootstrapEnv, missingForTarget, type BootstrapTarget } from './env.js';
-import { bootstrap, BootstrapEnvError } from './index.js';
+import { bootstrap, BootstrapEnvError, teardown } from './index.js';
 import { MigrationFailedError, SchemaNotEmptyError } from './migrations.js';
 
 const CLI_NAME = 'opt2-db';
@@ -17,12 +18,22 @@ const LOGGER_IDENTITY = { service: 'db-bootstrap', version: '1.0.0' } as const;
 const TARGET_FLAG = '--target';
 const HELP_TOKENS: ReadonlySet<string> = new Set(['--help', '-h', 'help']);
 
+type CommandName = 'bootstrap' | 'teardown';
+// The cloud bootstrap is declared but never executed, so only a local stack is torn down.
+const TARGETS_OF: Readonly<Record<CommandName, readonly BootstrapTarget[]>> = {
+  bootstrap: BOOTSTRAP_TARGETS,
+  teardown: ['local'],
+};
+
 const SYNOPSIS = [
   `Usage: ${CLI_NAME} bootstrap ${TARGET_FLAG} ${BOOTSTRAP_TARGETS.join('|')}`,
+  `       ${CLI_NAME} teardown ${TARGET_FLAG} ${TARGETS_OF.teardown.join('|')}`,
   `       ${CLI_NAME} --help`,
   '',
   '  local  drops and recreates every OPT-2 schema and role; role passwords from $OPT2_STATE_DIR/secrets/db-<schema>-{app,migrator}',
   '  cloud  Cloud SQL as the built-in postgres admin plus IAM users; refuses schemas that already hold tables',
+  '',
+  'teardown drops every OPT-2 schema and its roles from local PostgreSQL; it is repeatable and reads no password file.',
   '',
 ];
 const SUMMARY_NOTE = 'Prints one JSON summary line on stdout.';
@@ -61,6 +72,7 @@ export const HELP = [
 export type ParsedArgs =
   | { kind: 'help' }
   | { kind: 'bootstrap'; target: BootstrapTarget }
+  | { kind: 'teardown'; target: 'local' }
   | { kind: 'usage-error'; message: string };
 
 function isTarget(value: string): value is BootstrapTarget {
@@ -76,7 +88,8 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   if (argv.some((token) => HELP_TOKENS.has(token))) return { kind: 'help' };
   const [command, ...rest] = argv;
   if (command === undefined || command.startsWith('-')) return usageError('missing command');
-  if (command !== 'bootstrap') return usageError(`unknown command ${JSON.stringify(command)}`);
+  if (command !== 'bootstrap' && command !== 'teardown') return usageError(`unknown command ${JSON.stringify(command)}`);
+  const allowed = TARGETS_OF[command];
   const values: string[] = [];
   for (let token = rest.shift(); token !== undefined; token = rest.shift()) {
     if (token === TARGET_FLAG) {
@@ -91,11 +104,14 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   }
   const [target, extra] = values;
   if (extra !== undefined) return usageError(`${TARGET_FLAG} given more than once`);
-  if (target === undefined) return usageError(`${TARGET_FLAG} ${BOOTSTRAP_TARGETS.join('|')} is required`);
+  if (target === undefined) return usageError(`${TARGET_FLAG} ${allowed.join('|')} is required`);
   if (!isTarget(target)) {
-    return usageError(`${TARGET_FLAG} must be one of ${BOOTSTRAP_TARGETS.join(', ')}, got ${JSON.stringify(target)}`);
+    return usageError(`${TARGET_FLAG} must be one of ${allowed.join(', ')}, got ${JSON.stringify(target)}`);
   }
-  return { kind: 'bootstrap', target };
+  if (!allowed.includes(target)) {
+    return usageError(`${command} supports only ${TARGET_FLAG} ${allowed.join('|')}, not ${JSON.stringify(target)}`);
+  }
+  return command === 'bootstrap' ? { kind: command, target } : { kind: command, target: 'local' };
 }
 
 /** `safeFailure` of `error`, then the fields naming what failed. */
@@ -131,7 +147,7 @@ export async function main(
     io.stderr.write(`${CLI_NAME}: ${parsed.message}\n${USAGE}`);
     return 2;
   }
-  const { target } = parsed;
+  const { kind: command, target } = parsed;
   let logger: logging.Logger | undefined;
   try {
     const env = loadBootstrapEnv(source);
@@ -146,15 +162,16 @@ export async function main(
       googleCloudProject: env.GOOGLE_CLOUD_PROJECT,
       destination: io.stderr,
     });
-    const summary = await bootstrap({ target, env, config, logger });
+    const summary =
+      command === 'bootstrap' ? await bootstrap({ target, env, config, logger }) : await teardown({ env, config, logger });
     io.stdout.write(`${JSON.stringify(summary)}\n`);
     return summary.ok ? 0 : 1;
   } catch (error) {
     // Before the logger exists, the same identity logs on stderr, as local when the cloud project cannot form the trace key.
     const failureLogger =
       logger ?? stderrLogger(logging, io, { ...LOGGER_IDENTITY, env: target, googleCloudProject: source.GOOGLE_CLOUD_PROJECT });
-    logFailure(logging, failureLogger, 'bootstrap failed', error);
-    writeLine(logging, io, { command: 'bootstrap', target, ok: false, error: failureOf(error) });
+    logFailure(logging, failureLogger, `${command} failed`, error);
+    writeLine(logging, io, { command, target, ok: false, error: failureOf(error) });
     return 1;
   }
 }

@@ -9,7 +9,7 @@ import { Readable } from 'node:stream';
 import { text } from 'node:stream/consumers';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { DestinationStream } from 'pino';
-import { errorCodes, type FastifyInstance, type FastifyRequest } from 'fastify';
+import { errorCodes, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AuthDenial,
@@ -54,11 +54,13 @@ import {
   legacyParamsOf,
   legacyScopesOf,
   multipartFilesOf,
+  recordLogScope,
   recordOutcomeReason,
   sendLegacyResponse,
   UNMATCHED_ROUTE,
   type CreateServiceOptions,
   type LegacyParamsOptions,
+  type RequestLogScope,
 } from '../../src/service-kit/create-service.js';
 import { loadEnv, type BaseEnv } from '../../src/service-kit/env.js';
 import { recordEventScope } from '../../src/service-kit/event-scope.js';
@@ -123,10 +125,10 @@ const AUTHENTICATED = { [INVOCATION_HEADER]: SERVICE_CREDENTIAL, authorization: 
 
 type LogLine = Record<string, unknown>;
 
-function captureLogger(): { logger: Logger; lines: LogLine[] } {
+function captureLogger(level?: string): { logger: Logger; lines: LogLine[] } {
   const lines: LogLine[] = [];
   const destination: DestinationStream = { write: (chunk: string) => void lines.push(JSON.parse(chunk) as LogLine) };
-  return { logger: createLogger({ service: 'people', version: '1.0.0', env: 'local', destination }), lines };
+  return { logger: createLogger({ service: 'people', version: '1.0.0', env: 'local', level, destination }), lines };
 }
 
 const apps: FastifyInstance[] = [];
@@ -2350,6 +2352,119 @@ describe('request log line', () => {
       }
     },
   );
+
+  const RECORDED = { route: 'fixture:people.persons.archive', tenantId: tenantIdForSite('tenant-b'), userId: 'C3D4E5F6-0718-293A-4B5C6D7E8F900112' };
+  const RECORDED_SCOPE = { tenantId: RECORDED.tenantId, userId: RECORDED.userId };
+
+  interface RecordedCase {
+    label: string;
+    headers: Record<string, string>;
+    records: RequestLogScope[];
+    status: number;
+    reason: string | null;
+    warning: string | null;
+    scope: typeof PRINCIPAL | typeof ANONYMOUS | typeof RECORDED_SCOPE;
+    verified: string | undefined;
+  }
+
+  it.each<RecordedCase>([
+    { label: 'a public 200', headers: {}, records: [RECORDED], status: 200, reason: null, warning: null, scope: RECORDED_SCOPE, verified: undefined },
+    {
+      label: 'a handler 403 recorded in two steps',
+      headers: {},
+      records: [{ route: RECORDED.route }, { tenantId: RECORDED.tenantId, userId: RECORDED.userId }],
+      status: 403,
+      reason: 'notOwner',
+      warning: 'request denied: notOwner',
+      scope: RECORDED_SCOPE,
+      verified: undefined,
+    },
+    { label: 'a recorded route alone', headers: {}, records: [{ route: RECORDED.route }], status: 200, reason: null, warning: null, scope: ANONYMOUS, verified: undefined },
+    {
+      label: 'empty values after a recorded scope',
+      headers: {},
+      records: [RECORDED, { route: '', tenantId: '', userId: '' }],
+      status: 200,
+      reason: null,
+      warning: null,
+      scope: RECORDED_SCOPE,
+      verified: undefined,
+    },
+    {
+      label: 'empty values alone',
+      headers: {},
+      records: [{ route: RECORDED.route }, { route: '', tenantId: '', userId: '' }],
+      status: 200,
+      reason: null,
+      warning: null,
+      scope: ANONYMOUS,
+      verified: undefined,
+    },
+    { label: 'a verified user', headers: AUTHENTICATED, records: [RECORDED], status: 200, reason: null, warning: null, scope: PRINCIPAL, verified: TENANT_A_ID },
+  ])(
+    'logs $label under the recorded route, with the verified tenant and user else the recorded ones, leaving the request context unchanged',
+    async ({ headers, records, status, reason, warning, scope, verified }) => {
+      const { app, lines } = await build();
+      let seen: unknown;
+      app.get('/recorded/:id', { config: { opt2: { public: true } } }, async (request, reply) => {
+        for (const record of records) recordLogScope(request, record);
+        if (reason !== null) recordOutcomeReason(request, reason);
+        seen = { store: currentRequestContext()?.tenantId, user: currentRequestContext()?.user?.sub, request: request.opt2.tenantId };
+        return reply.code(status).send('answered');
+      });
+      const res = await app.inject({ method: 'GET', url: '/recorded/a?key=push-key-value', headers });
+      expect(res.statusCode).toBe(status);
+      expect(seen).toStrictEqual({ store: verified, user: verified === undefined ? undefined : USER_ID, request: verified });
+      const outcomes = lines.filter((line) => line.severity === 'WARNING' || line.message === 'request completed');
+      expect(outcomes.map((line) => line.message)).toStrictEqual([...(warning === null ? [] : [warning]), 'request completed']);
+      for (const line of outcomes) {
+        expect(validateLogRecord(line).errors).toStrictEqual([]);
+        expect(line).toMatchObject({ route: RECORDED.route, httpMethod: 'GET', statusCode: status });
+        expect({ tenantId: line.tenantId, userId: line.userId }).toStrictEqual(scope);
+      }
+      expect(JSON.stringify(lines)).not.toContain('push-key-value');
+    },
+  );
+
+  it.each([
+    { label: 'a polled 200', url: '/polled/ok', headers: AUTHENTICATED, expected: [['DEBUG', 'request completed', 200]] },
+    { label: 'a polled 302', url: '/polled/moved', headers: AUTHENTICATED, expected: [['DEBUG', 'request completed', 302]] },
+    {
+      label: 'a polled 401',
+      url: '/polled/ok',
+      headers: {},
+      expected: [
+        ['WARNING', 'request denied: missing-credential', 401],
+        ['INFO', 'request completed', 401],
+      ],
+    },
+    { label: 'a polled 404', url: '/polled/missing', headers: AUTHENTICATED, expected: [['INFO', 'request completed', 404]] },
+    {
+      label: 'a polled 500',
+      url: '/polled/broken',
+      headers: AUTHENTICATED,
+      expected: [
+        ['ERROR', 'unhandled error', null],
+        ['INFO', 'request completed', 500],
+      ],
+    },
+    { label: 'a 200 of a route without the opt-in', url: '/plain/ok', headers: AUTHENTICATED, expected: [['INFO', 'request completed', 200]] },
+  ])("logs $label at the level the route's opt2Log and the status select", async ({ url, headers, expected }) => {
+    const { logger, lines } = captureLogger('debug');
+    const { app } = await build({ logger });
+    const answer = async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply): Promise<FastifyReply> => {
+      const { id } = request.params;
+      if (id === 'broken') throw new Error('poll failed');
+      if (id === 'moved') return reply.redirect('/polled/ok');
+      return reply.code(id === 'missing' ? 404 : 200).send({ id });
+    };
+    app.get('/polled/:id', { config: { opt2: { requires: ['s2'] }, opt2Log: { successLevel: 'debug' } } }, answer);
+    app.get('/plain/:id', { config: { opt2: { requires: ['s2'] } } }, answer);
+    await app.inject({ method: 'GET', url, headers });
+    const outcomes = lines.filter((line) => line.severity !== 'DEBUG' || line.message === 'request completed');
+    expect(outcomes.map((line) => [line.severity, line.message, line.statusCode ?? null])).toStrictEqual(expected);
+    for (const line of outcomes) expect(validateLogRecord(line).errors).toStrictEqual([]);
+  });
 });
 
 describe('graceful shutdown', () => {

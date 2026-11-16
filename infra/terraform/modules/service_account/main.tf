@@ -20,3 +20,13 @@ resource "google_service_account_iam_member" "account" {
   role               = each.value.role
   member             = each.value.member
 }
+
+# Read access to existing secrets this configuration references but never creates; keyed by secret id.
+resource "google_secret_manager_secret_iam_member" "secret_access" {
+  for_each = toset(var.secret_access)
+
+  project   = var.project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.this.email}"
+}

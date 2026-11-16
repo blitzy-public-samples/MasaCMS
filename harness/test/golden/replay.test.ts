@@ -697,6 +697,45 @@ describe('main flags', () => {
     expect((await readSessionState('GS-ID-09', env))?.completed).toBe(true);
   });
 
+  it.each<{
+    label: string;
+    flags: string[];
+    code: number;
+    summary: Record<string, unknown>;
+    /** Resumed gateway requests as `[query, cookie]`. */
+    steps: (string | null)[][];
+    completed: boolean;
+  }>([
+    {
+      label: 'refuses the resume without --rehearsal, which needs v0002',
+      flags: [],
+      code: 1,
+      summary: { error: 'the gateway has v0003 active; replay needs v0002' },
+      steps: [],
+      completed: false,
+    },
+    {
+      label: 'resumes the session saved under v0002 with --rehearsal --only',
+      flags: ['--rehearsal'],
+      code: 0,
+      summary: { replayed: 1 },
+      steps: [['?muraAction=cUsers.list', SESSION_COOKIE]],
+      completed: true,
+    },
+  ])('GS-ID-09 after the v0003 activation: $label', async ({ flags, code, summary, steps, completed }) => {
+    const invoker = await operatorInvoker();
+    const only = ['--only', 'GS-ID-09', '--catalogue', catalogueFile];
+    const paused = await main(['--phase', 'pre-transition', ...only], env, mainDeps(fakeStack(), invoker));
+    expect(paused).toEqual({ code: 0, summary: summaryOf({ paused: 1 }) });
+    const after = fakeStack({ tableVersion: 'v0003' });
+
+    const resumed = await main([...flags, '--phase', 'resume', ...only], env, mainDeps(after, invoker));
+
+    expect(resumed).toEqual({ code, summary: summaryOf({ ...summary, tableVersion: 'v0003' }) });
+    expect(after.steps().map((s) => [s.url.search, s.headers.get('cookie')])).toEqual(steps);
+    expect((await readSessionState('GS-ID-09', env))?.completed).toBe(completed);
+  });
+
   it('masks a configured reload key in the admin reload link of the saved sessions and the replay output', async () => {
     const invoker = await operatorInvoker();
     const key = ['FIXTURE', 'reload', 'key'].join('-');

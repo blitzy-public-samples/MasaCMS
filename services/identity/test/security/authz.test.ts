@@ -1,6 +1,5 @@
 /** In-process authorisation matrix of identity as its composition root builds it: every route × subject, the legacy handler gates, the site check, transport separation and deny by default. */
 import { isDeepStrictEqual } from 'node:util';
-import { decodeJwt } from 'jose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   AuthDenial,
@@ -11,6 +10,7 @@ import {
   TASKS_INVOKER_ROLE,
   UndeclaredRouteError,
   collectRouteMatrix,
+  decodeJwt,
   isServiceRole,
   moduleRole,
   renderAuthDenial,
@@ -407,6 +407,7 @@ const EXPECTED: Readonly<Record<string, Row>> = {
   'POST /internal/v1/accounts::username-candidates': service(PEOPLE_ONLY, { method: 'POST', url: '/internal/v1/accounts:username-candidates', payload: {} }),
   'POST /internal/v1/accounts::memberships': service(PEOPLE_ONLY, { method: 'POST', url: '/internal/v1/accounts:memberships', payload: {} }),
   'GET /internal/v1/groups': service(PEOPLE_ONLY, { method: 'GET', url: '/internal/v1/groups?ispublic=2' }),
+  'GET /internal/v2/groups': service(PEOPLE_ONLY, { method: 'GET', url: '/internal/v2/groups?ispublic=2' }),
   // people's invocation credential alone is admitted: the favorites templates run for anonymous visitors.
   'POST /internal/v1/group-favorites::lookup': service(PEOPLE_ONLY, { method: 'POST', url: '/internal/v1/group-favorites:lookup', payload: {} }),
   'GET /internal/v1/accounts/:userId/operations/:operationId': service(PEOPLE_ONLY, { method: 'GET', url: operationUrl() }),

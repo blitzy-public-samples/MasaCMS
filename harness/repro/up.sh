@@ -80,6 +80,9 @@ STARTED_ANYTHING=false
 NATIVE_TASK_EXISTED=false
 LEGACY_DEVIATION=""
 SNAPSHOT_JSON=null
+# Name and pid of the target process launch started that up.json does not record yet.
+UNRECORDED_NAME=""
+UNRECORDED_PID=""
 
 # log_step, remembering the step for the exit message.
 step() {
@@ -87,11 +90,27 @@ step() {
   log_step "$@"
 }
 
-# An EXIT trap rather than ERR: die exits directly, which an ERR trap never sees. Nothing is torn down here.
+# An EXIT trap rather than ERR: die exits directly, which an ERR trap never sees. Only an unrecorded launch is stopped.
 on_exit() {
-  local status=$?
+  local status=$? count
   ((status != 0)) || return 0
   printf 'opt2: up.sh failed at step %s\n' "$CURRENT_STEP" >&2
+  if [[ -n $UNRECORDED_PID ]]; then
+    # A subshell, so a stop_process that dies still lets this report finish.
+    if count="$(stop_process "$UNRECORDED_PID" "OPT2_SERVICE_NAME=$UNRECORDED_NAME" "OPT2_STATE_DIR=$OPT2_STATE_DIR" &&
+      printf '%s' "$STOPPED_PROCESS_COUNT")"; then
+      if ((count > 0)); then
+        printf 'opt2: up.sh stopped %s (pid %s) because it could not record it in %s/up.json\n' \
+          "$UNRECORDED_NAME" "$UNRECORDED_PID" "$OPT2_STATE_DIR" >&2
+      else
+        printf 'opt2: %s (pid %s), which up.sh could not record in %s/up.json, has already exited\n' \
+          "$UNRECORDED_NAME" "$UNRECORDED_PID" "$OPT2_STATE_DIR" >&2
+      fi
+    else
+      printf 'opt2: up.sh could not record %s (pid %s) in %s/up.json nor stop it; stop that process group by hand\n' \
+        "$UNRECORDED_NAME" "$UNRECORDED_PID" "$OPT2_STATE_DIR" >&2
+    fi
+  fi
   if [[ $STARTED_ANYTHING == true ]]; then
     printf 'opt2: what it started is recorded in %s/up.json and tooling.json; run harness/repro/down.sh to stop it\n' \
       "$OPT2_STATE_DIR" >&2
@@ -143,10 +162,15 @@ legacy_listening() {
 
 # Stops the CommandBox servers on legacy's port: opt2-legacy first, since it shares the original's server home and pid file.
 stop_coldfusion() {
-  local name status original
+  local name status original record
   original="$(json_get "$CAPTURE_FILE" name 2>/dev/null)" || original=""
   for name in "$LEGACY_SERVER_NAME" "$original"; do
     if [[ -z $name || $name == null ]] || ! legacy_listening; then continue; fi
+    if [[ $name == "$LEGACY_SERVER_NAME" ]]; then
+      record="$(legacy_registration)" || exit 1
+      # A registration in another server home is never stopped.
+      legacy_record_home_ours "$record" || continue
+    fi
     status="$(box server info name="$name" --json </dev/null 2>/dev/null | json_get - status 2>/dev/null)" || status=""
     if [[ -n $status && ${status,,} != stopped ]]; then
       box server stop name="$name" </dev/null >&2 || die "box server stop name=$name failed"
@@ -159,8 +183,7 @@ stop_coldfusion() {
 ensure_cfpm_packages() {
   local home cfpm out line name list
   local -a installed=() missing=()
-  home=${OPT2_CF_SERVER_HOME:-}
-  if [[ -z $home ]]; then home="$(json_get "$CAPTURE_FILE" serverHomeDirectory 2>/dev/null)" || home=""; fi
+  home="$(legacy_server_home)"
   cfpm="$home/WEB-INF/cfusion/bin/cfpm.sh"
   [[ -x $cfpm ]] || die "no cfpm at $cfpm: the captured server home must hold the installed ACF 2023 engine"
   out="$("$cfpm" list 2>&1)" || die "cfpm list failed: $out"
@@ -189,31 +212,39 @@ write_up_state() {
   rm -f -- "$patch"
 }
 
-# Records target process <name> with <pid> in up.json in the form down.sh and the harness respawn it from.
+# record_process <name> <pid> [start-time]: records target process <name> in up.json in the form down.sh and the
+# harness respawn it from; the start time, when given, is what down.sh checks before signalling <pid>.
 record_process() {
-  local name=$1 pid=$2 env_text command port dir
+  local name=$1 pid=$2 start=${3:-} env_text command port dir
   env_text="$(process_env "$name")" || exit 1
   command="$(process_command_json "$name")" || exit 1
   port="$(process_port "$name")" || exit 1
   dir="$(process_dir "$name")" || exit 1
   # shellcheck disable=SC2016 # JavaScript source
   printf '%s' "$env_text" | node -e '
-const [name, pid, port, cwd, command, log] = process.argv.slice(1);
+const [name, pid, start, port, cwd, command, log] = process.argv.slice(1);
 const env = {};
 for (const line of require("fs").readFileSync(0, "utf8").split("\n")) {
   const eq = line.indexOf("=");
   if (eq > 0) env[line.slice(0, eq)] = line.slice(eq + 1);
 }
 const entry = { pid: Number(pid), port: Number(port), cwd, command: JSON.parse(command), env, log };
+if (start !== "") entry.startTime = start;
 process.stdout.write(JSON.stringify({ processes: { [name]: entry } }));
-' -- "$name" "$pid" "$port" "$dir" "$command" "$PROCESS_OUTPUT_DIR/$name.out" | write_up_state
+' -- "$name" "$pid" "$start" "$port" "$dir" "$command" "$PROCESS_OUTPUT_DIR/$name.out" | write_up_state
 }
 
-# Starts target process <name>, records it at once, then waits for its health endpoint.
+# Starts target process <name>, records it at once, then waits for its health endpoint; on_exit stops it until recorded.
 launch() {
-  local name=$1 pid
+  local name=$1 pid start
   pid="$(start_process "$name")" || die "cannot start $name"
-  record_process "$name" "$pid"
+  UNRECORDED_NAME=$name
+  UNRECORDED_PID=$pid
+  # Empty once the process has exited; down.sh then finds only what is left of its session.
+  start="$(_opt2_proc_start_time "$pid")" || start=""
+  record_process "$name" "$pid" "$start"
+  UNRECORDED_NAME=""
+  UNRECORDED_PID=""
   wait_healthy "$name" "$PROCESS_TIMEOUT_S"
   printf 'opt2: %s healthy (pid %s, port %s)\n' "$name" "$pid" "$(process_port "$name")" >&2
 }
@@ -267,19 +298,17 @@ if (task !== undefined) process.stdout.write(JSON.stringify(task));
 
 # --- Preconditions ---------------------------------------------------------------------------------------------
 
+# The pin is confirmed before the lock, any state write or any install.
+require_cmd git node
+confirm_pin_preflight
 lock_acquire up
 export MURA_ADMIN_USERNAME="${MURA_ADMIN_USERNAME:-admin}"
-require_env PORT MURA_DBHOST MURA_DBPORT MURA_DATABASE MURA_DBUSERNAME MURA_DBPASSWORD MURA_ADMIN_PASSWORD \
-  PG_HOST PG_PORT PG_USER PG_PASSWORD PG_DATABASE CFCONFIG_ADMINPASSWORD
-if [[ -n ${MURA_DBTYPE:-} && ${MURA_DBTYPE,,} != mssql ]]; then
-  die "MURA_DBTYPE=$MURA_DBTYPE: the OPT-2 stack needs the SQL Server legacy database (pristine backup, opt2_sync," \
-    "snapshots); a MySQL fallback is a baseline deviation that stops the migration stages"
-fi
+require_env PORT PG_HOST PG_PORT PG_USER PG_PASSWORD PG_DATABASE CFCONFIG_ADMINPASSWORD
 # mssql-tools18 installs sqlcmd outside PATH; load-fixtures.sh looks it up on PATH too.
 if ! command -v sqlcmd >/dev/null 2>&1 && [[ -x /opt/mssql-tools18/bin/sqlcmd ]]; then
   PATH="$PATH:/opt/mssql-tools18/bin"
 fi
-require_cmd git node npm box sqlcmd pg_isready psql curl tar sha256sum gcloud otelcol-contrib flock setsid
+require_cmd git node npm box sqlcmd pg_isready psql curl tar sha256sum gcloud otelcol-contrib flock setsid ps
 check_target_ports
 # Every process, tool and harness command shares these with the emulator; the service URL map is always ports.env's.
 export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-opt2-local}"
@@ -289,6 +318,13 @@ ensure_state_dirs
 # The target ports are free, so an earlier stack's processes are gone and its up.json is stale.
 rm -f -- "$OPT2_STATE_DIR/up.json"
 capture_server
+# The captured server's env block decides the Masa settings from here on, for every step and process alike.
+adopt_captured_server_env
+require_env MURA_DBHOST MURA_DBPORT MURA_DATABASE MURA_DBUSERNAME MURA_DBPASSWORD MURA_ADMIN_PASSWORD
+if [[ -n ${MURA_DBTYPE:-} && ${MURA_DBTYPE,,} != mssql ]]; then
+  die "MURA_DBTYPE=$MURA_DBTYPE: the OPT-2 stack needs the SQL Server legacy database (pristine backup, opt2_sync," \
+    "snapshots); a MySQL fallback is a baseline deviation that stops the migration stages"
+fi
 resolve_tz
 printf 'opt2: TZ=%s\n' "$TZ" >&2
 
@@ -297,7 +333,7 @@ printf 'opt2: TZ=%s\n' "$TZ" >&2
 step 1 "pin and local versions"
 [[ "$(node -v)" == "$NODE_VERSION" ]] || die "node $(node -v) found; OPT-2 pins Node.js $NODE_VERSION"
 [[ "$(npm -v)" == "$NPM_VERSION" ]] || die "npm $(npm -v) found; OPT-2 pins npm $NPM_VERSION"
-# The pin check runs on harness's tsx, so platform and harness install first and the other packages in step 3.
+# The full pin checker runs on harness's tsx, so it follows the platform and harness installs; the rest build in step 3.
 build_package platform
 build_package harness ci
 harness_run check:pin -- --confirm >&2 || die "the source pin is not confirmed (summary above)"

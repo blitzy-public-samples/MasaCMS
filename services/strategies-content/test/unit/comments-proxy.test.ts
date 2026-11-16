@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { LEGACY_ERROR_PAGE_HTML, LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
-import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
-import { getCommentValues, getContentStatsValues, type CommentValues } from '../../src/domain/comments.js';
+import { BUSINESS_DATE, TENANT_A, TENANT_B, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
+import { getCommentValues, getContentStatsValues, type CommentGetValues } from '../../src/domain/comments.js';
 import { CONTENT_CONFIG_DEFAULTS, type DomainDeps } from '../../src/domain/context.js';
 import { STATS_DEFAULTS, statsValues } from '../../src/domain/stats.js';
 import { muraJsonEncode } from '../../src/legacy/cfjson.js';
@@ -137,7 +137,7 @@ describe('commentsProxy.cfc data methods', () => {
   }
 
   /** `get`'s expected body: the domain's comment values under the bean instance id the response carries, which every load draws afresh. */
-  async function expectedGetBody(body: string, commentId: string): Promise<{ text: string; values: CommentValues }> {
+  async function expectedGetBody(body: string, commentId: string): Promise<{ text: string; values: CommentGetValues }> {
     const values = await getCommentValues(deps, TENANT_A.tenantId, commentId, { scheme: 'http' });
     const instanceID = /"instanceid":"([^"]+)"/.exec(body)?.[1];
     return { text: muraJsonEncode({ ...values, instanceID }), values };
@@ -156,6 +156,7 @@ describe('commentsProxy.cfc data methods', () => {
     const expected = await expectedGetBody(res.body, COMMENT);
     expect(expected.values).toMatchObject({ isNew: 0, commentID: COMMENT, contentID: WITHOUT_STATS, name: 'Approved Reader', isApproved: 1 });
     expect(res.body).toBe(expected.text);
+    expect(res.body).toContain('"entered":"2026-06-28 09:00:00.0"');
   });
 
   it('get of an unknown commentID answers a new bean holding that id, as load() leaves a miss', async () => {
@@ -165,6 +166,7 @@ describe('commentsProxy.cfc data methods', () => {
     const expected = await expectedGetBody(res.body, UNKNOWN_COMMENT);
     expect(expected.values).toMatchObject({ isNew: 1, commentID: UNKNOWN_COMMENT, contentID: '', siteID: '', name: '', flagCount: 0 });
     expect(res.body).toBe(expected.text);
+    expect(res.body).toContain(`"entered":"{ts \\'${BUSINESS_DATE} 12:00:00\\'}"`);
   });
 
   it.each<[string, string, () => object]>([

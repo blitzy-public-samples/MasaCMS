@@ -29,8 +29,11 @@ export interface LegacyBeforeSendResult {
 /** Runs once legacy's status and headers are known, before any byte reaches the client; a rejection answers the 503 instead. */
 export type LegacyBeforeSend = (upstream: LegacyUpstream) => Promise<LegacyBeforeSendResult | void>;
 
-/** What `beforeSend` decided: the `Set-Cookie` replacement it asked for, or that it rejected. */
-type BeforeSendOutcome = { failed: false; setCookies: string[] | undefined } | { failed: true };
+/** What `beforeSend` decided: the `Set-Cookie` replacement it asked for, or its rejection. */
+type BeforeSendOutcome = { failed: false; setCookies: string[] | undefined } | { failed: true; error: unknown };
+
+/** Fail-closed reason of a legacy response a rejected `beforeSend` withholds. */
+const BEFORE_SEND_FAILED = 'legacy response withheld: beforeSend failed';
 
 /** A complete legacy response held by the gateway. */
 export interface BufferedLegacyResponse extends LegacyUpstream {
@@ -237,14 +240,13 @@ export async function forwardToLegacy(
   /** Legacy's final response head as sent, recorded by reply-from's dispatcher when it is the gateway's. */
   const legacyHead: ResponseHeadSlot = {};
 
-  /** Runs `beforeSend`; a rejection is logged and reported, so legacy's response does not leave. */
+  /** Runs `beforeSend`; a rejection is reported, so legacy's response does not leave. */
   async function runBeforeSend(upstream: LegacyUpstream): Promise<BeforeSendOutcome> {
     try {
       const extra = await ctx.beforeSend?.(upstream);
       return { failed: false, setCookies: extra?.setCookies };
     } catch (error) {
-      request.log.error({ error: serializeError(error) }, 'legacy forward beforeSend failed');
-      return { failed: true };
+      return { failed: true, error };
     }
   }
 
@@ -261,7 +263,7 @@ export async function forwardToLegacy(
       if (before.failed) {
         // Drained rather than destroyed, so the exchange still settles once legacy's response has ended.
         res.stream.resume();
-        failClosed(reply, ctx.failContext);
+        failClosed(reply, ctx.failContext, { reason: BEFORE_SEND_FAILED, error: before.error });
         return;
       }
       replaceSetCookies(reply, ctx.sessionMode, upstream, before.setCookies);
@@ -273,7 +275,7 @@ export async function forwardToLegacy(
     // Legacy executed whether or not its response may leave, so the buffered response is reported either way.
     await guarded(request, 'onBuffered', () => ctx.onBuffered?.({ ...upstream, body }));
     if (before.failed) {
-      failClosed(reply, ctx.failContext);
+      failClosed(reply, ctx.failContext, { reason: BEFORE_SEND_FAILED, error: before.error });
       return;
     }
     replaceSetCookies(reply, ctx.sessionMode, upstream, before.setCookies);
@@ -308,19 +310,19 @@ export async function forwardToLegacy(
     onResponse: (_request, _reply, res) => {
       // No byte has reached the client before `respond` sends, so a failure here (a broken buffered body) answers the 503.
       respond(res).catch((error: unknown) => {
-        request.log.error({ error: serializeError(error) }, 'legacy response failed');
         res.stream.destroy();
-        failClosed(reply, ctx.failContext);
+        failClosed(reply, ctx.failContext, { reason: 'legacy response failed', error });
       });
     },
-    onError: () => {
+    onError: (_reply, { error }) => {
+      const cause = { reason: 'legacy unavailable', error };
       // Synchronous otherwise: for an invalid status reply-from calls onResponse next, which must see the 503 sent.
       if (notSentSettlement === undefined) {
-        failClosed(reply, ctx.failContext);
+        failClosed(reply, ctx.failContext, cause);
         return;
       }
       void notSentSettlement.then(() => {
-        failClosed(reply, ctx.failContext);
+        failClosed(reply, ctx.failContext, cause);
       });
     },
   };
@@ -332,9 +334,8 @@ export async function forwardToLegacy(
     );
   } catch (error) {
     // reply-from rejects a path it cannot parse before anything is sent to legacy.
-    request.log.warn({ error: serializeError(error) }, 'legacy forward rejected before sending');
     await settle('not-sent');
-    return failClosed(reply, ctx.failContext);
+    return failClosed(reply, ctx.failContext, { reason: 'forward to legacy rejected before sending', error, level: 'warn' });
   }
   return forwarded;
 }

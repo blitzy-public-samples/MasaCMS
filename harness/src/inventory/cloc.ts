@@ -71,25 +71,11 @@ export const CLOC_EXCLUSIONS: Readonly<Record<'vendored' | 'generated' | 'toolin
   }),
 });
 
-// The unfiltered figure keeps the exclusions that reproduce the planning measurement (1,243 files, 362,994 lines):
-// `vendor`, `node_modules` and `.git` directories at any depth plus lockfiles, minified files and source maps.
-// Excluding only core/vendor, node_modules and .git would count those too (1,348 files, 367,990 lines).
-/** `--not-match-d` of the unfiltered measurement. */
-export const UNFILTERED_NOT_MATCH_D = String.raw`(^|/)(vendor|node_modules|\.git)(/|$)`;
-
-/** `--not-match-f` of the unfiltered measurement. */
-export const UNFILTERED_NOT_MATCH_F = String.raw`(^|/)(package-lock\.json|[^/]+\.min\.(js|css)|[^/]+\.map)$`;
+/** `--not-match-d` of the unfiltered measurement, its only exclusion. */
+export const UNFILTERED_NOT_MATCH_D = String.raw`(^|/)(core/vendor|node_modules|\.git)(/|$)`;
 
 /** Patterns the unfiltered measurement excludes; directory names match at any depth. */
-export const UNFILTERED_EXCLUDES: readonly string[] = Object.freeze([
-  'vendor',
-  'node_modules',
-  '.git',
-  'package-lock.json',
-  '*.min.js',
-  '*.min.css',
-  '*.map',
-]);
+export const UNFILTERED_EXCLUDES: readonly string[] = Object.freeze(['core/vendor', 'node_modules', '.git']);
 
 /** cloc languages that make up CFML application code. */
 export const CFML_LANGUAGES: readonly string[] = Object.freeze(['ColdFusion CFScript', 'ColdFusion']);
@@ -311,7 +297,7 @@ export interface ClocReport {
   languages: ClocReportLanguage[];
   totals: Figure;
   cfmlApplicationCode: Figure & { languages: string[] };
-  unfiltered: Figure & { excludes: string[]; notMatchD: string; notMatchF: string };
+  unfiltered: Figure & { excludes: string[]; notMatchD: string };
   detail: { blank: number; comment: number; perFile: ClocFile[]; reason: string };
 }
 
@@ -330,7 +316,7 @@ export interface PlanningComparison {
 }
 
 const FILTERED_OPTIONS = { notMatchD: CLOC_NOT_MATCH_D, notMatchF: CLOC_NOT_MATCH_F, byFile: true } as const;
-const UNFILTERED_OPTIONS = { notMatchD: UNFILTERED_NOT_MATCH_D, notMatchF: UNFILTERED_NOT_MATCH_F } as const;
+const UNFILTERED_OPTIONS = { notMatchD: UNFILTERED_NOT_MATCH_D } as const;
 const WORKING_DIRECTORY = 'scratch extraction outside the checkout';
 
 function figureOf(row: { files: number; code: number }): Figure {
@@ -390,7 +376,6 @@ export function buildClocReport(sha: string, filtered: ClocResult, unfiltered: C
     unfiltered: {
       excludes: [...UNFILTERED_EXCLUDES],
       notMatchD: UNFILTERED_NOT_MATCH_D,
-      notMatchF: UNFILTERED_NOT_MATCH_F,
       ...figureOf(unfiltered.totals),
     },
     detail: {
@@ -450,6 +435,11 @@ function code(text: string): string {
   return `\`${text}\``;
 }
 
+/** `items` as a prose list: `a`, `a and b`, `a, b and c`. */
+function prose(items: readonly string[]): string {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
 function shellWord(arg: string): string {
   if (/^[\w./=:,@+-]+$/.test(arg)) return arg;
   const quote = (s: string): string => `'${s.replaceAll("'", `'\\''`)}'`;
@@ -494,7 +484,6 @@ export function renderClocMarkdown(report: ClocReport, planning: PlanningCompari
     commandLine(clocArgs(UNFILTERED_OPTIONS)),
     '',
     `- ${code('--not-match-d')}: ${code(report.unfiltered.notMatchD)}`,
-    `- ${code('--not-match-f')}: ${code(report.unfiltered.notMatchF)}`,
     '',
     '## Exclusions',
     '',
@@ -515,7 +504,7 @@ export function renderClocMarkdown(report: ClocReport, planning: PlanningCompari
     '| Figure | Files | Code lines |',
     '|---|---:|---:|',
     `| CFML application code (CFScript + tags) | ${figureCells(report.cfmlApplicationCode)} |`,
-    `| Unfiltered (excludes only ${report.unfiltered.excludes.map(code).join(', ')}) | ${figureCells(report.unfiltered)} |`,
+    `| Unfiltered (excludes only ${prose(report.unfiltered.excludes.map(code))}) | ${figureCells(report.unfiltered)} |`,
     '',
     'Directory patterns match a directory name at any depth.',
     '',

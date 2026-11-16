@@ -46,6 +46,8 @@ const CONTENT = cfId('C', 1);
 const NO_STATS = cfId('C', 2);
 const COMMENT = cfId('M', 1);
 const FLAGGED = cfId('M', 2);
+const FRACTION = cfId('M', 3);
+const UNDATED = cfId('M', 4);
 const USER = cfId('U', 1);
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' } as const;
 
@@ -119,6 +121,9 @@ describe.skipIf(!(await pgAvailable()))('commentsProxy routes', () => {
       const comment = { contentid: CONTENT, siteid: SITE, email: 'ann@x.test', entered: new Date(2026, 5, 1, 9, 0, 0), isapproved: 1, isspam: 0, isdeleted: 0, subscribe: 0 };
       await repository.comments.insertComment(tx, { ...comment, commentid: COMMENT, name: 'Ann', comments: 'First', url: 'ann.example', userid: USER, flagcount: 0 });
       await repository.comments.insertComment(tx, { ...comment, commentid: FLAGGED, name: 'Bob', comments: 'Second', flagcount: 2 });
+      const quiet = { ...comment, contentid: NO_STATS, flagcount: 0 };
+      await repository.comments.insertComment(tx, { ...quiet, commentid: FRACTION, name: 'Cy', comments: 'Third', entered: new Date(2026, 5, 1, 9, 0, 0, 250) });
+      await repository.comments.insertComment(tx, { ...quiet, commentid: UNDATED, name: 'Di', comments: 'Fourth', entered: null });
     });
 
     stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-strategies-content-comments-proxy-'));
@@ -175,6 +180,19 @@ describe.skipIf(!(await pgAvailable()))('commentsProxy routes', () => {
     expect(res.body).toContain(`"commentid":"${COMMENT}"`);
     expect(res.body).toContain('"url":"http://ann.example"');
     expect(res.body).toBe(await expectedGetBody(res.body, COMMENT));
+  });
+
+  // ACF: set(rs) keeps a datetime cell as its java.sql.Timestamp; a NULL cell or a miss leaves init's now(), a CF date.
+  it.each<[string, string, string]>([
+    ['a stored comment as its timestamp cell', COMMENT, '"entered":"2026-06-01 09:00:00.0"'],
+    ['a stored comment with milliseconds as its timestamp cell', FRACTION, '"entered":"2026-06-01 09:00:00.25"'],
+    ['a stored comment without a date as the bean default', UNDATED, `"entered":"{ts \\'2026-06-30 10:15:42\\'}"`],
+    ['an unknown comment as the bean default', 'ABC', `"entered":"{ts \\'2026-06-30 10:15:42\\'}"`],
+  ])('answers get of %s', async (_label, commentId, entered) => {
+    const res = await call('GET', `?method=get&commentID=${commentId}`);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(entered);
+    expect(res.body).toBe(await expectedGetBody(res.body, commentId));
   });
 
   it.each<[string, string, string | undefined, string]>([

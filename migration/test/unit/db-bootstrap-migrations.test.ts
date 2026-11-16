@@ -2,9 +2,9 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import pg from 'pg';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createLogger, type Logger } from '@opt2/platform/logging';
+import { pg } from '@opt2/platform/tenancy';
 import {
   MIGRATION_FILE_PATTERN,
   MigrationDirectoryError,

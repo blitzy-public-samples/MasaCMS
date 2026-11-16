@@ -40,7 +40,7 @@ import {
   siteRow,
 } from './helpers/fixtures.js';
 import type { OwnerDoubleState, ScriptedChangesPage } from './helpers/owner-double.js';
-import { PG_OWNER_ROWS_PATH, startPgOwner, type PgOwner } from './helpers/pg-owner.js';
+import { PG_OWNER_ROWS_PATH, fetchPgOwnerRows, startPgOwner, type PgOwner } from './helpers/pg-owner.js';
 
 const OWNER = 'communications';
 const MEMBERS = TABLES.tmailinglistmembers;
@@ -483,9 +483,11 @@ describe.skipIf(!PG)(`keyless reverse projection from a PostgreSQL owner${PG ? '
 
     expect(legacy.multiset(MEMBERS.qualified)).toEqual(expectedMultiset(MEMBER_COLUMNS, [[R, 1], [R_STAR, 1], [U, 1]]));
     expect(multiset(legacyEncodings(legacy, MEMBERS.qualified))).toEqual(multiset(await targetEncodings(started)));
-    const stored = await fetch(`${started.url}${PG_OWNER_ROWS_PATH}/${MEMBER_TARGET_TABLE}?tenantId=${TENANT_A.tenantId}`);
+    const stored = await fetchPgOwnerRows<{ rows: Array<{ legacy_row_hash: string }> }>(
+      `${started.url}${PG_OWNER_ROWS_PATH}/${MEMBER_TARGET_TABLE}?tenantId=${TENANT_A.tenantId}`,
+    );
     expect(stored.status).toBe(200);
-    const { rows } = (await stored.json()) as { rows: Array<{ legacy_row_hash: string }> };
+    const { rows } = stored.body;
     expect(rows.map((row) => row.legacy_row_hash).sort()).toEqual([R, R_STAR, U].map((row) => legacyRowHash(MEMBER_COLUMNS, row)).sort());
   });
 });

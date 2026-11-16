@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
-import { createLocalJWKSet, type JSONWebKeySet } from 'jose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import {
@@ -13,8 +12,10 @@ import {
   LOCAL_USER_TOKEN,
   Roles,
   collectRouteMatrix,
+  createLocalJWKSet,
   createUserTokenVerifier,
   userClaimsSchema,
+  type JSONWebKeySet,
 } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError, WWW_AUTHENTICATE } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';

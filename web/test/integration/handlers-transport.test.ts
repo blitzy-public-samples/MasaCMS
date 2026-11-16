@@ -11,7 +11,6 @@ import { adminRequest } from '../helpers/requests';
 
 vi.mock('@/lib/telemetry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/telemetry')>()),
-  ensureTracing: vi.fn(async () => undefined),
   logRequest: vi.fn(),
 }));
 

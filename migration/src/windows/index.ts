@@ -2,7 +2,7 @@
 export { createWindowService, WindowRefusedError, WindowNotFoundError, WindowStateError } from './service.js';
 export type { WindowService, WindowServiceOptions, WindowHooks } from './service.js';
 
-export { acquireLeases, releaseLeases, leasesOf, holdersOf, LeaseUnavailableError } from './leases.js';
+export { acquireLeases, releaseLeases, leasesOf, leasesOfUnits, holdersOf, LeaseUnavailableError } from './leases.js';
 export type { LeaseKind, LeaseRow, AcquireLeasesInput } from './leases.js';
 
 export { importWindow, toExtractScope, windowBatchId, WindowImportError } from './import.js';

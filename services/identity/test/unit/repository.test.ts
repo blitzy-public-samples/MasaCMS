@@ -681,6 +681,40 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(page.total).toBe(6);
   });
 
+  it.each([
+    [0, 1000],
+    [0, 2],
+    [2, 2],
+    [4, 5],
+    [6, 1],
+    [100, 3],
+  ])('windows the pool groups at offset %i, limit %i in listPoolGroups order with the listing total', async (offset, limit) => {
+    const ordered = await seedWindowedGroups();
+
+    const page = await inTenant((tx) => repo.pagePoolGroups(tx, 'site-a', 1, { offset, limit }));
+
+    expect(page).toEqual({ items: ordered.slice(offset, offset + limit).map((userid) => expect.objectContaining({ userid, ispublic: 1 })), total: 6 });
+    expect(page.items[0] ?? {}).not.toHaveProperty('total');
+    expect(await inTenant((tx) => repo.pagePoolGroups(tx, 'site-a', 1, { offset, limit }), otherTenantId)).toEqual({ items: [], total: 0 });
+  });
+
+  it('reads the whole group and pool-group listings through one cursor each in pages, rows and order as one statement gives them', async () => {
+    const ordered = await seedWindowedGroups();
+    const paged = createIdentityRepository({ clock: CLOCK, schema: handle.schema, pageSize: 2 });
+    const statements: string[] = [];
+
+    const pool = await inTenant((tx) => paged.listPoolGroups(recording(tx, statements), 'site-a', 1));
+    const named = await inTenant((tx) => paged.listGroups(recording(tx, statements), 'site-a', 1));
+
+    expect(pool).toEqual((await inTenant((tx) => repo.pagePoolGroups(tx, 'site-a', 1, { offset: 0, limit: 1000 }))).items);
+    expect(pool.map((row) => row.userid)).toEqual(ordered);
+    expect(pool[0]).toEqual({ userid: id(4, 'G'), groupname: 'alpha', siteid: 'site-a', ispublic: 1, perm: 1 });
+    expect(named.map((row) => row.userid)).toEqual([id(5, 'G'), id(3, 'G'), id(4, 'G'), id(1, 'G'), id(6, 'G'), id(2, 'G')]);
+    expect(statements.filter((text) => text.startsWith('DECLARE'))).toHaveLength(2);
+    expect(statements.filter((text) => text.startsWith('FETCH'))).toHaveLength(8);
+    expect(statements.filter((text) => text.startsWith('CLOSE'))).toHaveLength(2);
+  });
+
   it('counts the members a group lists, S2 ones only with includeS2, and bounds a paged member cursor to its first limit members', async () => {
     const paged = createIdentityRepository({ clock: CLOCK, schema: handle.schema, pageSize: 2 });
     const groupId = id(1, 'G');

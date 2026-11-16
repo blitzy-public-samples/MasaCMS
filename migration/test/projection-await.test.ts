@@ -4,10 +4,11 @@ import { readFileSync } from 'node:fs';
 import { LegacyServiceUnavailableError, apiUnavailableResponse, legacyErrorResponse } from '@opt2/platform/legacy-compat';
 import { WRITE_POSITION_HEADER, isApplied, parseWritePosition, type RepositoryRow } from '@opt2/platform/migration-kit';
 import { ROLE_SET, TENANT_A, assertResponseMatchesOpenApi, authHeadersFor, testVerifier } from '@opt2/platform/testing';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
 import type { ResolvedPaths } from '../src/config.js';
+import { currentAuthority } from '../src/cutover/index.js';
 import { upsertCheckpoint } from '../src/reverse/apply-legacy.js';
 import {
   CHECKPOINT_TABLE,
@@ -36,7 +37,7 @@ import {
   siteRow,
   type FixtureTableName,
 } from './helpers/fixtures.js';
-import { PG_AVAILABLE, PG_OWNER_ROWS_PATH, PG_SKIP_REASON, startPgOwner, type PgOwner } from './helpers/pg-owner.js';
+import { PG_AVAILABLE, PG_OWNER_ROWS_PATH, PG_SKIP_REASON, fetchPgOwnerRows, startPgOwner, type PgOwner } from './helpers/pg-owner.js';
 
 // buildApp reads the committed cut-over directory and ownership file, where no programs-sites unit is target-authoritative;
 // the route suite points the app's configuration at its fixture world while the app is built, and nothing else is overridden.
@@ -238,11 +239,7 @@ describe.skipIf(!PG_AVAILABLE)(`awaitProjection over a PostgreSQL owner and the 
     const held = await owner.openTransaction();
     await held.write(TARGET_TABLE, targetRow(ROW_HELD));
 
-    const response = await fetch(rowsUrl(), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(targetRow(ROW_NEWER)),
-    });
+    const response = await fetchPgOwnerRows(rowsUrl(), { method: 'POST', json: targetRow(ROW_NEWER) });
     expect(response.status).toBe(200);
     const written = parseWritePosition(response.headers.get(WRITE_POSITION_HEADER) ?? undefined);
     const newerXid = written.get(OWNER);
@@ -303,17 +300,23 @@ describe.skipIf(!PG_AVAILABLE)(`awaitProjection over a PostgreSQL owner and the 
   });
 });
 
+/** Reads the authority from the cut-over files `tc` just wrote, so their first read, slow on a loaded host, is not charged to an await's budget. */
+async function primeAuthority(tc: TestContext): Promise<void> {
+  await currentAuthority({ gateway: tc.gateway, config: tc.ctx.config.paths });
+}
+
 describe('awaitProjection of owners whose positions are read at call time', () => {
   const POSITION = '500';
   let tc: TestContext;
   let projector: Projector;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     tc = await buildTestContext({ legacy: await legacyDb(['tsettings']), gateway: { active: VB.tableVersion }, bridge: false, clock: realTimeClock() });
     projector = createProjector(tc.ctx, { startupGuard: DIRECT_COMMIT });
+    await primeAuthority(tc);
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     await tc?.close();
   });
 
@@ -341,6 +344,7 @@ describe('awaitProjection of owners whose positions are read at call time', () =
   });
 
   it('resolves with the position read once the checkpoint has passed it', async () => {
+    ownerDouble(OWNER).positionScript = { position: POSITION };
     await storeCheckpoint(tc.legacy, OWNER, '501');
 
     const result = await projector.awaitProjection({ owners: [OWNER], timeoutMs: SHORT_BUDGET_MS });
@@ -365,7 +369,7 @@ describe(`POST ${AWAIT_PATH} on the migration app`, () => {
   let tc: TestContext;
   let app: Awaited<ReturnType<typeof buildApp>>;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     tc = await buildTestContext({
       legacy: await legacyDb(['tsettings']),
       gateway: { active: PROGRAMS_SITES_TARGET.tableVersion },
@@ -386,9 +390,10 @@ describe(`POST ${AWAIT_PATH} on the migration app`, () => {
     } finally {
       configPaths.current = undefined;
     }
+    await primeAuthority(tc);
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     await app?.opt2.shutdown();
     await tc?.close();
   });

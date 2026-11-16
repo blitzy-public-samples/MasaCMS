@@ -2,6 +2,7 @@
 import { legacyQuery } from '@opt2/platform/legacy-compat';
 import { describe, expect, it } from 'vitest';
 import {
+  CfTimestamp,
   acfSerializeJson,
   cfJsStringFormat,
   cfToString,
@@ -125,6 +126,18 @@ describe('muraJsonEncode', () => {
       [undefined, '""'],
     ])('quotes non-numeric %j as %s', (value, expected) => {
       expect(muraJsonEncode(value)).toBe(expected);
+    });
+
+    // ACF: commentsProxy `get` of a stored comment answers "entered":"2026-11-15 16:59:43.25", its bean's java.sql.Timestamp.
+    it.each<[number, string]>([
+      [250, '"2026-06-30 13:04:05.25"'],
+      [0, '"2026-06-30 13:04:05.0"'],
+      [7, '"2026-06-30 13:04:05.007"'],
+      [120, '"2026-06-30 13:04:05.12"'],
+    ])('quotes a cfquery timestamp with %i ms as its ToString, %s', (ms, expected) => {
+      const timestamp = new CfTimestamp(new Date(2026, 5, 30, 13, 4, 5, ms));
+      expect(muraJsonEncode(timestamp)).toBe(expected);
+      expect(muraJsonEncode({ Entered: timestamp, Now: JUNE_30 })).toBe(`{"entered":${expected},"now":"{ts \\'2026-06-30 13:04:05\\'}"}`);
     });
   });
 

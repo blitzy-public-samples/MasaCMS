@@ -1,11 +1,11 @@
-/** Variation targeting (contentVariationTargetingBean): reads, saves and deletes, gated by the configBean `variations` setting. */
+/** Variation targeting (contentVariationTargetingBean): reads, saves, deletes and the variation script the `variations` setting gates. */
 import { LegacyApiError, cfUuid } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import type { BeanFeedSource } from '../repo/bean-feed-sql.js';
 import type { ContentRepository } from '../repo/repository.js';
 import { VARIATION_TARGETING, type VariationTargetingRow } from '../repo/tables.js';
-import { writeContextFor, type Actor, type ContentConfig, type DomainDeps } from './context.js';
+import { writeContextFor, type Actor, type ContentConfig, type DomainDeps, type LegacyErrors } from './context.js';
 import { getModulePerm } from './permissions.js';
 
 /** A variation targeting bean's values [contentVariationTargetingBean.cfc:82-86]; NULL columns read as ''. */
@@ -29,6 +29,18 @@ export interface VariationTargetingValues {
   targetingjs?: string;
 }
 
+/** Options of a targeting save. */
+export interface VariationTargetingSaveOptions {
+  /** The bean's saveErrors: write despite validation errors (beanORM.cfc:206-218, 389). */
+  saveErrors?: boolean;
+}
+
+/** A targeting save's outcome: the bean as stored, null when validation errors kept it unwritten, and those errors. */
+export interface VariationTargetingSave {
+  saved: VariationTargeting | null;
+  errors: LegacyErrors;
+}
+
 /** One live Variation item of a site with its targeting scripts. */
 export interface VariationScriptItem {
   contentid: string;
@@ -50,7 +62,7 @@ export interface VariationScriptModel {
 // default branch checks the entity's registered module, not Variation content's module 099.
 const VARIATION_TARGETING_MODULE_ID = '00000000000000000000000000000000000';
 
-/** configBean `getValue('variations', false)`: whether variation targeting is served. */
+/** configBean `getValue('variations', false)`: whether the JSON API registers `variationTargeting` and the variation script is served. */
 export function variationsEnabled(config: Pick<ContentConfig, 'variations'>): boolean {
   return config.variations;
 }
@@ -81,6 +93,33 @@ async function loadForContent(tx: TenantTx, repository: ContentRepository, conte
 /** contentVariationTargetingBean.loadBy(targetingid) in `tx`: the stored row, or null. */
 async function findById(tx: TenantTx, repository: ContentRepository, targetingId: string): Promise<VariationTargetingRow | null> {
   return repository.platform.findByKey<VariationTargetingRow>(tx, VARIATION_TARGETING.table, { targetingid: targetingId });
+}
+
+/** A beanValidator rule of a contentVariationTargetingBean property: the value it reads and when that value fails. */
+interface TargetingRule {
+  value: (bean: VariationTargeting) => string;
+  required?: boolean;
+  maxLength: number;
+}
+
+// Keyed as bean.getValidations keys them (relationships by fkcolumn); the char, varchar and text datatype rules always
+// pass for text, so only these can fail.
+const RULES: Readonly<Record<string, TargetingRule>> = {
+  targetingid: { value: (b) => b.targetingid, required: true, maxLength: 35 },
+  contentid: { value: (b) => b.contentid, maxLength: 35 },
+  siteid: { value: (b) => b.siteid, maxLength: 25 },
+};
+
+/** contentVariationTargetingBean.validate(): beanValidator's errors, then beanORM's primary key check (Masa's default `stricthtml` off). */
+function validateTargeting(bean: VariationTargeting): LegacyErrors {
+  const errors: LegacyErrors = {};
+  for (const [key, rule] of Object.entries(RULES)) {
+    const value = rule.value(bean);
+    // A rule of a property that is not required skips an empty value; CFML len() counts UTF-16 code units.
+    if (value === '' ? rule.required === true : value.length > rule.maxLength) errors[key] = `The property named '${key}' is not valid`;
+  }
+  if (bean.targetingid === '') errors['primarykey'] = "The primary key 'targetingid' is required.";
+  return errors;
 }
 
 const VALUE_FIELDS = ['targetingid', 'contentid', 'siteid', 'initjs', 'targetingjs'] as const;
@@ -143,16 +182,18 @@ export function withVariationTargetingFeed<T>(
 
 /**
  * contentVariationTargetingBean `set(values).save()` in the caller's gated transaction: loads by `targetingid`, else by
- * `contentid` and `siteid`, applies `input` and inserts or updates the row. It runs whatever the `variations` setting,
- * as contentManager.add saves a Variation's initJS [contentManager.cfc:1125-1127,1737-1740].
- * @returns the bean as stored.
+ * `contentid` and `siteid`, applies `input`, validates, and inserts or updates the row unless validation fails without
+ * `saveErrors` [beanORM.cfc:379-389]. It runs whatever the `variations` setting, as contentManager.add saves a
+ * Variation's initJS [contentManager.cfc:1125-1127,1737-1740].
+ * @returns the bean as stored (null when unwritten) and its validation errors.
  */
 export async function saveVariationTargetingInTx(
   tx: TenantTx,
   repository: ContentRepository,
   input: VariationTargetingValues,
   actor: Actor,
-): Promise<VariationTargeting> {
+  opts: VariationTargetingSaveOptions = {},
+): Promise<VariationTargetingSave> {
   const { targetingid, contentid = '', siteid = '' } = input;
   let loaded: VariationTargeting;
   if (targetingid !== undefined && targetingid !== '') {
@@ -162,6 +203,8 @@ export async function saveVariationTargetingInTx(
     loaded = await loadForContent(tx, repository, contentid, siteid);
   }
   const bean: VariationTargeting = { ...loaded, ...suppliedValues(input) };
+  const errors = validateTargeting(bean);
+  if (Object.keys(errors).length > 0 && opts.saveErrors !== true) return { saved: null, errors };
   const saved = await repository.variation.upsertTargeting(
     tx,
     {
@@ -173,40 +216,36 @@ export async function saveVariationTargetingInTx(
     },
     writeContextFor(actor),
   );
-  return fromRow(saved);
+  return { saved: fromRow(saved), errors };
 }
 
 /**
- * JSON API `variationTargeting` save [jsonApiUtility.cfc:1903-2068]: refuses with `authorization` without the entity's
- * module permission, then saves `input` (an empty or omitted `targetingid` saves under a new id).
- * @returns the saved bean, or null without any write when the `variations` setting is off.
+ * JSON API `variationTargeting` save [jsonApiUtility.cfc:1903-2068], whatever the `variations` setting: refuses with
+ * `authorization` without the entity's module permission, then saves `input` (an empty or omitted `targetingid` saves
+ * under a new id).
+ * @returns the bean as stored (null when validation kept it unwritten) and its validation errors.
  */
 export async function saveVariationTargeting(
   deps: DomainDeps,
   actor: Actor,
   input: VariationTargetingValues,
-): Promise<VariationTargeting | null> {
-  if (!variationsEnabled(deps.config)) {
-    return null;
-  }
+  opts: VariationTargetingSaveOptions = {},
+): Promise<VariationTargetingSave> {
   if (!getModulePerm(actor, VARIATION_TARGETING_MODULE_ID)) {
     throw new LegacyApiError('authorization');
   }
   const targetingid = input.targetingid === undefined || input.targetingid === '' ? cfUuid() : input.targetingid;
   return withGatedTenant(deps.db, actor.tenantId, (tx) =>
-    saveVariationTargetingInTx(tx, deps.repository, { ...input, targetingid }, actor),
+    saveVariationTargetingInTx(tx, deps.repository, { ...input, targetingid }, actor, opts),
   );
 }
 
 /**
- * JSON API `variationTargeting` delete [jsonApiUtility.cfc:3259-3337]: an absent row is a silent no-op; a stored one is
- * deleted after the module permission check, which refuses with `authorization`.
- * @returns the deleted bean, or null when none was stored or the `variations` setting is off.
+ * JSON API `variationTargeting` delete [jsonApiUtility.cfc:3259-3337], whatever the `variations` setting: an absent row
+ * is a silent no-op; a stored one is deleted after the module permission check, which refuses with `authorization`.
+ * @returns the deleted bean, or null when none was stored.
  */
 export async function deleteVariationTargeting(deps: DomainDeps, actor: Actor, targetingId: string): Promise<VariationTargeting | null> {
-  if (!variationsEnabled(deps.config)) {
-    return null;
-  }
   return withGatedTenant(deps.db, actor.tenantId, async (tx) => {
     if ((await findById(tx, deps.repository, targetingId)) === null) {
       return null;

@@ -78,7 +78,7 @@ export interface RouteKeyOptions {
   appReloadKey?: string;
   /** configBean `variations`; default false. */
   variationsEnabled?: boolean;
-  /** Names serviceFactory.containsBean accepts; default the registered entities plus `entity`. */
+  /** Names serviceFactory.containsBean accepts; default the registered entities, `entity` and `variationTargeting`. */
   knownEntities?: readonly string[];
   /** application.objectmappings.<entity>.remoteFunctions names. */
   entityRemoteFunctions?: Record<string, readonly string[]>;
@@ -338,8 +338,8 @@ function lowerSetMap(record: Record<string, readonly string[]> | undefined): Rea
 
 function resolveOptions(opts: RouteKeyOptions): ResolvedOptions {
   const variationsEnabled = opts.variationsEnabled ?? false;
-  const known =
-    opts.knownEntities ?? [...REGISTERED_ENTITIES, 'entity', ...(variationsEnabled ? [VARIATION_ENTITY] : [])];
+  // The variationTargeting bean exists whatever `variations` says (onApplicationStart_include.cfm:387).
+  const known = opts.knownEntities ?? [...REGISTERED_ENTITIES, 'entity', VARIATION_ENTITY];
   const adminSegments = listToArray(opts.adminDir ?? '/admin', '/');
   return {
     siteExists: opts.siteExists ?? (() => true),

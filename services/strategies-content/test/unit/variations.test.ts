@@ -23,6 +23,7 @@ import {
   saveVariationTargetingInTx,
   variationScriptModel,
   variationsEnabled,
+  type VariationTargetingValues,
 } from '../../src/domain/variations.js';
 import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS, type VariationTargetingRow } from '../../src/repo/tables.js';
@@ -74,23 +75,20 @@ describe('variationsEnabled', () => {
 });
 
 describe('with the variations setting off', () => {
-  const deps = offlineDeps(false);
-
-  it.each<[string, () => Promise<unknown>]>([
-    ['saveVariationTargeting', () => saveVariationTargeting(deps, variationOnly, { contentid: cfId('C', 1), siteid: SITE, initjs: 'x' })],
-    ['deleteVariationTargeting', () => deleteVariationTargeting(deps, variationOnly, cfId('T', 1))],
-    ['variationScriptModel', () => variationScriptModel(deps, variationOnly, { siteId: SITE, contentType: '' })],
-  ])('%s answers null without a read, a write or an access refusal', async (_label, call) => {
-    await expect(call()).resolves.toBeNull();
+  it('variationScriptModel answers null without a read', async () => {
+    await expect(variationScriptModel(offlineDeps(false), variationOnly, { siteId: SITE, contentType: '' })).resolves.toBeNull();
   });
 });
 
 describe('JSON API save access', () => {
-  it('refuses with authorization without the Content module role (m:000), even with the Variation module role (m:099)', async () => {
-    const call = saveVariationTargeting(offlineDeps(true), variationOnly, { contentid: cfId('C', 1), siteid: SITE, initjs: 'x' });
-    await expect(call).rejects.toBeInstanceOf(LegacyApiError);
-    await expect(call).rejects.toMatchObject({ type: 'authorization' });
-  });
+  it.each([true, false])(
+    'refuses with authorization without the Content module role (m:000), even with the Variation module role (m:099) (variations=%s)',
+    async (variations) => {
+      const call = saveVariationTargeting(offlineDeps(variations), variationOnly, { contentid: cfId('C', 1), siteid: SITE, initjs: 'x' });
+      await expect(call).rejects.toBeInstanceOf(LegacyApiError);
+      await expect(call).rejects.toMatchObject({ type: 'authorization' });
+    },
+  );
 });
 
 const TARGETING_TABLE = '"content"."variation_targeting"';
@@ -145,24 +143,36 @@ describe('domain/variations over the recording database', () => {
       db.respond(TARGETING_BY_ID, [stored]);
       db.respond(TARGETING_UPDATE, [{ ...stored, initjs: 'next()' }]);
     }
-    const saved = await withGatedTenant(db, TENANT_A.tenantId, (tx) =>
+    const { saved, errors } = await withGatedTenant(db, TENANT_A.tenantId, (tx) =>
       saveVariationTargetingInTx(tx, repository, { contentid: STORED_CONTENT, siteid: SITE, initjs: 'next()' }, contentEditor),
     );
+    expect(errors).toEqual({});
     expect(saved).toMatchObject({ contentid: STORED_CONTENT, siteid: SITE, initjs: 'next()', targetingjs: stored?.targetingjs ?? '', isNew: 0 });
-    expect(isCfUuid(saved.targetingid)).toBe(true);
+    expect(isCfUuid(saved?.targetingid ?? '')).toBe(true);
     const writes = targetingWrites();
     expect(writes.map((statement) => write.test(statement.sql))).toEqual([true]);
-    expect(writes[0]?.params).toContain(stored?.targetingid ?? saved.targetingid);
+    expect(writes[0]?.params).toContain(stored?.targetingid ?? saved?.targetingid);
   });
 
-  it.each<[string, Actor]>([
-    ['the Content module role (m:000)', contentEditor],
-    ['site-admin', siteAdmin],
-    ['s2', superUser],
-  ])('deleteVariationTargeting deletes a stored row for %s', async (_label, deleter) => {
+  it.each([true, false])('saveVariationTargeting inserts a row whatever the setting (variations=%s)', async (variations) => {
+    const { saved } = await saveVariationTargeting({ ...recorded, config: { ...recorded.config, variations } }, superUser, {
+      contentid: STORED_CONTENT,
+      siteid: SITE,
+      initjs: 'x',
+    });
+    expect(saved).toMatchObject({ contentid: STORED_CONTENT, siteid: SITE, initjs: 'x', targetingjs: '', isNew: 0 });
+    expect(targetingWrites().map((statement) => /^INSERT INTO "content"\."variation_targeting" /.test(statement.sql))).toEqual([true]);
+  });
+
+  it.each<[string, Actor, boolean]>([
+    ['the Content module role (m:000)', contentEditor, true],
+    ['site-admin', siteAdmin, true],
+    ['s2', superUser, true],
+    ['s2 with the setting off', superUser, false],
+  ])('deleteVariationTargeting deletes a stored row for %s', async (_label, deleter, variations) => {
     db.respond(TARGETING_BY_ID, [STORED]);
     db.respond(TARGETING_DELETE, [STORED]);
-    await expect(deleteVariationTargeting(recorded, deleter, STORED.targetingid)).resolves.toEqual({
+    await expect(deleteVariationTargeting({ ...recorded, config: { ...recorded.config, variations } }, deleter, STORED.targetingid)).resolves.toEqual({
       targetingid: STORED.targetingid,
       contentid: STORED_CONTENT,
       siteid: SITE,
@@ -262,7 +272,7 @@ describe('the composed app with MURA_VARIATIONS off and on', () => {
   });
 
   // Unregistered, legacy still loads the entity's bean and refuses with `authorization` rather than an unknown-entity
-  // error (oracle), so that is the answer with the setting off.
+  // error (oracle), so that is a read's answer with the setting off.
   it('refuses JSON API variationTargeting with the authorization error while the setting is off, reading nothing', async () => {
     const res = await get('off', `/_api/json/v1/${SITE}/variationTargeting/${STORED.targetingid}`);
     expect(res.statusCode).toBe(401);
@@ -285,193 +295,250 @@ describe('the composed app with MURA_VARIATIONS off and on', () => {
   });
 });
 
-let handle: ThrowawaySchema;
-let repo: ContentRepository;
-let deps: DomainDeps;
-
-const inA = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> => withTenant(handle.app, TENANT_A.tenantId, fn);
-
-async function storedRow(targetingId: string): Promise<Record<string, unknown> | null> {
-  return inA((tx) => repo.platform.findByKey(tx, 'variation_targeting', { targetingid: targetingId }));
+/** One describe's throwaway content schema with open gates, its repository and deps, and helpers bound to them. */
+interface VariationSchema {
+  handle: ThrowawaySchema;
+  repo: ContentRepository;
+  deps: DomainDeps;
+  /** Runs `fn` in a tenant-a transaction. */
+  inA<T>(fn: (tx: TenantTx) => Promise<T>): Promise<T>;
+  /** The stored targeting row of `targetingId`, or null. */
+  storedRow(targetingId: string): Promise<Record<string, unknown> | null>;
+  /** `handle.app` with the text of every statement its tenant transactions issue appended to `statements`. */
+  recordingDb(statements: string[]): TenantDb;
 }
 
-/** `handle.app` with the text of every statement its tenant transactions issue appended to `statements`. */
-function recordingDb(statements: string[]): TenantDb {
+/** Creates a content schema, opens its content gates under `holderId` and binds the helpers to it. */
+async function createVariationSchema(holderId: string): Promise<VariationSchema> {
+  const handle = await createThrowawaySchema({
+    service: 'strategies-content',
+    schemaName: 'content',
+    migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)),
+  });
+  await ensureUnitGates(handle.app, CONTENT_UNITS);
+  await closeGates(handle.app, { units: CONTENT_UNITS, holderId, allowLegacy: true });
+  await openGates(handle.app, { units: CONTENT_UNITS, holderId, state: 'open' });
+  const repo = createContentRepository({ clock: fixedClock(NOW), schema: handle.schema });
+  const deps: DomainDeps = { db: handle.app, repository: repo, clock: fixedClock(NOW), config: { ...CONTENT_CONFIG_DEFAULTS, variations: true } };
+  const inA = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> => withTenant(handle.app, TENANT_A.tenantId, fn);
   return {
-    schema: handle.app.schema,
-    withTenant: (tenantId, fn) =>
-      handle.app.withTenant(tenantId, (tx) =>
-        fn({
-          ...tx,
-          query: <R extends QueryResultRow = QueryResultRow>(text: string | QueryConfig, values?: unknown[]): Promise<QueryResult<R>> => {
-            statements.push(typeof text === 'string' ? text : text.text);
-            return tx.query<R>(text, values);
-          },
-        }),
-      ),
-    withMetadata: (fn) => handle.app.withMetadata(fn),
-    end: () => Promise.resolve(),
+    handle,
+    repo,
+    deps,
+    inA,
+    storedRow: (targetingId) => inA((tx) => repo.platform.findByKey(tx, 'variation_targeting', { targetingid: targetingId })),
+    recordingDb: (statements) => ({
+      schema: handle.app.schema,
+      withTenant: (tenantId, fn) =>
+        handle.app.withTenant(tenantId, (tx) =>
+          fn({
+            ...tx,
+            query: <R extends QueryResultRow = QueryResultRow>(text: string | QueryConfig, values?: unknown[]): Promise<QueryResult<R>> => {
+              statements.push(typeof text === 'string' ? text : text.text);
+              return tx.query<R>(text, values);
+            },
+          }),
+        ),
+      withMetadata: (fn) => handle.app.withMetadata(fn),
+      end: () => Promise.resolve(),
+    }),
   };
+}
+
+/** The case-variant layout at `n`: Variation items C<n>, C<n+2>, C<n+3>, C<n+4> and `short`, titles led by `prefix`; `mixed` is C<n+2> with a lower-case `c`. */
+interface CaseVariants {
+  n: number;
+  prefix: string;
+  upper: string;
+  mixed: string;
+  mixedItem: string;
+  otherSiteCase: string;
+  unscripted: string;
+  short: string;
+}
+
+const caseVariants = (n: number, short: string, prefix: string): CaseVariants => ({
+  n,
+  prefix,
+  upper: cfId('C', n),
+  mixed: `c${cfId('C', n + 2).slice(1)}`,
+  mixedItem: cfId('C', n + 2),
+  otherSiteCase: cfId('C', n + 3),
+  unscripted: cfId('C', n + 4),
+  short,
+});
+
+/** Inserts the layout's items (hist ids H<n>…H<n+5>) and targeting rows T<n+1> upper, T<n> lower-case upper, T<n+2> mixed, T<n+3> upper-case site, T<n+5> upper-case short. */
+async function arrangeCaseVariants(fx: VariationSchema, v: CaseVariants): Promise<void> {
+  await withGatedTenant(fx.handle.app, TENANT_A.tenantId, async (tx) => {
+    const base = { siteid: SITE, subtype: 'Default', moduleid: VARIATION_MODULE, approved: 1, active: 1, display: 1, type: 'Variation' };
+    const items: [string, string, number][] = [
+      [v.upper, 'Upper', v.n], [v.mixedItem, 'Mixed', v.n + 2], [v.otherSiteCase, 'Site case', v.n + 3], [v.unscripted, 'Unscripted', v.n + 4], [v.short, 'Short', v.n + 5],
+    ];
+    for (const [contentid, label, n] of items) {
+      const title = `${v.prefix}${label}`;
+      await fx.repo.content.insertVersion(tx, { ...base, contentid, contenthistid: cfId('H', n), title, menutitle: title });
+    }
+    const rows: [number, string, string, string][] = [
+      [v.n + 1, v.upper, SITE, 'upper()'],
+      [v.n, v.upper.toLowerCase(), SITE, 'lower()'],
+      [v.n + 2, v.mixed, SITE, 'mixed()'],
+      [v.n + 3, v.otherSiteCase, SITE.toUpperCase(), 'site()'],
+      [v.n + 5, v.short.toUpperCase(), SITE, 'short()'],
+    ];
+    for (const [n, contentid, siteid, initjs] of rows) {
+      await saveVariationTargetingInTx(tx, fx.repo, { targetingid: cfId('T', n), contentid, siteid, initjs, targetingjs: `["#${String(n)}"]` }, contentEditor);
+    }
+  });
 }
 
 const targetingStatements = (statements: readonly string[]): string[] => statements.filter((sql) => sql.includes('variation_targeting'));
 
 describe.skipIf(!(await pgAvailable()))('domain/variations over a throwaway content schema', () => {
+  let fx: VariationSchema;
+
   beforeAll(async () => {
-    handle = await createThrowawaySchema({
-      service: 'strategies-content',
-      schemaName: 'content',
-      migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)),
-    });
-    await ensureUnitGates(handle.app, CONTENT_UNITS);
-    await closeGates(handle.app, { units: CONTENT_UNITS, holderId: 'variations-test', allowLegacy: true });
-    await openGates(handle.app, { units: CONTENT_UNITS, holderId: 'variations-test', state: 'open' });
-    repo = createContentRepository({ clock: fixedClock(NOW), schema: handle.schema });
-    deps = { db: handle.app, repository: repo, clock: fixedClock(NOW), config: { ...CONTENT_CONFIG_DEFAULTS, variations: true } };
+    fx = await createVariationSchema('variations-test');
   });
 
   afterAll(async () => {
-    await handle?.drop();
+    await fx?.handle.drop();
   });
 
   it('readVariationTargeting returns a new bean with empty scripts and writes nothing when no row exists', async () => {
-    const bean = await readVariationTargeting(deps, contentEditor, { contentId: cfId('C', 1), siteId: SITE });
+    const bean = await readVariationTargeting(fx.deps, contentEditor, { contentId: cfId('C', 1), siteId: SITE });
     expect(bean).toMatchObject({ contentid: cfId('C', 1), siteid: SITE, initjs: '', targetingjs: '', isNew: 1 });
     expect(isCfUuid(bean.targetingid)).toBe(true);
-    expect(await storedRow(bean.targetingid)).toBeNull();
+    expect(await fx.storedRow(bean.targetingid)).toBeNull();
   });
 
   it('a Variation content save writes its initjs through saveVariationTargetingInTx, then updates the same row', async () => {
     const contentId = cfId('C', 2);
-    const first = await withGatedTenant(handle.app, TENANT_A.tenantId, async (tx) => {
-      await repo.content.insertVersion(tx, {
+    const { saved: first } = await withGatedTenant(fx.handle.app, TENANT_A.tenantId, async (tx) => {
+      await fx.repo.content.insertVersion(tx, {
         contentid: contentId, contenthistid: cfId('H', 2), siteid: SITE, type: 'Variation', subtype: 'Default',
         moduleid: VARIATION_MODULE, approved: 1, active: 1, display: 1, title: 'Hero', menutitle: 'Hero',
       });
-      return saveVariationTargetingInTx(tx, repo, { contentid: contentId, siteid: SITE, initjs: 'init()' }, contentEditor);
+      return saveVariationTargetingInTx(tx, fx.repo, { contentid: contentId, siteid: SITE, initjs: 'init()' }, contentEditor);
     });
     expect(first).toMatchObject({ contentid: contentId, siteid: SITE, initjs: 'init()', targetingjs: '', isNew: 0 });
-    expect(await storedRow(first.targetingid)).toMatchObject({ initjs: 'init()', targetingjs: null, contentid: contentId });
+    expect(await fx.storedRow(first?.targetingid ?? '')).toMatchObject({ initjs: 'init()', targetingjs: null, contentid: contentId });
 
-    const second = await withGatedTenant(handle.app, TENANT_A.tenantId, (tx) =>
-      saveVariationTargetingInTx(tx, repo, { contentid: contentId, siteid: SITE, initjs: 'again()' }, contentEditor),
+    const { saved: second } = await withGatedTenant(fx.handle.app, TENANT_A.tenantId, (tx) =>
+      saveVariationTargetingInTx(tx, fx.repo, { contentid: contentId, siteid: SITE, initjs: 'again()' }, contentEditor),
     );
     expect(second).toEqual({ ...first, initjs: 'again()' });
-    expect(await readVariationTargeting(deps, contentEditor, { contentId, siteId: SITE })).toEqual(second);
+    expect(await readVariationTargeting(fx.deps, contentEditor, { contentId, siteId: SITE })).toEqual(second);
   });
 
   it('saveVariationTargeting inserts under a new id, then upserts by targetingid keeping unsupplied fields', async () => {
     const contentId = cfId('C', 3);
-    const created = await saveVariationTargeting(deps, contentEditor, { contentid: contentId, siteid: SITE, targetingjs: '[".hero"]' });
+    const { saved: created } = await saveVariationTargeting(fx.deps, contentEditor, { contentid: contentId, siteid: SITE, targetingjs: '[".hero"]' });
     expect(created).not.toBeNull();
     expect(isCfUuid(created?.targetingid ?? '')).toBe(true);
     expect(created).toMatchObject({ contentid: contentId, siteid: SITE, initjs: '', targetingjs: '[".hero"]', isNew: 0 });
 
-    const updated = await saveVariationTargeting(deps, superUser, { targetingid: created?.targetingid, initjs: 'go()' });
+    const { saved: updated } = await saveVariationTargeting(fx.deps, superUser, { targetingid: created?.targetingid, initjs: 'go()' });
     expect(updated).toEqual({ ...created, initjs: 'go()' });
-    expect(await readVariationTargeting(deps, contentEditor, { contentId, siteId: SITE })).toEqual(updated);
+    expect(await readVariationTargeting(fx.deps, contentEditor, { contentId, siteId: SITE })).toEqual(updated);
   });
 
   it('saveVariationTargeting with an unknown targetingid inserts the row under that id', async () => {
     const targetingid = cfId('T', 4);
-    const saved = await saveVariationTargeting(deps, contentEditor, { targetingid, contentid: cfId('C', 4), siteid: SITE, initjs: 'a' });
+    const { saved } = await saveVariationTargeting(fx.deps, contentEditor, { targetingid, contentid: cfId('C', 4), siteid: SITE, initjs: 'a' });
     expect(saved).toEqual({ targetingid, contentid: cfId('C', 4), siteid: SITE, initjs: 'a', targetingjs: '', isNew: 0 });
-    expect(await storedRow(targetingid)).toMatchObject({ targetingid, initjs: 'a' });
+    expect(await fx.storedRow(targetingid)).toMatchObject({ targetingid, initjs: 'a' });
+  });
+
+  it.each<[string, VariationTargetingValues, Record<string, string>]>([
+    ['a 36-character contentid', { contentid: 'X'.repeat(36), siteid: SITE }, { contentid: "The property named 'contentid' is not valid" }],
+    ['a 36-character targetingid', { targetingid: 'T'.repeat(36), contentid: cfId('C', 30), siteid: SITE }, { targetingid: "The property named 'targetingid' is not valid" }],
+    ['a 26-character siteid', { contentid: cfId('C', 30), siteid: 's'.repeat(26) }, { siteid: "The property named 'siteid' is not valid" }],
+    [
+      'an empty targetingid',
+      { targetingid: '', contentid: cfId('C', 30), siteid: SITE },
+      { targetingid: "The property named 'targetingid' is not valid", primarykey: "The primary key 'targetingid' is required." },
+    ],
+  ])('saveVariationTargetingInTx answers the validation errors of %s and writes nothing', async (_label, input, errors) => {
+    const counts = (): Promise<number[]> =>
+      fx.inA(async (tx) =>
+        Promise.all(
+          ['variation_targeting', 'changelog'].map(
+            async (table) => (await tx.query<{ n: number }>(`SELECT count(*)::integer AS n FROM ${fx.handle.schema}.${table}`)).rows[0]?.n ?? 0,
+          ),
+        ),
+      );
+    const before = await counts();
+    await expect(withGatedTenant(fx.handle.app, TENANT_A.tenantId, (tx) => saveVariationTargetingInTx(tx, fx.repo, input, contentEditor))).resolves.toEqual({
+      saved: null,
+      errors,
+    });
+    expect(await counts()).toEqual(before);
   });
 
   it('deleteVariationTargeting is a silent no-op for an absent row, refuses a stored one without access, else deletes it', async () => {
-    await expect(deleteVariationTargeting(deps, variationOnly, cfId('T', 99))).resolves.toBeNull();
+    await expect(deleteVariationTargeting(fx.deps, variationOnly, cfId('T', 99))).resolves.toBeNull();
 
-    const saved = await saveVariationTargeting(deps, contentEditor, { contentid: cfId('C', 5), siteid: SITE, initjs: 'b' });
+    const { saved } = await saveVariationTargeting(fx.deps, contentEditor, { contentid: cfId('C', 5), siteid: SITE, initjs: 'b' });
     const targetingId = saved?.targetingid ?? '';
-    await expect(deleteVariationTargeting(deps, variationOnly, targetingId)).rejects.toMatchObject({ type: 'authorization' });
-    expect(await storedRow(targetingId)).not.toBeNull();
+    await expect(deleteVariationTargeting(fx.deps, variationOnly, targetingId)).rejects.toMatchObject({ type: 'authorization' });
+    expect(await fx.storedRow(targetingId)).not.toBeNull();
 
-    await expect(deleteVariationTargeting(deps, contentEditor, targetingId)).resolves.toEqual(saved);
-    expect(await storedRow(targetingId)).toBeNull();
-    expect(await readVariationTargeting(deps, contentEditor, { contentId: cfId('C', 5), siteId: SITE })).toMatchObject({ isNew: 1, initjs: '' });
+    await expect(deleteVariationTargeting(fx.deps, contentEditor, targetingId)).resolves.toEqual(saved);
+    expect(await fx.storedRow(targetingId)).toBeNull();
+    expect(await readVariationTargeting(fx.deps, contentEditor, { contentId: cfId('C', 5), siteId: SITE })).toMatchObject({ isNew: 1, initjs: '' });
   });
-
-  it('variationScriptModel lists the live Variation items by title with their targeting scripts', async () => {
-    await withGatedTenant(handle.app, TENANT_A.tenantId, async (tx) => {
-      const base = { siteid: SITE, subtype: 'Default', moduleid: VARIATION_MODULE, approved: 1, active: 1, display: 1 };
-      await repo.content.insertVersion(tx, { ...base, type: 'Variation', contentid: cfId('C', 6), contenthistid: cfId('H', 6), title: 'Alpha', menutitle: 'Alpha' });
-      await repo.content.insertVersion(tx, { ...base, type: 'Variation', contentid: cfId('C', 7), contenthistid: cfId('H', 7), title: 'Draft', menutitle: 'Draft', active: 0 });
-      await repo.content.insertVersion(tx, { ...base, type: 'Page', contentid: cfId('C', 8), contenthistid: cfId('H', 8), title: 'Page', menutitle: 'Page' });
-      await saveVariationTargetingInTx(tx, repo, { contentid: cfId('C', 6), siteid: SITE, initjs: 'alpha()', targetingjs: '["#a"]' }, contentEditor);
-    });
-    const model = await variationScriptModel(deps, contentEditor, { siteId: SITE, contentType: 'Page' });
-    expect(model).toEqual({
-      siteId: SITE,
-      contentType: 'Page',
-      variations: [
-        { contentid: cfId('C', 6), title: 'Alpha', initjs: 'alpha()', targetingjs: '["#a"]' },
-        { contentid: cfId('C', 2), title: 'Hero', initjs: 'again()', targetingjs: '' },
-      ],
-    });
-  });
-
-  const upper = cfId('C', 20);
-  const mixed = `c${cfId('C', 22).slice(1)}`;
-  const otherSiteCase = cfId('C', 23);
-  const unscripted = cfId('C', 24);
 
   it('variationScriptModel reads every item targeting in one statement and answers what the per-item read answers', async () => {
+    const v = caseVariants(30, 'short-script', '');
+    const { upper, otherSiteCase, unscripted } = v;
+    // A listed item makes the first read issue its targeting statement too.
+    await withGatedTenant(fx.handle.app, TENANT_A.tenantId, (tx) =>
+      fx.repo.content.insertVersion(tx, {
+        contentid: cfId('C', 36), contenthistid: cfId('H', 36), siteid: SITE, type: 'Variation', subtype: 'Default',
+        moduleid: VARIATION_MODULE, approved: 1, active: 1, display: 1, title: 'Prior', menutitle: 'Prior',
+      }),
+    );
     const before: string[] = [];
-    const first = await variationScriptModel({ ...deps, db: recordingDb(before) }, contentEditor, { siteId: SITE, contentType: '' });
+    const first = await variationScriptModel({ ...fx.deps, db: fx.recordingDb(before) }, contentEditor, { siteId: SITE, contentType: '' });
 
-    await withGatedTenant(handle.app, TENANT_A.tenantId, async (tx) => {
-      const base = { siteid: SITE, subtype: 'Default', moduleid: VARIATION_MODULE, approved: 1, active: 1, display: 1, type: 'Variation' };
-      const items: [string, string, number][] = [
-        [upper, 'Upper', 20], [cfId('C', 22), 'Mixed', 22], [otherSiteCase, 'Site case', 23], [unscripted, 'Unscripted', 24], ['short-variation', 'Short', 25],
-      ];
-      for (const [contentid, title, n] of items) {
-        await repo.content.insertVersion(tx, { ...base, contentid, contenthistid: cfId('H', n), title, menutitle: title });
-      }
-      const rows: [number, string, string, string][] = [
-        [21, upper, SITE, 'upper()'],
-        [20, upper.toLowerCase(), SITE, 'lower()'],
-        [22, mixed, SITE, 'mixed()'],
-        [23, otherSiteCase, SITE.toUpperCase(), 'site()'],
-        [25, 'SHORT-VARIATION', SITE, 'short()'],
-      ];
-      for (const [n, contentid, siteid, initjs] of rows) {
-        await saveVariationTargetingInTx(tx, repo, { targetingid: cfId('T', n), contentid, siteid, initjs, targetingjs: `["#${String(n)}"]` }, contentEditor);
-      }
-    });
+    await arrangeCaseVariants(fx, v);
     const after: string[] = [];
-    const model = await variationScriptModel({ ...deps, db: recordingDb(after) }, contentEditor, { siteId: SITE, contentType: '' });
+    const model = await variationScriptModel({ ...fx.deps, db: fx.recordingDb(after) }, contentEditor, { siteId: SITE, contentType: '' });
 
     expect(model?.variations.length).toBe((first?.variations.length ?? 0) + 5);
     expect(after.length).toBe(before.length);
     expect(targetingStatements(after)).toHaveLength(1);
-    const items = await inA((tx) => repo.content.componentType(tx, { siteId: SITE, type: 'Variation' }));
+    const items = await fx.inA((tx) => fx.repo.content.componentType(tx, { siteId: SITE, type: 'Variation' }));
     const perItem = await Promise.all(
       items.map(async (item) => {
         const contentid = item.contentid ?? '';
-        const { initjs, targetingjs } = await readVariationTargeting(deps, contentEditor, { contentId: contentid, siteId: SITE });
+        const { initjs, targetingjs } = await readVariationTargeting(fx.deps, contentEditor, { contentId: contentid, siteId: SITE });
         return { contentid, title: item.menutitle ?? '', initjs, targetingjs };
       }),
     );
     expect(model?.variations).toEqual(perItem);
     expect(model?.variations).toEqual(
       expect.arrayContaining([
-        { contentid: upper, title: 'Upper', initjs: 'lower()', targetingjs: '["#20"]' },
-        { contentid: cfId('C', 22), title: 'Mixed', initjs: '', targetingjs: '' },
+        { contentid: upper, title: 'Upper', initjs: 'lower()', targetingjs: '["#30"]' },
+        { contentid: cfId('C', 32), title: 'Mixed', initjs: '', targetingjs: '' },
         { contentid: otherSiteCase, title: 'Site case', initjs: '', targetingjs: '' },
         { contentid: unscripted, title: 'Unscripted', initjs: '', targetingjs: '' },
-        { contentid: 'short-variation'.padEnd(35), title: 'Short', initjs: 'short()', targetingjs: '["#25"]' },
+        { contentid: 'short-script'.padEnd(35), title: 'Short', initjs: 'short()', targetingjs: '["#35"]' },
       ]),
     );
   });
 
   it('targetingsForContents answers each requested id as targetingFor does, and issues no statement for no ids', async () => {
+    const v = caseVariants(20, 'short-variation', 'Lookup ');
+    const { upper, mixed, otherSiteCase, unscripted } = v;
+    await arrangeCaseVariants(fx, v);
     const ids = [upper, upper.toLowerCase(), cfId('C', 22), mixed, 'short-variation', 'SHORT-VARIATION  ', otherSiteCase, unscripted, upper, ''];
-    const batched = await inA((tx) => repo.variation.targetingsForContents(tx, { contentIds: ids, siteId: SITE }));
-    const perId = await inA(async (tx) => {
+    const batched = await fx.inA((tx) => fx.repo.variation.targetingsForContents(tx, { contentIds: ids, siteId: SITE }));
+    const perId = await fx.inA(async (tx) => {
       const rows = [];
       for (const contentId of ids) {
-        rows.push(await repo.variation.targetingFor(tx, { contentId, siteId: SITE }));
+        rows.push(await fx.repo.variation.targetingFor(tx, { contentId, siteId: SITE }));
       }
       return rows;
     });
@@ -482,8 +549,41 @@ describe.skipIf(!(await pgAvailable()))('domain/variations over a throwaway cont
 
     const statements: string[] = [];
     await expect(
-      recordingDb(statements).withTenant(TENANT_A.tenantId, (tx) => repo.variation.targetingsForContents(tx, { contentIds: [], siteId: SITE })),
+      fx.recordingDb(statements).withTenant(TENANT_A.tenantId, (tx) => fx.repo.variation.targetingsForContents(tx, { contentIds: [], siteId: SITE })),
     ).resolves.toEqual([]);
     expect(statements).toEqual([]);
+  });
+});
+
+describe.skipIf(!(await pgAvailable()))('domain/variations script model over its own throwaway content schema', () => {
+  let fx: VariationSchema;
+
+  beforeAll(async () => {
+    fx = await createVariationSchema('variations-script-test');
+  });
+
+  afterAll(async () => {
+    await fx?.handle.drop();
+  });
+
+  it('variationScriptModel lists the live Variation items by title with their targeting scripts', async () => {
+    await withGatedTenant(fx.handle.app, TENANT_A.tenantId, async (tx) => {
+      const base = { siteid: SITE, subtype: 'Default', moduleid: VARIATION_MODULE, approved: 1, active: 1, display: 1 };
+      await fx.repo.content.insertVersion(tx, { ...base, type: 'Variation', contentid: cfId('C', 2), contenthistid: cfId('H', 2), title: 'Hero', menutitle: 'Hero' });
+      await saveVariationTargetingInTx(tx, fx.repo, { contentid: cfId('C', 2), siteid: SITE, initjs: 'again()' }, contentEditor);
+      await fx.repo.content.insertVersion(tx, { ...base, type: 'Variation', contentid: cfId('C', 6), contenthistid: cfId('H', 6), title: 'Alpha', menutitle: 'Alpha' });
+      await fx.repo.content.insertVersion(tx, { ...base, type: 'Variation', contentid: cfId('C', 7), contenthistid: cfId('H', 7), title: 'Draft', menutitle: 'Draft', active: 0 });
+      await fx.repo.content.insertVersion(tx, { ...base, type: 'Page', contentid: cfId('C', 8), contenthistid: cfId('H', 8), title: 'Page', menutitle: 'Page' });
+      await saveVariationTargetingInTx(tx, fx.repo, { contentid: cfId('C', 6), siteid: SITE, initjs: 'alpha()', targetingjs: '["#a"]' }, contentEditor);
+    });
+    const model = await variationScriptModel(fx.deps, contentEditor, { siteId: SITE, contentType: 'Page' });
+    expect(model).toEqual({
+      siteId: SITE,
+      contentType: 'Page',
+      variations: [
+        { contentid: cfId('C', 6), title: 'Alpha', initjs: 'alpha()', targetingjs: '["#a"]' },
+        { contentid: cfId('C', 2), title: 'Hero', initjs: 'again()', targetingjs: '' },
+      ],
+    });
   });
 });

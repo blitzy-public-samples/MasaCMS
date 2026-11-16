@@ -82,7 +82,7 @@ function callFor(
     isAggregateQuery: a.isAggregateQuery ?? false,
     user: { loggedIn: false, systemUser: false },
     allowAction: () => false,
-    customImageSizes: [],
+    customImageSizes: () => Promise.resolve([]),
   } as unknown as JsonApiRequestContext;
   const params = createJsonApiParams(Object.entries({ ...url, ...a.params }));
   return {

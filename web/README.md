@@ -15,6 +15,8 @@ Web has no database and no state of its own: every read and write goes through t
 | `app/admin-raw/[circuit]/[action]/route.ts` | `fragment`, `json` and `download` modes |
 | `app/opt2/admin/[module]/[screen]/route.ts`, `app/opt2/admin-actions/[module]/[action]/route.ts` | SYNTHETIC module screens and their posts |
 | `app/healthz/route.ts` | Liveness route: unauthenticated 200 `{"status":"ok"}`, like the service-kit `/healthz` |
+| `server.ts`, `src/server/` | The process entry (`node server.ts`): Next.js behind the platform logger, listening only after boot, one log line per request, graceful shutdown |
+| `instrumentation.ts`, `src/lib/boot.ts` | Start-up hook: validates the environment and Masa settings, builds the auth runtime and starts tracing |
 | `src/shell/` | `admin/common/layouts/template.cfm`, `compact.cfm` and their includes (`nav.cfm`, `header.cfm`, `dsp_secondary_menu.cfm`, `dialog.cfm`) |
 | `src/screens/<circuit>/`, `src/screens/opt2/<module>/` | Reproduced views |
 | `src/lib/` | Markup primitives (`html.ts`), legacy URLs (`urls.ts`), legacy responses (`responses.ts`), environment and Masa settings (`env.ts`), dates, telemetry, resource bundles, auth, the gateway client |
@@ -132,18 +134,23 @@ Prerequisites: Node.js 22.23.4 (`engines` in `package.json`, enforced by `engine
 npm ci                # also installs and builds ../platform (postinstall)
 npm run generate      # service clients and resource bundles into src/generated/
 npm run build         # runs generate, then next build
-PORT=8101 npm start   # next start; reads the environment below
+PORT=8101 npm start   # node server.ts; reads the environment below
 npm test              # runs generate, then vitest with coverage (>= 90% statements)
 ```
 
 - `npm run generate` writes `src/generated/clients/<service>.ts` from each `../services/<service>/contracts/openapi.yaml` (`generate:clients`) and `src/generated/resource-bundles/` from the legacy `.properties` files (`generate:rb`).
 - The container image is the Cloud Run artefact, built in CI only, from the repository root: `docker build -f web/Dockerfile .`. It listens on `8080`.
-- `GET /healthz` (`app/healthz/route.ts`) is the unauthenticated liveness route: 200 `{"status":"ok"}`, the answer the service-kit health route gives in the Fastify packages. `next start` serves it on `PORT`, so the container image answers it on `8080`.
+- `node server.ts [--hostname <host>]` replaces `next start` everywhere (`npm start`, the container image, `harness/repro/up.sh`); without `--hostname` it listens on every interface. NODE_ENV defaults to `production`.
+  - Start-up: Next's `instrumentation.ts` hook runs `bootWeb()` (`src/lib/boot.ts`). A failure writes one `start-up failed` log line naming the invalid variables and exits with code 1, under `next start` too. The port opens only after boot succeeded.
+  - Logging: every line on stdout is log-record.v1, Next's own console output and Node's warnings included. Each request outside the admin pipeline gets one `request` line with route `/healthz`, `/_next/*` or `(unmatched)`; when its client disconnects first, the line is `request aborted`, with a status only if headers were sent. Pipeline requests keep their own line, aborted or not. Refusals (`WebAuthError`, `GatewayDenialError`) are WARNING `request denied: <reason>` lines; 5xx and unexpected errors are ERROR with `error`.
+  - Tracing: Next opens each request's SERVER span; the pipeline's span is its child, with `http.request.method`, `http.route` (the route key), `http.response.status_code` and ERROR status on a 5xx.
+  - Shutdown: SIGTERM or SIGINT stops accepting connections, lets in-flight requests finish, closes Next, exports queued spans and flushes the log, then exits 143 or 130.
+- `GET /healthz` (`app/healthz/route.ts`) is the unauthenticated liveness route: 200 `{"status":"ok"}`, the answer the service-kit health route gives in the Fastify packages. `node server.ts` serves it on `PORT`, so the container image answers it on `8080`.
 - `harness/repro/up.sh` starts web with the rest of the stack; set `NEXT_TELEMETRY_DISABLED=1` when running it by hand.
 
 ## Environment
 
-Every variable but `MURA_*` is parsed at first use by `webEnvSchema` (`src/lib/env.ts`, extending `baseEnvSchema` of `@opt2/platform/service-kit`), which counts a blank value as unset and throws `EnvValidationError` naming each offending variable.
+Every variable but `MURA_*` is validated at start-up by `webEnvSchema` (`src/lib/env.ts`, extending `baseEnvSchema` of `@opt2/platform/service-kit`), which counts a blank value as unset and throws `EnvValidationError` naming each offending variable.
 
 | Variable | Type / format | Local | Cloud | Use |
 |---|---|---|---|---|
@@ -163,7 +170,7 @@ Every variable but `MURA_*` is parsed at first use by `webEnvSchema` (`src/lib/e
 
 Locally `${OPT2_STATE_DIR}/secrets/` must hold the local signing key pair (`LOCAL_SECRET_FILES` in `@opt2/platform/auth`), which `harness/repro/up.sh` generates. The cloud reads neither file.
 
-- `token-signing-public.pem` verifies the gateway's invocation credential; without it web authenticates no request.
+- `token-signing-public.pem` verifies the gateway's invocation credential; without it web refuses to start.
 - `token-signing-private.pem` mints web's invocation credential for the relay; without it web starts, but every relay call fails.
 
 The Masa settings web reads: `MURA_TITLE`, `MURA_CONTEXT`, `MURA_ADMINDIR`, `MURA_ADMINDOMAIN`, `MURA_ADMINEMAIL`, `MURA_ADMINSSL`, `MURA_SESSIONTIMEOUT`, `MURA_RENDERMURAALERTS`, `MURA_SECURECOOKIES`, `MURA_SESSIONHISTORY`, `MURA_WINDOWDOCUMENTDOMAIN`, `MURA_LOCALE`, `MURA_ALLOWAUTOUPDATES`, `MURA_FILEMANAGERENABLED`, `MURA_FMSHOWSITEFILES`, `MURA_FMSHOWAPPLICATIONROOT`, `MURA_MODE`, `MURA_DBTYPE`, `MURA_PORT`, `MURA_HTMLEDITORTYPE`, `MURA_FILEDELIM`, `MURA_SITEIDINURLS`, `MURA_INDEXFILEINURLS`, `MURA_INDEXFILEINAPI`, `MURA_LEGACYINDEXFILELOCATION`, `MURA_FILEASSETPATH`, `MURA_COREPATH`, `MURA_PLUGINSPATH`, `MURA_EXPIREPASSWORDS`, `MURA_WEBROOT`, `MURA_APPRELOADKEY`, `MURA_JAVAENABLED`, `MURA_SITEDIR`, `MURA_ASSETPATH`, `MURA_FILEDIR` and `MURA_S3ASSETS`. Unlike the variables `webEnvSchema` parses, a blank `MURA_*` variable is set, not unset: its configBean setter receives `''`, so `MURA_TITLE=` gives an empty title. An unset variable takes its `core/templates/settings.template.cfm` value. The configBean default applies to a value the setter rejects (`MURA_ADMINDIR=` keeps `/admin`; `MURA_SESSIONHISTORY=` gives `1`, not the template's `0`) and to an unset variable the template lacks, except `MURA_INDEXFILEINAPI`, which then follows `MURA_INDEXFILEINURLS`. `SETTING_RULES` and `resolveLegacySettings` in `src/lib/env.ts` are the per-key table of defaults and conversions. A `${…}` or `{{…}}` value resolves to `''`. `MURA_PORT` is Masa's `port` setting, not web's `PORT`.
@@ -174,6 +181,7 @@ Web reads no `PG_*`, `OPT2_DB_AUTH` or `CLOUD_SQL_INSTANCE` variable: it has no 
 
 - `web/test/**` holds DOM-model (`test/helpers/dom-model.ts`, cheerio) and snapshot tests of the shell, screens and lib. They need no running stack.
 - Two vitest projects: `unit` needs no network; `integration` (`test/integration/**`) holds the loopback transport tests. `npm test` runs both with coverage; `npm run test:unit` or `npm run test:integration` runs one.
+- `npm run test:contract` runs `test/contract/`: web's requests and its fixture answers against the producers' `contracts/openapi.yaml`. `npm run test:security` runs `test/security/` (inbound credentials, the access gate, CSRF), `test/integration/access-gate-denials.test.ts` and every controller `*gate.test.ts` under `test/screens/`. Both generate the clients first, as `npm test` does.
 - Equivalence is demonstrated only by the proofs below, which run from `harness/` and `web/test/`; this README records no result:
   - **Reproduced screens:** the golden scenarios GS-ID, GS-PE, GS-PS and GS-CO, replayed through the gateway and compared against legacy captures as each scenario declares (`compare` in `harness/golden/catalogue.yaml`): admin screens as DOM models (AAP 0.7.3), plus status, headers, authentication behaviour, envelopes, exports, and stored-row, stored-file and mail side effects; and the browser flows GS-UI-01 to GS-UI-05, which compare DOM, XHR responses and console.
   - **SYNTHETIC modules:** GS-TS, GS-FI, GS-ES, GS-RE, GS-SU and GS-CM prove API parity: the module APIs, called through the gateway, against the legacy-fixture captures (responses and side effects). Their `/opt2/admin/…` and `/opt2/admin-actions/…` steps are `compare: []` coverage visits, not UI comparisons.

@@ -568,10 +568,10 @@ describe('the validators the fixture routes run', () => {
     expect(validateSuppliedChain({ entries: suppliedChain() })).toEqual({ ok: true, value: expected });
   });
 
-  it('decodes the create document and keeps documentName and signerUserId as sent', () => {
+  it('decodes the create document and keeps documentName and signerUserId as sent', async () => {
     const name = '  contract.pdf ';
 
-    expect(validateCreateInput({ ...VALID_CREATE, documentName: name })).toEqual({
+    expect(await validateCreateInput({ ...VALID_CREATE, documentName: name })).toEqual({
       ok: true,
       value: { documentName: name, document: DOCUMENT, signerUserId: SIGNER_USER_ID },
     });

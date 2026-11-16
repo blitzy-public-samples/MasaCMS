@@ -150,7 +150,7 @@ describe.skipIf(!available)('local task adapter', () => {
       queue: 'surveys-launch',
       name,
       scheduleTime: new Date(nowMs - 1000),
-      url: `${SERVICE_URLS.surveys}/internal/v1/tasks/surveys/${name}/launch`,
+      url: `${SERVICE_URLS.surveys}/internal/v1/tasks/surveys/launch`,
       deadlineS: 60,
       ...(tenantId === undefined ? {} : { tenantId }),
       ...extra,
@@ -260,7 +260,7 @@ describe.skipIf(!available)('local task adapter', () => {
     });
     expect(call?.headersTimeout).toBe(45_000);
     const { publicKey } = await testSigningKeys();
-    const request = { headers: { authorization: call?.headers.authorization }, path: '/internal/v1/tasks/surveys/hdr-a/launch' };
+    const request = { headers: { authorization: call?.headers.authorization }, path: '/internal/v1/tasks/surveys/launch' };
     const surveys = createLocalCloudTasksTransport({ publicKey, callee: 'surveys' });
     expect((await surveys.authenticate(request, { optional: false })).service?.name).toBe('tasks-invoker');
     const other = createLocalCloudTasksTransport({ publicKey, callee: 'communications' });
@@ -273,7 +273,7 @@ describe.skipIf(!available)('local task adapter', () => {
       queue,
       name: 'pause-b',
       scheduleTime: new Date(nowMs),
-      url: `${SERVICE_URLS.communications}/internal/v1/tasks/reminders/1`,
+      url: `${SERVICE_URLS.communications}/internal/v1/tasks/reminders`,
       deadlineS: 60,
       tenantId: TENANT_B.tenantId,
     });
@@ -743,7 +743,7 @@ describe.skipIf(!available)('local task adapter', () => {
         queue: 'reporting-export-run',
         name: 'hung-a',
         scheduleTime: new Date(nowMs),
-        url: `${target.reporting}/internal/v1/tasks/exports/1/run`,
+        url: `${target.reporting}/internal/v1/tasks/exports/run`,
         deadlineS: 15,
         tenantId: TENANT_A.tenantId,
       });
@@ -768,7 +768,7 @@ describe.skipIf(!available)('local task adapter', () => {
           traceId = span.spanContext().traceId;
           await real.create({ queue: 'reporting-export-run', name, scheduleTime: new Date(nowMs - 1000), url, deadlineS: 30, tenantId: TENANT_B.tenantId });
         });
-      await create('trace-b', `${target.reporting}/internal/v1/tasks/exports/2/run`);
+      await create('trace-b', `${target.reporting}/internal/v1/tasks/exports/run`);
       const instrumentedTrace = traceId;
       expect(await real.dispatchDue()).toBe(1);
       const traceparent = received.at(-1)?.traceparent;
@@ -778,7 +778,7 @@ describe.skipIf(!available)('local task adapter', () => {
       const dispatched = exporter.getFinishedSpans().find((span) => span.spanContext().spanId === String(traceparent).split('-')[2]);
       expect(dispatched).toMatchObject({ name: 'POST reporting', kind: SpanKind.CLIENT });
 
-      await create('trace-stub-b', `${target.reporting}/internal/v1/tasks/exports/3/run`);
+      await create('trace-stub-b', `${target.reporting}/internal/v1/tasks/exports/run`);
       const stored = (await rowOf(TENANT_B.tenantId, 'trace-stub-b'))?.headers as { traceparent?: string };
       await shutdownTracing();
       const stubbed = await createLocalTaskAdapter({ db, stateDir, serviceUrls: target, clock, logger, autoStart: false, request: stubRequest });
@@ -1020,7 +1020,7 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
           queue,
           name,
           scheduleTime: new Date(nowMs),
-          url: `${SERVICE_URLS.communications}/internal/v1/tasks/reminders/2`,
+          url: `${SERVICE_URLS.communications}/internal/v1/tasks/reminders`,
           deadlineS: 60,
           tenantId: TENANT_B.tenantId,
         });

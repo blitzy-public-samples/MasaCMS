@@ -15,7 +15,7 @@ import {
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
-import type { MetadataTx, TenantDb } from '@opt2/platform/tenancy';
+import type { MetadataTx, QueryConfig, QueryResult, QueryResultRow, TenantDb } from '@opt2/platform/tenancy';
 import {
   ContractAssertionError,
   assertResponseMatchesOpenApi,
@@ -25,7 +25,6 @@ import {
   type ContractViolation,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
-import type { QueryConfig, QueryResult, QueryResultRow } from 'pg';
 import { parse } from 'yaml';
 
 import { createMigrationContext, type MigrationContext } from '../../src/context.js';

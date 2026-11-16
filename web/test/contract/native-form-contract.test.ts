@@ -18,9 +18,9 @@ import { loadEditUser, renderEditUser } from '@/screens/cusers/edituser';
 import { addUserAction, updateGroupAction, updateUserAction } from '@/screens/cusers/update';
 import { updateAddressAction } from '@/screens/cusers/updateaddress';
 import type { RedirectScreen, ScreenContext } from '@/screens/registry';
-import { GROUP_IDS, groupsById } from '../../fixtures/identity/groups';
-import { adminS2Request } from '../../helpers/admin-request';
-import { useTestEnv } from '../../helpers/env';
+import { GROUP_IDS, groupsById } from '../fixtures/identity/groups';
+import { adminS2Request } from '../helpers/admin-request';
+import { useTestEnv } from '../helpers/env';
 import {
   fakeGatewayClient,
   routeKey,
@@ -28,7 +28,7 @@ import {
   type FakeGatewayClient,
   type FakeReply,
   type RecordedRequest,
-} from '../../helpers/fake-gateway';
+} from '../helpers/fake-gateway';
 
 type AddressRecord = components['schemas']['AddressRecord'];
 type PersonRecord = components['schemas']['PersonRecord'];
@@ -37,7 +37,7 @@ type Entry = readonly [name: string, value: FormDataEntryValue];
 
 /** A producer contract as consumer contract tests load it, by relative path. */
 const contract = (service: 'identity' | 'people'): object => {
-  const file = new URL(`../../../../services/${service}/contracts/openapi.yaml`, import.meta.url);
+  const file = new URL(`../../../services/${service}/contracts/openapi.yaml`, import.meta.url);
   return parse(readFileSync(file, 'utf8')) as object;
 };
 

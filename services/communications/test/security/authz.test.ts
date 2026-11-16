@@ -251,7 +251,7 @@ const SUPERSEDED_REMINDER = {
   reminder_n: 1,
   schedule_time: SEEDED_AT,
   status: 'superseded',
-  target_route: REMINDER_TASK_PATH.replace(':scheduledTaskId', SUPERSEDED_TASK_ID),
+  target_route: REMINDER_TASK_PATH,
   schedule_version: 1,
   origin: 'event',
   enqueued_at: SEEDED_AT,
@@ -381,7 +381,7 @@ const EXPECTED: Readonly<Record<string, Expectation>> = {
   'POST /internal/v1/task-queues/:queue/ensure': queueControl('ensure'),
   'POST /internal/v1/task-queues/:queue/pause': queueControl('pause'),
   'POST /internal/v1/task-queues/:queue/resume': queueControl('resume'),
-  'POST /internal/v1/tasks/reminders/:scheduledTaskId': taskRoute(reminderTaskRequest),
+  'POST /internal/v1/tasks/reminders': taskRoute(reminderTaskRequest),
   // The api.cfm catch-all dispatches to the same sender-checked handlers as the declared fixture routes.
   'DELETE /legacy-fixtures/cfml/api.cfm/*': fixtureSenderRoute(catchAllList('DELETE')),
   'GET /legacy-fixtures/cfml/api.cfm/*': fixtureSenderRoute(() => ({ method: 'GET', url: `${FIXTURE_PREFIX}/MESSAGES/${messageId}?${ON_SITE_A}` })),

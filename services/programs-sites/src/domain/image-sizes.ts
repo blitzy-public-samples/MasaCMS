@@ -2,7 +2,7 @@
 import { assertSiteMatches, type UserClaims } from '@opt2/platform/auth';
 import { cfEq, cfIsNumeric, cfUuid, javaTrim } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
-import { withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { registeredTenants, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import type { components } from '../generated/openapi.js';
 import type { ProgramsSitesRepository } from '../repo/repository.js';
 import type { ImageSizeRow } from '../repo/tables.js';
@@ -32,6 +32,8 @@ export type ImageSizePost = Readonly<Record<string, unknown>>;
 const DEFAULT_URL_TITLE_DELIM = '-';
 const DEFAULT_ALLOW_UNICODE_IN_FILENAMES = false;
 const AUTO = 'AUTO';
+/** settingsManager `getSite`'s fallback for an empty or unknown site id. */
+const DEFAULT_SITE_ID = 'default';
 
 // contentUtility.approximations (contentUtility.cfc:93-98).
 const APPROXIMATIONS: ReadonlyMap<string, string> = new Map([
@@ -184,7 +186,7 @@ function postedText(post: ImageSizePost, key: string): string {
   return text;
 }
 
-/** Image size operations of the Edit Site dialog; every one runs in the token tenant `claims.tid`. */
+/** Image size operations of the Edit Site dialog, each in the token tenant `claims.tid`, and the service callers' site read. */
 export interface ImageSizesDomain {
   /** The custom image sizes of `siteId` by `sizeid` (settingsBean.getCustomImageSizeIterator); 403 unless `siteId` is the token's site. */
   listImageSizes(db: TenantDb, claims: UserClaims, siteId: string): Promise<ImageSizeBean[]>;
@@ -194,6 +196,11 @@ export interface ImageSizesDomain {
   saveImageSize(db: TenantDb, claims: UserClaims, input: ImageSizePost): Promise<ImageSizeBean | null>;
   /** `loadcustomimages` with `imageaction=delete`: true when a size was deleted; an empty or unknown `sizeId` deletes nothing. */
   deleteImageSize(db: TenantDb, claims: UserClaims, sizeId: string): Promise<boolean>;
+  /**
+   * `getSite(siteId).getCustomImageSizeIterator()` for a service caller: the registered site ignoring case, else `default`.
+   * @throws Error when neither the named site nor `default` is registered, where legacy's getSite fails.
+   */
+  readSiteImageSizes(db: TenantDb, siteId: string): Promise<ImageSizeBean[]>;
 }
 
 /**
@@ -247,5 +254,17 @@ export function createImageSizesDomain(deps: { repo: ProgramsSitesRepository; na
     return withGatedTenant(db, claims.tid, (tx) => repo.deleteImageSize(tx, sizeId));
   }
 
-  return Object.freeze({ listImageSizes, loadImageSize, saveImageSize, deleteImageSize });
+  async function readSiteImageSizes(db: TenantDb, siteId: string): Promise<ImageSizeBean[]> {
+    // The registry holds the sites getSite's variables.sites does, keyed ignoring case, under their stored ids.
+    const sites = await registeredTenants(db);
+    const named = (id: string) => sites.find((site) => site.siteId.toLowerCase() === id.toLowerCase());
+    const site = named(siteId) ?? named(DEFAULT_SITE_ID);
+    if (site === undefined) {
+      throw new Error(`Neither site '${siteId}' nor the default site is registered`);
+    }
+    const rows = await withTenant(db, site.tenantId, (tx) => repo.listImageSizes(tx, site.siteId));
+    return rows.map((row) => beanFromRow(row, nameOptions));
+  }
+
+  return Object.freeze({ listImageSizes, loadImageSize, saveImageSize, deleteImageSize, readSiteImageSizes });
 }

@@ -64,6 +64,7 @@ import {
   recurringQueues,
   retryDelayS,
   targetUrl,
+  type QueueDefinition,
   type QueueTopologyEntry,
   type RetryPolicy,
 } from '../../src/tasks/queues.js';
@@ -96,7 +97,7 @@ const CLOUD_TOPOLOGY: readonly QueueTopologyEntry[] = [
   {
     name: 'surveys-launch',
     targetService: 'surveys',
-    targetPath: '/internal/v1/tasks/surveys/{surveyId}/launch',
+    targetPath: '/internal/v1/tasks/surveys/launch',
     creators: ['communications'],
     deadlineS: 60,
     retry: ONE_OFF_RETRY,
@@ -104,7 +105,7 @@ const CLOUD_TOPOLOGY: readonly QueueTopologyEntry[] = [
   {
     name: 'communications-reminders',
     targetService: 'communications',
-    targetPath: '/internal/v1/tasks/reminders/{scheduledTaskId}',
+    targetPath: '/internal/v1/tasks/reminders',
     creators: ['communications'],
     deadlineS: 60,
     retry: ONE_OFF_RETRY,
@@ -128,7 +129,7 @@ const CLOUD_TOPOLOGY: readonly QueueTopologyEntry[] = [
   {
     name: 'reporting-export-run',
     targetService: 'reporting',
-    targetPath: '/internal/v1/tasks/exports/{exportId}/run',
+    targetPath: '/internal/v1/tasks/exports/run',
     creators: ['reporting'],
     deadlineS: 1800,
     retry: ONE_OFF_RETRY,
@@ -226,6 +227,12 @@ describe('QUEUES', () => {
     }
   });
 
+  it('targets only fixed paths, whose URLs are exact OIDC audiences', () => {
+    for (const def of Object.values(QUEUES)) {
+      expect(def.targetPath).toMatch(/^(\/[a-z0-9-]+)+$/);
+    }
+  });
+
   it('uses the recurring retry policy exactly on recurring queues', () => {
     for (const def of Object.values(QUEUES)) {
       expect(def.retry).toBe(def.recurring ? RECURRING_RETRY : DEFAULT_RETRY);
@@ -252,7 +259,7 @@ describe('isQueueName', () => {
 describe('queueDefinition', () => {
   it('returns the registry entry', () => {
     expect(queueDefinition('surveys-launch')).toBe(QUEUES['surveys-launch']);
-    expect(queueDefinition('surveys-launch').targetPath).toBe('/internal/v1/tasks/surveys/{surveyId}/launch');
+    expect(queueDefinition('surveys-launch').targetPath).toBe('/internal/v1/tasks/surveys/launch');
   });
 
   it.each(['unknown-queue', 'toString', ''])('throws UnknownQueueError for %j', (name) => {
@@ -304,18 +311,22 @@ describe('queuesCreatedBy', () => {
 });
 
 describe('targetUrl', () => {
+  /** A parameterised definition, which no registry queue is, for the template filling of `targetUrl`. */
+  const TEMPLATE_QUEUE: QueueDefinition = { ...QUEUES['surveys-launch'], name: 'items-run', targetPath: '/internal/v1/tasks/items/{itemId}/run' };
+
+  it.each([
+    ['fills a path parameter', { itemId: SURVEY_ID }, `http://127.0.0.1:8117/internal/v1/tasks/items/${SURVEY_ID}/run`],
+    ['URI-encodes parameter values', { itemId: 'a/b c?d#é' }, 'http://127.0.0.1:8117/internal/v1/tasks/items/a%2Fb%20c%3Fd%23%C3%A9/run'],
+  ])('%s of a parameterised definition', (_label, params, expected) => {
+    expect(targetUrl(TEMPLATE_QUEUE, SERVICE_URLS, params)).toBe(expected);
+  });
+
   it.each([
     [
-      'fills the survey launch path parameter',
+      'keeps the fixed survey launch path',
       'surveys-launch',
       { surveyId: SURVEY_ID },
-      `http://127.0.0.1:8117/internal/v1/tasks/surveys/${SURVEY_ID}/launch`,
-    ],
-    [
-      'URI-encodes parameter values',
-      'surveys-launch',
-      { surveyId: 'a/b c?d#é' },
-      'http://127.0.0.1:8117/internal/v1/tasks/surveys/a%2Fb%20c%3Fd%23%C3%A9/launch',
+      'http://127.0.0.1:8117/internal/v1/tasks/surveys/launch',
     ],
     [
       'strips one trailing slash from the base URL',
@@ -327,7 +338,7 @@ describe('targetUrl', () => {
       'strips repeated trailing slashes from the base URL',
       'reporting-export-run',
       { exportId: 'E1' },
-      'https://reporting-abc.a.run.app/internal/v1/tasks/exports/E1/run',
+      'https://reporting-abc.a.run.app/internal/v1/tasks/exports/run',
     ],
     [
       'ignores parameters the route does not name',
@@ -353,9 +364,9 @@ describe('targetUrl', () => {
   });
 
   it('throws TypeError for a missing path parameter', () => {
-    const error = thrownBy(() => targetUrl(QUEUES['surveys-launch'], SERVICE_URLS));
+    const error = thrownBy(() => targetUrl(TEMPLATE_QUEUE, SERVICE_URLS));
     expect(error).toBeInstanceOf(TypeError);
-    expect(error).toMatchObject({ message: 'Missing path parameter "surveyId" for queue surveys-launch' });
+    expect(error).toMatchObject({ message: 'Missing path parameter "itemId" for queue items-run' });
   });
 });
 
@@ -425,7 +436,7 @@ describe('parseTaskWireBody', () => {
     queue: 'surveys-launch',
     name: 'surveys-launch-A1B2',
     scheduleTime: new Date('2026-06-30T12:00:00Z'),
-    url: `http://127.0.0.1:8117/internal/v1/tasks/surveys/${SURVEY_ID}/launch`,
+    url: 'http://127.0.0.1:8117/internal/v1/tasks/surveys/launch',
     deadlineS: 60,
     body: { surveyId: SURVEY_ID },
     tenantId: TENANT_A.tenantId,
@@ -505,8 +516,7 @@ const TASK_SERVICE_URLS: Readonly<Record<string, string>> = {
 };
 
 const SWEEP_PATH = '/internal/v1/outbox/sweep';
-const LAUNCH_ROUTE = '/internal/v1/tasks/surveys/:surveyId/launch';
-const LAUNCH_PATH = `/internal/v1/tasks/surveys/${SURVEY_ID}/launch`;
+const LAUNCH_PATH = '/internal/v1/tasks/surveys/launch';
 
 const SWEEP_BODY = taskWireBody({
   queue: 'people-outbox-sweep',
@@ -671,18 +681,22 @@ describe('TaskTenantMismatchError', () => {
 describe('registerTaskRoute', () => {
   afterEach(closeApps);
 
+  const OUTSIDE = 'must be under /internal/v1/tasks/ or /internal/v1/jobs/, or be /internal/v1/outbox/sweep';
+  const NOT_FIXED = 'must be a fixed path: Cloud Run admits only exact OIDC audiences';
+
   it.each([
-    '/internal/v1/task-queues/surveys-launch/pause',
-    '/internal/v1/events/people-person-archived',
-    '/internal/v1/outbox/sweep/now',
-    '/tasks/feed',
-  ])('refuses %s, which is outside the managed task families', async (route) => {
+    { route: '/internal/v1/task-queues/surveys-launch/pause', why: 'is outside the managed task families', reason: OUTSIDE },
+    { route: '/internal/v1/events/people-person-archived', why: 'is outside the managed task families', reason: OUTSIDE },
+    { route: '/internal/v1/outbox/sweep/now', why: 'is outside the managed task families', reason: OUTSIDE },
+    { route: '/tasks/feed', why: 'is outside the managed task families', reason: OUTSIDE },
+    { route: '/internal/v1/tasks/surveys/:surveyId/launch', why: 'carries a route parameter', reason: NOT_FIXED },
+    { route: '/internal/v1/tasks/exports/{exportId}/run', why: 'carries a template parameter', reason: NOT_FIXED },
+    { route: '/internal/v1/jobs/*', why: 'carries a wildcard', reason: NOT_FIXED },
+  ])('refuses $route, which $why', async ({ route, reason }) => {
     const app = await taskServiceApp('people');
     const error = thrownBy(() => registerTaskRoute(app, route, { scope: 'system', handler: vi.fn() }));
     expect(error).toBeInstanceOf(TypeError);
-    expect(error).toMatchObject({
-      message: `Task route ${route} must be under /internal/v1/tasks/ or /internal/v1/jobs/, or be /internal/v1/outbox/sweep`,
-    });
+    expect(error).toMatchObject({ message: `Task route ${route} ${reason}` });
   });
 
   it('declares the cloud-tasks transport and the tasks-invoker role', async () => {
@@ -874,7 +888,7 @@ describe('registerTaskRoute', () => {
     const db = memoryTenantDb();
     const findStored = vi.fn(findSurvey);
     const seen: Array<{ ctx: TaskContext<StoredSurvey>; contextTenant: string | undefined }> = [];
-    registerTaskRoute<StoredSurvey>(app, LAUNCH_ROUTE, {
+    registerTaskRoute<StoredSurvey>(app, LAUNCH_PATH, {
       scope: 'tenant',
       db,
       findStored,
@@ -901,7 +915,7 @@ describe('registerTaskRoute', () => {
     expect(seen[0]?.contextTenant).toBe(TENANT_A.tenantId);
   });
 
-  /** A tenant handler refusing every task it runs as a tenant mismatch, as a route refuses a URL naming another row. */
+  /** A tenant handler refusing every task it runs as a tenant mismatch, as a route refuses a payload its stored row contradicts. */
   const refusingHandler = () =>
     vi.fn(async (ctx: TaskContext<StoredSurvey>) => {
       throw new TaskTenantMismatchError(ctx.tenantId, ctx.taskName);
@@ -922,7 +936,7 @@ describe('registerTaskRoute', () => {
       const app = await taskServiceApp('surveys');
       const db = memoryTenantDb();
       const handler = refusingHandler();
-      registerTaskRoute<StoredSurvey>(app, LAUNCH_ROUTE, { scope: 'tenant', db, findStored: findSurvey, handler });
+      registerTaskRoute<StoredSurvey>(app, LAUNCH_PATH, { scope: 'tenant', db, findStored: findSurvey, handler });
       const response = await postTask(app, LAUNCH_PATH, body, LAUNCH_HEADERS);
       expect(response.statusCode).toBe(400);
       expect(errorOf(response)).toStrictEqual(error);
@@ -939,7 +953,7 @@ describe('registerTaskRoute', () => {
       const db = memoryTenantDb();
       const handler = refusingHandler();
       const ignored = vi.fn((why: string) => ({ ignored: why }));
-      registerTaskRoute<StoredSurvey>(app, LAUNCH_ROUTE, { scope: 'tenant', db, findStored: findSurvey, handler, ignored });
+      registerTaskRoute<StoredSurvey>(app, LAUNCH_PATH, { scope: 'tenant', db, findStored: findSurvey, handler, ignored });
       const response = await postTask(app, LAUNCH_PATH, body, LAUNCH_HEADERS);
       expect(response.statusCode).toBe(200);
       expect(response.json()).toStrictEqual({ ignored: reason });
@@ -969,7 +983,7 @@ describe('registerTaskRoute', () => {
       throw new LegacyServiceUnavailableError('surveys gate closed', 'auto', 'gate-closed');
     });
     const ignored = vi.fn((why: string) => ({ ignored: why }));
-    registerTaskRoute<StoredSurvey>(app, LAUNCH_ROUTE, { scope: 'tenant', db, findStored: findSurvey, handler, ignored });
+    registerTaskRoute<StoredSurvey>(app, LAUNCH_PATH, { scope: 'tenant', db, findStored: findSurvey, handler, ignored });
     const response = await app.inject({ method: 'POST', url: LAUNCH_PATH, headers: await headersOf(), payload: launchBody(TENANT_A.tenantId) as object });
     expect(response.statusCode).toBe(status);
     expect(handler).toHaveBeenCalledTimes(handlerCalls);

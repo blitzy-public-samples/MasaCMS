@@ -239,7 +239,7 @@ describe.skipIf(!PG)('drafts, purged drafts and archive trimming', () => {
   const tree = useSeededTree();
   const restricted = (title: string): ContentInput => ({ siteid: SITE_ID, contentid: RESTRICTED, parentid: ROOT, type: 'Page', title });
 
-  it('saves a draft beside the active version as unapproved and inactive', async () => {
+  it('saves a draft beside the active version, keeps the drafts on a publish without purgeDrafts, purges them and trims the archive to maxArchivedVersions on the next, and keeps every archived version at 0', async () => {
     const draft = await saveDraft(tree().deps, S2, SITE, restricted('Restricted Draft Two'));
     expect(draft.errors).toEqual({});
     expect(states(await tree().versions(RESTRICTED))).toEqual([
@@ -247,9 +247,7 @@ describe.skipIf(!PG)('drafts, purged drafts and archive trimming', () => {
       ['Restricted (draft)', 0, 0],
       ['Restricted Draft Two', 0, 0],
     ]);
-  });
 
-  it('keeps the drafts on publish when purgeDrafts is off', async () => {
     await publish(tree().withConfig({ purgeDrafts: false }), S2, SITE, restricted('Restricted v2'));
     expect(states(await tree().versions(RESTRICTED))).toEqual([
       ['Restricted', 0, 1],
@@ -257,17 +255,13 @@ describe.skipIf(!PG)('drafts, purged drafts and archive trimming', () => {
       ['Restricted Draft Two', 0, 0],
       ['Restricted v2', 1, 1],
     ]);
-  });
 
-  it('purges the drafts and trims the archive to maxArchivedVersions on the next publish', async () => {
     await publish(tree().withConfig({ purgeDrafts: true, maxArchivedVersions: 1 }), S2, SITE, restricted('Restricted v3'));
     expect(states(await tree().versions(RESTRICTED))).toEqual([
       ['Restricted v2', 0, 1],
       ['Restricted v3', 1, 1],
     ]);
-  });
 
-  it('keeps every archived version when maxArchivedVersions is 0', async () => {
     expect(CONTENT_CONFIG_DEFAULTS.maxArchivedVersions).toBe(0);
     await publish(tree().deps, S2, SITE, restricted('Restricted v4'));
     expect(states(await tree().versions(RESTRICTED))).toEqual([
@@ -286,8 +280,6 @@ describe.skipIf(!PG)('approval-chain saves', () => {
   const AUTHOR = actorOf('editor', 'Ava Author', authorId);
   const requestsOf = (contentHistId: string) => tree().rows('approval_request', 'contenthistid = $1', [contentHistId]);
   let folderId = '';
-  let pendingHistId = '';
-  let pendingId = '';
 
   beforeAll(async () => {
     folderId = (await saveContent(tree().deps, S2, SITE, { siteid: SITE_ID, parentid: ROOT, type: 'Folder', title: 'Chained Folder', approved: 1 })).bean.contentId();
@@ -303,10 +295,8 @@ describe.skipIf(!PG)('approval-chain saves', () => {
   it("raises a pending request from the chain's first group for a non-exempt editor saving under the chained folder", async () => {
     const saved = await saveContent(tree().deps, EDITOR, SITE, { siteid: SITE_ID, parentid: folderId, type: 'Page', title: 'Chained Page', approved: 1 });
     expect(saved.errors).toEqual({});
-    pendingId = saved.bean.contentId();
-    pendingHistId = saved.bean.contentHistId();
-    expect(states(await tree().versions(pendingId))).toEqual([['Chained Page', 1, 0]]);
-    expect(await requestsOf(pendingHistId)).toEqual([
+    expect(states(await tree().versions(saved.bean.contentId()))).toEqual([['Chained Page', 1, 0]]);
+    expect(await requestsOf(saved.bean.contentHistId())).toEqual([
       expect.objectContaining({ chainid: IDS.approval.chain, groupid: IDS.groups.approvers, userid: EDITOR.userId, status: 'Pending', siteid: SITE_ID }),
     ]);
   });
@@ -318,6 +308,10 @@ describe.skipIf(!PG)('approval-chain saves', () => {
   });
 
   it("activates the pending version as the chain's last approval does", async () => {
+    const pending = await saveContent(tree().deps, EDITOR, SITE, { siteid: SITE_ID, parentid: folderId, type: 'Page', title: 'Chained Page', approved: 1 });
+    const pendingId = pending.bean.contentId();
+    const pendingHistId = pending.bean.contentHistId();
+    expect(await requestsOf(pendingHistId)).toEqual([expect.objectContaining({ status: 'Pending' })]);
     const approved = await withGatedTenant(tree().deps.db, APPROVER.tenantId, (tx) =>
       approveVersion(tx, tree().deps, APPROVER, SITE, pendingHistId, { approvingChainRequest: true }),
     );
@@ -380,13 +374,10 @@ describe.skipIf(!PG)('version deletes', () => {
 describe.skipIf(!PG)('copy, multi-file upload and deleteAll of a section', () => {
   const tree = useSeededTree();
   const activeChildren = (parentId: string) => tree().rows('content', 'parentid = $1 AND active = 1', [parentId]);
-  let copyId = '';
-  let uploadedId = '';
-  let uploadedFileId = '';
 
-  it('copies a section and its children under new ids and unique filenames, keeping the sibling order', async () => {
+  it('copies a section with its children, adds an uploaded File child to it, halts an image upload, aborts deleteAll of the home page and trashes the section with every descendant', async () => {
     const copied = await copy(tree().deps, S2, SITE, { siteId: SITE_ID, contentId: SECTION, parentId: ROOT, recurse: true });
-    copyId = copied.contentId();
+    const copyId = copied.contentId();
     expect(isCfUuid(copyId) && copyId !== SECTION).toBe(true);
     expect(await tree().rows('content', 'contentid = $1 AND active = 1', [copyId])).toEqual([
       expect.objectContaining({ menutitle: 'Section - Copy', filename: 'section1', parentid: ROOT, type: 'Folder' }),
@@ -399,9 +390,7 @@ describe.skipIf(!PG)('copy, multi-file upload and deleteAll of a section', () =>
     ]);
     expect(kids.every((row) => isCfUuid(String(row.contentid)) && row.contentid !== PAGE_ONE && row.contentid !== PAGE_TWO)).toBe(true);
     expect((await activeChildren(SECTION)).map((row) => row.contentid)).toEqual([PAGE_ONE, PAGE_TWO]);
-  });
 
-  it('adds one File child under the parent for a non-image upload and links the stored file to it', async () => {
     const item = await multiFileUpload(tree().deps, S2, SITE, {
       siteId: SITE_ID,
       parentId: SECTION,
@@ -412,29 +401,23 @@ describe.skipIf(!PG)('copy, multi-file upload and deleteAll of a section', () =>
     });
     expect(item).toMatchObject({ filename: 'notes.txt', title: 'notes.txt', body: 'notes.txt' });
     const [child] = (await activeChildren(SECTION)).filter((row) => row.type === 'File');
-    uploadedId = String(child?.contentid);
-    uploadedFileId = String(child?.fileid);
+    const uploadedId = String(child?.contentid);
+    const uploadedFileId = String(child?.fileid);
     const expected = uniqueFilename({ urlTitle: formatFilename('notes.txt', FILENAME_RULES), contentId: uploadedId, parentId: SECTION, parentFilename: 'section', exists: () => false, ...FILENAME_RULES });
     expect(child).toMatchObject({ type: 'File', parentid: SECTION, approved: 1, filename: expected.filename, body: 'notes.txt' });
     expect(await tree().rows('file', 'fileid = $1', [uploadedFileId], TENANT_UMBRELLA.tenantId)).toEqual([
       expect.objectContaining({ contentid: uploadedId, filename: 'notes.txt', fileext: 'txt', deleted: 0 }),
     ]);
-  });
 
-  it('halts an image upload before any item is added', async () => {
     const before = await activeChildren(SECTION);
     await expect(
       multiFileUpload(tree().deps, S2, SITE, { siteId: SITE_ID, parentId: SECTION, subType: 'Default', approved: 1, files: [textPart('photo.png', 'image/png')], extraParams: '{"body":"photo.png"}' }),
     ).rejects.toBeInstanceOf(ImageUploadHaltedError);
     expect(await activeChildren(SECTION)).toEqual(before);
-  });
 
-  it('aborts deleteAll of the home page without a write', async () => {
     expect(await deleteAll(tree().deps, S2, SITE, { contentId: ROOT, siteId: SITE_ID })).toEqual({ aborted: true });
     expect(await tree().rows('trash', 'true')).toEqual([]);
-  });
 
-  it('trashes the section and every descendant as content, removes all their versions and flags their files deleted', async () => {
     const nodes = [PAGE_ONE, PAGE_TWO, uploadedId, SECTION];
     expect(await deleteAll(tree().deps, S2, SITE, { contentId: SECTION, siteId: SITE_ID })).toEqual({ aborted: false, topId: ROOT });
     const trash = await tree().rows('trash', 'true', [], TENANT_A.tenantId);
@@ -577,18 +560,21 @@ describe.skipIf(!PG)('quick edit, object params and the JSON API', () => {
   });
 
   it('adds the display object to a new version saved from the given one, leaving that version unchanged', async () => {
+    const page = await saveContent(tree().deps, S2, SITE, { siteid: SITE_ID, parentid: ROOT, type: 'Page', title: 'Object Page', approved: 1 });
+    const pageId = page.bean.contentId();
+    const pageHistId = page.bean.contentHistId();
     const objects = (contentHistId: string) => tree().rows('content_object', 'contenthistid = $1', [contentHistId]);
-    const args = { siteid: SITE_ID, contenthistid: IDS.hist.rootActive, approved: 1, regionid: 2, object: 'text', objectid: 'obj1', name: 'Box', orderno: 1 };
+    const args = { siteid: SITE_ID, contenthistid: pageHistId, approved: 1, regionid: 2, object: 'text', objectid: 'obj1', name: 'Box', orderno: 1 };
     const unsaved = await updateObjectParams(tree().deps, S2, SITE, { ...args, params: 'not json' });
-    expect(unsaved?.contentHistId()).toBe(IDS.hist.rootActive);
-    expect(await tree().versions(ROOT)).toHaveLength(2);
+    expect(unsaved?.contentHistId()).toBe(pageHistId);
+    expect(await tree().versions(pageId)).toHaveLength(1);
 
     const saved = await updateObjectParams(tree().deps, S2, SITE, { ...args, params: '{"a":1}' });
     const savedHistId = saved?.contentHistId() ?? '';
-    expect(savedHistId).not.toBe(IDS.hist.rootActive);
+    expect(savedHistId).not.toBe(pageHistId);
     expect(await objects(savedHistId)).toEqual([expect.objectContaining({ object: 'text', name: 'Box', objectid: 'obj1', params: '{"a":1}', columnid: 2 })]);
-    expect(await objects(IDS.hist.rootActive)).toEqual([]);
-    expect(await activeOf(ROOT)).toMatchObject({ contenthistid: savedHistId });
+    expect(await objects(pageHistId)).toEqual([]);
+    expect(await activeOf(pageId)).toMatchObject({ contenthistid: savedHistId });
     expect(await updateObjectParams(tree().deps, APPROVER, SITE, { ...args, contenthistid: savedHistId, params: '{}' })).toBeNull();
   });
 
@@ -608,9 +594,10 @@ describe.skipIf(!PG)('quick edit, object params and the JSON API', () => {
   });
 
   it("deletes an item by id for its section's editor through deleteAll", async () => {
-    expect(await deleteContentEntity(tree().deps, EDITOR, SITE, { event: { siteid: SITE_ID, id: PAGE_TWO }, validateCsrf: () => true })).toEqual({ aborted: false });
-    expect(await tree().versions(PAGE_TWO)).toEqual([]);
-    expect(await tree().rows('trash', 'objectid = $1', [PAGE_TWO])).toEqual([expect.objectContaining({ objectclass: 'content', deletedby: 'Eda Editor' })]);
+    const pageId = (await saveContent(tree().deps, S2, SITE, { siteid: SITE_ID, parentid: SECTION, type: 'Page', title: 'Deleted By Id', approved: 1 })).bean.contentId();
+    expect(await deleteContentEntity(tree().deps, EDITOR, SITE, { event: { siteid: SITE_ID, id: pageId }, validateCsrf: () => true })).toEqual({ aborted: false });
+    expect(await tree().versions(pageId)).toEqual([]);
+    expect(await tree().rows('trash', 'objectid = $1', [pageId])).toEqual([expect.objectContaining({ objectclass: 'content', deletedby: 'Eda Editor' })]);
   });
 });
 

@@ -17,7 +17,7 @@ import {
   type VariantDeclaration,
 } from '@opt2/platform/legacy-compat';
 import { z } from '@opt2/platform/service-kit';
-import { LOCAL_SIGNED_URL_PREFIX, isBucketName, signLocalUrl } from '@opt2/platform/storage';
+import { LOCAL_SIGNED_URL_PREFIX, isBucketName, signLocalUrl, type BucketName } from '@opt2/platform/storage';
 import { ROLE_SET, TENANT_A, type RoleSubject } from '@opt2/platform/testing';
 import type { CapturedLogLine } from '../events/traces.js';
 import { repoPath } from '../lib/paths.js';
@@ -141,6 +141,8 @@ export interface ReachInputs {
   sign: (path: string) => string;
   /** Values of named parameters of the gateway's own routes, by name; any other parameter gets a fresh CF UUID. */
   gatewayParams?: Readonly<Record<string, string>>;
+  /** Values of named parameters of each bucket's signed-file routes, by bucket then name, naming a stored object. */
+  signedFileParams?: Readonly<Partial<Record<BucketName, Readonly<Record<string, string>>>>>;
 }
 
 /** Cut-over lookup the gateway dispatcher would make for a concrete path. */
@@ -287,11 +289,35 @@ function notProbed(pkg: string, route: RouteMatrixEntry, reason: NotProbedReason
   return { package: pkg, method: route.method, url: route.url, reason, detail, coveredBy: securitySuiteOf(pkg) };
 }
 
+/** Bucket of a signed-file route template `/opt2/files/<bucket>/…`, or undefined for any other template. */
+export function signedFileBucketOf(url: string): BucketName | undefined {
+  if (!url.startsWith(LOCAL_SIGNED_URL_PREFIX)) return undefined;
+  const [bucket = ''] = url.slice(LOCAL_SIGNED_URL_PREFIX.length).split('/');
+  return isBucketName(bucket) ? bucket : undefined;
+}
+
+/** Buckets whose signed-file routes `reach` probes, sorted: the buckets a probe object must be stored in. */
+export function probedSignedBuckets(reach: Pick<ReachMap, 'probed'>): BucketName[] {
+  const buckets = new Set<BucketName>();
+  for (const route of reach.probed) {
+    const bucket = signedFileBucketOf(route.url);
+    if (bucket !== undefined) buckets.add(bucket);
+  }
+  return [...buckets].sort();
+}
+
+/** Given values of `url`'s named parameters: the gateway's own, or its bucket's on a signed-file route. */
+function givenParams(inputs: ReachInputs, pkg: string, url: string): Readonly<Record<string, string>> {
+  if (pkg === GATEWAY_PACKAGE) return inputs.gatewayParams ?? {};
+  const bucket = signedFileBucketOf(url);
+  return bucket === undefined ? {} : (inputs.signedFileParams?.[bucket] ?? {});
+}
+
 /** Reach of one non-edge route of `matrix`. */
 function reachOf(context: ReachContext, matrix: LoadedMatrix, route: RouteMatrixEntry): ProbedRoute | NotProbedRoute {
   const pkg = matrix.package;
   const { method, url } = route;
-  const given = pkg === GATEWAY_PACKAGE ? (context.inputs.gatewayParams ?? {}) : {};
+  const given = givenParams(context.inputs, pkg, url);
   const defaults = freeParams(url).map((name) => (Object.hasOwn(given, name) ? (given[name] as string) : cfUuid()));
   const suffix = `opt2-authz-probe/${cfUuid()}`;
   const defaultPath = fillTemplate(url, defaults, suffix);

@@ -259,6 +259,10 @@ describe('tenancy subpath', () => {
         'TenantMismatchError',
         'writeGrant',
         'hasGrant',
+        'pg',
+        'Connector',
+        'AuthTypes',
+        'IpAddressTypes',
       ].sort(),
     );
   });

@@ -44,7 +44,7 @@ import { exportRunTaskOptions } from '../../src/tasks/handler.js';
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 const QUEUE = QUEUES['reporting-export-run'];
-const ROUTE = QUEUE.targetPath.replace(/\{(\w+)\}/g, ':$1');
+const ROUTE = QUEUE.targetPath;
 const CLOCK = fixedClock(new Date(2026, 5, 30, 10, 0, 0, 0));
 const BAD_REQUEST = { error: { code: 'invalid_request', message: 'Bad Request' } };
 
@@ -104,13 +104,11 @@ const priorPayload = (payload: ExportRunPayload, userToken: string) => ({ jobId:
 /** The wire body the task adapters POST for `payload` under `tenantId`. */
 const wire = (tenantId: string | null, payload: unknown) => ({ queue: QUEUE.name, name: `${QUEUE.name}-task`, tenantId, payload });
 
-const runUrl = (jobId: string): string => `/internal/v1/tasks/exports/${jobId}/run`;
-
 /** Validates an injected response against `runExportTask` in the reporting contract. */
-function assertContract(jobId: string, res: { statusCode: number; headers: Record<string, unknown>; payload: string }): void {
+function assertContract(res: { statusCode: number; headers: Record<string, unknown>; payload: string }): void {
   assertResponseMatchesOpenApi(OPENAPI, {
     method: 'POST',
-    path: runUrl(jobId),
+    path: ROUTE,
     status: res.statusCode,
     contentType: res.headers['content-type'] as string | undefined,
     body: res.payload,
@@ -238,9 +236,9 @@ describe.skipIf(!(await pgAvailable()))('export-run task route', () => {
     });
 
   /** POSTs a task as the local tasks adapter does, with a `tasks-invoker` token unless `authorization` is given. */
-  async function post(app: FastifyInstance, jobId: string, body: unknown, authorization?: string) {
+  async function post(app: FastifyInstance, body: unknown, authorization?: string) {
     const token = authorization ?? `Bearer ${await mintTasksInvokerToken({ audience: 'reporting' })}`;
-    return app.inject({ method: 'POST', url: runUrl(jobId), headers: { authorization: token }, payload: body as object });
+    return app.inject({ method: 'POST', url: ROUTE, headers: { authorization: token }, payload: body as object });
   }
 
   it('is a POST on the cloud-tasks transport for the tasks-invoker only', async () => {
@@ -256,14 +254,14 @@ describe.skipIf(!(await pgAvailable()))('export-run task route', () => {
     const { job, payload } = await queuedJob();
     const app = await taskApp();
 
-    const first = await post(app, job.job_id, wire(job.tenant_id, payload));
+    const first = await post(app, wire(job.tenant_id, payload));
     expect(first.statusCode).toBe(200);
     expect(first.json()).toStrictEqual({ jobId: job.job_id, state: 'done' });
-    assertContract(job.job_id, first);
+    assertContract(first);
     const done = await read(job);
     expect(done).toMatchObject({ state: 'done', error: null });
 
-    const again = await post(app, job.job_id, wire(job.tenant_id, payload));
+    const again = await post(app, wire(job.tenant_id, payload));
     expect(again.statusCode).toBe(200);
     expect(again.json()).toStrictEqual({ jobId: job.job_id, state: 'done' });
     expect(await read(job)).toStrictEqual(done);
@@ -273,7 +271,7 @@ describe.skipIf(!(await pgAvailable()))('export-run task route', () => {
     const app = await taskApp();
     const { job, payload } = await queuedJob('broken');
 
-    const res = await post(app, job.job_id, wire(job.tenant_id, payload));
+    const res = await post(app, wire(job.tenant_id, payload));
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toStrictEqual({ jobId: job.job_id, state: 'failed' });
@@ -285,11 +283,11 @@ describe.skipIf(!(await pgAvailable()))('export-run task route', () => {
     const { url, received } = await sheetsServer(job);
     const app = await taskApp((created) => created.opt2.client, { identity: url, timesheets: url, finance: url });
 
-    const res = await post(app, job.job_id, wire(job.tenant_id, payload));
+    const res = await post(app, wire(job.tenant_id, payload));
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toStrictEqual({ jobId: job.job_id, state: 'done' });
-    assertContract(job.job_id, res);
+    assertContract(res);
     expect(received).toHaveLength(1);
     const [sourceRead] = received as [ReceivedRequest & { stored: ExportJobRow | null }];
     const target = new URL(sourceRead.url, url);
@@ -328,11 +326,11 @@ describe.skipIf(!(await pgAvailable()))('export-run task route', () => {
       exp: iat + LOCAL_USER_TOKEN.lifetimeSeconds,
     });
 
-    const res = await post(app, job.job_id, wire(job.tenant_id, build(payload, queuedToken)));
+    const res = await post(app, wire(job.tenant_id, build(payload, queuedToken)));
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toStrictEqual({ jobId: job.job_id, state: 'done' });
-    assertContract(job.job_id, res);
+    assertContract(res);
     expect(await read(job)).toMatchObject({ state: 'done', error: null });
     expect(received.map((request) => new URL(request.url, url).pathname)).toStrictEqual([SHEET_STATUS_PATH]);
     for (const request of received) {
@@ -349,37 +347,35 @@ describe.skipIf(!(await pgAvailable()))('export-run task route', () => {
     const { job, payload } = await queuedJob();
     const app = await taskApp(() => refusingClient(status));
 
-    const res = await post(app, job.job_id, wire(job.tenant_id, payload));
+    const res = await post(app, wire(job.tenant_id, payload));
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toStrictEqual({ jobId: job.job_id, state: 'failed' });
-    assertContract(job.job_id, res);
+    assertContract(res);
     const failed = await read(job);
     expect(failed).toMatchObject({ state: 'failed', error: 'source-unavailable' });
-    const again = await post(app, job.job_id, wire(job.tenant_id, payload));
+    const again = await post(app, wire(job.tenant_id, payload));
     expect(again.json()).toStrictEqual({ jobId: job.job_id, state: 'failed' });
     expect(await read(job)).toStrictEqual(failed);
   });
 
-  it.each<[string, (job: ExportJobRow, payload: ExportRunPayload) => [string, unknown]]>([
-    ["another tenant than the job's", (job, payload) => [job.job_id, wire(TENANT_B.tenantId, payload)]],
-    ['no tenant', (job, payload) => [job.job_id, wire(null, payload)]],
-    ['a payload without asOf', (job, payload) => [job.job_id, wire(job.tenant_id, { jobId: payload.jobId })]],
-    ['an asOf outside yyyy-mm-dd', (job, payload) => [job.job_id, wire(job.tenant_id, { ...payload, asOf: '30/06/2026' })]],
-    ['a jobId that is no CF UUID', (job, payload) => [job.job_id, wire(job.tenant_id, { ...payload, jobId: 'job-1' })]],
-    ['a null payload', (job) => [job.job_id, wire(job.tenant_id, null)]],
-    ['a job the tenant does not hold', (job, payload) => [job.job_id, wire(job.tenant_id, { ...payload, jobId: cfUuid() })]],
-    ['a URL naming another job than the payload', (job, payload) => [cfUuid(), wire(job.tenant_id, payload)]],
+  it.each<[string, (job: ExportJobRow, payload: ExportRunPayload) => unknown]>([
+    ["another tenant than the job's", (_job, payload) => wire(TENANT_B.tenantId, payload)],
+    ['no tenant', (_job, payload) => wire(null, payload)],
+    ['a payload without asOf', (job, payload) => wire(job.tenant_id, { jobId: payload.jobId })],
+    ['an asOf outside yyyy-mm-dd', (job, payload) => wire(job.tenant_id, { ...payload, asOf: '30/06/2026' })],
+    ['a jobId that is no CF UUID', (job, payload) => wire(job.tenant_id, { ...payload, jobId: 'job-1' })],
+    ['a null payload', (job) => wire(job.tenant_id, null)],
+    ['a job the tenant does not hold', (job, payload) => wire(job.tenant_id, { ...payload, jobId: cfUuid() })],
   ])('refuses %s as legacy badRequest and leaves the job queued', async (_case, build) => {
     const app = await taskApp();
     const { job, payload } = await queuedJob();
-    const [urlJobId, body] = build(job, payload);
 
-    const res = await post(app, urlJobId, body);
+    const res = await post(app, build(job, payload));
 
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject(BAD_REQUEST);
-    assertContract(urlJobId, res);
+    assertContract(res);
     expect((await read(job))?.state).toBe('queued');
   });
 
@@ -388,7 +384,7 @@ describe.skipIf(!(await pgAvailable()))('export-run task route', () => {
     const { job, payload } = await queuedJob();
     const token = await mintUserToken({ sub: 'tasks-user', site: TENANT_A.siteId, roles: ['s2'] });
 
-    const res = await post(app, job.job_id, wire(job.tenant_id, payload), `Bearer ${token}`);
+    const res = await post(app, wire(job.tenant_id, payload), `Bearer ${token}`);
 
     expect(res.statusCode).toBe(401);
     expect((await read(job))?.state).toBe('queued');
@@ -401,10 +397,10 @@ describe.skipIf(!(await pgAvailable()))('export-run task route', () => {
     await closeGates(handle.app, { units: UNITS, holderId });
     await openGates(handle.app, { units: UNITS, holderId, state: 'legacy' });
     try {
-      const res = await post(app, job.job_id, wire(job.tenant_id, payload));
+      const res = await post(app, wire(job.tenant_id, payload));
 
       expect(res.statusCode).toBe(503);
-      assertContract(job.job_id, res);
+      assertContract(res);
       expect((await read(job))?.state).toBe('queued');
     } finally {
       await closeGates(handle.app, { units: UNITS, holderId, allowLegacy: true });

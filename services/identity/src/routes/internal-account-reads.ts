@@ -1,11 +1,12 @@
-/** Service routes people reads identity's account, membership, strike and pool-group rows through: `getAccount`, `getAccountMemberships`, `lookupAccounts`, `lookupAccountsAllSites`, `countAccounts`, `lookupUsernameCandidates`, `lookupMemberships`, `loadLoginBlock` and `listSiteGroups`. */
+/** Service routes people reads identity's account, membership, strike and pool-group rows through: `getAccount`, `getAccountMemberships`, `lookupAccounts`, `lookupAccountsAllSites`, `countAccounts`, `lookupUsernameCandidates`, `lookupMemberships`, `loadLoginBlock`, `listSiteGroups` and `listSiteGroupsV2`. */
 import { AuthDenial, serviceRole, type Opt2AuthContext, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import type { FastifyInstance } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import type { AccountReads } from '../domain/account-reads.js';
 import type { components } from '../generated/openapi.js';
-import type { IdentityRepository } from '../repo/repository.js';
+import type { IdentityRepository, ListPage } from '../repo/repository.js';
 import { membershipIds } from './admin-groups.js';
+import { LIST_PAGE_PROPERTIES, continuation } from './list-page.js';
 
 type Schemas = components['schemas'];
 
@@ -27,6 +28,8 @@ interface GroupsQuery {
   ispublic: '0' | '1';
 }
 
+type GroupPageQuery = GroupsQuery & ListPage;
+
 const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([serviceRole('people')]) });
 
 const CF_UUID = {
@@ -37,7 +40,7 @@ const CF_UUID = {
 } as const;
 
 // AccountLookupRequest, AccountCountRequest, UsernameCandidateRequest, MembershipLookupRequest, LoginBlockRequest with its user id
-// and the listSiteGroups query as the contract declares them; Fastify validates them once, before the handler.
+// and the listSiteGroups and listSiteGroupsV2 queries as the contract declares them; Fastify validates them once, before the handler.
 const ACCOUNT_WHERE = {
   type: 'object',
   additionalProperties: false,
@@ -101,6 +104,8 @@ const GROUPS_QUERY = {
   properties: { siteid: { type: 'string', minLength: 1 }, ispublic: { type: 'string', enum: ['0', '1'] } },
 } as const;
 
+const GROUP_PAGE_QUERY = { ...GROUPS_QUERY, properties: { ...GROUPS_QUERY.properties, ...LIST_PAGE_PROPERTIES } } as const;
+
 /** The verified user claims; every route acts for the token's user, so their absence is a missing credential. */
 function userOf(auth: Opt2AuthContext): UserClaims {
   if (auth.user === undefined) throw AuthDenial.unauthenticated('missing-credential');
@@ -112,7 +117,7 @@ function requireS2User(auth: Opt2AuthContext): void {
   if (!userOf(auth).s2) throw AuthDenial.forbidden();
 }
 
-/** Registers `getAccount`, `getAccountMemberships`, `lookupAccounts`, `lookupAccountsAllSites`, `countAccounts`, `lookupUsernameCandidates`, `lookupMemberships`, `loadLoginBlock` and `listSiteGroups`; the auth hooks answer a `siteid` other than the token's site with 403. */
+/** Registers `getAccount`, `getAccountMemberships`, `lookupAccounts`, `lookupAccountsAllSites`, `countAccounts`, `lookupUsernameCandidates`, `lookupMemberships`, `loadLoginBlock`, `listSiteGroups` and `listSiteGroupsV2`; the auth hooks answer a `siteid` other than the token's site with 403. */
 export async function registerAccountReadRoutes(app: FastifyInstance, deps: AccountReadRouteDeps): Promise<void> {
   const { db, repo, accountReads, sleep } = deps;
 
@@ -192,5 +197,15 @@ export async function registerAccountReadRoutes(app: FastifyInstance, deps: Acco
     async (request) => ({
       items: await accountReads.listSiteGroups(db, userOf(request.opt2Auth), request.query.ispublic === '1' ? 1 : 0),
     }),
+  );
+
+  app.get<{ Querystring: GroupPageQuery; Reply: Schemas['SiteGroupPage'] }>(
+    '/internal/v2/groups',
+    { schema: { querystring: GROUP_PAGE_QUERY }, config: { opt2: ROUTE_AUTH } },
+    async (request) => {
+      const page = { offset: request.query.offset, limit: request.query.limit };
+      const { items, total } = await accountReads.listSiteGroupsV2(db, userOf(request.opt2Auth), request.query.ispublic === '1' ? 1 : 0, page);
+      return { items, ...continuation(page, items.length, total) };
+    },
   );
 }

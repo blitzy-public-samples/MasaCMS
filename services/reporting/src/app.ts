@@ -34,8 +34,8 @@ const VERSION = '1.0.0';
 // Project of the harness's local Pub/Sub topology; OPT2_ENV=cloud makes GOOGLE_CLOUD_PROJECT required.
 const LOCAL_PROJECT_ID = 'opt2-local';
 
-/** Fastify form of the `reporting-export-run` target path: the handler reads `{exportId}` as a route param. */
-const EXPORT_RUN_ROUTE = QUEUES['reporting-export-run'].targetPath.replace(/\{(\w+)\}/g, ':$1');
+/** Fixed target path of the `reporting-export-run` task; the job travels in the task payload. */
+const EXPORT_RUN_ROUTE = QUEUES['reporting-export-run'].targetPath;
 
 /** Services reporting calls through `OPT2_SERVICE_URLS`: identity (CSRF), finance and timesheets (sources), and itself (the run task's target). */
 const REQUIRED_SERVICES: readonly string[] = ['identity', 'finance', 'timesheets', OWNER];

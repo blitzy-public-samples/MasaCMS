@@ -42,7 +42,7 @@ import type { MutableClock } from './helpers/env.js';
 import { FIXTURE_CATALOG, TABLES, UNITS, V0001, V0002, fixtureGroups, imageSizeRow, userRow, type FixtureTableName } from './helpers/fixtures.js';
 import { createGatewayDouble } from './helpers/gateway-double.js';
 import { createOwnerDoubles, type OwnerDoubleState, type OwnerDoubles } from './helpers/owner-double.js';
-import { PG_OWNER_ROWS_PATH, startPgOwner, type PgOwner } from './helpers/pg-owner.js';
+import { PG_OWNER_ROWS_PATH, fetchPgOwnerRows, startPgOwner, type PgOwner } from './helpers/pg-owner.js';
 
 type Schemas = components['schemas'];
 type WindowOpenRequest = Schemas['WindowOpenRequest'];
@@ -541,10 +541,8 @@ describe.skipIf(!PG)('write windows (skipped without PostgreSQL: PG_* unset)', (
             },
           },
         });
-        const read = async (): Promise<{ status: number; body: { rows?: { height: string }[] } }> => {
-          const res = await fetch(`${owner.url}${PG_OWNER_ROWS_PATH}/image_size?tenantId=${TENANT_A.tenantId}&budgetMs=100`);
-          return { status: res.status, body: (await res.json()) as { rows?: { height: string }[] } };
-        };
+        const read = () =>
+          fetchPgOwnerRows<{ rows?: { height: string }[] }>(`${owner.url}${PG_OWNER_ROWS_PATH}/image_size?tenantId=${TENANT_A.tenantId}&budgetMs=100`);
         expect((await read()).body.rows?.map((row) => row.height)).toEqual([legacyRow.height]);
 
         const opened = await service.open({ routeKey: 'admin:csettings.updatesite{action=delete}', units: [UNITS.imageSize], scope: { keys: { siteid: 'tenant-a' } }, requestId: cfUuid() });

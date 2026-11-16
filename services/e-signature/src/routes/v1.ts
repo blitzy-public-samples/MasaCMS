@@ -1,9 +1,11 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** `/v1/esignature` routes of the OPT-2 e-signature screens: plain JSON over the domain functions the fixture routes share. */
 import { AuthDenial, Roles, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
-import { isCfUuid } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, isCfUuid } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import {
+  csrfPreHandler,
+  isUnstorableTextError,
   recordOutcomeReason,
   sendLegacyResponse,
   type FastifyInstance,
@@ -87,9 +89,18 @@ const PAGE_QUERY_SCHEMA = {
   },
 } as const;
 
-const SIGNER_OPTIONS = { config: { opt2: SIGNER_AUTH } };
+/** CSRF context of a create: the fixture validates it under the collection's empty route id. */
+const COLLECTION_CSRF_CONTEXT = '';
+
+// Identity consumes each write's CSRF pair after the role and site checks, under the fixture's context: the path id as sent.
+const COLLECTION_CSRF = csrfPreHandler({ contextOf: () => COLLECTION_CSRF_CONTEXT });
+const REQUEST_CSRF = csrfPreHandler({ contextOf: (request) => (request.params as RequestParams).id });
+
+const CREATE_OPTIONS = { config: { opt2: SIGNER_AUTH }, preHandler: COLLECTION_CSRF };
+const SIGN_OPTIONS = { config: { opt2: SIGNER_AUTH }, preHandler: REQUEST_CSRF };
 const SIGNER_PAGE_OPTIONS = { config: { opt2: SIGNER_AUTH }, schema: { querystring: PAGE_QUERY_SCHEMA } };
 const READER_OPTIONS = { config: { opt2: READER_AUTH } };
+const VERIFY_SUPPLIED_OPTIONS = { config: { opt2: READER_AUTH }, preHandler: REQUEST_CSRF };
 const READER_PAGE_OPTIONS = { config: { opt2: READER_AUTH }, schema: { querystring: PAGE_QUERY_SCHEMA } };
 
 /** Error envelope `method` of each route: the fixture's method for the same operation. */
@@ -135,10 +146,14 @@ function pageOf<T>(items: readonly T[], total: number, paging: RequestPaging): F
 /** The fixture error a `/v1` failure answers; undefined for an error service-kit renders, such as a denial or the legacy 503. */
 function answeredError(error: unknown): EsignatureDomainError | FixtureApiError | undefined {
   if (error instanceof EsignatureDomainError || error instanceof FixtureApiError) return error;
+  // The CSRF hook's refusal, answered as the fixture's requireCsrf answers it.
+  if (error instanceof LegacyApiError && error.type === 'invalidTokens') return new FixtureApiError('invalidTokens');
   // People refused the signer read for this caller; the fixture's own refusals answer forbidden.
   if (error instanceof PeopleReadDeniedError) return new FixtureApiError('forbidden');
   // A paging parameter the querystring schema refuses, as the fixture's page() refuses it.
   if (error instanceof Error && (error as { validation?: unknown }).validation !== undefined) return new FixtureApiError('invalidParameters');
+  // PostgreSQL refuses a value the checks accept, such as a NUL, which the fixture routes answer invalidParameters.
+  if (isUnstorableTextError(error)) return new FixtureApiError('invalidParameters');
   return undefined;
 }
 
@@ -147,7 +162,8 @@ export const esignatureV1Plugin: FastifyPluginAsync<EsignatureV1Deps> = async (i
   instance.setErrorHandler((error, request, reply) => {
     const answered = answeredError(error);
     if (answered === undefined) throw error;
-    recordOutcomeReason(request, fixtureOutcomeReason(answered));
+    // A refused value's reason is its SQLSTATE, as the fixture routes record it.
+    recordOutcomeReason(request, isUnstorableTextError(error) ? error.code : fixtureOutcomeReason(answered));
     const method = ENVELOPE_METHODS.get(request.routeOptions.url ?? '') ?? fixtureMethod('requests');
     return sendLegacyResponse(reply, fixtureError(answered.type, { method, params: {} }, answered.message));
   });
@@ -162,9 +178,9 @@ export const esignatureV1Plugin: FastifyPluginAsync<EsignatureV1Deps> = async (i
   });
 
   /** `createSignatureRequest`: a PENDING request for one signer, with its `created` audit entry. */
-  instance.post(REQUESTS_PATH, SIGNER_OPTIONS, async (request, reply) => {
+  instance.post(REQUESTS_PATH, CREATE_OPTIONS, async (request, reply) => {
     const { tenantId, actor } = callerOf(request);
-    const input = validated(validateCreateInput(bodyOf(request)));
+    const input = validated(await validateCreateInput(bodyOf(request)));
     const created = await withGatedTenant(deps.db, tenantId, (tx) => createSignatureRequest(tx, deps, input, actor));
     const body: FixtureRequest = requestRow(created.request);
     return reply.code(200).send(body);
@@ -183,7 +199,7 @@ export const esignatureV1Plugin: FastifyPluginAsync<EsignatureV1Deps> = async (i
   });
 
   /** `signRequest`: the signer's typed-name signature, with its `signed` audit entry. */
-  instance.post<{ Params: RequestParams }>(SIGN_PATH, SIGNER_OPTIONS, async (request, reply) => {
+  instance.post<{ Params: RequestParams }>(SIGN_PATH, SIGN_OPTIONS, async (request, reply) => {
     const { tenantId, actor } = callerOf(request);
     const input = validated(validateSignInput(requestIdOf(request), bodyOf(request)));
     const signed = await withGatedTenant(deps.db, tenantId, (tx) => signRequest(tx, deps, input, actor));
@@ -211,7 +227,7 @@ export const esignatureV1Plugin: FastifyPluginAsync<EsignatureV1Deps> = async (i
   });
 
   /** `verifySuppliedChain`: the verdict on a supplied copy of the request's chain; nothing is stored. */
-  instance.post<{ Params: RequestParams }>(VERIFY_PATH, READER_OPTIONS, async (request, reply) => {
+  instance.post<{ Params: RequestParams }>(VERIFY_PATH, VERIFY_SUPPLIED_OPTIONS, async (request, reply) => {
     const { tenantId, actor } = callerOf(request);
     const id = requestIdOf(request);
     const result = await withTenant(deps.db, tenantId, async (tx) => {

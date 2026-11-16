@@ -1,6 +1,7 @@
 /**
  * JSON API `variationTargeting` entity (jsonApiUtility.cfc:103-105, core/mura/content/contentVariationTargetingBean.cfc):
- * the generic finders, save and delete as legacy answers them, served only while the configBean `variations` setting is on.
+ * the generic finders, save and delete as legacy answers them; the reads are served only while the entity is registered
+ * for the site: the configBean `variations` setting is on, or findProperties has registered it.
  */
 import {
   cfEq,
@@ -13,7 +14,8 @@ import {
   javaTrim,
   LegacyApiError,
 } from '@opt2/platform/legacy-compat';
-import type { Actor, DomainDeps } from '../../domain/context.js';
+import { isUnstorableTextError } from '@opt2/platform/service-kit';
+import type { Actor, DomainDeps, LegacyErrors } from '../../domain/context.js';
 import {
   deleteVariationTargeting,
   findVariationTargeting,
@@ -25,6 +27,7 @@ import {
   type VariationTargetingValues,
 } from '../../domain/variations.js';
 import { CONTENT_ENTITIES } from '../../legacy/jsonapi-entities.js';
+import type { ContentRouteContext } from '../index.js';
 import {
   paramUrl,
   serializeCollection,
@@ -124,12 +127,30 @@ const PROPERTY_FORMATS: ReadonlyMap<string, Readonly<Struct>> = new Map([
 // Non-persistent base properties findProperties skips without error (bean.cfc:79-82, beanORM.cfc:79).
 const NON_PERSISTENT_PROPERTIES: ReadonlySet<string> = new Set(['errors', 'isnew', 'frommuracache', 'instanceid', 'saveerrors']);
 
-// Legacy registers the entity only while `variations` is on (jsonApiUtility.cfc:103-105). Unregistered, the bean still
-// exists, so legacy reads refuse with `authorization` (oracle), never `invalidEntityCall`; every handler answers so.
-/** `fn` behind the `variations` setting. */
+// Legacy registers the entity at start-up only while `variations` is on (jsonApiUtility.cfc:103-105); otherwise
+// findProperties registers it through getEntityConfig (124-129, 1559) on the site's API instance, which settingsBean
+// caches (settingsBean.cfc:1249-1254) and the json, ajax and REST families share (contentServer.cfc:610-636). That
+// registration lasts for the route context here, so for the service instance.
+const registeredSites = new WeakMap<ContentRouteContext, Set<string>>();
+
+/** Whether the entity is registered on `siteId`'s API instance; site ids match ignoring case, as settingsManager's. */
+function registered(ctx: ContentRouteContext, siteId: string): boolean {
+  return variationsEnabled(ctx.domain.config) || (registeredSites.get(ctx)?.has(siteId.toLowerCase()) ?? false);
+}
+
+/** getEntityConfig's registration of the entity on `siteId`'s API instance. */
+function register(ctx: ContentRouteContext, siteId: string): void {
+  const sites = registeredSites.get(ctx) ?? new Set<string>();
+  sites.add(siteId.toLowerCase());
+  registeredSites.set(ctx, sites);
+}
+
+// Unregistered, the bean still exists, so legacy reads refuse with `authorization` (oracle), never `invalidEntityCall`;
+// save, delete and findProperties never consult the registration, and findPermissions reads it only for `read` (AllowAccess).
+/** The read `fn`, refused while the entity is unregistered on the API instance of the request's site. */
 function guarded(fn: JsonApiHandlerFn): JsonApiHandlerFn {
   return async (ctx, call) => {
-    if (!variationsEnabled(ctx.domain.config)) throw new LegacyApiError('authorization');
+    if (!registered(ctx, call.apiContext.siteId)) throw new LegacyApiError('authorization');
     return fn(ctx, call);
   };
 }
@@ -264,8 +285,8 @@ const findMany: JsonApiHandlerFn = guarded(async (ctx, call) => {
   );
 });
 
-/** findProperties (1548-1618): the bean's ORM property metadata; no access check, as legacy. */
-const findProperties: JsonApiHandlerFn = guarded(async (_ctx, call) => {
+/** findProperties' result: the bean's ORM property metadata; an unknown requested name raises server_error. */
+function propertiesResult(call: JsonApiCall): JsonApiResult {
   const requested = cfListToArray(call.params.string('properties')).map((name) => name.toLowerCase());
   const names = requested.length > 0 ? requested : [...PROPERTY_FORMATS.keys()];
   const properties = names.flatMap((name) => {
@@ -281,10 +302,17 @@ const findProperties: JsonApiHandlerFn = guarded(async (_ctx, call) => {
   result['bundleable'] = 'true';
   if (Object.hasOwn(result, 'table')) result['table'] = TABLE;
   return jsonApiResultOf(result, ENTITY);
-});
+}
+
+/** findProperties (1548-1618); no access check, as legacy. It registers the entity before any property is read. */
+const findProperties: JsonApiHandlerFn = (ctx, call) =>
+  new Promise((resolve) => {
+    register(ctx, call.apiContext.siteId);
+    resolve(propertiesResult(call));
+  });
 
 /** findPermissions (2240-2266): bean.getPermissions of the addressed bean; no access check, as legacy. */
-const findPermissions: JsonApiHandlerFn = guarded(async (ctx, call) => {
+const findPermissions: JsonApiHandlerFn = async (ctx, call) => {
   const actor = actorOf(call);
   const id = call.id ?? '';
   // Only a uuid or 35-character id loads the bean; otherwise it keeps the request site.
@@ -294,11 +322,12 @@ const findPermissions: JsonApiHandlerFn = guarded(async (ctx, call) => {
       : call.siteId !== '';
   const permissions = permissionsOf({
     hasSiteId,
-    readAllowed: entityAccessAllowed(actor, CONFIG),
+    // AllowAccess refuses an unregistered entity; getPermissions asks the API instance of the bean's site, the request site.
+    readAllowed: registered(ctx, call.siteId) && entityAccessAllowed(actor, CONFIG),
     actionAllowed: entityActionAllowed(actor, CONFIG),
   });
   return jsonApiResultOf(permissions, ENTITY);
-});
+};
 
 /**
  * save's load key and the id the bean is saved under (1958-1973): a uuid `targetingid` param, else the call id, `new`
@@ -321,14 +350,30 @@ function saveErrorsOf(call: JsonApiCall): boolean {
   return cfIsBoolean(value) && cfToBoolean(value);
 }
 
-/** save (1903-2074): CSRF first, then AllowAction, then `set(event).save()` and the reloaded bean. */
-const save: JsonApiHandlerFn = guarded(async (ctx, call) => {
-  if (!(await call.validateCsrf())) return { error: 'invalidTokens' };
-  const actor = actorOf(call);
-  if (!entityActionAllowed(actor, CONFIG)) return authorizationDenied();
+/**
+ * The bean save answers when validation kept it unwritten (2041-2049): reloaded by its primary key, then each request
+ * value whose key the bean holds set on it as bean.set does (null skipped, text trimmed).
+ */
+async function unsavedValues(domain: DomainDeps, actor: Actor, call: JsonApiCall, savedId: string): Promise<Struct> {
+  const values = beanValues(await findVariationTargeting(domain, actor, { targetingId: savedId, siteId: call.siteId }));
+  for (const key of Object.keys(values)) {
+    const value = call.params.get(key);
+    if (value !== undefined && value !== null) values[key] = javaTrim(call.params.string(key));
+  }
+  // The event holds the request site and the id the bean was saved under.
+  return { ...values, siteid: call.siteId, targetingid: savedId };
+}
+
+/** save's `set(event).save()` (1958-2049): the reloaded bean's values and the bean's validation errors. */
+async function savedValues(
+  domain: DomainDeps,
+  actor: Actor,
+  call: JsonApiCall,
+  saveErrors: boolean,
+): Promise<{ values: Struct; errors: LegacyErrors }> {
   const { loadId, savedId } = saveKeys(call);
   // A `targetingid` param that is not the load key re-keys the loaded bean; its unsupplied values carry over.
-  const loaded = savedId === loadId ? undefined : await findVariationTargeting(ctx.domain, actor, { targetingId: loadId, siteId: call.siteId });
+  const loaded = savedId === loadId ? undefined : await findVariationTargeting(domain, actor, { targetingId: loadId, siteId: call.siteId });
   // The event's siteid is always the request site (event.cfc:82-89).
   const input: VariationTargetingValues = { targetingid: savedId, siteid: call.siteId };
   for (const field of SAVED_FIELDS) {
@@ -337,20 +382,36 @@ const save: JsonApiHandlerFn = guarded(async (ctx, call) => {
     if (value !== undefined && value !== null) input[field] = javaTrim(call.params.string(field));
     else if (loaded !== undefined) input[field] = loaded[field];
   }
-  const saved = await saveVariationTargeting(ctx.domain, actor, input);
-  if (saved === null) throw new LegacyApiError('authorization');
-  const data = await serializeContentEntity(viewOf(beanValues(saved)), call.apiContext, undefined, {
+  const { saved, errors } = await saveVariationTargeting(domain, actor, input, { saveErrors });
+  return { values: saved === null ? await unsavedValues(domain, actor, call, savedId) : beanValues(saved), errors };
+}
+
+/** save (1903-2074): CSRF first, then AllowAction, then `set(event).save()` and the reloaded bean. */
+const save: JsonApiHandlerFn = async (ctx, call) => {
+  if (!(await call.validateCsrf())) return { error: 'invalidTokens' };
+  const actor = actorOf(call);
+  if (!entityActionAllowed(actor, CONFIG)) return authorizationDenied();
+  const saveErrors = saveErrorsOf(call);
+  let saved: { values: Struct; errors: LegacyErrors };
+  try {
+    saved = await savedValues(ctx.domain, actor, call, saveErrors);
+  } catch (err) {
+    // PostgreSQL text cannot hold a NUL, which legacy stores (EX-UNSTORABLE-TEXT-VARIATIONTARGETING).
+    if (isUnstorableTextError(err)) return { error: 'invalidParameters' };
+    throw err;
+  }
+  const data = await serializeContentEntity(viewOf(saved.values), call.apiContext, undefined, {
     expanded: true,
     expandLinks: expandOf(call),
     pk: PRIMARY_KEY,
   });
-  data['saveErrors'] = saveErrorsOf(call);
-  data['errors'] = {};
+  data['saveErrors'] = saveErrors;
+  data['errors'] = saved.errors;
   return jsonApiResultOf(data, ENTITY);
-});
+};
 
 /** delete (3259-3335): a silent no-op for an absent row; else AllowAction, then CSRF, then the delete. */
-const remove: JsonApiHandlerFn = guarded(async (ctx, call) => {
+const remove: JsonApiHandlerFn = async (ctx, call) => {
   const actor = actorOf(call);
   const param = call.params.string(PRIMARY_KEY);
   const targetingId = param !== '' && isCfUuid(param) ? param : (call.id ?? '');
@@ -360,7 +421,7 @@ const remove: JsonApiHandlerFn = guarded(async (ctx, call) => {
   if (!(await call.validateCsrf())) return { error: 'invalidTokens' };
   await deleteVariationTargeting(ctx.domain, actor, targetingId);
   return { data: '' };
-});
+};
 
 /** The `variationTargeting` entity's handlers. */
 export const variationTargetingHandler: EntityHandler = Object.freeze({

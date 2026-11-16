@@ -62,7 +62,7 @@ const CRUMBS = /LEFT JOIN "content"\."approval_assignment" tapprovalassignments/
 const VERSION = /AS approvalgroupid FROM "content"\."content" tcontent .* WHERE tcontent\.contenthistid = ANY/;
 const ACTIVE = /AS approvalgroupid FROM "content"\."content" tcontent .* WHERE tcontent\.contentid = ANY/;
 const BY_TITLE = /AS approvalgroupid FROM "content"\."content" tcontent .* WHERE lower\(rtrim\(tcontent\.title\)\)/;
-const BY_REMOTE_ID = /AS approvalgroupid FROM "content"\."content" tcontent .* WHERE lower\(rtrim\(tcontent\.remoteid\)\)/;
+const BY_REMOTE_ID = /AS approvalgroupid FROM "content"\."content" tcontent .* WHERE \(\(\(tcontent\.remoteid::bpchar\) COLLATE "content"\."lookup_ci"\) = \$1::text::bpchar AND lower\(rtrim\(tcontent\.remoteid\)\)/;
 const NEST = /AND tcontent\.parentid = ANY\(\$2::bpchar\[\]\) AND tcontent\.active = 1/;
 const STATS = /FROM "content"\."content_stats" s WHERE/;
 const DRAFTS = /^SELECT \* FROM \(SELECT draft\.contenthistid/;

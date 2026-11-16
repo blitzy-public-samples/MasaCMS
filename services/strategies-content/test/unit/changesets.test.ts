@@ -1,4 +1,4 @@
-/** domain/changesets: bean values, write order over the recording pool, and the cchangesets operations, publish and rollback over a throwaway `content` schema. */
+/** domain/changesets: bean values, write order over the recording pool, and the cchangesets operations, publish and rollback over throwaway `content` schemas. */
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
@@ -213,24 +213,24 @@ describe('change-set writes over the recording pool', () => {
 
 describe.skipIf(!(await pgAvailable()))('domain/changesets', () => {
   let fx: ContentFixture;
-  const CS1 = cfId('S', 1);
-  const CS2 = cfId('S', 2);
-  const CS3 = cfId('S', 3);
-  let aboutId = '';
-  let aboutV1 = '';
-  let aboutDraft = '';
-  let launchId = '';
-  let launchDraft = '';
   const save = (input: ContentInput) => saveContent(fx.deps, ADMIN, SITE, { siteid: SITE_ID, ...input });
   const content = (where: string, params: unknown[] = []) => fx.rows('content', where, params);
   const changeset = async (id: string) => (await fx.rows('changeset', 'changesetid = $1', [id]))[0];
 
+  /** Saves change set 'Summer' `cfId('S', n)`, an approved 'About' page, and that change set's 'About v2' and new 'Launch' drafts. */
+  async function arrangeAssigned(n: number) {
+    const changesetId = cfId('S', n);
+    await saveChangeset(fx.deps, ADMIN, { changesetid: changesetId, siteid: SITE_ID, name: 'Summer', description: 'd', publishdate: '', tags: 'promo,Sale' });
+    const about = await save({ parentid: HOME, type: 'Page', title: 'About', approved: 1 });
+    const aboutId = about.bean.contentId();
+    const aboutDraft = (await saveDraft(fx.deps, ADMIN, SITE, { siteid: SITE_ID, contentid: aboutId, parentid: HOME, type: 'Page', title: 'About v2', changesetid: changesetId })).bean.contentHistId();
+    const launch = await saveDraft(fx.deps, ADMIN, SITE, { siteid: SITE_ID, parentid: HOME, type: 'Page', title: 'Launch', changesetid: changesetId });
+    return { changesetId, aboutId, aboutV1: about.bean.contentHistId(), aboutDraft, launchId: launch.bean.contentId(), launchDraft: launch.bean.contentHistId() };
+  }
+
   beforeAll(async () => {
     fx = await createContentFixture('changesets-test');
     await save({ contentid: HOME, parentid: END, type: 'Page', title: 'Home', approved: 1 });
-    const about = await save({ parentid: HOME, type: 'Page', title: 'About', approved: 1 });
-    aboutId = about.bean.contentId();
-    aboutV1 = about.bean.contentHistId();
   });
 
   afterAll(async () => {
@@ -238,6 +238,7 @@ describe.skipIf(!(await pgAvailable()))('domain/changesets', () => {
   });
 
   it('saves a new change set with its tags and redirects; a nameless one returns legacy errors', async () => {
+    const CS1 = cfId('S', 1);
     const saved = await saveChangeset(fx.deps, ADMIN, { changesetid: CS1, siteid: SITE_ID, name: 'Summer', description: 'd', publishdate: '', tags: 'promo,Sale' });
     expect(saved).toMatchObject({ redirect: true, errors: {} });
     expect(await changeset(CS1)).toMatchObject({ name: 'Summer', published: 0, publishdate: null, lastupdateby: 'Admin User' });
@@ -249,10 +250,7 @@ describe.skipIf(!(await pgAvailable()))('domain/changesets', () => {
   });
 
   it('lists the assigned versions per module, with variations only when configured', async () => {
-    aboutDraft = (await saveDraft(fx.deps, ADMIN, SITE, { siteid: SITE_ID, contentid: aboutId, parentid: HOME, type: 'Page', title: 'About v2', changesetid: CS1 })).bean.contentHistId();
-    const launch = await saveDraft(fx.deps, ADMIN, SITE, { siteid: SITE_ID, parentid: HOME, type: 'Page', title: 'Launch', changesetid: CS1 });
-    launchId = launch.bean.contentId();
-    launchDraft = launch.bean.contentHistId();
+    const { changesetId: CS1 } = await arrangeAssigned(10);
     const listed = await assignments(fx.deps, ADMIN, { changesetId: CS1 });
     expect(listed.site.map((row) => row.title)).toEqual(['About v2', 'Launch']);
     expect([listed.component, listed.form, listed.variation]).toEqual([[], [], undefined]);
@@ -262,12 +260,15 @@ describe.skipIf(!(await pgAvailable()))('domain/changesets', () => {
   });
 
   it('skips a publish while an assigned version awaits approval', async () => {
-    await fx.inTenant((tx) => fx.repo.approvals.insertRequest(tx, { requestid: cfId('R', 1), contenthistid: aboutDraft, siteid: SITE_ID, chainid: cfId('H', 1), groupid: cfId('G', 1), status: 'Pending' }));
+    const { changesetId: CS1, aboutDraft } = await arrangeAssigned(11);
+    await fx.inTenant((tx) => fx.repo.approvals.insertRequest(tx, { requestid: cfId('R', 2), contenthistid: aboutDraft, siteid: SITE_ID, chainid: cfId('H', 1), groupid: cfId('G', 1), status: 'Pending' }));
     expect(await publish(fx.deps, ADMIN, SITE, CS1)).toEqual({ published: false, changeset: null, notices: [] });
     expect(await changeset(CS1)).toMatchObject({ published: 0 });
   });
 
   it('publishes every assigned version, records what it replaced and stamps the change set published now', async () => {
+    const { changesetId: CS1, aboutId, aboutV1, aboutDraft, launchId, launchDraft } = await arrangeAssigned(12);
+    await fx.inTenant((tx) => fx.repo.approvals.insertRequest(tx, { requestid: cfId('R', 1), contenthistid: aboutDraft, siteid: SITE_ID, chainid: cfId('H', 1), groupid: cfId('G', 1), status: 'Pending' }));
     await fx.inTenant((tx) => fx.repo.approvals.updateRequest(tx, cfId('R', 1), { status: 'Approved' }));
     const result = await publish(fx.deps, ADMIN, SITE, CS1);
     expect(result.published).toBe(true);
@@ -284,29 +285,9 @@ describe.skipIf(!(await pgAvailable()))('domain/changesets', () => {
     expect(result.changeset).toMatchObject({ published: 1 });
   });
 
-  it('filters the list by name, dates and tags, 20 per page, with the stop-date-only quirk', async () => {
-    await saveChangeset(fx.deps, ADMIN, { changesetid: CS2, siteid: SITE_ID, name: 'Winter', publishdate: '2026-08-15 09:00:00' });
-    const names = async (rc: Record<string, unknown>) => (await listChangesets(fx.deps, ADMIN, { siteid: SITE_ID, ...rc })).changesets.map((bean) => bean.name);
-    // The feed has no ORDER BY, so rows come in id order.
-    expect(await names({})).toEqual(['Summer', 'Winter']);
-    expect(await names({ keywords: 'UMM' })).toEqual(['Summer']);
-    expect(await names({ keywords: 'null' })).toEqual([]);
-    expect(await names({ startdate: '08/01/2026' })).toEqual(['Winter']);
-    expect(await names({ startdate: '06/01/2026', stopdate: '06/30/2026' })).toEqual(['Summer']);
-    expect(await names({ stopdate: '12/31/2026' })).toEqual([]);
-    expect(await names({ tags: 'PROMO' })).toEqual(['Summer']);
-    expect(await names({ tags: 'nomatch' })).toEqual([]);
-    expect(await names({ categoryid: cfId('C', 1) })).toEqual([]);
-    const listed = await listChangesets(fx.deps, ADMIN, { siteid: SITE_ID, stopdate: '06/30/2026', page: '5' });
-    expect(listed).toMatchObject({ recordCount: 0, pageIndex: 1, nextN: 20, stopdate: new Date(2026, 6, 1) });
-    const paged = await listChangesets(fx.deps, ADMIN, { siteid: SITE_ID, page: 3 });
-    expect(paged).toMatchObject({ recordCount: 2, pageIndex: 1 });
-    expect(paged.changesets[0]).toMatchObject({ isnew: 1, categoryid: '', tags: '' });
-    await expect(listChangesets(fx.deps, ADMIN, { siteid: SITE_ID, page: 'x' })).rejects.toThrow(TypeError);
-    await expect(listChangesets(fx.deps, ADMIN, { siteid: SITE_ID, page: 0 })).rejects.toThrow(RangeError);
-  });
-
   it('rolls back the replaced versions and resets the change set unpublished', async () => {
+    const { changesetId: CS1, aboutId } = await arrangeAssigned(13);
+    expect((await publish(fx.deps, ADMIN, SITE, CS1)).published).toBe(true);
     const result = await rollback(fx.deps, ADMIN, SITE, CS1);
     expect((await content('contentid = $1 AND active = 1', [aboutId]))[0]).toMatchObject({ title: 'About', approved: 1 });
     expect(result.changeset).toMatchObject({ published: 0, publishdate: null });
@@ -314,6 +295,8 @@ describe.skipIf(!(await pgAvailable()))('domain/changesets', () => {
   });
 
   it('hides an item the change set published first when the version it replaced does not exist', async () => {
+    const CS3 = cfId('S', 3);
+    const launchId = (await save({ parentid: HOME, type: 'Page', title: 'Launch', approved: 1 })).bean.contentId();
     const [active] = await content('contentid = $1 AND active = 1', [launchId]);
     await saveChangeset(fx.deps, ADMIN, { changesetid: CS3, siteid: SITE_ID, name: 'First', published: '1' });
     await withGatedTenant(fx.deps.db, ADMIN.tenantId, (tx) =>
@@ -325,13 +308,18 @@ describe.skipIf(!(await pgAvailable()))('domain/changesets', () => {
   });
 
   it('removes one version from its change set only', async () => {
-    const draft = await saveDraft(fx.deps, ADMIN, SITE, { siteid: SITE_ID, contentid: aboutId, parentid: HOME, type: 'Page', title: 'About v3', changesetid: CS2 });
-    const changed = await removeItem(fx.deps, ADMIN, CS2, draft.bean.contentHistId());
+    const CS5 = cfId('S', 5);
+    await saveChangeset(fx.deps, ADMIN, { changesetid: CS5, siteid: SITE_ID, name: 'Winter', publishdate: '2026-08-15 09:00:00' });
+    const aboutId = (await save({ parentid: HOME, type: 'Page', title: 'About', approved: 1 })).bean.contentId();
+    const draft = await saveDraft(fx.deps, ADMIN, SITE, { siteid: SITE_ID, contentid: aboutId, parentid: HOME, type: 'Page', title: 'About v3', changesetid: CS5 });
+    const changed = await removeItem(fx.deps, ADMIN, CS5, draft.bean.contentHistId());
     expect(changed).toHaveLength(1);
     expect((await content('contenthistid = $1', [draft.bean.contentHistId()]))[0]).toMatchObject({ changesetid: null, title: 'About v3' });
   });
 
   it('throws the change set in, then deletes it with its assignments', async () => {
+    const CS2 = cfId('S', 2);
+    await saveChangeset(fx.deps, ADMIN, { changesetid: CS2, siteid: SITE_ID, name: 'Winter', publishdate: '2026-08-15 09:00:00' });
     const deleted = await deleteChangeset(fx.deps, ADMIN, CS2);
     expect(deleted.trash).toMatchObject({ objectid: CS2, objectclass: 'changeset', objecttype: 'changeset', objectsubtype: 'Default', objectlabel: 'Winter', siteid: SITE_ID });
     expect(deleted.trash?.parentid?.trim()).toBe('NA');
@@ -353,5 +341,40 @@ describe.skipIf(!(await pgAvailable()))('domain/changesets', () => {
     expect(active).toMatchObject({ type: 'Link', approved: 1, body: 'https://example.org/docs', filename: 'docs' });
     // onApplicationStart_include.cfm:896-899 under SQL Server's case-insensitive, trailing-space-blind comparison.
     expect(await content("lower(rtrim(type)) IN ('file', 'link') AND active = 1 AND body IS NULL AND filename IS NOT NULL")).toEqual([]);
+  });
+});
+
+describe.skipIf(!(await pgAvailable()))('domain/changesets list', () => {
+  let fx: ContentFixture;
+
+  beforeAll(async () => {
+    fx = await createContentFixture('changesets-list-test');
+  });
+
+  afterAll(async () => {
+    await fx?.drop();
+  });
+
+  it('filters the list by name, dates and tags, 20 per page, with the stop-date-only quirk', async () => {
+    await saveChangeset(fx.deps, ADMIN, { changesetid: cfId('S', 1), siteid: SITE_ID, name: 'Summer', description: 'd', publishdate: '2026-06-30 10:15:00', published: '1', tags: 'promo,Sale' });
+    await saveChangeset(fx.deps, ADMIN, { changesetid: cfId('S', 2), siteid: SITE_ID, name: 'Winter', publishdate: '2026-08-15 09:00:00' });
+    const names = async (rc: Record<string, unknown>) => (await listChangesets(fx.deps, ADMIN, { siteid: SITE_ID, ...rc })).changesets.map((bean) => bean.name);
+    // The feed has no ORDER BY, so rows come in id order.
+    expect(await names({})).toEqual(['Summer', 'Winter']);
+    expect(await names({ keywords: 'UMM' })).toEqual(['Summer']);
+    expect(await names({ keywords: 'null' })).toEqual([]);
+    expect(await names({ startdate: '08/01/2026' })).toEqual(['Winter']);
+    expect(await names({ startdate: '06/01/2026', stopdate: '06/30/2026' })).toEqual(['Summer']);
+    expect(await names({ stopdate: '12/31/2026' })).toEqual([]);
+    expect(await names({ tags: 'PROMO' })).toEqual(['Summer']);
+    expect(await names({ tags: 'nomatch' })).toEqual([]);
+    expect(await names({ categoryid: cfId('C', 1) })).toEqual([]);
+    const listed = await listChangesets(fx.deps, ADMIN, { siteid: SITE_ID, stopdate: '06/30/2026', page: '5' });
+    expect(listed).toMatchObject({ recordCount: 0, pageIndex: 1, nextN: 20, stopdate: new Date(2026, 6, 1) });
+    const paged = await listChangesets(fx.deps, ADMIN, { siteid: SITE_ID, page: 3 });
+    expect(paged).toMatchObject({ recordCount: 2, pageIndex: 1 });
+    expect(paged.changesets[0]).toMatchObject({ isnew: 1, categoryid: '', tags: '' });
+    await expect(listChangesets(fx.deps, ADMIN, { siteid: SITE_ID, page: 'x' })).rejects.toThrow(TypeError);
+    await expect(listChangesets(fx.deps, ADMIN, { siteid: SITE_ID, page: 0 })).rejects.toThrow(RangeError);
   });
 });

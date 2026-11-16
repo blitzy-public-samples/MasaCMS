@@ -93,11 +93,15 @@ vi.mock('@opt2/platform/auth', async (importOriginal) => {
   };
 });
 
+/** Options of every legacy port the context creates, in creation order. */
+const legacyPorts = vi.hoisted(() => ({ options: [] as unknown[] }));
+
 vi.mock('../../src/legacy/legacy-db.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/legacy/legacy-db.js')>();
   return {
     ...actual,
     createLegacyDb: (...args: Parameters<typeof actual.createLegacyDb>) => {
+      legacyPorts.options.push(args[1]);
       const legacy = actual.createLegacyDb(...args);
       return { ...legacy, close: closes.record('legacy', () => legacy.close()) };
     },
@@ -200,6 +204,7 @@ afterEach(() => {
   closes.order.length = 0;
   closes.failing.clear();
   cloudMinters.options.length = 0;
+  legacyPorts.options.length = 0;
   vi.restoreAllMocks();
 });
 
@@ -231,9 +236,12 @@ describe('createMigrationContext', () => {
     await ctx.close();
   });
 
-  it('creates the ports options omit, with the migration schema pool and the ownership catalog', async () => {
-    const ctx = await createMigrationContext({ env: envWith(), logger: silentLogger() });
+  it('creates the ports options omit, with the migration schema pool, the ownership catalog and a legacy port logging through the context logger', async () => {
+    const logger = silentLogger();
+    const ctx = await createMigrationContext({ env: envWith(), logger });
 
+    expect(legacyPorts.options).toHaveLength(1);
+    expect((legacyPorts.options[0] as { logger: unknown }).logger).toBe(logger);
     expect(ctx.db.schema).toBe('migration');
     expect(ctx.clock).toBe(systemClock);
     expect(ctx.catalog.units().length).toBeGreaterThan(0);

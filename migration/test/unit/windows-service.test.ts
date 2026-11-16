@@ -9,9 +9,8 @@ import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-com
 import { serializeError, type Logger } from '@opt2/platform/logging';
 import { GATE_WAIT_MS, MIGRATION_PATH_PREFIX, type ApplyRequest, type GatePhase, type GateRequest, type UnitGate } from '@opt2/platform/migration-kit';
 import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, systemClock, type Clock } from '@opt2/platform/service-kit';
-import type { MetadataTx, TenantDb } from '@opt2/platform/tenancy';
+import type { MetadataTx, QueryConfig, QueryResult, TenantDb } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
-import type { QueryConfig, QueryResult } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';

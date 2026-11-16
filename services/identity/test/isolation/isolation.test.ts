@@ -1,8 +1,8 @@
 /** Tenant isolation of the identity schema, its group, permission and token routes, and its person-contact consumer against PostgreSQL. */
 import { randomBytes, randomInt } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { decodeJwt } from 'jose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { decodeJwt } from '@opt2/platform/auth';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, cfUuid, generateCsrfToken } from '@opt2/platform/legacy-compat';
 import { ensureUnitGates, type CanonicalType } from '@opt2/platform/migration-kit';
 import { NON_TENANT_TABLES, OutsideTenantTransactionError, createPool, withMetadata, withTenant, type TenantTx } from '@opt2/platform/tenancy';

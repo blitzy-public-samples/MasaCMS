@@ -1,7 +1,9 @@
 // Unit tests of the migration service's composition root: service wiring, background loops and suspension, close order, failed
 // builds and the listener; the composed services are doubles, so only `server.ts` itself is under test.
 import { once } from 'node:events';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
+import path from 'node:path';
 
 import { fixedClock, type FastifyInstance } from '@opt2/platform/service-kit';
 import { reconcileRecurringQueues, type ReconcileResult } from '@opt2/platform/tasks';
@@ -9,6 +11,7 @@ import { testVerifier } from '@opt2/platform/testing';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMigrationContext } from '../../src/context.js';
+import { CutoverDataError, loadGroups, loadVersion, type CutoverVersion, type GroupsFile } from '../../src/cutover/index.js';
 import { UnsupportedLegacyDatabaseError, loadMigrationEnv, type MigrationEnv } from '../../src/env.js';
 import type { BridgeClient, LegacyDb, SchedulerDescription } from '../../src/legacy/index.js';
 import type { OwnersClient } from '../../src/owners/index.js';
@@ -231,6 +234,38 @@ function windowOptions(): WindowServiceOptions {
   return vi.mocked(createWindowService).mock.calls.at(-1)?.[1] as WindowServiceOptions;
 }
 
+const CUTOVER_GROUPS: GroupsFile = { sourceSha: 'x', groups: [{ id: 'grp:a', units: ['a.one'], writeEntries: [], hasCarryWrite: false }] };
+const CUTOVER_V0001: CutoverVersion = {
+  tableVersion: 'v0001',
+  previous: null,
+  sourceSha: 'x',
+  createdAt: NOW.toISOString(),
+  groupAuthority: { 'grp:a': 'legacy' },
+  rollbackRefs: [],
+  entries: [],
+};
+
+/** Writes `files` into a fresh cut-over directory and points the next built context's configuration at it. */
+async function nextContextCutover(files: Record<string, string>): Promise<{ cutoverDir: string; groupsFile: string }> {
+  const cutoverDir = await mkdtemp(path.join(dirs.stateDir, 'cutover-'));
+  await mkdir(path.join(cutoverDir, 'versions'));
+  for (const [rel, text] of Object.entries(files)) await writeFile(path.join(cutoverDir, rel), text);
+  const paths = { cutoverDir, groupsFile: path.join(cutoverDir, 'groups.json') };
+  const actual = await vi.importActual<typeof import('../../src/context.js')>('../../src/context.js');
+  vi.mocked(createMigrationContext).mockImplementationOnce(async (contextOptions) => {
+    const ctx = await actual.createMigrationContext(contextOptions);
+    return Object.freeze({
+      ...ctx,
+      config: { ...ctx.config, paths: { ...ctx.config.paths, ...paths } },
+      close: async () => {
+        h.events.push('ctx.close');
+        await ctx.close();
+      },
+    });
+  });
+  return paths;
+}
+
 describe('buildApp composition', () => {
   it('builds the projector with the fault hooks and the shared start-up guard runner, and transitions with their own guard', async () => {
     await build({ startBackground: false });
@@ -268,6 +303,27 @@ describe('buildApp composition', () => {
 
     await expect(buildApp(options())).rejects.toThrow('context refused');
     // createService adds a SIGTERM listener that only the app's close removes.
+    expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
+  });
+
+  it('preloads the configured cut-over directory, so its versions and groups load without their files once built', async () => {
+    const paths = await nextContextCutover({
+      'groups.json': JSON.stringify(CUTOVER_GROUPS),
+      'versions/v0001.json': JSON.stringify(CUTOVER_V0001),
+    });
+    await build({ startBackground: false });
+    await rm(paths.cutoverDir, { recursive: true, force: true });
+
+    expect(loadVersion(paths.cutoverDir, 'v0001')).toEqual(CUTOVER_V0001);
+    expect(loadGroups(paths.groupsFile)).toEqual(CUTOVER_GROUPS);
+  });
+
+  it('closes what it built and rethrows when a committed cut-over version contradicts its file name', async () => {
+    const sigtermListeners = process.listenerCount('SIGTERM');
+    await nextContextCutover({ 'groups.json': JSON.stringify(CUTOVER_GROUPS), 'versions/v0002.json': JSON.stringify(CUTOVER_V0001) });
+
+    await expect(buildApp(options())).rejects.toBeInstanceOf(CutoverDataError);
+    expect(h.events).toContain('ctx.close');
     expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
   });
 });

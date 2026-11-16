@@ -1836,6 +1836,11 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     ).map((row) => ({ userid: row.userid, groupname: row.groupname, siteid: row.siteid ?? poolSiteId, ispublic: isPublic, perm: row.perm }));
   }
 
+  async function pagePoolGroups(tx: TenantTx, poolSiteId: string, isPublic: 0 | 1, page: ListPage): Promise<ListedPage<PoolGroupRow>> {
+    const listed = await listPoolGroups(tx, poolSiteId, isPublic);
+    return { items: listed.slice(page.offset, page.offset + page.limit), total: listed.length };
+  }
+
   /** The person contact naming an actor that has no login snapshot. */
   async function actorContact(tx: TenantTx, actor: AuditActor | null): Promise<AuditNames | null> {
     return actor === null || actor.fromSnapshot ? null : findPersonContact(tx, actor.userId);
@@ -2891,6 +2896,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     groupFeedPages,
     readGroupFeed,
     listPoolGroups,
+    pagePoolGroups,
     insertGroup,
     updateGroup,
     insertGroupAddress,

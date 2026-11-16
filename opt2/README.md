@@ -14,7 +14,7 @@ Run from the repository root:
 
 - [`harness/repro/up.sh`](../harness/repro/up.sh) boots legacy and target with seed data, on the installed engines and without Docker; it exits 0 when the stack is up.
 - [`harness/repro/test-all.sh`](../harness/repro/test-all.sh) runs stages 0–9 in the order of proof and writes [`reports/test-all.json`](reports/test-all.json) and [`reports/test-all.md`](reports/test-all.md); it exits 0, or 2 when the legacy fixtures are unavailable and acceptance items are unmet.
-- [`harness/repro/down.sh`](../harness/repro/down.sh) stops the stack and restores the pristine legacy baseline.
+- [`harness/repro/down.sh`](../harness/repro/down.sh) stops the stack, drops its snapshot databases and PostgreSQL schemas and roles, and restores the pristine legacy baseline.
 - [`harness/repro/clean-checkout-proof.sh`](../harness/repro/clean-checkout-proof.sh) proves both commands from a fresh clone and writes [`reports/reproducibility.md`](reports/reproducibility.md).
 
 ## Deliverable index

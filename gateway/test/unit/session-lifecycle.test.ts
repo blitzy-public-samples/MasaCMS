@@ -36,7 +36,7 @@ import {
   createSessionStateChecker,
   type SessionStateChecker,
 } from '../../src/session/state-check.js';
-import { DEFAULT_SITE_ID, createTokenCache, type TokenCache } from '../../src/session/token-cache.js';
+import { DEFAULT_SITE_ID, TOKEN_REUSE_MARGIN_MS, createTokenCache, type TokenCache } from '../../src/session/token-cache.js';
 import { TEST_BRIDGE_KEY, TEST_CLOCK } from '../helpers/env.js';
 import { createInProcessLegacyOrigin, parseWireTime, type InProcessLegacyOrigin } from '../helpers/legacy-origin.js';
 import { createMemoryGatewayDb, type LegacyJarRow, type MemoryGatewayDb } from '../helpers/memory-store.js';
@@ -322,8 +322,9 @@ describe('token cache', () => {
     const first = await tokenCache.get(SESSION, 'tenant-a', 1);
     await expect(tokenCache.get(SESSION, 'tenant-a', 1)).resolves.toBe(first);
     expect(identity.mints).toEqual([{ sessionId: SESSION, siteId: 'tenant-a' }]);
-    expect(first).toBe(identity.tokens[0]);
-    expect(claimsOf(first)).toMatchObject({ sid: SESSION, site: 'tenant-a', sub: USER_ID });
+    expect(first.token).toBe(identity.tokens[0]);
+    expect(first.claims).toStrictEqual(claimsOf(first.token));
+    expect(first.claims).toMatchObject({ sid: SESSION, site: 'tenant-a', sub: USER_ID });
 
     await tokenCache.get(SESSION, 'tenant-b', 1);
     expect(identity.mints).toEqual([
@@ -344,19 +345,19 @@ describe('token cache', () => {
     expect(identity.mints).toEqual([{ sessionId: SESSION, siteId: 'default' }]);
   });
 
-  it('mints again once the cached token has reached its exp', async () => {
+  it('mints again once the cached token is within the reuse margin of its exp', async () => {
     const { clock, identity, tokenCache } = createSeam();
     await tokenCache.get(SESSION, 'tenant-a', 1);
 
-    clock.advance(TOKEN_LIFETIME_SECONDS * 1000 - 1);
+    clock.advance(TOKEN_LIFETIME_SECONDS * 1000 - TOKEN_REUSE_MARGIN_MS - 1);
     await tokenCache.get(SESSION, 'tenant-a', 1);
     expect(identity.mints).toHaveLength(1);
 
     clock.advance(1);
     const renewed = await tokenCache.get(SESSION, 'tenant-a', 1);
     expect(identity.mints).toHaveLength(2);
-    expect(renewed).toBe(identity.tokens[1]);
-    expect(renewed).not.toBe(identity.tokens[0]);
+    expect(renewed.token).toBe(identity.tokens[1]);
+    expect(renewed.token).not.toBe(identity.tokens[0]);
   });
 
   it('mints again for a new session epoch', async () => {

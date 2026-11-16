@@ -8,6 +8,7 @@ import {
   baseEnvSchema,
   createService,
   loadEnv,
+  optionalEnvString,
   publisherEmulatorHost,
   systemClock,
   type Clock,
@@ -38,9 +39,12 @@ export const SERVICE_VERSION = '1.0.0';
 /** Services identity calls through `OPT2_SERVICE_URLS`: itself (its outbox sweep's task target), people, programs-sites and strategies-content. */
 const REQUIRED_SERVICES: readonly string[] = [SERVICE_NAME, 'people', 'programs-sites', 'strategies-content'];
 
-/** Base variables with every callee's URL required, the gateway's by either entry; `OPT2_ENV=cloud` selects Identity Platform issuance in the tenants of `GOOGLE_CLOUD_PROJECT`. */
-export const identityEnvSchema = baseEnvSchema.superRefine(
+/** Base variables with every callee's URL required, the gateway's by either entry; `OPT2_ENV=cloud` selects Identity Platform issuance in the tenants of `GOOGLE_CLOUD_PROJECT` and requires the project's Web API key. */
+export const identityEnvSchema = baseEnvSchema.extend({ OPT2_IDENTITY_PLATFORM_API_KEY: optionalEnvString() }).superRefine(
   (env, ctx) => {
+    if (env.OPT2_ENV === 'cloud' && env.OPT2_IDENTITY_PLATFORM_API_KEY === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['OPT2_IDENTITY_PLATFORM_API_KEY'], message: 'is required when OPT2_ENV=cloud' });
+    }
     // Failed fields keep their raw values here; a map that failed as a whole carries its own issue.
     const urls: unknown = env.OPT2_SERVICE_URLS;
     const mapFailed = ctx.issues.some((issue) => issue.path?.length === 1 && issue.path[0] === 'OPT2_SERVICE_URLS');
@@ -138,8 +142,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
     const identityPlatform =
       options.identityPlatform ??
-      (env.OPT2_ENV === 'cloud' && env.GOOGLE_CLOUD_PROJECT !== undefined
-        ? await createCloudIdentityPlatformAdapter({ projectId: env.GOOGLE_CLOUD_PROJECT, app: options.firebaseApp })
+      (env.OPT2_ENV === 'cloud' && env.GOOGLE_CLOUD_PROJECT !== undefined && env.OPT2_IDENTITY_PLATFORM_API_KEY !== undefined
+        ? await createCloudIdentityPlatformAdapter({
+            projectId: env.GOOGLE_CLOUD_PROJECT,
+            apiKey: env.OPT2_IDENTITY_PLATFORM_API_KEY,
+            app: options.firebaseApp,
+          })
         : undefined);
     const tokens = createTokenService({
       env,

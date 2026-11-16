@@ -60,9 +60,6 @@ interface ContractRoute {
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
 
-// No route module serves the rater save and v0002 keeps its route on legacy; serving it must also remove it from here.
-const UNSERVED_OPERATIONS: readonly string[] = ['raterSaveRatePost'];
-
 // The common-prefix tree, because the flattened one drops the static prefix before a trailing wildcard.
 /** A `printRoutes()` line: tree indent, branch, radix-node fragment of the path, and the methods of a route ending there. */
 const PRINTED_NODE = /^((?:│ {3}| {4})*)[├└]── (.+?)(?: \(([A-Z]+(?:, [A-Z]+)*)\))?$/;
@@ -105,12 +102,9 @@ function contractRoutes(): ContractRoute[] {
   return routes;
 }
 
-/** Served contract operations as `METHOD path` in the route tree's spelling, where an escaped `::` reads as `:`. */
-function servedContractRoutes(): string[] {
-  return contractRoutes()
-    .filter((route) => !UNSERVED_OPERATIONS.includes(route.operationId))
-    .map((route) => `${route.method} ${route.url.replaceAll('::', ':')}`)
-    .sort();
+/** Contract operations as `METHOD path` in the route tree's spelling, where an escaped `::` reads as `:`. */
+function contractRouteTexts(): string[] {
+  return contractRoutes().map((route) => `${route.method} ${route.url.replaceAll('::', ':')}`).sort();
 }
 
 /** Every registered route as `METHOD path` from Fastify's route tree, without the HEAD routes Fastify derives from GET. */
@@ -172,22 +166,15 @@ describe('strategies-content start-up', () => {
 });
 
 describe('strategies-content routes against contracts/openapi.yaml', () => {
-  it('registers every served contract operation', () => {
+  it('registers every contract operation', () => {
     const missing = contractRoutes()
-      .filter((route) => !UNSERVED_OPERATIONS.includes(route.operationId))
       .filter((route) => !t.app.hasRoute({ method: route.method, url: route.url }))
       .map((route) => `${route.operationId}: ${route.method} ${route.url}`);
     expect(missing).toEqual([]);
   });
 
-  it('registers exactly the served contract operations and nothing else', () => {
-    expect(registeredRoutes(t.app)).toEqual(servedContractRoutes());
-  });
-
-  it.each(UNSERVED_OPERATIONS)('leaves the unserved contract operation %s unregistered', (operationId) => {
-    const route = contractRoutes().find((candidate) => candidate.operationId === operationId);
-    if (route === undefined) throw new Error(`contract has no operation ${operationId}`);
-    expect(t.app.hasRoute({ method: route.method, url: route.url })).toBe(false);
+  it('registers exactly the contract operations and nothing else', () => {
+    expect(registeredRoutes(t.app)).toEqual(contractRouteTexts());
   });
 });
 

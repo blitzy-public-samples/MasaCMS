@@ -223,9 +223,9 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
     expect(launch).toMatchObject({
       task_name: `opt2-survey-${survey}-launch`,
       queue_task_name: `opt2-survey-${survey}-launch-v1`,
-      target_route: `/internal/v1/tasks/surveys/${survey}/launch`,
+      target_route: '/internal/v1/tasks/surveys/launch',
     });
-    expect(first?.target_route).toBe(`/internal/v1/tasks/reminders/${first?.scheduled_task_id ?? ''}`);
+    expect(first?.target_route).toBe('/internal/v1/tasks/reminders');
     expect(port.creates.map((task) => ({ ...task, scheduleTime: task.scheduleTime.getTime() }))).toEqual(
       stored.map((row, i) => ({
         queue: row.queue,
@@ -233,8 +233,8 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
         scheduleTime: new Date(2026, 6, 1, 9, [0, 60, 120][i] ?? 0).getTime(),
         url:
           i === 0
-            ? `${SERVICE_URLS.surveys}/internal/v1/tasks/surveys/${survey}/launch`
-            : `${SERVICE_URLS.communications}/internal/v1/tasks/reminders/${row.scheduled_task_id}`,
+            ? `${SERVICE_URLS.surveys}/internal/v1/tasks/surveys/launch`
+            : `${SERVICE_URLS.communications}/internal/v1/tasks/reminders`,
         body:
           i === 0
             ? { surveyId: survey, siteId: TENANT_A.siteId, scheduleVersion: 1 }
@@ -388,7 +388,7 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
       sourceType: SURVEY_SOURCE_TYPE,
       sourceId: survey,
       scheduleTime: new Date(2026, 6, 1, 9, 0, 0),
-      targetRoute: `/internal/v1/tasks/surveys/${survey}/launch`,
+      targetRoute: '/internal/v1/tasks/surveys/launch',
       scheduleVersion: 1,
     };
     const adopt = () => withGatedTenant(handle.app, TENANT_A.tenantId, (tx) => deps.repository.adoptScheduledTasks(tx, [adoption]));

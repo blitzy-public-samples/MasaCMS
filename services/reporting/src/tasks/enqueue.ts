@@ -32,7 +32,7 @@ export function createExportRunEnqueuer({ tasks, serviceUrls, clock }: ExportRun
   return async ({ tenantId, jobId, payload }) => {
     const name = exportRunTaskName(jobId);
     // Outside the catch: a missing reporting URL is a configuration error, not an unavailable queue.
-    const url = targetUrl(queue, serviceUrls, { exportId: jobId });
+    const url = targetUrl(queue, serviceUrls);
     try {
       // The adapter wraps `body` as the wire body's `payload`, so the payload is passed unwrapped.
       await tasks.create({ queue: queue.name, name, scheduleTime: clock.now(), url, body: payload, deadlineS: queue.deadlineS, tenantId });

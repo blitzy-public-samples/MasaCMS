@@ -74,7 +74,8 @@ _opt2_lock_describe() {
   printf '%s (command %s, pid %s, since %s)' "${1:-?}" "${2:-?}" "${3:-?}" "${4:-?}"
 }
 
-# Prints every processes.<name>.pid of the up.json file $1; nothing when it is missing or unreadable.
+# Prints `<pid>\t<start time>` for every processes.<name> of the up.json file $1, the start time empty when none is
+# recorded; nothing when the file is missing or unreadable.
 _opt2_lock_up_pids() {
   # shellcheck disable=SC2016 # JavaScript source
   node -e '
@@ -82,9 +83,10 @@ let doc;
 try { doc = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); } catch { process.exit(0); }
 const processes = doc !== null && typeof doc === "object" ? doc.processes : undefined;
 if (processes === null || typeof processes !== "object" || Array.isArray(processes)) process.exit(0);
+const start = (entry) => (typeof entry.startTime === "string" && /^\d+$/.test(entry.startTime) ? entry.startTime : "");
 const pids = Object.values(processes)
   .filter((entry) => entry !== null && typeof entry === "object" && Number.isInteger(entry.pid) && entry.pid > 0)
-  .map((entry) => `${entry.pid}\n`);
+  .map((entry) => `${entry.pid}\t${start(entry)}\n`);
 // One write: the reader stops at the first live pid, and a later write to its closed pipe would raise EPIPE.
 process.stdout.write(pids.join(""));
 ' -- "$1"
@@ -96,16 +98,17 @@ lock_holder() {
   cat -- "$OPT2_LOCK_FILE"
 }
 
-# True when the run lock exists and its pid, or any process recorded in its stack's up.json, is alive.
+# True when the run lock exists and its pid, or any process recorded in its stack's up.json, is alive with the start
+# time recorded for it, when one is.
 lock_holder_live() {
-  local pid
+  local pid start
   local -a lock=()
-  _opt2_lock_load lock strict "$OPT2_LOCK_FILE" pid stateDir
+  _opt2_lock_load lock strict "$OPT2_LOCK_FILE" pid stateDir startTime
   ((${#lock[@]} > 0)) || return 1
-  if _opt2_lock_pid_alive "${lock[0]:-}"; then return 0; fi
+  if _opt2_lock_pid_alive "${lock[0]:-}" && _opt2_proc_start_matches "${lock[0]}" "${lock[2]:-}"; then return 0; fi
   [[ -n ${lock[1]:-} ]] || return 1
-  while IFS= read -r pid; do
-    if _opt2_lock_pid_alive "$pid"; then return 0; fi
+  while IFS=$'\t' read -r pid start; do
+    if _opt2_lock_pid_alive "$pid" && _opt2_proc_start_matches "$pid" "$start"; then return 0; fi
   done < <(_opt2_lock_up_pids "${lock[1]}/up.json")
   return 1
 }
@@ -130,9 +133,10 @@ _opt2_lock_flock() {
   printf '%s\n' "$record" >"$OPT2_LOCK_FLOCK"
   # Processes this shell starts (services, emulators) would inherit fd 9 and keep the lock after it exits, so a
   # helper the kernel kills when this shell exits holds the lock instead and fd 9 is closed here. The PPID check
-  # covers a shell that exited before setpriv armed the signal: the helper was reparented by then.
+  # covers a shell that exited before setpriv armed the signal: the helper was reparented by then. The helper ignores
+  # HUP, INT and TERM sent to this shell's process group, so the lock lasts until this shell has handled them.
   # shellcheck disable=SC2016 # $1 expands in the helper shell
-  setpriv --pdeathsig KILL bash -c '[[ $PPID == "$1" ]] && exec sleep infinity' _ "$shell_pid" \
+  setpriv --pdeathsig KILL bash -c 'trap "" HUP INT TERM; [[ $PPID == "$1" ]] && exec sleep infinity' _ "$shell_pid" \
     </dev/null >/dev/null 2>&1 &
   disown "$!"
   exec 9>&-
@@ -141,8 +145,8 @@ _opt2_lock_flock() {
 # lock_acquire <up|test-all|down|clean-checkout-proof>: takes the per-command flock, refuses while another checkout's
 # stack is live, clears a stale one, and for `up` records this checkout's stack in the run lock.
 lock_acquire() {
-  local command=${1:?lock_acquire needs a command} record tmp
-  local -a lock=()
+  local command=${1:?lock_acquire needs a command} record tmp start
+  local -a lock=() identity=()
   case $command in
     up | test-all | down | clean-checkout-proof) ;;
     *) die "lock_acquire: unknown command '$command' (expected up, test-all, down or clean-checkout-proof)" ;;
@@ -166,8 +170,11 @@ lock_acquire() {
   fi
 
   [[ $command == up ]] || return 0
-  record="$(_opt2_lock_json acquiredAt checkout "$REPO" stateDir "$OPT2_STATE_DIR" pid "$$" command "$command")" ||
-    die "cannot build the run lock record"
+  # The start time lets lock_holder_live tell this shell from a later process the kernel gives the same pid.
+  start="$(_opt2_proc_start_time "$$")" || start=""
+  if [[ -n $start ]]; then identity=(startTime "$start"); fi
+  record="$(_opt2_lock_json acquiredAt checkout "$REPO" stateDir "$OPT2_STATE_DIR" pid "$$" "${identity[@]}" \
+    command "$command")" || die "cannot build the run lock record"
   tmp="$(mktemp -- "$OPT2_LOCK_FILE.XXXXXX")" || die "cannot create a temporary file in $OPT2_LOCK_DIR"
   if ! printf '%s\n' "$record" >"$tmp" || ! chmod 600 -- "$tmp" || ! mv -f -- "$tmp" "$OPT2_LOCK_FILE"; then
     rm -f -- "$tmp"

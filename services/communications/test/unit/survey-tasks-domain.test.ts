@@ -265,38 +265,25 @@ describe('planSurveyTasks', () => {
 });
 
 describe('taskTarget', () => {
-  it('targets the surveys launch route', () => {
-    expect(taskTarget({ queue: 'surveys-launch', surveyId: SURVEY_ID }, SERVICE_URLS)).toStrictEqual({
-      url: targetUrl(QUEUES['surveys-launch'], SERVICE_URLS, { surveyId: SURVEY_ID }),
-      route: `/internal/v1/tasks/surveys/${SURVEY_ID}/launch`,
-    });
-  });
-
-  it('targets the reminder route of its row', () => {
-    const ref = { queue: 'communications-reminders', surveyId: SURVEY_ID, scheduledTaskId: ROW_ID } as const;
-    expect(taskTarget(ref, SERVICE_URLS)).toStrictEqual({
-      url: targetUrl(QUEUES['communications-reminders'], SERVICE_URLS, { scheduledTaskId: ROW_ID }),
-      route: `/internal/v1/tasks/reminders/${ROW_ID}`,
-    });
+  it.each([
+    ['surveys-launch', SERVICE_URLS.surveys, '/internal/v1/tasks/surveys/launch'],
+    ['communications-reminders', SERVICE_URLS.communications, '/internal/v1/tasks/reminders'],
+  ] as const)('targets the fixed %s route on its own service', (queue, origin, route) => {
+    expect(taskTarget(queue, SERVICE_URLS)).toStrictEqual({ url: `${origin}${route}`, route });
+    expect(targetUrl(QUEUES[queue], SERVICE_URLS)).toBe(`${origin}${route}`);
   });
 
   it('targets each planned task on its own service', () => {
     const tasks = planSurveyTasks(scheduled('2026-07-01T09:00:00.000', [60]), { now: businessClock().now() });
-    const urls = tasks.map((task) => taskTarget({ ...task, scheduledTaskId: ROW_ID }, SERVICE_URLS).url);
+    const urls = tasks.map((task) => taskTarget(task.queue, SERVICE_URLS).url);
     expect(urls).toStrictEqual([
-      `${SERVICE_URLS.surveys}/internal/v1/tasks/surveys/${SURVEY_ID}/launch`,
-      `${SERVICE_URLS.communications}/internal/v1/tasks/reminders/${ROW_ID}`,
+      `${SERVICE_URLS.surveys}/internal/v1/tasks/surveys/launch`,
+      `${SERVICE_URLS.communications}/internal/v1/tasks/reminders`,
     ]);
   });
 
-  it('rejects a reminder without its row id', () => {
-    expect(() => taskTarget({ queue: 'communications-reminders', surveyId: SURVEY_ID }, SERVICE_URLS)).toThrow(TypeError);
-  });
-
   it('rejects a target service without a URL', () => {
-    expect(() =>
-      taskTarget({ queue: 'surveys-launch', surveyId: SURVEY_ID }, { communications: SERVICE_URLS.communications }),
-    ).toThrow(UnknownTaskTargetError);
+    expect(() => taskTarget('surveys-launch', { communications: SERVICE_URLS.communications })).toThrow(UnknownTaskTargetError);
   });
 });
 

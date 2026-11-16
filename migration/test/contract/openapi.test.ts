@@ -7,7 +7,14 @@ import { fileURLToPath } from 'node:url';
 import { INVOCATION_HEADER, collectRouteMatrix, transportForPath } from '@opt2/platform/auth';
 import { GATE_PHASES, GATE_STATES } from '@opt2/platform/migration-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
-import { assertResponseMatchesOpenApi, createThrowawaySchema, findOperation, mintServiceToken, pgAvailable } from '@opt2/platform/testing';
+import {
+  assertRequestMatchesOpenApi,
+  assertResponseMatchesOpenApi,
+  createThrowawaySchema,
+  findOperation,
+  mintServiceToken,
+  pgAvailable,
+} from '@opt2/platform/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
@@ -904,7 +911,46 @@ const STUBBED_CASES: readonly StubbedCase[] = [
       );
     },
   },
+  {
+    operationId: 'gatesList',
+    status: 200,
+    title: 'with the first page of the named units and the cursor of the next',
+    method: 'GET',
+    url: `${GATES_URL}?units=${OPEN_REQUEST.units.join(',')}&limit=1`,
+    as: OPERATOR,
+    arrange: (s) => {
+      s.leases.mockResolvedValue([{ unit: 'people.person_archive', holderId: WINDOW_ID, kind: 'window', acquiredAt: new Date(AT) }]);
+      s.ownerGates.mockImplementation((_owner, units) => Promise.resolve(units.map((unit) => ({ unit, state: 'closed', holderId: WINDOW_ID, phase: 'executing' }))));
+    },
+    verify: (body, s) => {
+      // The follow-up request, carrying the answered cursor, is contract-valid too.
+      const next = `${GATES_URL}?units=${OPEN_REQUEST.units.join(',')}&limit=1&cursor=${String(body.nextCursor)}`;
+      expect(() => assertRequestMatchesOpenApi(DOC, { method: 'GET', path: next })).not.toThrow();
+      const archive = CATALOG.unit('people.person_archive');
+      expect(body).toEqual({
+        units: [
+          {
+            unit: 'people.person_archive',
+            owner: archive.owner,
+            lease: { holderId: WINDOW_ID, kind: 'window', acquiredAt: AT },
+            gate: { state: 'closed', holderId: WINDOW_ID, phase: 'executing' },
+          },
+        ],
+        nextCursor: 'people.person_archive',
+      });
+      expect(s.leases.mock.calls).toEqual([[['people.person_archive']]]);
+      expect(s.ownerGates.mock.calls).toEqual([[archive.owner, ['people.person_archive']]]);
+    },
+  },
   { operationId: 'gatesList', status: 400, title: 'for a unit the ownership file does not name', method: 'GET', url: `${GATES_URL}?units=people.unknown_table`, as: OPERATOR },
+  {
+    operationId: 'gatesList',
+    status: 400,
+    title: 'for a cursor that names no unit of the selection',
+    method: 'GET',
+    url: `${GATES_URL}?units=people.person_archive&cursor=timesheets.blackout`,
+    as: OPERATOR,
+  },
   { operationId: 'gatesList', status: 401, title: 'without a credential', method: 'GET', url: GATES_URL, as: 'none' },
   { operationId: 'gatesList', status: 403, title: 'for the gateway', method: 'GET', url: GATES_URL, as: GATEWAY },
   {

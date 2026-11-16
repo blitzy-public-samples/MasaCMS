@@ -340,14 +340,17 @@ describe('entity registration and the legacy error map', () => {
     expect(isContentEntity('variationTargeting')).toBe(true);
   });
 
-  it('refuses variationTargeting, unregistered while variations is off, with the authorization error', async () => {
-    const res = await send(api, { url: VARIATION_PROPERTIES, subject: 's2' });
+  it('refuses a variationTargeting read, unregistered while variations is off, with the authorization error', async () => {
+    const res = await send(api, { url: `${API}/variationTargeting`, subject: 's2' });
     expect(res.statusCode).toBe(LEGACY_ERROR_MAP.authorization.status);
-    expect(bodyOf(res)).toMatchObject({ method: 'findProperties', error: errorBody('authorization') });
+    expect(bodyOf(res)).toMatchObject({ method: 'findAll', error: errorBody('authorization') });
   });
 
-  it('serves variationTargeting when MURA_VARIATIONS=true', async () => {
-    const res = await send(variationsApi, { url: VARIATION_PROPERTIES, subject: 's2' });
+  it.each<[string, () => TestApp]>([
+    ['off', () => api],
+    ['on (MURA_VARIATIONS=true)', () => variationsApi],
+  ])('serves variationTargeting findProperties with variations %s', async (_label, app) => {
+    const res = await send(app(), { url: VARIATION_PROPERTIES, subject: 's2' });
     expect(res.statusCode).toBe(200);
     expect(bodyOf(res)).toMatchObject({ method: 'findProperties', data: { displayname: 'variationTargeting' } });
   });
@@ -426,6 +429,114 @@ describe('entity registration and the legacy error map', () => {
   });
 });
 
+describe.each(['variationTargeting', 'variationTargetings'])('variationTargeting registration by findProperties while variations is off, on /%s', (segment) => {
+  const ENTITY = `${API}/${segment}`;
+  const ABSENT_ID = '11111111-2222-3333-4444555566667777';
+  const PERMISSIONS = `${ENTITY}/${ABSENT_ID}/permissions`;
+  const READS = [`${ENTITY}/new`, ENTITY, `${ENTITY}/${ABSENT_ID}`, `/_api/rest/v1/${SITE}/${segment}/new`];
+  const OTHER_SITE_NEW = `/_api/json/v1/${TENANT_B.siteId}/${segment}/new`;
+  /** findAll's count of the site's targeting rows, which the seed holds none of. */
+  const TARGETING_COUNT = /^SELECT \(SELECT count\(\*\)::integer FROM "content"\."variation_targeting"/;
+
+  it.each<[string, ApiCall, number]>([
+    ['the properties path', { url: `${ENTITY}/properties` }, 200],
+    ['an unknown property, which answers server_error', { url: `${ENTITY}/properties?properties=contentid` }, 500],
+    // A public method gets `entityname` as sent; only path resolution folds a plural (jsonApiUtility.cfc:869-899, 971-985).
+    ['the direct method', { url: `${API}/?method=findProperties&entityname=variationTargeting` }, 200],
+    ['the REST family', { url: `/_api/rest/v1/${SITE}/${segment}/properties`, subject: 's2' }, 200],
+  ])('serves the site reads of every family after %s, for the life of a new app', async (_label, trigger, status) => {
+    const fresh = await contentApi({}, (db) => {
+      db.respond(TARGETING_COUNT, [{ n: 0 }]);
+      return Promise.resolve();
+    });
+    try {
+      expect(dataOf(await send(fresh, { url: PERMISSIONS, subject: 's2' }))).toEqual({ read: false, delete: true, save: true });
+      for (const url of READS) expect((await send(fresh, { url, subject: 's2' })).statusCode).toBe(401);
+
+      expect((await send(fresh, trigger)).statusCode).toBe(status);
+
+      expect(dataOf(await send(fresh, { url: PERMISSIONS, subject: 's2' }))).toEqual({ read: true, delete: true, save: true });
+      expect(dataOf(await send(fresh, { url: PERMISSIONS }))).toEqual({ read: false, delete: false, save: false });
+      for (const url of READS) {
+        expect((await send(fresh, { url, subject: 's2' })).statusCode).toBe(200);
+        expect((await send(fresh, { url })).statusCode).toBe(401);
+      }
+      // Each site's API instance holds its own registration.
+      expect((await send(fresh, { url: OTHER_SITE_NEW, subject: 'other-tenant' })).statusCode).toBe(401);
+      expect((await send(fresh, { url: `/_api/json/v1/${TENANT_B.siteId}/${segment}/properties` })).statusCode).toBe(200);
+      expect((await send(fresh, { url: OTHER_SITE_NEW, subject: 'other-tenant' })).statusCode).toBe(200);
+    } finally {
+      await fresh.close();
+    }
+  });
+});
+
+describe.each(['variationtargeting', 'variationtargetings'])('variationTargeting writes while variations is off, on /%s', (segment) => {
+  const ENTITY = `${API}/${segment}/`;
+  const ABSENT_ID = '11111111-2222-3333-4444555566667777';
+  const TARGETING_WRITE = /"content"\."variation_targeting"/;
+
+  it.each<[string, ApiCall]>([
+    ['form POST', { method: 'POST', url: ENTITY, headers: { 'content-type': FORM }, payload: formBody({ contentid: 'X', initjs: 'a' }) }],
+    ['POST of a malformed JSON body', { method: 'POST', url: ENTITY, headers: { 'content-type': 'application/json' }, payload: '{bad' }],
+    ['POST with an empty method param', { method: 'POST', url: `${ENTITY}?method=`, headers: { 'content-type': FORM }, payload: formBody({ initjs: 'a' }) }],
+    ['POST of a 12 MB body', { method: 'POST', url: ENTITY, headers: { 'content-type': FORM }, payload: formBody({ initjs: 'x'.repeat(12 * 1024 * 1024) }) }],
+  ])('answers an anonymous %s with Invalid CSRF tokens, writing nothing', async (_label, request) => {
+    api.db.clear();
+    const res = await send(api, request);
+    expect(res.statusCode).toBe(LEGACY_ERROR_MAP.invalidTokens.status);
+    expect(bodyOf(res)).toEqual({ apiversion: 'v1', method: 'save', error: errorBody('invalidTokens') });
+    expect(api.db.writes()).toEqual([]);
+  });
+
+  it('answers an anonymous X-HTTP-Method-Override delete of an absent row with empty data', async () => {
+    api.db.clear();
+    const res = await send(api, { method: 'POST', url: `${ENTITY}${ABSENT_ID}`, headers: { 'X-HTTP-Method-Override': 'delete' } });
+    expect(res.statusCode).toBe(200);
+    expect(bodyOf(res)).toEqual({ apiversion: 'v1', data: '', method: 'delete' });
+    expect(api.db.writes()).toEqual([]);
+  });
+
+  it('saves for an s2 admin with valid CSRF tokens', async () => {
+    api.db.clear();
+    const res = await send(api, {
+      method: 'POST',
+      url: ENTITY,
+      subject: 's2',
+      headers: { 'content-type': FORM },
+      payload: formBody({ contentid: PAGE_ONE, targetingjs: '[1]', csrf_token: 'form-csrf-token', csrf_token_expires: 'form-csrf-expiry' }),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(bodyOf(res)).toMatchObject({ method: 'save', data: { contentid: PAGE_ONE, targetingjs: '[1]', isnew: 0, errors: {} } });
+    expect(api.db.writes().filter((statement) => TARGETING_WRITE.test(statement.sql)).map((statement) => statement.sql.split(' ')[0])).toEqual(['INSERT']);
+  });
+
+  it('answers a save PostgreSQL refuses as unstorable text with the invalidParameters row', async () => {
+    // The refusal node-postgres raises for a NUL (SQLSTATE 22021).
+    const unstorable = Object.assign(new Error('invalid byte sequence for encoding "UTF8": 0x00'), { code: '22021', severity: 'ERROR' });
+    const refusing = await contentApi({}, (db) => {
+      db.respond(/^INSERT INTO "content"\."variation_targeting"/, () => {
+        throw unstorable;
+      });
+      return Promise.resolve();
+    });
+    try {
+      const res = await send(refusing, {
+        method: 'POST',
+        url: ENTITY,
+        subject: 's2',
+        headers: { 'content-type': 'application/json', 'x-csrf_token': 'json-csrf-token', 'x-csrf_token_expires': 'json-csrf-expiry' },
+        payload: JSON.stringify({ contentid: PAGE_ONE, initjs: 'a\u0000b' }),
+      });
+      expect(res.statusCode).toBe(LEGACY_ERROR_MAP.invalidParameters.status);
+      expect(bodyOf(res)).toEqual({ apiversion: 'v1', method: 'save', error: errorBody('invalidParameters') });
+      expect(refusing.db.statements.filter((statement) => /^INSERT INTO "content"\."variation_targeting"/.test(statement.sql))).toHaveLength(1);
+    } finally {
+      await refusing.close();
+    }
+  });
+});
+
 describe('the ignored JSONApi site flag', () => {
   let flagged: TestApp;
 
@@ -448,5 +559,68 @@ describe('the ignored JSONApi site flag', () => {
     const body = bodyOf(res);
     expect(body).not.toHaveProperty('error');
     expect((body.data as Struct).contentid).toBe(PAGE_ONE);
+  });
+});
+
+describe('site custom image sizes', () => {
+  const IMAGE_FILE = 'A3000000-0000-0000-0000000000000099';
+  const SIZES_ROUTE = '/internal/v1/sites/{siteId}/image-sizes';
+  const CAROUSEL = { sizeID: 'C63AB001-1111-2222-3333444455556666', siteID: SITE, name: 'carouselimage', height: '400', width: '1200', isNew: 0 };
+  let imaged: TestApp;
+
+  beforeAll(async () => {
+    // Every published page as one with an uploaded PNG.
+    imaged = await contentApi({}, async (db) => {
+      db.respond(ACTIVE_READ, (params, sql, tx) => activeContent(params, sql, tx).map((row) => ({ ...row, fileid: IMAGE_FILE, fileext: 'png' })));
+    });
+    imaged.client.on('programs-sites', 'GET', SIZES_ROUTE, () => ({ status: 200, headers: {}, body: [CAROUSEL] }));
+  });
+
+  afterAll(async () => {
+    await imaged?.close();
+  });
+
+  function sizeCalls(app: TestApp) {
+    return app.client.requests.filter((req) => req.service === 'programs-sites');
+  }
+
+  /** The renditions of `images` plus `carouselimage`, which names its rendition as `small` does. */
+  function expectCarousel(images: Struct): void {
+    expect(Object.keys(images).sort()).toEqual(['carouselimage', 'large', 'medium', 'small', 'source']);
+    expect(images.carouselimage).toBe(String(images.small).replace('small', 'carouselimage'));
+    expect(images.carouselimage).toContain(IMAGE_FILE);
+  }
+
+  it('lists the site custom sizes beside the renditions, read from programs-sites as this service', async () => {
+    imaged.client.clear();
+    const res = await send(imaged, { url: `${API}${PAGE_ONE_PATH}?fields=images,title` });
+    expect(res.statusCode).toBe(200);
+    expectCarousel(dataOf(res).images as Struct);
+    expect(sizeCalls(imaged)).toEqual([expect.objectContaining({ method: 'GET', path: `/internal/v1/sites/${SITE}/image-sizes`, userToken: null })]);
+  });
+
+  it('reads the sizes once for every image entity of a request', async () => {
+    imaged.client.clear();
+    const res = await send(imaged, { url: `${API}${PAGE_ONE_PATH}?expand=parent` });
+    expect(res.statusCode).toBe(200);
+    const data = dataOf(res);
+    expect((data.parent as Struct).contentid).toBe(IDS.content.section);
+    for (const entity of [data, data.parent as Struct]) expectCarousel(entity.images as Struct);
+    expect(sizeCalls(imaged)).toHaveLength(1);
+  });
+
+  it('makes no programs-sites call for a request that serializes no image', async () => {
+    api.client.clear();
+    const res = await send(api, { url: `${API}${PAGE_ONE_PATH}` });
+    expect(res.statusCode).toBe(200);
+    expect(dataOf(res).images).toEqual({});
+    expect(sizeCalls(api)).toEqual([]);
+  });
+
+  it('answers the legacy 503 when programs-sites is unavailable', async () => {
+    imaged.client.failNext('programs-sites');
+    const res = await send(imaged, { url: `${API}${PAGE_ONE_PATH}` });
+    expect(res.statusCode).toBe(503);
+    expect(bodyOf(res)).toMatchObject({ apiversion: 'v1', error: { code: 'server_error' } });
   });
 });

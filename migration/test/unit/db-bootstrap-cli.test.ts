@@ -7,19 +7,27 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { validateLogRecord } from '@opt2/platform/logging';
-import pg from 'pg';
+import { pg } from '@opt2/platform/tenancy';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { MigrateIo } from '../../src/cli.js';
 import { loadConfig } from '../../src/config.js';
 import { HELP, USAGE, main, parseArgs, type ParsedArgs } from '../../src/db-bootstrap/cli.js';
 import { BOOTSTRAP_TARGETS, bootstrapEnvSchema, loadBootstrapEnv, missingForTarget } from '../../src/db-bootstrap/env.js';
-import { bootstrap, BootstrapStatementError, bootstrapOwners, secretPathsFor, type BootstrapSummary } from '../../src/db-bootstrap/index.js';
+import {
+  bootstrap,
+  BootstrapStatementError,
+  bootstrapOwners,
+  secretPathsFor,
+  teardown,
+  type BootstrapSummary,
+  type TeardownSummary,
+} from '../../src/db-bootstrap/index.js';
 import { MigrationFailedError, resetLocalSchemas, SchemaNotEmptyError } from '../../src/db-bootstrap/migrations.js';
 
 vi.mock('../../src/db-bootstrap/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/db-bootstrap/index.js')>();
-  return { ...actual, bootstrap: vi.fn(actual.bootstrap) };
+  return { ...actual, bootstrap: vi.fn(actual.bootstrap), teardown: vi.fn(actual.teardown) };
 });
 
 const PACKAGE_DIR = fileURLToPath(new URL('../../', import.meta.url));
@@ -44,6 +52,7 @@ afterAll(async () => {
 
 afterEach(() => {
   vi.mocked(bootstrap).mockClear();
+  vi.mocked(teardown).mockClear();
 });
 
 /** Streams that record what `main` writes. */
@@ -138,6 +147,18 @@ describe('parseArgs', () => {
       argv: ['bootstrap', '--target', 'local', '--target=cloud'],
       expected: { kind: 'usage-error', message: '--target given more than once' },
     },
+    { argv: ['teardown', '--target', 'local'], expected: { kind: 'teardown', target: 'local' } },
+    { argv: ['teardown', '--target=local'], expected: { kind: 'teardown', target: 'local' } },
+    { argv: ['teardown'], expected: { kind: 'usage-error', message: '--target local is required' } },
+    {
+      argv: ['teardown', '--target', 'cloud'],
+      expected: { kind: 'usage-error', message: 'teardown supports only --target local, not "cloud"' },
+    },
+    {
+      argv: ['teardown', '--target', 'staging'],
+      expected: { kind: 'usage-error', message: '--target must be one of local, got "staging"' },
+    },
+    { argv: ['teardown', '--target', 'local', 'extra'], expected: { kind: 'usage-error', message: 'unexpected argument "extra"' } },
   ])('parses $argv', ({ argv, expected }) => {
     const parsed = parseArgs(argv);
     expect(parsed).toEqual(expected);
@@ -191,7 +212,9 @@ describe('main', () => {
     expect(await main(['--help'], io, {})).toBe(0);
     expect(io.out()).toBe(HELP);
     expect(io.err()).toBe('');
-    expect(HELP).toMatch(/^Usage: opt2-db bootstrap --target local\|cloud\n {7}opt2-db --help\n/);
+    for (const text of [HELP, USAGE]) {
+      expect(text).toMatch(/^Usage: opt2-db bootstrap --target local\|cloud\n {7}opt2-db teardown --target local\n {7}opt2-db --help\n/);
+    }
   });
 
   it('writes the message and the usage to stderr and returns 2 for a usage error', async () => {
@@ -213,17 +236,45 @@ describe('main', () => {
     expect(bootstrap).not.toHaveBeenCalled();
   });
 
-  it('names every variable the cloud target lacks before a logger exists, and no value', async () => {
+  it.each([
+    {
+      argv: ['bootstrap', '--target=cloud'],
+      source: { OPT2_ENV: 'cloud', PG_PASSWORD: SAMPLE_PASSWORD },
+      missing: 'PG_DATABASE, CLOUD_SQL_INSTANCE, GOOGLE_CLOUD_PROJECT, OPT2_CLOUDSQL_ADMIN_PASSWORD',
+    },
+    {
+      argv: ['teardown', '--target=local'],
+      source: { OPT2_ENV: 'local', PG_PASSWORD: SAMPLE_PASSWORD },
+      missing: 'PG_HOST, PG_PORT, PG_DATABASE, PG_USER',
+    },
+  ])('names every variable $argv lacks before a logger exists, and no value', async ({ argv, source, missing }) => {
     const io = captureIo();
-    const source = { OPT2_ENV: 'cloud', PG_PASSWORD: SAMPLE_PASSWORD };
-    expect(await main(['bootstrap', '--target=cloud'], io, source)).toBe(1);
-    const error = {
-      type: 'BootstrapEnvError',
-      message: 'db-bootstrap: invalid environment (PG_DATABASE, CLOUD_SQL_INSTANCE, GOOGLE_CLOUD_PROJECT, OPT2_CLOUDSQL_ADMIN_PASSWORD)',
-    };
-    expect(onlyJsonLine(io.out())).toEqual({ command: 'bootstrap', target: 'cloud', ok: false, error });
-    expect(logRecords(io.err())).toMatchObject([{ message: 'bootstrap failed', env: 'local', error }]);
+    expect(await main(argv, io, source)).toBe(1);
+    const [command, target] = [argv[0], argv[1]?.split('=')[1]];
+    const error = { type: 'BootstrapEnvError', message: `db-bootstrap: invalid environment (${missing})` };
+    expect(onlyJsonLine(io.out())).toEqual({ command, target, ok: false, error });
+    expect(logRecords(io.err())).toMatchObject([{ message: `${command} failed`, env: 'local', error }]);
     expect(`${io.out()}${io.err()}`).not.toContain(SAMPLE_PASSWORD);
+    expect(bootstrap).not.toHaveBeenCalled();
+    expect(teardown).not.toHaveBeenCalled();
+  });
+
+  it('prints the teardown summary as the only stdout line, without OPT2_STATE_DIR, and returns 0', async () => {
+    const summary: TeardownSummary = {
+      command: 'teardown',
+      target: 'local',
+      ok: true,
+      schemas: { dropped: ['identity'], absent: ['people'] },
+      roles: 3,
+    };
+    vi.mocked(teardown).mockResolvedValueOnce(summary);
+    const io = captureIo();
+    const { OPT2_STATE_DIR: _unused, ...source } = localSource();
+    expect(await main(['teardown', '--target', 'local'], io, source)).toBe(0);
+    expect(io.out()).toBe(`${JSON.stringify(summary)}\n`);
+    const [options] = vi.mocked(teardown).mock.calls[0] ?? [];
+    expect(options?.config).toBe(config);
+    expect(options?.env).toMatchObject({ PG_HOST: '127.0.0.1', PG_PORT: 5432 });
     expect(bootstrap).not.toHaveBeenCalled();
   });
 
@@ -286,11 +337,15 @@ describe('main', () => {
     expect(io.err()).not.toContain(SAMPLE_PASSWORD);
   });
 
-  it('reports a thrown non-Error value by its type alone', async () => {
-    vi.mocked(bootstrap).mockRejectedValueOnce(`connection lost: ${SECRET}`);
+  it.each([
+    { command: 'bootstrap', run: bootstrap },
+    { command: 'teardown', run: teardown },
+  ] as const)('reports a thrown non-Error value of $command by its type alone and logs the failure', async ({ command, run }) => {
+    vi.mocked(run).mockRejectedValueOnce(`connection lost: ${SECRET}`);
     const io = captureIo();
-    expect(await main(['bootstrap', '--target', 'local'], io, localSource())).toBe(1);
-    expect(onlyJsonLine(io.out())).toEqual({ command: 'bootstrap', target: 'local', ok: false, error: { type: 'string', message: '[REDACTED]' } });
+    expect(await main([command, '--target', 'local'], io, localSource())).toBe(1);
+    expect(onlyJsonLine(io.out())).toEqual({ command, target: 'local', ok: false, error: { type: 'string', message: '[REDACTED]' } });
+    expect(logRecords(io.err())).toMatchObject([{ severity: 'ERROR', message: `${command} failed` }]);
     expect(`${io.out()}${io.err()}`).not.toContain(SECRET);
   });
 
@@ -359,14 +414,16 @@ describe('opt2-db as a process', () => {
     { args: ['--help'], status: 0 },
     { args: [], status: 2 },
     { args: ['bootstrap', '--target', 'staging'], status: 2 },
+    { args: ['teardown', '--target', 'cloud'], status: 2 },
     { args: ['bootstrap', '--target', 'cloud'], status: 1 },
+    { args: ['teardown', '--target', 'local'], status: 1 },
   ])('exits $status for $args', ({ args, status }) => {
     const child = runCli(CLI_SOURCE, args);
     expect(child.status, child.stderr).toBe(status);
     if (status === 0) expect(child.stdout).toBe(HELP);
     if (status === 1) {
-      expect(onlyJsonLine(child.stdout)).toMatchObject({ command: 'bootstrap', target: 'cloud', ok: false, error: { type: 'EnvValidationError' } });
-      expect(logRecords(child.stderr)).toMatchObject([{ severity: 'ERROR', message: 'bootstrap failed' }]);
+      expect(onlyJsonLine(child.stdout)).toMatchObject({ command: args[0], target: args[2], ok: false, error: { type: 'EnvValidationError' } });
+      expect(logRecords(child.stderr)).toMatchObject([{ severity: 'ERROR', message: `${args[0]} failed` }]);
     }
     if (status === 2) expect(child.stderr).toMatch(/^opt2-db: /);
   });
@@ -450,4 +507,47 @@ describe.skipIf(!dedicated)('opt2-db bootstrap against a dedicated PostgreSQL cl
     expect(line.schemas.map((entry) => entry.schema)).toEqual(Object.values(config.owners).map((owner) => owner.schema));
     for (const password of passwords) expect(`${io.out()}${io.err()}`).not.toContain(password);
   });
+
+  it('tears every schema and role down without OPT2_STATE_DIR, and a repeat finds them absent', async () => {
+    const schemas = owners.map((owner) => owner.schema);
+    const roleNames = owners.flatMap(({ roles }) => [roles.owner, roles.app, roles.migrator]);
+    const source = (stateDirectory?: string): NodeJS.ProcessEnv => ({
+      OPT2_ENV: 'local',
+      PG_HOST: process.env.PG_HOST,
+      PG_PORT: process.env.PG_PORT,
+      PG_DATABASE: process.env.PG_DATABASE,
+      PG_USER: process.env.PG_USER,
+      PG_PASSWORD: process.env.PG_PASSWORD,
+      ...(stateDirectory === undefined ? {} : { OPT2_STATE_DIR: stateDirectory }),
+    });
+    const bootstrapIo = captureIo();
+    expect(await main(['bootstrap', '--target', 'local'], bootstrapIo, source(dbStateDir)), bootstrapIo.out()).toBe(0);
+
+    const io = captureIo();
+    expect(await main(['teardown', '--target', 'local'], io, source()), io.out()).toBe(0);
+    expect(onlyJsonLine(io.out())).toEqual({
+      command: 'teardown',
+      target: 'local',
+      ok: true,
+      schemas: { dropped: schemas, absent: [] },
+      roles: roleNames.length,
+    });
+    const again = captureIo();
+    expect(await main(['teardown', '--target', 'local'], again, source())).toBe(0);
+    expect(onlyJsonLine(again.out())).toMatchObject({ ok: true, schemas: { dropped: [], absent: schemas }, roles: 0 });
+
+    const admin = new pg.Client(PG_CONFIG);
+    await admin.connect();
+    try {
+      const left = await admin.query<{ name: string }>(
+        'SELECT nspname AS name FROM pg_namespace WHERE nspname = ANY($1::text[]) UNION ALL ' +
+          'SELECT rolname FROM pg_roles WHERE rolname = ANY($2::text[])',
+        [schemas, roleNames],
+      );
+      expect(left.rows).toEqual([]);
+    } finally {
+      await admin.end();
+    }
+    // A full local bootstrap applies every package's migrations, which takes minutes on a loaded host.
+  }, 1_800_000);
 });

@@ -384,13 +384,18 @@ export function createProcessControl(options: ProcessControlOptions): ProcessCon
     }
   }
 
-  /** Replaces the entry's pid, re-read in up.json's write queue so that concurrent restarts keep each other's pids. */
+  /**
+   * Replaces the entry's pid and start time (dropped once the pid is gone), re-read in up.json's write queue so that
+   * concurrent restarts keep each other's pids.
+   */
   async function recordPid(name: string, pid: number): Promise<void> {
+    const startTime = await processStartTime(procRoot, pid);
     const file = upJsonPath(options.stateDir);
     const key = path.join(await realpath(path.dirname(file)), path.basename(file));
     await serialized(key, async () => {
       const { doc, entry } = await findAsync(name);
-      const next: UpJson = { ...doc, processes: { ...doc.processes, [name]: { ...entry, pid } } };
+      // An undefined startTime is left out by JSON.stringify, so the previous process's never survives.
+      const next: UpJson = { ...doc, processes: { ...doc.processes, [name]: { ...entry, pid, startTime } } };
       await replaceFile(file, `${JSON.stringify(next, null, 2)}\n`);
     });
   }

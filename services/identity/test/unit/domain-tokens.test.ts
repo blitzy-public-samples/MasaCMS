@@ -7,13 +7,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deleteApp, type App } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { SignJWT, createLocalJWKSet, decodeJwt, decodeProtectedHeader } from 'jose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   ANONYMOUS_PRINCIPAL_UID,
   LOCAL_USER_TOKEN,
+  SignJWT,
   cloudUserTokenSettings,
+  createLocalJWKSet,
   createUserTokenVerifier,
+  decodeJwt,
+  decodeProtectedHeader,
   loadLocalSigningKeys,
   verifyLocalServiceToken,
   type UserClaims,
@@ -25,7 +28,6 @@ import { createThrowawaySchema, fixedClock, pgAvailable, testJwks, testSigningKe
 import { applyLogin, endSession, ensureSession } from '../../src/domain/sessions.js';
 import {
   MAX_CUSTOM_CLAIMS_BYTES,
-  SIGN_IN_WITH_CUSTOM_TOKEN_URL,
   createCloudIdentityPlatformAdapter,
   createFirebaseIdentityPlatformAdapter,
   createLocalTokenSigner,
@@ -36,7 +38,7 @@ import {
 } from '../../src/domain/tokens.js';
 import { createIdentityRepository, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
 import { IDENTITY_UNITS, type LoginSnapshot } from '../../src/repo/tables.js';
-import { recordTenantListing, testFirebaseApp, type RecordedTenantPage } from '../helpers/firebase.js';
+import { TEST_EXCHANGE_URL, TEST_WEB_API_KEY, recordTenantListing, testFirebaseApp, type RecordedTenantPage } from '../helpers/firebase.js';
 
 const NOW = new Date(2026, 5, 30, 12, 0, 0);
 const CLOCK = fixedClock(NOW);
@@ -191,22 +193,23 @@ describe('Firebase Identity Platform adapter', () => {
     const app = await testFirebaseApp('identity-tokens-test');
     try {
       const ok = recordedFetch(200, JSON.stringify({ idToken: 'id-token', expiresIn: '3600', refreshToken: 'refresh' }));
-      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool, fetchImpl: ok.fetchImpl, app });
+      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', apiKey: TEST_WEB_API_KEY, tenantIdForPool, fetchImpl: ok.fetchImpl, app });
 
       expect(await adapter.mintIdToken('umbrella', userId(1), custom)).toEqual({ idToken: 'id-token', expiresIn: 3600 });
       expect(ok.calls).toHaveLength(1);
-      expect(ok.calls[0]?.url).toBe(SIGN_IN_WITH_CUSTOM_TOKEN_URL);
-      expect(ok.calls[0]?.init.headers).toMatchObject({ authorization: 'Bearer access-1' });
+      expect(ok.calls[0]?.url).toBe(TEST_EXCHANGE_URL);
+      expect(ok.calls[0]?.init.headers).toEqual({ authorization: 'Bearer access-1', 'content-type': 'application/json' });
       const body = JSON.parse(String(ok.calls[0]?.init.body)) as { token: string; tenantId: string; returnSecureToken: boolean };
+      expect(Object.keys(body).sort()).toEqual(['returnSecureToken', 'tenantId', 'token']);
       expect(body).toMatchObject({ tenantId: 'ip-umbrella', returnSecureToken: true });
       expect(decodeJwt(body.token)).toMatchObject({ uid: userId(1), tenant_id: 'ip-umbrella', claims: custom, iss: 'sa@proj.iam.gserviceaccount.com' });
 
       for (const [status, answer, message] of [
-        [400, JSON.stringify({ error: { message: 'INVALID_CUSTOM_TOKEN' } }), /HTTP 400 INVALID_CUSTOM_TOKEN$/],
-        [502, '<html>bad gateway</html>', /HTTP 502$/],
-        [200, JSON.stringify({ idToken: 'id-token' }), /HTTP 200$/],
+        [400, JSON.stringify({ error: { message: 'INVALID_CUSTOM_TOKEN' } }), /^signInWithCustomToken failed for tenant ip-umbrella: HTTP 400 INVALID_CUSTOM_TOKEN$/],
+        [502, '<html>bad gateway</html>', /^signInWithCustomToken failed for tenant ip-umbrella: HTTP 502$/],
+        [200, JSON.stringify({ idToken: 'id-token' }), /^signInWithCustomToken failed for tenant ip-umbrella: HTTP 200$/],
       ] as const) {
-        const failing = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool, fetchImpl: recordedFetch(status, answer).fetchImpl, app });
+        const failing = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', apiKey: TEST_WEB_API_KEY, tenantIdForPool, fetchImpl: recordedFetch(status, answer).fetchImpl, app });
         await expect(failing.mintIdToken('umbrella', userId(1), custom)).rejects.toThrow(message);
       }
     } finally {
@@ -224,13 +227,13 @@ describe('Firebase Identity Platform adapter', () => {
     };
     try {
       const ok = recordedFetch(200, JSON.stringify({ idToken: 'anon-id-token', expiresIn: '3600', refreshToken: 'refresh' }));
-      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool: countingTenantIdForPool, fetchImpl: ok.fetchImpl, app });
+      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', apiKey: TEST_WEB_API_KEY, tenantIdForPool: countingTenantIdForPool, fetchImpl: ok.fetchImpl, app });
 
       expect(await adapter.mintIdToken(null, ANONYMOUS_PRINCIPAL_UID, anonymous)).toEqual({ idToken: 'anon-id-token', expiresIn: 3600 });
       expect(poolLookups).toBe(0);
       expect(ok.calls).toHaveLength(1);
-      expect(ok.calls[0]?.url).toBe(SIGN_IN_WITH_CUSTOM_TOKEN_URL);
-      expect(ok.calls[0]?.init.headers).toMatchObject({ authorization: 'Bearer access-1' });
+      expect(ok.calls[0]?.url).toBe(TEST_EXCHANGE_URL);
+      expect(ok.calls[0]?.init.headers).toEqual({ authorization: 'Bearer access-1', 'content-type': 'application/json' });
       const body = JSON.parse(String(ok.calls[0]?.init.body)) as { token: string; returnSecureToken: boolean };
       expect(Object.keys(body).sort()).toEqual(['returnSecureToken', 'token']);
       const customToken = decodeJwt(body.token);
@@ -238,8 +241,8 @@ describe('Firebase Identity Platform adapter', () => {
       expect(customToken).not.toHaveProperty('tenant_id');
 
       const refused = recordedFetch(400, JSON.stringify({ error: { message: 'INVALID_CUSTOM_TOKEN' } }));
-      const failing = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool, fetchImpl: refused.fetchImpl, app });
-      await expect(failing.mintIdToken(null, ANONYMOUS_PRINCIPAL_UID, anonymous)).rejects.toThrow(/for the project: HTTP 400 INVALID_CUSTOM_TOKEN$/);
+      const failing = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', apiKey: TEST_WEB_API_KEY, tenantIdForPool, fetchImpl: refused.fetchImpl, app });
+      await expect(failing.mintIdToken(null, ANONYMOUS_PRINCIPAL_UID, anonymous)).rejects.toThrow(/^signInWithCustomToken failed for the project: HTTP 400 INVALID_CUSTOM_TOKEN$/);
     } finally {
       await deleteApp(app);
     }
@@ -249,6 +252,7 @@ describe('Firebase Identity Platform adapter', () => {
     let called = false;
     const adapter = createFirebaseIdentityPlatformAdapter({
       projectId: 'proj',
+      apiKey: TEST_WEB_API_KEY,
       tenantIdForPool: () => {
         called = true;
         return 'ip';
@@ -288,7 +292,7 @@ describe('Firebase Identity Platform adapter', () => {
     try {
       if (refuse) await server.close();
       const fetchImpl = ((_url: string, init: RequestInit) => fetch(server.url, init)) as unknown as typeof fetch;
-      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool, fetchImpl, app, timeoutMs: 200 });
+      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', apiKey: TEST_WEB_API_KEY, tenantIdForPool, fetchImpl, app, timeoutMs: 200 });
       const failure: unknown = await adapter.mintIdToken('umbrella', userId(1), custom).then(
         () => undefined,
         (err: unknown) => err,
@@ -321,7 +325,7 @@ describe('Firebase Identity Platform adapter', () => {
     try {
       stall(app);
       const ok = recordedFetch(200, JSON.stringify({ idToken: 'id-token', expiresIn: '3600' }));
-      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool, fetchImpl: ok.fetchImpl, app, timeoutMs: 100 });
+      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', apiKey: TEST_WEB_API_KEY, tenantIdForPool, fetchImpl: ok.fetchImpl, app, timeoutMs: 100 });
       const failure = adapter.mintIdToken('umbrella', userId(1), custom);
       await expect(failure).rejects.toBeInstanceOf(ServiceUnavailableError);
       await expect(failure).rejects.toMatchObject({ service: 'identity-platform', cause: { name: 'TimeoutError' } });
@@ -338,7 +342,7 @@ describe('Firebase Identity Platform adapter', () => {
       const credential = app.options.credential;
       if (credential !== undefined) credential.getAccessToken = () => Promise.reject(denied);
       const ok = recordedFetch(200, JSON.stringify({ idToken: 'id-token', expiresIn: '3600' }));
-      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool, fetchImpl: ok.fetchImpl, app });
+      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', apiKey: TEST_WEB_API_KEY, tenantIdForPool, fetchImpl: ok.fetchImpl, app });
       await expect(adapter.mintIdToken('umbrella', userId(1), custom)).rejects.toBe(denied);
       expect(ok.calls).toHaveLength(0);
     } finally {
@@ -362,10 +366,11 @@ describe('Firebase Identity Platform adapter', () => {
     try {
       const pageTokens = recordTenantListing(app, LISTED_PAGES);
       const ok = recordedFetch(200, JSON.stringify({ idToken: 'id-token', expiresIn: '3600' }));
-      const adapter = await createCloudIdentityPlatformAdapter({ projectId: 'proj', fetchImpl: ok.fetchImpl, app });
+      const adapter = await createCloudIdentityPlatformAdapter({ projectId: 'proj', apiKey: TEST_WEB_API_KEY, fetchImpl: ok.fetchImpl, app });
 
       expect(await adapter.mintIdToken(pool, userId(1), custom)).toEqual({ idToken: 'id-token', expiresIn: 3600 });
       expect(pageTokens).toEqual([undefined, 'page-2']);
+      expect(ok.calls[0]?.url).toBe(TEST_EXCHANGE_URL);
       const body = JSON.parse(String(ok.calls[0]?.init.body)) as { token: string; tenantId: string };
       expect(body.tenantId).toBe(tenantId);
       expect(decodeJwt(body.token)).toMatchObject({ uid: userId(1), tenant_id: tenantId });
@@ -392,7 +397,7 @@ describe('Firebase Identity Platform adapter', () => {
     try {
       recordTenantListing(app, pages);
       const ok = recordedFetch(200, JSON.stringify({ idToken: 'id-token', expiresIn: '3600' }));
-      const minted = createCloudIdentityPlatformAdapter({ projectId: 'proj', fetchImpl: ok.fetchImpl, app }).then((adapter) =>
+      const minted = createCloudIdentityPlatformAdapter({ projectId: 'proj', apiKey: TEST_WEB_API_KEY, fetchImpl: ok.fetchImpl, app }).then((adapter) =>
         adapter.mintIdToken(pool, userId(1), custom),
       );
 
@@ -407,7 +412,7 @@ describe('Firebase Identity Platform adapter', () => {
     const app = await testFirebaseApp('identity-tokens-cloud-stalled-listing');
     try {
       getAuth(app).tenantManager().listTenants = () => new Promise(() => undefined);
-      const built = createCloudIdentityPlatformAdapter({ projectId: 'proj', app, timeoutMs: 100 });
+      const built = createCloudIdentityPlatformAdapter({ projectId: 'proj', apiKey: TEST_WEB_API_KEY, app, timeoutMs: 100 });
 
       await expect(built).rejects.toBeInstanceOf(ServiceUnavailableError);
       await expect(built).rejects.toMatchObject({ service: 'identity-platform', cause: { name: 'TimeoutError' } });

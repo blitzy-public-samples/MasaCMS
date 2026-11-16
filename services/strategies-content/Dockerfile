@@ -12,6 +12,7 @@ COPY services/strategies-content/package.json services/strategies-content/packag
 RUN npm ci
 COPY services/identity/contracts/events/identity.group.changed.v1.json services/identity/contracts/events/identity.permission.changed.v1.json services/identity/contracts/events/identity.membership.changed.v1.json /app/services/identity/contracts/events/
 COPY services/programs-sites/contracts/events/programs-sites.site.changed.v1.json /app/services/programs-sites/contracts/events/
+COPY services/programs-sites/contracts/openapi.yaml /app/services/programs-sites/contracts/
 COPY services/strategies-content/contracts/ ./contracts/
 COPY services/strategies-content/src/ ./src/
 RUN npm run build \

@@ -37,7 +37,7 @@ const INPUT: CreateTaskInput = {
   queue: 'surveys-launch',
   name: 'surveys-launch-A1B2',
   scheduleTime: new Date(Date.UTC(2026, 5, 30, 12, 0, 0, 250)),
-  url: 'https://surveys-abc.a.run.app/internal/v1/tasks/surveys/A1B2/launch?attempt=1',
+  url: 'https://surveys-abc.a.run.app/internal/v1/tasks/surveys/launch',
   body: { surveyId: 'A1B2' },
   deadlineS: 60,
   tenantId: TENANT,
@@ -92,17 +92,24 @@ describe('buildCloudTask', () => {
         body: expect.any(String),
         oidcToken: {
           serviceAccountEmail: INVOKER,
-          audience: managedAudience('https://surveys-abc.a.run.app', '/internal/v1/tasks/surveys/A1B2/launch'),
+          audience: managedAudience('https://surveys-abc.a.run.app', '/internal/v1/tasks/surveys/launch'),
         },
       },
     });
-    expect(task.httpRequest.oidcToken.audience).toBe('https://surveys-abc.a.run.app/internal/v1/tasks/surveys/A1B2/launch');
+    expect(task.httpRequest.oidcToken.audience).toBe('https://surveys-abc.a.run.app/internal/v1/tasks/surveys/launch');
     expect(decodeBody(task.httpRequest.body)).toStrictEqual({
       queue: 'surveys-launch',
       name: 'surveys-launch-A1B2',
       tenantId: TENANT,
       payload: { surveyId: 'A1B2' },
     });
+  });
+
+  it('addresses the OIDC token to the task URL without its query', () => {
+    const url = `${INPUT.url}?siteid=default`;
+    const task = buildCloudTask({ ...INPUT, url }, { project: PROJECT, location: LOCATION, invokerEmail: INVOKER, headers: {} });
+    expect(task.httpRequest.url).toBe(url);
+    expect(task.httpRequest.oidcToken.audience).toBe('https://surveys-abc.a.run.app/internal/v1/tasks/surveys/launch');
   });
 
   it('uses an injected task path and encodes a system task with null tenant and payload', () => {

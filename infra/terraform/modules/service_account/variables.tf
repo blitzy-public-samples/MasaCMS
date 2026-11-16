@@ -29,3 +29,9 @@ variable "account_iam" {
   }))
   default = []
 }
+
+variable "secret_access" {
+  description = "Ids of existing Secret Manager secrets the account reads; each gets roles/secretmanager.secretAccessor for it."
+  type        = list(string)
+  default     = []
+}

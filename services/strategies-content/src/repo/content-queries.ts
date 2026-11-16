@@ -164,6 +164,14 @@ function ciIn(p: SqlParams, expr: string, values: readonly string[]): string {
   return `lower(rtrim(${expr})) IN (SELECT lower(rtrim(v)) FROM unnest(${p.add(values)}::text[]) AS v)`;
 }
 
+/** `ciEq` (a value) or `ciIn` (a list) behind a leakproof `lookup_ci` prefilter, a superset its indexes seek under forced RLS. */
+function ciLookup(p: SqlParams, schema: string, expr: string, value: string | readonly string[]): string {
+  const key = `((${expr}::bpchar) COLLATE ${qualified(schema, 'lookup_ci')})`;
+  return typeof value === 'string'
+    ? `(${key} = ${p.add(value)}::text::bpchar AND ${ciEq(p, expr, value)})`
+    : `(${key} = ANY(${p.add(value)}::text[]::bpchar[]) AND ${ciIn(p, expr, value)})`;
+}
+
 /** The forms a stored single-case CF id may take for a caller-supplied id. */
 function idForms(ids: readonly string[]): string[] {
   return [...new Set(ids.flatMap((id) => [id, id.toUpperCase(), id.toLowerCase()]))];
@@ -717,7 +725,7 @@ export async function readActiveByRemoteId(
     return [];
   }
   const p = new SqlParams();
-  return readActiveWhere(tx, p, ciEq(p, 'tcontent.remoteid', args.remoteId), args, VERSION_TYPES);
+  return readActiveWhere(tx, p, ciLookup(p, tx.schema, 'tcontent.remoteid', args.remoteId), args, VERSION_TYPES);
 }
 
 /** `readActiveByRemoteId` of several remote ids with one query: each requested id's rows, keyed by the id as given. */
@@ -733,7 +741,7 @@ export async function readActiveByRemoteIds(
   await readable(tx, 'content', 'file', 'approval_request');
   const p = new SqlParams();
   const requested = p.add(ids);
-  const versions = activeWhereSelect(tx.schema, p, ciIn(p, 'tcontent.remoteid', ids), args, VERSION_TYPES);
+  const versions = activeWhereSelect(tx.schema, p, ciLookup(p, tx.schema, 'tcontent.remoteid', ids), args, VERSION_TYPES);
   // The requested id is joined under ciEq's key, so a version reaches every id SQL Server's = would match it to.
   const rows = await run<ContentVersionRow & { requested_ord: number }>(
     tx,
@@ -778,7 +786,8 @@ export async function readActiveByFilename(
   args: TypedActiveVersionArgs & { filename: string },
 ): Promise<ContentVersionRow[]> {
   const p = new SqlParams();
-  const filename = args.filename === '' ? 'tcontent.filename IS NULL' : ciEq(p, 'tcontent.filename', args.filename.toLowerCase());
+  const filename =
+    args.filename === '' ? 'tcontent.filename IS NULL' : ciLookup(p, tx.schema, 'tcontent.filename', args.filename.toLowerCase());
   const where = `${filename} AND ${ciLiterals('tcontent.type', ['Page', 'Folder', 'Calendar', 'Gallery', 'File', 'Link'])}`;
   return readActiveWhere(tx, p, where, args, VERSION_TYPES.filter((type) => type !== 'Module'));
 }

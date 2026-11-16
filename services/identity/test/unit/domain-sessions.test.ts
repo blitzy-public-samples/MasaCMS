@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sessionCookieStrings, sessionIdForJsessionid, type LegacyCookieConfig } from '@opt2/platform/legacy-compat';
 import type { Clock } from '@opt2/platform/service-kit';
-import { SYSTEM_TENANT_ID, tenantIdForSite, withMetadata, withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { SYSTEM_TENANT_ID, tenantIdForSite, withMetadata, withTenant, type QueryConfig, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import { importUsedTokens } from '../../src/domain/csrf.js';
 import { ANONYMOUS_USER_STRUCT, snapshotOfUserStruct, userStructOf } from '../../src/domain/roles.js';
@@ -595,6 +595,117 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
 
       expect((await adoptLegacySession(deps(), describeLegacy(sessionId, user), { mode: 'legacy-primary' })).tenantId).toBe(SYSTEM_TENANT_ID);
       expect((await sessionState(deps(), sessionId)).userId).toBe(userId);
+    });
+
+    describe('re-adoption cost', () => {
+      const SESSION_TABLE = (): string => `"${handle.schema}"."session"`;
+
+      /** `handle.app` whose tenant transactions record each statement's text in `statements`. */
+      function recordingDb(statements: string[]): TenantDb {
+        return {
+          ...handle.app,
+          withTenant: (tenantId, fn, options) =>
+            handle.app.withTenant(
+              tenantId,
+              (tx) => {
+                const query = ((text: string | QueryConfig, values?: unknown[]) => {
+                  statements.push(typeof text === 'string' ? text : text.text);
+                  return tx.query(text, values);
+                }) as TenantTx['query'];
+                return fn({ ...tx, query });
+              },
+              options,
+            ),
+        };
+      }
+
+      /** The statements of one adoption, run a second later so a session write would move `updated_at`. */
+      async function adoptionStatements(description: LegacyDescribe): Promise<string[]> {
+        const statements: string[] = [];
+        now = new Date(now.getTime() + 1_000);
+        await adoptLegacySession({ ...deps(), db: recordingDb(statements) }, description, { mode: 'legacy-primary' });
+        return statements;
+      }
+
+      it('re-adopts an unchanged session under a share lock in the same statements whatever its used-token count, writing no session row', async () => {
+        const keys = Array.from({ length: 200 }, (_, i) => `T${String(i).padStart(3, '0')}`);
+        const few = nextSessionId();
+        const many = nextSessionId();
+        await adoptLegacySession(deps(), describeLegacy(few, LEGACY_USER, { usedTokens: keys.slice(0, 1) }), { mode: 'legacy-primary' });
+        await adoptLegacySession(deps(), describeLegacy(many, LEGACY_USER, { usedTokens: keys }), { mode: 'legacy-primary' });
+        const before = await stored(many, SYSTEM_TENANT_ID);
+
+        const fewStatements = await adoptionStatements(describeLegacy(few, LEGACY_USER, { usedTokens: keys.slice(0, 1) }));
+        const manyStatements = await adoptionStatements(describeLegacy(many, LEGACY_USER, { usedTokens: keys }));
+
+        expect(manyStatements).toEqual(fewStatements);
+        expect(manyStatements.filter((sql) => sql.includes(SESSION_TABLE()) && /\bFOR SHARE\b/.test(sql))).toHaveLength(1);
+        expect(manyStatements.filter((sql) => /^(INSERT|UPDATE|DELETE|SAVEPOINT)\b|\bFOR UPDATE\b/.test(sql))).toEqual([]);
+        expect(await stored(many, SYSTEM_TENANT_ID)).toEqual(before);
+        expect(await claimKeys(many, SYSTEM_TENANT_ID)).toHaveLength(keys.length);
+      });
+
+      it('marks new and pending-legacy keys used on an unchanged re-adoption without locking FOR UPDATE or writing the session row', async () => {
+        const sessionId = nextSessionId();
+        await adoptLegacySession(deps(), describeLegacy(sessionId, LEGACY_USER, { usedTokens: ['aa', 'bb'] }), { mode: 'legacy-primary' });
+        await inTenant(SYSTEM_TENANT_ID, (tx) => repo.insertCsrfClaim(tx, { sessionId, token: 'PP', state: 'pending-legacy' }));
+        const before = await stored(sessionId, SYSTEM_TENANT_ID);
+
+        const statements = await adoptionStatements(describeLegacy(sessionId, LEGACY_USER, { usedTokens: ['aa', 'bb', 'nn', 'pp'] }));
+
+        expect(statements.filter((sql) => sql.includes(SESSION_TABLE()) && !/^SELECT \*/.test(sql))).toEqual([]);
+        expect(statements.filter((sql) => sql.includes(SESSION_TABLE()) && /\bFOR UPDATE\b/.test(sql))).toEqual([]);
+        expect(await stored(sessionId, SYSTEM_TENANT_ID)).toEqual(before);
+        const claims = await inTenant(SYSTEM_TENANT_ID, (tx) => repo.listCsrfClaims(tx, sessionId));
+        expect(claims.map((row) => [row.token, row.state, row.used_at]).sort()).toEqual([
+          ['AA', 'used', NOW],
+          ['BB', 'used', NOW],
+          ['NN', 'used', now],
+          ['PP', 'used', now],
+        ]);
+      });
+
+      it('re-adopts an unchanged session while another transaction holds its row shared, and concurrent re-adoptions keep its epoch', async () => {
+        const sessionId = nextSessionId();
+        const description = describeLegacy(sessionId, LEGACY_USER, { usedTokens: ['aa'] });
+        await adoptLegacySession(deps(), description, { mode: 'legacy-primary' });
+
+        const whileShared = await inTenant(SYSTEM_TENANT_ID, async (tx) => {
+          await repo.lockSession(tx, sessionId, 'share');
+          const readopted = adoptLegacySession(deps(), description, { mode: 'legacy-primary' }).then(() => 'adopted');
+          let timer: NodeJS.Timeout | undefined;
+          const blocked = new Promise<string>((resolve) => {
+            timer = setTimeout(resolve, 2_000, 'blocked');
+          });
+          try {
+            return await Promise.race([readopted, blocked]);
+          } finally {
+            clearTimeout(timer);
+          }
+        });
+        const concurrent = await Promise.all(Array.from({ length: 8 }, () => adoptLegacySession(deps(), description, { mode: 'legacy-primary' })));
+
+        expect(whileShared).toBe('adopted');
+        expect(concurrent.map((adopted) => adopted.epoch)).toEqual(Array.from({ length: 8 }, () => 1));
+      });
+
+      it('writes no session row when a row located as changed is unchanged once locked', async () => {
+        const sessionId = nextSessionId();
+        const description = describeLegacy(sessionId, LEGACY_USER, { usedTokens: ['aa'] });
+        await adoptLegacySession(deps(), description, { mode: 'legacy-primary' });
+        const before = await stored(sessionId, SYSTEM_TENANT_ID);
+        const staleLookup: IdentityRepository = {
+          ...repo,
+          async findSession(tx, id) {
+            const row = await repo.findSession(tx, id);
+            return row === null ? null : { ...row, mode: 'target-primary' };
+          },
+        };
+        now = new Date(NOW.getTime() + 1_000);
+
+        expect(await adoptLegacySession(deps(staleLookup), description, { mode: 'legacy-primary' })).toEqual({ sessionId, tenantId: SYSTEM_TENANT_ID, epoch: 1, mode: 'legacy-primary' });
+        expect(await stored(sessionId, SYSTEM_TENANT_ID)).toEqual(before);
+      });
     });
   });
 

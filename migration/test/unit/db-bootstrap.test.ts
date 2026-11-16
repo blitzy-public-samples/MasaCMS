@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { pg } from '@opt2/platform/tenancy';
 import { pgAvailable, testPgConfig } from '@opt2/platform/testing';
 import { loadConfig } from '../../src/config.js';
 import { assertRoles, type Finding, type FindingKind, type RoleAssertionInput } from '../../src/db-bootstrap/assertions.js';

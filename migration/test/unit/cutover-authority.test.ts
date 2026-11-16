@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { currentAuthority, type CurrentAuthorityDeps } from '../../src/cutover/authority.js';
+import { currentAuthority, type CurrentAuthority, type CurrentAuthorityDeps } from '../../src/cutover/authority.js';
 import type { CutoverStatus } from '../../src/cutover/gateway-client.js';
 import { CutoverDataError, loadGroups, loadVersion } from '../../src/cutover/versions.js';
 import { repoPath } from '../../src/paths.js';
@@ -108,6 +108,19 @@ describe('currentAuthority', () => {
     await currentAuthority(fake);
 
     expect(fake.calls()).toBe(2);
+  });
+
+  it('selects the version each status reports, so an activation changes the next answer', async () => {
+    const reported = ['v0001', 'v0002', null];
+    const gateway = { status: () => Promise.resolve(statusBody({ tableVersion: reported.shift() ?? null })) };
+    const config = { cutoverDir: CUTOVER_DIR, groupsFile: GROUPS_FILE };
+
+    const answers: CurrentAuthority[] = [];
+    for (let call = 0; call < 3; call += 1) answers.push(await currentAuthority({ gateway, config }));
+
+    expect(reported).toEqual([]);
+    expect(answers.map((answer) => answer.tableVersion)).toEqual(['v0001', 'v0002', null]);
+    expect(answers.map((answer) => [...answer.targetUnits])).toEqual([[], targetUnitsOf('v0002'), []]);
   });
 
   it.each([1_250, undefined])('bounds the status call by timeoutMs %s', async (timeoutMs) => {

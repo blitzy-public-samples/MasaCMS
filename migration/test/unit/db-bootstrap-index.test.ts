@@ -1,9 +1,8 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { Connector } from '@google-cloud/cloud-sql-connector';
 import { createLogger, type Logger } from '@opt2/platform/logging';
-import pg from 'pg';
+import { Connector, pg } from '@opt2/platform/tenancy';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type MigrationConfig, type OwnerName } from '../../src/config.js';
 import {
@@ -14,6 +13,7 @@ import {
   MissingIamUserError,
   secretPathsFor,
   SecretFileError,
+  teardown,
   type BootstrapDeps,
   type ConnectedClient,
   type ConnectSpec,
@@ -30,6 +30,8 @@ interface Call {
 interface FakeOptions {
   /** Roles present before the run, with their LOGIN attribute. */
   roles?: Record<string, boolean>;
+  /** Schemas present before the run, owned by their `<schema>_owner`. */
+  schemas?: string[];
   /** Schemas the emptiness check reports as holding tables. */
   populated?: string[];
   /** Schema the catalog reports with a foreign owner. */
@@ -90,7 +92,7 @@ function fakeDatabase(options: FakeOptions = {}) {
   const connections: { spec: ConnectSpec; ended: boolean }[] = [];
   const secretsRead: string[] = [];
   const roles = new Map(Object.entries(options.roles ?? {}));
-  const schemas = new Map<string, string>();
+  const schemas = new Map<string, string>((options.schemas ?? []).map((schema) => [schema, `${schema}_owner`]));
   let closed = 0;
   const names = (values?: unknown[]): string[] => (values?.[0] as string[] | undefined) ?? [];
 
@@ -118,6 +120,9 @@ function fakeDatabase(options: FakeOptions = {}) {
           .map((nspname) => ({ nspname, owner: nspname === options.wrongOwner ? 'other_role' : schemas.get(nspname), acl: null })),
       };
     }
+    if (text.startsWith('SELECT nspname FROM pg_namespace')) {
+      return { rows: names(values).filter((name) => schemas.has(name)).map((nspname) => ({ nspname })) };
+    }
     if (text.startsWith('SELECT has_schema_privilege')) return { rows: [{ can_create: false }] };
     const role = /^CREATE ROLE "([^"]+)" (NOLOGIN|LOGIN)/.exec(text);
     if (role) roles.set(role[1]!, role[2] === 'LOGIN');
@@ -125,6 +130,8 @@ function fakeDatabase(options: FakeOptions = {}) {
     if (schema) schemas.set(schema[1]!, schema[2]!);
     const dropped = /^DROP ROLE IF EXISTS "([^"]+)"/.exec(text);
     if (dropped) roles.delete(dropped[1]!);
+    const droppedSchema = /^DROP SCHEMA IF EXISTS "([^"]+)"/.exec(text);
+    if (droppedSchema) schemas.delete(droppedSchema[1]!);
     return { rows: [] };
   };
 
@@ -539,3 +546,78 @@ describe('environment checks', () => {
     expect(db.closed()).toBe(0);
   });
 });
+
+describe('local teardown', () => {
+  const allRoles = schemasInOrder.flatMap((schema) => [`${schema}_owner`, `${schema}_app`, `${schema}_migrator`]);
+  const teardownEnv = (): BootstrapEnv => localEnv();
+
+  it.each<{ what: string; schemas: string[]; roles: string[] }>([
+    { what: 'every schema and role', schemas: schemasInOrder, roles: allRoles },
+    { what: 'a partial stack', schemas: ['people'], roles: ['people_owner', 'people_app'] },
+    { what: 'nothing', schemas: [], roles: [] },
+  ])('drops $what on one admin session, then a repeat finds everything absent', async ({ schemas, roles }) => {
+    const db = fakeDatabase({ schemas, roles: Object.fromEntries(roles.map((role) => [role, false])) });
+    const { logger, lines } = capturingLogger();
+
+    const summary = await teardown({ env: teardownEnv(), config, logger, deps: db.deps });
+
+    expect(summary).toEqual({
+      command: 'teardown',
+      target: 'local',
+      ok: true,
+      schemas: { dropped: schemas, absent: schemasInOrder.filter((schema) => !schemas.includes(schema)) },
+      roles: roles.length,
+    });
+    expect(db.connections).toEqual([{ spec: { kind: 'admin' }, ended: true }]);
+    expect(db.closed()).toBe(1);
+    expect(db.secretsRead).toEqual([]);
+    const admin = db.texts('admin');
+    expect(admin.some((text) => /^(CREATE|GRANT|SET )/.test(text))).toBe(false);
+    expect(admin.filter((text) => text.startsWith('DROP SCHEMA'))).toEqual(
+      [...schemasInOrder].reverse().map((schema) => `DROP SCHEMA IF EXISTS "${schema}" CASCADE`),
+    );
+    const schemasWithRoles = new Set(roles.map((role) => role.replace(/_(?:owner|app|migrator)$/, '')));
+    expect(admin.filter((text) => text.startsWith('DROP OWNED BY'))).toHaveLength(schemasWithRoles.size);
+    expect(lines.at(-1)?.message).toBe(`teardown finished: dropped ${schemas.length} schemas and ${roles.length} roles`);
+
+    const again = await teardown({ env: teardownEnv(), config, logger, deps: db.deps });
+    expect(again).toMatchObject({ ok: true, schemas: { dropped: [], absent: schemasInOrder }, roles: 0 });
+  });
+
+  it('throws BootstrapEnvError naming the variables it lacks, before connecting', async () => {
+    const db = fakeDatabase();
+    const env = loadBootstrapEnv({ OPT2_ENV: 'local', PG_HOST: '127.0.0.1' });
+    const thrown = await failure(teardown({ env, config, logger: capturingLogger().logger, deps: db.deps }));
+    expect(thrown).toBeInstanceOf(BootstrapEnvError);
+    expect((thrown as BootstrapEnvError).missing).toEqual(['PG_PORT', 'PG_DATABASE', 'PG_USER', 'PG_PASSWORD']);
+    expect(db.connections).toHaveLength(0);
+    expect(db.closed()).toBe(0);
+  });
+
+  it('rethrows a failed drop and still ends the admin session and closes the dependencies', async () => {
+    const db = fakeDatabase({ schemas: ['stub'], roles: { stub_owner: false }, failOn: /^DROP ROLE IF EXISTS "stub_owner"/ });
+    const thrown = await failure(teardown({ env: teardownEnv(), config, logger: capturingLogger().logger, deps: db.deps }));
+    expect(thrown).toMatchObject({ message: 'statement rejected', code: '42000' });
+    expect(db.connections.every((connection) => connection.ended)).toBe(true);
+    expect(db.closed()).toBe(1);
+  });
+
+  it('logs in as the admin PG_USER through the default dependencies', async () => {
+    const db = fakeDatabase({ schemas: ['stub'] });
+    const configs = servePgClients(db, 'admin_role');
+    try {
+      const env = teardownEnv();
+      const summary = await teardown({
+        env,
+        config: { ...config, owners: { stub: config.owners.stub } } as unknown as MigrationConfig,
+        logger: capturingLogger().logger,
+      });
+      expect(summary).toMatchObject({ schemas: { dropped: ['stub'], absent: [] }, roles: 0 });
+      expect(configs).toEqual([{ host: '127.0.0.1', port: 5432, database: 'opt2_test', user: 'admin_role', password: env.PG_PASSWORD }]);
+      expect(db.connections).toEqual([{ spec: { kind: 'admin' }, ended: true }]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+});
+

@@ -304,7 +304,7 @@ const CASES = {
     expected: () => [MEMBERS_GROUP.UserID],
   },
   siteGroups: {
-    operations: ['listSiteGroups'],
+    operations: ['listSiteGroupsV2'],
     act: ({ identity }) => identity.siteGroups(TENANT_A.siteId, 0),
     expected: (): GroupSummary[] => [{ groupId: ADMIN_GROUP.UserID, groupName: ADMIN_GROUP.GroupName, siteId: TENANT_A.siteId, isPublic: 0, perm: 0 }],
   },
@@ -549,6 +549,31 @@ describe("identity's answers as people's client reads them", () => {
     expect(commit?.error).toBeInstanceOf(ServiceUnavailableError);
     assertExchangesMatchContract(subject.exchanges);
   });
+
+  it("reads a pool of more groups than identity's page size through listSiteGroupsV2 pages, as listSiteGroups lists them whole, every exchange within the contract", async () => {
+    const pooled: DoubleGroup[] = Array.from({ length: 1000 }, (_, n) => ({
+      UserID: cfUuid(),
+      GroupName: `Group ${String(n).padStart(4, '0')}`,
+      SiteID: TENANT_A.siteId,
+      isPublic: 0,
+      Perm: 0,
+    }));
+    subject.double.seedGroups(...pooled);
+    const v1Request = { service: 'identity', method: 'GET', path: '/internal/v1/groups', query: { siteid: TENANT_A.siteId, ispublic: '0' } } as const;
+
+    const { groups, whole } = await inSiteAdminSession(async () => ({
+      groups: await subject.identity.siteGroups(TENANT_A.siteId, 0),
+      whole: await subject.double.client.request<Record<string, Array<{ UserID: string }>>>(v1Request),
+    }));
+
+    expect(groups.map((group) => group.groupId)).toEqual([ADMIN_GROUP.UserID, ...pooled.map((group) => group.UserID)]);
+    expect(subject.exchanges.map(operationIdOf)).toEqual(['listSiteGroupsV2', 'listSiteGroupsV2']);
+    expect(subject.exchanges.map(({ request }) => request.query?.offset)).toEqual(['0', '1000']);
+    assertExchangesMatchContract(subject.exchanges);
+    expect(Object.keys(whole.body)).toEqual(['items']);
+    expect(whole.body.items?.map((group) => group.UserID)).toEqual(groups.map((group) => group.groupId));
+  });
+
 });
 
 describe('identity unavailable', () => {

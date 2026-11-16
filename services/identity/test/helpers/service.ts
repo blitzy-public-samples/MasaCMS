@@ -1,9 +1,8 @@
 /** Test-only composition of the identity service: createService and every implemented register* route function over the memory repository, a recording database and recording outbound ports. */
-import { decodeJwt } from 'jose';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { INVOCATION_HEADER, Roles, moduleRole } from '@opt2/platform/auth';
+import { INVOCATION_HEADER, Roles, decodeJwt, moduleRole } from '@opt2/platform/auth';
 import type { EventEnvelope } from '@opt2/platform/events';
 import { createLogger, type Logger } from '@opt2/platform/logging';
 import { registerWritePositionHeader } from '@opt2/platform/migration-kit';

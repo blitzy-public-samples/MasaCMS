@@ -68,6 +68,90 @@ variable "legacy_db_username" {
   type        = string
 }
 
+variable "operator_secret_ids" {
+  description = "Ids of existing Secret Manager secrets the operator provides and Terraform only references: MURA_DBPASSWORD of migration; MURA_APPRELOADKEY of the legacy origin, null when legacy keeps Masa's default appreload; OPT2_IDENTITY_PLATFORM_API_KEY of identity, the project Web API key accounts:signInWithCustomToken takes."
+  type = object({
+    legacy_db_password        = string
+    legacy_reload_key         = optional(string)
+    identity_platform_api_key = string
+  })
+  nullable = false
+
+  validation {
+    condition = alltrue([
+      can(regex("^[A-Za-z0-9_-]{1,255}$", var.operator_secret_ids.legacy_db_password)),
+      can(regex("^[A-Za-z0-9_-]{1,255}$", var.operator_secret_ids.identity_platform_api_key)),
+      var.operator_secret_ids.legacy_reload_key == null || can(regex("^[A-Za-z0-9_-]{1,255}$", var.operator_secret_ids.legacy_reload_key)),
+    ])
+    error_message = "operator_secret_ids entries must be Secret Manager secret ids of 1 to 255 letters, digits, '_' or '-'; only legacy_reload_key may be null."
+  }
+
+  validation {
+    condition = length(setintersection(
+      [for id in values(var.operator_secret_ids) : id if id != null],
+      keys(local.secrets),
+    )) == 0
+    error_message = "operator_secret_ids must name secrets the operator provides, never one this configuration creates (${join(", ", sort(keys(local.secrets)))})."
+  }
+}
+
+variable "legacy_settings" {
+  description = "Non-secret Masa MURA_<KEY> settings of the legacy origin that the targets reproduce; each service gets the keys it reads."
+  type        = map(string)
+  default     = {}
+  nullable    = false
+
+  validation {
+    condition     = alltrue([for v in values(var.legacy_settings) : v != null])
+    error_message = "legacy_settings values must be strings, never null."
+  }
+
+  validation {
+    condition     = alltrue([for k in keys(var.legacy_settings) : contains(local.legacy_setting_keys, k) || !can(regex("(?i)(PASSWORD|SECRET|TOKEN|KEY$)", k))])
+    error_message = "legacy_settings must not carry secrets such as MURA_APPRELOADKEY or MURA_DBPASSWORD: put the id of an existing Secret Manager secret in operator_secret_ids instead."
+  }
+
+  validation {
+    condition     = alltrue([for k in keys(var.legacy_settings) : contains(local.legacy_setting_keys, k) || can(regex("(?i)(PASSWORD|SECRET|TOKEN|KEY$)", k))])
+    error_message = "legacy_settings keys must be among ${join(", ", local.legacy_setting_keys)}."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.legacy_settings : can(regex("(?i)^(true|false|yes|no|1|0)$", v)) if contains(local.legacy_setting_flags, k)])
+    error_message = "legacy_settings flags ${join(", ", local.legacy_setting_flags)} must be CFML booleans: true, false, yes, no, 1 or 0, in any case."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.legacy_settings : v == "" || try(can(regex("^[0-9]+$", v)) && tonumber(v) >= 1 && tonumber(v) <= 65535, false) if k == "MURA_PORT"])
+    error_message = "legacy_settings MURA_PORT must be blank or a TCP port from 1 to 65535."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.legacy_settings : can(regex("^[0-9]+$", v)) if k == "MURA_EXPIREPASSWORDS"])
+    error_message = "legacy_settings MURA_EXPIREPASSWORDS must be a whole number of days."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.legacy_settings : try(can(regex("^[+-]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][+-]?[0-9]+)?$", v)) && abs(tonumber(v)) <= 1.7976931348623157e308, false) if contains(["MURA_SESSIONHISTORY", "MURA_SESSIONTIMEOUT"], k)])
+    error_message = "legacy_settings MURA_SESSIONHISTORY (days) and MURA_SESSIONTIMEOUT (minutes) must be CFML numbers: decimal text such as 180, 1.5 or 2e2, with no whitespace."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.legacy_settings : can(regex("^(/[^\\s?#]*)?$", v)) if k == "MURA_CONTEXT"])
+    error_message = "legacy_settings MURA_CONTEXT must be blank or a path that starts with / and holds no whitespace, ? or #."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.legacy_settings : can(regex("^[^\\s:/\\\\?#@]*$", v)) if k == "MURA_ADMINDOMAIN"])
+    error_message = "legacy_settings MURA_ADMINDOMAIN must be blank or a comma list of host names with no whitespace, port, path or @."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.legacy_settings : !can(regex("(?i)[a-z][a-z0-9+.-]*://[^/?#\\s]*@", v)) if contains(["MURA_ASSETPATH", "MURA_COREPATH", "MURA_FILEASSETPATH", "MURA_FILEDIR", "MURA_PLUGINSPATH", "MURA_PROXYSERVER", "MURA_S3ASSETS"], k)])
+    error_message = "legacy_settings MURA_ASSETPATH, MURA_COREPATH, MURA_FILEASSETPATH, MURA_FILEDIR, MURA_PLUGINSPATH, MURA_PROXYSERVER and MURA_S3ASSETS must not embed URL credentials (scheme://user[:password]@host): legacy_settings values are plain env, and secrets reach the services only as existing Secret Manager ids in operator_secret_ids."
+  }
+}
+
 variable "smtp_host" {
   description = "SMTP relay host (SMTP_HOST) of communications."
   type        = string

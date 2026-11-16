@@ -20,14 +20,7 @@ import {
 import type { TenantDb } from '@opt2/platform/tenancy';
 import type { Clock } from '@opt2/platform/service-kit';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
-import {
-  claimStagedObject,
-  deleteStagedObject,
-  hasStaleStagedObjects,
-  listFileObjectsForExport,
-  markStagedObjectCommitted,
-  type FileObjectExportRow,
-} from '../repo/files.js';
+import { claimStagedObject, hasStaleStagedObjects, listFileObjectsForExport, type FileObjectExportRow } from '../repo/files.js';
 import {
   CONTENT_FILES_BUCKET,
   STAGED_OBJECT_GRACE_MS,
@@ -120,17 +113,21 @@ export async function storeMigrationObject(deps: StoreObjectDeps, req: Migration
   const { files } = deps.repository;
   const ctx: WriteContext = { origin: req.origin ?? 'backfill', requestId: req.requestId, authority: requestMigrationAuthority() };
   await recoverStagedObjects(deps, req.tenantId);
-  const entry = await stageObject(deps, {
-    tenant_id: req.tenantId,
-    object_key: key,
-    kind: 'migration',
-    file_id: req.fileId,
-    variant: req.variant,
-    ext: req.ext,
-    size: req.bytes.length,
-    sha256: req.sha256,
-    content_type: req.contentType,
-  });
+  const entry = await stageObject(
+    deps,
+    {
+      tenant_id: req.tenantId,
+      object_key: key,
+      kind: 'migration',
+      file_id: req.fileId,
+      variant: req.variant,
+      ext: req.ext,
+      size: req.bytes.length,
+      sha256: req.sha256,
+      content_type: req.contentType,
+    },
+    ctx,
+  );
 
   let published: { result: StoredObjectResult; backedUp: boolean };
   try {
@@ -141,7 +138,7 @@ export async function storeMigrationObject(deps: StoreObjectDeps, req: Migration
       const head = await deps.storage.head(CONTENT_FILES_BUCKET, key);
       const consistent = held !== null && holdsRecorded(head, held);
       if (consistent && held.sha256 === req.sha256) {
-        await deleteStagedObject(tx, entry.stage_id);
+        await files.deleteStagedObject(tx, entry.stage_id, ctx);
         return { result: resultOf(held, false), backedUp: false };
       }
       if (consistent) {
@@ -166,13 +163,13 @@ export async function storeMigrationObject(deps: StoreObjectDeps, req: Migration
       );
       // Validate the row before replacing bytes; recovery settles an ambiguous put or COMMIT.
       await deps.storage.put(CONTENT_FILES_BUCKET, key, req.bytes, { contentType: req.contentType });
-      if (consistent) await markStagedObjectCommitted(tx, entry.stage_id);
-      else await deleteStagedObject(tx, entry.stage_id);
+      if (consistent) await files.markStagedObjectCommitted(tx, entry.stage_id, ctx);
+      else await files.deleteStagedObject(tx, entry.stage_id, ctx);
       return { result: resultOf(stored, true), backedUp: consistent };
     });
   } catch (err) {
     try {
-      await settleStagedObject(deps, entry);
+      await settleStagedObject(deps, entry, ctx);
     } catch {
       // The durable intent remains for recovery; preserve the publication error.
     }
@@ -181,7 +178,7 @@ export async function storeMigrationObject(deps: StoreObjectDeps, req: Migration
 
   if (published.backedUp) {
     try {
-      await settleStagedObject(deps, entry);
+      await settleStagedObject(deps, entry, ctx);
     } catch {
       // The committed intent keeps its backup until a recovery pass deletes both.
     }
@@ -227,16 +224,20 @@ export async function deleteMigrationObject(deps: StoreObjectDeps, key: string):
   const { files } = deps.repository;
   const ctx: WriteContext = { origin: 'migration-feed', authority: requestMigrationAuthority() };
   await recoverStagedObjects(deps, tenantId);
-  const entry = await stageObject(deps, {
-    tenant_id: tenantId,
-    object_key: key,
-    kind: 'migration',
-    file_id: name.slice(0, FILE_ID_LENGTH),
-    variant: name.slice(FILE_ID_LENGTH, dot),
-    ext: name.slice(dot + 1),
-    ...NO_BYTES,
-    content_type: null,
-  });
+  const entry = await stageObject(
+    deps,
+    {
+      tenant_id: tenantId,
+      object_key: key,
+      kind: 'migration',
+      file_id: name.slice(0, FILE_ID_LENGTH),
+      variant: name.slice(FILE_ID_LENGTH, dot),
+      ext: name.slice(dot + 1),
+      ...NO_BYTES,
+      content_type: null,
+    },
+    ctx,
+  );
 
   let deleted: boolean;
   try {
@@ -247,14 +248,14 @@ export async function deleteMigrationObject(deps: StoreObjectDeps, key: string):
     });
   } catch (err) {
     try {
-      await settleStagedObject(deps, entry);
+      await settleStagedObject(deps, entry, ctx);
     } catch {
       // The durable intent remains for recovery; preserve the deletion error.
     }
     throw err;
   }
   // No committed row names the key now, so settling the intent deletes its bytes.
-  await settleStagedObject(deps, entry);
+  await settleStagedObject(deps, entry, ctx);
   return { key, deleted };
 }
 

@@ -620,7 +620,7 @@ export function defineExportRunTaskCases(mode: TestDbMode): void {
     expect(refused.statusCode).toBe(503);
     assertResponseMatchesOpenApi(OPENAPI, {
       method: 'POST',
-      path: QUEUE.targetPath.replace('{exportId}', jobId),
+      path: QUEUE.targetPath,
       status: refused.statusCode,
       contentType: refused.headers['content-type'] as string | undefined,
       body: refused.payload,

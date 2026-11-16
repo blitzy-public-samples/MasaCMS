@@ -1039,12 +1039,10 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
           description: Communications or a unit gate is unavailable.
-  /internal/v1/tasks/surveys/{surveyId}/launch:
-    parameters:
-      - $ref: '#/components/parameters/SurveyId'
+  /internal/v1/tasks/surveys/launch:
     post:
       operationId: launchSurveyTask
-      summary: Runs a `surveys-launch` task, marking the survey LAUNCHED once when its schedule version is current.
+      summary: Runs a `surveys-launch` task, marking the payload's survey LAUNCHED once when its schedule version is current.
       tags:
         - internal
       x-opt2-transport: cloud-tasks
@@ -1066,7 +1064,7 @@ paths:
               $ref: '#/components/schemas/LaunchTaskWireBody'
       responses:
         '200':
-          description: The launch outcome; a stale schedule version or an earlier launch answers `applied` false. A malformed task body, no tenant, a tenant under which the survey is not visible, or a URL naming another survey answers `TaskIgnoredResult` without acting, so Cloud Tasks does not retry it.
+          description: The launch outcome; a stale schedule version or an earlier launch answers `applied` false. A malformed task body, no tenant, or a payload naming a survey not visible under the body's tenant answers `TaskIgnoredResult` without acting, so Cloud Tasks does not retry it.
           headers:
             X-Opt2-Write-Position:
               $ref: '#/components/headers/XOpt2WritePosition'
@@ -3002,7 +3000,7 @@ components:
           format: uuid
         payload: {}
     LaunchTaskWireBody:
-      description: Task wire body of a launch task, which names the tenant of its survey.
+      description: Task wire body of a launch task, which names the tenant of its survey and, in its payload, the survey.
       allOf:
         - $ref: '#/components/schemas/TaskWireBody'
         - type: object

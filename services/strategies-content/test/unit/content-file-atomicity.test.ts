@@ -209,7 +209,12 @@ describe.skipIf(!(await pgAvailable()))('content file atomicity', () => {
         expect(await filesNamed(fileName)).toEqual([]);
         expect(await query(t.pool, 'SELECT * FROM {schema}.file_object WHERE object_key = $1', [objectKey])).toEqual([]);
         expect(await query(t.actor.tenantId, 'SELECT * FROM {schema}.content WHERE title = $1', [title])).toEqual([]);
-        expect(await changesSince(mark)).toEqual([]);
+        const changes = await changesSince(mark);
+        const ledger = changes.filter((change) => change.table === 'staged_object');
+        expect(changes.filter((change) => change.table !== 'staged_object')).toEqual([]);
+        // Only the intent's insert and its settling delete commit, each in a transaction of its own.
+        expect(ledger.map((change) => change.tenant_id)).toEqual([t.pool, t.pool]);
+        expect(new Set(ledger.map((change) => change.xid)).size).toBe(2);
       },
     );
 
@@ -227,7 +232,12 @@ describe.skipIf(!(await pgAvailable()))('content file atomicity', () => {
       expect(await query(t.pool, 'SELECT tenant_id FROM {schema}.file_object WHERE object_key = $1', [objectKey])).toEqual([{ tenant_id: t.pool }]);
       expect(await storage.head(CONTENT_FILES_BUCKET, objectKey)).not.toBeNull();
       expect(await stagedFor(t, objectKey)).toEqual([]);
-      const changes = await changesSince(mark);
+      const logged = await changesSince(mark);
+      // The intent's insert commits alone before the save; its delete commits with the save.
+      const [staging, settled] = logged.filter((change) => change.table === 'staged_object');
+      const changes = logged.filter((change) => change !== staging);
+      expect([staging?.tenant_id, settled?.tenant_id]).toEqual([t.pool, t.pool]);
+      expect(changes.map((change) => change.xid)).not.toContain(staging?.xid);
       expect(new Set(changes.map((change) => change.xid)).size).toBe(1);
       expect(changes.filter((change) => change.table === 'file' || change.table === 'file_object').map((change) => [change.table, change.tenant_id])).toEqual([
         ['file', t.pool],

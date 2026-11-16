@@ -569,6 +569,11 @@ const EXPECTED: Readonly<Record<string, Expected>> = {
       ),
     ],
   },
+  // jsonApiUtility.setImageURLs' getSite(siteid).getCustomImageSizeIterator(), read for strategies-content's content images as itself.
+  'GET /internal/v1/sites/:siteId/image-sizes': {
+    declared: { transport: 'service', requires: ['service:strategies-content'] },
+    probes: [probe('GET site custom image sizes', { method: 'GET', url: `/internal/v1/sites/${SITE_A}/image-sizes` }, ['service:strategies-content'])],
+  },
   // csettings.cfc:84-94: `list` is excluded from the site Admin grant, so only S2 lists sites.
   'GET /v1/sites': {
     declared: { transport: 'service', requires: ['s2'] },

@@ -4,13 +4,16 @@ import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import { validateLogRecord } from '@opt2/platform/logging';
 import {
   SpanKind,
+  SpanStatusCode,
+  activeSpanIds,
   flushTracing,
   shutdownTracing,
+  startSpan,
   type MemorySpanExporter,
   type StartTracingOptions,
 } from '@opt2/platform/tracing';
 import { GatewayUnavailableError, setServiceClientForTests } from '@/lib/gateway-client';
-import { createWebLogger, setWebLoggerForTests } from '@/lib/telemetry';
+import { createWebLogger, ensureTracing, setWebLoggerForTests } from '@/lib/telemetry';
 import type { SubmitResult } from '@/screens/registry';
 import { siteRecordFor } from '../helpers/admin-request';
 import { useTestEnv } from '../helpers/env';
@@ -100,6 +103,8 @@ beforeEach(async () => {
   };
   cleanups.push(setWebLoggerForTests(createWebLogger({ write })));
   screen.failure = undefined;
+  // Boot starts the SDK once per process; the handlers never start it.
+  await ensureTracing();
   await flushTracing();
   tracing.exporter?.reset();
 });
@@ -150,6 +155,12 @@ describe('request log line', () => {
     const [span] = spans;
     expect(span?.kind).toBe(SpanKind.SERVER);
     expect(span?.parentSpanContext?.spanId).toBe(INBOUND_SPAN_ID);
+    expect(span?.attributes).toEqual({
+      'http.request.method': 'POST',
+      'http.route': 'redirect:cusers.update',
+      'http.response.status_code': status,
+    });
+    expect(span?.status.code).toBe(status >= 500 ? SpanStatusCode.ERROR : SpanStatusCode.UNSET);
     expect(lines).toHaveLength(1);
     const [line] = lines;
     expect(validateLogRecord(line).errors).toEqual([]);
@@ -165,5 +176,23 @@ describe('request log line', () => {
       traceSampled: true,
     });
     expect(line?.error === undefined).toBe(failure === undefined);
+  });
+});
+
+describe('request span under the active Next.js server span', () => {
+  it('is its child, parents the request log line and leaves the inbound headers unread', async () => {
+    let outer: ReturnType<typeof activeSpanIds>;
+    const response = await startSpan('POST /admin-actions/[circuit]/[action]', SpanKind.SERVER, async () => {
+      outer = activeSpanIds();
+      return handleAdminAction(await updateRequest(), { circuit: 'cusers', action: 'update' });
+    });
+
+    expect(response.status).toBe(302);
+    await flushTracing();
+    const [span] = (tracing.exporter?.getFinishedSpans() ?? []).filter((finished) => finished.name === SPAN_NAME);
+    expect(span?.kind).toBe(SpanKind.INTERNAL);
+    expect(span?.parentSpanContext?.spanId).toBe(outer?.spanId);
+    expect(span?.spanContext().traceId).toBe(outer?.traceId);
+    expect(lines).toEqual([expect.objectContaining({ traceId: outer?.traceId, spanId: span?.spanContext().spanId })]);
   });
 });

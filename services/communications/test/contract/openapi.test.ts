@@ -1331,7 +1331,7 @@ const FAMILIES: ReadonlyArray<{ family: string; prefix: string; count: number; d
   },
   {
     family: 'reminder task',
-    prefix: '/internal/v1/tasks/reminders/',
+    prefix: '/internal/v1/tasks/reminders',
     count: 1,
     declaration: { transport: 'cloud-tasks', requires: ['service:tasks-invoker'], public: false },
   },

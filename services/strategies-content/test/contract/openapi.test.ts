@@ -30,6 +30,7 @@ import {
 import { FEED_AUTO_IMPORT_PATH, PUBLISH_SCHEDULED_CHANGESETS_PATH } from '../../src/jobs/index.js';
 import { mappings } from '../../src/migration/mappings/index.js';
 import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
+import { RATER_SAVE_PATH } from '../../src/routes/rater.js';
 import {
   FAKE_XID,
   SERVICE,
@@ -71,12 +72,6 @@ const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', impor
 const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch', 'head', 'options'] as const;
 const TRANSPORTS: readonly unknown[] = ['service', 'pubsub-push', 'cloud-tasks'];
-
-// The rater save carries in the inventory, but rating writes stay on legacy (domain/stats.ts) and v0002 keeps its route
-// legacy, so no route module serves it; app.test.ts and routes-registry.test.ts exempt the same operation. Serving it fails
-// the 'serves none' test below until the name is removed here.
-/** Contract operations no route serves yet. */
-const UNSERVED_OPERATIONS: readonly string[] = ['raterSaveRatePost'];
 
 /** Legacy-served, decision-list and halted actions this service must neither declare nor register. */
 const NOT_BUILT = ['processAsyncObject', 'swagger', 'declareEntity', 'undeclareEntity', 'checkSchema', 'cropimage', 'rotateimage', 'flipimage', 'upload=image'];
@@ -282,18 +277,11 @@ describe('contract document', () => {
 });
 
 describe('route parity', () => {
-  it('registers exactly the contract operations, apart from the unserved ones', () => {
+  it('registers exactly the contract operations', () => {
     const registered = registeredRoutes(full.app);
-    const declared = new Set(OPERATIONS.filter((op) => !UNSERVED_OPERATIONS.includes(op.operationId)).map((op) => op.key));
+    const declared = new Set(OPERATIONS.map((op) => op.key));
     expect([...registered.keys()].filter((key) => !declared.has(key)).sort(), 'routes registered but not in contract').toEqual([]);
     expect([...declared].filter((key) => !registered.has(key)).sort(), 'contract operations no route registers').toEqual([]);
-  });
-
-  it('serves none of the unserved operations, each of which the contract still declares', () => {
-    const registered = registeredRoutes(full.app);
-    const unserved = OPERATIONS.filter((op) => UNSERVED_OPERATIONS.includes(op.operationId));
-    expect(unserved.map((op) => op.operationId).sort()).toEqual([...UNSERVED_OPERATIONS].sort());
-    expect(unserved.filter((op) => registered.has(op.key)).map((op) => op.key)).toEqual([]);
   });
 
   it('registers every route with its contract roles, public access and transport', () => {
@@ -554,7 +542,11 @@ describe('migration objects', () => {
     t.db.respond(/FROM "content"\."file_object" WHERE "object_key" = \$1/, [objectRow()]);
     const res = await call({ method: 'POST', url: putUrl(), headers: { ...(await serviceHeaders('migration')), ...OCTET_TYPE }, payload: OBJECT_BYTES });
     expect({ status: res.statusCode, created: (res.json() as Json).created }).toEqual({ status: 200, created: false });
-    expect(paramsOf(/^INSERT INTO "content"\."(?!staged_object")/)).toEqual([]);
+    expect(paramsOf(/^INSERT INTO "content"\."(?!staged_object"|changelog")/)).toEqual([]);
+    expect(paramsOf(/^INSERT INTO "content"\."changelog"/).map((params) => [params[1], params[2]])).toEqual([
+      ['staged_object', 'insert'],
+      ['staged_object', 'delete'],
+    ]);
     expect(publicationSteps()).toEqual(['recover', 'stage', 'lock', 'claim', 'settle']);
   });
 
@@ -590,17 +582,23 @@ describe('migration objects', () => {
   it.each<[string, Json[], boolean]>([
     ['a recorded object', [objectRow()], true],
     ['a key no row records', [], false],
-  ])('deletes the bytes under %s, answering the contract DeletedFileObject with the position of any row deletion', async (_label, rows, deleted) => {
+  ])('deletes the bytes under %s, answering the contract DeletedFileObject with the position of its logged writes', async (_label, rows, deleted) => {
     await t.storage.put(CONTENT_FILES_BUCKET, key, OBJECT_BYTES, { contentType: 'image/png' });
     t.db.respond(/^DELETE FROM "content"\."file_object"/, rows);
     const res = await call({ method: 'DELETE', url: `${url}?key=${encodeURIComponent(key)}`, headers: await serviceHeaders('migration') });
     expect({ status: res.statusCode, body: res.json(), position: res.headers[WRITE_POSITION_HEADER_LC] }).toEqual({
       status: 200,
       body: { key, deleted },
-      position: deleted ? `${SERVICE}=${FAKE_XID}` : undefined,
+      position: `${SERVICE}=${FAKE_XID}`,
     });
     expect(await t.storage.head(CONTENT_FILES_BUCKET, key)).toBeNull();
     expect(publicationSteps()).toEqual(['recover', 'stage', 'lock', 'claim', 'lock', 'claim', 'settle']);
+    // The intent's insert and settling delete are logged, with the row deletion between them when a row was recorded.
+    expect(paramsOf(/^INSERT INTO "content"\."changelog"/).map((params) => [params[1], params[2]])).toEqual([
+      ['staged_object', 'insert'],
+      ...(deleted ? [['file_object', 'delete']] : []),
+      ['staged_object', 'delete'],
+    ]);
   });
 
   it('answers the contract 400 for a deletion key outside the contract pattern', async () => {
@@ -1082,6 +1080,47 @@ describe('full app responses', () => {
       verify: (res) => {
         expect(res.json()).toEqual({ saved: true, errors: {}, redirect: { circuit: 'cCategory', action: 'list', params: [['siteid', SITE_A]] } });
         expect(full.client.csrfConsumes).toHaveLength(1);
+      },
+    },
+    {
+      name: 'saves a rating through the rater and answers the getAvgRating query as Mura.json encodes it, with its write position',
+      method: 'POST',
+      url: RATER_SAVE_PATH,
+      headers: async () => ({ ...(await visitor()), ...FORM_TYPE }),
+      payload: `contentID=${PAGE_ONE}&siteID=${SITE_A}&userID=${USER_ID}&rate=4`,
+      setup: () => full.db.respond(/ AS theavg, count\(r\.contentid\)/, [{ theavg: 4, thecount: 1, upvotes: null, downvotes: null }]),
+      status: 200,
+      verify: (res) => {
+        // Own oracle, one rating of 4.
+        expect({ type: res.headers['content-type'], body: res.body, position: res.headers[WRITE_POSITION_HEADER_LC] }).toEqual({
+          type: 'text/html;charset=UTF-8',
+          body: '{"recordcount":1,"columnlist":"DOWNVOTES,THEAVG,THECOUNT,UPVOTES","data":{"DOWNVOTES":[""],"THEAVG":[4],"THECOUNT":[1],"UPVOTES":[""]}}',
+          position: `${SERVICE}=${FAKE_XID}`,
+        });
+      },
+    },
+    {
+      name: 'refuses a rater siteID other than the token site with the contract 403, writing nothing',
+      method: 'POST',
+      url: RATER_SAVE_PATH,
+      headers: async () => ({ ...(await visitor()), ...FORM_TYPE }),
+      payload: `contentID=${PAGE_ONE}&siteID=${SITE_B}&userID=${USER_ID}&rate=4`,
+      status: 403,
+      verify: () => expect(full.db.writes()).toEqual([]),
+    },
+    {
+      name: 'answers a non-numeric rater rate with the ColdFusion error page, writing nothing',
+      method: 'POST',
+      url: RATER_SAVE_PATH,
+      headers: async () => ({ ...(await visitor()), ...FORM_TYPE }),
+      payload: `contentID=${PAGE_ONE}&siteID=${SITE_A}&userID=${USER_ID}&rate=abc`,
+      status: 500,
+      verify: (res) => {
+        expect({ type: res.headers['content-type'], message: res.statusMessage, writes: full.db.writes() }).toEqual({
+          type: 'text/html;charset=UTF-8',
+          message: 'An Error Occurred',
+          writes: [],
+        });
       },
     },
   ];

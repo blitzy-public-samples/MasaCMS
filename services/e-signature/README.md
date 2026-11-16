@@ -11,7 +11,7 @@ Contract: [`contracts/openapi.yaml`](contracts/openapi.yaml). Behaviour-to-code-
 
 - **Signature requests.** A signer uploads a document for one named signer of the site. The request starts `PENDING`; the document's SHA-256 is recorded with it.
 - **Typed-name signing.** The designated signer signs by typing their name. The request becomes `SIGNED`, and a request is signed at most once.
-- **Audit trail.** Every create and sign appends an entry to the request's audit chain. Each entry's hash covers the previous entry's hash, so the trail is append-only in effect: changing, removing, reordering or inserting an entry breaks the chain.
+- **Audit trail.** Every create and sign appends an entry to the request's audit chain. Each entry's hash covers the previous entry's hash and the entry's sequence number, action, actor, detail and time, so changing any of those, reordering or inserting an entry, or removing one before the end, breaks a link or hash that verification recomputes. Verification establishes that consistency only: removing entries from the end, down to an empty chain, leaves a valid prefix, and because the hashes are unkeyed SHA-256, anyone who can write the trail can recompute a consistent chain. Completeness and authenticity need an independent anchor, such as an entry count or last hash held elsewhere; neither the fixture nor the service keeps one.
 - **Verification.** Anyone allowed to read a request's audit can recompute its stored chain, or a copy they hold, and learn whether it is intact and where it first breaks.
 
 | | |
@@ -45,7 +45,7 @@ Each audit entry stores `prev_hash` and `entry_hash` (32 bytes each).
 - **Entry hash.** `entry_hash = SHA-256(prev_hash ‖ UTF-16LE(canonical))`, identical to `HASHBYTES('SHA2_256', @prev_hash + CAST(@canonical AS varbinary(max)))` on the procedure's `nvarchar` canonical value.
 - **Actions.** `created` (detail: the document SHA-256) and `signed` (detail: the typed name).
 - **Appended row.** `usp_audit_append` returns `entry_id, request_id, seq, action, actor_user_id, detail, at, prev_hash, entry_hash, prev_hash_hex, entry_hash_hex` (the last two lowercase hex). The audit routes answer `entry_id, request_id, seq, action, actor_user_id, detail, at, prev_hash, entry_hash`, with `at` as the hashed text and both hashes as lowercase hex, so their items can be posted back to verify unchanged.
-- **Verify.** Recomputes the chain and answers `{valid, entries, brokenat}`. An entry breaks on its position (`seq` differs from its place in the chain), its link (`prev_hash` differs from the previous `entry_hash`, or genesis) or its own hash. `entries` counts every entry; `brokenat` is the `seq` of the first broken entry in chain order, and `0` when `valid`. An empty chain is valid. The stored chain is read in `seq` order; a supplied copy is checked in array order against the stored request id.
+- **Verify.** Recomputes the chain and answers `{valid, entries, brokenat}`. An entry breaks on its position (`seq` differs from its place in the chain), its link (`prev_hash` differs from the previous `entry_hash`, or genesis) or its own hash. `entries` counts every entry; `brokenat` is the `seq` of the first broken entry in chain order, and `0` when `valid`. An empty chain is valid. No expected length or tail is held, so a truncated chain, being an intact prefix, verifies valid, as the fixture's does. The stored chain is read in `seq` order; a supplied copy is checked in array order against the stored request id.
 
 ## Roles
 
@@ -101,7 +101,7 @@ Served under `/legacy-fixtures/cfml/api.cfm/esignature` in the Masa envelope (`m
 
 ### OPT-2 screens
 
-`/v1/esignature/**` serves the screens `web/` renders at `/opt2/admin/e-signature/{requests,request,audit,verify}` and the actions `/opt2/admin-actions/e-signature/{create-request,sign,verify}`. The list shows every request of the site; for one request's detail, audit and verify, an auditor may open any request and a signer only those addressed to them.
+`/v1/esignature/**` serves the screens `web/` renders at `/opt2/admin/e-signature/{requests,request,audit,verify}` and the actions `/opt2/admin-actions/e-signature/{create-request,sign,verify}`. The list shows every request of the site; for one request's detail, audit and verify, an auditor may open any request and a signer only those addressed to them. Each `POST` consumes a CSRF pair through identity after the role and site checks, as the fixture does: the context is empty for the create and the request `{id}` as sent for sign and supplied verify.
 
 | Method | Path | Operation | Requires |
 |---|---|---|---|
@@ -127,7 +127,7 @@ Served under `/legacy-fixtures/cfml/api.cfm/esignature` in the Masa envelope (`m
 ## Other services
 
 - **People.** Whether a signer exists as a Type 2 user of the site's public or private user pool comes only from people's `readPoolUser` (`GET /internal/v1/users/pool-user`, [`services/people/contracts/openapi.yaml`](../people/contracts/openapi.yaml)), through [`src/legacy/people-client.ts`](src/legacy/people-client.ts) and the generated client `src/generated/clients/people.ts`. It stands in for the fixture's `userManager.read`. E-signature never reads another schema.
-- **Identity.** Validates and consumes the CSRF token of each fixture `POST`.
+- **Identity.** Validates and consumes the CSRF token of each fixture `POST` and `/v1` write.
 
 ## Files
 
@@ -156,5 +156,7 @@ The GS-ES scenarios in `harness/golden/catalogue.yaml` are captured from the fix
 |---|---|
 | GS-ES-01 | Typed-name signing: create, sign, a repeated sign (409 `already-signed`), list |
 | GS-ES-02 | Audit chain; verification of the stored chain and of an intact copy; tamper detection on a corrupted copy |
+
+Chain hashes cover the request id and `at`, which differ on every run, so the comparator checks each `entry_hash` against the procedure's formula over its own entry and then replaces both hashes with scenario ordinals under the `chain-hash` rule of `harness/golden/normalise.yaml`; an entry that fails the check reads `<hash:mismatch>` and stays a difference.
 
 Each behaviour's code and test are listed in [`TRACEABILITY.md`](TRACEABILITY.md).

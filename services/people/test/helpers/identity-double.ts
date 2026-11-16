@@ -311,7 +311,7 @@ const JSON_CONTENT_TYPE = 'application/json; charset=utf-8';
 /** Identity's user-closed wait (`USER_CLOSED_WAIT_MS`). */
 const USER_CLOSED_WAIT_MS = 10_000;
 const DEFAULT_XID_START = 1000n;
-/** Default and largest `limit` of `listGroups`. */
+/** Default and largest `limit` of `listGroups` and `listSiteGroupsV2`. */
 const GROUP_PAGE_LIMIT = 1000;
 /** Width of the legacy `tusers.UserName` column, which identity's prepare enforces. */
 const USERNAME_WIDTH = 255;
@@ -504,6 +504,11 @@ function byPermThenName(a: DoubleGroup, b: DoubleGroup): number {
   if (a.Perm !== b.Perm) return a.Perm === null ? 1 : b.Perm === null ? -1 : b.Perm - a.Perm;
   if (a.GroupName === null || b.GroupName === null) return a.GroupName === b.GroupName ? 0 : a.GroupName === null ? -1 : 1;
   return a.GroupName.toLowerCase().localeCompare(b.GroupName.toLowerCase());
+}
+
+/** A group in the contract's `SiteGroup` columns, without the `GroupListItem` ones. */
+function siteGroupRow({ UserID, GroupName, SiteID, isPublic, Perm }: DoubleGroup): Record<string, unknown> {
+  return { UserID, GroupName, SiteID, isPublic, Perm };
 }
 
 const REGISTRY = registryPayloads();
@@ -899,14 +904,15 @@ export function createIdentityDouble(options: IdentityDoubleOptions = {}): Ident
     },
 
     listSiteGroups(call) {
-      const items = siteGroups(call.query.siteid, call.query.ispublic === '1' ? 1 : 0).map(({ UserID, GroupName, SiteID, isPublic, Perm }) => ({
-        UserID,
-        GroupName,
-        SiteID,
-        isPublic,
-        Perm,
-      }));
-      return json({ items });
+      return json({ items: siteGroups(call.query.siteid, call.query.ispublic === '1' ? 1 : 0).map(siteGroupRow) });
+    },
+
+    listSiteGroupsV2(call) {
+      const listed = siteGroups(call.query.siteid, call.query.ispublic === '1' ? 1 : 0);
+      const offset = Number(call.query.offset ?? '0');
+      const page = listed.slice(offset, offset + Number(call.query.limit ?? String(GROUP_PAGE_LIMIT)));
+      const next = offset + page.length;
+      return json({ items: page.map(siteGroupRow), total: listed.length, nextOffset: next < listed.length ? next : null });
     },
 
     listGroups(call) {

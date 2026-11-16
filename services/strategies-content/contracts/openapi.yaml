@@ -10,7 +10,7 @@ info:
 servers:
   - url: http://127.0.0.1:8114
     description: local
-x-opt2-calls: [identity]
+x-opt2-calls: [identity, programs-sites]
 x-opt2-entity-access:
   content:
     read: public
@@ -2219,9 +2219,13 @@ paths:
                 $ref: '#/components/schemas/LegacyText'
         '401':
           $ref: '#/components/responses/Unauthorized'
+          description: No user token accompanies the call, so it has no tenant.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The `siteID` the form binds differs from the user token's site.
         '500':
           $ref: '#/components/responses/ErrorPage'
-          description: A missing `contentID`, `siteID`, `userID` or `rate` form field.
+          description: The ColdFusion error page of a save legacy cannot run, with nothing written. A `contentID`, `siteID`, `userID` or `rate` form field is missing, or an id is empty. The `rate` is not numeric, or SQL Server cannot store it as an `int` (out of range, or a decimal of more than 38 digits).
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/content/tree:

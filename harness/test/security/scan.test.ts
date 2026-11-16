@@ -3,9 +3,10 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type Mock } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import { runCli, UsageError } from '../../src/lib/cli.js';
+import { defaultRunner } from '../../src/lib/git.js';
 import { REPO_ROOT } from '../../src/lib/paths.js';
 import { readPin } from '../../src/lib/pin.js';
 import {
@@ -31,6 +32,7 @@ import {
   runSecurityScan,
   severityOf,
   type Advisory,
+  type ScanDeps,
   type ScanResult,
   type SecretFinding,
   type Severity,
@@ -159,8 +161,8 @@ const SAMPLE_ITEMS: SecretFinding[] = [
   { ruleId: 'generic-api-key', file: 'services/people/src/config.ts', line: 12 },
 ];
 
-/** Scripted answer of one tool call: an exit, a rejection, or a function of the call's arguments. */
-type Step = ToolResult | { reject: unknown } | ((args: readonly string[]) => Promise<ToolResult>);
+/** Scripted answer of one tool call: an exit, a rejection, or a function of the call's arguments and directory. */
+type Step = ToolResult | { reject: unknown } | ((args: readonly string[], opts: { cwd: string }) => Promise<ToolResult>);
 
 interface Script {
   osvVersion?: Step;
@@ -245,12 +247,12 @@ const CLEAN_SCRIPT: Required<Script> = {
 /** Fake runner answering the two version checks and the two scans from `script`, defaulting to a clean run. */
 function scriptedRunner(script: Script = {}) {
   const steps = { ...CLEAN_SCRIPT, ...script };
-  return vi.fn<ToolRunner>(async (command, args) => {
+  return vi.fn<ToolRunner>(async (command, args, opts) => {
     let step: Step;
     if (command === 'osv-scanner') step = args[0] === '--version' ? steps.osvVersion : steps.osvScan;
     else if (command === 'gitleaks') step = args[0] === 'version' ? steps.gitleaksVersion : steps.gitleaksScan;
     else throw new Error(`unexpected command ${command}`);
-    if (typeof step === 'function') return step(args);
+    if (typeof step === 'function') return step(args, opts);
     if ('reject' in step) throw step.reject;
     return step;
   });
@@ -276,20 +278,44 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+type Extract = NonNullable<ScanDeps['extract']>;
+
+/** Extractor standing in for `git archive`: each call makes a new empty tree directory under the test root. */
+function fakeExtractor(): Mock<Extract> {
+  return vi.fn<Extract>(() => mkdtemp(path.join(root, 'tree-')));
+}
+
+/** Directory the first call of `extract` resolved, or undefined. */
+function extractedTree(extract: Mock<Extract>): string | undefined {
+  const settled = extract.mock.settledResults[0];
+  return settled?.type === 'fulfilled' ? settled.value : undefined;
+}
+
+/** Real git in `cwd` with a placeholder identity. */
+async function realGit(cwd: string, ...args: string[]): Promise<void> {
+  const config = ['user.name=OPT2 Test', 'user.email=opt2-test@example.invalid', 'commit.gpgsign=false', 'init.defaultBranch=main'];
+  await defaultRunner('git', [...config.flatMap((setting) => ['-c', setting]), ...args], { cwd });
+}
+
 interface ScanRun {
   result: ScanResult;
   run: ReturnType<typeof scriptedRunner>;
+  extract: Mock<Extract>;
   osvReport: string;
   gitleaksReport: string;
 }
 
-/** Runs the scan with a fake runner against a fresh state directory (or `state`) and the fixture repository. */
-async function scan(script: Script = {}, opts: { repoRoot?: string; state?: string } = {}): Promise<ScanRun> {
+/** Runs the scan with a fake runner and extractor (or `extract`) against a fresh state directory (or `state`) and the fixture repository. */
+async function scan(
+  script: Script = {},
+  opts: { repoRoot?: string; state?: string; extract?: Mock<Extract> } = {},
+): Promise<ScanRun> {
   const state = opts.state ?? (await mkdtemp(path.join(root, 'state-')));
   const run = scriptedRunner(script);
-  const result = await runSecurityScan({ run, env: { OPT2_STATE_DIR: state }, repoRoot: opts.repoRoot ?? repo });
+  const extract = opts.extract ?? fakeExtractor();
+  const result = await runSecurityScan({ run, extract, env: { OPT2_STATE_DIR: state }, repoRoot: opts.repoRoot ?? repo });
   const out = path.join(state, 'security');
-  return { result, run, osvReport: path.join(out, 'osv.json'), gitleaksReport: path.join(out, 'gitleaks.json') };
+  return { result, run, extract, osvReport: path.join(out, 'osv.json'), gitleaksReport: path.join(out, 'gitleaks.json') };
 }
 
 /** summary.json as written, split into the summary body and its report stamp. */
@@ -741,13 +767,14 @@ describe('parseGitleaksReport', () => {
 });
 
 describe('runSecurityScan', () => {
-  it('checks both versions, then scans from the repository root and writes a clean summary', async () => {
-    const { result, run, osvReport, gitleaksReport } = await scan();
+  it('checks both versions, scans dependencies from the repository root and secrets in its HEAD extraction, and writes a clean summary', async () => {
+    const { result, run, extract, osvReport, gitleaksReport } = await scan();
+    expect(extract.mock.calls).toEqual([['HEAD', repo]]);
     expect(run.mock.calls).toEqual([
       ['osv-scanner', ['--version'], { cwd: repo, timeoutMs: VERSION_PROBE_TIMEOUT_MS }],
       ['gitleaks', ['version'], { cwd: repo, timeoutMs: VERSION_PROBE_TIMEOUT_MS }],
       ['osv-scanner', osvArgs(), { cwd: repo, timeoutMs: SCAN_TIMEOUT_MS }],
-      ['gitleaks', gitleaksArgs(gitleaksReport), { cwd: repo, timeoutMs: SCAN_TIMEOUT_MS }],
+      ['gitleaks', gitleaksArgs(gitleaksReport), { cwd: extractedTree(extract), timeoutMs: SCAN_TIMEOUT_MS }],
     ]);
     expect(result.code).toBe(0);
     expect(result.summary).toEqual({
@@ -769,6 +796,74 @@ describe('runSecurityScan', () => {
     expect(written.body).toEqual(result.summary);
     expect(written.sourceSha).toBe(PIN.sha);
     expect(Number.isNaN(Date.parse(written.generatedAt))).toBe(false);
+  });
+
+  it('scans a git archive of HEAD under os.tmpdir(), never ignored, untracked or uncommitted files, and removes it', async () => {
+    const checkout = await mkdtemp(path.join(root, 'checkout-'));
+    for (const lockfile of OPT2_LOCKFILES) {
+      await mkdir(path.dirname(path.join(checkout, lockfile)), { recursive: true });
+      await writeFile(path.join(checkout, lockfile), '{}\n', 'utf8');
+    }
+    await writeFile(path.join(checkout, '.gitignore'), 'server.json\n', 'utf8');
+    await writeFile(path.join(checkout, 'committed.txt'), 'committed\n', 'utf8');
+    await realGit(checkout, 'init', '-q');
+    await realGit(checkout, 'add', '-A');
+    await realGit(checkout, 'commit', '-q', '-m', 'Fixture commit');
+    await writeFile(path.join(checkout, 'server.json'), '{"name":"ignored"}\n', 'utf8');
+    await writeFile(path.join(checkout, 'untracked.txt'), 'untracked\n', 'utf8');
+    await writeFile(path.join(checkout, 'committed.txt'), 'uncommitted\n', 'utf8');
+    let scanned: { cwd: string; files: string[]; committed: string } | undefined;
+    const run = scriptedRunner({
+      gitleaksScan: async (args, { cwd }) => {
+        const entries = await readdir(cwd, { recursive: true, withFileTypes: true });
+        const files = entries
+          .filter((entry) => entry.isFile())
+          .map((entry) => path.relative(cwd, path.join(entry.parentPath, entry.name)));
+        scanned = { cwd, files: files.sort(), committed: await readFile(path.join(cwd, 'committed.txt'), 'utf8') };
+        await writeFile(reportPathOf(args), '[]', 'utf8');
+        return exited(0);
+      },
+    });
+    const state = await mkdtemp(path.join(root, 'state-'));
+    const result = await runSecurityScan({ run, env: { OPT2_STATE_DIR: state }, repoRoot: checkout });
+    expect(result.summary.error).toBeUndefined();
+    expect(result.code).toBe(0);
+    expect(scanned?.files).toEqual(['.gitignore', 'committed.txt', ...OPT2_LOCKFILES].sort());
+    expect(scanned?.committed).toBe('committed\n');
+    expect(path.dirname(scanned?.cwd ?? '')).toBe(os.tmpdir());
+    expect(path.basename(scanned?.cwd ?? '')).toMatch(/^opt2-archive-/);
+    expect(existsSync(scanned?.cwd ?? '')).toBe(false);
+  });
+
+  it.each<[string, Step]>([
+    ['writes a clean report', gitleaksWrites([], 0)],
+    ['reports findings', gitleaksWrites(GITLEAKS_SAMPLE, 1)],
+    ['exits 2', exited(2, '', 'FTL bad config\n')],
+    ['cannot be executed', { reject: errno('EACCES', 'gitleaks') }],
+    ['times out', { reject: timedOut('gitleaks') }],
+  ])('removes the HEAD extraction gitleaks ran in once gitleaks %s', async (_label, gitleaksScan) => {
+    const { run, extract } = await scan({ gitleaksScan });
+    const tree = extractedTree(extract);
+    expect(extract).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls.at(-1)).toEqual(['gitleaks', expect.arrayContaining(['dir', '.']), { cwd: tree, timeoutMs: SCAN_TIMEOUT_MS }]);
+    expect(existsSync(tree ?? '')).toBe(false);
+  });
+
+  it('reports an error and runs no gitleaks scan when HEAD cannot be extracted, keeping the osv scan', async () => {
+    const extract = vi.fn<Extract>(async () => {
+      throw new Error('fatal: not a git repository');
+    });
+    const { result, run, gitleaksReport } = await scan({ osvScan: osvPrints(osvSample(repo), 1) }, { extract });
+    expect(run.mock.calls.map(([command, args]) => [command, args[0]])).toEqual([
+      ['osv-scanner', '--version'],
+      ['gitleaks', 'version'],
+      ['osv-scanner', 'scan'],
+    ]);
+    expect(result.code).toBe(2);
+    expect(result.summary).toMatchObject({ verdict: 'error', exitCode: 2, error: 'git archive HEAD: fatal: not a git repository' });
+    expect(result.summary.dependencies.failing.flatMap((advisory) => advisory.ids)).toEqual(['OSV-FIXTURE-0001']);
+    expect(result.summary.secrets.findings).toBe(0);
+    expect(existsSync(gitleaksReport)).toBe(false);
   });
 
   it('counts every advisory, fails only production HIGH/CRITICAL ones and reports each secret finding', async () => {
@@ -896,8 +991,9 @@ describe('runSecurityScan', () => {
       { osvScanner: null, gitleaks: null },
     ],
   ])('stops before scanning when %s', async (_label, script, error, tools) => {
-    const { result, run, osvReport, gitleaksReport } = await scan(script);
+    const { result, run, extract, osvReport, gitleaksReport } = await scan(script);
     expect(run).toHaveBeenCalledTimes(2);
+    expect(extract).not.toHaveBeenCalled();
     expect(result.code).toBe(2);
     expect(result.summary).toMatchObject({ tools, verdict: 'error', exitCode: 2, error });
     expect(result.summary.dependencies.failing).toEqual([]);
@@ -1045,14 +1141,16 @@ describe('runSecurityScan', () => {
     const state = await mkdtemp(path.join(root, 'state-'));
     vi.stubEnv('OPT2_STATE_DIR', state);
     const run = scriptedRunner();
-    const result = await runSecurityScan({ run });
+    const extract = fakeExtractor();
+    const result = await runSecurityScan({ run, extract });
     expect(result.code).toBe(0);
     expect(result.summaryPath).toBe(path.join(state, 'security', 'summary.json'));
+    expect(extract.mock.calls).toEqual([['HEAD', REPO_ROOT]]);
     expect(run.mock.calls.map((call) => call[2])).toEqual([
       { cwd: REPO_ROOT, timeoutMs: VERSION_PROBE_TIMEOUT_MS },
       { cwd: REPO_ROOT, timeoutMs: VERSION_PROBE_TIMEOUT_MS },
       { cwd: REPO_ROOT, timeoutMs: SCAN_TIMEOUT_MS },
-      { cwd: REPO_ROOT, timeoutMs: SCAN_TIMEOUT_MS },
+      { cwd: extractedTree(extract), timeoutMs: SCAN_TIMEOUT_MS },
     ]);
   });
 
@@ -1084,7 +1182,7 @@ describe('runSecurityScan', () => {
     const state = await mkdtemp(path.join(root, 'state-'));
     const run: ToolRunner = (command, args, opts) => defaultToolRunner(path.join(bin, command), args, { ...opts, timeoutMs: 2_000 });
     const started = Date.now();
-    const result = await runSecurityScan({ run, env: { OPT2_STATE_DIR: state }, repoRoot: repo });
+    const result = await runSecurityScan({ run, extract: fakeExtractor(), env: { OPT2_STATE_DIR: state }, repoRoot: repo });
     expect(Date.now() - started).toBeLessThan(15_000);
     expect(result.code).toBe(2);
     expect(result.summary).toMatchObject({
@@ -1102,7 +1200,7 @@ describe('main', () => {
   it('returns the scan code and the summary line fields', async () => {
     const state = await mkdtemp(path.join(root, 'state-'));
     const run = scriptedRunner({ osvScan: osvPrints(osvSample(repo), 1), gitleaksScan: gitleaksWrites(GITLEAKS_SAMPLE, 1) });
-    const outcome = await main([], { run, env: { OPT2_STATE_DIR: state }, repoRoot: repo });
+    const outcome = await main([], { run, extract: fakeExtractor(), env: { OPT2_STATE_DIR: state }, repoRoot: repo });
     expect(outcome).toEqual({
       code: 1,
       summary: {

@@ -124,7 +124,7 @@ function planAdoption(input: AdoptedTaskInput, now: Date, serviceUrls: Record<st
       sourceId: parts.surveyId,
       n: parts.n ?? null,
       scheduleTime: immediate ? now : runAt,
-      targetRoute: (scheduledTaskId) => taskTarget({ queue, surveyId: parts.surveyId, scheduledTaskId }, serviceUrls).route,
+      targetRoute: taskTarget(queue, serviceUrls).route,
       scheduleVersion: input.scheduleVersion,
     },
   };

@@ -114,8 +114,11 @@ export interface MemoryGatewayDb extends TenantDb {
   readonly queries: RecordedQuery[];
   /** Empties `queries`, drops every override and resets the tables to the seeded state. */
   clear(): void;
-  /** Answers matching statements ahead of the interpreter, first-installed first; BEGIN, COMMIT and ROLLBACK are never overridden. */
-  respond(matcher: QueryMatcher, result: QueryResponse): void;
+  /**
+   * Answers matching statements ahead of the interpreter, first-installed first; BEGIN, COMMIT and ROLLBACK are never overridden.
+   * Returns a function that removes this override.
+   */
+  respond(matcher: QueryMatcher, result: QueryResponse): () => void;
   /** Commits another instance's heartbeat: upserts its `instance` row, keeping `started_at`. */
   heartbeat(instanceId: string, seenEpoch: number, at?: Date): void;
   /** Commits an activation of `tableVersion`; `previous` defaults to the active version and `epoch` to the current one plus 1. */
@@ -1221,7 +1224,12 @@ export function createMemoryGatewayDb(seed: MemoryGatewaySeed = {}): MemoryGatew
       restoreInto(tables, seeded);
     },
     respond(matcher, result) {
-      overrides.push({ matcher, result });
+      const override: Override = { matcher, result };
+      overrides.push(override);
+      return () => {
+        const index = overrides.indexOf(override);
+        if (index >= 0) overrides.splice(index, 1);
+      };
     },
     heartbeat(instanceId, seenEpoch, at = new Date()) {
       const seen = String(bigintText(seenEpoch));

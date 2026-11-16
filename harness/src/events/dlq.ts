@@ -3,10 +3,10 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { PubSub, type Message } from '@google-cloud/pubsub';
 import {
   DEAD_LETTER_REASONS,
   DEAD_LETTER_REASON_ATTRIBUTE,
+  PubSub,
   compileTopicSchema,
   createPublisher,
   decodeEnvelopeData,
@@ -21,6 +21,7 @@ import {
   topicSchemaRelativePath,
   type DeadLetterReason,
   type EventEnvelope,
+  type Message,
   type RawMessage,
   type TopicValidator,
 } from '@opt2/platform/events';

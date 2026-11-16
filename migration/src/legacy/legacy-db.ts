@@ -1,6 +1,8 @@
 import sql from 'mssql';
 import type { ConnectionPool, Transaction, config as MssqlConfig } from 'mssql';
 
+import { serializeError, type Logger } from '@opt2/platform/logging';
+
 import type { MigrationEnv } from '../env.js';
 
 /** Settings the port connects with: the Masa datasource account, so unqualified Masa table names resolve as for Masa. */
@@ -32,11 +34,15 @@ function isAlreadyEnded(error: unknown): boolean {
   return error instanceof sql.TransactionError && (error.code === 'EABORT' || error.code === 'ENOTBEGUN');
 }
 
-/** Creates the legacy database port; `options.createPool` replaces the driver's pool constructor, for example in tests. */
+/**
+ * Creates the legacy database port; `options.logger` records every error a pool emits, and `options.createPool` replaces
+ * the driver's pool constructor, for example in tests.
+ */
 export function createLegacyDb(
   env: LegacyDbEnv,
-  options: { createPool?: (config: MssqlConfig) => ConnectionPool } = {},
+  options: { logger: Pick<Logger, 'error'>; createPool?: (config: MssqlConfig) => ConnectionPool },
 ): LegacyDb {
+  const { logger } = options;
   const createPool = options.createPool ?? ((config: MssqlConfig) => new sql.ConnectionPool(config));
   const pools = new Map<string, Promise<ConnectionPool>>();
 
@@ -53,7 +59,17 @@ export function createLegacyDb(
   const database = (name: string): Promise<ConnectionPool> => {
     const cached = pools.get(name);
     if (cached !== undefined) return cached;
-    const connecting = (async () => createPool(poolConfig(name)).connect())().catch((error: unknown) => {
+    const connecting = (async () => {
+      const pool = createPool(poolConfig(name));
+      // The driver emits connection and acquire failures on the pool, and an 'error' event without a listener ends the process.
+      pool.on('error', (error: unknown) => {
+        logger.error(
+          { error: serializeError(error) },
+          `SQL Server pool error on database ${name} at ${env.MURA_DBHOST}:${String(env.MURA_DBPORT)}`,
+        );
+      });
+      return pool.connect();
+    })().catch((error: unknown) => {
       // A failed connect is forgotten, so the next call opens a fresh pool.
       if (pools.get(name) === connecting) pools.delete(name);
       throw error;

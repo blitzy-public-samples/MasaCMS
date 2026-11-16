@@ -43,6 +43,7 @@ const CONTRACT_PATHS = [
   '/internal/v1/accounts:username-candidates',
   '/internal/v1/accounts:memberships',
   '/internal/v1/groups',
+  '/internal/v2/groups',
 ];
 const CANDIDATES = { publicPool: false, pattern: 'a%', limit: 10 };
 /** The bulk routes whose body lists one or more distinct CF UUIDs; lookupMemberships at most 1000. */
@@ -245,8 +246,8 @@ describe('route declarations', () => {
           requires: operation['x-opt2-requires'],
         })),
     );
-    expect(expected).toHaveLength(9);
-    expect(declared).toHaveLength(9);
+    expect(expected).toHaveLength(10);
+    expect(declared).toHaveLength(10);
     expect(declared).toEqual(expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))));
   });
 });
@@ -262,6 +263,7 @@ describe('auth denials', () => {
     ['POST', '/internal/v1/accounts:username-candidates', CANDIDATES],
     ['POST', '/internal/v1/accounts:memberships', { userIds: [ACTIVE] }],
     ['GET', '/internal/v1/groups?ispublic=0', undefined],
+    ['GET', '/internal/v2/groups?ispublic=0', undefined],
   ] as const)('refuse %s %s to callers other than people and to people without a user token', async (method, url, payload) => {
     for (const caller of ['gateway', 'strategies-content', 'identity']) {
       expect((await send(method, url, await headersFor(caller), payload)).statusCode).toBe(403);
@@ -280,6 +282,7 @@ describe('auth denials', () => {
     ['POST', '/internal/v1/accounts:username-candidates?siteid=umbrella', CANDIDATES],
     ['POST', '/internal/v1/accounts:memberships?siteid=umbrella', { userIds: [ACTIVE] }],
     ['GET', '/internal/v1/groups?siteid=tenant-b&ispublic=0', undefined],
+    ['GET', '/internal/v2/groups?siteid=tenant-b&ispublic=0', undefined],
   ] as const)('answer %s %s, whose siteid is not the token site, with 403', async (method, url, payload) => {
     const res = await send(method, url, await headersFor('people', 'tenant-a', [Roles.systemUser, Roles.s2]), payload);
 
@@ -353,7 +356,11 @@ describe('auth denials', () => {
     expect(res.json()).toMatchObject({ error: { message: 'Invalid parameters' } });
   });
 
-  it.each(['/internal/v1/groups', '/internal/v1/groups?ispublic=2', '/internal/v1/groups?ispublic=0&siteid=', '/internal/v1/accounts/not-a-uuid/memberships'])(
+  it.each([
+    ...['/internal/v1/groups', '/internal/v2/groups'].flatMap((url) => [url, `${url}?ispublic=2`, `${url}?ispublic=0&siteid=`]),
+    ...['limit=1001', 'limit=0', 'offset=-1'].map((window) => `/internal/v2/groups?ispublic=0&${window}`),
+    '/internal/v1/accounts/not-a-uuid/memberships',
+  ])(
     'answer %s with the legacy 400',
     async (url) => {
       expect((await send('GET', url, await headersFor('people'))).statusCode).toBe(400);
@@ -565,6 +572,21 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
     if (isPublic === 0) expect(items[0]?.UserID).toBe(GROUP);
   });
 
+  it.each([
+    ['ispublic=0', ['Admin', 'Authors', 'editors'], 3, null],
+    ['ispublic=1', ['Members'], 1, null],
+    ['ispublic=0&offset=0&limit=2', ['Admin', 'Authors'], 3, 2],
+    ['ispublic=0&offset=2&limit=2', ['editors'], 3, null],
+    ['ispublic=0&offset=1', ['Authors', 'editors'], 3, null],
+    ['ispublic=0&offset=3&limit=1', [], 3, null],
+    ['ispublic=0&offset=50&limit=1000', [], 3, null],
+  ])('pages listSiteGroupsV2 at %s in Perm-then-name order with the pool total and the next offset', async (query, names, total, nextOffset) => {
+    const res = await send('GET', `/internal/v2/groups?${query}`, await headersFor('people'));
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ items: names.map((GroupName) => expect.objectContaining({ GroupName })), total, nextOffset });
+  });
+
   it('answers the legacy 503 while an account operation keeps the user closed past the wait', async () => {
     const op = await gated('tenant-a', (tx) => repo.insertAccountOperation(tx, { user_id: ACTIVE, kind: 'update', state: 'committed' }));
     try {
@@ -593,6 +615,7 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
     ['identity.user_account', 'GET', `/internal/v1/accounts/${ACTIVE}`, undefined],
     ['identity.credential', 'POST', '/internal/v1/accounts:lookup', { userIds: [ACTIVE] }],
     ['identity.group_account', 'GET', '/internal/v1/groups?ispublic=0', undefined],
+    ['identity.group_account', 'GET', '/internal/v2/groups?ispublic=0', undefined],
     ['identity.membership', 'POST', '/internal/v1/accounts:memberships', { userIds: [ACTIVE] }],
     ['identity.login_state', 'POST', '/internal/v1/accounts:lookup-all-sites', { userIds: [ACTIVE] }],
     ['identity.user_account', 'POST', '/internal/v1/accounts:count', { scope: 'tenant' }],
@@ -603,5 +626,28 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
     await adminQuery("UPDATE $schema.unit_gate SET phase = 'executing' WHERE unit = $1", [unit]);
 
     expect((await send(method, url, await headersFor('people', 'tenant-a', [Roles.systemUser, Roles.s2]), payload)).statusCode).toBe(503);
+  });
+
+  it('answers a pool of more groups than the largest page whole on listSiteGroups and page by page on listSiteGroupsV2', async () => {
+    const names = Array.from({ length: 1001 }, (_, n) => `Bulk ${String(n).padStart(4, '0')}`);
+    await registerSite('bulk', 'bulk', 'bulk');
+    await gated('bulk', async (tx) => {
+      for (const groupname of names) await repo.insertGroup(tx, groupInput({ groupname, siteid: 'bulk' }), null);
+    });
+    const headers = await headersFor('people', 'bulk');
+    const groupNames = (body: { items: Array<{ GroupName: string | null }> }): Array<string | null> => body.items.map((group) => group.GroupName);
+
+    const whole = (await send('GET', '/internal/v1/groups?ispublic=0', headers)).json() as { items: Array<{ GroupName: string | null }> };
+    expect(Object.keys(whole)).toEqual(['items']);
+    expect(groupNames(whole)).toEqual(names);
+
+    type Page = { items: Array<{ GroupName: string | null }>; total: number; nextOffset: number | null };
+    const first = (await send('GET', '/internal/v2/groups?ispublic=0', headers)).json() as Page;
+    const last = (await send('GET', `/internal/v2/groups?ispublic=0&offset=${String(first.nextOffset)}`, headers)).json() as Page;
+    expect([first, last].map(({ items, total, nextOffset }) => [items.length, total, nextOffset])).toEqual([
+      [1000, 1001, 1000],
+      [1, 1001, null],
+    ]);
+    expect([...groupNames(first), ...groupNames(last)]).toEqual(names);
   });
 });

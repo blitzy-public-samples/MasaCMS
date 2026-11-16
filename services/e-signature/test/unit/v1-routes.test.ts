@@ -17,6 +17,7 @@ import { auditRow, requestRow, verifyResult, type FixtureAuditEntry, type Fixtur
 import { createEsignatureRepository } from '../../src/repo/repository.js';
 import { OWNER, UNITS } from '../../src/repo/tables.js';
 import { V1_PREFIX, registerV1Routes, type EsignatureV1Deps } from '../../src/routes/v1.js';
+import { CSRF_HEADERS, installCsrfDouble } from '../helpers/app.js';
 import { AUDITOR_USER_ID, OTHER_USER_ID, SIGNER_USER_ID, SUBJECTS, headersFor, userHeaders } from '../helpers/tokens.js';
 
 interface ContractOperation {
@@ -65,8 +66,8 @@ function contractV1Routes(): RouteMatrixEntry[] {
     );
 }
 
-/** An e-signature app serving only the `/v1` routes over `deps`. */
-async function v1App(deps: EsignatureV1Deps): Promise<FastifyInstance> {
+/** An e-signature app serving only the `/v1` routes over `deps`, with identity's CSRF consume answering every token valid; `log` receives each log line. */
+async function v1App(deps: EsignatureV1Deps, log: (line: string) => void = () => undefined): Promise<FastifyInstance> {
   const app = await createService({
     name: OWNER,
     version: '1.0.0',
@@ -81,10 +82,11 @@ async function v1App(deps: EsignatureV1Deps): Promise<FastifyInstance> {
     }),
     verifierOverride: testVerifier(OWNER),
     pool: deps.db,
-    logger: createLogger({ service: OWNER, version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+    logger: createLogger({ service: OWNER, version: '1.0.0', env: 'local', destination: { write: log } }),
   });
   registerWritePositionHeader(app);
   await registerV1Routes(app, deps);
+  installCsrfDouble(app);
   await app.ready();
   return app;
 }
@@ -96,12 +98,13 @@ interface Call {
   json?: unknown;
 }
 
-/** Injects one call and asserts its answer against the contract; returns the status, headers and parsed body. */
+/** Injects one call, a POST with the CSRF pair, and asserts its answer against the contract; returns the status, headers and parsed body. */
 async function call(app: FastifyInstance, { method, url, headers, json }: Call) {
+  const sent = method === 'POST' ? { ...CSRF_HEADERS, ...headers } : headers;
   const res = await app.inject({
     method,
     url,
-    headers: json === undefined ? headers : { ...headers, 'content-type': 'application/json' },
+    headers: json === undefined ? sent : { ...sent, 'content-type': 'application/json' },
     ...(json === undefined ? {} : { payload: JSON.stringify(json) }),
   });
   const path = url.split('?')[0] ?? url;
@@ -182,6 +185,7 @@ describe.skipIf(!available)('esignature v1 routes against PostgreSQL', () => {
   let signer: Record<string, string>;
   let creator: Record<string, string>;
   let auditor: Record<string, string>;
+  const logLines: string[] = [];
 
   beforeAll(async () => {
     handle = await createThrowawaySchema({
@@ -195,7 +199,7 @@ describe.skipIf(!available)('esignature v1 routes against PostgreSQL', () => {
     await seedRegistry(handle.app);
     const clock = fixedClock(NOW);
     deps = { repository: createEsignatureRepository({ db: handle.app, clock }), clock, peopleClient: people, db: handle.app };
-    app = await v1App(deps);
+    app = await v1App(deps, (line) => void logLines.push(line));
     [signer, creator, auditor] = await Promise.all([
       userHeaders({ sub: SIGNER_USER_ID, roles: SIGNER_ROLES }),
       userHeaders({ sub: OTHER_USER_ID, roles: SIGNER_ROLES }),
@@ -322,6 +326,28 @@ describe.skipIf(!available)('esignature v1 routes against PostgreSQL', () => {
     const res = await call(app, { method: 'POST', url: `${REQUESTS}/${id}/verify`, headers: auditor, json });
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ method: 'esignature.requests.verify', error: { message: 'Invalid parameters' } });
+  });
+
+  it.each<[string, string, (id: string) => Call]>([
+    ['documentName of a create', 'esignature.requests', () => ({ method: 'POST', url: REQUESTS, headers: creator, json: { documentName: 'a\u0000b.pdf', documentBase64: DOCUMENT_BASE64, signerUserId: SIGNER_USER_ID } })],
+    ['typedName of a signature', 'esignature.requests.sign', (id) => ({ method: 'POST', url: `${REQUESTS}/${id}/sign`, headers: signer, json: { typedName: 'Jane\u0000Doe' } })],
+  ])('answers a NUL in the %s, which PostgreSQL refuses, with invalidParameters under the route method and writes nothing', async (_name, method, request) => {
+    const { request_id: id } = await create();
+    const total = async (): Promise<unknown> => (await call(app, { method: 'GET', url: `${REQUESTS}?itemsPerPage=1`, headers: signer })).body.totalitems;
+    const before = await total();
+    const logged = logLines.length;
+    const res = await call(app, request(id));
+    const warnings = logLines
+      .slice(logged)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter(({ severity }) => severity === 'WARNING');
+    expect([res.status, res.body]).toEqual([400, { apiversion: 'v1', method, error: { code: 'invalid_request', message: 'Invalid parameters' } }]);
+    expect(warnings.map(({ message }) => message)).toEqual(['request rejected: 22021']);
+    expect(await total()).toBe(before);
+    const detail = await call(app, { method: 'GET', url: `${REQUESTS}/${id}`, headers: auditor });
+    expect(detail.body).toMatchObject({ state: 'PENDING', signature: null });
+    const audit = await call(app, { method: 'GET', url: `${REQUESTS}/${id}/audit`, headers: auditor });
+    expect((audit.body.items as FixtureAuditEntry[]).map((entry) => entry.action)).toEqual(['created']);
   });
 
   it.each(['pageIndex=0', 'itemsPerPage=1001', 'itemsPerPage=0', 'pageIndex=first'])('refuses the paging %s', async (query) => {

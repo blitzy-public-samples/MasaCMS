@@ -59,11 +59,11 @@ const C1 = cfId('C', 1);
 const H1 = cfId('H', 1);
 const H2 = cfId('H', 2);
 
-function actor(site: TenantFixture, roles: string[]): Actor {
+function actor(site: TenantFixture, roles: string[], sub = cfId('U', 1)): Actor {
   const claims: UserClaims = {
     iss: 'opt2-local-identity',
     aud: 'opt2-local',
-    sub: cfId('U', 1),
+    sub,
     sid: 'session-1',
     tid: site.tenantId,
     site: site.siteId,
@@ -83,6 +83,13 @@ const EDITOR_A = actor(TENANT_A, ['m:010']);
 const MANAGER_A = actor(TENANT_A, ['m:000']);
 /** tenant-b's Categories module user: every pool its own site. */
 const EDITOR_B = actor(TENANT_B, ['m:010']);
+/** tenant-a's site Admin, whose private pool is tenant-a. */
+const SITE_ADMIN_A = actor(TENANT_A, ['site-admin']);
+const S2_A = actor(TENANT_A, ['s2']);
+/** A tenant-a user in the umbrella group holding the Categories module grant on umbrella. */
+const POOL_EDITOR_A = actor(TENANT_A, ['system-user'], cfId('U', 2));
+const POOL_EDITORS = cfId('G', 1);
+const CATEGORIES_MODULE = '00000000000000000000000000000000010';
 
 function urls(siteId: string): LegacySiteUrlConfig {
   return {
@@ -156,7 +163,7 @@ function callFor(a: CallArgs): JsonApiCall & { validateCsrf: ReturnType<typeof v
     user: { loggedIn: caller.isLoggedIn, systemUser: caller.isLoggedIn },
     allowAction: () => caller.roles.length > 0,
     site: urls(site.siteId),
-    customImageSizes: [],
+    customImageSizes: () => Promise.resolve([]),
   };
   const settings: SiteContentSettings = {
     siteId: site.siteId,
@@ -269,6 +276,13 @@ describe.skipIf(!(await pgAvailable()))('JSON API category and contentCategoryAs
     CHILD = await category(EDITOR_A, { siteid: POOL, name: 'Child Topic', parentid: ROOT.categoryid });
     OWN_A = await category(EDITOR_A, { siteid: TENANT_A.siteId, name: 'Own Topic' });
     OWN_B = await category(EDITOR_B, { siteid: TENANT_B.siteId, name: 'Bee Topic' });
+    await withTenant(handle.app, TENANT_UMBRELLA.tenantId, async (tx) => {
+      await repository.projections.upsertGroupProjection(tx, { groupId: POOL_EDITORS, siteId: POOL, groupName: 'Category Editors', isPublic: 1, deleted: false });
+      await repository.projections.replaceGroupPermissions(tx, POOL_EDITORS, POOL, [{ contentId: CATEGORIES_MODULE, siteId: POOL, type: 'module' }]);
+    });
+    await withTenant(handle.app, TENANT_A.tenantId, (tx) =>
+      repository.projections.replaceUserMemberships(tx, POOL_EDITOR_A.userId, TENANT_A.siteId, [POOL_EDITORS]),
+    );
     await withTenant(handle.app, TENANT_A.tenantId, async (tx) => {
       for (const [histId, assigned] of [[H1, CHILD], [H2, OWN_A]] as const) {
         await setCategoryAssignments(tx, deps.repository, {
@@ -375,9 +389,25 @@ describe.skipIf(!(await pgAvailable()))('JSON API category and contentCategoryAs
       });
     });
 
+    it.each<[string, Op, Omit<CallArgs, 'method' | 'entityName'>]>([
+      ['findNew of `category/new`', 'findNew', { id: 'new' }],
+      ['findNew of `?method=findNew&entityname=category`', 'findNew', { url: { method: 'findNew', entityname: 'category' } }],
+      ['findOne of an unknown id', 'findOne', { id: cfId('X', 1) }],
+      ['save with validation errors', 'save', { actor: EDITOR_A, form: { name: '' } }],
+    ])('%s answers the new bean\'s init dates in the JSON date format', async (_label, op, args) => {
+      const data = wire(op, await onCategory(op, args));
+      expect(data).toMatchObject({ isnew: 1, datecreated: '2026-06-30T10:00:00', lastupdate: '2026-06-30T10:00:00' });
+    });
+
     it.each([
       ['anonymous', ANONYMOUS, undefined, { read: true, delete: false, save: false }],
-      ['the Categories module user on a pool category', EDITOR_A, () => CHILD.categoryid, { read: true, delete: true, save: true }],
+      ['the Categories module user on a pool category', EDITOR_A, () => CHILD.categoryid, { read: true, delete: false, save: false }],
+      ['the Categories module user on an own-site category', EDITOR_A, () => OWN_A.categoryid, { read: true, delete: true, save: true }],
+      ['the site Admin on a pool category', SITE_ADMIN_A, () => CHILD.categoryid, { read: true, delete: false, save: false }],
+      ['the site Admin on an own-site category', SITE_ADMIN_A, () => OWN_A.categoryid, { read: true, delete: true, save: true }],
+      ['an S2 user on a pool category', S2_A, () => CHILD.categoryid, { read: true, delete: true, save: true }],
+      ['a pool-site module group member on a pool category', POOL_EDITOR_A, () => CHILD.categoryid, { read: true, delete: true, save: true }],
+      ['a pool-site module group member on an own-site category', POOL_EDITOR_A, () => OWN_A.categoryid, { read: true, delete: false, save: false }],
       ['the Site Manager module user', MANAGER_A, () => OWN_A.categoryid, { read: true, delete: false, save: false }],
     ])('findPermissions for %s', async (_label, caller, id, expected) => {
       const call = callFor({ method: 'findPermissions', actor: caller, ...(id === undefined ? {} : { id: id() }) });

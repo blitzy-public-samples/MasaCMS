@@ -49,6 +49,8 @@ esac
 
 # shellcheck source=SCRIPTDIR/common.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
+# shellcheck source=SCRIPTDIR/lock.sh
+source "$LIB_DIR/lock.sh"
 # shellcheck source=SCRIPTDIR/processes.sh
 source "$LIB_DIR/processes.sh"
 
@@ -76,35 +78,11 @@ capture_value() {
 # Prints `export NAME=value` lines for the env block of the captured server's own server.json: settings such as
 # its database, encryption key and mail server belong to the start environment opt2-legacy must reproduce.
 _captured_server_env() {
-  local config pairs name value
-  [[ -f $CAPTURE_FILE ]] || return 0
-  config="$(capture_value serverConfigFile)"
-  [[ -n $config && -f $config ]] || return 0
-  pairs="$(mktemp -- "$OPT2_STATE_DIR/secrets/.server-env.XXXXXX")" || die "cannot create a temp file in $OPT2_STATE_DIR/secrets"
-  # NUL-separated pairs, so values reach printf %q unchanged; the error names only the file.
-  # shellcheck disable=SC2016 # JavaScript source
-  if ! node -e '
-const fs = require("fs");
-let doc;
-try { doc = JSON.parse(fs.readFileSync(process.argv[1], "utf8").replace(/^\uFEFF/, "")); } catch {
-  process.stderr.write(`opt2: ${process.argv[1]} is not valid JSON\n`);
-  process.exit(1);
-}
-const env = doc?.env;
-if (env === null || typeof env !== "object" || Array.isArray(env)) process.exit(0);
-for (const [name, value] of Object.entries(env)) {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || value === null || typeof value === "object") continue;
-  const text = String(value);
-  if (!text.includes("\0")) process.stdout.write(`${name}\0${text}\0`);
-}
-' -- "$config" >"$pairs"; then
-    rm -f -- "$pairs"
-    die "cannot read the env block of $config"
-  fi
-  while IFS= read -r -d '' name && IFS= read -r -d '' value; do
-    printf 'export %s=%q\n' "$name" "$value"
-  done <"$pairs"
-  rm -f -- "$pairs"
+  local name
+  load_captured_server_env
+  for name in "${CAPTURED_SERVER_ENV_NAMES[@]}"; do
+    printf 'export %s=%q\n' "$name" "${CAPTURED_SERVER_ENV[$name]}"
+  done
 }
 
 # Writes legacy-env from this (up.sh) environment: Masa, CFConfig, Java and CommandBox variables, legacy's port.
@@ -204,11 +182,37 @@ if (String(info?.name ?? "").toLowerCase() === process.argv[1].toLowerCase()) {
 ' -- "$1"
 }
 
+# refuse_foreign_registration <record>: dies naming a foreign registration unless this checkout holds the run lock.
+refuse_foreign_registration() {
+  local record=${1:-} webroot home
+  if [[ -z $record ]] || legacy_record_ours "$record" || (lock_assert_mine) 2>/dev/null; then return 0; fi
+  webroot="$(legacy_registration_field "$record" webroot)"
+  home="$(legacy_registration_field "$record" home)"
+  die "CommandBox server $LEGACY_SERVER_NAME is registered with webroot $webroot and server home $home, not this" \
+    "checkout's; it is released only while this checkout's stack holds $OPT2_LOCK_FILE (harness/repro/up.sh)"
+}
+
+# Releases a LEGACY_SERVER_NAME registration of another checkout or server home, keeping every server file.
+release_foreign_registration() {
+  local record webroot home
+  while true; do
+    record="$(legacy_registration)" || exit 1
+    if [[ -z $record ]] || legacy_record_ours "$record"; then return 0; fi
+    refuse_foreign_registration "$record"
+    webroot="$(legacy_registration_field "$record" webroot)"
+    home="$(legacy_registration_field "$record" home)"
+    legacy_unregister "$(legacy_registration_field "$record" id)" >/dev/null
+    printf 'opt2: released the CommandBox registration %s of webroot %s, server home %s; server files kept\n' \
+      "$LEGACY_SERVER_NAME" "$webroot" "$home" >&2
+  done
+}
+
 # Stops opt2-legacy, and the captured original server when it listens on legacy's port; waits for the port to close.
 stop_legacy() {
-  local state original
-  state="$(server_state "$LEGACY_SERVER_NAME")"
-  if [[ -n $state && $state != stopped* ]]; then
+  local record original state
+  record="$(legacy_registration)" || exit 1
+  # A registration in another server home is never stopped.
+  if legacy_record_home_ours "$record" && [[ "$(legacy_registration_field "$record" status)" != stopped ]]; then
     box_cmd server stop name="$LEGACY_SERVER_NAME" || die "box server stop name=$LEGACY_SERVER_NAME failed"
   fi
   original="$(capture_value name)"
@@ -342,7 +346,7 @@ process.stdout.write(`${JSON.stringify({
 
 # --original: the captured server as it was, without a window, task changes or OPT-2 variables.
 run_original() {
-  local name was port state
+  local name was port state record
   [[ -f $CAPTURE_FILE ]] || die "$CAPTURE_FILE is missing: no original legacy server was captured"
   name="$(capture_value name)"
   was="$(capture_value wasRunning)"
@@ -357,8 +361,9 @@ run_original() {
   # `box server start name=` creates a new server for an unknown name, so the name must be registered.
   [[ -n "$(server_state "$name")" ]] || die "CommandBox has no server named $name"
   # opt2-legacy shares the original's server home, so both report its pid file's state until opt2-legacy is stopped.
-  state="$(server_state "$LEGACY_SERVER_NAME")"
-  if [[ -n $state && $state != stopped* ]]; then
+  record="$(legacy_registration)" || exit 1
+  # A registration in another server home is never stopped.
+  if legacy_record_home_ours "$record" && [[ "$(legacy_registration_field "$record" status)" != stopped ]]; then
     log_step a "stop $LEGACY_SERVER_NAME"
     box_cmd server stop name="$LEGACY_SERVER_NAME" || die "box server stop name=$LEGACY_SERVER_NAME failed"
     wait_port_closed "$LEGACY_PORT" 120
@@ -391,8 +396,11 @@ if [[ $MODE == original ]]; then
 fi
 if [[ $MODE == tasks-file && ! -f $TASKS_FILE ]]; then die "tasks file $TASKS_FILE does not exist"; fi
 
-log_step a "render $SERVER_JSON"
+log_step a "render $SERVER_JSON and check the $LEGACY_SERVER_NAME registration"
 render_server_json
+registration="$(legacy_registration)" || exit 1
+# Before the window opens, so a refusal leaves ColdFusion and the content units untouched.
+refuse_foreign_registration "$registration"
 
 log_step b "open the start-up window"
 trap on_exit EXIT
@@ -400,8 +408,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 open_window
 
-log_step c "stop ColdFusion"
+log_step c "stop ColdFusion and release a foreign $LEGACY_SERVER_NAME registration"
 stop_legacy
+# Once ColdFusion is stopped, so a running opt2-legacy is stopped through its registration before it is released.
+release_foreign_registration
 
 resume_json="[]"
 if [[ $MODE == tasks-file ]]; then

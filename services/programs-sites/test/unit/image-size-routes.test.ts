@@ -87,6 +87,7 @@ beforeEach(async () => {
     loadImageSize: vi.fn<ImageSizesDomain['loadImageSize']>(async () => STORED),
     saveImageSize: vi.fn<ImageSizesDomain['saveImageSize']>(async () => STORED),
     deleteImageSize: vi.fn<ImageSizesDomain['deleteImageSize']>(async () => true),
+    readSiteImageSizes: vi.fn<ImageSizesDomain['readSiteImageSizes']>(async () => [STORED]),
   };
   app = await createService({
     name: 'programs-sites',
@@ -338,5 +339,52 @@ describe('auth denials', () => {
     const res = await send(method, url, headers, method === 'PUT' ? SIZE_BODY : undefined);
     expect(res.statusCode).toBe(401);
     expectNoDomainCall();
+  });
+});
+
+describe('GET /internal/v1/sites/:siteId/image-sizes', () => {
+  const SERVICE_URL = '/internal/v1/sites/TENANT-A/image-sizes';
+
+  it('is declared as the contract operation', () => {
+    const operation = OPENAPI.paths['/internal/v1/sites/{siteId}/image-sizes']?.['get'];
+    const declared = collectRouteMatrix(app).routes.find((route) => route.url === '/internal/v1/sites/:siteId/image-sizes');
+    expect(declared).toMatchObject({ method: 'GET', transport: operation?.['x-opt2-transport'], requires: operation?.['x-opt2-requires'] });
+  });
+
+  it.each([
+    [[STORED], [STORED_JSON]],
+    [[], []],
+  ])('answers strategies-content the sizes the domain reads for the path site as given', async (beans, expected) => {
+    imageSizes.readSiteImageSizes.mockResolvedValueOnce(beans);
+    const res = await send('GET', SERVICE_URL, await headersAs('service:strategies-content'));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(expected);
+    expect(imageSizes.readSiteImageSizes).toHaveBeenCalledExactlyOnceWith(db, 'TENANT-A');
+  });
+
+  it.each<[string, number]>([
+    ['anonymous', 401],
+    ['s2', 403],
+    ['site-admin', 403],
+    ['service:gateway', 403],
+    ['service:identity', 403],
+  ])('denies %s with %i before any domain operation', async (as, status) => {
+    const res = await send('GET', SERVICE_URL, await headersAs(as));
+    expect(res.statusCode).toBe(status);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
+    expectNoDomainCall();
+  });
+
+  it('answers invalidParameters for a path siteId of 26 characters before any domain operation', async () => {
+    const res = await send('GET', `/internal/v1/sites/${'a'.repeat(26)}/image-sizes`, await headersAs('service:strategies-content'));
+    expect(res.statusCode).toBe(400);
+    expectNoDomainCall();
+  });
+
+  it('answers the legacy 503 when the read meets a closed unit gate', async () => {
+    imageSizes.readSiteImageSizes.mockRejectedValueOnce(new GateClosedError(['programs-sites.image-sizes']));
+    const res = await send('GET', SERVICE_URL, await headersAs('service:strategies-content'));
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error' } });
   });
 });

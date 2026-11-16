@@ -205,7 +205,7 @@ describe('mssql-dropped-mid-extract fault script', () => {
         state: { resumeSeq: 4 },
       });
 
-      expect(createLegacyDb).toHaveBeenCalledExactlyOnceWith(ctx.env);
+      expect(createLegacyDb).toHaveBeenCalledExactlyOnceWith(ctx.env, { logger: ctx.logger });
       expect(latestSnapshot).toHaveBeenNthCalledWith(1, ctx);
       expect(latestSnapshot).toHaveBeenNthCalledWith(2, ctx);
       expect(base.close).not.toHaveBeenCalled();

@@ -350,28 +350,6 @@ export interface StagedObjectCursor {
   stage_id: string;
 }
 
-/** Records an intent without a changelog row. */
-export async function insertStagedObject(tx: TenantTx, entry: StagedObjectEntry): Promise<void> {
-  await tx.query(
-    `INSERT INTO ${qualified(tx.schema, 'staged_object')}` +
-      ' (tenant_id, stage_id, object_key, kind, file_id, variant, ext, size, sha256, content_type, state)' +
-      ' VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
-    [
-      tx.tenantId,
-      entry.stage_id,
-      entry.object_key,
-      entry.kind,
-      entry.file_id,
-      entry.variant,
-      entry.ext,
-      entry.size,
-      entry.sha256,
-      entry.content_type,
-      entry.state,
-    ],
-  );
-}
-
 /** Locks an intent and returns its stored form; null when it no longer exists. */
 export function claimStagedObject(tx: TenantTx, stageId: string): Promise<StagedObjectEntry | null> {
   return firstRow<StagedObjectEntry>(
@@ -379,16 +357,6 @@ export function claimStagedObject(tx: TenantTx, stageId: string): Promise<Staged
     `SELECT * FROM ${qualified(tx.schema, 'staged_object')} WHERE stage_id = $1 FOR UPDATE`,
     [stageId],
   );
-}
-
-/** Marks an intent whose publication commits with a backup of the replaced version still stored. */
-export async function markStagedObjectCommitted(tx: TenantTx, stageId: string): Promise<void> {
-  await tx.query(`UPDATE ${qualified(tx.schema, 'staged_object')} SET state = 'committed' WHERE stage_id = $1`, [stageId]);
-}
-
-/** Removes a settled intent without a changelog row. */
-export async function deleteStagedObject(tx: TenantTx, stageId: string): Promise<void> {
-  await tx.query(`DELETE FROM ${qualified(tx.schema, 'staged_object')} WHERE stage_id = $1`, [stageId]);
 }
 
 /** Locks one stale page, retaining PostgreSQL's timestamp precision for the cursor. */
@@ -401,7 +369,7 @@ export async function listStaleStagedObjects(
   const { rows } = await tx.query<StagedObjectEntry & StagedObjectCursor>(
     `SELECT s.*, s.recorded_at::text AS recorded_at FROM ${qualified(tx.schema, 'staged_object')} s` +
       " WHERE recorded_at < clock_timestamp() - ($1 * interval '1 millisecond')" +
-      (after === undefined ? '' : ' AND (recorded_at, stage_id) > ($3::timestamptz, $4::bpchar)') +
+      (after === undefined ? '' : ' AND (recorded_at, stage_id) > ($3::timestamp, $4::bpchar)') +
       ' ORDER BY s.recorded_at, stage_id LIMIT $2 FOR UPDATE SKIP LOCKED',
     after === undefined ? [graceMs, limit] : [graceMs, limit, after.recorded_at, after.stage_id],
   );

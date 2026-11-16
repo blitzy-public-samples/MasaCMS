@@ -13,6 +13,8 @@
     "prebuild": "npm run generate",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run --coverage",
+    "test:contract": "vitest run test/reporting/check-pin test/reporting/check-synthetic test/golden/catalogue-response-paths test/route-key-parity",
+    "test:security": "vitest run test/security test/repro/secrets",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "inventory": "tsx src/inventory/generate.ts",
     "inventory:cloc": "tsx src/inventory/cloc.ts",
@@ -41,15 +43,12 @@
     "repro:up-state": "tsx src/repro/up-state.ts"
   },
   "dependencies": {
-    "@google-cloud/pubsub": "6.3.2",
     "@opt2/platform": "file:../platform",
-    "ajv": "8.20.0",
     "cheerio": "1.2.0",
     "csv-parse": "7.0.3",
     "exceljs": "4.4.0",
     "mssql": "12.7.13",
     "pdfjs-dist": "6.4.299",
-    "pg": "8.23.1",
     "tough-cookie": "6.0.2",
     "yaml": "2.9.1"
   },
@@ -57,7 +56,6 @@
     "@playwright/test": "1.64.1",
     "@types/mssql": "12.3.0",
     "@types/node": "22.20.5",
-    "@types/pg": "8.23.1",
     "@vitest/coverage-v8": "5.0.5",
     "fast-check": "4.10.2",
     "openapi-typescript": "7.13.0",

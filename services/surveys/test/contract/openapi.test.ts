@@ -896,7 +896,7 @@ const CASES: Record<string, Case[]> = {
     {
       name: 'launches the scheduled survey once for the tasks invoker',
       method: 'POST',
-      url: ({ surveyId }) => `/internal/v1/tasks/surveys/${surveyId}/launch`,
+      url: '/internal/v1/tasks/surveys/launch',
       as: 'service:tasks-invoker',
       payload: (seeded) => launchTask(seeded),
       seed: 'scheduled',
@@ -909,7 +909,7 @@ const CASES: Record<string, Case[]> = {
     {
       name: 'acknowledges a task naming a tenant the survey is not visible under as ignored, launching nothing',
       method: 'POST',
-      url: ({ surveyId }) => `/internal/v1/tasks/surveys/${surveyId}/launch`,
+      url: '/internal/v1/tasks/surveys/launch',
       as: 'service:tasks-invoker',
       payload: (seeded) => launchTask(seeded, TENANT_B.tenantId),
       seed: 'scheduled',
@@ -922,7 +922,7 @@ const CASES: Record<string, Case[]> = {
     {
       name: 'refuses a service invocation credential on the cloud-tasks route before the handler',
       method: 'POST',
-      url: ({ surveyId }) => `/internal/v1/tasks/surveys/${surveyId}/launch`,
+      url: '/internal/v1/tasks/surveys/launch',
       headers: async () => ({ authorization: `Bearer ${await mintServiceToken({ caller: 'communications', audience: 'surveys' })}` }),
       payload: (seeded) => launchTask(seeded),
       seed: 'scheduled',

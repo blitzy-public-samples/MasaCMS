@@ -50,9 +50,6 @@ const REGISTERED_ELSEWHERE: readonly RegExp[] = [
   /^\/internal\/v1\/task-queues\//,
 ];
 
-// No route module serves the rater save yet; v0002 keeps its route legacy. Implementing it fails this suite until removed.
-const UNSERVED_OPERATIONS: readonly string[] = ['raterSaveRatePost'];
-
 const CLAIMS: UserClaims = {
   iss: 'opt2-local-identity',
   aud: 'opt2-local',
@@ -118,10 +115,9 @@ function routeText(method: string, url: string, transport: unknown, requires: re
 }
 
 /** The contract operations the registry owns, as Fastify registers them (a trailing `{path}` is the `*` wildcard). */
-function contractRoutes(): { served: string[]; unserved: string[] } {
+function contractRoutes(): string[] {
   const doc = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as { paths: Record<string, Record<string, Json>> };
-  const served: string[] = [];
-  const unserved: string[] = [];
+  const routes: string[] = [];
   for (const [template, item] of Object.entries(doc.paths)) {
     if (REGISTERED_ELSEWHERE.some((pattern) => pattern.test(template))) continue;
     for (const method of ['get', 'post', 'put', 'delete', 'patch'] as const) {
@@ -130,11 +126,10 @@ function contractRoutes(): { served: string[]; unserved: string[] } {
       const fastifyPath = op['x-opt2-fastify-path'];
       const url = typeof fastifyPath === 'string' ? fastifyPath : template.replace(/\{path\}$/, '*').replace(/\{(\w+)\}/g, ':$1');
       const requires = Array.isArray(op['x-opt2-requires']) ? (op['x-opt2-requires'] as string[]) : undefined;
-      const text = routeText(method.toUpperCase(), url, op['x-opt2-transport'], requires, op['x-opt2-public'] === true);
-      (UNSERVED_OPERATIONS.includes(String(op.operationId)) ? unserved : served).push(text);
+      routes.push(routeText(method.toUpperCase(), url, op['x-opt2-transport'], requires, op['x-opt2-public'] === true));
     }
   }
-  return { served: [...new Set(served)].sort(), unserved };
+  return [...new Set(routes)].sort();
 }
 
 function registered(route: RouteMatrixEntry): string {
@@ -161,10 +156,8 @@ beforeEach(() => {
 
 describe('registerRoutes', () => {
   it('registers every contract operation it owns, with the contract transport and roles, and nothing else', () => {
-    const { served, unserved } = contractRoutes();
     const actual = [...new Set(collectRouteMatrix(app).routes.filter((route) => !REGISTERED_ELSEWHERE.some((p) => p.test(route.url))).map(registered))].sort();
-    expect(actual).toEqual(served);
-    expect(unserved.filter((text) => actual.includes(text))).toEqual([]);
+    expect(actual).toEqual(contractRoutes());
   });
 
   it.each([

@@ -15,6 +15,7 @@ import {
   getNodePermPublic,
   getPerm,
   getPermPublic,
+  getSiteModulePerm,
   loadMemberships,
   setRestriction,
   setRestrictions,
@@ -41,8 +42,25 @@ const G = {
   gone: id('G', 9),
   other: id('G', 10),
   comma: id('G', 11),
+  poolEditors: id('G', 12),
+  poolPrivate: id('G', 13),
+  poolAdmin: id('G', 14),
+  poolGone: id('G', 15),
+  poolNamesake: id('G', 16),
 };
-const U = { user: id('U', 1), member: id('U', 2), nobody: id('U', 3), commaUser: id('U', 4) };
+const U = {
+  user: id('U', 1),
+  member: id('U', 2),
+  nobody: id('U', 3),
+  commaUser: id('U', 4),
+  poolEditor: id('U', 5),
+  poolPrivate: id('U', 6),
+  poolAdmin: id('U', 7),
+  poolGone: id('U', 8),
+  poolNamesake: id('U', 9),
+};
+const MODULE_010 = '00000000000000000000000000000000010';
+const MODULE_011 = '00000000000000000000000000000000011';
 const C = { root: id('C', 1), parent: id('C', 2), leaf: id('C', 3), none: id('C', 4), deny: id('C', 5), typed: id('C', 6) };
 
 let handle: ThrowawaySchema;
@@ -122,6 +140,30 @@ describe.skipIf(!(await pgAvailable()))('domain/permissions', () => {
       await repo.projections.upsertGroupProjection(tx, { groupId: G.members, siteId: 'umbrella', groupName: 'Members', isPublic: 1, deleted: false });
       await repo.projections.upsertGroupProjection(tx, { groupId: G.publicAdmin, siteId: 'umbrella', groupName: 'Admin', isPublic: 1, deleted: false });
       await repo.projections.replaceUserMemberships(tx, U.member, 'umbrella', [G.members, G.publicAdmin]);
+      const pool = (groupId: string, groupName: string, isPublic: number, deleted = false) => ({ groupId, siteId: 'umbrella', groupName, isPublic, deleted });
+      for (const g of [
+        pool(G.poolEditors, 'Category Editors', 1),
+        pool(G.poolPrivate, 'Pool Editors', 0),
+        pool(G.poolAdmin, 'Admin', 0),
+        pool(G.poolGone, 'Gone Editors', 1, true),
+        pool(G.poolNamesake, 'Category Editors', 1),
+      ]) {
+        await repo.projections.upsertGroupProjection(tx, g);
+      }
+      for (const groupId of [G.poolEditors, G.poolPrivate, G.poolGone]) {
+        await repo.projections.replaceGroupPermissions(tx, groupId, 'umbrella', [{ contentId: MODULE_010, siteId: 'umbrella', type: 'module' }]);
+      }
+    });
+    await inT(TENANT_A.tenantId, async (tx) => {
+      for (const [userId, groupId] of [
+        [U.poolEditor, G.poolEditors],
+        [U.poolPrivate, G.poolPrivate],
+        [U.poolAdmin, G.poolAdmin],
+        [U.poolGone, G.poolGone],
+        [U.poolNamesake, G.poolNamesake],
+      ] as const) {
+        await repo.projections.replaceUserMemberships(tx, userId, SITE, [groupId]);
+      }
     });
     await inT(TENANT_B.tenantId, async (tx) => {
       await repo.projections.upsertGroupProjection(tx, { groupId: G.other, siteId: 'tenant-b', groupName: 'Other', isPublic: 0, deleted: false });
@@ -217,6 +259,40 @@ describe.skipIf(!(await pgAvailable()))('domain/permissions', () => {
     [['m:000'], false, 'PLUGINMODULE', false],
   ] as Array<[string[], boolean, string, boolean]>)('getModulePerm with roles %j and s2 %s on %s is %s', (roles, s2, moduleId, expected) => {
     expect(getModulePerm(actor(U.user, { roles, s2 }), moduleId)).toBe(expected);
+  });
+
+  it.each([
+    ['the site-admin role', MODULE_010, 'umbrella', false, actor(U.nobody, { roles: ['site-admin'] })],
+    ['the site-admin role', MODULE_010, SITE, true, actor(U.nobody, { roles: ['site-admin'] })],
+    ['the site-admin role', MODULE_010, 'TENANT-A', true, actor(U.nobody, { roles: ['site-admin'] })],
+    ['the m:010 role', MODULE_010, 'umbrella', false, actor(U.nobody, { roles: ['m:010'] })],
+    ['the m:010 role', MODULE_010, SITE, true, actor(U.nobody, { roles: ['m:010'] })],
+    ['the s2 flag', MODULE_011, 'umbrella', true, actor(U.nobody, { s2: true })],
+    ['the s2 role', MODULE_010, 'Umbrella', true, actor(U.nobody, { roles: ['s2'] })],
+    ['a public pool-group grant', MODULE_010, 'umbrella', true, actor(U.poolEditor)],
+    ['a public pool-group grant', MODULE_010, 'UMBRELLA ', true, actor(U.poolEditor)],
+    ['a public pool-group grant', MODULE_011, 'umbrella', false, actor(U.poolEditor)],
+    ['a public pool-group grant', MODULE_010, SITE, false, actor(U.poolEditor)],
+    ['a public pool-group grant', MODULE_010, TENANT_B.siteId, false, actor(U.poolEditor)],
+    ['a private pool-group grant', MODULE_010, 'umbrella', true, actor(U.poolPrivate)],
+    ['the pool private-pool Admin group', MODULE_011, 'umbrella', true, actor(U.poolAdmin)],
+    ['the pool public-pool Admin group', MODULE_010, 'umbrella', false, actor(U.member)],
+    ['a deleted pool-group grant', MODULE_010, 'umbrella', false, actor(U.poolGone)],
+    ['a namesake of a granted pool group', MODULE_010, 'umbrella', true, actor(U.poolNamesake)],
+    ['token-site groups only', MODULE_010, 'umbrella', false, actor(U.user)],
+    ['no memberships', MODULE_010, 'umbrella', false, actor(U.nobody)],
+    ['anonymity', MODULE_010, 'umbrella', false, anon],
+    ['a tenant-b token, whose category pool is tenant-b', MODULE_010, 'umbrella', false, actor(U.user, { tid: TENANT_B.tenantId, site: TENANT_B.siteId })],
+  ] as Array<[string, string, string, boolean, Actor]>)('getSiteModulePerm through %s on module %s of %j is %s [permission.cfc:302-362]', async (_label, moduleId, siteId, expected, who) => {
+    expect(await getSiteModulePerm(deps, who, moduleId, siteId, 'category')).toBe(expected);
+  });
+
+  it('getSiteModulePerm on the pool site ignores a token-site module grant and fails for an unregistered token tenant', async () => {
+    await inT(TENANT_A.tenantId, (tx) => repo.projections.replaceGroupPermissions(tx, G.editors, SITE, [{ contentId: MODULE_010, siteId: SITE, type: 'module' }]));
+    expect(await getSiteModulePerm(deps, actor(U.user), MODULE_010, 'umbrella', 'category')).toBe(false);
+    await inT(TENANT_A.tenantId, (tx) => repo.projections.replaceGroupPermissions(tx, G.editors, SITE, []));
+    const unregistered = actor(U.poolEditor, { tid: '11111111-1111-4111-8111-111111111111' });
+    await expect(getSiteModulePerm(deps, unregistered, MODULE_010, 'umbrella', 'category')).rejects.toBeInstanceOf(UnregisteredTenantError);
   });
 
   it('setRestriction walks restricted crumbs, the S2 and module-access paths and restrict groups by name or id [permission.cfc:364-445]', async () => {

@@ -597,7 +597,7 @@ export interface IdentityRepository extends Repository {
   findGroupsByColumn(tx: TenantTx, column: 'groupname' | 'username' | 'remoteid', value: string, siteIds: readonly string[]): Promise<GroupAccountRow[]>;
   /** How many accounts of `siteIds`, pending ones included, have `column` equal to `value` as SQL Server compares nvarchar. */
   countAccountsByColumn(tx: TenantTx, column: 'username' | 'remoteid', value: string, siteIds: readonly string[]): Promise<number>;
-  /** Type=1 groups of `poolSiteId` with that visibility, by name then userid [legacy: core/mura/permission.cfc:600-621]. */
+  /** Type=1 groups of `poolSiteId` with that visibility, by name then userid, read through one cursor in pages [legacy: core/mura/permission.cfc:600-621]. */
   listGroups(tx: TenantTx, poolSiteId: string, isPublic: boolean | number, opts?: { excludeAdmin?: boolean }): Promise<GroupAccountRow[]>;
   /** `listGroups` rows with their `membersOf` counts (S2 included) from one cursor snapshot in pages, stopping after the first page when an open account operation closes a listed group [legacy: core/mura/user/userGateway.cfc:93-120]. */
   listCountedGroups(tx: TenantTx, poolSiteId: string, isPublic: boolean | number): Promise<CountedGroupList>;
@@ -612,8 +612,10 @@ export interface IdentityRepository extends Repository {
   ): AsyncGenerator<GroupAccountRow[], void, undefined>;
   /** The groupFeedPages selection that `query`'s filters accept: its first `limit` rows in `query`'s order and its count up to `query.top`, from one statement behind the gate read fence. */
   readGroupFeed(tx: TenantTx, poolSiteId: string, isPublic: boolean | number, query: GroupFeedQuery): Promise<GroupFeedPage>;
-  /** Type=1 groups of `poolSiteId` with `ispublic` = `isPublic`, by Perm descending, then name [legacy: core/mura/user/userGateway.cfc:594-622]. */
+  /** Type=1 groups of `poolSiteId` with `ispublic` = `isPublic`, by Perm descending, then name, read through one cursor in pages [legacy: core/mura/user/userGateway.cfc:594-622]. */
   listPoolGroups(tx: TenantTx, poolSiteId: string, isPublic: 0 | 1): Promise<PoolGroupRow[]>;
+  /** The `page` window of the `listPoolGroups` rows and the listing's total, from one statement. */
+  pagePoolGroups(tx: TenantTx, poolSiteId: string, isPublic: 0 | 1, page: ListPage): Promise<ListedPage<PoolGroupRow>>;
   /** Inserts a group as `userDAO.create` does [legacy: core/mura/user/userDAO.cfc:300-346]. */
   insertGroup(tx: TenantTx, input: GroupInput, actor: AuditActor | null, ctx?: WriteContext): Promise<GroupAccountRow>;
   /** Updates a group as `userDAO.update` does and adds 1 to `row_version` [legacy: core/mura/user/userDAO.cfc:404-456]; null when absent. */
@@ -827,7 +829,7 @@ export interface IdentityRepository extends Repository {
 export interface IdentityRepositoryOptions {
   clock?: Clock;
   schema?: string;
-  /** Rows per FETCH of the paged member, counted-group and group-feed reads; defaults to `READ_PAGE_SIZE`. */
+  /** Rows per FETCH of the paged member, group, counted-group, pool-group and group-feed reads; defaults to `READ_PAGE_SIZE`. */
   pageSize?: number;
 }
 
@@ -1081,6 +1083,10 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     `), affecting AS (${affectingSql((groupId) => `${groupId} IN (SELECT userid FROM paged)`)})` +
     ` SELECT (SELECT count(*)::integer FROM ${groupAccount} WHERE ${listedGroupsWhere}) AS total, a.closed_users, p.*, c.counter` +
     ` FROM affecting a LEFT JOIN paged p ON true LEFT JOIN counted c ON c.groupid = p.userid ORDER BY ${groupOrder('p')}`;
+  // poolGroupsSql's $4 rows after the first $5 with the listing's total; a window without groups still yields the total row.
+  const poolGroupPageSql =
+    `SELECT n.total, p.* FROM (SELECT count(*)::integer AS total FROM ${groupAccount} WHERE ${listedGroupsWhere}) n` +
+    ` LEFT JOIN (${poolGroupsSql} LIMIT $4 OFFSET $5) p ON true ORDER BY ${groupOrder('p')}`;
   // A NULL s2 or inactive matches neither filter, as SQL Server compares NULL with nothing.
   const groupFeedSql =
     `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND type = 1 AND ispublic = $2 AND siteid = $3` +
@@ -1351,7 +1357,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     opts: { excludeAdmin?: boolean } = {},
   ): Promise<GroupAccountRow[]> {
     const params = [tx.tenantId, flag(isPublic) ? 1 : 0, poolSiteId, opts.excludeAdmin === true];
-    return readUnits<GroupAccountRow>(tx, GROUP_ACCOUNT.unit, listGroupsSql, params);
+    return base.read(tx, GROUP_ACCOUNT.unit, () => fetchPages<GroupAccountRow>(tx, listGroupsSql, params, () => false));
   }
 
   function listCountedGroups(tx: TenantTx, poolSiteId: string, isPublic: boolean | number): Promise<CountedGroupList> {
@@ -1373,7 +1379,14 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
   }
 
   function listPoolGroups(tx: TenantTx, poolSiteId: string, isPublic: 0 | 1): Promise<PoolGroupRow[]> {
-    return readUnits<PoolGroupRow>(tx, GROUP_ACCOUNT.unit, poolGroupsSql, [tx.tenantId, isPublic, poolSiteId]);
+    return base.read(tx, GROUP_ACCOUNT.unit, () => fetchPages<PoolGroupRow>(tx, poolGroupsSql, [tx.tenantId, isPublic, poolSiteId], () => false));
+  }
+
+  async function pagePoolGroups(tx: TenantTx, poolSiteId: string, isPublic: 0 | 1, page: ListPage): Promise<ListedPage<PoolGroupRow>> {
+    type Row = Omit<PoolGroupRow, 'userid'> & { userid: string | null; total: number };
+    const rows = await readUnits<Row>(tx, GROUP_ACCOUNT.unit, poolGroupPageSql, [tx.tenantId, isPublic, poolSiteId, page.limit, page.offset]);
+    const items = rows.flatMap(({ total: _total, userid, ...group }) => (userid === null ? [] : [{ ...group, userid }]));
+    return { items, total: rows[0]?.total ?? 0 };
   }
 
   /** The person contact naming an actor that has no login snapshot, read in this transaction's tenant. */
@@ -2286,6 +2299,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     groupFeedPages,
     readGroupFeed,
     listPoolGroups,
+    pagePoolGroups,
     insertGroup,
     updateGroup,
     insertGroupAddress,

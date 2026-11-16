@@ -8,10 +8,9 @@ import { routeKey, startFakeGateway, type FakeGateway } from '../../helpers/fake
 import { adminRequest, routeParams } from '../../helpers/requests';
 import { SUBJECTS } from '../../helpers/tokens';
 
-// The spans stay in-process: the SDK, and with it the OTLP exporter, is never started.
+// Request log lines are recorded instead of written to stdout.
 vi.mock('@/lib/telemetry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/telemetry')>()),
-  ensureTracing: vi.fn(() => Promise.resolve(undefined)),
   logRequest: vi.fn(),
 }));
 

@@ -1,11 +1,12 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FIXTURES_UNAVAILABLE } from '../../src/golden/catalogue.js';
 import { ROLE_SUFFIXES, SERVICE_SCHEMAS, type RoleFindings } from '../../src/isolation/catalog.js';
 import type { ConsumerIsolationRow, IsolationReport, ServiceIsolationRow } from '../../src/isolation/report.js';
+import { runCli } from '../../src/lib/cli.js';
 import { REPO_ROOT } from '../../src/lib/paths.js';
 import { readPin } from '../../src/lib/pin.js';
 import { TEN_SERVICES, type ServiceName } from '../../src/reporting/check-reviewability.js';
@@ -683,5 +684,72 @@ describe('main', () => {
     const outcome = await run(['--no-write']);
     expect(outcome).toMatchObject({ code: 0, summary: { written: false, failingStages: [] } });
     expect(existsSync(path.join(root, 'reports'))).toBe(false);
+  });
+
+  const writeFixtures = async (text: string) => {
+    const state = env.OPT2_STATE_DIR ?? '';
+    await mkdir(state, { recursive: true });
+    await writeFile(path.join(state, 'fixtures.json'), text);
+  };
+
+  it.each<[string, string | null, { available: boolean | null; reason: string | null }]>([
+    ['available', JSON.stringify({ available: true, reason: null, checkedAt: AT }), { available: true, reason: null }],
+    [
+      'unavailable',
+      JSON.stringify({ available: false, reason: 'cfpm scheduler missing', checkedAt: AT }),
+      { available: false, reason: 'cfpm scheduler missing' },
+    ],
+    ['missing', null, { available: null, reason: 'fixtures.json missing' }],
+  ])('check accepts %s fixtures and creates the absent reports directory', async (_label, text, fixtures) => {
+    if (text !== null) await writeFixtures(text);
+    const reports = path.join(root, 'reports');
+    expect(existsSync(reports)).toBe(false);
+    expect(await run(['check'])).toEqual({ summary: { fixtures, reportsDir: displayPath(reports, env) } });
+    expect(statSync(reports).isDirectory()).toBe(true);
+  });
+
+  it.each<[string, () => Promise<void>, string, string[]]>([
+    ['malformed fixtures.json', () => writeFixtures('{bad'), 'GoldenConfigError', ['fixtures.json is not valid JSON']],
+    [
+      'schema-invalid fixtures.json',
+      () => writeFixtures(JSON.stringify({ available: 'yes', reason: null })),
+      'GoldenConfigError',
+      ['fixtures.json: ', 'available', 'checkedAt'],
+    ],
+    [
+      'a regular file as OPT2_REPORTS_DIR',
+      () => writeFile(env.OPT2_REPORTS_DIR ?? '', ''),
+      'Error',
+      ['OPT2_REPORTS_DIR ', 'is not a writable directory', 'EEXIST'],
+    ],
+    [
+      'OPT2_REPORTS_DIR beneath a regular file',
+      async () => {
+        await writeFile(env.OPT2_REPORTS_DIR ?? '', '');
+        env.OPT2_REPORTS_DIR = path.join(env.OPT2_REPORTS_DIR ?? '', 'sub');
+      },
+      'Error',
+      ['OPT2_REPORTS_DIR ', 'is not a writable directory', 'ENOTDIR'],
+    ],
+  ])('check exits 1 for %s, naming the input', async (_label, arrange, type, parts) => {
+    await arrange();
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const chunks: string[] = [];
+    const code = await runCli((args) => main(args, { env }), {
+      argv: ['check'],
+      stdout: { write: (chunk: string) => chunks.push(chunk) },
+      exit: () => undefined,
+      command: 'test-all',
+    });
+    vi.restoreAllMocks();
+    expect(code).toBe(1);
+    const line = JSON.parse(chunks.join('')) as { ok: boolean; error: { type: string; message: string } };
+    expect(line).toMatchObject({ ok: false, error: { type } });
+    for (const part of parts) expect(line.error.message).toContain(part);
+  });
+
+  it('documents check in the help and rejects arguments to it', async () => {
+    await expect(run(['check', '--help'])).rejects.toMatchObject({ name: 'HelpRequest', text: expect.stringContaining('test-all check') });
+    await expect(run(['check', 'extra'])).rejects.toMatchObject({ name: 'UsageError', usage: 'test-all check' });
   });
 });

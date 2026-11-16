@@ -33,6 +33,7 @@ import {
   MEMBERSHIP_PROJECTION,
   OWNED_TABLES,
   PERMISSION_PROJECTION,
+  STAGED_OBJECT,
 } from '../../src/repo/tables.js';
 
 const OWNER = 'strategies-content';
@@ -305,12 +306,14 @@ describe('strategies-content units', () => {
     },
   );
 
-  it('leaves file_object, which has no legacy table, and the three projections without a unit or a mapping', () => {
+  it('leaves file_object and staged_object, which have no legacy table, and the three projections without a unit or a mapping', () => {
     const unitless = OWNED_TABLES.filter((definition) => definition.unit === undefined);
     const targets = new Set(mappings.map((mapping) => mapping.targetTable));
 
-    expect(unitless).toStrictEqual([FILE_OBJECT, GROUP_PROJECTION, PERMISSION_PROJECTION, MEMBERSHIP_PROJECTION]);
-    expect(OWNERSHIP.newTables).toContainEqual(expect.objectContaining({ table: `content.${FILE_OBJECT.table}`, owner: OWNER }));
+    expect(unitless).toStrictEqual([FILE_OBJECT, STAGED_OBJECT, GROUP_PROJECTION, PERMISSION_PROJECTION, MEMBERSHIP_PROJECTION]);
+    for (const definition of [FILE_OBJECT, STAGED_OBJECT]) {
+      expect(OWNERSHIP.newTables).toContainEqual(expect.objectContaining({ table: `content.${definition.table}`, owner: OWNER }));
+    }
     expect(unitless.filter((definition) => targets.has(`content.${definition.table}`))).toStrictEqual([]);
   });
 });

@@ -174,7 +174,7 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
       reminder_n: kind === 'survey-launch' ? null : (seed.n ?? 1),
       schedule_time: seed.scheduleTime ?? at(60),
       status: seed.status ?? 'scheduled',
-      target_route: `/internal/v1/tasks/reminders/${cfId(seed.id)}`,
+      target_route: '/internal/v1/tasks/reminders',
       schedule_version: version,
       origin: seed.origin ?? 'event',
       enqueued_at: seed.enqueuedAt === undefined ? at(0) : seed.enqueuedAt,

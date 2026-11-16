@@ -61,7 +61,7 @@ interface ReceiverRecord {
   closed: boolean;
 }
 
-/** One `@google-cloud/pubsub` client the double constructed. */
+/** One `@opt2/platform/events` `PubSub` client the double constructed. */
 interface ClientRecord {
   options: unknown;
   closed: boolean;
@@ -165,7 +165,10 @@ const pubsubDouble = vi.hoisted(() => {
   return { state, PubSub };
 });
 
-vi.mock('@google-cloud/pubsub', () => ({ PubSub: pubsubDouble.PubSub }));
+vi.mock(import('@opt2/platform/events'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, PubSub: pubsubDouble.PubSub as unknown as typeof actual.PubSub };
+});
 
 // Spawning is refused unless a test scripts execFile; the emulator probe answers false unless a test says otherwise.
 vi.mock(import('node:child_process'), async (importOriginal) => {

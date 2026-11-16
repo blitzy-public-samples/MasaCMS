@@ -149,6 +149,8 @@ export interface HeldRow {
   tenantId: string;
   values: Record<string, unknown>;
   legacyProgramId?: number;
+  /** Unit whose row an apply wrote; unset on a seeded row, which every unit whose predicate takes it holds. */
+  unit?: string;
 }
 
 /** One stored object; `unit` is the unit whose first export page lists it in the manifest. */
@@ -187,7 +189,8 @@ export interface OwnerDoubleState {
   readonly name: string;
   /** Applied (non-duplicate) batches, in arrival order. */
   readonly batches: ApplyRequest[];
-  readonly appliedBatchIds: Set<string>;
+  /** Batch receipts: lower-case tenant to its applied batch ids, as `migration_batch (tenant_id, batch_id)` holds them. */
+  readonly appliedBatchIds: Map<string, Set<string>>;
   /** Held rows by lower-case legacy table name without `dbo.`; folded tables under their `Program_N.<table>` name. */
   readonly rows: Map<string, HeldRow[]>;
   /** Legacy columns of each table in catalog order, keyed like `rows`; an apply records its batch columns when unset. */
@@ -349,12 +352,15 @@ function matchText(value: unknown): string {
   return String(value).replace(/ +$/, '').toLowerCase();
 }
 
-/** Row filter of a `<column> = <value>` ownership predicate; any other predicate takes every row. */
-function predicateFilter(target: LegacyTableTarget | undefined): (values: Readonly<Record<string, unknown>>) => boolean {
+/** Row filter of a `<column> = <value>` ownership predicate, judged on a row lacking the column by its apply discriminator; any other predicate takes every row. */
+function predicateFilter(
+  target: LegacyTableTarget | undefined,
+): (values: Readonly<Record<string, unknown>>, discriminator?: string | number) => boolean {
   const [, column, wanted] = /^(\w+)\s*=\s*'?([^'\s]+)'?$/.exec(target?.rowPredicate ?? '') ?? [];
   if (column === undefined || wanted === undefined) return () => true;
-  return (values) => {
-    const value = valuesOver([{ name: column, type: 's' }], values)[column];
+  return (values, discriminator) => {
+    const present = Object.keys(values).some((name) => name.toLowerCase() === column.toLowerCase());
+    const value = present ? valuesOver([{ name: column, type: 's' }], values)[column] : discriminator;
     return value !== null && value !== undefined && matchText(value) === matchText(wanted);
   };
 }
@@ -402,7 +408,7 @@ interface DoubleContext {
 class OwnerDouble implements OwnerDoubleState {
   readonly name: string;
   readonly batches: ApplyRequest[] = [];
-  readonly appliedBatchIds = new Set<string>();
+  readonly appliedBatchIds = new Map<string, Set<string>>();
   readonly rows = new Map<string, HeldRow[]>();
   readonly exportColumns = new Map<string, CanonicalColumn[]>();
   readonly changesScript = new Map<string, ScriptedChangesPage[]>();
@@ -579,34 +585,75 @@ class OwnerDouble implements OwnerDoubleState {
     }
   }
 
-  /** Upserts, inserts or deletes one decoded row in the scope of its tenant and program; false when a delete found nothing. */
+  /** Targets of `mapped`, the owner's of `table`, a batch writes: those `units` name, else all. @throws OwnerCallError 400 for a unit not mapped. */
+  #writableTargets(table: string, mapped: readonly LegacyTableTarget[], units: readonly string[] | undefined): readonly LegacyTableTarget[] {
+    const unmapped = units?.find((unit) => !mapped.some((target) => target.unit === unit));
+    if (unmapped !== undefined) throw invalid(this.name, 'apply', `${this.name} maps ${table} to no unit ${unmapped}`);
+    return units === undefined ? mapped : mapped.filter((target) => units.includes(target.unit));
+  }
+
+  /**
+   * Upserts, inserts or deletes one decoded row as `target`'s row in the scope of its tenant and program, writing only the
+   * key and the target's owned columns; false when a delete found nothing. `mapped` are the owner's targets of the table.
+   */
   #applyRow(
     held: HeldRow[],
+    mapped: readonly LegacyTableTarget[],
+    target: LegacyTableTarget,
     columns: readonly CanonicalColumn[],
     keyNames: readonly string[],
     op: string,
     values: Record<string, unknown>,
     scope: Pick<HeldRow, 'tenantId' | 'legacyProgramId'>,
   ): boolean {
+    const written = unitColumns(columns, target, keyNames);
+    const stored = (base: Readonly<Record<string, unknown>> = {}): HeldRow => ({
+      tenantId: scope.tenantId,
+      values: { ...base, ...valuesOver(written, values) },
+      ...(scope.legacyProgramId === undefined ? {} : { legacyProgramId: scope.legacyProgramId }),
+      unit: target.unit,
+    });
+    if (op === 'insert') {
+      held.push(stored());
+      return true;
+    }
     const identity = (row: Readonly<Record<string, unknown>>): string =>
-      keyNames.length === 0 ? encodeRow(columns, valuesOver(columns, row)) : encodeKey(columns, keyNames, valuesOver(columns, row));
+      keyNames.length === 0 ? encodeRow(written, valuesOver(written, row)) : encodeKey(written, keyNames, valuesOver(written, row));
     const wanted = identity(values);
-    const index = held.findIndex((row) => row.tenantId === scope.tenantId && row.legacyProgramId === scope.legacyProgramId && identity(row.values) === wanted);
+    const takes = predicateFilter(target);
+    let index = held.findIndex(
+      (row) =>
+        row.tenantId === scope.tenantId &&
+        row.legacyProgramId === scope.legacyProgramId &&
+        (row.unit === undefined ? takes(row.values) : row.unit === target.unit) &&
+        identity(row.values) === wanted,
+    );
+    const seeded = held[index];
+    if (seeded !== undefined && seeded.unit === undefined) {
+      // One copy per unit that holds the seeded row, so this write leaves the other units' rows as they were.
+      const copies = mapped
+        .filter((candidate) => predicateFilter(candidate)(seeded.values))
+        .map((candidate): HeldRow => ({ ...seeded, values: { ...seeded.values }, unit: candidate.unit }));
+      held.splice(index, 1, ...copies);
+      index += copies.findIndex((copy) => copy.unit === target.unit);
+    }
     const current = held[index];
     if (op === 'delete') {
       if (current === undefined) return false;
       held.splice(index, 1);
       return true;
     }
-    const row: HeldRow = { tenantId: scope.tenantId, values: { ...values }, ...(scope.legacyProgramId === undefined ? {} : { legacyProgramId: scope.legacyProgramId }) };
-    if (op === 'insert' || current === undefined) held.push(row);
-    else held[index] = { ...row, values: { ...current.values, ...values } };
+    if (current === undefined) held.push(stored());
+    else held[index] = stored(current.values);
     return true;
   }
 
-  /** `POST /apply`: a new batch is stored with one write position; a repeated `batchId` answers `duplicate` with no counts or position, as the owner does. */
+  /**
+   * `POST /apply`: checked as the owner checks it, then a new `(tenant, batchId)` receipt writes each row through the
+   * selected units that take it, with one write position. A repeated receipt answers `duplicate`, with no counts or position,
+   * before row ops and values are checked; a batch failing those checks stays unreceipted.
+   */
   apply(req: ApplyRequest): ApplyResult {
-    if (this.appliedBatchIds.has(req.batchId)) return { batchId: req.batchId, duplicate: true, applied: 0, skipped: 0, writePositions: new Map() };
     const tenantId = this.#tenantOf(req);
     const fold = this.#ctx.catalog.foldProgramTable(req.legacyTable);
     if (fold.programId !== null && req.legacyProgramId !== undefined && req.legacyProgramId !== fold.programId) {
@@ -614,6 +661,11 @@ class OwnerDouble implements OwnerDoubleState {
     }
     const legacyProgramId = fold.programId ?? req.legacyProgramId;
     const keyNames = this.#applyKey(fold.legacyTable, req.columns);
+    const mapped = this.#ctx.catalog.unitsForLegacyTable(fold.legacyTable).filter((target) => target.owner === this.name);
+    const writable = this.#writableTargets(fold.legacyTable, mapped, req.units);
+    const watermark = req.watermark === undefined ? undefined : this.#watermarkOf('apply', { ...req.watermark, legacyTable: req.legacyTable });
+    const receipts = this.appliedBatchIds.get(tenantId) ?? new Set<string>();
+    if (receipts.has(req.batchId)) return { batchId: req.batchId, duplicate: true, applied: 0, skipped: 0, writePositions: new Map() };
     const ops = keyNames.length === 0 ? ['insert', 'delete'] : ['upsert', 'delete'];
     const wrongOp = req.rows.find((input) => !ops.includes(input.op));
     if (wrongOp !== undefined) throw invalid(this.name, 'apply', `${fold.legacyTable} takes ${ops.join(' or ')} rows, not ${wrongOp.op}`);
@@ -624,18 +676,24 @@ class OwnerDouble implements OwnerDoubleState {
       if (error instanceof CanonicalEncodingError) throw invalid(this.name, 'apply', error.message);
       throw error;
     }
-    const watermark = req.watermark === undefined ? undefined : this.#watermarkOf('apply', { ...req.watermark, legacyTable: req.legacyTable });
 
     const key = tableKey(fold.legacyTable);
     if (!this.exportColumns.has(key)) this.exportColumns.set(key, req.columns.map((column) => ({ ...column })));
     const held = this.#held(key);
     const scope = { tenantId, legacyProgramId };
+    const takers = writable.map((target) => ({ target, takes: predicateFilter(target) }));
     let applied = 0;
     req.rows.forEach((input, index) => {
-      if (this.#applyRow(held, req.columns, keyNames, input.op, decoded[index] ?? {}, scope)) applied += 1;
+      const values = decoded[index] ?? {};
+      let wrote = false;
+      for (const { target, takes } of takers) {
+        if (!takes(values, input.discriminator)) continue;
+        if (this.#applyRow(held, mapped, target, req.columns, keyNames, input.op, values, scope)) wrote = true;
+      }
+      if (wrote) applied += 1;
     });
     if (watermark !== undefined) this.watermarks.set(watermarkKey(watermark.legacyTable, watermark.direction), watermark);
-    this.appliedBatchIds.add(req.batchId);
+    this.appliedBatchIds.set(tenantId, receipts.add(req.batchId));
     this.batches.push(structuredClone(req));
     return { batchId: req.batchId, duplicate: false, applied, skipped: req.rows.length - applied, writePositions: new Map([[this.name, this.#write()]]) };
   }
@@ -656,7 +714,7 @@ class OwnerDouble implements OwnerDoubleState {
         (row) =>
           row.tenantId === tenantId &&
           (params.programId === undefined || row.legacyProgramId === params.programId) &&
-          accepts(row.values) &&
+          (row.unit === undefined ? accepts(row.values) : row.unit === params.unit) &&
           (terms === undefined || matchesAny(row.values, terms)),
       );
       if (held.length > 0 && keyColumns === undefined) throw new Error(`Owner double ${this.name}: export columns of ${legacyTable} lack its key`);

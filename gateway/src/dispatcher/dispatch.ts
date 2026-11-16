@@ -11,6 +11,7 @@ import {
 import { REST_CONSUMED_PARAMS_HEADER, isLegacySessionCookie, parseCookieHeader, parseSetCookie } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import {
+  recordLogScope,
   requireRequestContext,
   sendLegacyResponse,
   type Clock,
@@ -45,7 +46,7 @@ import type { SessionStateChecker } from '../session/state-check.js';
 import { DEFAULT_SITE_ID, type TokenCache } from '../session/token-cache.js';
 import type { SessionBarrier } from './barrier.js';
 import { UnreadableBodyError, bodyParamsFrom, type BodyParams } from './body.js';
-import { failClosed, failContextFor, isTargetUnavailable } from './fail-closed.js';
+import { failClosed, failContextFor, isTargetUnavailable, unavailableCauseOf, type FailCause, type FailContext } from './fail-closed.js';
 import {
   forwardToLegacy,
   type LegacyBeforeSendResult,
@@ -54,13 +55,15 @@ import {
   type LegacyUpstream,
 } from './forward-legacy.js';
 import { forwardToTarget } from './forward-target.js';
-import type {
-  LegacyDestination,
-  MatchOutcome,
-  Matcher,
-  RelayDestination,
-  RoutedOutcome,
-  TargetDestination,
+import {
+  RELAY_ALIAS_PREFIX,
+  type LegacyDestination,
+  type MatchOutcome,
+  type Matcher,
+  type RelayDestination,
+  type RoutedOutcome,
+  type TargetDestination,
+  type UnavailableReason,
 } from './match.js';
 import { SAFE_METHODS, isRelayCaller, relayHandler, type RelayDeps } from './relay.js';
 import type { WindowCompleteInput, WriteWindowClient } from './write-window.js';
@@ -74,7 +77,13 @@ export const FREEZE_WAIT_MS = 30_000;
 /** Route of the edge catch-all. */
 export const EDGE_ROUTE_URL = '/*';
 
+/** Route the log lines of a relay alias request carry. */
+export const RELAY_ALIAS_ROUTE = `${RELAY_ALIAS_PREFIX}/:service/*`;
+
 const EDGE_ROUTE_CONFIG: Opt2RouteConfig = Object.freeze({ public: true, edge: true });
+
+/** Namespace of the gateway's own routes; the edge dispatches nothing under it. */
+const INTERNAL_NAMESPACE = '/internal/v1';
 
 /** Entry kinds whose requests read the epoch and register in `gateway.inflight` before they are routed. */
 const WRITE_KINDS: ReadonlySet<EntryKind> = new Set<EntryKind>(['write', 'legacy-write', 'job']);
@@ -199,6 +208,12 @@ function keyed(outcome: MatchOutcome): RoutedOutcome {
   return outcome;
 }
 
+/** Route a request's log lines carry: its matched entry's route key, else its computed key; {@link RELAY_ALIAS_ROUTE} for the relay alias. */
+function loggedRouteOf(outcome: MatchOutcome): string {
+  if (outcome.result === undefined) return RELAY_ALIAS_ROUTE;
+  return outcome.entry?.route ?? outcome.result.key;
+}
+
 /** The entry when its requests register as writes. */
 function writeEntryOf(outcome: RoutedOutcome): CutoverEntry | undefined {
   return outcome.entry !== undefined && WRITE_KINDS.has(outcome.entry.kind) ? outcome.entry : undefined;
@@ -219,6 +234,13 @@ function sameUnits(a: readonly string[], b: readonly string[]): boolean {
 function pathOf(url: string): string {
   const queryAt = url.indexOf('?');
   return queryAt === -1 ? url : url.slice(0, queryAt);
+}
+
+/** Whether the router reads `url` as in the gateway's own namespace: the path before `?` or `#`, percent-decoded, case-sensitive. */
+function isInternalPath(url: string): boolean {
+  // The router decoded the same path before matching, so decodeURI cannot throw here.
+  const path = decodeURI(url.split(/[?#]/, 1)[0] ?? url);
+  return path === INTERNAL_NAMESPACE || path.startsWith(`${INTERNAL_NAMESPACE}/`);
 }
 
 function userAgentOf(request: FastifyRequest): string | undefined {
@@ -300,10 +322,28 @@ function clientTargetSetCookies(jar: JarCookies, setCookies: readonly string[], 
   });
 }
 
+/** Fail-closed cause of a destination the gateway cannot serve. */
+function unservedCause(reason: UnavailableReason, ctx: FailContext): FailCause {
+  if (reason === 'no-active-version') return { reason: 'no cut-over version is active' };
+  if (reason === 'admin-unmapped') return { reason: 'admin action has no web mapping' };
+  return { reason: `${ctx.owner ?? 'owning service'} has no service URL` };
+}
+
+/** Fail-closed cause of an entry whose freeze outlasted the wait, which no unavailability caused. */
+function frozenCause(ctx: FailContext): FailCause {
+  return { reason: `${ctx.owner ?? 'route'} entry frozen past the ${FREEZE_WAIT_MS} ms wait`, level: 'warn' };
+}
+
+/** Fail-closed cause of an unavailable dependency that stopped a request before it was forwarded. */
+function beforeForwardingCause(error: unknown, ctx: FailContext): FailCause {
+  const to = ctx.owner === undefined ? '' : ` to ${ctx.owner}`;
+  return { reason: `${unavailableCauseOf(error)} before forwarding${to}`, error };
+}
+
 /** Answers a destination the gateway serves itself: the legacy-shaped 503 or a body-less status. */
 function answer(reply: FastifyReply, outcome: RoutedOutcome): void {
   const { destination } = outcome;
-  if (destination.kind === 'unavailable') failClosed(reply, outcome.failContext);
+  if (destination.kind === 'unavailable') failClosed(reply, outcome.failContext, unservedCause(destination.reason, outcome.failContext));
   else if (destination.kind === 'bare') reply.code(destination.status).send();
 }
 
@@ -326,6 +366,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       if (error instanceof AuthDenial) return sendLegacyResponse(reply, renderAuthDenial(error, request));
       throw error;
     }
+    recordLogScope(request, { tenantId: verified.user?.tid, userId: verified.user?.sub });
     const caller = verified.service;
     if (!isRelayCaller(caller)) return sendLegacyResponse(reply, renderAuthDenial(AuthDenial.forbidden(), request));
     const auth = { userToken: verified.userToken, user: verified.user, caller };
@@ -381,7 +422,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         const route = outcome.entry?.route;
         if (route === undefined || !state.isFrozen(route)) return { outcome, index };
         if (!(await unfrozenBy(route, deadline))) {
-          failClosed(ex.reply, outcome.failContext);
+          failClosed(ex.reply, outcome.failContext, frozenCause(outcome.failContext));
           return undefined;
         }
         index = state.active();
@@ -400,7 +441,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       if (state.isFrozen(entry.route)) {
         await ex.dropRow();
         if (!(await unfrozenBy(entry.route, deadline))) {
-          failClosed(ex.reply, current.failContext);
+          failClosed(ex.reply, current.failContext, frozenCause(current.failContext));
           return undefined;
         }
         outcome = current;
@@ -466,7 +507,9 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         if (check.state === 'active') {
           sessionId = resolution.sessionId;
           jar = resolution.legacyCookies;
-          userToken = await deps.tokenCache.get(sessionId, await tokenSiteOf(result, destination, sessionId), check.epoch);
+          const minted = await deps.tokenCache.get(sessionId, await tokenSiteOf(result, destination, sessionId), check.epoch);
+          userToken = minted.token;
+          recordLogScope(request, { tenantId: minted.claims.tid, userId: minted.claims.sub });
         } else {
           await deps.invalidation.afterTargetLogout(resolution.sessionId, { userAgent });
         }
@@ -650,6 +693,11 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
   };
 
   return async (request, reply) => {
+    // A method or path the gateway's own routes lack answers service-kit's legacy 404, never legacy or a target.
+    if (isInternalPath(request.url)) {
+      reply.callNotFound();
+      return reply;
+    }
     const { requestId } = requireRequestContext();
     let body: BodyParams;
     try {
@@ -657,11 +705,11 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     } catch (error) {
       if (!(error instanceof UnreadableBodyError)) throw error;
       // Without the body's params the route key is unknown, so neither side may serve the request.
-      request.log.warn({ error: serializeError(error) }, 'edge request body unreadable');
-      return failClosed(reply, failContextFor(undefined, request.url));
+      return failClosed(reply, failContextFor(undefined, request.url), { reason: 'request body unreadable', error, level: 'warn' });
     }
     const index = state.active();
     const first = await matcher.match(request, body, index);
+    recordLogScope(request, { route: loggedRouteOf(first) });
     if (first.result === undefined) return relay(request, reply, first.destination);
     const ex = new Exchange(request, reply, requestId, body, deps);
     try {
@@ -674,8 +722,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     } catch (error) {
       await ex.release();
       if (!isTargetUnavailable(error)) throw error;
-      request.log.warn({ error: serializeError(error) }, 'edge dependency unavailable before forwarding');
-      return failClosed(reply, first.failContext);
+      return failClosed(reply, first.failContext, beforeForwardingCause(error, first.failContext));
     } finally {
       await ex.release();
     }

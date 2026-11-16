@@ -2,8 +2,7 @@
 import { createHash } from 'node:crypto';
 
 import type { Logger } from '@opt2/platform/logging';
-import { tenantIdForSite, type MetadataTx, type TenantDb } from '@opt2/platform/tenancy';
-import type { QueryResult, QueryResultRow } from 'pg';
+import { tenantIdForSite, type MetadataTx, type QueryResult, type QueryResultRow, type TenantDb } from '@opt2/platform/tenancy';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { MigrationContext } from '../../src/context.js';

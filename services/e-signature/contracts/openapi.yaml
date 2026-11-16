@@ -1044,11 +1044,15 @@ paths:
     post:
       operationId: createSignatureRequest
       summary: Creates a PENDING request for one signer and appends its `created` audit entry.
+      description: Identity consumes the CSRF pair for the empty context of the request collection, as the fixture create does.
       tags:
         - v1
       x-opt2-transport: service
       x-opt2-requires:
         - esignature.signer
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         required: true
         content:
@@ -1066,7 +1070,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SignatureRequest'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -1115,12 +1119,15 @@ paths:
     post:
       operationId: signRequest
       summary: Signs a PENDING request with the signer's typed name and appends its `signed` audit entry.
-      description: Only the request's designated signer may sign; the typed name is stored as sent.
+      description: Only the request's designated signer may sign; the typed name is stored as sent. Identity consumes the CSRF pair for the context of the path `{id}` as sent, as the fixture sign does.
       tags:
         - v1
       x-opt2-transport: service
       x-opt2-requires:
         - esignature.signer
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         required: true
         content:
@@ -1138,7 +1145,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SignatureRequest'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -1223,13 +1230,16 @@ paths:
     post:
       operationId: verifySuppliedChain
       summary: Recomputes a supplied copy of the request's audit chain for the verify screen.
-      description: The copy is hashed in array order against the stored request id; nothing is stored.
+      description: The copy is hashed in array order against the stored request id; nothing is stored. Identity consumes the CSRF pair for the context of the path `{id}` as sent, as the fixture supplied verify does.
       tags:
         - v1
       x-opt2-transport: service
       x-opt2-requires:
         - esignature.signer
         - esignature.auditor
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         required: true
         content:
@@ -1244,7 +1254,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/VerifyResult'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -1984,7 +1994,7 @@ components:
           schema:
             $ref: '#/components/schemas/FixtureErrorEnvelope'
     FixtureWriteBadRequest:
-      description: '`invalidTokens` (`Invalid CSRF tokens`): no valid CSRF token of the request id context, empty for `esignature/requests`; or `invalidParameters` (`Invalid parameters`): an unknown site, invalid document, signer, typed name or supplied chain.'
+      description: '`invalidTokens` (`Invalid CSRF tokens`): no valid CSRF token of the request id context, empty for the request collection (`esignature/requests` and `/v1/esignature/requests`); or `invalidParameters` (`Invalid parameters`): an unknown site, invalid document, signer, typed name or supplied chain.'
       headers:
         Generator:
           $ref: '#/components/headers/Generator'

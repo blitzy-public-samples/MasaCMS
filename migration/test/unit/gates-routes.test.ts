@@ -1,5 +1,5 @@
-// Unit tests for the `gatesList` route over fake lease and owner-gate reads: declaration, answers, owner unavailability,
-// the legacy 400, auth, and the bound reads of `gateReadsOf`.
+// Unit tests for the `gatesList` route over fake lease and owner-gate reads: declaration, answers, paging, owner
+// unavailability, the legacy 400, auth, and the bound reads of `gateReadsOf`.
 import { readFileSync } from 'node:fs';
 
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
@@ -206,6 +206,71 @@ describe('answers', () => {
   });
 });
 
+describe('paging', () => {
+  const ALL = CATALOG_UNITS.map((unit) => unit.id);
+
+  /** Every unit of `ids` held by the window, with its owner's open gate. */
+  function heldPage(ids: readonly string[]) {
+    return ids.map((id) => ({
+      unit: id,
+      owner: catalog.unit(id).owner,
+      lease: { holderId: WINDOW_ID, kind: 'window', acquiredAt: '2026-06-30T12:00:00.000Z' },
+      gate: { state: 'open', holderId: null, phase: 'quiet' },
+    }));
+  }
+
+  beforeEach(() => {
+    leases.mockImplementation((ids) => Promise.resolve(ids.map((unit) => ({ unit, holderId: WINDOW_ID, kind: 'window' as const, acquiredAt: ACQUIRED }))));
+    ownerGates.mockImplementation(gatesFrom(Object.fromEntries(ALL.map((id) => [id, OPEN]))));
+  });
+
+  it.each([
+    ['the first page with the cursor of the next', '?limit=2', ['identity.user_account', 'people.person'], 'people.person'],
+    ['a follow-up page after the cursor', '?limit=1&cursor=people.person', ['people.person_archive'], 'people.person_archive'],
+    ['the last page without a cursor', '?limit=2&cursor=people.person', ['people.person_archive', 'content.content'], undefined],
+    ['every unit after the cursor without a limit', '?cursor=identity.user_account', ALL.slice(1), undefined],
+    ['a page as long as the remaining units without a cursor', '?limit=4', ALL, undefined],
+    ['the largest page size', '?limit=500', ALL, undefined],
+    [
+      'a page of the unit filter in its order',
+      '?units=content.content,people.person,identity.user_account&cursor=content.content&limit=1',
+      ['people.person'],
+      'people.person',
+    ],
+  ])('answers %s, reading leases and gates of its units only', async (_label, query, ids, nextCursor) => {
+    const res = await get(query, await asOperator());
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ units: heldPage(ids), ...(nextCursor === undefined ? {} : { nextCursor }) });
+    expect(leases.mock.calls).toEqual([[ids]]);
+    expect(ownerGates.mock.calls.flatMap(([, units]) => units).sort()).toEqual([...ids].sort());
+  });
+
+  it('lists the unpaged units once each, in order, when the cursors are followed', async () => {
+    const seen: string[] = [];
+    let query = '?limit=3';
+    for (;;) {
+      const body = (await get(query, await asOperator())).json() as { units: { unit: string }[]; nextCursor?: string };
+      seen.push(...body.units.map((entry) => entry.unit));
+      if (body.nextCursor === undefined) break;
+      query = `?limit=3&cursor=${body.nextCursor}`;
+    }
+    expect(seen).toEqual(ALL);
+  });
+
+  it.each([
+    ['the cursor names the last unit of the catalog', '?cursor=content.content'],
+    ['the cursor names the last unit of the filter', '?units=people.person,content.content&cursor=content.content&limit=5'],
+  ])('answers an empty page without reading leases or gates when %s', async (_label, query) => {
+    const res = await get(query, await asOperator());
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ units: [] });
+    expect(leases).not.toHaveBeenCalled();
+    expect(ownerGates).not.toHaveBeenCalled();
+  });
+});
+
 describe('owner unavailability', () => {
   it.each([
     ['unreachable', new ServiceUnavailableError('people', new Error('ECONNREFUSED'))],
@@ -237,7 +302,7 @@ describe('owner unavailability', () => {
   });
 });
 
-describe('invalid unit filters', () => {
+describe('invalid queries', () => {
   it.each([
     ['an empty list', '?units='],
     ['an upper-case id', '?units=People.person'],
@@ -245,6 +310,17 @@ describe('invalid unit filters', () => {
     ['a trailing comma', '?units=people.person,'],
     ['a repeated parameter', '?units=people.person&units=content.content'],
     ['an unknown unit', '?units=people.person,people.unknown'],
+    ['a zero limit', '?limit=0'],
+    ['a limit above 500', '?limit=501'],
+    ['a non-numeric limit', '?limit=abc'],
+    ['a negative limit', '?limit=-1'],
+    ['a fractional limit', '?limit=1.5'],
+    ['an empty limit', '?limit='],
+    ['a repeated limit', '?limit=1&limit=2'],
+    ['a cursor naming no unit', '?cursor=people.unknown'],
+    ['a cursor outside the unit filter', '?units=people.person&cursor=content.content'],
+    ['an empty cursor', '?cursor='],
+    ['a repeated cursor', '?cursor=people.person&cursor=content.content'],
   ])('answer %s with the legacy 400 without reading leases or gates', async (_label, query) => {
     const res = await get(query, await asOperator());
 
@@ -289,30 +365,38 @@ describe('gateReadsOf', () => {
     { unit: 'content.content', holderId: TRANSITION_ID, kind: 'transition', acquiredAt: ACQUIRED },
   ];
 
-  /** `migration.unit_lease` answering the holder and per-holder lease reads of the lease module. */
-  function leaseDb(): TenantDb {
+  const UNITS_LEASES_SQL = 'SELECT unit, holder_id, kind, acquired_at FROM migration.unit_lease WHERE unit = ANY($1::text[])';
+
+  /** `migration.unit_lease` answering the lease module's read of the units' leases; `log` records each transaction's statements. */
+  function leaseDb(log: { text: string; values: unknown[] }[][] = []): TenantDb {
     const record = (lease: LeaseRow) => ({ unit: lease.unit, holder_id: lease.holderId, kind: lease.kind, acquired_at: lease.acquiredAt });
-    const query = (text: string, values: unknown[]) => {
-      if (/WHERE unit = ANY/.test(text)) {
-        const units = new Set(values[0] as string[]);
-        return Promise.resolve({ rows: STORED.filter((lease) => units.has(lease.unit)).map(record) });
-      }
-      if (/WHERE holder_id = \$1$/.test(text)) return Promise.resolve({ rows: STORED.filter((lease) => lease.holderId === values[0]).map(record) });
-      return Promise.reject(new Error(`unexpected statement: ${text}`));
-    };
-    const tx = { schema: 'migration', query } as unknown as MetadataTx;
-    return { withMetadata: (fn: (t: MetadataTx) => Promise<unknown>) => fn(tx) } as unknown as TenantDb;
+    return {
+      withMetadata: (fn: (t: MetadataTx) => Promise<unknown>) => {
+        const statements: { text: string; values: unknown[] }[] = [];
+        log.push(statements);
+        const query = (text: string, values: unknown[]) => {
+          statements.push({ text, values });
+          if (text !== UNITS_LEASES_SQL) return Promise.reject(new Error(`unexpected statement: ${text}`));
+          const units = new Set(values[0] as string[]);
+          return Promise.resolve({ rows: STORED.filter((lease) => units.has(lease.unit)).map(record) });
+        };
+        return fn({ schema: 'migration', query } as unknown as MetadataTx);
+      },
+    } as unknown as TenantDb;
   }
 
-  it('reads the requested units leases with kind and time, through each distinct holder', async () => {
-    const reads = gateReadsOf({ db: leaseDb(), owners: {} as OwnersClient } as Pick<MigrationContext, 'db' | 'owners'>);
+  it("reads every holder's leases of the requested units, with kind and time, in one query sorted by unit", async () => {
+    const log: { text: string; values: unknown[] }[][] = [];
+    const reads = gateReadsOf({ db: leaseDb(log), owners: {} as OwnersClient } as Pick<MigrationContext, 'db' | 'owners'>);
+    const units = ['people.person', 'content.content', 'timesheets.blackout'];
 
-    const rows = await reads.leases(['people.person', 'content.content', 'timesheets.blackout']);
+    const rows = await reads.leases(units);
 
-    expect(rows.sort((a, b) => a.unit.localeCompare(b.unit))).toEqual([
+    expect(rows).toEqual([
       { unit: 'content.content', holderId: TRANSITION_ID, kind: 'transition', acquiredAt: ACQUIRED },
       { unit: 'people.person', holderId: WINDOW_ID, kind: 'window', acquiredAt: ACQUIRED },
     ]);
+    expect(log).toEqual([[{ text: UNITS_LEASES_SQL, values: [units] }]]);
   });
 
   it('reads an owner gate rows through the status operation, which changes no gate', async () => {

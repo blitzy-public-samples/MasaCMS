@@ -1,9 +1,12 @@
 // Read-only model of the gateway's committed cut-over versions and groups, and the authority and transition sets they imply.
 import { readFileSync } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 import { normaliseRouteKey } from '@opt2/platform/legacy-compat';
 
-import { cutoverVersionFile } from '../paths.js';
+import type { ResolvedPaths } from '../config.js';
+import { cutoverVersionFile, cutoverVersionsDir } from '../paths.js';
 
 /** Write authority of a unit, and routing state of an entry. */
 export type Authority = 'legacy' | 'target';
@@ -98,24 +101,71 @@ export class CutoverDataError extends Error {
 /** Route key of the admin login action, whose group decides the session mode. */
 export const LOGIN_ROUTE_KEY = 'admin:clogin.login';
 
+const VERSION_FILE = /^v\d{4}\.json$/;
+
+/** Parsed version files by absolute path; only files that parsed and named their own version. */
+const loadedVersions = new Map<string, CutoverVersion>();
+/** Parsed groups files by absolute path. */
+const loadedGroups = new Map<string, GroupsFile>();
+
 function byRoute(a: CutoverEntry | ChangedEntry, b: CutoverEntry | ChangedEntry): number {
   if (a.route === b.route) return 0;
   return a.route < b.route ? -1 : 1;
 }
 
-/** Reads `<cutoverDir>/versions/<v>.json`; `cutoverDir` must be absolute. */
-export function loadVersion(cutoverDir: string, v: string): CutoverVersion {
-  const file = cutoverVersionFile(cutoverDir, v);
-  const version = JSON.parse(readFileSync(file, 'utf8')) as CutoverVersion;
+/** Freezes parsed JSON at every level, so a shared file throws on any write instead of changing for every reader. */
+function deepFreeze<T>(value: T): T {
+  if (typeof value === 'object' && value !== null) {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/** Parses version file `file` as version `v` and keeps it. @throws CutoverDataError when it declares another version */
+function rememberVersion(file: string, v: string, text: string): CutoverVersion {
+  const version = JSON.parse(text) as CutoverVersion;
   if (version.tableVersion !== v) {
     throw new CutoverDataError(`${file} declares tableVersion "${version.tableVersion}", expected "${v}"`);
   }
+  loadedVersions.set(file, deepFreeze(version));
   return version;
 }
 
-/** Reads the groups file at the given absolute path. */
+/** Parses the groups file at absolute path `file` and keeps it. */
+function rememberGroups(file: string, text: string): GroupsFile {
+  const groups = deepFreeze(JSON.parse(text) as GroupsFile);
+  loadedGroups.set(file, groups);
+  return groups;
+}
+
+/** Frozen `<cutoverDir>/versions/<v>.json`, read once per path; `cutoverDir` must be absolute. */
+export function loadVersion(cutoverDir: string, v: string): CutoverVersion {
+  const file = cutoverVersionFile(cutoverDir, v);
+  return loadedVersions.get(file) ?? rememberVersion(file, v, readFileSync(file, 'utf8'));
+}
+
+/** Frozen groups file at the given absolute path, read once per path. */
 export function loadGroups(groupsFile: string): GroupsFile {
-  return JSON.parse(readFileSync(groupsFile, 'utf8')) as GroupsFile;
+  const file = path.resolve(groupsFile);
+  return loadedGroups.get(file) ?? rememberGroups(file, readFileSync(groupsFile, 'utf8'));
+}
+
+/**
+ * Reads groups.json and every `versions/vNNNN.json` not yet loaded without blocking, so later loads are served from memory.
+ * @throws CutoverDataError for a version declaring another version, or the read or parse error of a file; nothing failed is kept.
+ */
+export async function preloadCutover(paths: Pick<ResolvedPaths, 'cutoverDir' | 'groupsFile'>): Promise<void> {
+  const names = (await readdir(cutoverVersionsDir(paths.cutoverDir))).filter((name) => VERSION_FILE.test(name));
+  const groupsFile = path.resolve(paths.groupsFile);
+  await Promise.all([
+    loadedGroups.has(groupsFile) ? undefined : readFile(groupsFile, 'utf8').then((text) => rememberGroups(groupsFile, text)),
+    ...names.map(async (name) => {
+      const v = name.slice(0, -'.json'.length);
+      const file = cutoverVersionFile(paths.cutoverDir, v);
+      if (!loadedVersions.has(file)) rememberVersion(file, v, await readFile(file, 'utf8'));
+    }),
+  ]);
 }
 
 /** Authority of every unit of every group under `version`, in groups-file order. */

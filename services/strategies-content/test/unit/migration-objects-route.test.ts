@@ -316,15 +316,29 @@ describe.skipIf(!(await pgAvailable()))('migration object routes', () => {
     const key = `${TENANT_A.tenantId}/${REMOVED_ID}_small.png`;
     expect((await call('POST', putQuery(REMOVED_ID, bytes, { variant: '_small' }), headers, bytes)).json()).toMatchObject({ key, created: true });
 
+    /** The newest `count` changelog rows of tenant-a, newest first. */
+    const latest = async (count: number) =>
+      (
+        await handle.app.withTenant(TENANT_A.tenantId, (tx) =>
+          tx.query<{ xid: string; table: string; op: string; origin: string }>(
+            `SELECT xid::text AS xid, "table", op, origin FROM ${handle.schema}.changelog ORDER BY seq DESC LIMIT $1`,
+            [count],
+          ),
+        )
+      ).rows;
+    const xid = expect.stringMatching(/^\d+$/);
+
     const res = await call('DELETE', { key }, headers);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ key, deleted: true });
-    const { rows: logged } = await handle.app.withTenant(TENANT_A.tenantId, (tx) =>
-      tx.query<{ xid: string; op: string; origin: string }>(
-        `SELECT xid::text AS xid, op, origin FROM ${handle.schema}.changelog WHERE "table" = 'file_object' ORDER BY seq DESC LIMIT 1`,
-      ),
-    );
-    expect(logged).toEqual([{ xid: expect.stringMatching(/^\d+$/), op: 'delete', origin: 'migration-feed' }]);
+    // The intent is staged, the row deleted, then the intent settled, each in a transaction of its own.
+    const logged = await latest(3);
+    expect(logged).toEqual([
+      { xid, table: 'staged_object', op: 'delete', origin: 'migration-feed' },
+      { xid, table: 'file_object', op: 'delete', origin: 'migration-feed' },
+      { xid, table: 'staged_object', op: 'insert', origin: 'migration-feed' },
+    ]);
+    expect(new Set(logged.map((change) => change.xid)).size).toBe(3);
     expect(res.headers[WRITE_POSITION_HEADER_LC]).toBe(`strategies-content=${String(logged[0]?.xid)}`);
     expect(await storage.head(CONTENT_FILES_BUCKET, key)).toBeNull();
     expect(await recorded(key)).toEqual({ rows: 0, intents: 0 });
@@ -333,7 +347,13 @@ describe.skipIf(!(await pgAvailable()))('migration object routes', () => {
     const repeat = await call('DELETE', { key }, headers);
     expect(repeat.statusCode).toBe(200);
     expect(repeat.json()).toEqual({ key, deleted: false });
-    expect(repeat.headers[WRITE_POSITION_HEADER_LC]).toBeUndefined();
+    // A repeat deletes no row, so only its own intent is logged.
+    const repeated = await latest(2);
+    expect(repeated).toEqual([
+      { xid, table: 'staged_object', op: 'delete', origin: 'migration-feed' },
+      { xid, table: 'staged_object', op: 'insert', origin: 'migration-feed' },
+    ]);
+    expect(repeat.headers[WRITE_POSITION_HEADER_LC]).toBe(`strategies-content=${String(repeated[0]?.xid)}`);
   });
 
   it.each<[string, Buffer | undefined]>([

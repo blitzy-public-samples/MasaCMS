@@ -60,6 +60,7 @@ import {
   PUBLIC_SUBMISSION_APPROVAL,
   REMOTE_POINTER,
   SOURCE_MAP,
+  STAGED_OBJECT,
   TRASH,
   VARIATION_TARGETING,
   type ApprovalActionRow,
@@ -1696,16 +1697,21 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
 
   // ---- stats ----
 
-  /** Serialises the stats writers of one item, whether or not its row exists, until `tx` ends; the unit's write gate is taken first. */
-  function lockStatsItem(tx: TenantTx, args: StatsKey, ctx: Ctx): Promise<void> {
-    const item = [args.contentId, args.siteId].map((id) => id.toLowerCase().replace(/ +$/u, '')).join(':');
-    const units = unitsOf(CONTENT_STATS);
+  /** Serialises the writers of one `def` item, keyed by `ids`, whether or not its row exists, until `tx` ends; the unit's write gate is taken first. */
+  function lockWriters(tx: TenantTx, def: TableDef, ids: readonly string[], ctx: Ctx): Promise<void> {
+    const item = ids.map((id) => id.toLowerCase().replace(/ +$/u, '')).join(':');
+    const units = unitsOf(def);
     return platform.read(tx, [], async () => {
       if (ctx?.authority === undefined && units.length > 0) {
         await acquireWriteGates(tx, units);
       }
-      await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`${schema}.${CONTENT_STATS.table}:${tx.tenantId}:${item}`]);
+      await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`${schema}.${def.table}:${tx.tenantId}:${item}`]);
     });
+  }
+
+  /** Serialises the stats writers of one item, whether or not its row exists, until `tx` ends; the unit's write gate is taken first. */
+  function lockStatsItem(tx: TenantTx, args: StatsKey, ctx: Ctx): Promise<void> {
+    return lockWriters(tx, CONTENT_STATS, [args.contentId, args.siteId], ctx);
   }
 
   /** contentStatsBean.load then save: applies `changes` to the item's stats row, or inserts it from the bean defaults. */
@@ -1734,6 +1740,11 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
 
   const stats = {
     upsertStats,
+
+    /** The `cflock` raterManager.saveRate and contentManager.setCommentStat take on an item's stats, held until `tx` ends. */
+    lockItem(tx: TenantTx, args: StatsKey, ctx?: WriteContext): Promise<void> {
+      return lockStatsItem(tx, args, ctx);
+    },
 
     /** contentManager lock: records the user and type holding the item's lock. */
     setLock(tx: TenantTx, args: StatsKey & { lockId: string; lockType: string }, ctx?: WriteContext): Promise<ContentStatsRow> {
@@ -1792,6 +1803,27 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
         [tx.tenantId, ...p.values],
       );
       return rows[0] ?? null;
+    },
+
+    /**
+     * rateBean.save: sets `rate` and `entered` on every row of the user's rating of the item, or inserts it; the writers of
+     * one rating serialise until `tx` ends. An empty id is stored as NULL, as the bean's insert binds it.
+     * @returns the rows as stored.
+     */
+    async saveRating(tx: TenantTx, args: StatsKey & { userId: string; rate: number; entered: Date }, ctx?: WriteContext): Promise<ContentRatingRow[]> {
+      await lockWriters(tx, CONTENT_RATING, [args.contentId, args.userId, args.siteId], ctx);
+      const current = await lockRows<ContentRatingRow>(
+        tx,
+        CONTENT_RATING,
+        (p) => `${idEq(p, 'contentid', args.contentId)} AND ${ciEq(p, 'userid', args.userId)} AND siteid = ${p.add(args.siteId)}`,
+        ctx,
+      );
+      const values = { rate: args.rate, entered: args.entered };
+      if (current.length > 0) {
+        return updateEach(tx, CONTENT_RATING, current, values, ctx);
+      }
+      const row = { contentid: nullIfEmpty(args.contentId), userid: nullIfEmpty(args.userId), siteid: nullIfEmpty(args.siteId), ...values };
+      return [await platform.insert<ContentRatingRow>(tx, CONTENT_RATING.table, row, ctx)];
     },
 
     /** raterManager.getAvgRating: SQL Server's integer `avg(rate)` with the vote counts; null for an unrated item. */
@@ -1980,6 +2012,24 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     async deleteFileObject(tx: TenantTx, args: { objectKey: string }, ctx?: WriteContext): Promise<FileObjectRow | null> {
       await gateFileObjectWrite(tx, ctx);
       return platform.delete<FileObjectRow>(tx, FILE_OBJECT.table, { object_key: args.objectKey }, ctx);
+    },
+
+    // Intent writes take no gate: recovery settles intents while a window import holds content.file.
+
+    /** Records a publication intent; `recorded_at` takes its column default. */
+    async insertStagedObject(tx: TenantTx, entry: fileQueries.StagedObjectEntry, ctx?: WriteContext): Promise<void> {
+      const { tenant_id: _tenant, ...row } = entry;
+      await platform.insert(tx, STAGED_OBJECT.table, row, ctx);
+    },
+
+    /** Marks an intent whose publication commits with a backup of the replaced version still stored. */
+    async markStagedObjectCommitted(tx: TenantTx, stageId: string, ctx?: WriteContext): Promise<void> {
+      await platform.update(tx, STAGED_OBJECT.table, { stage_id: stageId }, { state: 'committed' }, ctx);
+    },
+
+    /** Removes a settled intent. */
+    async deleteStagedObject(tx: TenantTx, stageId: string, ctx?: WriteContext): Promise<void> {
+      await platform.delete(tx, STAGED_OBJECT.table, { stage_id: stageId }, ctx);
     },
 
     /** contentFileMetaDataBean.save of a new row, under a new CF UUID. */

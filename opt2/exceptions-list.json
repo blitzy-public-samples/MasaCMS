@@ -272,7 +272,7 @@
       "appliesTo": [],
       "difference": "Legacy `carch.imagedetails`, a view without a controller method, copies each listed file's missing `_source` rendition with `fileManager.touchSourceImage` (admin/core/views/carch/imagedetails.cfm:82-83) and prints per file the small, medium and large rendition widths, heights and ratios, read from `tsettings` through `$.siteConfig` (imagedetails.cfm:22-38,122-131,163-172), and the site's custom image sizes from `getSite(siteid).getCustomImageSizeIterator()`, which reads `timagesizes` (imagedetails.cfm:135,176; core/mura/settings/settingsBean.cfc:1276-1288). strategies-content answers every request with the legacy-shaped 503 after `before()`, ahead of any read or `_source` copy.",
       "decision": "preserve",
-      "reason": "Equivalence is impossible: each file the view prints needs the site's rendition sizes and custom image sizes, and strategies-content has no verified source of them. The tenant registry holds only site and tenant ids, pools and domains (platform/src/tenancy/registry.ts), `programs-sites.site.changed.v1` carries none of these settings, and programs-sites `getSite` and `listImageSizes` answer only `s2` and `site-admin` callers, while the topology lets strategies-content call identity alone (infra/terraform/envs/plan/topology.auto.tfvars.json). strategies-content therefore fails closed with the legacy-shaped 503 naming the halt reason `carch-imagedetails-halted`, and `admin:carch.imagedetails` stays `legacy` in every cut-over version. The entry closes when strategies-content reads these settings through a programs-sites contract or projection.",
+      "reason": "Equivalence is impossible: each file the view prints needs the site's rendition sizes and custom image sizes, and strategies-content has no verified source of them. The tenant registry holds only site and tenant ids, pools and domains (platform/src/tenancy/registry.ts), `programs-sites.site.changed.v1` carries none of these settings, and programs-sites serves the rendition sizes only through `getSite`, which answers only `s2` and `site-admin` callers; strategies-content reads only the custom image sizes, through `listSiteCustomImageSizes` (services/programs-sites/contracts/openapi.yaml). strategies-content therefore fails closed with the legacy-shaped 503 naming the halt reason `carch-imagedetails-halted`, and `admin:carch.imagedetails` stays `legacy` in every cut-over version. The entry closes when strategies-content reads these settings through a programs-sites contract or projection.",
       "status": "halted",
       "evidence": {
         "golden": "harness/golden/sets/GS-CO-17.json",
@@ -492,6 +492,35 @@
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     },
     {
+      "id": "EX-VARIATIONTARGETING-REGISTRATION",
+      "scenario": "GS-CO-19",
+      "routeKey": "api:variationtargeting.findproperties",
+      "appliesTo": [
+        "api:variationtargeting.findone",
+        "api:variationtargeting.findall",
+        "api:variationtargeting.findmany",
+        "api:variationtargeting.findnew",
+        "api:variationtargeting.findquery",
+        "api:variationtargeting.findpermissions",
+        "rest:variationtargeting.findproperties",
+        "rest:variationtargeting.findone",
+        "rest:variationtargeting.findall",
+        "rest:variationtargeting.findmany",
+        "rest:variationtargeting.findnew",
+        "rest:variationtargeting.findquery",
+        "rest:variationtargeting.findpermissions"
+      ],
+      "difference": "With configBean `variations` off, legacy leaves `variationTargeting` unregistered at start-up (core/mura/client/api/json/v1/jsonApiUtility.cfc:103-105) until a `findProperties` of it registers it on the site's JSON API instance: getEntityConfig inserts `{public=false}` before any property is read (124-129, 1559), on the instance settingsBean caches per site (core/mura/settings/settingsBean.cfc:1249-1254) and the json, ajax and REST families share (core/mura/content/contentServer.cfc:610-636). From then AllowAccess grants the finders and the `findpermissions` `read` to the Content module (jsonApiUtility.cfc:1686-1736; core/mura/bean/bean.cfc:1499-1521) until the site beans are rebuilt by settingsManager.setSites (core/mura/settings/settingsManager.cfc:440-486): application start and `?appreload` (core/appcfc/onApplicationStart_include.cfm:794), a site create, update or delete (settingsManager.cfc:295,320,403; admin/core/controllers/csettings.cfc:193), a bundle deploy (core/mura/publisher.cfc:376) and the reverse projector's `site.cfm?op=refresh`, or a ColdFusion restart. Legacy also registers it on the `default` site from an in-process call no request carries, beanORM.getPropertiesAsJSON (core/mura/bean/beanORM.cfc:1044-1046). strategies-content registers the entity for a site on its own `findproperties`, whatever the family or the answer, and keeps it until the service instance stops (services/strategies-content/src/routes/jsonapi/variation-targeting.ts): it sees none of those resets or in-process calls, and every instance, a Cloud Run instance started after scaling to zero included, begins unregistered. Once one side holds a site's registration and the other does not, a Content-module read answers 401 `authorization` on one and 200 on the other, and `findpermissions` reports `read` false against true.",
+      "decision": "preserve",
+      "reason": "The resets and the in-process registration are events of the legacy runtime that reach the target as no request, and the target's instances share no registration with legacy or with each other, so equivalence is impossible across them. Between them the target matches legacy: the same requests register the same site, and the same reads follow. The keys stay `legacy` in `v0001`–`v0003` for their start-up-writer units, so this run's replay serves them from legacy; halting them would keep every `variationTargeting` read on legacy after those units move, so the entry stays open as the record of the divergence.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-19.json",
+        "replay": "opt2/reports/parity.json#GS-CO-19"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
       "id": "EX-PEOPLE-TEXT-CODEPAGE",
       "scenario": "GS-PE-02",
       "routeKey": "admin:cusers.updateaddress",
@@ -606,6 +635,43 @@
       "evidence": {
         "golden": "harness/golden/sets/GS-PE-02.json",
         "replay": "opt2/reports/parity.json#GS-PE-02"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-JSONAPI-IMAGE-SIZES-CACHE",
+      "scenario": "GS-CO-05",
+      "routeKey": "api:content.findone",
+      "appliesTo": [
+        "api:content.findall",
+        "api:content.findmany",
+        "api:content.findquery",
+        "api:contentnav.findone",
+        "api:contentnav.findall",
+        "api:contentnav.findmany",
+        "api:contentnav.findquery",
+        "rest:content.findone",
+        "rest:content.findall",
+        "rest:content.findmany",
+        "rest:content.findquery",
+        "rest:contentnav.findone",
+        "rest:contentnav.findall",
+        "rest:contentnav.findmany",
+        "rest:contentnav.findquery",
+        "api:findcrumbarray",
+        "api:findrelatedcontent",
+        "api:findversionhistory",
+        "rest:findcrumbarray",
+        "rest:findrelatedcontent",
+        "rest:findversionhistory"
+      ],
+      "difference": "Legacy setImageURLs lists the custom image sizes of `getSite(entity.getSiteID()).getCustomImageSizeIterator()` read once into the JSON API utility (`variables.images`, kept on the site bean until its settings reload) and copied once per request (`request.muraCustomImageIterator`) (core/mura/client/api/json/v1/jsonApiUtility.cfc:3574-3615; core/mura/settings/settingsBean.cfc:1249-1254,1276-1288). A custom image size saved or deleted while the legacy application runs is therefore missing from, or still listed in, content `images` until the site settings reload (core/mura/settings/settingsImageSizeBean.cfc:184-228 reloads nothing). strategies-content reads the sizes from programs-sites `listSiteCustomImageSizes` once per request, so it lists the current sizes.",
+      "decision": "preserve",
+      "reason": "Which sizes legacy lists is process state, the set the site's JSON API utility read since the application or the site's settings last loaded, which no stateless service instance holds and no request decides, so no request-decidable variant can keep the case on legacy, and halting these keys would send every content read there. With sizes unchanged since that load both sides list the same sizes, as GS-CO-05 replays them, so the entry carries no `matches`, excuses no difference and is the record of the case.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-05.json",
+        "replay": "opt2/reports/parity.json#GS-CO-05"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }

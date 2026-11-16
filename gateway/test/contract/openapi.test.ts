@@ -42,7 +42,7 @@ import { TEST_INSTANCE_ID } from '../helpers/env.js';
 import type { RecordedRequest } from '../helpers/http-double.js';
 import type { MemoryGatewayDb } from '../helpers/memory-store.js';
 import type { TargetDouble } from '../helpers/target-double.js';
-import { committedGroups, committedTable, cutoverTable } from '../helpers/versions.js';
+import { committedGroups, committedTable, cutoverTable, type CommittedVersion } from '../helpers/versions.js';
 
 type Json = Record<string, unknown>;
 type Headers = Record<string, string>;
@@ -72,11 +72,20 @@ interface ContractOperation {
   config: RouteConfig;
 }
 
+/** Cut-over state a gateway starts in: the seeded active version, if any, and the entries frozen over it. */
+interface Start {
+  version?: CommittedVersion;
+  frozen?: readonly string[];
+}
+
 /** One request against an operation and the declared response key (a status or a range such as `2XX`) it must answer. */
 interface Case {
   operationId: string;
   status: string;
   title: string;
+  start: Start;
+  /** Changes or asserts cut-over or instance rows, so it runs on a gateway built for it alone. */
+  isolated?: true;
   request(tg: TestGateway): Promise<InjectOptions>;
   before?(tg: TestGateway): void | Promise<void>;
   after?(tg: TestGateway): void | Promise<void>;
@@ -161,6 +170,11 @@ const UNFREEZE = '/internal/v1/cutover/unfreeze';
 const STATUS = '/internal/v1/cutover/status';
 const CLEAR = '/internal/v1/inflight:clear-orphans';
 const markUsedUrl = (sid: string): string => `/internal/v1/legacy-sessions/${sid}:mark-used`;
+
+const NO_VERSION: Start = {};
+const V0001: Start = { version: 'v0001' };
+const V0002: Start = { version: 'v0002' };
+const V0002_FROZEN: Start = { version: 'v0002', frozen: [FREEZE_ROUTE] };
 
 function contractConfig(operation: Json): RouteConfig {
   const requires = operation['x-opt2-requires'] as string[] | undefined;
@@ -288,6 +302,40 @@ function legacyPages(tg: TestGateway): RecordedRequest[] {
   return tg.legacy.requests.filter((req) => !req.path.startsWith(BRIDGE_PREFIX));
 }
 
+/** The committed cut-over epoch of the gateway's store. */
+function epochOf(tg: TestGateway): number {
+  return Number(memoryOf(tg).tables.cutover_state[0]?.epoch);
+}
+
+/** Builds a gateway in `start`, its legacy answering the JSON API 404 under a `missing` segment; a failed set-up closes it. */
+async function gatewayAt(start: Start): Promise<TestGateway> {
+  const built = await buildTestGateway(start.version === undefined ? {} : { version: start.version });
+  try {
+    const { headers, body } = legacyErrorResponse('invalidMethodCall', { mura404: true });
+    built.legacy.setResponse((req) => (MISSING_SEGMENT.test(req.path) ? { status: 404, headers, body } : {}));
+    if (start.frozen !== undefined) {
+      const res = await built.app.inject({ method: 'POST', url: FREEZE, headers: await operatorHeaders(), payload: { routes: start.frozen } });
+      if (res.statusCode !== 200) throw new Error(`freezing ${start.frozen.join(', ')} answered ${res.statusCode}: ${res.body}`);
+    }
+    return built;
+  } catch (error) {
+    await built.close();
+    throw error;
+  }
+}
+
+/** Gateways shared by the cases that leave cut-over and instance rows as they found them, one per start, built on first use. */
+const SHARED = new Map<Start, Promise<TestGateway>>();
+
+function sharedGateway(start: Start): Promise<TestGateway> {
+  let gateway = SHARED.get(start);
+  if (gateway === undefined) {
+    gateway = gatewayAt(start);
+    SHARED.set(start, gateway);
+  }
+  return gateway;
+}
+
 function subjectFor(predicate: (subject: RoleSubject) => boolean, label: string): RoleSubject {
   const subject = ROLE_SET.find(predicate);
   if (subject === undefined) throw new TypeError(`ROLE_SET has no subject ${label}`);
@@ -323,6 +371,9 @@ let relayedUserToken = '';
 /** Legacy requests counted before a case that must reach legacy with none. */
 let legacyBefore = 0;
 
+/** Committed epoch of the running case's gateway as the case starts. */
+let startEpoch = 0;
+
 /** Legacy session the mark-used case writes into. */
 let markedLegacySession = '';
 
@@ -346,20 +397,29 @@ async function seedJar(tg: TestGateway, sessionId: string, legacySessionId: stri
 
 const tokenEntry = (token: string): { token: string; usedAt: string } => ({ token, usedAt: USED_AT });
 
-/** The 401 and 403 answers of an operation: no credential, and a caller holding none of its roles. */
-function credentialCases(operationId: string, url: string, method: HttpMethod, payload: object | undefined, wrongCaller: string): Case[] {
+/** The 401 and 403 answers of an operation in `start`: no credential, and a caller holding none of its roles. */
+function credentialCases(
+  operationId: string,
+  url: string,
+  method: HttpMethod,
+  payload: object | undefined,
+  wrongCaller: string,
+  start: Start,
+): Case[] {
   const body = payload === undefined ? {} : { payload };
   return [
     {
       operationId,
       status: '401',
       title: 'without an invocation credential',
+      start,
       request: async () => ({ method, url, ...body }),
     },
     {
       operationId,
       status: '403',
       title: `as ${wrongCaller}, which holds none of the required roles`,
+      start,
       request: async () => ({ method, url, headers: await callerHeaders(wrongCaller), ...body }),
     },
   ];
@@ -370,6 +430,7 @@ const CONTROL_CASES: Case[] = [
     operationId: 'edgeGet',
     status: '503',
     title: 'a JSON API read while no version is active, as the JSON envelope',
+    start: NO_VERSION,
     before: (tg) => {
       legacyBefore = legacyPages(tg).length;
     },
@@ -383,6 +444,7 @@ const CONTROL_CASES: Case[] = [
     operationId: 'healthz',
     status: '200',
     title: 'anonymous liveness',
+    start: NO_VERSION,
     request: async () => ({ method: 'GET', url: '/healthz' }),
     verify: (_res, body) => expect(body).toEqual({ status: 'ok' }),
   },
@@ -390,19 +452,22 @@ const CONTROL_CASES: Case[] = [
     operationId: 'healthz',
     status: '401',
     title: 'with a bearer that is no user token',
+    start: NO_VERSION,
     request: async () => ({ method: 'GET', url: '/healthz', headers: { authorization: 'Bearer not-a-token' } }),
   },
   {
     operationId: 'healthz',
     status: '403',
     title: "with a siteid other than the user token's site",
+    start: NO_VERSION,
     request: async () => ({ method: 'GET', url: '/healthz?siteid=tenant-b', headers: await userHeaders('tenant-a') }),
   },
-  ...credentialCases('cutoverActivate', ACTIVATE, 'POST', { tableVersion: 'v0001' }, 'web'),
+  ...credentialCases('cutoverActivate', ACTIVATE, 'POST', { tableVersion: 'v0001' }, 'web', NO_VERSION),
   {
     operationId: 'cutoverActivate',
     status: '400',
     title: 'a malformed table version',
+    start: NO_VERSION,
     request: async () => ({ method: 'POST', url: ACTIVATE, headers: await operatorHeaders(), payload: { tableVersion: 'one' } }),
     verify: (_res, body) => expect(body).toMatchObject({ apiversion: 'v1', error: { code: expect.any(String) } }),
   },
@@ -410,6 +475,7 @@ const CONTROL_CASES: Case[] = [
     operationId: 'cutoverActivate',
     status: '400',
     title: 'a version without a file',
+    start: NO_VERSION,
     request: async () => ({ method: 'POST', url: ACTIVATE, headers: await operatorHeaders(), payload: { tableVersion: 'v0009' } }),
     verify: (_res, body) => expect(body).toMatchObject({ findings: [{ rule: 'unknown-version' }] }),
   },
@@ -417,13 +483,15 @@ const CONTROL_CASES: Case[] = [
     operationId: 'cutoverActivate',
     status: '200',
     title: 'v0001 as the first version',
+    start: NO_VERSION,
+    isolated: true,
     request: async () => ({ method: 'POST', url: ACTIVATE, headers: await operatorHeaders(), payload: { tableVersion: 'v0001' } }),
     verify: (_res, body, tg) => {
-      expect(body).toEqual({ tableVersion: 'v0001', epoch: 1 });
+      expect(body).toEqual({ tableVersion: 'v0001', epoch: startEpoch + 1 });
       expect(memoryOf(tg).tables.cutover_state[0]).toMatchObject({
         table_version: 'v0001',
         previous_version: null,
-        epoch: '1',
+        epoch: String(startEpoch + 1),
         activated_by: 'operator',
       });
     },
@@ -432,49 +500,61 @@ const CONTROL_CASES: Case[] = [
     operationId: 'cutoverActivate',
     status: '409',
     title: 'v0001 again, whose previous is no longer active',
+    start: V0001,
+    isolated: true,
     request: async () => ({ method: 'POST', url: ACTIVATE, headers: await operatorHeaders(), payload: { tableVersion: 'v0001' } }),
     verify: (_res, body, tg) => {
       expect(body).toMatchObject({ findings: [{ rule: 'previous-mismatch' }] });
-      expect(memoryOf(tg).tables.cutover_state[0]?.epoch).toBe('1');
+      expect(memoryOf(tg).tables.cutover_state[0]?.epoch).toBe(String(startEpoch));
     },
   },
   {
     operationId: 'cutoverActivate',
     status: '200',
     title: 'v0002 after v0001',
+    start: V0001,
+    isolated: true,
     request: async () => ({ method: 'POST', url: ACTIVATE, headers: await operatorHeaders(), payload: { tableVersion: 'v0002' } }),
-    verify: (_res, body) => expect(body).toEqual({ tableVersion: 'v0002', epoch: 2 }),
+    verify: (_res, body, tg) => {
+      expect(body).toEqual({ tableVersion: 'v0002', epoch: startEpoch + 1 });
+      expect(memoryOf(tg).tables.cutover_state[0]).toMatchObject({ table_version: 'v0002', previous_version: 'v0001' });
+    },
   },
   ...(['operator', 'migration'] as const).map(
     (caller): Case => ({
       operationId: 'cutoverStatus',
       status: '200',
       title: `as ${caller}`,
+      start: V0002,
+      // An instance stays live only seconds after its last heartbeat, which a fresh gateway has just sent.
+      isolated: true,
       request: async () => ({ method: 'GET', url: STATUS, headers: await callerHeaders(caller) }),
       verify: (_res, body) => {
         expect(body).toMatchObject({
           tableVersion: 'v0002',
           previous: 'v0001',
-          epoch: 2,
+          epoch: startEpoch,
           frozen: [],
-          acknowledgedEpoch: 2,
+          acknowledgedEpoch: startEpoch,
           inflight: [],
           sessionMode: 'legacy-primary',
         });
         expect((body as { instances: unknown[] }).instances).toContainEqual(
-          expect.objectContaining({ instanceId: TEST_INSTANCE_ID, seenEpoch: 2, live: true }),
+          expect.objectContaining({ instanceId: TEST_INSTANCE_ID, seenEpoch: startEpoch, live: true }),
         );
       },
     }),
   ),
-  ...credentialCases('cutoverStatus', STATUS, 'GET', undefined, 'web'),
+  ...credentialCases('cutoverStatus', STATUS, 'GET', undefined, 'web', V0002),
   {
     operationId: 'cutoverFreeze',
     status: '200',
     title: 'an entry of the active version',
+    start: V0002,
+    isolated: true,
     request: async () => ({ method: 'POST', url: FREEZE, headers: await operatorHeaders(), payload: { routes: [FREEZE_ROUTE] } }),
     verify: (_res, body, tg) => {
-      expect(body).toMatchObject({ tableVersion: 'v0002', epoch: 3, frozen: [FREEZE_ROUTE] });
+      expect(body).toMatchObject({ tableVersion: 'v0002', epoch: startEpoch + 1, frozen: [FREEZE_ROUTE] });
       expect(memoryOf(tg).tables.cutover_freeze.map((row) => row.route)).toEqual([FREEZE_ROUTE]);
     },
   },
@@ -482,20 +562,24 @@ const CONTROL_CASES: Case[] = [
     operationId: 'cutoverFreeze',
     status: '400',
     title: 'a route the active version lacks, rolling its epoch back',
+    start: V0002,
+    isolated: true,
     request: async () => ({ method: 'POST', url: FREEZE, headers: await operatorHeaders(), payload: { routes: [UNKNOWN_ROUTE] } }),
     verify: (_res, body, tg) => {
       expect(body).toMatchObject({ findings: [{ rule: 'unknown-route', route: UNKNOWN_ROUTE }] });
-      expect(memoryOf(tg).tables.cutover_state[0]?.epoch).toBe('3');
+      expect(memoryOf(tg).tables.cutover_state[0]?.epoch).toBe(String(startEpoch));
     },
   },
-  ...credentialCases('cutoverFreeze', FREEZE, 'POST', { routes: [FREEZE_ROUTE] }, 'migration'),
+  ...credentialCases('cutoverFreeze', FREEZE, 'POST', { routes: [FREEZE_ROUTE] }, 'migration', V0002),
   {
     operationId: 'cutoverUnfreeze',
     status: '200',
     title: 'the frozen entry',
+    start: V0002_FROZEN,
+    isolated: true,
     request: async () => ({ method: 'POST', url: UNFREEZE, headers: await operatorHeaders(), payload: { routes: [FREEZE_ROUTE] } }),
     verify: (_res, body, tg) => {
-      expect(body).toMatchObject({ epoch: 4, frozen: [] });
+      expect(body).toMatchObject({ epoch: startEpoch + 1, frozen: [] });
       expect(memoryOf(tg).tables.cutover_freeze).toHaveLength(0);
     },
   },
@@ -503,14 +587,17 @@ const CONTROL_CASES: Case[] = [
     operationId: 'cutoverUnfreeze',
     status: '400',
     title: 'a route neither frozen nor in the active version',
+    start: V0002,
     request: async () => ({ method: 'POST', url: UNFREEZE, headers: await operatorHeaders(), payload: { routes: [UNKNOWN_ROUTE] } }),
     verify: (_res, body) => expect(body).toMatchObject({ findings: [{ rule: 'unknown-route' }] }),
   },
-  ...credentialCases('cutoverUnfreeze', UNFREEZE, 'POST', { routes: [FREEZE_ROUTE] }, 'migration'),
+  ...credentialCases('cutoverUnfreeze', UNFREEZE, 'POST', { routes: [FREEZE_ROUTE] }, 'migration', V0002),
   {
     operationId: 'inflightClearOrphans',
     status: '200',
     title: "a dead instance's legacy-side row after a legacy restart",
+    start: V0002,
+    isolated: true,
     before: (tg) => {
       const startedAt = new Date(Date.now() - 600_000);
       const { tables } = memoryOf(tg);
@@ -539,6 +626,7 @@ const CONTROL_CASES: Case[] = [
     operationId: 'inflightClearOrphans',
     status: '400',
     title: 'target-side clearing with legacy-restart evidence',
+    start: V0002,
     request: async () => ({
       method: 'POST',
       url: CLEAR,
@@ -552,11 +640,13 @@ const CONTROL_CASES: Case[] = [
     'POST',
     { side: 'legacy', evidence: { kind: 'legacy-restart', holderId: 'restart-1', at: `${USED_AT}+00:00` } },
     'web',
+    V0002,
   ),
   {
     operationId: 'legacySessionMarkUsed',
     status: '204',
     title: "into the mapped legacy session's ledger",
+    start: V0002,
     before: async (tg) => {
       const { session, cookies } = tg.legacy.createSession();
       markedLegacySession = session.legacySessionId;
@@ -577,6 +667,7 @@ const CONTROL_CASES: Case[] = [
     operationId: 'legacySessionMarkUsed',
     status: '400',
     title: 'a token that is not 64 hex digits',
+    start: V0002,
     request: async () => ({
       method: 'POST',
       url: markUsedUrl(MARKED_SESSION),
@@ -588,6 +679,7 @@ const CONTROL_CASES: Case[] = [
     operationId: 'legacySessionMarkUsed',
     status: '404',
     title: 'a session without a jar',
+    start: V0002,
     before: (tg) => {
       legacyBefore = tg.legacy.requests.length;
     },
@@ -603,6 +695,7 @@ const CONTROL_CASES: Case[] = [
     operationId: 'legacySessionMarkUsed',
     status: '503',
     title: 'a jar whose legacy session the bridge no longer attaches',
+    start: V0002,
     before: (tg) => seedJar(tg, STALE_SESSION, 'masacms_1_2', { CFID: '1', CFTOKEN: '2' }),
     request: async () => ({
       method: 'POST',
@@ -612,7 +705,7 @@ const CONTROL_CASES: Case[] = [
     }),
     verify: (_res, _body, tg) => expect(tg.legacy.bridgeCalls.at(-1)).toMatchObject({ op: 'markUsed', status: 409 }),
   },
-  ...credentialCases('legacySessionMarkUsed', markUsedUrl(MARKED_SESSION), 'POST', { tokens: [tokenEntry(MARKED_TOKEN)] }, 'operator'),
+  ...credentialCases('legacySessionMarkUsed', markUsedUrl(MARKED_SESSION), 'POST', { tokens: [tokenEntry(MARKED_TOKEN)] }, 'operator', V0002),
 ];
 
 const relayOperation = (method: string): string => `relay${method.charAt(0)}${method.slice(1).toLowerCase()}`;
@@ -627,6 +720,7 @@ const RELAY_CASES: Case[] = RELAY_METHODS.flatMap((method): Case[] => [
     operationId: relayOperation(method),
     status: '2XX',
     title: "web's call with a user token",
+    start: V0002,
     request: async () => {
       const body = withBody(method);
       return { method, url: RELAY_PATH, ...body, headers: { ...body.headers, ...(await webWithUser()) } };
@@ -642,17 +736,19 @@ const RELAY_CASES: Case[] = RELAY_METHODS.flatMap((method): Case[] => [
       expect(caller.name).toBe(SERVICE_NAME);
     },
   },
-  ...credentialCases(relayOperation(method), RELAY_PATH, method, undefined, 'gateway'),
+  ...credentialCases(relayOperation(method), RELAY_PATH, method, undefined, 'gateway', V0002),
   {
     operationId: relayOperation(method),
     status: '404',
     title: 'an unknown service',
+    start: V0002,
     request: async () => ({ method, url: '/internal/v1/relay/nosuch/x', headers: await webServiceHeaders() }),
   },
   {
     operationId: relayOperation(method),
     status: '503',
     title: 'a callee answering 503',
+    start: V0002,
     before: (tg) => target(tg, 'people').setMode('503'),
     after: (tg) => target(tg, 'people').setMode('ok'),
     request: async () => ({ method, url: RELAY_PATH, headers: await webWithUser() }),
@@ -666,6 +762,7 @@ const EDGE_CASES: Case[] = [
       operationId: edgeOperation(method),
       status: '2XX',
       title: 'a legacy JSON API read, passed through',
+      start: V0002,
       request: async () => ({ method, url: CONTENT_PATH, ...withBody(method) }),
       verify: (_res, _body, tg) => expect(legacyPages(tg).at(-1)).toMatchObject({ method, path: CONTENT_PATH }),
     },
@@ -673,12 +770,14 @@ const EDGE_CASES: Case[] = [
       operationId: edgeOperation(method),
       status: '4XX',
       title: "legacy's own 404, passed through",
+      start: V0002,
       request: async () => ({ method, url: MISSING_PATH, ...withBody(method) }),
     },
     {
       operationId: edgeOperation(method),
       status: '503',
       title: 'a target entry whose owner answers 503, never retried on legacy',
+      start: V0002,
       before: async (tg) => {
         await target(tg, 'stub').setMode('503');
         legacyBefore = legacyPages(tg).length;
@@ -695,6 +794,7 @@ const EDGE_CASES: Case[] = [
     operationId: 'edgeGet',
     status: '2XX',
     title: 'a web screen of the active version',
+    start: V0002,
     request: async () => ({ method: 'GET', url: '/opt2/admin/finance/claims' }),
     verify: (_res, _body, tg) => expect(tg.web.requests.at(-1)?.path).toBe('/opt2/admin/finance/claims'),
   },
@@ -702,6 +802,7 @@ const EDGE_CASES: Case[] = [
     operationId: 'edgeGet',
     status: '4XX',
     title: 'the legacy bridge from outside, answered by the gateway',
+    start: V0002,
     before: (tg) => {
       legacyBefore = tg.legacy.requests.length;
     },
@@ -715,6 +816,7 @@ const EDGE_CASES: Case[] = [
     operationId: 'edgeGet',
     status: '503',
     title: 'an admin legacy-write whose window cannot open, as the legacy error page',
+    start: V0002,
     before: (tg) => {
       tg.migration.setOpen({ status: 503 });
       legacyBefore = legacyPages(tg).length;
@@ -728,19 +830,12 @@ const EDGE_CASES: Case[] = [
   },
 ];
 
-/** Every case against the gateway that starts with no active version, in order: activation precedes routing. */
+/** Every case against the gateway, each from its own start state. */
 const CASES: readonly Case[] = [...CONTROL_CASES, ...RELAY_CASES, ...EDGE_CASES];
 
-let tg: TestGateway;
-
-beforeAll(async () => {
-  tg = await buildTestGateway();
-  const { headers, body } = legacyErrorResponse('invalidMethodCall', { mura404: true });
-  tg.legacy.setResponse((req) => (MISSING_SEGMENT.test(req.path) ? { status: 404, headers, body } : {}));
-}, 120_000);
-
 afterAll(async () => {
-  await tg?.close();
+  const built = await Promise.allSettled(SHARED.values());
+  await Promise.all(built.flatMap((result) => (result.status === 'fulfilled' ? [result.value.close()] : [])));
 });
 
 describe('gateway contract document', () => {
@@ -771,10 +866,10 @@ describe('gateway contract document', () => {
 describe('registered routes', () => {
   let routes: RouteMatrixEntry[];
 
-  beforeAll(() => {
+  beforeAll(async () => {
     // The contract declares a HEAD operation, so routes are compared as collected.
-    ({ routes } = collectRouteMatrix(tg.app));
-  });
+    ({ routes } = collectRouteMatrix((await sharedGateway(NO_VERSION)).app));
+  }, 120_000);
 
   it("registers exactly the contract's operations", () => {
     const registered = routes.map((route) => `${route.method} ${templateOf(route.url)}`).sort();
@@ -795,14 +890,20 @@ describe('registered routes', () => {
 describe('gateway responses through buildApp', () => {
   it.each(CASES.map((c) => [c.operationId, c.status, c.title, c] as const))('%s %s: %s', async (_operationId, _status, _title, c) => {
     const operation = operationOf(c.operationId);
-    await c.before?.(tg);
+    const tg = c.isolated === true ? await gatewayAt(c.start) : await sharedGateway(c.start);
     try {
+      startEpoch = epochOf(tg);
+      await c.before?.(tg);
       const res = await tg.app.inject(await c.request(tg));
       expect(statusKeyOf(operation, res.statusCode), `${c.operationId} answered ${res.statusCode}: ${res.body}`).toBe(c.status);
       const body = expectContract(operation, res);
       await c.verify?.(res, body, tg);
     } finally {
-      await c.after?.(tg);
+      try {
+        await c.after?.(tg);
+      } finally {
+        if (c.isolated === true) await tg.close();
+      }
     }
   });
 });
@@ -844,16 +945,21 @@ describe('cut-over activation refused on a fixture cut-over directory', () => {
   it('answers the conflict status when another operation commits between read and compare-and-set', async () => {
     const memory = memoryOf(fixture);
     const epoch = memory.tables.cutover_state[0]?.epoch;
-    memory.respond(CAS_STATEMENT, []);
-    const res = await fixture.app.inject({ method: 'POST', url: ACTIVATE, headers: await operatorHeaders(), payload: { tableVersion: 'v0002' } });
-    expect(res.statusCode).toBe(409);
-    expect(expectContract(activate, res)).toMatchObject({ findings: [{ rule: 'previous-mismatch' }] });
-    expect(memory.tables.cutover_state[0]).toMatchObject({ table_version: 'v0001', epoch });
+    const restore = memory.respond(CAS_STATEMENT, []);
+    try {
+      const res = await fixture.app.inject({ method: 'POST', url: ACTIVATE, headers: await operatorHeaders(), payload: { tableVersion: 'v0002' } });
+      expect(res.statusCode).toBe(409);
+      expect(expectContract(activate, res)).toMatchObject({ findings: [{ rule: 'previous-mismatch' }] });
+      expect(memory.tables.cutover_state[0]).toMatchObject({ table_version: 'v0001', epoch });
+    } finally {
+      restore();
+    }
   });
 });
 
 describe('invocation credentials the contract names', () => {
   it('accepts a service token only from the scheme the contract declares, X-Serverless-Authorization', async () => {
+    const tg = await sharedGateway(V0002);
     const token = await mintServiceToken({ caller: 'operator', audience: SERVICE_NAME, roles: rolesForService('operator') });
     const inHeader = await tg.app.inject({ method: 'GET', url: STATUS, headers: { [INVOCATION_HEADER]: `Bearer ${token}` } });
     const asBearer = await tg.app.inject({ method: 'GET', url: STATUS, headers: { authorization: `Bearer ${token}` } });
@@ -903,8 +1009,10 @@ describe("the gateway's identity and migration calls against their producer cont
   let completed: WindowCompleteResult | undefined;
   let awaitsBefore = 0;
   let windowsBefore = 0;
+  let tg: TestGateway;
 
   beforeAll(async () => {
+    tg = await buildTestGateway();
     tg.identity.clearRequests();
     tg.migration.clearRequests();
     awaitsBefore = tg.migration.awaits.length;
@@ -961,7 +1069,11 @@ describe("the gateway's identity and migration calls against their producer cont
     const keyed = await windows.open({ ...open, scope: { keys: { siteid: 'tenant-a' } }, requestId: 'contract-window-keys' });
     opened.push(keyed);
     completed = await windows.complete(keyed.windowId, { forwarded: true, legacyStatus: 200 });
-  }, 60_000);
+  }, 120_000);
+
+  afterAll(async () => {
+    await tg?.close();
+  });
 
   it('returns what identity answered from every operation the client implements', () => {
     expect(Object.keys(identityResults).sort()).toEqual(Object.keys(IDENTITY_OPERATIONS).sort());

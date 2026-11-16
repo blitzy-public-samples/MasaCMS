@@ -5,6 +5,7 @@ import path from 'node:path';
 import { z } from '@opt2/platform/service-kit';
 
 import { isMainModule, parseFlags, runCli, type CliOutcome } from '../lib/cli.js';
+import { gitArchiveExtract } from '../lib/git.js';
 import { REPO_ROOT, stateDir, type EnvLike } from '../lib/paths.js';
 import { writeJsonReport } from '../lib/report.js';
 
@@ -19,6 +20,9 @@ export const GITLEAKS_CONFIG = 'harness/security/gitleaks.toml';
 
 /** gitleaks baseline of pre-existing findings, repository-relative. */
 export const GITLEAKS_BASELINE = 'harness/security/gitleaks-baseline.json';
+
+/** Revision whose `git archive` extraction gitleaks scans. */
+const SCANNED_REVISION = 'HEAD';
 
 /** Lowest CVSS score that fails a production advisory. */
 export const FAILING_CVSS = 7.0;
@@ -107,7 +111,7 @@ export function osvArgs(lockfiles: readonly string[] = OPT2_LOCKFILES): string[]
   return ['scan', 'source', '--format', 'json', ...lockfiles.flatMap((lockfile) => ['--lockfile', lockfile])];
 }
 
-/** gitleaks arguments for a directory scan of the working directory, writing its JSON report to `reportPath`. */
+/** gitleaks arguments for a directory scan of the working directory (a repository tree), writing its JSON report to `reportPath`. */
 export function gitleaksArgs(reportPath: string): string[] {
   return [
     'dir',
@@ -302,11 +306,13 @@ export function parseGitleaksReport(json: unknown): { count: number; items: Secr
   return { count: items.length, items };
 }
 
-/** Injectable tool runner, environment (for `OPT2_STATE_DIR`) and repository root of {@link runSecurityScan}. */
+/** Injectable tool runner, environment (for `OPT2_STATE_DIR`), repository root and tree extractor of {@link runSecurityScan}. */
 export interface ScanDeps {
   run?: ToolRunner;
   env?: EnvLike;
   repoRoot?: string;
+  /** Extracts `rev` of the repository at `repoRoot` into a new directory outside it; defaults to {@link gitArchiveExtract}. */
+  extract?: (rev: string, repoRoot: string) => Promise<string>;
 }
 
 /** Content of `<state>/security/summary.json`, read by `reporting/test-all.ts`. */
@@ -415,20 +421,32 @@ async function scanDependencies(
   }
 }
 
-// gitleaks exits 1 on new findings and on a fatal error alike, so the report file decides between them.
+// gitleaks reads an extraction of HEAD, so ignored and untracked working-tree files are never scanned. It exits 1
+// on new findings and on a fatal error alike, so the report file decides between them.
 async function scanSecrets(
   run: ToolRunner,
+  extract: NonNullable<ScanDeps['extract']>,
   repoRoot: string,
   reportPath: string,
 ): Promise<{ count: number; items: SecretFinding[] } | { error: string }> {
-  const outcome = await attempt(run, 'gitleaks', gitleaksArgs(reportPath), repoRoot, SCAN_TIMEOUT_MS);
-  if ('error' in outcome) return outcome;
-  const { code, stderr } = outcome.result;
-  if (code !== 0 && code !== 1) return { error: `gitleaks exited ${code}: ${lastLines(stderr)}` };
+  let tree: string;
   try {
-    return parseGitleaksReport(JSON.parse(await readFile(reportPath, 'utf8')));
+    tree = await extract(SCANNED_REVISION, repoRoot);
   } catch (err) {
-    return { error: `gitleaks report ${reportPath}: ${messageOf(err)}; gitleaks exited ${code}: ${lastLines(stderr)}` };
+    return { error: `git archive ${SCANNED_REVISION}: ${messageOf(err)}` };
+  }
+  try {
+    const outcome = await attempt(run, 'gitleaks', gitleaksArgs(reportPath), tree, SCAN_TIMEOUT_MS);
+    if ('error' in outcome) return outcome;
+    const { code, stderr } = outcome.result;
+    if (code !== 0 && code !== 1) return { error: `gitleaks exited ${code}: ${lastLines(stderr)}` };
+    try {
+      return parseGitleaksReport(JSON.parse(await readFile(reportPath, 'utf8')));
+    } catch (err) {
+      return { error: `gitleaks report ${reportPath}: ${messageOf(err)}; gitleaks exited ${code}: ${lastLines(stderr)}` };
+    }
+  } finally {
+    await rm(tree, { recursive: true, force: true });
   }
 }
 
@@ -439,11 +457,13 @@ function countBySeverity(advisories: readonly Advisory[]): Record<Severity, numb
 }
 
 /**
- * Checks the lockfiles and tool versions, runs osv-scanner and gitleaks from the repository root, and writes
- * `osv.json`, `gitleaks.json` and `summary.json` under `<state>/security/`. Code 0 clean, 1 findings, 2 error.
+ * Checks the lockfiles and tool versions, runs osv-scanner from the repository root and gitleaks in a temporary
+ * `git archive HEAD` extraction, and writes `osv.json`, `gitleaks.json` and `summary.json` under `<state>/security/`.
+ * Code 0 clean, 1 findings, 2 error.
  */
 export async function runSecurityScan(deps: ScanDeps = {}): Promise<ScanResult> {
   const run = deps.run ?? defaultToolRunner;
+  const extract = deps.extract ?? ((rev: string, repoRoot: string) => gitArchiveExtract(rev, undefined, { cwd: repoRoot }));
   const root = deps.repoRoot ?? REPO_ROOT;
   const outDir = path.join(stateDir(deps.env), 'security');
   const osvReport = path.join(outDir, 'osv.json');
@@ -468,7 +488,7 @@ export async function runSecurityScan(deps: ScanDeps = {}): Promise<ScanResult> 
     const dependencyScan = await scanDependencies(run, root, osvReport);
     if ('error' in dependencyScan) errors.push(dependencyScan.error);
     else advisories = dependencyScan.advisories;
-    const secretScan = await scanSecrets(run, root, gitleaksReport);
+    const secretScan = await scanSecrets(run, extract, root, gitleaksReport);
     if ('error' in secretScan) errors.push(secretScan.error);
     else secrets = secretScan;
   }
@@ -496,9 +516,9 @@ export async function runSecurityScan(deps: ScanDeps = {}): Promise<ScanResult> 
 const USAGE = 'security:scan (takes no arguments)';
 const HELP = `${USAGE}
 
-Runs osv-scanner over the ${String(OPT2_LOCKFILES.length)} OPT-2 lockfiles and gitleaks over the checkout (config ${GITLEAKS_CONFIG},
-baseline ${GITLEAKS_BASELINE}) from the repository root, and writes their reports and a summary
-for test-all.
+Runs osv-scanner over the ${String(OPT2_LOCKFILES.length)} OPT-2 lockfiles from the repository root and gitleaks over a temporary
+git archive ${SCANNED_REVISION} extraction under TMPDIR (config ${GITLEAKS_CONFIG}, baseline ${GITLEAKS_BASELINE}), so ignored and
+untracked files are not scanned, and writes their reports and a summary for test-all.
 
 Options:
   --help  print this help and exit 0

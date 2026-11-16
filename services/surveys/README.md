@@ -108,7 +108,7 @@ Used by the OPT-2 screens at `/opt2/admin/surveys/*`, which `web/` renders. Tran
 
 | Method | Path | Transport | Requires | Does |
 |---|---|---|---|---|
-| `POST` | `/internal/v1/tasks/surveys/{surveyId}/launch` | `cloud-tasks` (queue `surveys-launch`) | `service:tasks-invoker` | Marks the survey `LAUNCHED` once while the task's schedule version is current, then reports the run task to communications, which records it `done` |
+| `POST` | `/internal/v1/tasks/surveys/launch` | `cloud-tasks` (queue `surveys-launch`) | `service:tasks-invoker` | Marks the survey the task payload names `LAUNCHED` once while the task's schedule version is current, then reports the run task to communications, which records it `done` |
 | `POST` | `/internal/v1/surveys/{surveyId}/reminders/{n}/sent` | `service` | `service:communications` | Stamps reminder `n` as sent once, after communications ran its reminder task |
 | `POST` | `/internal/v1/migration/apply` | `service` | `platform.migration` | Applies one batch of canonical legacy rows, once per batch id |
 | `GET` | `/internal/v1/migration/export` | `service` | `platform.migration` | One page of a unit's rows in canonical legacy form |
@@ -132,7 +132,7 @@ Produces `surveys.survey.scheduled.v1` in the transaction of every schedule writ
 | `aggregateVersion` | `survey_schedule.row_version`, incremented in the same transaction |
 | `payload` | `surveyId`, `siteId`, `scheduleVersion`, `launchAt`, `launchTaskName`, `reminders[]` (`n`, `offsetMinutes`, `taskName`), `targets[]` (`siteId`, `groupName`) |
 
-Communications consumes it: one launch task on queue `surveys-launch`, which calls `/internal/v1/tasks/surveys/{surveyId}/launch` here, and one task per reminder on `communications-reminders`, each recorded in `communications.scheduled_task`. Migration applies never emit it, because legacy already created those tasks.
+Communications consumes it: one launch task on queue `surveys-launch`, which calls the fixed route `/internal/v1/tasks/surveys/launch` here with the survey id and schedule version in its payload, and one task per reminder on `communications-reminders`, each recorded in `communications.scheduled_task`. Migration applies never emit it, because legacy already created those tasks.
 
 Consumes `programs-sites.site.changed.v1` into `surveys.tenant_registry`, the site registry that resolves site ids, pools and grantees to tenants.
 

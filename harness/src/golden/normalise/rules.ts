@@ -442,6 +442,59 @@ const filesSchema = z.strictObject({
 /** Stored file-variant comparison. */
 export type FileRules = z.infer<typeof filesSchema>;
 
+const recordField = z.string().min(1);
+const chainHashesSchema = z
+  .strictObject({
+    id: ruleId,
+    fields: nonEmptyNames,
+    fieldMatch: z.literal('case-insensitive'),
+    format: z.string().min(1),
+    placeholder: ordinalPlaceholder,
+    ordinal: z.literal('scenario'),
+    ordinalKey: z.literal('exact'),
+    keepLiteral: names,
+    selfConsistency: z.strictObject({
+      check: z.literal('usp-audit-append'),
+      record: z.strictObject({
+        requestId: recordField,
+        seq: recordField,
+        action: recordField,
+        actor: recordField,
+        detail: recordField,
+        at: recordField,
+        previous: recordField,
+        hash: recordField,
+      }),
+      mismatchPlaceholder: placeholder,
+    }),
+  })
+  .superRefine((rule, ctx) => {
+    for (const name of duplicates(rule.fields, lowerCase)) {
+      ctx.addIssue({ code: 'custom', message: `declares field ${name} more than once`, path: ['fields'] });
+    }
+    const { record } = rule.selfConsistency;
+    for (const name of duplicates(Object.values(record), lowerCase)) {
+      const message = `names field ${name} for more than one role`;
+      ctx.addIssue({ code: 'custom', message, path: ['selfConsistency', 'record'] });
+    }
+    const fields = new Set(rule.fields.map(lowerCase));
+    for (const role of ['previous', 'hash'] as const) {
+      if (!fields.has(record[role].toLowerCase())) {
+        ctx.addIssue({ code: 'custom', message: 'must be one of fields', path: ['selfConsistency', 'record', role] });
+      }
+    }
+    if (!compiles(rule.format)) {
+      ctx.addIssue({ code: 'custom', message: 'must be a valid regular expression', path: ['format'] });
+      return;
+    }
+    const format = new RegExp(rule.format);
+    rule.keepLiteral.forEach((value, index) => {
+      if (!format.test(value)) ctx.addIssue({ code: 'custom', message: 'must match format', path: ['keepLiteral', index] });
+    });
+  });
+/** Audit chain hashes as ordinals, each entry hash checked against the fixture procedure's formula first. */
+export type ChainHashRules = z.infer<typeof chainHashesSchema>;
+
 const knownIssueScopeSchema = z
   .strictObject({
     compareKinds: z.array(z.enum(COMPARE_KINDS)).min(1).optional(),
@@ -595,6 +648,7 @@ export const normaliseRulesSchema = z
     rows: rowsSchema,
     tasks: tasksSchema,
     files: filesSchema,
+    chainHashes: chainHashesSchema,
     knownIssues: knownIssuesSchema,
     overrides: overridesSchema,
   })

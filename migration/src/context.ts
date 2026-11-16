@@ -171,7 +171,7 @@ export async function createMigrationContext(options: CreateContextOptions = {})
       return found;
     };
 
-    const legacy = options.legacy ?? own(createLegacyDb(env), (created) => created.close());
+    const legacy = options.legacy ?? own(createLegacyDb(env, { logger }), (created) => created.close());
     const bridge = options.bridge ?? createBridgeClient({ origin: env.LEGACY_ORIGIN, key: env.OPT2_BRIDGE_HMAC_KEY });
     const owners = options.owners ?? createOwnersClient({ client, catalog });
     const gateway =

@@ -363,13 +363,15 @@ describe('JSON API over an in-memory registry', () => {
     expect(json(res)).toMatchObject({ error: ERRORS.serverError });
   });
 
-  it("answers people's 503 to findCurrentUser with the legacy 503", async () => {
-    people.answer = { status: 503, headers: {}, body: legacyError('invalid', ERRORS.serverError) };
+  it.each([502, 503, 504])("answers people's %i to findCurrentUser with the legacy 503", async (status) => {
+    people.calls.length = 0;
+    people.answer = { status, headers: {}, body: legacyError('invalid', ERRORS.serverError) };
 
     const res = await send(app, 'GET', `${API}/findCurrentUser`, await headersFor());
 
     expect(res.statusCode).toBe(503);
     expect(json(res)).toMatchObject({ error: ERRORS.serverError });
+    expect(people.calls).toHaveLength(1);
   });
 
   it.each<[string, ServiceResponse]>([

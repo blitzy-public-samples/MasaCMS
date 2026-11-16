@@ -200,12 +200,13 @@ export function traceabilityRowCount(markdown: string): number {
 const entrySchema = z.looseObject({
   id: z.string(),
   owningService: z.string().nullish(),
+  ownerBasis: z.string().nullish(),
   disposition: z.string().nullish(),
   routeKey: z.string().nullish(),
   baseRouteKey: z.string().nullish(),
 });
 const actionSchema = entrySchema.extend({ variants: z.array(entrySchema).nullish() });
-const controllerSchema = z.looseObject({ actions: z.array(actionSchema).nullish() });
+const controllerSchema = entrySchema.extend({ actions: z.array(actionSchema).nullish() });
 const jobSchema = entrySchema.extend({ steps: z.array(entrySchema).nullish() });
 const tableSchema = entrySchema.extend({ table: z.string() });
 
@@ -242,14 +243,24 @@ export type Inventory = z.infer<typeof inventorySchema>;
 export type Ownership = z.infer<typeof ownershipSchema>;
 type InventoryEntry = z.infer<typeof entrySchema>;
 
-/** Inventory list an item comes from. */
-export type ItemCategory = 'entity' | 'service' | 'admin-action' | 'front-end' | 'job' | 'route' | 'table';
+/** Inventory list an item comes from; `admin-controller` is a `controllers[]` circuit itself. */
+export type ItemCategory =
+  | 'entity'
+  | 'service'
+  | 'admin-controller'
+  | 'admin-action'
+  | 'front-end'
+  | 'job'
+  | 'route'
+  | 'table';
 
 /** One inventory item a service carries or owns. */
 export interface ReviewItem {
   id: string;
   category: ItemCategory;
   disposition: string | null;
+  /** Whether a covering row must cite target code; false for items that keep running on legacy. */
+  codeRequired: boolean;
   routeKey?: string;
   baseRouteKey?: string;
   /** Legacy table name, for tables. */
@@ -261,39 +272,50 @@ export interface ReviewItem {
 const FIXTURE_SCHEMA = /^(?:program_(?:\d+|n)|synthetic)\./i;
 /** Dispositions whose items keep running on legacy, so their rows need no target code path. */
 const CODE_EXEMPT: ReadonlySet<string> = new Set(['legacy-served', 'decision', 'retired']);
+/** `ownerBasis` of an owner the decision list only proposes; the item is not owned until the user approves. */
+const PROPOSED_OWNER = 'decision-list-proposal';
 
-function itemOf(entry: InventoryEntry, category: ItemCategory): ReviewItem {
-  const item: ReviewItem = { id: entry.id, category, disposition: entry.disposition ?? null };
+function itemOf(
+  entry: InventoryEntry,
+  category: ItemCategory,
+  codeRequired = !CODE_EXEMPT.has(entry.disposition ?? ''),
+): ReviewItem {
+  const item: ReviewItem = { id: entry.id, category, disposition: entry.disposition ?? null, codeRequired };
   if (entry.routeKey) item.routeKey = entry.routeKey;
   if (entry.baseRouteKey) item.baseRouteKey = entry.baseRouteKey;
   return item;
 }
 
 /**
- * Items `service` carries (`disposition === 'carry'` and `owningService === service`) across entities, services,
- * admin actions and their variants, front-end entries, scheduled jobs and their steps, and routes; plus every table
- * it owns, whole or through a split target unit. Ordered by inventory list, then inventory order; ids are unique.
+ * Items `service` carries or owns (`owningService === service`, any disposition, unless the owner is only a
+ * decision-list proposal) across entities, services, controllers with their actions and variants, front-end entries,
+ * scheduled jobs and their steps, routes and tables; plus every table it owns through a split target unit. A
+ * controller needs target code only when the service carries one of its actions. Ordered by inventory list, then
+ * inventory order; ids are unique.
  */
 export function carriedOrOwnedItems(service: string, inventory: Inventory, ownership: Ownership): ReviewItem[] {
   const items = new Map<string, ReviewItem>();
   const add = (item: ReviewItem): void => {
     if (!items.has(item.id)) items.set(item.id, item);
   };
-  const carried = (entry: InventoryEntry): boolean =>
+  const carries = (entry: InventoryEntry): boolean =>
     entry.owningService === service && entry.disposition === 'carry';
+  const owns = (entry: InventoryEntry): boolean =>
+    entry.owningService === service && (entry.disposition === 'carry' || entry.ownerBasis !== PROPOSED_OWNER);
+  const addOwned = (entries: InventoryEntry[], category: ItemCategory): void => {
+    for (const entry of entries) if (owns(entry)) add(itemOf(entry, category));
+  };
 
-  const actions = inventory.controllers.flatMap((c) => (c.actions ?? []).flatMap((a) => [a, ...(a.variants ?? [])]));
-  const lists: [InventoryEntry[], ItemCategory][] = [
-    [inventory.entities, 'entity'],
-    [inventory.services, 'service'],
-    [actions, 'admin-action'],
-    [inventory.frontEnd, 'front-end'],
-    [inventory.scheduledJobs.flatMap((job) => [job, ...(job.steps ?? [])]), 'job'],
-    [inventory.routes, 'route'],
-  ];
-  for (const [entries, category] of lists) {
-    for (const entry of entries) if (carried(entry)) add(itemOf(entry, category));
+  addOwned(inventory.entities, 'entity');
+  addOwned(inventory.services, 'service');
+  for (const controller of inventory.controllers) {
+    const actions = (controller.actions ?? []).flatMap((a) => [a, ...(a.variants ?? [])]);
+    if (owns(controller)) add(itemOf(controller, 'admin-controller', actions.some(carries)));
+    addOwned(actions, 'admin-action');
   }
+  addOwned(inventory.frontEnd, 'front-end');
+  addOwned(inventory.scheduledJobs.flatMap((job) => [job, ...(job.steps ?? [])]), 'job');
+  addOwned(inventory.routes, 'route');
 
   const unitOwner = new Map<string, string>();
   for (const unit of ownership.units) {
@@ -311,12 +333,14 @@ export function carriedOrOwnedItems(service: string, inventory: Inventory, owner
   }
   const inventoryTables = new Map(inventory.tables.map((table) => [table.table, table]));
   const tableItem = (name: string, entry: InventoryEntry | undefined): ReviewItem => ({
-    ...(entry === undefined ? { id: `tbl:${name}`, category: 'table', disposition: null } : itemOf(entry, 'table')),
+    ...(entry === undefined
+      ? { id: `tbl:${name}`, category: 'table', disposition: null, codeRequired: true }
+      : itemOf(entry, 'table')),
     table: name,
     units: ownedUnits.get(name) ?? [],
   });
   for (const table of inventory.tables) {
-    if (table.owningService === service) add(tableItem(table.table, table));
+    if (owns(table)) add(tableItem(table.table, table));
   }
   for (const name of splitOwned) add(tableItem(name, inventoryTables.get(name)));
   return [...items.values()];
@@ -491,7 +515,7 @@ async function judgeItem(
   let incomplete: MissingItem | undefined;
   let unresolved: MissingItem | undefined;
   for (const row of coveringRows(item, rows, index)) {
-    const verdict = await judgeRow(row, !CODE_EXEMPT.has(item.disposition ?? ''), exists);
+    const verdict = await judgeRow(row, item.codeRequired, exists);
     if (verdict.ok) return null;
     const missing: MissingItem = { ...base, reason: verdict.reason, line: row.line };
     if (verdict.lacks !== undefined) missing.lacks = verdict.lacks;

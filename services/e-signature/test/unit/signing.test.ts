@@ -23,6 +23,7 @@ import {
   type EsignatureDomainDeps,
   type SuppliedAuditEntry,
 } from '../../src/domain/signing.js';
+import { BASE64_DECODE_SLICE } from '../../src/legacy/checks.js';
 import { PeopleReadDeniedError, type PersonSummary } from '../../src/legacy/people-client.js';
 import { createEsignatureRepository } from '../../src/repo/repository.js';
 import type { AuditEntryRow, SignatureRequestRow } from '../../src/repo/tables.js';
@@ -155,10 +156,9 @@ const signer = (site: string = TENANT_A.siteId): Promise<Headers> => userHeaders
 const requester = (): Promise<Headers> => userHeaders({ sub: OTHER_USER_ID, roles: SIGNER_ROLES });
 const auditor = (): Promise<Headers> => headersFor('esignature.auditor', { site: TENANT_A.siteId });
 
-/** A POST to `url`, with the CSRF token pair auth.cfc requireCsrf checks on a fixture write. */
+/** A POST to `url`, with the CSRF token pair auth.cfc requireCsrf checks on a fixture write and the `/v1` writes consume alike. */
 async function post(url: string, headers: Headers | Promise<Headers>, payload: Payload = {}, app: TestApp = t): Promise<Injected> {
-  const csrf = url.startsWith(FIXTURE) ? CSRF_HEADERS : {};
-  return app.app.inject({ method: 'POST', url, headers: { ...(await headers), ...csrf }, payload: { ...payload } });
+  return app.app.inject({ method: 'POST', url, headers: { ...(await headers), ...CSRF_HEADERS }, payload: { ...payload } });
 }
 
 async function get(url: string, headers: Headers | Promise<Headers>, app: TestApp = t): Promise<Injected> {
@@ -277,6 +277,18 @@ describe('create', () => {
       expect([surface, res.statusCode, res.json()]).toEqual([surface, 400, errorBody('esignature.requests', INVALID_PARAMETERS)]);
     }
     expect(dataWrites(t.db.writes())).toEqual([]);
+  });
+
+  it.each(SURFACES)('stores and hashes a document spanning several decode slices byte for byte through %s', async (surface, prefix) => {
+    const document = Buffer.alloc((BASE64_DECODE_SLICE / 4) * 3 * 2 + 1000);
+    for (let i = 0; i < document.length; i += 1) document[i] = (i * 131 + 17) & 0xff;
+    const sha256 = createHash('sha256').update(document).digest('hex');
+    const res = await post(`${prefix}/requests`, requester(), { ...CREATE, documentBase64: document.toString('base64') });
+    expect(res.statusCode).toBe(200);
+    const data = dataOf(surface, res);
+    expect(data.document_sha256).toBe(sha256);
+    expect(t.db.rows('signature_request')[0]?.document?.equals(document)).toBe(true);
+    expect(storedChain(t.db, data.request_id as string)[0]?.detail).toBe(sha256);
   });
 
   it('accepts a documentName of exactly 255 characters', async () => {
@@ -412,13 +424,12 @@ describe('sign', () => {
     expect(t.db.rows('signature_request')[0]?.state).toBe('PENDING');
   });
 
-  it.each(SURFACES)('answers invalidParameters to a typed name holding U+0000 through %s and rolls the signature back', async (surface, prefix) => {
+  it.each(SURFACES)('answers invalidParameters to a typed name holding U+0000 through %s and rolls the signature back', async (_surface, prefix) => {
     const id = await createRequest();
     t.db.clear();
-    // The name passes the typed-name rule; PostgreSQL refuses it, and on /v1 service-kit's handler answers it.
+    // The name passes the typed-name rule; PostgreSQL refuses it.
     const res = await post(`${prefix}/requests/${id}/sign`, signer(), { typedName: 'A\u0000B' });
-    const method = surface === 'fixture' ? 'esignature.requests.sign' : 'invalid';
-    expect([res.statusCode, res.json()]).toEqual([400, errorBody(method, INVALID_PARAMETERS)]);
+    expect([res.statusCode, res.json()]).toEqual([400, errorBody('esignature.requests.sign', INVALID_PARAMETERS)]);
     expect(dataWrites(t.db.writes())).toEqual([]);
     expect(t.db.rows('signature_request')[0]?.state).toBe('PENDING');
     expect(t.db.rows('signature')).toEqual([]);
@@ -676,6 +687,65 @@ describe('verify', () => {
     seedVectorChain();
     const res = await post(`${FIXTURE}/requests/${VECTOR_REQUEST_ID}/verify`, auditor(), { entries: entries(suppliedCopy(chainEntries())) });
     expect([res.statusCode, res.json()]).toEqual([400, errorBody('esignature.requests.verify', INVALID_PARAMETERS)]);
+  });
+});
+
+describe('/v1 CSRF', () => {
+  /** One `/v1` write on a PENDING request `id`: its URL, caller, body, envelope method and the context the fixture consumes its pair under. */
+  interface V1Write {
+    label: string;
+    url: (id: string) => string;
+    headers: () => Promise<Headers>;
+    payload: Payload;
+    method: string;
+    context: (id: string) => string;
+  }
+
+  const V1_WRITES: readonly V1Write[] = [
+    { label: 'create', url: () => `${V1}/requests`, headers: requester, payload: CREATE, method: 'esignature.requests', context: () => '' },
+    { label: 'sign', url: (id) => `${V1}/requests/${id}/sign`, headers: () => signer(), payload: { typedName: 'Ann' }, method: 'esignature.requests.sign', context: (id) => id },
+    {
+      label: 'supplied verify',
+      url: (id) => `${V1}/requests/${id}/verify`,
+      headers: auditor,
+      payload: { entries: [] },
+      method: 'esignature.requests.verify',
+      context: (id) => id,
+    },
+  ];
+  const [CSRF_TOKEN, CSRF_EXPIRES] = Object.values(CSRF_HEADERS);
+
+  it.each(V1_WRITES)('answers a /v1 $label without a CSRF pair invalidTokens, calling identity for nothing and writing nothing', async ({ url, headers, payload, method }) => {
+    const id = await createRequest();
+    t.db.clear();
+    const consumed = t.csrf.calls.length;
+    const res = await t.app.inject({ method: 'POST', url: url(id), headers: await headers(), payload: { ...payload } });
+    expect([res.statusCode, res.json()]).toEqual([400, errorBody(method, INVALID_TOKENS)]);
+    expect(t.csrf.calls).toHaveLength(consumed);
+    expect(dataWrites(t.db.writes())).toEqual([]);
+  });
+
+  it.each(V1_WRITES)('answers a /v1 $label whose CSRF token identity rejects invalidTokens, writing nothing', async ({ url, headers, payload, method }) => {
+    const id = await createRequest();
+    t.db.clear();
+    t.csrf.answer(false);
+    const res = await post(url(id), headers(), payload);
+    expect([res.statusCode, res.json()]).toEqual([400, errorBody(method, INVALID_TOKENS)]);
+    expect(dataWrites(t.db.writes())).toEqual([]);
+  });
+
+  it.each(V1_WRITES)('consumes the CSRF pair of a /v1 $label once, under the fixture context', async ({ url, headers, payload, context }) => {
+    const id = await createRequest();
+    const consumed = t.csrf.calls.length;
+    const res = await post(url(id), headers(), payload);
+    expect(res.statusCode).toBe(200);
+    expect(t.csrf.calls.slice(consumed)).toEqual([{ sessionId: expect.any(String), token: CSRF_TOKEN, expires: CSRF_EXPIRES, context: context(id) }]);
+  });
+
+  it('consumes a /v1 sign pair under the path id as sent, before the id is validated', async () => {
+    const res = await post(`${V1}/requests/not-a-uuid/sign`, signer(), { typedName: 'Ann' });
+    expect([res.statusCode, res.json()]).toEqual([400, errorBody('esignature.requests.sign', INVALID_PARAMETERS)]);
+    expect(t.csrf.calls.map((call) => call.context)).toEqual(['not-a-uuid']);
   });
 });
 

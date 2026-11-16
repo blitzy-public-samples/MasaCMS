@@ -45,7 +45,7 @@ function portInputs(version: Version, idOf: (index: number) => string = rowId): 
     queue: task.queue,
     name: task.portName,
     scheduleTime: task.scheduleTime,
-    url: taskTarget({ queue: task.queue, surveyId: task.surveyId, scheduledTaskId: idOf(index) }, serviceUrls).url,
+    url: taskTarget(task.queue, serviceUrls).url,
     body: taskPayload(task, idOf(index)),
     deadlineS: task.deadlineS,
     tenantId: TENANT_ID,
@@ -63,7 +63,7 @@ describe('fixture schedules as port inputs', () => {
         queue: launch.name,
         name: `opt2-survey-${SURVEY_ID}-launch-v${String(version)}`,
         scheduleTime: launchAt,
-        url: targetUrl(launch, serviceUrls, { surveyId: SURVEY_ID }),
+        url: targetUrl(launch, serviceUrls),
         body: { surveyId: SURVEY_ID, siteId: SITE_ID, scheduleVersion: version },
         deadlineS: launch.deadlineS,
         tenantId: TENANT_ID,
@@ -72,7 +72,7 @@ describe('fixture schedules as port inputs', () => {
         queue: reminders.name,
         name: `opt2-survey-${SURVEY_ID}-reminder-${String(i + 1)}-v${String(version)}`,
         scheduleTime,
-        url: targetUrl(reminders, serviceUrls, { scheduledTaskId: rowId(i + 1) }),
+        url: targetUrl(reminders, serviceUrls),
         body: { scheduledTaskId: rowId(i + 1), surveyId: SURVEY_ID, n: i + 1, scheduleVersion: version },
         deadlineS: reminders.deadlineS,
         tenantId: TENANT_ID,
@@ -84,8 +84,8 @@ describe('fixture schedules as port inputs', () => {
     const inputs = portInputs(version);
 
     expect(inputs.map(({ url }) => new URL(url).pathname)).toStrictEqual([
-      `/internal/v1/tasks/surveys/${SURVEY_ID}/launch`,
-      ...inputs.slice(1).map((_, i) => `/internal/v1/tasks/reminders/${rowId(i + 1)}`),
+      '/internal/v1/tasks/surveys/launch',
+      ...inputs.slice(1).map(() => '/internal/v1/tasks/reminders'),
     ]);
     expect(inputs.every(({ name }) => TASK_NAME_PATTERN.test(name))).toBe(true);
   });

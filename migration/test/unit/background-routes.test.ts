@@ -4,9 +4,8 @@ import { readFileSync } from 'node:fs';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import type { MetadataTx, TenantDb } from '@opt2/platform/tenancy';
+import type { MetadataTx, QueryResult, TenantDb } from '@opt2/platform/tenancy';
 import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
-import type { QueryResult } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 

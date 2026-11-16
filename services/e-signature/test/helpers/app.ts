@@ -3171,7 +3171,7 @@ export function createRecordingDb(seed: RecordingSeed = {}, options: RecordingDb
   return Object.freeze(db);
 }
 
-/** CSRF token and expiry headers a fixture write sends; the identity double answers every token with its current verdict. */
+/** CSRF token and expiry headers a fixture or `/v1` write sends; the identity double answers every token with its current verdict. */
 export const CSRF_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   [CSRF_HEADER_TOKEN]: 'OPT2ESIGNATURETESTCSRFTOKEN',
   [CSRF_HEADER_EXPIRES]: '991231235959000',
@@ -3186,7 +3186,7 @@ export interface CsrfDouble {
 }
 
 /** Replaces `request` on the app's service client, which the CSRF hook uses at request time, with identity's CSRF consume; any other service call throws. */
-function installCsrfDouble(app: FastifyInstance): CsrfDouble {
+export function installCsrfDouble(app: FastifyInstance): CsrfDouble {
   const calls: CsrfConsumeRequest[] = [];
   let valid = true;
   function request<T = unknown>(req: ServiceRequest): Promise<ServiceResponse<T>> {

@@ -1,4 +1,5 @@
 // The handlers' request pipeline in every response mode, over a test screen registry and the in-memory gateway relay.
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +9,7 @@ import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
 import type { ScreenGate } from '@/lib/access-gate';
 import { GatewayUnavailableError, setServiceClientForTests } from '@/lib/gateway-client';
 import { html } from '@/lib/html';
-import { ensureTracing, logRequest, type RequestLogFields } from '@/lib/telemetry';
+import { logRequest, type RequestLogFields } from '@/lib/telemetry';
 import type {
   PageControllerRedirect,
   ScreenContext,
@@ -16,6 +17,7 @@ import type {
   SubmitResult,
   UploadPart,
 } from '@/screens/registry';
+import { installRequestScope, type RequestScope } from '@/server/shared';
 import { promptCountsZero } from '../fixtures/strategies-content/prompts';
 import { siteRecordFor } from '../helpers/admin-request';
 import { useTestEnv } from '../helpers/env';
@@ -36,7 +38,6 @@ const probe = vi.hoisted(() => ({
 
 vi.mock('@/lib/telemetry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/telemetry')>()),
-  ensureTracing: vi.fn(async () => undefined),
   logRequest: vi.fn(),
 }));
 
@@ -335,7 +336,21 @@ describe('page mode', () => {
     expect(response.status).toBe(403);
     expect(await response.text()).toBe('');
     expect(fake.requests).toHaveLength(0);
-    expect(loggedLines().map(({ statusCode, error }) => [statusCode, error !== undefined])).toEqual([[403, true]]);
+    expect(loggedLines().map(({ statusCode, denial, error }) => [statusCode, denial, error])).toEqual([
+      [403, 'forbidden', undefined],
+    ]);
+  });
+
+  it("marks the custom server's request scope as taken before it authenticates", async () => {
+    const storage = new AsyncLocalStorage<RequestScope>();
+    installRequestScope(storage);
+    const scope: RequestScope = { pipeline: false, logged: false };
+    const request = new Request('http://web/admin/cusers/list');
+
+    const response = await storage.run(scope, () => handleAdminPage(request, LIST));
+
+    expect(response.status).toBe(403);
+    expect(scope.pipeline).toBe(true);
   });
 
   it('sends an anonymous user on a secured screen to the login form', async () => {
@@ -364,6 +379,9 @@ describe('page mode', () => {
 
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toBe('/admin/?muraAction=clogin.logout');
+    expect(loggedLines().map(({ statusCode, denial, error }) => [statusCode, denial, error])).toEqual([
+      [302, 'identity answered 401', undefined],
+    ]);
   });
 
   it('logs an unexpected error once and rethrows it', async () => {
@@ -371,18 +389,6 @@ describe('page mode', () => {
 
     await expect(handleAdminPage(await getRequest('/admin/cusers/list'), LIST)).rejects.toBe(probe.renderError);
     expect(loggedLines()).toEqual([expect.objectContaining({ statusCode: 500, error: probe.renderError })]);
-  });
-
-  it('logs a tracing start-up failure once and rethrows it without calling a service', async () => {
-    const failure = new Error('tracing failed');
-    vi.mocked(ensureTracing).mockRejectedValueOnce(failure);
-
-    await expect(handleAdminPage(await getRequest('/admin/cusers/list'), LIST)).rejects.toBe(failure);
-    expect(fake.requests).toHaveLength(0);
-    expect(loggedLines()).toEqual([
-      expect.objectContaining({ route: 'page:cusers.list', statusCode: 500, requestId: 'req-pipeline', error: failure }),
-    ]);
-    expect(loggedLines()[0]?.userId).toBeUndefined();
   });
 
   it('persists the writes of a request a screen derived in place of its own, with the set-up writes it carries', async () => {

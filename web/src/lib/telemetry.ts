@@ -1,14 +1,24 @@
-// Web request logging (log-record.v1) and server spans through the platform logger and tracing SDK (server-only).
+// Web request logging (log-record.v1) and request spans through the platform logger and tracing SDK (server-only).
 import { createLogger, serializeError, type CreateLoggerOptions, type LogFields, type Logger } from '@opt2/platform/logging';
-import { SpanKind, startSpan, startTracing, withExtractedContext } from '@opt2/platform/tracing';
+import {
+  SpanKind,
+  SpanStatusCode,
+  activeSpanIds,
+  startSpan,
+  startTracing,
+  withExtractedContext,
+  type Span,
+} from '@opt2/platform/tracing';
+import { WEB_VERSION, claimRequestLine, currentRequestScope } from '../server/shared';
 import { webEnv } from './env';
 
-/** Version written on every web log line and span resource; matches `web/package.json`. */
-export const WEB_VERSION = '1.0.0';
+export { WEB_VERSION };
 
 /** Fields of the one log line written per web request. */
 export type RequestLogFields = Required<Pick<LogFields, 'route' | 'httpMethod' | 'statusCode' | 'latencyMs' | 'requestId'>> &
   Pick<LogFields, 'userId' | 'tenantId'> & {
+    /** Fixed reason of an expected refusal; the line is then `request denied: <reason>` at warning severity. */
+    denial?: string;
     /** Value the handler threw; the line is then written at error severity. */
     error?: unknown;
   };
@@ -44,14 +54,26 @@ export function setWebLoggerForTests(replacement: Logger | undefined): () => voi
   };
 }
 
-/** Writes the request's log line: `info`, or `error` with the serialized error when the handler threw. */
+/** Marks the custom server's request scope as taken by the admin pipeline; a no-op outside the custom server. */
+export function markPipelineRequest(): void {
+  const scope = currentRequestScope();
+  if (scope !== undefined) scope.pipeline = true;
+}
+
+/** Writes the request's unclaimed log line: `error` with the thrown error, else `warn` for a denial, else `info`. */
 export function logRequest(fields: RequestLogFields): void {
-  const { error, ...requestFields } = fields;
-  if (error === undefined) {
-    webLogger().info(requestFields, 'request');
+  const { denial, error, ...requestFields } = fields;
+  const scope = currentRequestScope();
+  if (scope !== undefined && !claimRequestLine(scope)) return;
+  if (error !== undefined) {
+    webLogger().error({ ...requestFields, error: serializeError(error) }, 'request');
     return;
   }
-  webLogger().error({ ...requestFields, error: serializeError(error) }, 'request');
+  if (denial !== undefined) {
+    webLogger().warn(requestFields, `request denied: ${denial}`);
+    return;
+  }
+  webLogger().info(requestFields, 'request');
 }
 
 /** Starts the platform tracing SDK for web once per process; later calls await the same start. */
@@ -64,12 +86,31 @@ export async function ensureTracing(): Promise<void> {
   await tracingStarted;
 }
 
-/** Runs `fn` in a server span named `name` (`<METHOD> <route>`), parented to the inbound W3C trace context. */
-export function withRequestSpan<T>(name: string, headers: HeadersInit, fn: () => Promise<T>): Promise<T> {
+/** Records the status a request was answered with on its span. */
+export type RecordStatus = (statusCode: number) => void;
+
+/**
+ * Runs `fn` in the span `<METHOD> <route>`: a child of the active span (Next's, in a route handler), else a server span
+ * under the inbound W3C trace context; `fn` records the answered status, a 5xx marking the span as an error.
+ */
+export function withRequestSpan<T>(
+  method: string,
+  route: string,
+  headers: HeadersInit,
+  fn: (recordStatus: RecordStatus) => Promise<T>,
+): Promise<T> {
+  const name = `${method} ${route}`;
+  const attributes = { 'http.request.method': method, 'http.route': route };
+  const run = (span: Span): Promise<T> =>
+    fn((statusCode) => {
+      span.setAttribute('http.response.status_code', statusCode);
+      if (statusCode >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
+    });
+  if (activeSpanIds() !== undefined) return startSpan(name, SpanKind.INTERNAL, run, attributes);
   const { traceparent, tracestate } = headersToRecord(headers);
   // Activating a Context from extractHttpContext needs @opentelemetry/api, which web never imports; withExtractedContext
   // performs the same W3C extraction and runs the span under it.
-  return withExtractedContext({ traceparent, tracestate }, () => startSpan(name, SpanKind.SERVER, fn));
+  return withExtractedContext({ traceparent, tracestate }, () => startSpan(name, SpanKind.SERVER, run, attributes));
 }
 
 /** Header names lower-cased with their values, repeated headers joined by `, ` as Fetch `Headers` joins them. */

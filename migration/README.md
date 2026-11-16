@@ -50,6 +50,7 @@ Run as `node migration/dist/cli.js <command>` or through the `opt2-migrate` bin.
 |---|---|
 | `opt2-db bootstrap --target local` | Drops and recreates every OPT-2 schema with its `<svc>_owner`, `<svc>_app` and `<svc>_migrator` roles, then applies each package's `db/migrations` as `<svc>_migrator` after `SET ROLE <svc>_owner`; role passwords from `${OPT2_STATE_DIR}/secrets/db-<schema>-{app,migrator}` |
 | `opt2-db bootstrap --target cloud` | The same against Cloud SQL, as the built-in `postgres` user plus IAM users; refuses schemas that already hold tables (AAP 0.4.6) |
+| `opt2-db teardown --target local` | Drops every OPT-2 schema with its objects and its three roles from `${PG_HOST}`/`${PG_DATABASE}` as `${PG_USER}`, through the bootstrap's local reset; repeatable, reads no password file. `down.sh` runs it. There is no cloud teardown: the cloud bootstrap is declared but never executed |
 | `opt2-ops drain-and-suspend` | Waits for outboxes and consumers to drain, pauses ACF and local tasks and the recurring sweeps, switches push subscriptions to pull, records what it paused |
 | `opt2-ops resume` | Undoes `drain-and-suspend` from its record and runs the recurring-task reconcile |
 | `opt2-ops seek-subscriptions --to <ISO-8601 time>` | Seeks every OPT-2 consumer subscription to the checkpoint time and verifies none holds a message |
@@ -59,7 +60,7 @@ Both print one JSON summary line; exit 0, 1 or 2 as above (`opt2-db` also exits 
 ### Service (`src/server.ts`)
 
 - `opt2-migrate serve` (the `Dockerfile` command); locally port 8102 (`OPT2_PORT_MIGRATION` in `harness/repro/ports.env`).
-- Cloud Run `min_instance_count = 1`, the only service that never scales to zero, because the projector and write windows must run while any unit is `target`-authoritative. CPU stays allocated (`cpu_idle = false`), as the Cloud Run module sets for every service.
+- Cloud Run `min_instance_count = 1`, the only service that never scales to zero, because the projector and write windows must run while any unit is `target`-authoritative. CPU stays allocated (`cpu_idle = false`); every other service is request-billed (`cpu_idle = true`).
 - Background work, started once the app is ready:
 
 | Loop | Interval | Gated by `opt2-ops` suspension |
@@ -211,7 +212,7 @@ Contract: [`contracts/openapi.yaml`](contracts/openapi.yaml). Every operation ex
 | `projectionAwait` | `POST /internal/v1/projection/await` | Gateway |
 | `unitAuthority` | `GET /internal/v1/authority` | Programs-sites site-monitor orchestrator, gateway, operators |
 | `legacyStepRun` | `POST /internal/v1/legacy-steps` | Programs-sites site-monitor orchestrator, for steps that run on legacy; windowed when they write `target`-authoritative units |
-| `gatesList` | `GET /internal/v1/gates` | Operators |
+| `gatesList` | `GET /internal/v1/gates`, optionally paged with `limit` and `cursor` | Operators |
 | `transitionStart`, `transitionGet` | `POST /internal/v1/transitions`, `GET /internal/v1/transitions/{transitionId}` | Operators (`opt2-migrate transition`) |
 | `schedulerStateGet`, `schedulerStateImport` | `GET /internal/v1/scheduler/state`, `POST /internal/v1/scheduler/state:import` | Operators |
 | `backgroundSuspend`, `backgroundResume` | `POST /internal/v1/background:suspend`, `POST /internal/v1/background:resume` | Operators (`opt2-ops`) |

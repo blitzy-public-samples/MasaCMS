@@ -23,9 +23,11 @@ import {
   type UnitGate,
 } from '@opt2/platform/migration-kit';
 import {
+  SERVICE_CALL_TIMEOUT_MS,
   baseEnvSchema,
   createService,
   createServiceClient,
+  decodeServiceBody,
   loadEnv,
   systemClock,
   type BaseEnv,
@@ -62,6 +64,33 @@ export const PG_OWNER_GATE_HOLDER = 'pg-owner';
 
 /** Path of the owner's public test rows route: GET reads a table behind its unit gate, POST writes one row. */
 export const PG_OWNER_ROWS_PATH = '/test/v1/rows';
+
+/** A rows-route call: a read (`GET`, the default) or a write of one row (`POST`). */
+export type PgOwnerRowsRequest = { method?: 'GET' } | { method: 'POST'; json: RepositoryRow };
+
+/** Answer of {@link fetchPgOwnerRows}; `body` is decoded as the service client decodes it. */
+export interface PgOwnerRowsResponse<T> {
+  status: number;
+  headers: Headers;
+  body: T;
+}
+
+/**
+ * Calls the rows route at `url` with connection, headers and body bounded by the service-call timeout; rejects with the
+ * signal's `TimeoutError` once it expires.
+ */
+export async function fetchPgOwnerRows<T = unknown>(url: string, request: PgOwnerRowsRequest = {}): Promise<PgOwnerRowsResponse<T>> {
+  const signal = AbortSignal.timeout(SERVICE_CALL_TIMEOUT_MS);
+  const response = await fetch(
+    url,
+    request.method === 'POST'
+      ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.json), signal }
+      : { method: 'GET', signal },
+  );
+  const raw = Buffer.from(await response.arrayBuffer());
+  const body = decodeServiceBody(raw, response.headers.get('content-type') ?? undefined, `PostgreSQL owner ${url}`) as T;
+  return { status: response.status, headers: response.headers, body };
+}
 
 /** Service name the owners client calls as; its local token carries `platform.migration`. */
 const CALLER = 'migration';

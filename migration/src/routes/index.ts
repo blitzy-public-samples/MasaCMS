@@ -84,7 +84,7 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     catalog: ctx.catalog,
   });
   registerLegacyStepRoutes(app, { windows: deps.windows });
-  // Leases come from `gateReadsOf`, not `holdersOf` alone: a holder map lacks the lease kind and acquisition time `gatesList` reports.
+  // Leases come from `gateReadsOf`'s single `leasesOfUnits` read, not `holdersOf`: a holder map lacks the lease kind and acquisition time `gatesList` reports.
   registerGatesRoutes(app, { catalog: ctx.catalog, ...gateReadsOf(ctx) });
   registerTransitionRoutes(app, { transitions: deps.transitions });
   // The contract's `SchedulerState` carries the background state, so the scheduler routes read the record the background routes write.

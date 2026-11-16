@@ -1,7 +1,6 @@
 // Token site of OPT-2 and fixture requests through the real matcher and edge dispatcher, against stand-in web, stub and people services.
 import { Buffer } from 'node:buffer';
 import replyFrom from '@fastify/reply-from';
-import { apiUnavailableResponse } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import {
   IDENTITY_SERVICE,
@@ -21,6 +20,7 @@ import { registerEdgeRoute, type DispatcherDeps } from '../src/dispatcher/dispat
 import { createMatcher } from '../src/dispatcher/match.js';
 import type { SessionSnapshot } from '../src/session/identity-client.js';
 import type { SessionResolution } from '../src/session/resolve.js';
+import type { SessionToken } from '../src/session/token-cache.js';
 import { sendBytes, startHttpDouble, type HttpDouble } from './helpers/http-double.js';
 
 const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
@@ -30,6 +30,19 @@ const URLENCODED = 'application/x-www-form-urlencoded';
 const ARCHIVE = '/legacy-fixtures/cfml/api.cfm/people/persons/00532E14-B51F-226C-36938FA3E4A6396C/archive';
 const SILENT = createLogger({ service: 'gateway', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
 const NO_FACTS: InventoryFacts = { get: () => undefined, routes: () => [] };
+const TOKEN_CLAIMS: SessionToken['claims'] = {
+  iss: 'opt2-local-identity',
+  aud: 'opt2-local',
+  sub: 'U',
+  sid: SESSION_ID,
+  tid: '00000000-0000-4000-8000-000000000001',
+  site: 'default',
+  roles: [],
+  s2: false,
+  epoch: EPOCH,
+  iat: 1_700_000_000,
+  exp: 4_000_000_000,
+};
 
 function entry(route: string, owningService: OwningService, kind: EntryKind): CutoverEntry {
   return { route, owningService, tableVersion: 'v0002', state: 'target', kind, group: null, units: [], disposition: 'carry' };
@@ -135,7 +148,9 @@ async function harness(): Promise<Harness> {
       resolveLegacyBound: async () => ({ kind: 'none', setCookies: [] }),
       adoptAfterLegacy: async () => ({ kind: 'none', setCookies: [] }),
     },
-    tokenCache: { get: vi.fn(async (_sessionId: string, siteId: string | undefined) => `tok:${siteId ?? ''}`) },
+    tokenCache: {
+      get: vi.fn(async (_sessionId: string, siteId: string | undefined) => ({ token: `tok:${siteId ?? ''}`, claims: TOKEN_CLAIMS })),
+    },
     identity: { adminSite: vi.fn(async () => ''), snapshot: vi.fn(async () => undefined) },
     stateCheck: {
       check: async () => ({ state: 'active' as const, epoch: EPOCH, userId: 'U', siteId: 'default', epochChanged: false }),
@@ -290,12 +305,12 @@ describe('fixture user token site', () => {
     expect(h.people.requests.map((r) => r.headers.authorization)).toEqual([`Bearer tok:${site}`]);
   });
 
-  it('fails closed with the API 503, calling no service, when identity cannot report the session user', async () => {
+  it('fails closed with the fixture 503, calling no service, when identity cannot report the session user', async () => {
     const h = await harness();
     vi.mocked(h.deps.identity.snapshot).mockRejectedValueOnce(new ServiceUnavailableError(IDENTITY_SERVICE, new Error('down')));
     const res = await h.app.inject({ method: 'POST', url: ARCHIVE });
     expect(res.statusCode).toBe(503);
-    expect(res.body).toBe(apiUnavailableResponse().body);
+    expect(res.body).toBe('{"apiversion":"v1","method":"people.persons.archive","error":{"code":"server_error","message":"Unhandled Exception"}}');
     expect(h.deps.tokenCache.get).not.toHaveBeenCalled();
     expect(h.people.requests).toHaveLength(0);
   });

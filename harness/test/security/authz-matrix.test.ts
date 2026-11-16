@@ -44,6 +44,7 @@ const PUSH_URL = '/internal/v1/events/people.programs-sites.site.changed.v1';
 const SWEEP_URL = '/internal/v1/outbox/sweep';
 const CONTACT_URL = '/internal/v1/persons/:userId/contact';
 const ARCHIVE_URL = '/legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive';
+const SITE_ARCHIVE_URL = '/v1/sites/:siteid/persons/:userId/archive';
 const USERS_URL = '/v1/users';
 const USERS_MODULE_ROLE = 'm:008';
 
@@ -90,6 +91,14 @@ function sampleRoute(url: string): RouteMatrixEntry {
   return route;
 }
 
+/** The sample archive route, which other-tenant's roles satisfy, at `url`. */
+function archiveRouteAt(url: string): RouteMatrixEntry {
+  return { ...sampleRoute(ARCHIVE_URL), url };
+}
+
+/** The sample plus a route whose template has a `siteid` param. */
+const SITED: RouteMatrix = { routes: [...SAMPLE.routes, archiveRouteAt(SITE_ARCHIVE_URL)] };
+
 /** `matrix` as the people package's loaded matrix. */
 function peopleMatrix(matrix: RouteMatrix = SAMPLE): LoadedMatrix {
   return { package: PEOPLE.name, file: SAMPLE_FILE, matrix };
@@ -128,7 +137,8 @@ function expectedOutcome(route: RouteMatrixEntry, subject: RoleSubject): Outcome
   const roles = [...subject.roles, serviceRole('gateway')];
   const granted = route.public === true || hasAnyRole(roles, route.requires ?? []);
   const foreignSite = subject.crossTenant === true || subject.siteOverride !== undefined;
-  return granted && !(foreignSite && route.siteCheck) ? 'allow' : 'deny';
+  const suppliesSite = /:siteid\b/i.test(route.url);
+  return granted && !(foreignSite && route.siteCheck && suppliesSite) ? 'allow' : 'deny';
 }
 
 /** Observation of `expectation`'s request answered with `status`. */
@@ -465,8 +475,9 @@ describe('expectationsFor', () => {
   });
 
   it('agrees with the independent verdict for every route and subject', () => {
-    for (const route of SAMPLE.routes) {
-      const expectations = expectationsAt(route.url);
+    const sited = expectationsFor(peopleMatrix(SITED));
+    for (const route of SITED.routes) {
+      const expectations = sited.filter((expectation) => expectation.url === route.url);
       for (const subject of ROLE_SET) {
         expect(expectationOf(expectations, route.url, subject.name).outcome, `${subject.name} ${route.url}`).toBe(
           expectedOutcome(route, subject),
@@ -475,16 +486,12 @@ describe('expectationsFor', () => {
     }
   });
 
-  it('allows every subject on the public /healthz except the other-tenant user the site check refuses', () => {
+  it('allows every subject on the public /healthz, other-tenant included, since its request supplies no siteid', () => {
     const expectations = expectationsAt(HEALTH_URL);
-    expect(expectationOf(expectations, HEALTH_URL, 'anonymous')).toMatchObject({ outcome: 'allow', reason: 'public' });
+    expect(expectations).toHaveLength(ROLE_SET.length);
     for (const expectation of expectations) {
-      expect(expectation, expectation.subject).toMatchObject(
-        expectation.subject === 'other-tenant'
-          ? { outcome: 'deny', status: 403, reason: 'other-tenant' }
-          : { outcome: 'allow', reason: 'public' },
-      );
-      expect(expectation.outcome === 'allow').toBe(expectation.status === undefined);
+      expect(expectation, expectation.subject).toMatchObject({ outcome: 'allow', reason: 'public' });
+      expect(expectation.status).toBeUndefined();
     }
   });
 
@@ -523,15 +530,15 @@ describe('expectationsFor', () => {
     });
   });
 
-  it('allows the archive route to s2 and site-admin and denies anonymous, member, system-user and editor', () => {
+  it('allows the archive route to s2, site-admin and other-tenant and denies anonymous, member, system-user, editor', () => {
     const expectations = expectationsAt(ARCHIVE_URL);
-    for (const name of [Roles.s2, Roles.siteAdmin]) {
+    for (const name of [Roles.s2, Roles.siteAdmin, 'other-tenant']) {
       expect(expectationOf(expectations, ARCHIVE_URL, name), name).toMatchObject({ outcome: 'allow', reason: 'role' });
     }
     for (const name of ['anonymous', Roles.member, Roles.systemUser, 'editor']) {
       expect(expectationOf(expectations, ARCHIVE_URL, name).outcome, name).toBe('deny');
     }
-    expect(allowedSubjects(expectations)).toEqual(new Set([Roles.s2, Roles.siteAdmin]));
+    expect(allowedSubjects(expectations)).toEqual(new Set([Roles.s2, Roles.siteAdmin, 'other-tenant']));
   });
 
   it.each([
@@ -586,15 +593,32 @@ describe('expectationsFor', () => {
     });
   });
 
-  it('denies other-tenant on every route even where its roles satisfy requires', () => {
-    const expectations = expectationsFor(peopleMatrix());
-    for (const route of SAMPLE.routes) {
-      expect(expectationOf(expectations, route.url, 'other-tenant').outcome, route.url).toBe('deny');
-    }
-    for (const url of [HEALTH_URL, ARCHIVE_URL]) {
-      expect(expectationOf(expectations, url, 'other-tenant'), url).toMatchObject({ status: 403, reason: 'other-tenant' });
-    }
-    expect(expectationOf(expectations, ARCHIVE_URL, Roles.siteAdmin).outcome).toBe('allow');
+  it.each<[string, RouteMatrixEntry]>([
+    ['a :siteid param', archiveRouteAt(SITE_ARCHIVE_URL)],
+    ['a :siteId param', archiveRouteAt('/v1/sites/:siteId/persons/:userId/archive')],
+    ['a :SiteID param with a regex', archiveRouteAt('/v1/sites/:SiteID([a-z-]+)/archive')],
+    ['a :siteid param, public', { ...sampleRoute(HEALTH_URL), url: '/v1/sites/:siteid/healthz' }],
+  ])('denies other-tenant 403 on a route with %s, though its roles pass the role check', (_case, route) => {
+    const expectations = expectationsFor(peopleMatrix({ routes: [route] }));
+    expect(expectationOf(expectations, route.url, 'other-tenant')).toMatchObject({
+      outcome: 'deny',
+      status: 403,
+      reason: 'other-tenant',
+    });
+    expect(expectationOf(expectations, route.url, Roles.siteAdmin).outcome).toBe('allow');
+  });
+
+  const byRole: Partial<Expectation> = { outcome: 'allow', reason: 'role' };
+  it.each<[string, RouteMatrixEntry, Partial<Expectation>]>([
+    ['the public /healthz', sampleRoute(HEALTH_URL), { outcome: 'allow', reason: 'public' }],
+    ['the archive route keyed by :userId', sampleRoute(ARCHIVE_URL), byRole],
+    ['a route whose :site param the check does not read', archiveRouteAt('/v1/sites/:site/archive'), byRole],
+    ['a route with an escaped colon before siteid', archiveRouteAt('/v1/sites::siteid/archive'), byRole],
+    ['/v1/users, whose role check refuses', sampleRoute(USERS_URL), { outcome: 'deny', status: 403, reason: 'missing-role' }],
+  ])('gives other-tenant its role verdict on %s, a siteCheck route supplied no siteid', (_case, route, verdict) => {
+    expect(route.siteCheck).toBe(true);
+    const expectations = expectationsFor(peopleMatrix({ routes: [route] }));
+    expect(expectationOf(expectations, route.url, 'other-tenant')).toMatchObject(verdict);
   });
 
   it('treats a user whose token names another site like the other-tenant user', () => {
@@ -604,17 +628,19 @@ describe('expectationsFor', () => {
       roles: [Roles.systemUser, Roles.siteAdmin],
       siteOverride: 'tenant-b',
     };
-    expect(expectationOf(expectationsAt(ARCHIVE_URL, [siteOverride]), ARCHIVE_URL, 'site-override')).toMatchObject({
+    const expectations = expectationsFor(peopleMatrix(SITED), [siteOverride]);
+    expect(expectationOf(expectations, SITE_ARCHIVE_URL, 'site-override')).toMatchObject({
       outcome: 'deny',
       status: 403,
       reason: 'other-tenant',
     });
+    expect(expectationOf(expectations, ARCHIVE_URL, 'site-override')).toMatchObject(byRole);
   });
 
   it('lets other-tenant through on routes whose handler performs the site check', () => {
-    const matrix: RouteMatrix = { routes: [{ ...sampleRoute(ARCHIVE_URL), siteCheck: false }] };
+    const matrix: RouteMatrix = { routes: [{ ...archiveRouteAt(SITE_ARCHIVE_URL), siteCheck: false }] };
     const expectations = expectationsFor(peopleMatrix(matrix));
-    expect(expectationOf(expectations, ARCHIVE_URL, 'other-tenant')).toMatchObject({ outcome: 'allow', reason: 'role' });
+    expect(expectationOf(expectations, SITE_ARCHIVE_URL, 'other-tenant')).toMatchObject(byRole);
   });
 
   it('skips edge routes', () => {
@@ -640,12 +666,12 @@ describe('expectationsFor', () => {
   });
 
   it('assigns every expectation reason the module declares', () => {
-    const reasons = new Set(expectationsFor(peopleMatrix()).map((e) => e.reason));
+    const reasons = new Set(expectationsFor(peopleMatrix(SITED)).map((e) => e.reason));
     expect(reasons).toEqual(new Set(Object.keys(REASONS)));
   });
 
   it('sets a 401 or 403 status on every deny and none on an allow', () => {
-    for (const expectation of expectationsFor(peopleMatrix())) {
+    for (const expectation of expectationsFor(peopleMatrix(SITED))) {
       if (expectation.outcome === 'allow') {
         expect(expectation.status).toBeUndefined();
       } else {

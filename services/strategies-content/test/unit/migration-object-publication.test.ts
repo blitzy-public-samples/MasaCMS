@@ -1,7 +1,7 @@
 /**
  * `storeMigrationObject` over a throwaway `content` schema and local storage: per-key serialization, backup and restore of
- * replaced versions after failed manifest writes, puts, commits and crashes, recovery of the ledger, the same-hash no-op, and
- * the object manifest export of the bytes stored now.
+ * replaced versions after failed manifest writes, puts, commits and crashes, recovery and changelog rows of the ledger, the
+ * same-hash no-op, and the object manifest export of the bytes stored now.
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -163,6 +163,33 @@ async function lockAwaited(key: string): Promise<void> {
 async function stagedFor(key: string): Promise<StagedObjectEntry[]> {
   return db.withTenant(tenantOf(key), async (tx) =>
     (await tx.query<StagedObjectEntry>(`SELECT * FROM ${handle.schema}.staged_object WHERE object_key = $1`, [key])).rows,
+  );
+}
+
+/** One tenant-a `content.changelog` row as these cases compare it. */
+interface LoggedChange {
+  xid: string;
+  table: string;
+  op: string;
+  origin: string;
+  columns: string[];
+}
+
+/** The highest changelog seq of tenant-a. */
+async function changelogMark(): Promise<string> {
+  return db.withTenant(TENANT_A.tenantId, async (tx) =>
+    (await tx.query<{ seq: string }>(`SELECT coalesce(max(seq), 0)::text AS seq FROM ${handle.schema}.changelog`)).rows[0]?.seq ?? '0',
+  );
+}
+
+/** Tenant-a changelog rows after `mark`, only those of `table` when given, in seq order. */
+async function changesSince(mark: string, table?: string): Promise<LoggedChange[]> {
+  return db.withTenant(TENANT_A.tenantId, async (tx) =>
+    (await tx.query<LoggedChange>(
+      `SELECT xid::text AS xid, "table", op, origin, columns FROM ${handle.schema}.changelog` +
+        ' WHERE seq > $1::bigint AND ($2::text IS NULL OR "table" = $2::text) ORDER BY seq',
+      [mark, table ?? null],
+    )).rows,
   );
 }
 
@@ -516,7 +543,7 @@ describe.skipIf(!(await pgAvailable()))('migration object publication', () => {
     expect(await recoverStagedObjects(deps(), TENANT_A.tenantId, 0)).toBe(1);
   });
 
-  it('pages past unresolved entries, isolates tenants, and never logs ledger writes', async () => {
+  it('pages past unresolved entries and isolates tenants', async () => {
     const blockedId = nextFileId();
     const recorded = Buffer.from('recorded');
     await store(deps(), request(blockedId, recorded));
@@ -531,8 +558,80 @@ describe.skipIf(!(await pgAvailable()))('migration object publication', () => {
     await storage.put(CONTENT_FILES_BUCKET, blocked.object_key, recorded, { contentType: PDF });
     await settleStagedObject(deps(), blocked);
     expect(await stagedFor(blocked.object_key)).toEqual([]);
-    expect(await db.withTenant(TENANT_A.tenantId, async (tx) =>
-      (await tx.query(`SELECT 1 FROM ${handle.schema}.changelog WHERE "table" = 'staged_object'`)).rows)).toEqual([]);
+  });
+
+  it('declares recorded_at as timestamp(3) without time zone', async () => {
+    const { rows } = await handle.adminPool.query(
+      `SELECT data_type, datetime_precision FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = 'staged_object' AND column_name = 'recorded_at'`,
+      [handle.schema],
+    );
+    expect(rows).toEqual([{ data_type: 'timestamp without time zone', datetime_precision: 3 }]);
+  });
+
+  it.each<[string, boolean, [string, string][], boolean[]]>([
+    ['a new key', false, [['insert', 'migration-feed'], ['delete', 'migration-feed']], [false, true]],
+    [
+      'a key holding a published version',
+      true,
+      [['insert', 'migration-feed'], ['update', 'migration-feed'], ['delete', 'migration-feed']],
+      [false, true, false],
+    ],
+  ])('logs every ledger write of a publication over %s with the write it records', async (_label, existing, writes, withManifest) => {
+    const fileId = nextFileId();
+    const key = keyOf(fileId);
+    if (existing) await store(deps(), request(fileId, Buffer.from('published version')));
+    const mark = await changelogMark();
+
+    await store(deps(), { ...request(fileId, Buffer.from('replacement version')), origin: 'migration-feed' });
+
+    const ledger = await changesSince(mark, 'staged_object');
+    const [manifestChange] = await changesSince(mark, 'file_object');
+    expect(ledger.map((change) => [change.op, change.origin])).toEqual(writes);
+    // The intent commits before the publication and settles in its transaction, or after it while a backup remains.
+    expect(ledger.map((change) => change.xid === manifestChange?.xid)).toEqual(withManifest);
+    expect(new Set(ledger.map((change) => change.xid)).size).toBe(ledger.length);
+    expect(ledger.filter((change) => change.op === 'update').map((change) => change.columns)).toEqual(existing ? [['state']] : []);
+    expect(await stagedFor(key)).toEqual([]);
+  });
+
+  it.each([false, true])('leaves no ledger or changelog change of a publication transaction that rolls back (previous version: %s)', async (existing) => {
+    const fileId = nextFileId();
+    const key = keyOf(fileId);
+    const previous = Buffer.from('published version');
+    if (existing) await store(deps(), request(fileId, previous));
+    const failure = new Error('publication rolled back');
+    const mark = await changelogMark();
+    let rolledBack: { xid: string; staged: StagedObjectEntry[]; ledger: LoggedChange[] } | undefined;
+    let calls = 0;
+    const rollingBack: TenantDb = {
+      ...db,
+      withTenant: async (tenantId, fn) => {
+        if (++calls !== 3) return db.withTenant(tenantId, fn);
+        let xid = '';
+        await expect(db.withTenant(tenantId, async (tx) => {
+          await fn(tx);
+          xid = (await tx.query<{ xid: string }>('SELECT pg_current_xact_id()::text AS xid')).rows[0]?.xid ?? '';
+          throw failure;
+        })).rejects.toBe(failure);
+        rolledBack = { xid, staged: await stagedFor(key), ledger: await changesSince(mark, 'staged_object') };
+        throw failure;
+      },
+    };
+
+    await expect(store(deps({ db: rollingBack }), request(fileId, Buffer.from('replacement version')))).rejects.toBe(failure);
+    // The publication's own ledger write rolled back: the intent stays staged with only its insert logged.
+    expect(rolledBack?.staged.map((entry) => entry.state)).toEqual(['staged']);
+    expect(rolledBack?.ledger.map((change) => change.op)).toEqual(['insert']);
+    expect(rolledBack?.xid).toMatch(/^\d+$/);
+    expect((await changesSince(mark)).filter((change) => change.xid === rolledBack?.xid)).toEqual([]);
+    // The settle after the failure is logged with the request's origin, `backfill` when the transfer names none.
+    expect((await changesSince(mark, 'staged_object')).map((change) => [change.op, change.origin])).toEqual([
+      ['insert', 'backfill'],
+      ['delete', 'backfill'],
+    ]);
+    expect(await stagedFor(key)).toEqual([]);
+    expect(await stateOf(key)).toEqual(existing ? published(previous) : ABSENT);
   });
 
   it.each<[string, (key: string) => Promise<void>, boolean]>([

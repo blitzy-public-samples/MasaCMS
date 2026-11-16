@@ -22,6 +22,7 @@ import { registerFileLookupRoutes } from './internal-file-lookup.js';
 import { JSON_API_PREFIXES, registerJsonApiRoutes } from './jsonapi.js';
 import { registerMigrationObjectRoutes } from './migration-objects.js';
 import { RENDER_PREFIXES, registerRenderRoutes } from './render.js';
+import { registerRaterRoutes } from './rater.js';
 import { VARIATION_PATH, registerVariationRoutes } from './variation.js';
 import { registerCarchRoutes } from './v1/carch.js';
 import { registerCategoryRoutes } from './v1/ccategory.js';
@@ -123,6 +124,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   registerFeedRoutes(app, ctx);
   registerVariationRoutes(app, ctx);
   registerCommentsProxyRoutes(app, ctx);
+  registerRaterRoutes(app, ctx);
   registerJsonApiRoutes(app, ctx);
   await registerCarchRoutes(app, ctx);
   await registerChangesetRoutes(app, ctx);

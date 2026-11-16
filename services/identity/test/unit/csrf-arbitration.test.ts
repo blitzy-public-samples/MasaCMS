@@ -328,6 +328,7 @@ describe('relay of consumed tokens to the legacy ledger', () => {
         method: 'POST',
         path: '/internal/v1/legacy-sessions/S-1:mark-used',
         json: { tokens: [{ token: request.token, usedAt: '2026-06-30T12:00:00' }] },
+        userToken: null,
       },
     ]);
   });

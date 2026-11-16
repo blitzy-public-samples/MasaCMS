@@ -1016,7 +1016,7 @@ const HELP = [
   '',
   'Replays the captured scenarios through the gateway in catalogue order and writes',
   '${OPT2_STATE_DIR}/golden/replay/<id>.json for golden:compare. The gateway must have v0002 active, or v0003 with',
-  '--rehearsal, which replays only the rollback-rehearsal scenarios.',
+  '--rehearsal, which without --only replays only the rollback-rehearsal scenarios.',
   '',
   '--phase pre-transition  replays the steps of acrossTransition scenarios before their boundary under any version',
   '                        and saves their sessions to ${OPT2_STATE_DIR}/golden/sessions/<id>.json',

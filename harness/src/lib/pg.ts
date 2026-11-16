@@ -1,5 +1,4 @@
-import pg from 'pg';
-import type { ClientConfig, QueryConfig } from 'pg';
+import { pg, type ClientConfig, type QueryConfig } from '@opt2/platform/tenancy';
 import type { EnvLike } from './paths.js';
 
 /** Connection surface the catalog client drives; `pg.Client` satisfies it. */

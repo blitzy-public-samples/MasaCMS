@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { IDENTITY_SERVICE, ServiceUnavailableError, type Clock } from '@opt2/platform/service-kit';
 import type { IdentityClient, TokenRequest, UserTokenResponse } from '../../src/session/identity-client.js';
-import { DEFAULT_SITE_ID, createTokenCache } from '../../src/session/token-cache.js';
+import { DEFAULT_SITE_ID, TOKEN_REUSE_MARGIN_MS, createTokenCache } from '../../src/session/token-cache.js';
 
 const START = Date.UTC(2026, 5, 30, 12);
 const SECOND = 1000;
@@ -116,9 +116,16 @@ const identityFailure = (): ServiceUnavailableError =>
 describe('createTokenCache', () => {
   it('mints through identity and serves the cached token on the next get', async () => {
     const { identity, cache } = setup();
-    expect(await cache.get('s1', 'site-a', 1)).toBe('s1@site-a#1');
-    expect(await cache.get('s1', 'site-a', 1)).toBe('s1@site-a#1');
+    expect((await cache.get('s1', 'site-a', 1)).token).toBe('s1@site-a#1');
+    expect((await cache.get('s1', 'site-a', 1)).token).toBe('s1@site-a#1');
     expect(identity.requests).toEqual([{ sessionId: 's1', siteId: 'site-a' }]);
+  });
+
+  it('returns the token with the claims identity minted it with, the cached one unchanged', async () => {
+    const { cache } = setup();
+    const minted = await cache.get('s1', 'site-a', 1);
+    expect(minted.claims).toMatchObject({ sid: 's1', site: 'site-a', tid: TENANT, epoch: IDENTITY_EPOCH });
+    expect(await cache.get('s1', 'site-a', 1)).toBe(minted);
   });
 
   it.each([
@@ -126,8 +133,8 @@ describe('createTokenCache', () => {
     ['empty', ''],
   ])('falls back to the default site when the site id is %s', async (_case, siteId) => {
     const { identity, cache } = setup();
-    expect(await cache.get('s1', siteId, 1)).toBe('s1@default#1');
-    expect(await cache.get('s1', DEFAULT_SITE_ID, 1)).toBe('s1@default#1');
+    expect((await cache.get('s1', siteId, 1)).token).toBe('s1@default#1');
+    expect((await cache.get('s1', DEFAULT_SITE_ID, 1)).token).toBe('s1@default#1');
     expect(identity.requests).toEqual([{ sessionId: 's1', siteId: 'default' }]);
   });
 
@@ -137,26 +144,48 @@ describe('createTokenCache', () => {
   ])('mints separately for another %s', async (_case, sessionId, siteId) => {
     const { identity, cache } = setup();
     await cache.get('s1', 'site-a', 1);
-    expect(await cache.get(sessionId, siteId, 1)).toBe(`${sessionId}@${siteId}#2`);
-    expect(await cache.get('s1', 'site-a', 1)).toBe('s1@site-a#1');
+    expect((await cache.get(sessionId, siteId, 1)).token).toBe(`${sessionId}@${siteId}#2`);
+    expect((await cache.get('s1', 'site-a', 1)).token).toBe('s1@site-a#1');
     expect(identity.requests).toHaveLength(2);
   });
 
   it('replaces the cached token when the epoch changes', async () => {
     const { cache } = setup();
     await cache.get('s1', 'site-a', 1);
-    expect(await cache.get('s1', 'site-a', 2)).toBe('s1@site-a#2');
-    expect(await cache.get('s1', 'site-a', 2)).toBe('s1@site-a#2');
-    expect(await cache.get('s1', 'site-a', 1)).toBe('s1@site-a#3');
+    expect((await cache.get('s1', 'site-a', 2)).token).toBe('s1@site-a#2');
+    expect((await cache.get('s1', 'site-a', 2)).token).toBe('s1@site-a#2');
+    expect((await cache.get('s1', 'site-a', 1)).token).toBe('s1@site-a#3');
   });
 
-  it('serves a token until the expiry identity reports in epoch seconds', async () => {
-    const { clock, cache } = setup();
+  // Offsets count from the mint; identity reports the expiry in epoch seconds.
+  it.each([
+    ['half', true, (LIFETIME_SECONDS * SECOND) / 2],
+    ['1 ms more than the reuse margin', true, LIFETIME_SECONDS * SECOND - TOKEN_REUSE_MARGIN_MS - 1],
+    ['exactly the reuse margin', false, LIFETIME_SECONDS * SECOND - TOKEN_REUSE_MARGIN_MS],
+    ['1 ms', false, LIFETIME_SECONDS * SECOND - 1],
+    ['nothing', false, LIFETIME_SECONDS * SECOND],
+  ])('with %s of its lifetime left, reuses the cached token: %s', async (_case, reused, offsetMs) => {
+    const { clock, identity, cache } = setup();
     await cache.get('s1', 'site-a', 1);
-    clock.at(LIFETIME_SECONDS * SECOND - 1);
-    expect(await cache.get('s1', 'site-a', 1)).toBe('s1@site-a#1');
-    clock.at(LIFETIME_SECONDS * SECOND);
-    expect(await cache.get('s1', 'site-a', 1)).toBe('s1@site-a#2');
+    clock.at(offsetMs);
+    expect((await cache.get('s1', 'site-a', 1)).token).toBe(reused ? 's1@site-a#1' : 's1@site-a#2');
+    expect(identity.requests).toHaveLength(reused ? 1 : 2);
+  });
+
+  it('returns a token minted with less than the reuse margin to its callers without reusing it', async () => {
+    const { identity, cache } = setup();
+    identity.lifetime = TOKEN_REUSE_MARGIN_MS / SECOND - 1;
+    identity.hold = true;
+    const first = cache.get('s1', 'site-a', 1);
+    const joined = cache.get('s1', 'site-a', 1);
+    identity.release(1);
+    expect((await Promise.all([first, joined])).map((minted) => minted.token)).toEqual(['s1@site-a#1', 's1@site-a#1']);
+    expect(identity.requests).toHaveLength(1);
+    identity.hold = false;
+    identity.lifetime = LIFETIME_SECONDS;
+    expect((await cache.get('s1', 'site-a', 1)).token).toBe('s1@site-a#2');
+    expect((await cache.get('s1', 'site-a', 1)).token).toBe('s1@site-a#2');
+    expect(identity.requests).toHaveLength(2);
   });
 });
 
@@ -168,7 +197,7 @@ describe('expired entry pruning', () => {
     clock.at(LIFETIME_SECONDS * SECOND);
     await cache.get('s2', 'site-a', 1);
     clock.at(0);
-    expect(await cache.get('s1', 'site-a', 1)).toBe('s1@site-a#3');
+    expect((await cache.get('s1', 'site-a', 1)).token).toBe('s1@site-a#3');
   });
 
   it('stops pruning at the first unexpired entry', async () => {
@@ -180,8 +209,8 @@ describe('expired entry pruning', () => {
     clock.at(LIFETIME_SECONDS * SECOND);
     await cache.get('s3', 'site-a', 1);
     clock.at(0);
-    expect(await cache.get('s2', 'site-a', 1)).toBe('s2@site-a#2');
-    expect(await cache.get('s1', 'site-a', 1)).toBe('s1@site-a#1');
+    expect((await cache.get('s2', 'site-a', 1)).token).toBe('s2@site-a#2');
+    expect((await cache.get('s1', 'site-a', 1)).token).toBe('s1@site-a#1');
   });
 
   it('mints again for an expired entry behind an unexpired one', async () => {
@@ -191,7 +220,7 @@ describe('expired entry pruning', () => {
     identity.lifetime = LIFETIME_SECONDS;
     await cache.get('s2', 'site-a', 1);
     clock.at(LIFETIME_SECONDS * SECOND);
-    expect(await cache.get('s2', 'site-a', 1)).toBe('s2@site-a#3');
+    expect((await cache.get('s2', 'site-a', 1)).token).toBe('s2@site-a#3');
   });
 
   it('moves a re-minted entry behind the entries minted before it', async () => {
@@ -205,8 +234,8 @@ describe('expired entry pruning', () => {
     clock.at(420 * SECOND);
     await cache.get('s3', 'site-a', 1);
     clock.at(200 * SECOND);
-    expect(await cache.get('s2', 'site-a', 1)).toBe('s2@site-a#5');
-    expect(await cache.get('s1', 'site-a', 2)).toBe('s1@site-a#3');
+    expect((await cache.get('s2', 'site-a', 1)).token).toBe('s2@site-a#5');
+    expect((await cache.get('s1', 'site-a', 2)).token).toBe('s1@site-a#3');
   });
 });
 
@@ -218,7 +247,7 @@ describe('in-flight mints', () => {
     const second = cache.get('s1', 'site-a', 1);
     expect(identity.requests).toHaveLength(1);
     identity.release(1);
-    expect(await Promise.all([first, second])).toEqual(['s1@site-a#1', 's1@site-a#1']);
+    expect((await Promise.all([first, second])).map((minted) => minted.token)).toEqual(['s1@site-a#1', 's1@site-a#1']);
   });
 
   it('returns a mint superseded by a newer epoch to its caller without caching it', async () => {
@@ -228,11 +257,11 @@ describe('in-flight mints', () => {
     const newer = cache.get('s1', 'site-a', 2);
     expect(identity.requests).toHaveLength(2);
     identity.release(2);
-    expect(await newer).toBe('s1@site-a#2');
+    expect((await newer).token).toBe('s1@site-a#2');
     identity.release(1);
-    expect(await older).toBe('s1@site-a#1');
+    expect((await older).token).toBe('s1@site-a#1');
     identity.hold = false;
-    expect(await cache.get('s1', 'site-a', 2)).toBe('s1@site-a#2');
+    expect((await cache.get('s1', 'site-a', 2)).token).toBe('s1@site-a#2');
     expect(identity.requests).toHaveLength(2);
   });
 });
@@ -244,9 +273,9 @@ describe('drop', () => {
     await cache.get('s1', 'site-b', 1);
     await cache.get('s10', 'site-a', 1);
     cache.drop('s1');
-    expect(await cache.get('s1', 'site-a', 1)).toBe('s1@site-a#4');
-    expect(await cache.get('s1', 'site-b', 1)).toBe('s1@site-b#5');
-    expect(await cache.get('s10', 'site-a', 1)).toBe('s10@site-a#3');
+    expect((await cache.get('s1', 'site-a', 1)).token).toBe('s1@site-a#4');
+    expect((await cache.get('s1', 'site-b', 1)).token).toBe('s1@site-b#5');
+    expect((await cache.get('s10', 'site-a', 1)).token).toBe('s10@site-a#3');
   });
 
   it('returns a mint superseded by drop to its caller without caching it', async () => {
@@ -257,11 +286,11 @@ describe('drop', () => {
     cache.drop('s1');
     identity.release(1);
     identity.release(2);
-    expect(await dropped).toBe('s1@site-a#1');
-    expect(await kept).toBe('s2@site-a#2');
+    expect((await dropped).token).toBe('s1@site-a#1');
+    expect((await kept).token).toBe('s2@site-a#2');
     identity.hold = false;
-    expect(await cache.get('s1', 'site-a', 1)).toBe('s1@site-a#3');
-    expect(await cache.get('s2', 'site-a', 1)).toBe('s2@site-a#2');
+    expect((await cache.get('s1', 'site-a', 1)).token).toBe('s1@site-a#3');
+    expect((await cache.get('s2', 'site-a', 1)).token).toBe('s2@site-a#2');
   });
 });
 
@@ -275,7 +304,7 @@ describe('identity errors', () => {
     identity.fail(1, error);
     await Promise.all([expect(first).rejects.toBe(error), expect(second).rejects.toBe(error)]);
     identity.hold = false;
-    expect(await cache.get('s1', 'site-a', 1)).toBe('s1@site-a#2');
+    expect((await cache.get('s1', 'site-a', 1)).token).toBe('s1@site-a#2');
   });
 
   it('keeps the newer mint in flight when a mint superseded by drop fails', async () => {
@@ -290,6 +319,6 @@ describe('identity errors', () => {
     const joined = cache.get('s1', 'site-a', 1);
     expect(identity.requests).toHaveLength(2);
     identity.release(2);
-    expect(await Promise.all([fresh, joined])).toEqual(['s1@site-a#2', 's1@site-a#2']);
+    expect((await Promise.all([fresh, joined])).map((minted) => minted.token)).toEqual(['s1@site-a#2', 's1@site-a#2']);
   });
 });

@@ -29,7 +29,7 @@ function record(n: number | null, over: Partial<ScheduledTaskRecord> = {}): Sche
     taskName: launch ? name('launch') : name(`reminder-${n}`),
     kind: launch ? 'survey-launch' : 'survey-reminder',
     n,
-    targetRoute: launch ? `/internal/v1/tasks/surveys/${SURVEY_ID}/launch` : `/internal/v1/tasks/reminders/${OTHER_SURVEY_ID}`,
+    targetRoute: launch ? '/internal/v1/tasks/surveys/launch' : '/internal/v1/tasks/reminders',
     scheduleTime: '2026-06-30T09:15:00.000',
     status: 'scheduled',
     scheduleVersion: 2,

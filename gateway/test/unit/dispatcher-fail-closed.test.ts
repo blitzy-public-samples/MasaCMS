@@ -1,17 +1,22 @@
-// Tests the fail-closed surface choice, envelope method, unavailability classification and the 503 it sends.
-import Fastify from 'fastify';
+// Tests the fail-closed surface choice, envelope method, unavailability classification, and the 503 it sends and logs.
+import Fastify, { type FastifyBaseLogger } from 'fastify';
 import { describe, expect, it } from 'vitest';
 import {
   LEGACY_ERROR_STATUS_TEXT,
   LegacyServiceUnavailableError,
   adminUnavailableResponse,
   apiUnavailableResponse,
+  etag,
+  legacyHeaders,
   routeKeyForRequest,
   type LegacyUnavailableResponse,
   type RouteFamily,
   type RouteKeyResult,
 } from '@opt2/platform/legacy-compat';
+import { createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { ServiceUnavailableError, type FastifyReply } from '@opt2/platform/service-kit';
+import { DatabaseUnavailableError } from '@opt2/platform/tenancy';
+import { BarrierTimeoutError } from '../../src/dispatcher/barrier.js';
 import {
   failClosed,
   failContextFor,
@@ -19,9 +24,12 @@ import {
   isTargetUnavailable,
   neverSent,
   surfaceForFamily,
+  unavailableCauseOf,
+  type FailCause,
   type FailContext,
   type FailSurface,
 } from '../../src/dispatcher/fail-closed.js';
+import { WindowOpenError } from '../../src/dispatcher/write-window.js';
 
 /** A route key result of `family:body` with `params`, as routeKeyForRequest shapes it. */
 function routeOf(
@@ -50,11 +58,23 @@ interface Served {
   headers: Record<string, unknown>;
   body: string;
   returnedSameReply: boolean;
+  /** Log records the request wrote, parsed. */
+  lines: Array<Record<string, unknown>>;
 }
 
-/** Runs `handle` as a GET route handler under Fastify inject and reports the response and failClosed's return. */
+/** A cause for cases that assert the response alone. */
+const CAUSE: FailCause = { reason: 'owner unavailable' };
+
+/** Runs `handle` as a GET route handler under Fastify inject, logging through the platform logger, and reports the response. */
 async function serve(handle: (reply: FastifyReply) => FastifyReply): Promise<Served> {
-  const app = Fastify();
+  const lines: Served['lines'] = [];
+  const logger = createLogger({
+    service: 'gateway',
+    version: '1.0.0',
+    env: 'local',
+    destination: { write: (line: string) => void lines.push(JSON.parse(line) as Record<string, unknown>) },
+  });
+  const app = Fastify({ loggerInstance: logger as unknown as FastifyBaseLogger, disableRequestLogging: true });
   let returnedSameReply = false;
   app.get('/', (_request, reply) => {
     returnedSameReply = handle(reply) === reply;
@@ -67,6 +87,7 @@ async function serve(handle: (reply: FastifyReply) => FastifyReply): Promise<Ser
       headers: res.headers,
       body: res.body,
       returnedSameReply,
+      lines,
     };
   } finally {
     await app.close();
@@ -158,10 +179,19 @@ describe('failContextFor', () => {
     ['supplied method of the REST oauth flow', routeOf('rest', 'oauth', { method: 'token' }), 'token'],
     ['no method of the REST oauth2 flow', routeOf('rest', 'oauth2', {}), undefined],
     ['no method of the REST tokeninfo flow', routeOf('rest', 'tokeninfo', {}), undefined],
-    ['supplied method of a fixture route', routeOf('fixture', 'finance/invoices@get', { method: 'list' }), 'list'],
     ['no method of the site monitor', routeOf('sitemonitor', 'run', {}), undefined],
   ])('reports the %s in the envelope method', (_case, route, method) => {
     expect(failContextFor(route, '/_api/json/v1/default/')).toEqual({ surface: 'api', method, params: route.params });
+  });
+
+  it('reports a fixture route by the method its path names, never a supplied one, as a fixture method', () => {
+    const route = routeOf('fixture', 'finance/invoices@get', { method: 'list' });
+    expect(failContextFor(route, '/legacy-fixtures/cfml/api.cfm/finance/invoices?method=list')).toEqual({
+      surface: 'api',
+      method: 'finance.invoices',
+      params: route.params,
+      fixture: true,
+    });
   });
 
   it('reports the envelope method of an OPT-2 namespace route from its supplied value', () => {
@@ -312,6 +342,18 @@ describe('isLegacyUnavailable', () => {
   });
 });
 
+describe('unavailableCauseOf', () => {
+  it.each<[string, unknown, string]>([
+    ['an unavailable callee', new ServiceUnavailableError('identity', coded('ECONNREFUSED')), 'identity unavailable'],
+    ['a database outage', new DatabaseUnavailableError('ECONNREFUSED', coded('ECONNREFUSED')), 'database unavailable'],
+    ['a write window that cannot open', new WindowOpenError('page:saverate', new Error('refused')), 'window unavailable'],
+    ['a barrier timeout', new BarrierTimeoutError('identity=9', new Error('timeout')), 'barrier timeout'],
+    ['a transport failure', coded('ECONNRESET'), 'dependency unavailable'],
+  ])('names %s by what is unavailable', (_case, error, cause) => {
+    expect(unavailableCauseOf(error)).toBe(cause);
+  });
+});
+
 describe('failClosed', () => {
   const JSON_TYPE = 'application/json;charset=utf-8';
   const HTML_TYPE = 'text/html;charset=UTF-8';
@@ -341,7 +383,7 @@ describe('failClosed', () => {
   ])('answers 503 with %s and drops headers copied before it', async (_case, ctx, expected, type, reason) => {
     const served = await serve((reply) => {
       reply.header('x-upstream-trace', 'abc123').header('set-cookie', 'CFID=1001; Path=/').header('etag', '"stale"');
-      return failClosed(reply, ctx);
+      return failClosed(reply, ctx, CAUSE);
     });
     expect(served.status).toBe(503);
     expect(served.statusMessage).toBe(reason);
@@ -356,13 +398,49 @@ describe('failClosed', () => {
 
   it('answers the JSON API envelope with the method failContextFor resolves', async () => {
     const ctx = failContextFor(routeOf('api', 'content.findone', { siteid: 'default' }), '/_api/json/v1/default/');
-    const served = await serve((reply) => failClosed(reply, ctx));
+    const served = await serve((reply) => failClosed(reply, ctx, CAUSE));
     expect(JSON.parse(served.body)).toEqual({
       apiversion: 'v1',
       method: 'findOne',
       error: { message: 'Unhandled Exception', code: 'server_error' },
     });
     expect(served.headers['content-type']).toBe(JSON_TYPE);
+  });
+
+  it('answers a fixture context with the fixture envelope 503, code before message, naming its dotted method as is', async () => {
+    const ctx: FailContext = { surface: 'api', method: 'finance.records', params: { siteid: 'a' }, fixture: true };
+    const served = await serve((reply) => failClosed(reply, ctx, CAUSE));
+    const body = '{"apiversion":"v1","method":"finance.records","error":{"code":"server_error","message":"Unhandled Exception"}}';
+    expect(served.status).toBe(503);
+    expect(served.statusMessage).toBe('Service Unavailable');
+    expect(served.body).toBe(body);
+    expect(served.headers).toMatchObject(lowerCased({ 'Content-Type': JSON_TYPE, ETag: etag(body), ...legacyHeaders() }));
+  });
+
+  it.each<[string, FailCause, string, Record<string, unknown> | undefined]>([
+    [
+      'an unavailability at ERROR with its error',
+      { reason: 'finance unavailable', error: Object.assign(coded('ECONNREFUSED'), { syscall: 'connect' }) },
+      'ERROR',
+      { type: 'Error', message: 'connect ECONNREFUSED', stack: expect.stringContaining('Error: connect ECONNREFUSED') },
+    ],
+    ['a cause no unavailability caused at WARNING', { reason: 'finance entry frozen past the 30000 ms wait', level: 'warn' }, 'WARNING', undefined],
+  ])('logs %s as the one fail-closed line, with the route key, method and 503', async (_case, cause, severity, error) => {
+    const ctx: FailContext = { surface: 'api', route: 'fixture:finance/records@get', owner: 'finance' };
+    const served = await serve((reply) => failClosed(reply, ctx, cause));
+    expect(served.status).toBe(503);
+    expect(served.lines).toHaveLength(1);
+    const [line] = served.lines;
+    expect(line).toMatchObject({
+      severity,
+      message: `fail-closed: ${cause.reason}`,
+      route: 'fixture:finance/records@get',
+      httpMethod: 'GET',
+      statusCode: 503,
+    });
+    if (error === undefined) expect(line).not.toHaveProperty('error');
+    else expect(line?.error).toMatchObject(error);
+    expect(validateLogRecord(line).errors).toEqual([]);
   });
 
   type ReplyStep = (reply: FastifyReply) => void;
@@ -384,12 +462,12 @@ describe('failClosed', () => {
       206,
       'partial',
     ],
-  ])('leaves a reply %s untouched', async (_case, start, finish, state, status, body) => {
+  ])('leaves a reply %s untouched and unlogged', async (_case, start, finish, state, status, body) => {
     let stateAtCall: { sent: boolean; headersSent: boolean } | undefined;
     const served = await serve((reply) => {
       start(reply);
       stateAtCall = { sent: reply.sent, headersSent: reply.raw.headersSent };
-      const returned = failClosed(reply, { surface: 'admin' });
+      const returned = failClosed(reply, { surface: 'admin' }, CAUSE);
       finish(reply);
       return returned;
     });
@@ -397,5 +475,6 @@ describe('failClosed', () => {
     expect(served.status).toBe(status);
     expect(served.body).toBe(body);
     expect(served.returnedSameReply).toBe(true);
+    expect(served.lines).toEqual([]);
   });
 });

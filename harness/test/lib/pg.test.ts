@@ -1,4 +1,4 @@
-import type { ClientConfig, QueryConfig } from 'pg';
+import type { ClientConfig, QueryConfig } from '@opt2/platform/tenancy';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EnvLike } from '../../src/lib/paths.js';
 import {
@@ -52,7 +52,10 @@ const pgDouble = vi.hoisted(() => {
   return { clients, behaviour, Client };
 });
 
-vi.mock('pg', () => ({ default: { Client: pgDouble.Client } }));
+vi.mock(import('@opt2/platform/tenancy'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, pg: { ...actual.pg, Client: pgDouble.Client as unknown as typeof actual.pg.Client } };
+});
 
 // Placeholder settings only; every connection is a fake, so nothing reaches PostgreSQL.
 const ENV: EnvLike = {

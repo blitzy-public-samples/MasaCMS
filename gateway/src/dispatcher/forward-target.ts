@@ -192,7 +192,8 @@ export async function forwardToTarget(
   reply: FastifyReply,
   ctx: TargetForwardContext,
 ): Promise<FastifyReply> {
-  const logFields = { service: ctx.service, sessionMode: ctx.mode };
+  // The platform logger keeps only log-record.v1 fields, so the callee and session mode are in the message.
+  const callee = `${ctx.service} (${ctx.mode})`;
   let settled = false;
   /** Session whose declaration of this write the exchange still holds. */
   let declared: string | undefined;
@@ -203,7 +204,7 @@ export async function forwardToTarget(
     try {
       await ctx.onSettled?.();
     } catch (error) {
-      request.log.error({ ...logFields, error: serializeError(error) }, 'target forward onSettled failed');
+      request.log.error({ error: serializeError(error) }, `target forward to ${callee} onSettled failed`);
     }
   };
   /** Ends the held declaration of a write legacy need not await; a failure only adds an owner await to each later legacy read. */
@@ -214,21 +215,20 @@ export async function forwardToTarget(
     try {
       await ctx.barrier.release(sessionId, ctx.service);
     } catch (error) {
-      request.log.error({ ...logFields, error: serializeError(error) }, 'target write declaration not released');
+      request.log.error({ error: serializeError(error) }, `target write declaration for ${callee} not released`);
     }
   };
-  /** Settles an exchange that never reached the callee, then answers the 503. */
-  const failUnsent = async (error: unknown, message: string): Promise<FastifyReply> => {
-    request.log.error({ ...logFields, error: serializeError(error) }, message);
+  /** Settles an exchange that never reached the callee, then answers the 503 failing for `reason`. */
+  const failUnsent = async (error: unknown, reason: string): Promise<FastifyReply> => {
     await settle();
     await release();
-    return failClosed(reply, ctx.failContext);
+    return failClosed(reply, ctx.failContext, { reason, error });
   };
   /** Logs an end after which the target may still commit, which therefore leaves the exchange unsettled. */
   const unsettled = (error: unknown): void => {
     request.log.warn(
-      { ...logFields, error: serializeError(error) },
-      'target exchange ended uncertainly; in-flight registration kept',
+      { error: serializeError(error) },
+      `target exchange with ${callee} ended uncertainly; in-flight registration kept`,
     );
   };
 
@@ -239,7 +239,7 @@ export async function forwardToTarget(
       { signal: AbortSignal.timeout(SERVICE_CALL_TIMEOUT_MS) },
     );
   } catch (error) {
-    return failUnsent(error, 'invocation credential for target forward failed');
+    return failUnsent(error, `invocation credential for ${ctx.service} failed`);
   }
 
   // Web's writes reach the services through the relay, which declares them there.
@@ -248,7 +248,7 @@ export async function forwardToTarget(
     try {
       await ctx.barrier.declare(declaring, ctx.service);
     } catch (error) {
-      return failUnsent(error, 'target write declaration failed');
+      return failUnsent(error, `write declaration for ${ctx.service} failed`);
     }
     declared = declaring;
   }
@@ -262,7 +262,7 @@ export async function forwardToTarget(
     try {
       positions = parseWritePosition(value);
     } catch (error) {
-      request.log.error({ ...logFields, error: serializeError(error) }, 'target write position not recorded');
+      request.log.error({ error: serializeError(error) }, `target write position from ${callee} not recorded`);
       await ctx.barrier.awaitOwners(listedOwners(value, ctx.service));
       await release();
       return;
@@ -270,7 +270,7 @@ export async function forwardToTarget(
     try {
       await ctx.barrier.record(ctx.sessionId, positions, owner);
     } catch (error) {
-      request.log.error({ ...logFields, error: serializeError(error) }, 'target write position not recorded');
+      request.log.error({ error: serializeError(error) }, `target write position from ${callee} not recorded`);
       await ctx.barrier.awaitPositions(positions);
       await release();
       return;
@@ -285,9 +285,11 @@ export async function forwardToTarget(
       return;
     }
     const { statusCode } = res;
-    if (ctx.isWeb ? statusCode >= 500 : isTargetUnavailable(statusCode)) {
+    const unavailable = isTargetUnavailable(statusCode);
+    if (unavailable || (ctx.isWeb && statusCode >= 500)) {
       res.stream.resume();
-      failClosed(reply, ctx.failContext);
+      const reason = unavailable ? `${ctx.service} unavailable: answered ${statusCode}` : `${ctx.service} answered ${statusCode}`;
+      failClosed(reply, ctx.failContext, { reason });
       return;
     }
     const upstream = upstreamOf(res);
@@ -304,9 +306,8 @@ export async function forwardToTarget(
     try {
       await ctx.beforeSend?.(upstream);
     } catch (error) {
-      request.log.error({ ...logFields, error: serializeError(error) }, 'target forward beforeSend failed');
       res.stream.resume();
-      failClosed(reply, ctx.failContext);
+      failClosed(reply, ctx.failContext, { reason: `${ctx.service} response withheld: beforeSend failed`, error });
       return;
     }
     // Answered without a write position, the write committed nothing the session's legacy reads must await.
@@ -348,14 +349,13 @@ export async function forwardToTarget(
     onResponse: (_request, _reply, res) => {
       // No byte has reached the client before `respond` sends, so a failure here answers the 503.
       respond(res).catch((error: unknown) => {
-        request.log.error({ ...logFields, error: serializeError(error) }, 'target response failed');
         res.stream.destroy();
-        failClosed(reply, ctx.failContext);
+        failClosed(reply, ctx.failContext, { reason: `${ctx.service} response failed`, error });
       });
     },
     // Synchronous: for an invalid status reply-from calls onResponse next, which must see the 503 sent.
-    onError: () => {
-      failClosed(reply, ctx.failContext);
+    onError: (_reply, { error }) => {
+      failClosed(reply, ctx.failContext, { reason: `${ctx.service} unavailable`, error });
     },
   };
 
@@ -364,7 +364,7 @@ export async function forwardToTarget(
     forwarded = replyFromCallee(reply, ctx.service, `${ctx.serviceUrl.replace(/\/+$/, '')}${path}`, options);
   } catch (error) {
     // reply-from rejects a path it cannot parse, and a GET or HEAD carrying a body, before anything is sent.
-    return failUnsent(error, 'target forward rejected before sending');
+    return failUnsent(error, `forward to ${ctx.service} rejected before sending`);
   }
   return forwarded;
 }

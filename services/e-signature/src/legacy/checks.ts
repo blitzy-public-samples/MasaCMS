@@ -1,6 +1,7 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** E-signature fixture checks of legacy-fixtures/cfml api.cfm, lib/auth.cfc and modules/esignature.cfc, which the fixture route handlers run. */
 import { Buffer } from 'node:buffer';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { AuthDenial, type UserClaims } from '@opt2/platform/auth';
 import { cfNumberString } from '@opt2/platform/legacy-compat';
 import { siteForTenant, tenantForRegisteredSite, type RegistrySource } from '@opt2/platform/tenancy';
@@ -66,6 +67,9 @@ const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 const UNICODE_SEPARATOR = /^[\p{Zs}\p{Zl}\p{Zp}]$/u;
 const NO_BREAK_SPACES: ReadonlySet<number> = new Set([0x00a0, 0x2007, 0x202f]);
 
+/** Code units of `documentBase64` decoded between event-loop yields. */
+export const BASE64_DECODE_SLICE = 256 * 1024;
+
 /** The param `name` ignoring case, as a CFML struct key resolves; the last spelling wins, as a later merge source does. */
 function param(params: FixtureParams, name: string): unknown {
   const lower = name.toLowerCase();
@@ -96,24 +100,29 @@ function isJavaWhitespace(char: string): boolean {
 /**
  * CFML binaryDecode(text, 'base64') as coldfusion.wddx.Base64Encoder decodes: '=' and whitespace are skipped and pending bits dropped;
  * null for any other non-alphabet character, or when the text ends on a data character that does not complete a byte.
+ * Decodes BASE64_DECODE_SLICE code units at a time, yielding to the event loop between slices.
  */
-function cfBase64Decode(text: string): Buffer | null {
+async function cfBase64Decode(text: string): Promise<Buffer | null> {
   const out = Buffer.alloc(Math.ceil((text.length * 3) / 4));
   let length = 0;
   let accumulator = 0;
   let bits = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text.charAt(i);
-    if (char === '=' || isJavaWhitespace(char)) continue;
-    const value = BASE64_ALPHABET.indexOf(char);
-    if (value < 0) return null;
-    accumulator = (accumulator << 6) | value;
-    bits += 6;
-    if (i === text.length - 1 && bits !== 8) return null;
-    if (bits >= 8) {
-      bits -= 8;
-      out[length] = (accumulator >> bits) & 0xff;
-      length += 1;
+  for (let start = 0; start < text.length; start += BASE64_DECODE_SLICE) {
+    if (start > 0) await yieldToEventLoop();
+    const end = Math.min(start + BASE64_DECODE_SLICE, text.length);
+    for (let i = start; i < end; i += 1) {
+      const char = text.charAt(i);
+      if (char === '=' || isJavaWhitespace(char)) continue;
+      const value = BASE64_ALPHABET.indexOf(char);
+      if (value < 0) return null;
+      accumulator = (accumulator << 6) | value;
+      bits += 6;
+      if (i === text.length - 1 && bits !== 8) return null;
+      if (bits >= 8) {
+        bits -= 8;
+        out[length] = (accumulator >> bits) & 0xff;
+        length += 1;
+      }
     }
   }
   return out.subarray(0, length);
@@ -149,10 +158,10 @@ export function requireFixtureLogin(claims: UserClaims | undefined): UserClaims 
 }
 
 /** esignature.cfc createRequest's fields: documentName (1-255 characters), the decoded non-empty documentBase64, and a non-empty signerUserId. */
-export function validateCreateInput(params: FixtureParams): ValidationResult<CreateRequestInput> {
+export async function validateCreateInput(params: FixtureParams): Promise<ValidationResult<CreateRequestInput>> {
   const documentName = textParam(params, 'documentName');
   if (documentName === '' || documentName.length > DOCUMENT_NAME_MAX_LENGTH) return INVALID_PARAMETERS;
-  const document = cfBase64Decode(textParam(params, 'documentBase64'));
+  const document = await cfBase64Decode(textParam(params, 'documentBase64'));
   if (document === null || document.length === 0) return INVALID_PARAMETERS;
   const signerUserId = textParam(params, 'signerUserId');
   if (signerUserId === '') return INVALID_PARAMETERS;

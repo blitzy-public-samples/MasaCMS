@@ -578,9 +578,21 @@ describe('stopProcess', () => {
 describe('startProcess', () => {
   const OLD = PID_BASE + 10;
   const NEW = PID_BASE + 20;
+  const NEW_START = '424242';
 
-  function deps(spawn: SpawnLike): { spawn: Mock<SpawnLike>; writeUpState: Mock<(patch: UpStatePatch) => unknown> } {
-    return { spawn: vi.fn<SpawnLike>(spawn), writeUpState: vi.fn<(patch: UpStatePatch) => unknown>() };
+  function deps(
+    spawn: SpawnLike,
+    startTimeOf: (pid: number) => string | undefined = () => NEW_START,
+  ): {
+    spawn: Mock<SpawnLike>;
+    writeUpState: Mock<(patch: UpStatePatch) => unknown>;
+    startTimeOf: Mock<(pid: number) => string | undefined>;
+  } {
+    return {
+      spawn: vi.fn<SpawnLike>(spawn),
+      writeUpState: vi.fn<(patch: UpStatePatch) => unknown>(),
+      startTimeOf: vi.fn<(pid: number) => string | undefined>(startTimeOf),
+    };
   }
 
   it.each<[string, UpProcessEntry['command'], string, string[]]>([
@@ -601,7 +613,20 @@ describe('startProcess', () => {
       stdio: 'ignore',
     });
     expect(unref).toHaveBeenCalledTimes(1);
-    expect(d.writeUpState.mock.calls).toStrictEqual([[{ processes: { people: { ...entry, pid: NEW } } }]]);
+    expect(d.startTimeOf.mock.calls).toStrictEqual([[NEW]]);
+    expect(d.writeUpState.mock.calls).toStrictEqual([[{ processes: { people: { ...entry, pid: NEW, startTime: NEW_START } } }]]);
+  });
+
+  it.each<[string, string | undefined, Partial<UpProcessEntry>]>([
+    ['the start time of the new pid', NEW_START, { startTime: NEW_START }],
+    ['no start time once the new pid is gone', undefined, {}],
+  ])('replaces the recorded start time of the previous process with %s', async (_label, startTime, recorded) => {
+    const d = deps(() => fakeChild(NEW).child, () => startTime);
+    const entry: UpProcessEntry = { pid: OLD, cwd: tmp, command: ['node'], startTime: '1' };
+    await startProcess('people', entry, d);
+    expect(d.writeUpState.mock.calls).toStrictEqual([
+      [{ processes: { people: { pid: NEW, cwd: tmp, command: ['node'], ...recorded } } }],
+    ]);
   });
 
   it('appends stdout and stderr to the log file under the entry cwd, created owner-only', async () => {
@@ -638,6 +663,7 @@ describe('startProcess', () => {
 describe('restartAndMeasure', () => {
   const OLD = PID_BASE + 30;
   const NEW = PID_BASE + 31;
+  const NEW_START = '515151';
   const PEOPLE_PORT = 28_112;
   const HEALTH_URL = `http://127.0.0.1:${PEOPLE_PORT}/healthz`;
   const PROBE_DESCRIBE = `GET ${CUSERS} as admin`;
@@ -690,6 +716,7 @@ describe('restartAndMeasure', () => {
       sleep: clock.sleep,
       readUpState: () => ({ processes }),
       writeUpState: writeUp,
+      startTimeOf: () => NEW_START,
     };
     return { deps, clock, signals, healthUrls, fetch, spawn, writeUp };
   }
@@ -727,7 +754,7 @@ describe('restartAndMeasure', () => {
       expect(rig.healthUrls).toStrictEqual([healthUrl, healthUrl, healthUrl]);
       expect(rig.fetch.mock.calls.every(([, init]) => init.signal instanceof AbortSignal)).toBe(true);
       expect(probe.attempt.mock.calls).toStrictEqual([[POLL_LIMIT_MS], [POLL_LIMIT_MS], [POLL_LIMIT_MS - PROBE_INTERVAL_MS]]);
-      expect(rig.writeUp.mock.calls).toStrictEqual([[{ processes: { people: { ...entry, pid: NEW } } }]]);
+      expect(rig.writeUp.mock.calls).toStrictEqual([[{ processes: { people: { ...entry, pid: NEW, startTime: NEW_START } } }]]);
     },
   );
 

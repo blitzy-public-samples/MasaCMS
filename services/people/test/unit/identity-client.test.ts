@@ -380,9 +380,24 @@ describe('identity reads', () => {
     ]);
   });
 
-  it('follows nextOffset through every page of the group list and returns the rows in page order', async () => {
-    const groupId = (n: number): string => `6A000000-0000-0000-${String(n).padStart(16, '0')}`;
-    const row = (n: number) => ({ UserID: groupId(n), GroupName: `Group ${n}`, Counter: null, Perm: 0, isPublic: 1 });
+  const groupId = (n: number): string => `6A000000-0000-0000-${String(n).padStart(16, '0')}`;
+  /** The paged group reads: client method, identity operation, the read as group ids, and one contract row of the operation. */
+  const pagedGroupReads = [
+    [
+      'userGroups',
+      'listGroups',
+      async (identity: IdentityClient) => (await identity.userGroups('tenant-a', 1)).map((group) => group.userId),
+      (n: number) => ({ UserID: groupId(n), GroupName: `Group ${n}`, Counter: null, Perm: 0, isPublic: 1 }),
+    ],
+    [
+      'siteGroups',
+      'listSiteGroupsV2',
+      async (identity: IdentityClient) => (await identity.siteGroups('tenant-a', 1)).map((group) => group.groupId),
+      (n: number) => ({ UserID: groupId(n), GroupName: `Group ${n}`, SiteID: 'tenant-a', isPublic: 1, Perm: 0 }),
+    ],
+  ] as const;
+
+  it.each(pagedGroupReads)('%s follows nextOffset through every page of %s and returns the rows in page order', async (_method, _operationId, read, row) => {
     const replies = [
       { status: 200, body: { items: Array.from({ length: 1000 }, (_, n) => row(n)), total: 2001, nextOffset: 1000 } },
       { status: 200, body: { items: Array.from({ length: 1000 }, (_, n) => row(1000 + n)), total: 2001, nextOffset: 2000 } },
@@ -390,9 +405,7 @@ describe('identity reads', () => {
     ];
     const { identity, requests } = identityWith(...replies);
 
-    const rows = await identity.userGroups('tenant-a', 1);
-
-    expect(rows.map((group) => group.userId)).toEqual(Array.from({ length: 2001 }, (_, n) => groupId(n)));
+    expect(await read(identity)).toEqual(Array.from({ length: 2001 }, (_, n) => groupId(n)));
     expect(requests.map((req) => req.query)).toEqual(['0', '1000', '2000'].map((offset) => ({ siteid: 'tenant-a', ispublic: '1', offset })));
     replies.forEach((reply, n) => assertIdentityReply(requests[n], reply));
   });
@@ -402,11 +415,17 @@ describe('identity reads', () => {
     await expect(identity.userGroups('tenant-a', 1)).rejects.toMatchObject(unavailableFrom('listGroups', status));
   });
 
-  it('fails closed when a later page answers 503, returning no partial list', async () => {
-    const first = { UserID: '6A000000-0000-0000-0000000000000001', GroupName: 'First', Counter: null, Perm: 0, isPublic: 1 };
-    const { identity, requests } = identityWith({ status: 200, body: { items: [first], total: 2, nextOffset: 1 } }, { status: 503 });
-    await expect(identity.userGroups('tenant-a', 1)).rejects.toMatchObject(unavailableFrom('listGroups', 503));
+  it.each(pagedGroupReads)('%s fails closed when a later page of %s answers 503, returning no partial list', async (_method, operationId, read, row) => {
+    const { identity, requests } = identityWith({ status: 200, body: { items: [row(1)], total: 2, nextOffset: 1 } }, { status: 503 });
+    await expect(read(identity)).rejects.toMatchObject(unavailableFrom(operationId, 503));
     expect(requests.map((req) => req.query?.offset)).toEqual(['0', '1']);
+  });
+
+  it('siteGroups fails closed after one call when identity serves no listSiteGroupsV2 route and answers 404', async () => {
+    const notFound = { apiversion: 'v1', method: 'invalid', error: { message: 'Invalid method call', code: 'invalid_request' } };
+    const { identity, requests } = identityWith({ status: 404, body: notFound });
+    await expect(identity.siteGroups('tenant-a', 0)).rejects.toMatchObject(unavailableFrom('listSiteGroupsV2', 404));
+    expect(requests.map(({ path, query }) => [path, query?.offset])).toEqual([['/internal/v2/groups', '0']]);
   });
 
   const session = (sessionId: string | null, user: Record<string, unknown>) => ({
@@ -703,16 +722,16 @@ describe('account and site-group reads', () => {
     assertIdentityReply(requests[0], reply);
   });
 
-  it.each([0, 1])('lists the site groups of pool visibility %i on listSiteGroups', async (isPublic) => {
+  it.each([0, 1])('lists the site groups of pool visibility %i on listSiteGroupsV2', async (isPublic) => {
     const items = groups.map((group) => ({ ...group, isPublic }));
-    const reply = { status: 200, body: { items } };
+    const reply = { status: 200, body: { items, total: 2, nextOffset: null } };
     const { identity, requests } = identityWith(reply);
     await expect(identity.siteGroups('tenant-a', isPublic)).resolves.toEqual([
       { groupId: GROUP_ID, groupName: 'Admin', siteId: 'tenant-a', isPublic, perm: 1 },
       { groupId: OTHER_GROUP_ID, groupName: null, siteId: 'tenant-a', isPublic, perm: null },
     ]);
     expect(requests).toEqual([
-      { service: 'identity', method: 'GET', path: '/internal/v1/groups', query: { siteid: 'tenant-a', ispublic: String(isPublic) } },
+      { service: 'identity', method: 'GET', path: '/internal/v2/groups', query: { siteid: 'tenant-a', ispublic: String(isPublic), offset: '0' } },
     ]);
     assertIdentityReply(requests[0], reply);
   });
@@ -723,7 +742,7 @@ describe('account and site-group reads', () => {
     ['readAccounts', 'lookupAccounts', ((identity) => identity.readAccounts([USER_ID])) as Read, { items: [record] }],
     ['readAccountsAllSites', 'lookupAccountsAllSites', ((identity) => identity.readAccountsAllSites([USER_ID])) as Read, { items: [record] }],
     ['lookupMemberships', 'lookupMemberships', ((identity) => identity.lookupMemberships([USER_ID])) as Read, { items: [{ userId: USER_ID, groupIds: [] }] }],
-    ['siteGroups', 'listSiteGroups', ((identity) => identity.siteGroups('tenant-a', 0)) as Read, { items: groups }],
+    ['siteGroups', 'listSiteGroupsV2', ((identity) => identity.siteGroups('tenant-a', 0)) as Read, { items: groups, total: 2, nextOffset: null }],
     ['countAccounts', 'countAccounts', ((identity) => identity.countAccounts({ scope: 'tenant' })) as Read, { count: 0 }],
     [
       'usernameCandidates',

@@ -5,6 +5,7 @@ import { reconcileRecurringQueues } from '@opt2/platform/tasks';
 import type { TenantDb } from '@opt2/platform/tenancy';
 
 import { createMigrationContext, type CreateContextOptions, type MigrationContext } from './context.js';
+import { preloadCutover } from './cutover/index.js';
 import { assertSqlServerSource, loadMigrationEnv, type MigrationEnv } from './env.js';
 import { createFaultRegistry } from './faults/index.js';
 import type { BridgeClient } from './legacy/bridge.js';
@@ -239,6 +240,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       gateway: options.gateway,
       bridge: options.bridge,
     });
+    // Requests and loops then select committed versions from memory instead of reading files on the event loop.
+    await preloadCutover(ctx.config.paths);
     const services = composeServices(ctx);
     registerRoutes(app, { ctx, ...services });
     registerLifecycle(app, ctx, services, options.startBackground !== false);

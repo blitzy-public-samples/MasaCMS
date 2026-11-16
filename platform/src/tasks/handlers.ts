@@ -96,12 +96,15 @@ function refuseTask(
   return reply.code(200).send(ignored(reason));
 }
 
-/** Registers a POST task route on the `cloud-tasks` transport; throws `TypeError` for a path outside the managed task families. */
+/** Registers a POST task route on the `cloud-tasks` transport; throws `TypeError` for a path outside the managed task families or carrying a route parameter. */
 export function registerTaskRoute<S>(app: FastifyInstance, path: string, opts: TaskRouteOptions<S>): void {
   if (transportForPath(path) !== 'cloud-tasks') {
     throw new TypeError(
       `Task route ${path} must be under /internal/v1/tasks/ or /internal/v1/jobs/, or be /internal/v1/outbox/sweep`,
     );
+  }
+  if (/[:*{}]/.test(path)) {
+    throw new TypeError(`Task route ${path} must be a fixed path: Cloud Run admits only exact OIDC audiences`);
   }
   const opt2: Opt2RouteConfig = { transport: 'cloud-tasks', requires: [TASKS_INVOKER_ROLE] };
   app.post(path, { config: { opt2 } }, async (request, reply) => {

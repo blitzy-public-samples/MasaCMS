@@ -23,10 +23,9 @@ import {
 import { adminRequest, type AdminRequestOptions } from '../helpers/requests';
 import { SUBJECTS, serviceInvocation, syntheticSubject, type WebTestSubject } from '../helpers/tokens';
 
-// The spans stay in-process: the SDK, and with it the OTLP exporter, is never started.
+// Request log lines are recorded instead of written to stdout.
 vi.mock('@/lib/telemetry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/telemetry')>()),
-  ensureTracing: vi.fn(async () => undefined),
   logRequest: vi.fn(),
 }));
 

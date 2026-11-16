@@ -284,12 +284,6 @@ function localIso(date: Date): string {
   );
 }
 
-/** Deterministic CF-format id of a survey's reminder `n`. */
-function reminderTaskId(surveyId: string, n: number): string {
-  const hex = createHash('sha256').update(`${surveyId}:reminder:${String(n)}`).digest('hex').toUpperCase();
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 32)}`;
-}
-
 /**
  * Communications' records of a survey scheduled at version 1: its launch a day after `clock` (default TEST_CLOCK) on
  * `surveys-launch`, then reminder n (`reminders`, default 2) n hours later on `communications-reminders`.
@@ -300,7 +294,7 @@ export function defaultScheduledTasks(surveyId: string, opts: { reminders?: numb
     taskName: `opt2-survey-${surveyId}-launch`,
     kind: 'survey-launch',
     n: null,
-    targetRoute: `/internal/v1/tasks/surveys/${surveyId}/launch`,
+    targetRoute: '/internal/v1/tasks/surveys/launch',
     scheduleTime: localIso(new Date(launchAt)),
     status: 'scheduled',
     scheduleVersion: 1,
@@ -312,7 +306,7 @@ export function defaultScheduledTasks(surveyId: string, opts: { reminders?: numb
       taskName: `opt2-survey-${surveyId}-reminder-${String(n)}`,
       kind: 'survey-reminder',
       n,
-      targetRoute: `/internal/v1/tasks/reminders/${reminderTaskId(surveyId, n)}`,
+      targetRoute: '/internal/v1/tasks/reminders',
       scheduleTime: localIso(new Date(launchAt + n * 60 * MINUTE_MS)),
       status: 'scheduled',
       scheduleVersion: 1,

@@ -15,6 +15,7 @@ import {
   loadGroups,
   loadVersion,
   loginGroup,
+  preloadCutover,
   unitAuthority,
   type CutoverEntry,
   type CutoverVersion,
@@ -88,6 +89,161 @@ describe('loaders', () => {
     writeFileSync(path.join(scratch, 'versions', 'v0009.json'), JSON.stringify(version('v0008', [entry('admin:x', 'legacy')], {})));
     expect(() => loadVersion(scratch, 'v0009')).toThrow(CutoverDataError);
     expect(() => loadVersion(scratch, 'v0009')).toThrow(/v0009\.json declares tableVersion "v0008", expected "v0009"/);
+  });
+});
+
+/** A fresh cut-over directory under the scratch directory holding `files`, keyed by path relative to it. */
+function cutoverDirWith(files: Record<string, string>): string {
+  const dir = mkdtempSync(path.join(scratch, 'memo-'));
+  mkdirSync(path.join(dir, 'versions'));
+  for (const [rel, text] of Object.entries(files)) writeFileSync(path.join(dir, rel), text);
+  return dir;
+}
+
+/** Whether every object and array reachable from `value` is frozen. */
+function deeplyFrozen(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return true;
+  return Object.isFrozen(value) && Object.values(value).every(deeplyFrozen);
+}
+
+function thrownBy(read: () => unknown): unknown {
+  try {
+    read();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('Expected the read to throw');
+}
+
+const smallGroups: GroupsFile = {
+  sourceSha: 'x',
+  groups: [{ id: 'grp:a', units: ['a.one'], writeEntries: ['admin:x'], hasCarryWrite: true }],
+};
+const smallVersion = (tableVersion: string): CutoverVersion => ({
+  ...version(tableVersion, [entry('admin:x', 'target', { kind: 'write', group: 'grp:a', units: ['a.one'] })], { 'grp:a': 'target' }),
+  rollbackRefs: [{ groups: ['grp:a'], rollbackSet: ['grp:a'], report: 'r.json', evidence: ['e.json'] }],
+});
+const groupsIn = (dir: string): string => path.join(dir, 'groups.json');
+
+const absent = (error: unknown): void => {
+  expect(error).toMatchObject({ code: 'ENOENT' });
+};
+const instanceOf =
+  (type: typeof CutoverDataError | SyntaxErrorConstructor) =>
+  (error: unknown): void => {
+    expect(error).toBeInstanceOf(type);
+  };
+
+describe('memoised loads', () => {
+  it.each<[string, string, unknown, (dir: string) => unknown]>([
+    ['version', 'versions/v0011.json', smallVersion('v0011'), (dir) => loadVersion(dir, 'v0011')],
+    ['groups file', 'groups.json', smallGroups, (dir) => loadGroups(groupsIn(dir))],
+  ])('serve a %s from memory after its first load, deeply frozen', (_name, rel, content, load) => {
+    const dir = cutoverDirWith({ [rel]: JSON.stringify(content) });
+    const first = load(dir);
+    rmSync(path.join(dir, rel));
+
+    expect(load(dir)).toBe(first);
+    expect(first).toEqual(content);
+    expect(deeplyFrozen(first)).toBe(true);
+  });
+
+  it.each<[string, string, string | null, (dir: string) => unknown, (error: unknown) => void, unknown]>([
+    ['an absent version', 'versions/v0012.json', null, (dir) => loadVersion(dir, 'v0012'), absent, smallVersion('v0012')],
+    [
+      'a version naming another version',
+      'versions/v0012.json',
+      JSON.stringify(smallVersion('v0013')),
+      (dir) => loadVersion(dir, 'v0012'),
+      instanceOf(CutoverDataError),
+      smallVersion('v0012'),
+    ],
+    [
+      'an invalid JSON version',
+      'versions/v0012.json',
+      '{"tableVersion": "v0012",',
+      (dir) => loadVersion(dir, 'v0012'),
+      instanceOf(SyntaxError),
+      smallVersion('v0012'),
+    ],
+    ['an absent groups file', 'groups.json', null, (dir) => loadGroups(groupsIn(dir)), absent, smallGroups],
+    ['an invalid JSON groups file', 'groups.json', '{"groups": [', (dir) => loadGroups(groupsIn(dir)), instanceOf(SyntaxError), smallGroups],
+  ])('keep nothing of %s, so the fixed file loads', (_name, rel, broken, load, check, fixed) => {
+    const dir = cutoverDirWith(broken === null ? {} : { [rel]: broken });
+    check(thrownBy(() => load(dir)));
+    check(thrownBy(() => load(dir)));
+
+    writeFileSync(path.join(dir, rel), JSON.stringify(fixed));
+    expect(load(dir)).toEqual(fixed);
+  });
+
+  describe('of one directory, shared by every reader,', () => {
+    const dir = cutoverDirWith({ 'versions/v0014.json': JSON.stringify(smallVersion('v0014')), 'groups.json': JSON.stringify(smallGroups) });
+    const first = (): { v: CutoverVersion; g: GroupsFile } => ({ v: loadVersion(dir, 'v0014'), g: loadGroups(groupsIn(dir)) });
+
+    it.each<[string, (loaded: { v: CutoverVersion; g: GroupsFile }) => unknown]>([
+      ['adding an entry', ({ v }) => v.entries.push(entry('admin:y', 'legacy'))],
+      ['changing an entry state', ({ v }) => (v.entries[0]!.state = 'legacy')],
+      ['adding a unit to an entry', ({ v }) => v.entries[0]!.units.push('a.two')],
+      ['changing a group authority', ({ v }) => (v.groupAuthority['grp:a'] = 'legacy')],
+      ['adding a group authority', ({ v }) => (v.groupAuthority['grp:b'] = 'target')],
+      ['replacing the rollback refs', ({ v }) => (v.rollbackRefs = [])],
+      ['adding a rollback group', ({ v }) => v.rollbackRefs[0]!.groups.push('grp:b')],
+      ['adding a group', ({ g }) => g.groups.push({ id: 'grp:b', units: [], writeEntries: [], hasCarryWrite: false })],
+      ['emptying the units of a group', ({ g }) => (g.groups[0]!.units.length = 0)],
+      ['adding a write entry to a group', ({ g }) => g.groups[0]!.writeEntries.push('admin:y')],
+    ])('reject %s with TypeError and stay unchanged', (_name, write) => {
+      expect(() => write(first())).toThrow(TypeError);
+
+      expect(first()).toEqual({ v: smallVersion('v0014'), g: smallGroups });
+    });
+  });
+});
+
+describe('preloadCutover', () => {
+  it('loads groups.json and every vNNNN.json beside other files, so later loads need no file and earlier loads are kept', async () => {
+    const dir = cutoverDirWith({
+      'groups.json': JSON.stringify(smallGroups),
+      'versions/v0021.json': JSON.stringify(smallVersion('v0021')),
+      'versions/v0022.json': JSON.stringify({ ...smallVersion('v0022'), previous: 'v0021' }),
+      'versions/v22.json': '{',
+      'versions/notes.txt': 'not a version',
+    });
+    const earlier = loadVersion(dir, 'v0021');
+
+    await preloadCutover({ cutoverDir: dir, groupsFile: groupsIn(dir) });
+    rmSync(dir, { recursive: true, force: true });
+
+    expect(loadVersion(dir, 'v0021')).toBe(earlier);
+    expect(loadVersion(dir, 'v0022')).toEqual({ ...smallVersion('v0022'), previous: 'v0021' });
+    expect(loadGroups(groupsIn(dir))).toEqual(smallGroups);
+    expect(deeplyFrozen(loadVersion(dir, 'v0022'))).toBe(true);
+    expect(deeplyFrozen(loadGroups(groupsIn(dir)))).toBe(true);
+  });
+
+  it.each<[string, Record<string, string>, (error: unknown) => void, (dir: string) => unknown]>([
+    [
+      'a version naming another version',
+      { 'groups.json': JSON.stringify(smallGroups), 'versions/v0031.json': JSON.stringify(smallVersion('v0030')) },
+      (error) => {
+        expect(error).toBeInstanceOf(CutoverDataError);
+        expect((error as Error).message).toMatch(/versions\/v0031\.json declares tableVersion "v0030", expected "v0031"/);
+      },
+      (dir) => loadVersion(dir, 'v0031'),
+    ],
+    [
+      'an invalid JSON version',
+      { 'groups.json': JSON.stringify(smallGroups), 'versions/v0032.json': '{"tableVersion": "v0032",' },
+      instanceOf(SyntaxError),
+      (dir) => loadVersion(dir, 'v0032'),
+    ],
+    ['an absent groups file', { 'versions/v0033.json': JSON.stringify(smallVersion('v0033')) }, absent, (dir) => loadGroups(groupsIn(dir))],
+    ['an invalid JSON groups file', { 'groups.json': '{"groups": [' }, instanceOf(SyntaxError), (dir) => loadGroups(groupsIn(dir))],
+  ])('rejects %s and keeps it out of memory', async (_name, files, check, load) => {
+    const dir = cutoverDirWith(files);
+
+    check(await preloadCutover({ cutoverDir: dir, groupsFile: groupsIn(dir) }).then(() => undefined, (error: unknown) => error));
+    check(thrownBy(() => load(dir)));
   });
 });
 

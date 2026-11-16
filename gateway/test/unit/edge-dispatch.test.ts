@@ -3,7 +3,7 @@ import { Buffer } from 'node:buffer';
 import replyFrom from '@fastify/reply-from';
 import { INVOCATION_HEADER, recordedRoutes, rolesForService } from '@opt2/platform/auth';
 import { apiUnavailableResponse, adminUnavailableResponse, type RouteKeyResult } from '@opt2/platform/legacy-compat';
-import { createLogger } from '@opt2/platform/logging';
+import { createLogger, validateLogRecord, type Logger } from '@opt2/platform/logging';
 import {
   IDENTITY_SERVICE,
   LEGACY_POST_LIMIT_BYTES,
@@ -13,13 +13,13 @@ import {
   systemClock,
   type FastifyInstance,
 } from '@opt2/platform/service-kit';
-import { mintServiceToken, testVerifier } from '@opt2/platform/testing';
+import { DatabaseUnavailableError, tenantIdForSite } from '@opt2/platform/tenancy';
+import { mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CutoverEntry, EntryKind, RouteFacts, RoutingIndex } from '../../src/cutover/types.js';
 import { BarrierTimeoutError } from '../../src/dispatcher/barrier.js';
-import { EDGE_METHODS, EDGE_ROUTE_URL, registerEdgeRoute, type DispatcherDeps } from '../../src/dispatcher/dispatch.js';
-import { failContextFor } from '../../src/dispatcher/fail-closed.js';
-import type { Destination, MatchOutcome } from '../../src/dispatcher/match.js';
+import { EDGE_METHODS, EDGE_ROUTE_URL, RELAY_ALIAS_ROUTE, registerEdgeRoute, type DispatcherDeps } from '../../src/dispatcher/dispatch.js';
+import { routedFailContext, type Destination, type MatchOutcome } from '../../src/dispatcher/match.js';
 import { WindowOpenError } from '../../src/dispatcher/write-window.js';
 import type { BridgeClient } from '../../src/session/bridge-client.js';
 import { createCsrfContinuity, type CsrfHandle } from '../../src/session/csrf.js';
@@ -34,6 +34,22 @@ import { sendBytes, startHttpDouble, type HttpDouble } from '../helpers/http-dou
 const SILENT = createLogger({ service: 'gateway', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
 const SESSION_ID = 'S1';
 const RATING_UNIT = 'content.content_rating';
+const MINTED_TENANT = '00000000-0000-4000-8000-0000000000a1';
+const MINTED_USER = 'A1B2C3D4-E5F6-0718-293A4B5C6D7E8F90';
+/** Claims identity minted the fake token cache's `user-token-1` with. */
+const MINTED_CLAIMS = {
+  iss: 'opt2-local-identity',
+  aud: 'opt2-local',
+  sub: MINTED_USER,
+  sid: SESSION_ID,
+  tid: MINTED_TENANT,
+  site: 'default',
+  roles: [],
+  s2: false,
+  epoch: 3,
+  iat: 1_700_000_000,
+  exp: 4_000_000_000,
+};
 
 /** What the fake matcher answers for a request target and the index it is matched against. */
 interface Script {
@@ -101,8 +117,8 @@ function urlScopeOf(url: string): Record<string, string> {
   return Object.fromEntries(scope);
 }
 
-/** `active: null` starts the gateway with no active version. */
-async function harness(opts: { active?: RoutingIndex | null; facts?: Record<string, RouteFacts> } = {}): Promise<Harness> {
+/** `active: null` starts the gateway with no active version; `logger` defaults to a silent one. */
+async function harness(opts: { active?: RoutingIndex | null; facts?: Record<string, RouteFacts>; logger?: Logger } = {}): Promise<Harness> {
   const facts = opts.facts ?? {};
   const calls: string[] = [];
   const frozen = new Set<string>();
@@ -124,7 +140,7 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
       TZ: 'UTC',
     }),
     verifierOverride: testVerifier('gateway'),
-    logger: SILENT,
+    logger: opts.logger ?? SILENT,
   });
 
   const outcomeFor = (url: string, index: RoutingIndex | undefined): MatchOutcome => {
@@ -157,7 +173,8 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
         : ({ owningService: 'people', tableVersion: 'v0001', state: 'legacy', units: [], disposition: 'carry', ...s.entry } as CutoverEntry);
     const destination: Exclude<Destination, { kind: 'relay' }> =
       index === undefined ? { kind: 'unavailable', reason: 'no-active-version' } : destinations[s.destination];
-    return { result, entry, destination, failContext: failContextFor(result, url), urlScope: urlScopeOf(url), scanFailed: false };
+    const failContext = routedFailContext(result, entry, destination, url);
+    return { result, entry, destination, failContext, urlScope: urlScopeOf(url), scanFailed: false };
   };
 
   const deps: DispatcherDeps = {
@@ -221,7 +238,7 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
       resolveLegacyBound: vi.fn(async (): Promise<SessionResolution> => ({ kind: 'none', setCookies: [] })),
       adoptAfterLegacy: vi.fn(async (_input, o): Promise<SessionResolution> => ({ kind: 'none', setCookies: [...o.setCookies] })),
     },
-    tokenCache: { get: vi.fn(async () => 'user-token-1') },
+    tokenCache: { get: vi.fn(async () => ({ token: 'user-token-1', claims: MINTED_CLAIMS })) },
     identity: { adminSite: vi.fn(async () => ''), snapshot: vi.fn(async () => undefined) },
     stateCheck: {
       check: vi.fn(async () => ({ state: 'active' as const, epoch: 3, userId: 'U', siteId: 'default', epochChanged: false })),
@@ -647,6 +664,271 @@ describe('relay alias', () => {
     const relayed = await h.app.inject({ method: 'GET', url: '/opt2/svc/people/v1/users?q=1', headers: await credential('web') });
     expect(relayed.statusCode).toBe(200);
     expect(h.svc.requests.map((request) => request.url)).toEqual(['/v1/users?q=1']);
+  });
+});
+
+describe('request log lines', () => {
+  type LogLine = Record<string, unknown>;
+  type Scope = { tenantId: string | undefined; userId: string | undefined };
+
+  const NO_SCOPE: Scope = { tenantId: undefined, userId: undefined };
+  const TARGET_ENTRY = { route: 'api:content.findone', kind: 'read', state: 'target' } as const;
+  const RELAY_USER = 'B2C3D4E5-F607-1829-3A4B5C6D7E8F9001';
+
+  /** Web's invocation credential and a user token of `RELAY_USER`. */
+  const webCallWithUser = async (): Promise<Record<string, string>> => ({
+    [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'web', audience: 'gateway', roles: rolesForService('web') })}`,
+    authorization: `Bearer ${await mintUserToken({ sub: RELAY_USER, site: 'tenant-a', roles: ['system-user'] })}`,
+  });
+
+  interface LineCase {
+    label: string;
+    url: string;
+    script: Script;
+    /** The session resolution of a target-bound request; anonymous when absent. */
+    resolved?: SessionResolution;
+    /** `sub` of the token minted for the session; `MINTED_USER` when absent. */
+    sub?: string;
+    headers?: () => Promise<Record<string, string>>;
+    status: number;
+    route: string;
+    warning: string | null;
+    scope: Scope;
+  }
+
+  it.each<LineCase>([
+    {
+      label: 'a legacy-bound request of an unlisted key',
+      url: '/_api/json/v1/default/content?q=opt2-secret-query',
+      script: { destination: 'legacy' },
+      status: 200,
+      route: 'api:unlisted',
+      warning: null,
+      scope: NO_SCOPE,
+    },
+    {
+      label: 'a legacy-bound entry',
+      url: '/admin/?muraAction=cusers.list&q=opt2-secret-query',
+      script: { entry: { route: 'admin:cusers.list', kind: 'read' }, destination: 'legacy' },
+      status: 200,
+      route: 'admin:cusers.list',
+      warning: null,
+      scope: NO_SCOPE,
+    },
+    {
+      label: 'an anonymous target-bound request',
+      url: '/_api/json/v1/default/content/x?q=opt2-secret-query',
+      script: { entry: TARGET_ENTRY, destination: 'target' },
+      status: 200,
+      route: TARGET_ENTRY.route,
+      warning: null,
+      scope: NO_SCOPE,
+    },
+    {
+      label: 'a target-bound request of a session',
+      url: '/_api/json/v1/default/content/x?q=opt2-secret-query',
+      script: { entry: TARGET_ENTRY, destination: 'target' },
+      resolved: session('legacy-primary'),
+      status: 200,
+      route: TARGET_ENTRY.route,
+      warning: null,
+      scope: { tenantId: MINTED_TENANT, userId: MINTED_USER },
+    },
+    {
+      label: 'a target-bound request of a session not logged in',
+      url: '/_api/json/v1/default/content/x?q=opt2-secret-query',
+      script: { entry: TARGET_ENTRY, destination: 'target' },
+      resolved: session('legacy-primary'),
+      sub: '',
+      status: 200,
+      route: TARGET_ENTRY.route,
+      warning: null,
+      scope: { tenantId: MINTED_TENANT, userId: undefined },
+    },
+    {
+      label: 'a gateway-served 404',
+      url: '/gateway/legacy-bridge/cfml/session.cfm?q=opt2-secret-query',
+      script: { entry: { route: 'gateway:bridge', kind: 'read' }, destination: 'bare' },
+      status: 404,
+      route: 'gateway:bridge',
+      warning: null,
+      scope: NO_SCOPE,
+    },
+    {
+      label: 'a relay alias call without the web credential',
+      url: '/opt2/svc/people/v1/users?q=opt2-secret-query',
+      script: { destination: 'relay' },
+      status: 403,
+      route: RELAY_ALIAS_ROUTE,
+      warning: 'request denied',
+      scope: NO_SCOPE,
+    },
+    {
+      label: "web's relay alias call with a user token",
+      url: '/opt2/svc/people/v1/users?q=opt2-secret-query',
+      script: { destination: 'relay' },
+      headers: webCallWithUser,
+      status: 200,
+      route: RELAY_ALIAS_ROUTE,
+      warning: null,
+      scope: { tenantId: tenantIdForSite('tenant-a'), userId: RELAY_USER },
+    },
+  ])('logs $label under its route, tenant and user, never the catch-all', async ({ url, script, resolved, sub, headers, status, route, warning, scope }) => {
+    const lines: LogLine[] = [];
+    const destination = { write: (chunk: string): void => void lines.push(JSON.parse(chunk) as LogLine) };
+    const h = await harness({ logger: createLogger({ service: 'gateway', version: '1.0.0', env: 'local', destination }) });
+    // Only the request's own lines, not the plugins' start-up warnings.
+    lines.length = 0;
+    h.setScript(() => script);
+    if (resolved !== undefined) vi.mocked(h.deps.resolver.resolveSession).mockResolvedValueOnce(resolved);
+    if (sub !== undefined) vi.mocked(h.deps.tokenCache.get).mockResolvedValueOnce({ token: 'user-token-1', claims: { ...MINTED_CLAIMS, sub } });
+    const res = await h.app.inject({ method: 'GET', url, headers: await headers?.() });
+    expect(res.statusCode).toBe(status);
+    const outcomes = lines.filter((line) => line.severity === 'WARNING' || line.message === 'request completed');
+    expect(outcomes.map((line) => line.message)).toStrictEqual([...(warning === null ? [] : [warning]), 'request completed']);
+    for (const line of outcomes) {
+      expect(validateLogRecord(line).errors).toStrictEqual([]);
+      expect(line).toMatchObject({ route, httpMethod: 'GET', statusCode: status });
+      expect({ tenantId: line.tenantId, userId: line.userId }).toStrictEqual(scope);
+    }
+    expect(JSON.stringify(lines)).not.toContain('opt2-secret-query');
+  });
+});
+
+describe('fail-closed lines', () => {
+  type LogLine = Record<string, unknown>;
+  const TARGET_READ = { route: 'api:content.findone', kind: 'read', state: 'target' } as const;
+  const refused = (): Error => Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:9'), { code: 'ECONNREFUSED', syscall: 'connect' });
+
+  interface FailCase {
+    label: string;
+    active?: null;
+    script?: Script;
+    setup?: (h: Harness) => unknown;
+    method?: 'GET' | 'POST';
+    url: string;
+    headers?: Record<string, string>;
+    payload?: string;
+    severity: 'ERROR' | 'WARNING';
+    message: string;
+    route: string | undefined;
+    /** Type of the logged error; undefined when the line carries none. */
+    errorType?: string;
+  }
+
+  it.each<FailCase>([
+    {
+      label: 'identity unavailable before a target forward',
+      script: { entry: TARGET_READ, destination: 'target' },
+      setup: (h) => vi.mocked(h.deps.resolver.resolveSession).mockRejectedValueOnce(new ServiceUnavailableError(IDENTITY_SERVICE, refused())),
+      url: '/_api/json/v1/default/content/x',
+      severity: 'ERROR',
+      message: 'fail-closed: identity unavailable before forwarding to people',
+      route: TARGET_READ.route,
+      errorType: 'ServiceUnavailableError',
+    },
+    {
+      label: 'the database unavailable before a target write registers',
+      script: { entry: { route: 'opt2:/opt2/stub/**', kind: 'write', state: 'target' }, destination: 'target' },
+      setup: (h) => vi.mocked(h.deps.inflight.register).mockRejectedValueOnce(new DatabaseUnavailableError('ECONNREFUSED', refused())),
+      method: 'POST',
+      url: '/opt2/stub/notes',
+      severity: 'ERROR',
+      message: 'fail-closed: database unavailable before forwarding to people',
+      route: 'opt2:/opt2/stub/**',
+      errorType: 'DatabaseUnavailableError',
+    },
+    {
+      label: 'a barrier timeout before a legacy forward',
+      script: { entry: { route: 'admin:cusers.list', kind: 'read' }, destination: 'legacy' },
+      setup: (h) => {
+        vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValueOnce(session('legacy-primary'));
+        vi.mocked(h.deps.barrier.awaitForSession).mockRejectedValueOnce(new BarrierTimeoutError('identity=1', new Error('timeout')));
+      },
+      url: '/admin/?muraAction=cusers.list',
+      severity: 'ERROR',
+      message: 'fail-closed: barrier timeout before forwarding to legacy',
+      route: 'admin:cusers.list',
+      errorType: 'BarrierTimeoutError',
+    },
+    {
+      label: 'a refused owner',
+      script: { entry: TARGET_READ, destination: 'target' },
+      setup: (h) => h.svc.close(),
+      url: '/_api/json/v1/default/content/x',
+      severity: 'ERROR',
+      message: 'fail-closed: people unavailable',
+      route: TARGET_READ.route,
+      errorType: 'FastifyError',
+    },
+    {
+      label: 'an owner answering 503',
+      script: { entry: TARGET_READ, destination: 'target' },
+      setup: (h) => h.svc.setHandler((_req, res) => sendBytes(res, 503, 'unavailable')),
+      url: '/_api/json/v1/default/content/x',
+      severity: 'ERROR',
+      message: 'fail-closed: people unavailable: answered 503',
+      route: TARGET_READ.route,
+    },
+    {
+      label: 'an owner without a service URL',
+      script: { entry: TARGET_READ, destination: 'unavailable' },
+      url: '/_api/json/v1/default/content/x',
+      severity: 'ERROR',
+      message: 'fail-closed: people has no service URL',
+      route: TARGET_READ.route,
+    },
+    {
+      label: 'no active version',
+      active: null,
+      url: '/_api/json/v1/default/content',
+      severity: 'ERROR',
+      message: 'fail-closed: no cut-over version is active',
+      route: 'api:unlisted',
+    },
+    {
+      label: 'a freeze outlasting the wait',
+      script: { entry: { route: 'api:r', kind: 'read' }, destination: 'legacy' },
+      setup: (h) => {
+        h.frozen.add('api:r');
+        vi.mocked(h.deps.state.waitUnfrozen).mockResolvedValueOnce(false);
+      },
+      url: '/_api/json/v1/default/r',
+      severity: 'WARNING',
+      message: 'fail-closed: legacy entry frozen past the 30000 ms wait',
+      route: 'api:r',
+    },
+    {
+      label: 'an unreadable body',
+      method: 'POST',
+      url: '/admin/',
+      headers: { 'content-type': 'multipart/form-data' },
+      payload: 'x',
+      severity: 'WARNING',
+      message: 'fail-closed: request body unreadable',
+      route: undefined,
+      errorType: 'UnreadableBodyError',
+    },
+  ])('logs $label as one $severity fail-closed line with its route key and the 503', async (c) => {
+    const lines: LogLine[] = [];
+    const destination = { write: (chunk: string): void => void lines.push(JSON.parse(chunk) as LogLine) };
+    const logger = createLogger({ service: 'gateway', version: '1.0.0', env: 'local', destination });
+    const h = await harness({ logger, ...(c.active === null ? { active: null } : {}) });
+    lines.length = 0;
+    if (c.script !== undefined) h.setScript(() => c.script as Script);
+    await c.setup?.(h);
+    const method = c.method ?? 'GET';
+    const res = await h.app.inject({ method, url: c.url, headers: c.headers, payload: c.payload });
+    expect(res.statusCode).toBe(503);
+    await settle();
+    const failed = lines.filter((line) => String(line.message).startsWith('fail-closed'));
+    expect(failed).toHaveLength(1);
+    const [line] = failed;
+    expect(line).toMatchObject({ severity: c.severity, message: c.message, httpMethod: method, statusCode: 503 });
+    expect(line?.route).toBe(c.route);
+    if (c.errorType === undefined) expect(line).not.toHaveProperty('error');
+    else expect(line?.error).toMatchObject({ type: c.errorType });
+    expect(validateLogRecord(line).errors).toStrictEqual([]);
   });
 });
 

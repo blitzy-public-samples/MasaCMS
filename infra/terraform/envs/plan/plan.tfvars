@@ -30,3 +30,13 @@ cloud_run_services = [
   "e-signature",
   "migration",
 ]
+operator_secret_ids = {
+  legacy_db_password        = "opt2-legacy-db-password"
+  legacy_reload_key         = "opt2-legacy-reload-key"
+  identity_platform_api_key = "opt2-identity-platform-api-key"
+}
+legacy_settings = {
+  MURA_DBTYPE          = "mssql"
+  MURA_INDEXFILEINURLS = "false"
+  MURA_SITEIDINURLS    = "false"
+}

@@ -12,6 +12,7 @@ import {
   PACKAGE_ROOT,
   REPO_ROOT,
   cutoverVersionFile,
+  cutoverVersionsDir,
   migrationsDirFor,
   packagePath,
   repoPath,
@@ -101,17 +102,22 @@ describe('migrationsDirFor', () => {
   });
 });
 
-describe('cutoverVersionFile', () => {
+describe('cutoverVersionFile and cutoverVersionsDir', () => {
   const cutoverDir = path.join(REPO_DIR, 'gateway', 'cutover');
 
   it.each(['v0001', 'v0002', 'v0003', 'v9999'])('returns versions/%s.json under the cut-over directory', (version) => {
     expect(cutoverVersionFile(cutoverDir, version)).toBe(path.join(cutoverDir, 'versions', `${version}.json`));
   });
 
-  it('rejects a relative cut-over directory', () => {
-    expect(() => cutoverVersionFile('gateway/cutover', 'v0002')).toThrow(
-      new Error('Cut-over directory must be an absolute path, got "gateway/cutover"'),
-    );
+  it('returns the versions directory under the cut-over directory', () => {
+    expect(cutoverVersionsDir(cutoverDir)).toBe(path.join(cutoverDir, 'versions'));
+  });
+
+  it.each([
+    ['cutoverVersionFile', (dir: string) => cutoverVersionFile(dir, 'v0002')],
+    ['cutoverVersionsDir', (dir: string) => cutoverVersionsDir(dir)],
+  ])('%s rejects a relative cut-over directory', (_name, resolve) => {
+    expect(() => resolve('gateway/cutover')).toThrow(new Error('Cut-over directory must be an absolute path, got "gateway/cutover"'));
   });
 
   it.each(['', 'v2', 'v00002', 'V0002', 'v000a', 'v0002.json', 'v0002\n', '../v0002'])('rejects the version %j', (version) => {

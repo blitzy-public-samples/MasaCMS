@@ -116,9 +116,65 @@ _pristine_backup_file() {
   _pristine_publish "$temp" "$final"
 }
 
-# _pristine_backup <link>: backs up to <link>, else to SQL Server's backup dir linked from <link>; prints the file.
+# _pristine_taking_add <record> <path>…: atomically adds artefact paths to the in-progress capture record.
+_pristine_taking_add() {
+  local record=$1 temp
+  shift
+  temp="$(mktemp -- "$record.XXXXXX")" || die "cannot create a temp file beside $record"
+  # shellcheck disable=SC2016 # JavaScript source
+  node -e '
+const fs = require("fs");
+const [file, database, ...paths] = process.argv.slice(1);
+const doc = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8"))
+  : { database, startedAt: new Date().toISOString(), artefacts: [] };
+for (const p of paths) if (!doc.artefacts.includes(p)) doc.artefacts.push(p);
+process.stdout.write(`${JSON.stringify(doc, null, 2)}\n`);
+' -- "$record" "$MURA_DATABASE" "$@" >"$temp" || {
+    rm -f -- "$temp"
+    die "cannot write $record"
+  }
+  mv -f -T -- "$temp" "$record" || {
+    rm -f -- "$temp"
+    die "cannot rename $temp to $record"
+  }
+}
+
+# _pristine_taking_discard <record> <artefact>…: removes what an unfinished capture recorded, temp files included,
+# then the record; only the given artefacts and SQL Server fallback backups are accepted.
+_pristine_taking_discard() {
+  local record=$1 output file each
+  local -a artefacts=() removed=()
+  shift
+  # shellcheck disable=SC2016 # JavaScript source
+  output="$(node -e '
+const fail = (message) => { process.stderr.write(`opt2: ${process.argv[1]}: ${message}\n`); process.exit(1); };
+const [file, ...own] = process.argv.slice(1);
+let doc;
+try { doc = JSON.parse(require("fs").readFileSync(file, "utf8")); } catch (error) { fail(error.message); }
+const ours = (p) => typeof p === "string" && (own.includes(p) || /^\/[^\n]*\/opt2-pristine-[^/\n]+\.bak$/.test(p));
+if (!Array.isArray(doc.artefacts) || !doc.artefacts.every(ours)) fail("artefacts is not a list of capture artefacts");
+process.stdout.write(doc.artefacts.map((p) => `${p}\n`).join(""));
+' -- "$record" "$@")" || die "cannot read $record: remove it and the artefacts it lists by hand to take the baseline"
+  mapfile -t artefacts <<<"$output"
+  for file in "${artefacts[@]}"; do
+    [[ -n $file ]] || continue
+    # Temp names: .tmp.<pid> (backup file, symlink) and mktemp's 6-character suffix.
+    for each in "$file" "$file".tmp.* "$file".??????; do
+      if [[ -e $each || -L $each ]]; then
+        rm -f -- "$each" || die "cannot remove $each, left by an unfinished pristine capture"
+        removed+=("$each")
+      fi
+    done
+  done
+  rm -f -- "$record" "$record".?????? || die "cannot remove $record"
+  printf 'opt2: an earlier pristine capture did not finish; removed %s, taking the baseline again\n' \
+    "${removed[*]:-no artefact}" >&2
+}
+
+# _pristine_backup <link> <record>: backs up to <link>, else to SQL Server's backup dir linked from <link>, recording
+# that file in <record> first; prints the file.
 _pristine_backup() {
-  local link=$1 status=0 dir real temp
+  local link=$1 record=$2 status=0 dir real temp
   _pristine_backup_file "$link" || status=$?
   if ((status == 0)); then
     realpath -- "$link"
@@ -135,6 +191,9 @@ _pristine_backup() {
   [[ $dir == /* ]] || die "no absolute SQL Server backup directory ('$dir'): set OPT2_MSSQL_BACKUP_DIR"
   real="${dir%/}/opt2-pristine-$MURA_DATABASE.bak"
   printf 'opt2: SQL Server cannot write %s; backing up to %s\n' "$link" "$real" >&2
+  # A file already there is not this capture's, so it is refused before the record claims the path.
+  _pristine_refuse_existing "$real"
+  _pristine_taking_add "$record" "$real"
   status=0
   _pristine_backup_file "$real" || status=$?
   ((status == 0)) || die "BACKUP DATABASE $MURA_DATABASE failed: SQL Server cannot write $real either (Msg 3201)"
@@ -197,6 +256,9 @@ const discoveredArgs = typeof found?.JVMargs === "string" && found.JVMargs.trim(
   : Array.isArray(found?.JVMargsArray) ? found.JVMargsArray.join(" ") : "";
 const home = env("OPT2_CF_SERVER_HOME") ?? nonEmpty(found?.serverHomeDirectory);
 const formatMatch = engine === null ? null : /^([A-Za-z][A-Za-z0-9-]*)(?:@(\d+))?/.exec(engine);
+// CFConfig reads an Adobe server home through its WEB-INF/cfusion directory, as it does for a server name.
+const homeTarget = (dir) => (formatMatch?.[1].toLowerCase() !== "adobe" || /(^|\/)WEB-INF\/cfusion\/*$/.test(dir) ? dir
+  : path.join(dir, "WEB-INF", "cfusion"));
 const portNumber = Number(found?.port);
 process.stdout.write(JSON.stringify({
   name: found?.name ?? null,
@@ -207,7 +269,7 @@ process.stdout.write(JSON.stringify({
   serverConfigFile: nonEmpty(found?.serverConfigFile),
   webroot: nonEmpty(found?.webroot) === null ? null : real(found.webroot),
   port: found !== undefined && Number.isInteger(portNumber) && portNumber > 0 ? portNumber : null,
-  cfconfigTarget: found?.name ?? home,
+  cfconfigTarget: found === undefined || env("OPT2_CF_SERVER_HOME") !== undefined ? homeTarget(home) : found.name,
   cfconfigFormat: formatMatch === null ? null : `${formatMatch[1].toLowerCase()}${formatMatch[2] ? `@${formatMatch[2]}` : ""}`,
 }));
 ' -- "${OPT2_LEGACY_SERVER_NAME:-}" "$REPO" "${LEGACY_PORT:-}" "$LEGACY_SERVER_NAME")" || exit 1
@@ -324,9 +386,11 @@ OR name LIKE 'Program[_]%' ORDER BY name")"; then
 }
 
 # Takes the pristine baseline once, ColdFusion stopped: pristine.bak, filestore.tar, then pristine.json marking it done.
+# pristine.taking.json lists the artefacts until then, so a rerun after an unfinished capture discards them first.
 pristine_take() {
   local json="$OPT2_PRISTINE_DIR/pristine.json" bak="$OPT2_PRISTINE_DIR/pristine.bak"
-  local tar="$OPT2_PRISTINE_DIR/filestore.tar" checks root rel sha real temp output
+  local tar="$OPT2_PRISTINE_DIR/filestore.tar" record="$OPT2_PRISTINE_DIR/pristine.taking.json"
+  local checks root rel sha real temp output
   local -a site_dirs=()
   if [[ -e $json ]]; then die "refusing to overwrite $json: the pristine baseline is taken once"; fi
   _pristine_require_stopped
@@ -344,9 +408,11 @@ pristine_take() {
   output="$(_pristine_site_dirs)" || die "cannot list the directories of $(masa_site_dir)"
   mapfile -t site_dirs < <(_pristine_lines "$output")
   sha="$(json_get "$REPO/opt2/source-pin.json" sha)" || die "cannot read the pinned SHA from $REPO/opt2/source-pin.json"
+  if [[ -e $record || -L $record ]]; then _pristine_taking_discard "$record" "$bak" "$tar" "$json"; fi
   _pristine_refuse_existing "$bak" "$tar"
+  _pristine_taking_add "$record" "$bak" "$tar" "$json"
 
-  real="$(_pristine_backup "$bak")" || exit 1
+  real="$(_pristine_backup "$bak" "$record")" || exit 1
   temp="$(mktemp -- "$tar.XXXXXX")" || die "cannot create a temp file beside $tar"
   filestore_tar "$temp" || {
     rm -f -- "$temp"
@@ -365,6 +431,7 @@ process.stdout.write(`${JSON.stringify({ sha, takenAt: new Date().toISOString(),
     die "cannot write $json"
   }
   _pristine_publish "$temp" "$json"
+  rm -f -- "$record" || die "cannot remove $record"
   printf 'opt2: pristine baseline of %s taken in %s\n' "$MURA_DATABASE" "$OPT2_PRISTINE_DIR" >&2
 }
 
@@ -375,6 +442,8 @@ pristine_restore() {
   local -a values=() site_dirs=() removed=()
   [[ -f $json ]] || die "no pristine baseline: $json is missing"
   _pristine_require_stopped
+  # A capture stopped between publishing pristine.json and removing its record leaves the record stale.
+  rm -f -- "$OPT2_PRISTINE_DIR/pristine.taking.json" || die "cannot remove $OPT2_PRISTINE_DIR/pristine.taking.json"
   # shellcheck disable=SC2016 # JavaScript source
   fields="$(node -e '
 const fail = (message) => { process.stderr.write(`opt2: ${process.argv[1]}: ${message}\n`); process.exit(1); };

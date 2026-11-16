@@ -10,8 +10,8 @@ import {
   CLOC_NOT_MATCH_F,
   ClocUnavailable,
   PLANNING_FIGURES,
+  UNFILTERED_EXCLUDES,
   UNFILTERED_NOT_MATCH_D,
-  UNFILTERED_NOT_MATCH_F,
   buildClocReport,
   cfmlFigure,
   clocArgs,
@@ -168,13 +168,23 @@ describe('exclusions', () => {
     expect(new RegExp(CLOC_NOT_MATCH_D).test(full) || new RegExp(CLOC_NOT_MATCH_F).test(full)).toBe(false);
   });
 
-  it('excludes vendor directories at any depth and minified files from the unfiltered measurement', () => {
-    const d = new RegExp(UNFILTERED_NOT_MATCH_D);
-    const f = new RegExp(UNFILTERED_NOT_MATCH_F);
-    expect(d.test(`${SCRATCH_ROOT}admin/assets/js/jquery/vendor/widget.js`)).toBe(true);
-    expect(d.test(`${SCRATCH_ROOT}core/mura/lib/x.cfc`)).toBe(false);
-    expect(f.test(`${SCRATCH_ROOT}a.min.js`)).toBe(true);
-    expect(f.test(`${SCRATCH_ROOT}admin/assets/css/admin.css`)).toBe(false);
+  it('excludes only core/vendor, node_modules and .git from the unfiltered measurement', () => {
+    expect(UNFILTERED_EXCLUDES).toEqual(['core/vendor', 'node_modules', '.git']);
+  });
+
+  it.each([
+    ['core/vendor', true],
+    ['core/vendor/ckeditor/vendor', true],
+    ['node_modules', true],
+    ['admin/node_modules/x', true],
+    ['.git', true],
+    ['.github', false],
+    ['admin/assets/js/jquery', false],
+    ['admin/assets/js/jquery/vendor', false],
+    ['core/mura/lib', false],
+    ['core/vendors', false],
+  ])('unfiltered --not-match-d on directory %s excludes it: %s', (sample, excluded) => {
+    expect(new RegExp(UNFILTERED_NOT_MATCH_D).test(`${SCRATCH_ROOT}${sample}`)).toBe(excluded);
   });
 });
 
@@ -289,7 +299,14 @@ describe('languages and planning figures', () => {
     ]);
   });
 
-  it('matches the planning figures when every measured figure equals them', () => {
+  it.each([
+    ['matches the planning figures when every measured figure equals them', { files: 1243, code: 362994 }, []],
+    [
+      'reports only the unfiltered difference when that alone differs',
+      { files: 1350, code: 368039 },
+      [{ figure: 'unfiltered', planning: { files: 1243, code: 362994 }, measured: { files: 1350, code: 368039 } }],
+    ],
+  ])('%s', (_case, unfilteredTotals, differences) => {
     const grouped: [string, number, number][] = [
       ['Text', 6, 483],
       ['JSON', 6, 430],
@@ -305,9 +322,9 @@ describe('languages and planning figures', () => {
       ...grouped.map(([language, files, code]) => ({ language, files, blank: 0, comment: 0, code })),
     ];
     const filtered: ClocResult = { version: '1.98', languages, totals: { files: 1179, blank: 0, comment: 0, code: 228839 } };
-    const unfiltered: ClocResult = { version: '1.98', languages: [], totals: { files: 1243, blank: 0, comment: 0, code: 362994 } };
+    const unfiltered: ClocResult = { version: '1.98', languages: [], totals: { ...unfilteredTotals, blank: 0, comment: 0 } };
     const report = buildClocReport(pin.sha, filtered, unfiltered, new Date(0));
-    expect(comparePlanning(report)).toEqual({ matchesPlanning: true, versionMatches: true, differences: [] });
+    expect(comparePlanning(report)).toEqual({ matchesPlanning: differences.length === 0, versionMatches: true, differences });
   });
 });
 
@@ -334,7 +351,7 @@ describe('generateCloc', () => {
     expect(signalListeners()).toEqual(listeners);
     expect(runner.mock.calls.map(([, args]) => args)).toEqual([
       ['--json', '--fullpath', '--quiet', `--not-match-d=${CLOC_NOT_MATCH_D}`, `--not-match-f=${CLOC_NOT_MATCH_F}`, '--by-file', '.'],
-      ['--json', '--fullpath', '--quiet', `--not-match-d=${UNFILTERED_NOT_MATCH_D}`, `--not-match-f=${UNFILTERED_NOT_MATCH_F}`, '.'],
+      ['--json', '--fullpath', '--quiet', `--not-match-d=${UNFILTERED_NOT_MATCH_D}`, '.'],
     ]);
 
     const json = JSON.parse(await readFile(path.join(out, 'cloc.json'), 'utf8'));
@@ -347,9 +364,10 @@ describe('generateCloc', () => {
       provenance: 'measured',
       totals: { files: 3, code: 105 },
       cfmlApplicationCode: { languages: ['ColdFusion CFScript', 'ColdFusion'], files: 2, code: 70 },
-      unfiltered: { notMatchD: UNFILTERED_NOT_MATCH_D, files: 3, code: 105 },
+      unfiltered: { excludes: ['core/vendor', 'node_modules', '.git'], notMatchD: UNFILTERED_NOT_MATCH_D, files: 3, code: 105 },
       detail: { blank: 12, comment: 3 },
     });
+    expect(Object.keys(json.unfiltered).sort()).toEqual(['code', 'excludes', 'files', 'notMatchD']);
     expect(json.command.args).toEqual(runner.mock.calls[0]?.[1]);
     expect(json.detail.perFile).toHaveLength(3);
     expect(result.jsonPath).toBe(path.join(out, 'cloc.json'));
@@ -361,6 +379,9 @@ describe('generateCloc', () => {
     }
     expect(md).toContain(`\`${CLOC_NOT_MATCH_D}\``);
     expect(md).toContain(`\`${CLOC_NOT_MATCH_F}\``);
+    expect(md).toContain(`- \`--not-match-d\`: \`${UNFILTERED_NOT_MATCH_D}\``);
+    expect(md).toContain('| Unfiltered (excludes only `core/vendor`, `node_modules` and `.git`) | 3 | 105 |');
+    expect(md.split('`--not-match-f`')).toHaveLength(2);
   });
 
   it('reports and notes every figure that differs from the planning measurement', async () => {

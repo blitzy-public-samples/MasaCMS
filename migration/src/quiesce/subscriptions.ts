@@ -1,11 +1,13 @@
 /** Pub/Sub adapter for quiescence: OPT-2 subscription discovery, push-config save and restore, non-acking backlog and DLQ peeks, leased pulls and witness subscriptions. */
-import { PubSub, v1, type protos } from '@google-cloud/pubsub';
 import {
   consumerOfSubscription,
   decodeEnvelopeData,
   dlqReplaySubscriptionName,
   InvalidEventNameError,
+  PubSub,
   topicOfSubscription,
+  v1,
+  type protos,
 } from '@opt2/platform/events';
 import type { MigrationEnv } from '../env.js';
 

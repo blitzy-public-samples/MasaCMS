@@ -3,13 +3,13 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { PubSub } from '@google-cloud/pubsub';
 import { LOCAL_SECRET_FILES, serviceRole } from '@opt2/platform/auth';
 import {
   consumerOfSubscription,
   dlqReplaySubscriptionName,
   dlqTopicName,
   parseTopic,
+  PubSub,
   PUSH_PATH_PREFIX,
   pushPath,
   readTopicSchema,
@@ -389,7 +389,7 @@ export interface SubscriptionHandleLike {
   delete(): Promise<unknown>;
 }
 
-/** The emulator client surface `applyLocalTopology` uses; a `PubSub` from `@google-cloud/pubsub` satisfies it. */
+/** The emulator client surface `applyLocalTopology` uses; a `PubSub` from `@opt2/platform/events` satisfies it. */
 export interface PubSubLike {
   createTopic(name: string): Promise<unknown>;
   topic(name: string): { createSubscription(name: string, options?: PushSubscriptionOptions): Promise<unknown> };
@@ -497,8 +497,7 @@ export async function applyLocalTopology(topology: Topology, opts: LocalApplyOpt
   if (opts.emulatorHost === undefined || opts.emulatorHost === '') {
     throw new TopologyError('PUBSUB_EMULATOR_HOST is not set; the local topology is applied only to the Pub/Sub emulator');
   }
-  const pubsubModule = await import('@google-cloud/pubsub');
-  const client: PubSub = new pubsubModule.PubSub({
+  const client = new PubSub({
     projectId: opts.projectId,
     apiEndpoint: opts.emulatorHost,
     emulatorMode: true,

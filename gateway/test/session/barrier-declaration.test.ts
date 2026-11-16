@@ -25,6 +25,7 @@ import { failContextFor } from '../../src/dispatcher/fail-closed.js';
 import type { LegacyDestination, MatchOutcome, TargetDestination } from '../../src/dispatcher/match.js';
 import { relayHandler, type RelayDeps } from '../../src/dispatcher/relay.js';
 import type { SessionResolution } from '../../src/session/resolve.js';
+import type { SessionToken } from '../../src/session/token-cache.js';
 import { sendBytes, startHttpDouble, type HttpDouble } from '../helpers/http-double.js';
 
 const SILENT = createLogger({ service: 'gateway', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
@@ -209,7 +210,7 @@ describe.skipIf(!live)('a target write declared in gateway.session_barrier again
         resolveLegacyBound: async () => session,
         adoptAfterLegacy: async () => session,
       },
-      tokenCache: { get: async () => 'user-token-1' },
+      tokenCache: { get: async () => ({ token: 'user-token-1', claims: { sid: SESSION_ID } as SessionToken['claims'] }) },
       identity: {
         adminSite: () => Promise.reject(new Error('unexpected identity call')),
         snapshot: () => Promise.reject(new Error('unexpected identity call')),

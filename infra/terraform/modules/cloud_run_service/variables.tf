@@ -62,6 +62,23 @@ variable "min_instance_count" {
   }
 }
 
+variable "cpu_idle" {
+  description = "CPU allocated only during requests; false keeps it allocated outside them."
+  type        = bool
+  default     = true
+
+  validation {
+    condition     = var.cpu_idle == (var.name != "migration")
+    error_message = "CPU idle must be false for migration and true for every other service."
+  }
+}
+
+variable "custom_audiences" {
+  description = "Exact extra OIDC audiences Cloud Run accepts besides the service URL."
+  type        = list(string)
+  default     = []
+}
+
 variable "env" {
   description = "Plain env vars of the app container; PORT is reserved by Cloud Run and must not be passed."
   type        = map(string)

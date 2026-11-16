@@ -75,20 +75,34 @@ const LOGIN_CARRIED: Inventory = (() => {
 
 /** Items each service carries or owns in the mini inventory and ownership fixtures, derived by hand. */
 const EXPECTED_ITEMS: Record<ServiceName, readonly string[]> = {
-  identity: ['tbl:tusersmemb', 'tbl:tusers'],
-  people: ['ctl:cusers.listusers', 'ctl:cusers.update{type=2,action=add}', 'tbl:tusers'],
+  identity: ['ctl:clogin', 'tbl:tusersmemb', 'tbl:tusers'],
+  people: ['ctl:cusers', 'ctl:cusers.listusers', 'ctl:cusers.update{type=2,action=add}', 'tbl:tusers'],
   'programs-sites': ['job:sitemonitor'],
   'strategies-content': ['api:content.findone'],
-  communications: [],
+  communications: ['ctl:cemail', 'ctl:cemail.list'],
   reporting: [],
   surveys: [],
   timesheets: [],
   finance: [],
   'e-signature': [],
 };
-const IDENTITY_LOGIN_ITEMS = ['ctl:clogin.login', 'tbl:tusersmemb', 'tbl:tusers'];
+const IDENTITY_LOGIN_ITEMS = ['ctl:clogin', 'ctl:clogin.login', 'tbl:tusersmemb', 'tbl:tusers'];
 /** Identity items of {@link LOGIN_CARRIED} that no row of the traceability fixture names. */
-const UNCOVERED_BY_FIXTURE = ['tbl:tusersmemb', 'tbl:tusers'];
+const UNCOVERED_BY_FIXTURE = ['ctl:clogin', 'tbl:tusersmemb', 'tbl:tusers'];
+
+/** The mini inventory with `ctl:cemail.list` owned by communications only as a decision-list proposal. */
+const CEMAIL_PROPOSED: Inventory = (() => {
+  const inventory = structuredClone(INVENTORY);
+  const proposed = { disposition: 'decision', ownerBasis: 'decision-list-proposal' };
+  for (const controller of inventory.controllers) {
+    for (const action of controller.actions ?? []) {
+      for (const variant of action.variants ?? []) {
+        if (variant.id === 'ctl:cemail.list') Object.assign(variant, proposed);
+      }
+    }
+  }
+  return inventory;
+})();
 
 /** Code and test files the traceability fixture's rows cite. */
 const FIXTURE_REFS = [
@@ -344,59 +358,108 @@ describe('carriedOrOwnedItems', () => {
   );
 
   it('selects identity-owned tables whole and through split units', () => {
-    expect(carriedOrOwnedItems('identity', INVENTORY, OWNERSHIP)).toEqual([
+    expect(carriedOrOwnedItems('identity', INVENTORY, OWNERSHIP).filter((item) => item.category === 'table')).toEqual([
       {
         id: 'tbl:tusersmemb',
         category: 'table',
         disposition: 'carry',
+        codeRequired: true,
         table: 'tusersmemb',
         units: ['identity.membership'],
       },
-      { id: 'tbl:tusers', category: 'table', disposition: 'carry', table: 'tusers', units: ['identity.user_account'] },
+      {
+        id: 'tbl:tusers',
+        category: 'table',
+        disposition: 'carry',
+        codeRequired: true,
+        table: 'tusers',
+        units: ['identity.user_account'],
+      },
     ]);
   });
 
-  it('selects the people roster variants with their route keys and its share of the split tusers', () => {
+  it('selects the people controller, its roster variants with their route keys and its share of tusers', () => {
     expect(carriedOrOwnedItems('people', INVENTORY, OWNERSHIP)).toEqual([
+      { id: 'ctl:cusers', category: 'admin-controller', disposition: null, codeRequired: true },
       {
         id: 'ctl:cusers.listusers',
         category: 'admin-action',
         disposition: 'carry',
+        codeRequired: true,
         routeKey: 'admin:cusers.listusers',
       },
       {
         id: 'ctl:cusers.update{type=2,action=add}',
         category: 'admin-action',
         disposition: 'carry',
+        codeRequired: true,
         routeKey: 'admin:cusers.update{type=2,action=add}',
       },
-      { id: 'tbl:tusers', category: 'table', disposition: 'carry', table: 'tusers', units: ['people.person'] },
+      {
+        id: 'tbl:tusers',
+        category: 'table',
+        disposition: 'carry',
+        codeRequired: true,
+        table: 'tusers',
+        units: ['people.person'],
+      },
+    ]);
+  });
+
+  it('selects the owned legacy-served controller and action communications does not carry, with no code path', () => {
+    expect(carriedOrOwnedItems('communications', INVENTORY, OWNERSHIP)).toEqual([
+      { id: 'ctl:cemail', category: 'admin-controller', disposition: null, codeRequired: false },
+      {
+        id: 'ctl:cemail.list',
+        category: 'admin-action',
+        disposition: 'legacy-served',
+        codeRequired: false,
+        routeKey: 'admin:cemail.list',
+      },
     ]);
   });
 
   it.each([
     ['identity', 'api:content.findone'],
     ['identity', 'ctl:clogin.login'],
+    ['identity', 'ctl:cusers'],
     ['people', 'ctl:cusers.update{type=2,action=delete}'],
-    ['communications', 'ctl:cemail.list'],
     ['programs-sites', 'job:sitemonitor.cache-purge'],
-  ])('excludes from %s the item %s, which it does not carry', (service, id) => {
+  ])('excludes from %s the item %s, which it neither carries nor owns', (service, id) => {
     expect(ids(carriedOrOwnedItems(service, INVENTORY, OWNERSHIP))).not.toContain(id);
+  });
+
+  it('excludes an item whose owner is only a decision-list proposal', () => {
+    expect(ids(carriedOrOwnedItems('communications', CEMAIL_PROPOSED, OWNERSHIP))).toEqual(['ctl:cemail']);
   });
 
   it('selects an admin action once its variant is carried by the service', () => {
     expect(ids(carriedOrOwnedItems('identity', LOGIN_CARRIED, OWNERSHIP))).toEqual(IDENTITY_LOGIN_ITEMS);
   });
 
-  it('selects carried entries from every inventory list in list order', () => {
-    const entry = (id: string): Record<string, string> => ({ id, owningService: 'identity', disposition: 'carry' });
+  it('selects carried and owned entries from every inventory list in list order', () => {
+    const entry = (id: string, disposition = 'carry'): Record<string, string> => ({
+      id,
+      owningService: 'identity',
+      ownerBasis: 'aap-0.3.2',
+      disposition,
+    });
+    const proposed = { ...entry('svc:proposed', 'decision'), ownerBasis: 'decision-list-proposal' };
+    const carriedProposal = { ...entry('svc:carried-proposal'), ownerBasis: 'decision-list-proposal' };
     const inventory = inventorySchema.parse({
-      entities: [entry('ent:a')],
-      services: [entry('svc:a')],
-      controllers: [{ actions: [{ ...entry('ctl:a'), variants: [entry('ctl:a{v=1}'), entry('ctl:a')] }] }],
-      frontEnd: [entry('fe:a')],
-      scheduledJobs: [{ ...entry('job:a'), steps: [entry('job:a.step')] }],
-      routes: [entry('api:a')],
+      entities: [entry('ent:a', 'legacy-served')],
+      services: [entry('svc:a'), proposed, carriedProposal],
+      controllers: [
+        {
+          id: 'ctl:c',
+          owningService: 'identity',
+          ownerBasis: 'aap-0.3.2',
+          actions: [{ ...entry('ctl:c.a'), variants: [entry('ctl:c.a{v=1}', 'decision'), entry('ctl:c.a')] }],
+        },
+      ],
+      frontEnd: [entry('fe:a', 'legacy-served')],
+      scheduledJobs: [{ ...entry('job:a'), steps: [entry('job:a.step', 'legacy-served')] }],
+      routes: [entry('api:a', 'retired')],
       tables: [{ ...entry('tbl:t'), table: 't' }],
     });
 
@@ -405,8 +468,10 @@ describe('carriedOrOwnedItems', () => {
     ).toEqual([
       ['ent:a', 'entity'],
       ['svc:a', 'service'],
-      ['ctl:a', 'admin-action'],
-      ['ctl:a{v=1}', 'admin-action'],
+      ['svc:carried-proposal', 'service'],
+      ['ctl:c', 'admin-controller'],
+      ['ctl:c.a', 'admin-action'],
+      ['ctl:c.a{v=1}', 'admin-action'],
       ['fe:a', 'front-end'],
       ['job:a', 'job'],
       ['job:a.step', 'job'],
@@ -426,8 +491,15 @@ describe('carriedOrOwnedItems', () => {
     });
 
     expect(carriedOrOwnedItems('identity', inventorySchema.parse({}), ownership)).toEqual([
-      { id: 'tbl:tnew', category: 'table', disposition: null, table: 'tnew', units: ['identity.new'] },
-      { id: 'tbl:tusers', category: 'table', disposition: null, table: 'tusers', units: ['people.person'] },
+      { id: 'tbl:tnew', category: 'table', disposition: null, codeRequired: true, table: 'tnew', units: ['identity.new'] },
+      {
+        id: 'tbl:tusers',
+        category: 'table',
+        disposition: null,
+        codeRequired: true,
+        table: 'tusers',
+        units: ['people.person'],
+      },
     ]);
   });
 });
@@ -448,7 +520,14 @@ describe('coverageKeys', () => {
   it.each<[string, ReviewItem, string[]]>([
     [
       'a table by its id, name and owned units',
-      { id: 'tbl:tusers', category: 'table', disposition: 'carry', table: 'tusers', units: ['identity.user_account'] },
+      {
+        id: 'tbl:tusers',
+        category: 'table',
+        disposition: 'carry',
+        codeRequired: true,
+        table: 'tusers',
+        units: ['identity.user_account'],
+      },
       ['tbl:tusers', 'tusers', 'identity.user_account'],
     ],
     [
@@ -457,6 +536,7 @@ describe('coverageKeys', () => {
         id: 'tbl:Program_1.timesheet',
         category: 'table',
         disposition: 'carry',
+        codeRequired: true,
         table: 'Program_1.timesheet',
         units: ['timesheets.timesheet'],
       },
@@ -468,6 +548,7 @@ describe('coverageKeys', () => {
         id: 'api:Content.findOne',
         category: 'route',
         disposition: 'carry',
+        codeRequired: true,
         routeKey: 'API:content.findone',
         baseRouteKey: 'api:content',
       },
@@ -485,12 +566,12 @@ describe('checkService', () => {
     await expect(checkService('identity', deps(root))).resolves.toEqual({
       service: 'identity',
       readme: { path: 'services/identity/README.md', present: true, sha: SHA },
-      traceability: { path: 'services/identity/TRACEABILITY.md', present: true, sha: SHA, rows: 5 },
+      traceability: { path: 'services/identity/TRACEABILITY.md', present: true, sha: SHA, rows: 6 },
       contracts: {
         openapi: { path: 'services/identity/contracts/openapi.yaml', present: true, sha: SHA },
         events: [{ path: `services/identity/${EVENT_FILE}`, present: true, sha: SHA }],
       },
-      inventoryItems: { carriedOrOwned: 3, covered: 3, missing: [] },
+      inventoryItems: { carriedOrOwned: 4, covered: 4, missing: [] },
       result: 'pass',
     });
   });
@@ -504,9 +585,14 @@ describe('checkService', () => {
       { path: 'services/identity/TRACEABILITY.md', present: false, sha: null, rows: null },
     ]);
     expect(report.inventoryItems).toEqual({
-      carriedOrOwned: 3,
+      carriedOrOwned: 4,
       covered: 0,
-      missing: [LOGIN_MISSING, { id: 'tbl:tusersmemb', reason: 'no-row' }, { id: 'tbl:tusers', reason: 'no-row' }],
+      missing: [
+        { id: 'ctl:clogin', reason: 'no-row' },
+        LOGIN_MISSING,
+        { id: 'tbl:tusersmemb', reason: 'no-row' },
+        { id: 'tbl:tusers', reason: 'no-row' },
+      ],
     });
     expect(report.result).toBe('fail');
   });
@@ -537,9 +623,60 @@ describe('checkService', () => {
 
     const report = await checkService('identity', deps(root));
 
-    expect(report.inventoryItems).toEqual({ carriedOrOwned: 3, covered: 2, missing: [LOGIN_MISSING] });
+    expect(report.inventoryItems).toEqual({ carriedOrOwned: 4, covered: 3, missing: [LOGIN_MISSING] });
     expect(failingFiles(report)).toEqual([]);
     expect(report.result).toBe('fail');
+  });
+
+  describe('owned items that stay on legacy', () => {
+    const CONTROLLER_ROW =
+      '| `ctl:cemail` | `admin/core/controllers/cemail.cfc:76-143` | legacy-served (circuit) | — | GS-CM-01 |';
+    const ACTION_ROW =
+      '| `ctl:cemail.list`, `admin:cemail.list` | `admin/core/controllers/cemail.cfc:84-90` | legacy-served | — |' +
+      ' GS-CM-01 |';
+
+    it('passes communications when its owned legacy-served rows cite a source and a test but no code', async () => {
+      await buildService(root, 'communications', {
+        traceability: traceabilityFor('communications', [CONTROLLER_ROW, ACTION_ROW]),
+      });
+
+      const report = await checkService('communications', deps(root, INVENTORY));
+
+      expect(report.inventoryItems).toEqual({ carriedOrOwned: 2, covered: 2, missing: [] });
+      expect(report.result).toBe('pass');
+    });
+
+    it.each<[string, string, MissingItem]>([
+      ['the controller', ACTION_ROW, { id: 'ctl:cemail', reason: 'no-row' }],
+      [
+        'the legacy-served action',
+        CONTROLLER_ROW,
+        { id: 'ctl:cemail.list', routeKey: 'admin:cemail.list', reason: 'no-row' },
+      ],
+    ])('fails communications once the row of %s is removed', async (_name, kept, missing) => {
+      await buildService(root, 'communications', { traceability: traceabilityFor('communications', [kept]) });
+
+      const report = await checkService('communications', deps(root, INVENTORY));
+
+      expect(report.inventoryItems).toEqual({ carriedOrOwned: 2, covered: 1, missing: [missing] });
+      expect(report.result).toBe('fail');
+    });
+
+    it.each<[string, Inventory, MissingItem[]]>([
+      ['carries none of its actions', INVENTORY, []],
+      [
+        'carries its login action',
+        LOGIN_CARRIED,
+        [{ id: 'ctl:clogin', reason: 'incomplete-row', line: 7, lacks: ['code-path'] }],
+      ],
+    ])('requires a code path on the ctl:clogin row only when identity %s', async (_name, inventory, missing) => {
+      const row = '| `ctl:clogin` | `admin/core/controllers/clogin.cfc:76-120` | circuit | — | GS-ID-01 |';
+      await buildService(root, 'identity', { traceability: traceabilityFor('identity', [row]) });
+
+      const report = await checkService('identity', deps(root, inventory));
+
+      expect(report.inventoryItems.missing.filter((item) => item.id === 'ctl:clogin')).toEqual(missing);
+    });
   });
 
   it.each<[string, Omit<ServiceOverrides, 'traceability'>, FileRecord]>([
@@ -660,9 +797,10 @@ describe('checkService', () => {
         null,
       ],
     ])('judges tbl:tusersmemb with %s', async (_name, rows, expected) => {
-      const tusersRow = coverRow('identity', 'tbl:tusers');
-      await buildService(root, 'identity', { traceability: `${TRACEABILITY}${[...rows, tusersRow].join('\n')}\n` });
-      await touch(root, [CODE, TEST, ...rowRefs('identity', 'tbl:tusers')]);
+      const others = ['tbl:tusers', 'ctl:clogin'];
+      const traceability = `${TRACEABILITY}${[...rows, ...others.map((id) => coverRow('identity', id))].join('\n')}\n`;
+      await buildService(root, 'identity', { traceability });
+      await touch(root, [CODE, TEST, ...others.flatMap((id) => rowRefs('identity', id))]);
 
       const report = await checkService('identity', deps(root, INVENTORY));
 
@@ -731,8 +869,8 @@ describe('buildReport and markdownLines', () => {
       '',
       MD_HEADER,
       MD_SEPARATOR,
-      '| identity | ok | ok | ok | 1/1 ok | 5 | 3 | 3 | 0 | pass |',
-      '| people | ok | absent | ok | 1/1 ok | — | 3 | 0 | 3 | fail |',
+      '| identity | ok | ok | ok | 1/1 ok | 6 | 4 | 4 | 0 | pass |',
+      '| people | ok | absent | ok | 1/1 ok | — | 4 | 0 | 4 | fail |',
       '',
       `Pass: ${PASS_CONDITION}.`,
       '',
@@ -740,6 +878,7 @@ describe('buildReport and markdownLines', () => {
       '',
       '### people',
       '',
+      '- `ctl:cusers`: no-row',
       '- `ctl:cusers.listusers` (`admin:cusers.listusers`): no-row',
       '- `ctl:cusers.update{type=2,action=add}` (`admin:cusers.update{type=2,action=add}`): no-row',
       '- `tbl:tusers`: no-row',
@@ -800,7 +939,7 @@ describe('buildReport and markdownLines', () => {
 
     const lines = markdownLines(await buildReport(['identity'], deps(root), clock));
 
-    expect(lines).toContain('| identity | ok | ok | ok | none | 5 | 3 | 3 | 0 | pass |');
+    expect(lines).toContain('| identity | ok | ok | ok | none | 6 | 4 | 4 | 0 | pass |');
     expect(lines.slice(-3)).toEqual(['## Missing items', '', 'None.']);
   });
 });

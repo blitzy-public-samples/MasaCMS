@@ -1,6 +1,5 @@
 /** Offline suite of identity's user tokens: claims from the login-time snapshot and the site registry, JWKS verification, the gateway-only mint route and Identity Platform issuance. */
 import { rm } from 'node:fs/promises';
-import { createLocalJWKSet, decodeJwt, decodeProtectedHeader, type JSONWebKeySet } from 'jose';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   AuthDenial,
@@ -8,9 +7,13 @@ import {
   LOCAL_USER_TOKEN,
   Roles,
   cloudUserTokenSettings,
+  createLocalJWKSet,
   createUserTokenVerifier,
+  decodeJwt,
+  decodeProtectedHeader,
   moduleRole,
   userClaimsSchema,
+  type JSONWebKeySet,
   type UserClaims,
 } from '@opt2/platform/auth';
 import { SYSTEM_TENANT_ID, tenantIdForSite, withTenant, type QueryResultRow } from '@opt2/platform/tenancy';
@@ -29,6 +32,7 @@ import {
   type FakeIdentityPlatform,
   type TestApp,
 } from '../helpers/app.js';
+import { TEST_WEB_API_KEY } from '../helpers/firebase.js';
 import { createMemoryIdentityRepo, createRecordingDb, type IdentitySeed, type MemoryIdentityRepo, type RecordingDb } from '../helpers/memory-repo.js';
 import {
   ADMIN_S2,
@@ -425,6 +429,7 @@ describe('Identity Platform issuance', () => {
         OPT2_TASKS_ADAPTER: 'cloud',
         OPT2_STORAGE_ADAPTER: 'cloud',
         GOOGLE_CLOUD_PROJECT: PROJECT,
+        OPT2_IDENTITY_PLATFORM_API_KEY: TEST_WEB_API_KEY,
         OPT2_TOKEN_ISSUER: issuer,
         OPT2_TOKEN_AUDIENCE: audience,
       },

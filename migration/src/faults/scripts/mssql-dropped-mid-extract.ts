@@ -60,7 +60,7 @@ async function closeEach(pools: readonly ConnectionPool[]): Promise<PoolClosure>
 
 /** Legacy port over its own pools whose snapshot pools drop their connection once `afterRows` rows have streamed from them in total. */
 function createDroppingLegacyDb(env: FaultEnv, afterRows: number): DroppingLegacyDb {
-  const base = createLegacyDb(env.ctx.env);
+  const base = createLegacyDb(env.ctx.env, { logger: env.ctx.logger });
   const stats: DropStats = { rowsSeen: 0, dropped: false };
   const wrappers = new WeakMap<ConnectionPool, ConnectionPool>();
   // The base port caches one connect per database name, so this holds each pool it opened for this port.

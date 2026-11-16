@@ -10,6 +10,7 @@ import {
   UpStateMissingError,
   main,
   mergeUpState,
+  processStartTime,
   readUpState,
   redactUpState,
   upProcessSchema,
@@ -145,6 +146,36 @@ function thrown(call: () => unknown): Error & { code?: string } {
 async function modeOf(target: string): Promise<number> {
   return (await fs.stat(target)).mode & 0o777;
 }
+
+describe('processStartTime', () => {
+  const PID = 77;
+
+  /** Writes `<stateDir>/proc/77/stat` with `text`; returns the fake proc root. */
+  async function fakeProc(text?: string): Promise<string> {
+    const procRoot = path.join(stateDir, 'proc');
+    await fs.mkdir(path.join(procRoot, String(PID)), { recursive: true });
+    if (text !== undefined) await fs.writeFile(path.join(procRoot, String(PID), 'stat'), text);
+    return procRoot;
+  }
+
+  it.each<[string, string | undefined, string | undefined]>([
+    // Fields 3 to 21, then 22; comm holds spaces and parentheses, as a real one may.
+    ['field 22, counted after the last ")"', `${PID} (node (x) y) S ${Array<string>(18).fill('0').join(' ')} 98765 0 0\n`, '98765'],
+    ['undefined for a pid without a stat entry', undefined, undefined],
+  ])('reads %s', async (_label, text, expected) => {
+    expect(processStartTime(PID, await fakeProc(text))).toBe(expected);
+  });
+
+  it('throws naming the file when the stat entry records no start time', async () => {
+    const procRoot = await fakeProc(`${PID} (node) S 1\n`);
+    expect(() => processStartTime(PID, procRoot)).toThrow(`${path.join(procRoot, String(PID), 'stat')} records no start time`);
+  });
+
+  it.runIf(process.platform === 'linux')('reads a live process under /proc by default', async () => {
+    const text = await fs.readFile(`/proc/${process.pid}/stat`, 'utf8');
+    expect(processStartTime(process.pid)).toBe(text.slice(text.lastIndexOf(')') + 1).trim().split(/\s+/)[19]);
+  });
+});
 
 describe('upStatePath', () => {
   it('is up.json in OPT2_STATE_DIR', () => {
@@ -390,6 +421,11 @@ describe('schemas shared with the fault process control', () => {
     expect(upProcessSchema.parse(entry)).toEqual(entry);
   });
 
+  it('upProcessSchema accepts a start time of decimal digits', () => {
+    const entry = { ...PEOPLE, startTime: '98765' };
+    expect(upProcessSchema.parse(entry)).toEqual(entry);
+  });
+
   it.each<[string, Record<string, unknown>]>([
     ['no pid', { cwd: '/x/gateway', command: 'node' }],
     ['no cwd', { pid: 4101, command: 'node' }],
@@ -400,6 +436,9 @@ describe('schemas shared with the fault process control', () => {
     ['an empty argv', { pid: 4101, cwd: '/x/gateway', command: [] }],
     ['a port above 65535', { pid: 4101, port: 65_536, cwd: '/x/gateway', command: 'node' }],
     ['a non-string env value', { pid: 4101, cwd: '/x/gateway', command: 'node', env: { PORT: 8100 } }],
+    ['a start time that is not digits', { pid: 4101, cwd: '/x/gateway', command: 'node', startTime: '12a' }],
+    ['an empty start time', { pid: 4101, cwd: '/x/gateway', command: 'node', startTime: '' }],
+    ['a numeric start time', { pid: 4101, cwd: '/x/gateway', command: 'node', startTime: 12 }],
   ])('upProcessSchema rejects an entry with %s', (_label, entry) => {
     expect(upProcessSchema.safeParse(entry).success).toBe(false);
   });
@@ -507,6 +546,11 @@ describe('redactUpState', () => {
       },
     ],
     ['processes alone', { processes: { people: structuredClone(PEOPLE) } }, { processes: { people: { pid: 4112, port: 8112, cwd: '/x/services/people' } } }],
+    [
+      'a process with its start time',
+      { processes: { people: { ...structuredClone(PEOPLE), startTime: '98765' } } },
+      { processes: { people: { pid: 4112, port: 8112, cwd: '/x/services/people', startTime: '98765' } } },
+    ],
     ['null fixtures and a null snapshot', { processes: {}, fixtures: null, snapshot: null }, { processes: {}, fixtures: null }],
     [
       'a null fixture reason and an array snapshot',

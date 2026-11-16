@@ -214,7 +214,7 @@ const V1_BULK_TARGET: ProbeRequest = {
 const MIGRATION_POSITION: ProbeRequest = { method: 'GET', url: '/internal/v1/migration/position' };
 const LAUNCH_TASK: ProbeRequest = {
   method: 'POST',
-  url: LAUNCH_TASK_PATH.replace(':surveyId', SURVEY_ID),
+  url: LAUNCH_TASK_PATH,
   payload: {
     queue: 'surveys-launch',
     name: LAUNCH_TASK_NAME,
@@ -310,7 +310,7 @@ const EXPECTED: Readonly<Record<string, Expectation>> = {
   'POST /internal/v1/task-queues/:queue/ensure': queueControl('ensure'),
   'POST /internal/v1/task-queues/:queue/pause': queueControl('pause'),
   'POST /internal/v1/task-queues/:queue/resume': queueControl('resume'),
-  'POST /internal/v1/tasks/surveys/:surveyId/launch': taskRoute(LAUNCH_TASK),
+  'POST /internal/v1/tasks/surveys/launch': taskRoute(LAUNCH_TASK),
   'GET /legacy-fixtures/cfml/api.cfm/surveys/surveys': fixtureManagerRoute(FIXTURE_LIST),
   'POST /legacy-fixtures/cfml/api.cfm/surveys/surveys': fixtureManagerRoute({
     method: 'POST',

@@ -7,7 +7,7 @@ import { z, type FastifyInstance } from '@opt2/platform/service-kit';
 import type { MigrationContext } from '../context.js';
 import type { components, operations, paths } from '../generated/openapi.js';
 import { OwnerCallError, UnknownUnitError, type DataOwner, type Unit, type UnitCatalog } from '../owners/index.js';
-import { holdersOf, leasesOf, type LeaseRow } from '../windows/index.js';
+import { leasesOfUnits, type LeaseRow } from '../windows/index.js';
 
 type GatesResponse = components['schemas']['GatesResponse'];
 type GatesEntry = GatesResponse['units'][number];
@@ -41,21 +41,47 @@ const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({
 // UnitList as the contract declares it: comma-separated `<schema>.<table>` ids.
 const UNIT_LIST = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*(,[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)*$/;
 
-const querySchema = z.object({ units: z.string().regex(UNIT_LIST).optional() }) satisfies z.ZodType<GatesQuery>;
+// PageLimit as the contract declares it: a decimal page size from 1 to 500.
+const PAGE_LIMIT_MAX = 500;
+
+const querySchema = z.object({
+  units: z.string().regex(UNIT_LIST).optional(),
+  limit: z.string().regex(/^[0-9]+$/).transform(Number).pipe(z.int().min(1).max(PAGE_LIMIT_MAX)).optional(),
+  cursor: z.string().optional(),
+}) satisfies z.ZodType<GatesQuery>;
 
 // Unavailable as the gateway's fail-closed rule reads it: refused or timed out, or a 502, 503 or 504 answer.
 const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 
-/** The units the query names, distinct and in query order, or every catalog unit; anything else is the legacy 400. */
-function requestedUnits(query: unknown, catalog: GatesRouteDeps['catalog']): readonly Unit[] {
-  const parsed = querySchema.safeParse(query);
-  if (!parsed.success) throw new LegacyApiError('invalidParameters');
-  if (parsed.data.units === undefined) return catalog.units();
+/** One page of the selected units, with the cursor of the next page when units of the selection remain after it. */
+interface UnitPage {
+  units: readonly Unit[];
+  nextCursor?: string;
+}
+
+/** The units `ids` names, distinct and in query order; an unknown unit is the legacy 400. */
+function namedUnits(ids: string, catalog: GatesRouteDeps['catalog']): readonly Unit[] {
   try {
-    return [...new Set(parsed.data.units.split(','))].map((id) => catalog.unit(id));
+    return [...new Set(ids.split(','))].map((id) => catalog.unit(id));
   } catch (error) {
     throw error instanceof UnknownUnitError ? new LegacyApiError('invalidParameters') : error;
   }
+}
+
+/**
+ * The page the query asks for: the units it names, or every catalog unit, from after `cursor` and at most `limit` long.
+ * An invalid query, or a cursor that names no unit of the selection, is the legacy 400.
+ */
+function requestedPage(query: unknown, catalog: GatesRouteDeps['catalog']): UnitPage {
+  const parsed = querySchema.safeParse(query);
+  if (!parsed.success) throw new LegacyApiError('invalidParameters');
+  const { units, limit, cursor } = parsed.data;
+  const selection = units === undefined ? catalog.units() : namedUnits(units, catalog);
+  const start = cursor === undefined ? 0 : selection.findIndex((unit) => unit.id === cursor) + 1;
+  if (cursor !== undefined && start === 0) throw new LegacyApiError('invalidParameters');
+  const page = selection.slice(start, limit === undefined ? selection.length : start + limit);
+  const last = page.at(-1);
+  return start + page.length < selection.length && last !== undefined ? { units: page, nextCursor: last.id } : { units: page };
 }
 
 function isUnavailable(error: unknown): boolean {
@@ -87,28 +113,25 @@ function entryOf(unit: Unit, lease: LeaseRow | undefined, gate: UnitGate | undef
   };
 }
 
-/** Binds `leases` to the lease table through `holdersOf` and `leasesOf`, and `ownerGates` to the owners client's gate status read. */
+/** Binds `leases` to the lease table through the single read `leasesOfUnits`, and `ownerGates` to the owners client's gate status read. */
 export function gateReadsOf(ctx: Pick<MigrationContext, 'db' | 'owners'>): Pick<GatesRouteDeps, 'leases' | 'ownerGates'> {
   return {
-    async leases(units) {
-      const requested = new Set(units);
-      const holders = new Set((await holdersOf(ctx, units)).values());
-      const held = await Promise.all([...holders].map((holderId) => leasesOf(ctx, holderId)));
-      return held.flat().filter((lease) => requested.has(lease.unit));
-    },
+    leases: (units) => leasesOfUnits(ctx, units),
     async ownerGates(owner, units) {
       return (await ctx.owners.gate(owner, { op: 'status', units: [...units] })).units;
     },
   };
 }
 
-/** Registers `gatesList`, which reads leases and owner gates only after the unit filter is valid. */
+/** Registers `gatesList`, which reads leases and owner gates only for the units of the requested page, once the query is valid. */
 export function registerGatesRoutes(app: FastifyInstance, deps: GatesRouteDeps): void {
   app.get<{ Querystring: unknown; Reply: GatesResponse }>(GATES_PATH, { config: { opt2: ROUTE_AUTH } }, async (request) => {
-    const units = requestedUnits(request.query, deps.catalog);
-    const ids = units.map((unit) => unit.id);
-    const [leases, gates] = await Promise.all([deps.leases(ids), gatesByUnit(units, deps.ownerGates)]);
+    const page = requestedPage(request.query, deps.catalog);
+    if (page.units.length === 0) return { units: [] };
+    const ids = page.units.map((unit) => unit.id);
+    const [leases, gates] = await Promise.all([deps.leases(ids), gatesByUnit(page.units, deps.ownerGates)]);
     const leaseByUnit = new Map(leases.map((lease) => [lease.unit, lease]));
-    return { units: units.map((unit) => entryOf(unit, leaseByUnit.get(unit.id), gates.get(unit.id))) };
+    const units = page.units.map((unit) => entryOf(unit, leaseByUnit.get(unit.id), gates.get(unit.id)));
+    return page.nextCursor === undefined ? { units } : { units, nextCursor: page.nextCursor };
   });
 }

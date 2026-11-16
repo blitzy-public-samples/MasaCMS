@@ -170,7 +170,7 @@ const CASES: readonly PlanCase[] = [
           sourceType: 'survey',
           sourceId: '00000012-AAAA-BBBB-CCCCDDDDEEEEFFFF',
           scheduleTime: CUTOFF,
-          targetRoute: '/internal/v1/surveys/S12/launch',
+          targetRoute: '/internal/v1/tasks/surveys/launch',
           scheduleVersion: 2,
         },
       ]),
@@ -227,7 +227,7 @@ describe.skipIf(!available)('communications query plans against PostgreSQL', () 
       `INSERT INTO ${qualified(tx.schema, 'scheduled_task')} (tenant_id, scheduled_task_id, task_name, queue, queue_task_name, kind, source_type,` +
         ' source_id, reminder_n, schedule_time, status, target_route, schedule_version, origin, enqueued_at, dequeued_at, created_at, updated_at)' +
         ` SELECT $1::uuid, ${id('n')}, 'opt2-survey-S' || n || '-launch', 'surveys-launch', 'opt2-survey-S' || n || '-launch-v1', 'survey-launch',` +
-        ` 'survey', ${id('n')}, NULL, ${created}, CASE WHEN n % 7 = 0 THEN 'done' ELSE 'scheduled' END, '/internal/v1/surveys/S' || n || '/launch', 1,` +
+        ` 'survey', ${id('n')}, NULL, ${created}, CASE WHEN n % 7 = 0 THEN 'done' ELSE 'scheduled' END, '/internal/v1/tasks/surveys/launch', 1,` +
         ` CASE WHEN n % 12 = 0 THEN 'adopted' ELSE 'event' END, CASE WHEN n % 20 = 0 THEN NULL ELSE ${created} END, NULL, ${created}, ${created}` +
         ' FROM generate_series(1, $2::integer) AS n',
       [tx.tenantId, ROWS_PER_TENANT, T0],

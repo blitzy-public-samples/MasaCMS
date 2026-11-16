@@ -291,7 +291,15 @@ describe('frozen entries at the edge', () => {
 
   it.each([
     { label: 'admin legacy-write', route: PERM_UPDATE, request: permUpdatePost, expected: adminUnavailableResponse() },
-    { label: 'fixture target write', route: ARCHIVE, request: archivePost, expected: apiUnavailableResponse() },
+    {
+      label: 'fixture target write',
+      route: ARCHIVE,
+      request: archivePost,
+      expected: {
+        ...apiUnavailableResponse(),
+        body: '{"apiversion":"v1","method":"people.persons.archive","error":{"code":"server_error","message":"Unhandled Exception"}}',
+      },
+    },
   ])('holds a frozen $label for FREEZE_WAIT_MS, then answers the legacy 503 without reaching either side', async ({ route, request, expected }) => {
     const test = gateway as TestGateway;
     await fake.freeze([route], 'op');

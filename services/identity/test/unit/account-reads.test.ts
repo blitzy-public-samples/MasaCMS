@@ -24,6 +24,7 @@ const RELEASE_AFTER_MS = 400;
 const PASSWORD_CREATED = new Date(2026, 5, 1, 9, 15, 0);
 const LAST_LOGIN = new Date(2026, 5, 30, 9, 15, 0, 120);
 const MINUTE_MS = 60_000;
+const WHOLE_LIST = { offset: 0, limit: 1000 };
 
 /** `CLOCK`'s now less `minutes`. */
 function minutesAgo(minutes: number): Date {
@@ -214,6 +215,7 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
     type Read = (r: IdentityRepository, tx: TenantTx) => Promise<unknown>;
     const readAccounts: Read = (r, tx) => r.readAccountRecords(tx, [ACTIVE]);
     const readGroups: Read = (r, tx) => r.listPoolGroups(tx, 'tenant-a', 0);
+    const readGroupPage: Read = (r, tx) => r.pagePoolGroups(tx, 'tenant-a', 0, WHOLE_LIST);
     const readMemberships: Read = (r, tx) => r.readMembershipRecords(tx, [ACTIVE]);
 
     it.each([
@@ -221,6 +223,7 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
       [CREDENTIAL.unit, readAccounts],
       [LOGIN_STATE.unit, readAccounts],
       [GROUP_ACCOUNT.unit, readGroups],
+      [GROUP_ACCOUNT.unit, readGroupPage],
       [MEMBERSHIP.unit, readMemberships],
     ])('blocks the read while a window executes on %s', async (unit, read) => {
       await setPhase(unit, 'executing');
@@ -310,14 +313,28 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
       expect(Date.now() - started).toBeGreaterThanOrEqual(RELEASE_AFTER_MS);
     });
 
-    it('lists the private pool\'s system groups and the public pool\'s member groups', async () => {
-      const groups = async (site: string, isPublic: 0 | 1): Promise<Array<string | null>> =>
-        (await reads().listSiteGroups(handle.app, claimsFor(site), isPublic)).map((group) => group.GroupName);
+    it.each([
+      ['tenant-a', 0 as const, ['Zeta', null, 'Alpha', 'beta', 'Gamma']],
+      ['tenant-a', 1 as const, ['Alumni', 'Members']],
+      ['umbrella', 0 as const, ['Umbrella Staff']],
+      ['tenant-b', 0 as const, []],
+    ])("lists %s's pool groups of visibility %i whole on listSiteGroups and as one page with their total on listSiteGroupsV2", async (site, isPublic, names) => {
+      const whole = await reads().listSiteGroups(handle.app, claimsFor(site), isPublic);
+      const { items, total } = await reads().listSiteGroupsV2(handle.app, claimsFor(site), isPublic, WHOLE_LIST);
 
-      expect(await groups('tenant-a', 0)).toEqual(['Zeta', null, 'Alpha', 'beta', 'Gamma']);
-      expect(await groups('tenant-a', 1)).toEqual(['Alumni', 'Members']);
-      expect(await groups('umbrella', 0)).toEqual(['Umbrella Staff']);
-      expect(await groups('tenant-b', 0)).toEqual([]);
+      expect(whole.map((group) => group.GroupName)).toEqual(names);
+      expect([items, total]).toEqual([whole, names.length]);
+    });
+
+    it.each([
+      [{ offset: 0, limit: 2 }, ['Zeta', null]],
+      [{ offset: 2, limit: 2 }, ['Alpha', 'beta']],
+      [{ offset: 4, limit: 2 }, ['Gamma']],
+      [{ offset: 5, limit: 1 }, []],
+    ])('lists the window %o of the pool groups in pool order with the pool total on listSiteGroupsV2', async (page, names) => {
+      const { items, total } = await reads().listSiteGroupsV2(handle.app, claimsFor('tenant-a'), 0, page);
+
+      expect([items.map((group) => group.GroupName), total]).toEqual([names, 5]);
     });
 
     it.each([
@@ -327,6 +344,7 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
       ['an unregistered site', 'unregistered', 1 as const],
     ])('lists no groups for %s', async (_label, site, isPublic) => {
       expect(await reads().listSiteGroups(handle.app, claimsFor(site), isPublic)).toEqual([]);
+      expect(await reads().listSiteGroupsV2(handle.app, claimsFor(site), isPublic, WHOLE_LIST)).toEqual({ items: [], total: 0 });
     });
 
     describe('loadLoginBlock', () => {
@@ -447,6 +465,7 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
       ['getAccount', USER_ACCOUNT.unit, (claims: UserClaims) => reads().getAccount(handle.app, claims, ACTIVE)],
       ['lookupAccounts', CREDENTIAL.unit, (claims: UserClaims) => reads().lookupAccounts(handle.app, claims, [ACTIVE])],
       ['listSiteGroups', GROUP_ACCOUNT.unit, (claims: UserClaims) => reads().listSiteGroups(handle.app, claims, 0)],
+      ['listSiteGroupsV2', GROUP_ACCOUNT.unit, (claims: UserClaims) => reads().listSiteGroupsV2(handle.app, claims, 0, WHOLE_LIST)],
       ['lookupAccountsAllSites', LOGIN_STATE.unit, () => reads().lookupAccountsAllSites(handle.app, [ACTIVE])],
       ['lookupMemberships', MEMBERSHIP.unit, () => reads().lookupMemberships(handle.app, [ACTIVE])],
       ['loadLoginBlock', USER_STRIKE.unit, (claims: UserClaims) => reads().loadLoginBlock(handle.app, claims, ACTIVE, { removeBlock: false })],

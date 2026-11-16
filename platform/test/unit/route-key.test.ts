@@ -471,7 +471,7 @@ describe('JSON API entity operations', () => {
     [{ entityRemoteFunctions: { user: ['sendLogin'] } }, `${API}/user/sendLogin`, 'api:user.~sendlogin'],
     [{ entityRemoteFunctions: { user: ['sendLogin'] } }, `${API}/user/?id=sendLogin`, 'api:user.~sendlogin'],
     [{ variationsEnabled: true }, `${API}/variationTargetings`, 'api:variationtargeting.findall'],
-    [{}, `${API}/variationTargetings`, 'api:variationtargetings.findall'],
+    [{}, `${API}/variationTargetings`, 'api:variationtargeting.findall'],
     [{ knownEntities: ['widget'] }, `${API}/widgets`, 'api:widget.findall'],
     [
       { knownEntities: ['widget'], entityPrimaryKeys: { widget: 'widgetId' } },

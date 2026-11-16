@@ -219,7 +219,7 @@ function callTrail(before: number): string[] {
   return t.client.requests.slice(before).map((call) => `${call.service} ${call.path} with ${call.userToken === null ? 'no user token' : String(call.userToken)}`);
 }
 
-const runUrl = (jobId: string): string => RUN_QUEUE.targetPath.replace('{exportId}', jobId);
+const RUN_URL = RUN_QUEUE.targetPath;
 
 beforeAll(async () => {
   t = await buildTestApp();
@@ -231,7 +231,7 @@ beforeAll(async () => {
     queue: RUN_QUEUE.name,
     name: `${RUN_QUEUE.name}-${queued.job_id}`,
     scheduleTime: queued.created,
-    url: `http://127.0.0.1:8116${runUrl(queued.job_id)}`,
+    url: `http://127.0.0.1:8116${RUN_URL}`,
     deadlineS: RUN_QUEUE.deadlineS,
     tenantId: queued.tenant_id,
   });
@@ -365,7 +365,7 @@ const cases: Record<string, () => Promise<CaseResult>> = {
   runExportTask: async () => {
     const job = await seedJob(t, definition, 'queued');
     const wire = await queueRun(t, job);
-    return call(await tasksHeaders(), 'POST', runUrl(job.job_id), { payload: { ...wire } });
+    return call(await tasksHeaders(), 'POST', RUN_URL, { payload: { ...wire } });
   },
   pauseTaskQueue: async () => call(await operatorHeaders(), 'POST', `${QUEUE_CONTROL_PREFIX}/${RUN_QUEUE.name}/pause`),
   resumeTaskQueue: async () => call(await operatorHeaders(), 'POST', `${QUEUE_CONTROL_PREFIX}/${RUN_QUEUE.name}/resume`),
@@ -594,13 +594,13 @@ describe('export run task', () => {
     const task = t.tasks.live.get(`${RUN_QUEUE.name}/${RUN_QUEUE.name}-${jobId}`);
     if (task === undefined) throw new Error(`the create queued no run task for ${jobId}`);
     const wire = await form(taskWireBody(task));
-    const { operation } = findOperation(OPENAPI, 'POST', runUrl(jobId));
+    const { operation } = findOperation(OPENAPI, 'POST', RUN_URL);
     const requestBody = resolve(operation.requestBody);
     assertMatchesSchema(resolve((requestBody.content as Json)['application/json']).schema, wire, 'run-task-body');
-    expect(new URL(task.url).pathname).toBe(runUrl(jobId));
+    expect(new URL(task.url).pathname).toBe(RUN_URL);
 
     const before = t.client.requests.length;
-    const res = await send(await tasksHeaders(), 'POST', runUrl(jobId), { payload: wire as unknown as Record<string, unknown> });
+    const res = await send(await tasksHeaders(), 'POST', RUN_URL, { payload: wire as unknown as Record<string, unknown> });
     expect({ status: res.statusCode, body: res.json<unknown>() }).toEqual({ status: 200, body: { jobId, state: 'done' } });
     expect(callTrail(before)).toEqual(['timesheets /internal/v1/timesheets/sheet-status with no user token']);
     expect(res.headers['x-opt2-write-position']).toMatch(/^reporting=\d+$/);
@@ -611,7 +611,7 @@ describe('export run task', () => {
   it('answers a done job with its unchanged state, reading nothing', async () => {
     const wire = await queueRun(t, done);
     const before = t.client.requests.length;
-    const res = await send(await tasksHeaders(), 'POST', runUrl(done.job_id), { payload: { ...wire } });
+    const res = await send(await tasksHeaders(), 'POST', RUN_URL, { payload: { ...wire } });
     expect({ body: res.json<unknown>(), calls: callTrail(before) }).toEqual({ body: { jobId: done.job_id, state: 'done' }, calls: [] });
   });
 
@@ -620,7 +620,7 @@ describe('export run task', () => {
     const wire = await queueRun(t, job);
     t.client.answer('finance', '/internal/v1/finance/records', () => ({ status: 503, headers: {}, body: undefined }));
     const before = t.client.requests.length;
-    const res = await send(await tasksHeaders(), 'POST', runUrl(job.job_id), { payload: { ...wire } });
+    const res = await send(await tasksHeaders(), 'POST', RUN_URL, { payload: { ...wire } });
     expect({ body: res.json<unknown>(), calls: callTrail(before) }).toEqual({
       body: { jobId: job.job_id, state: 'failed' },
       calls: ['finance /internal/v1/finance/records with no user token'],
@@ -631,13 +631,13 @@ describe('export run task', () => {
     ['a malformed body', () => Promise.resolve({ queue: RUN_QUEUE.name })],
     ['another tenant', async () => ({ ...(await queueRun(t, done)), tenantId: '13ab03ed-8b4b-5174-b787-d32a11dd8793' })],
   ])('answers a task with %s in the legacy error envelope', async (_label, payload) => {
-    expect((await send(await tasksHeaders(), 'POST', runUrl(done.job_id), { payload: await payload() })).statusCode).toBe(400);
+    expect((await send(await tasksHeaders(), 'POST', RUN_URL, { payload: await payload() })).statusCode).toBe(400);
   });
 
   it('refuses a run presented with a user token instead of the tasks credential, leaving the job queued', async () => {
     const job = await seedJob(t, definition, 'queued');
     const wire = await queueRun(t, job);
-    const res = await send('reporting.exporter', 'POST', runUrl(job.job_id), { payload: { ...wire } });
+    const res = await send('reporting.exporter', 'POST', RUN_URL, { payload: { ...wire } });
     expect([401, 403]).toContain(res.statusCode);
     const stored = await send('reporting.exporter', 'GET', `${V1_EXPORTS}/${job.job_id}?${ON_SITE_A}`);
     expect(stored.json<{ data: { state: string } }>().data.state).toBe('queued');

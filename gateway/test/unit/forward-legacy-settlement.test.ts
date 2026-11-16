@@ -466,7 +466,9 @@ describe('forwardToLegacy when legacy answers a status Fastify rejects', () => {
     expect(outcome).toMatchObject({ status: 503, complete: true });
     expect(onSettled.mock.calls).toEqual([['completed']]);
     expect(onBuffered).not.toHaveBeenCalled();
-    expect(gateway.logs().filter((record) => record.level >= ERROR_LEVEL)).toEqual([]);
+    expect(gateway.logs().filter((record) => record.level >= ERROR_LEVEL).map((record) => record.msg)).toEqual([
+      'fail-closed: legacy unavailable',
+    ]);
   });
 });
 

@@ -26,14 +26,15 @@ COPY services/e-signature/contracts/openapi.yaml /repo/services/e-signature/cont
 COPY core/mura/resourceBundle/resources/ /repo/core/mura/resourceBundle/resources/
 COPY core/modules/v1/core_assets/resource_bundles/ /repo/core/modules/v1/core_assets/resource_bundles/
 COPY resource_bundles/ /repo/resource_bundles/
-COPY web/tsconfig.json web/next.config.ts ./
+COPY web/tsconfig.json web/next.config.ts web/instrumentation.ts web/server.ts ./
 COPY web/app/ ./app/
 COPY web/src/ ./src/
 RUN npm run build \
  && npm prune --omit=dev --ignore-scripts \
  && npm prune --omit=dev --ignore-scripts --prefix ../platform
 
-# Runtime stage: the `next build` output and production dependencies only; bundles and client types are compiled into .next.
+# Runtime stage: the `next build` output, the custom server and production dependencies only; bundles and client types
+# are compiled into .next.
 FROM node:22.23.4-bookworm-slim
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=8080
 COPY --from=build --chown=node:node /repo/platform/package.json /repo/platform/
@@ -44,7 +45,10 @@ COPY --from=build --chown=node:node /repo/platform/node_modules/ /repo/platform/
 COPY --from=build --chown=node:node /repo/web/package.json /repo/web/next.config.ts /repo/web/
 COPY --from=build --chown=node:node /repo/web/.next/ /repo/web/.next/
 COPY --from=build --chown=node:node /repo/web/node_modules/ /repo/web/node_modules/
+# `node server.ts` runs these natively (type stripping); they import only packages and each other.
+COPY --from=build --chown=node:node /repo/web/server.ts /repo/web/
+COPY --from=build --chown=node:node /repo/web/src/server/ /repo/web/src/server/
 WORKDIR /repo/web
 USER node
 EXPOSE 8080
-CMD ["node_modules/.bin/next", "start"]
+CMD ["node", "server.ts"]

@@ -11,7 +11,7 @@ Run from the repository root. The commands take no arguments, are configured thr
 | Command | Does | Exit |
 |---|---|---|
 | `harness/repro/up.sh` | Boots legacy and the target stack with seed data | 0 stack up; 1 failure; 2 usage error |
-| `harness/repro/test-all.sh` | Runs stages 0–9 against that stack and writes `opt2/reports/test-all.{json,md}`. The stack stays up | 0 every acceptance item met; 2 completed with acceptance items unmet, such as legacy fixtures unavailable, each listed in `opt2/reports/test-all.md`; 1 a stage failed or the run could not start |
+| `harness/repro/test-all.sh` | Runs stages 0–9 against that stack and writes `opt2/reports/test-all.{json,md}`. The stack stays up | 0 every acceptance item met; 2 completed with acceptance items unmet, such as legacy fixtures unavailable, each listed in `opt2/reports/test-all.md`; 1 a stage failed, the run was interrupted, or it could not start |
 | `harness/repro/down.sh` | Stops the stack and restores legacy | 0 stopped and restored, or nothing running; 1 failure; 2 usage error |
 | `harness/repro/clean-checkout-proof.sh` | Proves `up.sh` and `test-all.sh` from a fresh clone | 0 proof passed; 1 proof failed; 2 usage error |
 
@@ -53,9 +53,11 @@ A variable without a default is required by the commands under "Needed by"; the 
 
 Boots on the existing ACF 2023, SQL Server 2022 and Mailpit installation; it never reinstalls an engine, the database or CommandBox.
 
+The `MURA_*` and `TZ` entries of the captured legacy server's `server.json` `env` block override the inherited environment in `up.sh`, `test-all.sh` and `down.sh`, as CommandBox applies them to ColdFusion; the adopted names, never their values, are printed to stderr.
+
 | Step | Name | Does |
 |---|---|---|
-| 1 | Pin and local versions | Asserts Node 22.23.4 and npm 11.21.0; builds `platform` and installs the harness; confirms the pin (`check:pin -- --confirm`); records local tool versions (`baseline:environment -- --phase local`) |
+| 1 | Pin and local versions | Before any lock, state write or installation, confirms the pin with git and node alone: the pinned commit exists, its subject matches and no file tracked at it is changed or gone. Then asserts Node 22.23.4 and npm 11.21.0; builds `platform` and installs the harness; runs the full pin check (`check:pin -- --confirm`); records local tool versions (`baseline:environment -- --phase local`) |
 | 2 | Secrets | `repro:secrets` writes the local token-signing key pair, the storage, bridge and push keys and the database role passwords to `${OPT2_STATE_DIR}/secrets/` |
 | 3 | Build | `npm ci && npm run build` in `gateway`, `web`, `migration`, `harness`, `legacy-fixtures/seed` and every `services/*`; installs Playwright Chromium; checks `repro/ports.env` |
 | 4 | Target tooling | Starts PostgreSQL 16, the Pub/Sub emulator and the OpenTelemetry Collector (`repro/otelcol-config.yaml`), each only if not running |
@@ -63,7 +65,7 @@ Boots on the existing ACF 2023, SQL Server 2022 and Mailpit installation; it nev
 | 6 | Databases | `opt2-db bootstrap --target local` (schemas, roles, migrations); `opt2-migrate init-legacy` (schema `opt2_sync`); `opt2-migrate scheduler import` of the captured tasks |
 | 7 | Topology | `topology -- --target local`: topics, push subscriptions, dead-letter topics and local task queues |
 | 8 | Target processes | Starts every service, `web` and the migration service; runs `opt2-tasks reconcile` |
-| 9 | Legacy start | `repro/lib/legacy-start.sh --fresh`, with every scheduled task paused at boot; waits for `/` and the admin login form; confirms Mailpit; starts the gateway |
+| 9 | Legacy start | `repro/lib/legacy-start.sh --fresh`, with every scheduled task paused at boot. An `opt2-legacy` CommandBox registration left by another checkout is released once ColdFusion is stopped, before the start (registry entry only; its server files are kept). Waits for `/` and the admin login form; confirms Mailpit; starts the gateway |
 | 10 | Service versions | `baseline:environment -- --phase services`: ColdFusion, SQL Server, PostgreSQL and Mailpit versions, time zone, `ping = false`, cluster settings. A non-SQL Server legacy database is recorded as a baseline deviation, and the seed snapshot and backfill are skipped |
 | 11 | Activate `v0001` | `repro:cutover -- activate v0001`; then repoints the native site-monitor task, if one existed, at the gateway and resumes it |
 | 12 | Seed and backfill | Generates the fixed-seed dataset; `legacy-fixtures/load-fixtures.sh` (writes `fixtures.json`); loads the seed into legacy; takes the seed snapshot with its file manifest and backfills the target |
@@ -71,7 +73,7 @@ Boots on the existing ACF 2023, SQL Server 2022 and Mailpit installation; it nev
 
 ### `test-all.sh`
 
-Needs the stack `up.sh` recorded. A failing stage stops the later ones, except a `timing-variance` baseline and the skips when fixtures are unavailable. Stages 4–8 do not run when step 10 recorded a baseline deviation. Each stage is recorded in `${OPT2_STATE_DIR}/test-all/stage-<n>.json`, with its output in `stage-<n>.out`.
+Needs the stack `up.sh` recorded. A failing stage stops the later ones, except a `timing-variance` baseline and the skips when fixtures are unavailable. Stages 4–8 do not run when step 10 recorded a baseline deviation. Each stage is recorded in `${OPT2_STATE_DIR}/test-all/stage-<n>.json`, with its output in `stage-<n>.out`. An interrupted run (TERM, INT or HUP) stops its stage, records it failed with the later stages not-run, writes the report and exits 1. A run interrupted or failed between stage 4's `drain-and-suspend` and stage 5's `resume` leaves background work suspended, and `test-all.sh` then refuses to start on that stack until it is restarted (`down.sh`, then `up.sh`).
 
 | Stage | Runs |
 |---|---|
@@ -88,7 +90,7 @@ Needs the stack `up.sh` recorded. A failing stage stops the later ones, except a
 
 ### `down.sh` and `clean-checkout-proof.sh`
 
-- `down.sh` stops every target process recorded in `up.json`, the tooling `up.sh` started and ColdFusion. It restores the legacy database and file store from the pristine baseline and re-imports the original scheduled tasks. It removes the `/muraWRM` mapping, or restores one that existed before. It then restarts the original legacy server with its own settings and `ping` (`legacy-start.sh --original`) and releases the lock.
+- `down.sh` stops every target process recorded in `up.json`. While the tooling still runs, it drops the snapshot databases `${MURA_DATABASE}_opt2_snap_<n>` (`opt2-migrate snapshot drop`, or directly where migration holds no record) with their `snap-<n>.bak` backups, then every OPT-2 PostgreSQL schema with its three roles (`opt2-db teardown --target local`). A PostgreSQL that does not answer fails that drop when `tooling.json` records one for this stack, and is only reported when it records none. It then stops the tooling `up.sh` started and ColdFusion, restores the legacy database and file store from the pristine baseline and re-imports the original scheduled tasks. It removes the `/muraWRM` mapping, or restores one that existed before. It then restarts the original legacy server with its own settings and `ping` (`legacy-start.sh --original`), removes this checkout's `opt2-legacy` CommandBox registration (the registry entry only; the server files are kept) and releases the lock. Another checkout's `opt2-legacy` registration is left in place. A failed step keeps the lock, and a failed schema drop also keeps PostgreSQL's `tooling.json` entry and does not stop an `up.sh`-started PostgreSQL, so rerunning `down.sh` retries them.
 - `clean-checkout-proof.sh` runs `down.sh` in this checkout. It then makes a fresh `git clone --no-local` of the current commit into `${OPT2_CLONE_PARENT:-$HOME/.opt2}/opt2-clean-<timestamp>`, outside the working tree and never in a directory named `mura`. There it runs `up.sh` and `test-all.sh` with a fresh `OPT2_STATE_DIR` and the same `OPT2_PRISTINE_DIR`. It records the clone path, commit, both exit codes and the digest of the clone's `test-all.json` in `opt2/reports/reproducibility.md`, then runs the clone's `down.sh`. This checkout starts again only through an explicit `up.sh`.
 
 ### One stack at a time
@@ -100,7 +102,7 @@ Every command takes the lock `$HOME/.opt2/run.lock`, which records the holder pi
 | Directory | Default | Holds |
 |---|---|---|
 | `${OPT2_STATE_DIR}` | `$HOME/.opt2/state` | `secrets/`, `storage/`, `snapshots/`, `otel/traces.jsonl`, `seed/`, `up.json`, `fixtures.json`, and the run records under `baseline/`, `golden/`, `e2e/`, `security/`, `checkpoint/` and `test-all/` |
-| `${OPT2_PRISTINE_DIR}` | `$HOME/.opt2/pristine` | `pristine.bak`, `filestore.tar`, `pristine.json`, `native-tasks.json` (with its CFConfig form `native-tasks.cfconfig.json`) and `server-capture.json`. Taken once with ColdFusion stopped and never overwritten |
+| `${OPT2_PRISTINE_DIR}` | `$HOME/.opt2/pristine` | `pristine.bak`, `filestore.tar`, `pristine.json`, `native-tasks.json` (with its CFConfig form `native-tasks.cfconfig.json`) and `server-capture.json`. Taken once with ColdFusion stopped and never overwritten. `pristine.taking.json` lists the artefacts of a capture that has not finished; the next `up.sh` removes them and takes the baseline again |
 
 `test:e2e` refuses an `OPT2_STATE_DIR` inside the checkout.
 
@@ -141,6 +143,8 @@ cd harness
 npm ci              # installs, then builds ../platform through postinstall
 npm run build       # generates the gateway and migration client types, then type-checks (tsc, no emit)
 npm test            # test/** only, with coverage (>= 90% statements); needs no legacy oracle or running stack
+npm run test:contract   # the check-pin, check-synthetic, catalogue-response-paths and route-key-parity suites of test/
+npm run test:security   # test/security and the repro:secrets suite
 npm run test:e2e    # e2e/** only, serially; needs the stack up.sh started; called by test-all.sh
 ```
 
@@ -152,6 +156,8 @@ npm run test:e2e    # e2e/** only, serially; needs the stack up.sh started; call
 | `generate` (run by `prebuild`) | `openapi-typescript` over `gateway/contracts/openapi.yaml` and `migration/contracts/openapi.yaml` | `src/generated/clients/{gateway,migration}.ts` |
 | `build` | `tsc -p tsconfig.json` | — |
 | `test` | `vitest.config.ts` | `coverage/` |
+| `test:contract` | `vitest.config.ts`: `test/reporting/check-pin*`, `test/reporting/check-synthetic*`, `test/golden/catalogue-response-paths*`, `test/route-key-parity*` | — |
+| `test:security` | `vitest.config.ts`: `test/security/`, `test/repro/secrets*` | — |
 | `test:e2e` | `vitest.e2e.config.ts` | `${OPT2_STATE_DIR}/e2e/results.json`; suite reports such as `opt2/reports/platform-proof.json` and `opt2/reports/observability.json` |
 | `inventory` | `src/inventory/generate.ts` | `opt2/inventory/legacy-inventory.{json,md}` |
 | `inventory:cloc` | `src/inventory/cloc.ts` | `opt2/inventory/cloc.{json,md}` |
@@ -169,7 +175,7 @@ npm run test:e2e    # e2e/** only, serially; needs the stack up.sh started; call
 | `check:reviewability` | `src/reporting/check-reviewability.ts` | `opt2/reports/reviewability.{json,md}` |
 | `check:deck` | `src/reporting/check-deck.ts` | — (verifies `opt2/executive-summary/index.html`) |
 | `report:speed` | `src/reporting/speed.ts` | `opt2/reports/speed.{json,md}` |
-| `report:test-all` | `src/reporting/test-all.ts` | `${OPT2_STATE_DIR}/test-all/stage-<n>.json` (`record`); `opt2/reports/test-all.{json,md}` |
+| `report:test-all` | `src/reporting/test-all.ts` | `${OPT2_STATE_DIR}/test-all/stage-<n>.json` (`record`); `opt2/reports/test-all.{json,md}`; — (`check` validates `fixtures.json` and `OPT2_REPORTS_DIR` before stage 0) |
 | `report:isolation` | `src/isolation/report.ts` | `opt2/reports/isolation.json` |
 | `report:events` | `src/events/report.ts` | `opt2/reports/events.json` |
 | `security:scan` | `src/security/scan.ts` | `${OPT2_STATE_DIR}/security/{osv,gitleaks,summary}.json` |

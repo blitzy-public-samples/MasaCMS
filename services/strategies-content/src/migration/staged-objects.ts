@@ -1,11 +1,10 @@
 /** Durable recovery of content-files publications. */
 import { cfUuid, LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
+import type { WriteContext } from '@opt2/platform/migration-kit';
 import type { BucketName, ObjectHead } from '@opt2/platform/storage';
 import { registeredTenants, type TenantTx } from '@opt2/platform/tenancy';
 import {
   claimStagedObject,
-  deleteStagedObject,
-  insertStagedObject,
   listStaleStagedObjects,
   lockFileObjectKey,
   tryLockFileObjectKey,
@@ -41,10 +40,14 @@ export class StagedObjectsPendingError extends LegacyServiceUnavailableError {
   }
 }
 
-/** Commits the intent before publication starts. */
-export async function stageObject(deps: StoreObjectDeps, values: Omit<StagedObjectEntry, 'stage_id' | 'state'>): Promise<StagedObjectEntry> {
+/** Commits the intent before publication starts, logged under `ctx`. */
+export async function stageObject(
+  deps: StoreObjectDeps,
+  values: Omit<StagedObjectEntry, 'stage_id' | 'state'>,
+  ctx?: WriteContext,
+): Promise<StagedObjectEntry> {
   const entry: StagedObjectEntry = { ...values, stage_id: cfUuid(), state: 'staged' };
-  await deps.db.withTenant(entry.tenant_id, (tx) => insertStagedObject(tx, entry));
+  await deps.db.withTenant(entry.tenant_id, (tx) => deps.repository.files.insertStagedObject(tx, entry, ctx));
   return entry;
 }
 
@@ -55,9 +58,10 @@ function holds(head: ObjectHead | null, value: { sha256: string; size: number | 
 
 /**
  * Settles an intent under its key lock without writing manifest rows: deletes bytes no committed row names and restores a
- * replaced version from its backup. False leaves the intent when the bytes match neither the row nor a backup of it.
+ * replaced version from its backup, logging the intent's deletion under `ctx`. False leaves the intent when the bytes match
+ * neither the row nor a backup of it.
  */
-async function settleLocked(deps: StoreObjectDeps, tx: TenantTx, entry: StagedObjectEntry): Promise<boolean> {
+async function settleLocked(deps: StoreObjectDeps, tx: TenantTx, entry: StagedObjectEntry, ctx?: WriteContext): Promise<boolean> {
   const backupKey = stagedBackupKey(entry);
   if (entry.state === 'committed') {
     await deps.storage.delete(CONTENT_FILES_BUCKET, backupKey);
@@ -77,16 +81,16 @@ async function settleLocked(deps: StoreObjectDeps, tx: TenantTx, entry: StagedOb
     }
     if (backup !== null) await deps.storage.delete(CONTENT_FILES_BUCKET, backupKey);
   }
-  await deleteStagedObject(tx, entry.stage_id);
+  await deps.repository.files.deleteStagedObject(tx, entry.stage_id, ctx);
   return true;
 }
 
-/** Settles one publisher's intent under the key lock, as its stored state records it. */
-export async function settleStagedObject(deps: StoreObjectDeps, entry: StagedObjectEntry): Promise<void> {
+/** Settles one publisher's intent under the key lock, as its stored state records it, logged under `ctx`. */
+export async function settleStagedObject(deps: StoreObjectDeps, entry: StagedObjectEntry, ctx?: WriteContext): Promise<void> {
   await deps.db.withTenant(entry.tenant_id, async (tx) => {
     await lockFileObjectKey(tx, entry.object_key);
     const claimed = await claimStagedObject(tx, entry.stage_id);
-    if (claimed !== null) await settleLocked(deps, tx, claimed);
+    if (claimed !== null) await settleLocked(deps, tx, claimed, ctx);
   });
 }
 

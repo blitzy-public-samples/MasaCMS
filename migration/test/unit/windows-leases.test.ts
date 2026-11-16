@@ -1,8 +1,7 @@
-// Unit tests for unit leases: atomic sorted acquisition, retry within a budget, release and holder lookups.
+// Unit tests for unit leases: atomic sorted acquisition, retry within a budget, release, and holder and unit lookups.
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
-import type { MetadataTx, TenantDb } from '@opt2/platform/tenancy';
-import type { QueryResult, QueryResultRow } from 'pg';
+import type { MetadataTx, QueryResult, QueryResultRow, TenantDb } from '@opt2/platform/tenancy';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -11,6 +10,7 @@ import {
   acquireLeases,
   holdersOf,
   leasesOf,
+  leasesOfUnits,
   releaseLeases,
   type LeaseKind,
 } from '../../src/windows/leases.js';
@@ -127,6 +127,10 @@ class LeaseTable {
     }
     if (sql === `SELECT unit, holder_id, kind, acquired_at FROM ${table} WHERE holder_id = $1`) {
       return result(all.filter((row) => row.holder_id === values[0]));
+    }
+    if (sql === `SELECT unit, holder_id, kind, acquired_at FROM ${table} WHERE unit = ANY($1::text[])`) {
+      const units = values[0] as string[];
+      return result(all.filter((row) => units.includes(row.unit)));
     }
     if (sql === `SELECT unit, holder_id FROM ${table} WHERE unit = ANY($1::text[])`) {
       const units = values[0] as string[];
@@ -558,6 +562,23 @@ describe('leasesOf', () => {
       { unit: 'people.person', holderId: 'tr-1', kind: 'transition', acquiredAt: new Date(T0) },
     ]);
     expect(await leasesOf({ db: table.db() }, 'nobody')).toEqual([]);
+  });
+});
+
+describe('leasesOfUnits', () => {
+  it("lists every holder's leases of the requested units in one statement, sorted by unit, omitting the others", async () => {
+    const table = new LeaseTable();
+    table.seed('people.person', 'tr-1', 'transition', T0);
+    table.seed('identity.account', 'win-1', 'window', T0 - 1);
+    table.seed('content.file', 'win-2', 'window', T0);
+
+    const leases = await leasesOfUnits({ db: table.db() }, ['people.person', 'timesheets.blackout', 'identity.account']);
+
+    expect(leases).toEqual([
+      { unit: 'identity.account', holderId: 'win-1', kind: 'window', acquiredAt: new Date(T0 - 1) },
+      { unit: 'people.person', holderId: 'tr-1', kind: 'transition', acquiredAt: new Date(T0) },
+    ]);
+    expect(table.statements).toHaveLength(1);
   });
 });
 

@@ -1,4 +1,4 @@
-/** Content stats (contentStatsBean) and the read-only content rating queries (raterManager); rating writes stay on legacy. */
+/** Content stats (contentStatsBean) and content ratings (raterManager, rateBean): reads and the rater's save. */
 import type { WriteContext } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import type { AvgRatingRow, ContentRepository, TopRatedArgs, TopRatedRow } from '../repo/repository.js';
@@ -203,6 +203,58 @@ export async function readRate(
  */
 export function getAvgRating(tx: TenantTx, repository: ContentRepository, contentId: string, siteId: string): Promise<AvgRatingRow | null> {
   return repository.stats.avgRating(tx, { contentId, siteId });
+}
+
+const INT_MIN = -2147483648;
+const INT_MAX = 2147483647;
+// SQL Server's numeric literals hold at most 38 digits, leading zeros of the integer part not counted.
+const MAX_LITERAL_DIGITS = 38;
+
+/**
+ * The `int` SQL Server stores for a rate, which rateBean.save writes into its SQL as a literal [rateBean.cfc:76,87]:
+ * an exponent literal is a float and a decimal one a numeric, each truncated toward zero.
+ * @returns undefined where the `numeric` rate argument refuses the text or SQL Server fails the write (out of `int`
+ * range, or a decimal of more than 38 digits).
+ */
+export function storedRate(rate: string): number | undefined {
+  const text = cfTrim(rate);
+  const value = cfNumeric(text);
+  if (value === undefined) return undefined;
+  let stored = Math.trunc(value);
+  if (!/[eE]/u.test(text)) {
+    const [whole = '', fraction = ''] = text.replace(/^[+-]/u, '').split('.');
+    if (whole.replace(/^0+/u, '').length + fraction.length > MAX_LITERAL_DIGITS) return undefined;
+    // The integer part as written: a double can round a long fraction up to the next integer.
+    stored = Number(`${text.startsWith('-') ? '-' : ''}${whole === '' ? '0' : whole}`);
+  }
+  return stored >= INT_MIN && stored <= INT_MAX ? stored + 0 : undefined;
+}
+
+/**
+ * raterManager.saveRate [raterManager.cfc:114-151] in the caller's gated transaction, holding the item's stats lock until
+ * commit so that saves of the item serialise: rateBean saves the user's rating of the item with `entered` = `now`, then its
+ * stats take the average, vote count and up and down votes. `rate` is the stored integer ({@link storedRate}).
+ * @returns the item's getAvgRating row, which the rater answers.
+ */
+export async function saveRate(
+  tx: TenantTx,
+  repository: ContentRepository,
+  args: { contentId: string; siteId: string; userId: string; rate: number; now: Date },
+  ctx?: WriteContext,
+): Promise<AvgRatingRow | null> {
+  const key = { contentId: cfTrim(args.contentId), siteId: cfTrim(args.siteId) };
+  await repository.stats.lockItem(tx, key, ctx);
+  await repository.stats.saveRating(tx, { ...key, userId: cfTrim(args.userId), rate: args.rate, entered: args.now }, ctx);
+  // getAvgRating takes the arguments untrimmed, the stats bean through its trimming setters.
+  const avg = await getAvgRating(tx, repository, args.contentId, args.siteId);
+  const loaded = await loadStats(tx, repository, key.contentId, key.siteId);
+  const voted = setStatsValues(loaded, {
+    rating: avg?.theavg,
+    totalVotes: avg?.thecount,
+    downVotes: typeof avg?.downvotes === 'number' ? avg.downvotes : 0,
+  });
+  await saveStatsInTx(tx, repository, setStatsValues(voted, { upVotes: voted.totalVotes - voted.downVotes }), ctx);
+  return avg;
 }
 
 /**

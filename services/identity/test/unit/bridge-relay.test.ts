@@ -56,14 +56,15 @@ describe('createBridgeRelay', () => {
             { token: TOKEN_B, usedAt: '2026-01-02T23:59:01' },
           ],
         },
+        userToken: null,
       },
     ]);
   });
 
-  it('sets no user token and no Authorization header', async () => {
+  it("sends no user token, not even the consume request's, and no Authorization header", async () => {
     const { client, requests } = recordingClient(204);
     await createBridgeRelay(client).markUsed('S-1', ONE_TOKEN);
-    expect(requests[0]).not.toHaveProperty('userToken');
+    expect(requests[0]).toHaveProperty('userToken', null);
     expect(requests[0]?.headers?.authorization ?? requests[0]?.headers?.Authorization).toBeUndefined();
   });
 

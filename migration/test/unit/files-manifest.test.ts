@@ -5,8 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Logger } from '@opt2/platform/logging';
-import type { MetadataTx, TenantDb } from '@opt2/platform/tenancy';
-import type { QueryResult, QueryResultRow } from 'pg';
+import type { MetadataTx, QueryResult, QueryResultRow, TenantDb } from '@opt2/platform/tenancy';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {

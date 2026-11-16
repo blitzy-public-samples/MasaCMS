@@ -73,11 +73,12 @@ export function recordResponseHead<T>(slot: ResponseHeadSlot, forward: () => T):
 /**
  * reply-from options of every forward: reply-from's own agent defaults, the head recorder, and a response-head limit
  * that admits legacy echoing a request head of its limit (a redirect's `Location`); the agent is destroyed on close.
+ * reply-from's per-forward info lines are off, so each request logs only the service kit's request line.
  */
 export function replyFromOptions(): FastifyReplyFromOptions {
   const agent = new Agent({ pipelining: 1, connections: 128, maxHeaderSize: SERVICE_MAX_HEADER_SIZE });
   // reply-from types `undici` against its own undici copy, but calls only `request(options, callback)` and `destroy()` on it.
-  return { undici: agent.compose(recordHead) as FastifyReplyFromOptions['undici'], destroyAgent: true };
+  return { undici: agent.compose(recordHead) as FastifyReplyFromOptions['undici'], destroyAgent: true, disableRequestLogging: true };
 }
 
 /** Whether `current` holds exactly the values reply-from copied from `received`. */

@@ -47,12 +47,9 @@ export function exportRunTaskOptions(deps: ReportingDeps): TaskRouteOptions<Stor
     scope: 'tenant',
     db: deps.db,
     findStored: findStoredExportRun,
-    handler: async ({ request, tenantId, taskName, stored }: TaskContext<StoredExportRun>): Promise<ExportTaskResult> => {
-      // The URL and the payload name one job; a task naming two is refused like one naming another tenant's job.
-      const exportId = (request.params as { exportId?: string }).exportId;
-      if (stored === undefined || tenantId === null || exportId !== stored.payload.jobId) {
-        throw new TaskTenantMismatchError(tenantId, taskName);
-      }
+    handler: async ({ tenantId, taskName, stored }: TaskContext<StoredExportRun>): Promise<ExportTaskResult> => {
+      // A tenant-scope delivery always carries both; the check narrows their types.
+      if (stored === undefined || tenantId === null) throw new TaskTenantMismatchError(tenantId, taskName);
       const { jobId } = stored.payload;
       const { state } = await runExport(deps, { tenantId, jobId, payload: stored.payload });
       // A job gone before the runner claimed it is no longer visible under the tenant, and the contract's result needs a state.

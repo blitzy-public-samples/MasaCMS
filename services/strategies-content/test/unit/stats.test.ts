@@ -14,6 +14,7 @@ import {
   setCommentStat,
   setStatsValues,
   statsValues,
+  storedRate,
   type ContentStats,
 } from '../../src/domain/stats.js';
 import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
@@ -112,6 +113,45 @@ describe('setStatsValues', () => {
     expect(setStatsValues(base, { views: undefined, lockType: undefined })).toEqual(base);
     setStatsValues(base, { views: 1 });
     expect(base.views).toBe(7);
+  });
+});
+
+describe('storedRate', () => {
+  // Own oracle: the rate tcontentratings stored for each posted rate, or undefined where the save answered the error page.
+  it.each<[string, number | undefined]>([
+    ['4', 4],
+    [' 4 ', 4],
+    ['2.7', 2],
+    ['2.99999999999999999999', 2],
+    ['-3', -3],
+    ['+3', 3],
+    ['-0.5', 0],
+    ['.5', 0],
+    ['5.', 5],
+    ['00007', 7],
+    ['1e2', 100],
+    ['1E+1', 10],
+    ['4.5e0', 4],
+    ['1e-400', 0],
+    ['2147483647.9', 2147483647],
+    ['2147483647.9e0', 2147483647],
+    ['-2147483648.5', -2147483648],
+    [`${'0'.repeat(42)}1`, 1],
+    [`0.${'0'.repeat(37)}1`, 0],
+    [`0.${'0'.repeat(38)}1`, undefined],
+    [`1.${'0'.repeat(40)}`, undefined],
+    ['2147483648', undefined],
+    ['3000000000', undefined],
+    ['-2147483649', undefined],
+    ['1e10', undefined],
+    ['1e309', undefined],
+    ['abc', undefined],
+    ['', undefined],
+    ['1d', undefined],
+    ['0x10', undefined],
+    ['1,000', undefined],
+  ])('stores the rate %j as %j', (rate, expected) => {
+    expect(storedRate(rate)).toBe(expected);
   });
 });
 

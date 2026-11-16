@@ -8,6 +8,7 @@ import {
   cfIsBoolean,
   cfListToArray,
   cfNumberString,
+  cfParseDateTimeText,
   cfToBoolean,
   cfUuid,
   isCfUuid,
@@ -25,6 +26,7 @@ import {
   type CategoryOptions,
 } from '../../domain/categories.js';
 import type { Actor } from '../../domain/context.js';
+import { getSiteModulePerm } from '../../domain/permissions.js';
 import { feedPoolSites, type PoolSite } from '../../domain/pools.js';
 import { CONTENT_ENTITIES } from '../../legacy/jsonapi-entities.js';
 import {
@@ -125,6 +127,10 @@ const ASSIGNMENT_DEFAULTS: Readonly<Struct> = Object.freeze({
   path: '',
   saveerrors: false,
 });
+
+/** Instance values that hold a date, which categoryBean.init sets to `now()`. */
+const DATE_VALUES: ReadonlySet<string> = new Set(['datecreated', 'lastupdate']);
+const TS_TEXT = /^\{ts '[^']*'\}$/;
 
 /** A simple value as CFML renders it in string context; '' for null or undefined. */
 function cfText(value: unknown): string {
@@ -264,6 +270,12 @@ function categoryRowView(row: Readonly<Struct>, ctx: ContentRouteContext, call: 
   return categoryView(rowValues(selectedRow(row, call, CATEGORY_COLUMNS), ctx), call);
 }
 
+/** An instance value as the serializer's isDate reads it: init's `now()` text as a date. */
+function legacyValue(key: string, value: unknown): unknown {
+  if (typeof value === 'string' && DATE_VALUES.has(key.toLowerCase()) && TS_TEXT.test(value)) return cfParseDateTimeText(value);
+  return value;
+}
+
 /** A category bean as the serializers read it, with categoryBean.getEditUrl (categoryBean.cfc:254-258). */
 function categoryView(values: Readonly<Struct>, call: JsonApiCall): ApiEntityView {
   const value = (name: string): string => cfText(getNoCase(values, name));
@@ -271,7 +283,7 @@ function categoryView(values: Readonly<Struct>, call: JsonApiCall): ApiEntityVie
     entityName: CATEGORY.name,
     configName: CATEGORY.name,
     primaryKey: CATEGORY_BEAN_PK,
-    allValues: values,
+    allValues: Object.fromEntries(Object.entries(values).map(([key, item]) => [key, legacyValue(key, item)])),
     hasMany: CATEGORY.hasMany,
     hasOne: CATEGORY.hasOne,
     editUrl: adminUrl({
@@ -370,16 +382,20 @@ export const categoryHandler: EntityHandler = Object.freeze({
     return Promise.resolve(jsonApiResultOf(findPropertiesFor(CATEGORY, call), CATEGORY.name));
   },
 
-  /** findPermissions (2240-2266): the bean is loaded for a 35-character or UUID id; read is public. */
+  /**
+   * findPermissions (2240-2266): the bean is loaded for a 35-character or UUID id; read is public, and save and delete are the
+   * module permission on the bean's site, whose API getPermissions asks (bean.cfc:1499-1521).
+   */
   async findPermissions(ctx: ContentRouteContext, call: JsonApiCall): Promise<JsonApiResult> {
     const id = call.id ?? '';
     const loads = isCfUuid(id) || id.length === 35;
-    const bean = loads ? await readCategory(ctx.domain, readerOf(call), id, categoryOptions(call)) : undefined;
+    const actor = readerOf(call);
+    const bean = loads ? await readCategory(ctx.domain, actor, id, categoryOptions(call)) : undefined;
     const siteId = bean === undefined ? call.siteId : cfText(beanValues(bean, call)['siteid']);
     const data = permissionsOf({
       hasSiteId: siteId !== '',
       readAllowed: entityAccessAllowed(call.actor, CATEGORY),
-      actionAllowed: entityActionAllowed(call.actor, CATEGORY),
+      actionAllowed: siteId !== '' && (await getSiteModulePerm(ctx.domain, actor, CATEGORY.moduleId, siteId, 'category')),
     });
     return jsonApiResultOf(data, CATEGORY.name);
   },

@@ -340,27 +340,32 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
   });
 
   /**
-   * The intent ledger's insert, claim by `stage_id`, state change and delete, each visible only in its own tenant as forced RLS
-   * keeps it. Every intent settles within the request that staged it, so recovery's stale reads find none.
+   * The intent ledger's repository insert, update and delete by key and its claim by `stage_id`, each returning the rows
+   * PostgreSQL would and visible only in its own tenant as forced RLS keeps it. Every intent settles within the request that
+   * staged it, so recovery's stale reads find none.
    */
   function stagedObjectAnswer(sql: string, params: readonly unknown[], tenantId: string | null) {
     const verb = verbOf(sql);
     const keyOf = (stageId: unknown): string => `${String(tenantId)}/${String(stageId)}`;
+    const returning = / RETURNING \*$/i.test(sql);
     if (verb === 'INSERT') {
-      const rows = insertedRows(sql, params) ?? [];
-      // bigint reads back as text; recorded_at defaults to clock_timestamp().
-      for (const row of rows) stagedObjects.set(keyOf(row.stage_id), { ...row, size: String(row.size), recorded_at: new Date() });
-      return answer([], rows.length, verb);
+      // bigint reads back as text; recorded_at takes its column default.
+      const rows = (insertedRows(sql, params) ?? []).map((row): Row => ({ ...row, size: String(row.size), recorded_at: TEST_CLOCK.now() }));
+      for (const row of rows) stagedObjects.set(keyOf(row.stage_id), row);
+      return answer(returning ? rows.map((row) => ({ ...row })) : [], rows.length, verb);
     }
-    const key = / WHERE stage_id = \$1\b/i.test(sql) ? keyOf(params[0]) : undefined;
+    const stageParam = / WHERE (?:"tenant_id" = \$\d+ AND "stage_id"|stage_id) = \$(\d+)\b/i.exec(sql)?.[1];
+    const key = stageParam === undefined ? undefined : keyOf(params[Number(stageParam) - 1]);
     const row = key === undefined ? undefined : stagedObjects.get(key);
-    if (verb === 'SELECT') return answer(row === undefined ? [] : [{ ...row }]);
-    if (verb === 'UPDATE') {
-      const state = / SET state = '(\w+)'/i.exec(sql)?.[1];
-      if (row !== undefined && state !== undefined) row.state = state;
-      return answer([], row === undefined ? 0 : 1, verb);
+    const found = row === undefined ? [] : [row];
+    if (verb === 'SELECT') return answer(found.map((stored) => ({ ...stored })));
+    if (verb === 'UPDATE' && row !== undefined) {
+      for (const [, column = '', index] of (/ SET (.+) WHERE /i.exec(sql)?.[1] ?? '').matchAll(/"(\w+)" = \$(\d+)/g)) {
+        row[column] = params[Number(index) - 1];
+      }
     }
-    return answer([], key !== undefined && verb === 'DELETE' && stagedObjects.delete(key) ? 1 : 0, verb);
+    if (verb === 'DELETE' && key !== undefined) stagedObjects.delete(key);
+    return answer(returning ? found.map((stored) => ({ ...stored })) : [], found.length, verb);
   }
 
   /** The answer PostgreSQL would give an unscripted statement of the platform tables and the staged object ledger; no rows for any other read. */
@@ -701,7 +706,7 @@ export interface SessionUserNames {
 
 /**
  * Fake service client: records each call, then answers from handlers, else from identity's CSRF consume and current
- * session defaults; an unmatched call throws after it is recorded.
+ * session defaults and programs-sites' empty custom image size list; an unmatched call throws after it is recorded.
  */
 export interface ClientRecorder extends ServiceClient {
   readonly requests: ServiceRequest[];
@@ -790,6 +795,7 @@ export function createClientRecorder(handlers: ClientHandlers = {}): ClientRecor
       return { status: 200, headers: {}, body: { valid: recorder.csrfValid } };
     }),
     clientRoute(IDENTITY_SERVICE, 'GET', CURRENT_SESSION_PATH, () => ({ status: 200, headers: {}, body: { user: { ...recorder.sessionUser } } })),
+    clientRoute('programs-sites', 'GET', '/internal/v1/sites/{siteId}/image-sizes', () => ({ status: 200, headers: {}, body: [] })),
   ];
   return recorder;
 }

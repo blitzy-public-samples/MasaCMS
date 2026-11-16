@@ -1,8 +1,7 @@
 // Unit tests for the scheduler hand-off records in migration.scheduler_state: key ownership, schemas, locking and updates.
 import { createHash } from 'node:crypto';
 
-import type { MetadataTx, TenantDb } from '@opt2/platform/tenancy';
-import type { QueryResult, QueryResultRow } from 'pg';
+import type { MetadataTx, QueryResult, QueryResultRow, TenantDb } from '@opt2/platform/tenancy';
 import { describe, expect, it, vi } from 'vitest';
 
 import {

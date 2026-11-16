@@ -12,6 +12,8 @@
     "postinstall": "npm ci --prefix ../../platform && npm run build --prefix ../../platform",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run --coverage",
+    "test:contract": "vitest run test/contract",
+    "test:security": "vitest run test/security",
     "generate": "node dist/generate.js",
     "generate:direct": "node dist/generate.js --direct"
   },

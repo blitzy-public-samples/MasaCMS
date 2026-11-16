@@ -316,6 +316,26 @@ describe('registerMigrationHandlers registration', () => {
     );
   });
 
+  it('logs the successful requests of the polled /changes alone at debug', async () => {
+    const app = await freshApp();
+    const logConfigs: unknown[][] = [];
+    app.addHook('onRoute', (route) => {
+      if (route.url.startsWith(MIGRATION_PATH_PREFIX)) logConfigs.push([route.method, route.url, route.config?.opt2Log]);
+    });
+    registerMigrationHandlers(app, { ...BASE_OPTIONS, repository, db: idleDb });
+    expect(logConfigs).toEqual(
+      [
+        ['POST', 'apply'],
+        ['GET', 'export'],
+        ['GET', 'changes'],
+        ['GET', 'position'],
+        ['GET', 'watermark'],
+        ['POST', 'watermark'],
+        ['POST', 'gate'],
+      ].map(([method, name]) => [method, `${MIGRATION_PATH_PREFIX}/${name as string}`, name === 'changes' ? { successLevel: 'debug' } : undefined]),
+    );
+  });
+
   it.each([
     [
       'without registerWritePositionHeader',

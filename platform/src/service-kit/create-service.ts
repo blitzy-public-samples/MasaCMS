@@ -122,12 +122,30 @@ export interface Opt2RequestScope {
   site?: string;
 }
 
+/** What a handler records for its request's log lines with {@link recordLogScope}. */
+export interface RequestLogScope {
+  /** Fixed route identifier, such as a route key, logged in place of the route template; never raw request input. */
+  route?: string;
+  /** Tenant and user of an identity the handler established itself; a verified token's own win. */
+  tenantId?: string;
+  userId?: string;
+}
+
+/** Route `config.opt2Log`: how service-kit logs the route's requests. */
+export interface Opt2RouteLogConfig {
+  /** Level of the completion line of a response below 400, `debug` for a polling route; defaults to `info`. */
+  successLevel?: 'debug' | 'info';
+}
+
 declare module 'fastify' {
   interface FastifyInstance {
     opt2: Opt2Runtime;
   }
   interface FastifyRequest {
     opt2: Opt2RequestScope;
+  }
+  interface FastifyContextConfig {
+    opt2Log?: Opt2RouteLogConfig;
   }
 }
 
@@ -169,6 +187,7 @@ const PART_HEADERS = Symbol('opt2.service-kit.part-headers');
 const BODY_LIMIT = Symbol('opt2.service-kit.body-limit');
 const RESPONSE_CLOSED = Symbol('opt2.service-kit.response-closed');
 const REASON = Symbol('opt2.service-kit.reason');
+const LOG_SCOPE = Symbol('opt2.service-kit.log-scope');
 const DISCONNECT = Symbol('opt2.service-kit.disconnect');
 const CONTAINER = Symbol('opt2.service-kit.container');
 
@@ -188,6 +207,8 @@ interface KitRequestState {
   [RESPONSE_CLOSED]: boolean;
   /** Fixed identifier of why the request was denied or rejected, such as an AuthDenial reason; never request input. */
   [REASON]: string | null;
+  /** Route and identity the handler recorded for the request's log lines. */
+  [LOG_SCOPE]: RequestLogScope | null;
   /** Whether the response is the legacy servlet container's own, which carries none of Masa's headers. */
   [CONTAINER]: boolean;
   [EVENT_SCOPE]: EventLogScope | null;
@@ -522,14 +543,15 @@ export function isUnstorableTextError(err: unknown): err is { code: '22021' | '2
   return code === '22021' || (code === '22P05' && file === 'jsonfuncs.c');
 }
 
-/** Tenant, user and recorded event of a request, for its log lines; a verified tenant wins over the delivery's. */
+/** Tenant, user and recorded event of a request, for its log lines; verified values win over recorded ones, both over the delivery's tenant. */
 function scopeFields(request: FastifyRequest): Pick<LogFields, 'tenantId' | 'userId' | 'eventId'> {
-  const store = stateOf(request)[CONTEXT];
+  const { [CONTEXT]: store, [LOG_SCOPE]: recorded } = stateOf(request);
   const event = eventScopeOf(request);
   const fields: Pick<LogFields, 'tenantId' | 'userId' | 'eventId'> = {};
-  const tenantId = store?.tenantId ?? event?.tenantId;
+  const tenantId = store?.tenantId ?? recorded?.tenantId ?? event?.tenantId;
   if (tenantId !== undefined) fields.tenantId = tenantId;
-  if (store?.user?.sub !== undefined) fields.userId = store.user.sub;
+  const userId = store?.user?.sub ?? recorded?.userId;
+  if (userId !== undefined) fields.userId = userId;
   if (event?.eventId !== undefined) fields.eventId = event.eventId;
   return fields;
 }
@@ -565,6 +587,22 @@ export function recordOutcomeReason(request: FastifyRequest, reason: string): vo
   stateOf(request)[REASON] = reason;
 }
 
+/** Records `scope` for the request's log lines; a field `scope` leaves undefined or empty keeps its earlier recorded value. */
+export function recordLogScope(request: FastifyRequest, scope: RequestLogScope): void {
+  const state = stateOf(request);
+  const recorded = state[LOG_SCOPE];
+  state[LOG_SCOPE] = {
+    route: scope.route || recorded?.route,
+    tenantId: scope.tenantId || recorded?.tenantId,
+    userId: scope.userId || recorded?.userId,
+  };
+}
+
+/** Log `route` of a request: the recorded route, else the matched route template, else {@link UNMATCHED_ROUTE}. */
+function loggedRouteOf(request: FastifyRequest): string {
+  return stateOf(request)[LOG_SCOPE]?.route ?? request.routeOptions.url ?? UNMATCHED_ROUTE;
+}
+
 /** Message of the WARNING line a denied (401, 403) or rejected (400) request writes before its completion line. */
 const OUTCOME_BY_STATUS: ReadonlyMap<number, string> = new Map([
   [400, 'request rejected'],
@@ -572,7 +610,10 @@ const OUTCOME_BY_STATUS: ReadonlyMap<number, string> = new Map([
   [403, 'request denied'],
 ]);
 
-/** Writes a request's WARNING line when `statusCode` is a denial or rejection, then its completion line; `route` is the matched route template or {@link UNMATCHED_ROUTE}, never request input. */
+/**
+ * Writes a request's WARNING line when `statusCode` is a denial or rejection, then its completion line, at the route's
+ * `opt2Log.successLevel` below 400; `route` is from {@link loggedRouteOf} or {@link UNMATCHED_ROUTE}, never request input.
+ */
 function logCompletion(request: FastifyRequest, statusCode: number, route: string, latencyMs: number, reason: string | null): void {
   const outcome = OUTCOME_BY_STATUS.get(statusCode);
   if (outcome !== undefined) {
@@ -582,7 +623,8 @@ function logCompletion(request: FastifyRequest, statusCode: number, route: strin
       reason === null ? outcome : `${outcome}: ${reason}`,
     );
   }
-  request.log.info({ route, httpMethod: request.method, statusCode, latencyMs, ...scopeFields(request) }, 'request completed');
+  const level = statusCode < 400 ? (request.routeOptions.config.opt2Log?.successLevel ?? 'info') : 'info';
+  request.log[level]({ route, httpMethod: request.method, statusCode, latencyMs, ...scopeFields(request) }, 'request completed');
 }
 
 function serviceUrlsOf(env: BaseEnv): Record<string, string> {
@@ -687,6 +729,7 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   app.decorateRequest(BODY_LIMIT, null, []);
   app.decorateRequest(RESPONSE_CLOSED, false, []);
   app.decorateRequest(REASON, null, []);
+  app.decorateRequest(LOG_SCOPE, null, []);
   app.decorateRequest(CONTAINER, false, []);
   app.decorateRequest(EVENT_SCOPE, null, []);
 
@@ -899,7 +942,7 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     if (error instanceof RequestAbortedError) {
-      const route = request.routeOptions.url ?? UNMATCHED_ROUTE;
+      const route = loggedRouteOf(request);
       request.log.info({ route, httpMethod: request.method, latencyMs: Math.round(reply.elapsedTime), ...scopeFields(request) }, 'request abandoned');
       // 499 is the client-closed-request code; the socket is gone, so it never reaches the wire.
       return reply.code(499).send();
@@ -959,7 +1002,7 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   app.setNotFoundHandler((request, reply) => sendLegacyResponse(reply, notFoundResponse(request, surfaceOf(request))));
 
   app.addHook('onResponse', (request, reply, done) => {
-    const route = request.routeOptions.url ?? UNMATCHED_ROUTE;
+    const route = loggedRouteOf(request);
     logCompletion(request, reply.statusCode, route, Math.round(reply.elapsedTime), stateOf(request)[REASON]);
     done();
   });

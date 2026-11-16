@@ -75,6 +75,8 @@ State lives only in the `gateway` schema (`db/migrations/`), never in a file or 
 - A `target` entry whose owner refuses the connection, times out, or answers 502, 503 or 504 answers the legacy-shaped 503: the JSON API envelope with `error` for JSON, AJAX, REST and OAuth, fixture, site-monitor, stub and relay routes; the legacy error page for admin routes and for `/_api/feed` and `/_api/render`, whose legacy failures are not enveloped.
 - Nothing is retried against legacy, reads included.
 - A `legacy-write` entry whose window cannot open answers the same 503 before legacy executes anything.
+- A fixture route's envelope `method` is the one `api.cfm` reads from the path: `<module>.<resource>[.<action>][.<tail>]` lower-cased, a CF UUID tail left out, and `invalid` outside that grammar.
+- Each fail-closed 503 writes one `fail-closed: <cause>` line whose message names what failed and the owner where one is known, with the route key, `httpMethod`, `statusCode` 503 and the cause's `error`. It is ERROR for an unavailable owner or dependency and for a gateway fault, and WARNING for a freeze outlasting its wait, an unreadable body or a path the forwarder rejects.
 
 ## Sessions and CSRF
 
@@ -87,7 +89,7 @@ Identity owns all session state; the gateway owns only the cookie mapping and th
 - **CSRF.** Both sides share one secret per session. Claims on tokens sent to legacy go through identity (`POST /internal/v1/csrf/claims`, `…/claims:settle`): only tokens legacy actually consumed (`op=usedSince`) become used, the rest are released. Identity marks tokens consumed on the target side in the legacy session through `POST /internal/v1/legacy-sessions/{sid}:mark-used`.
 - **Adoption.** At cut-over, a request with legacy cookies mapped to no target session is adopted (`POST /internal/v1/sessions:adopt`); moving back to legacy-primary answers target cookies with the jar's legacy values.
 - **Invalidation.** Logout on either side ends both sessions (`op=end`, `POST /internal/v1/sessions/{sid}:end`). On a session epoch change, the legacy session is re-hydrated from the new snapshot.
-- **User tokens.** A site-scoped token per (session, site) from identity `POST /internal/v1/tokens`, cached until expiry or an epoch change, attached as `Authorization: Bearer` to target-bound requests. Inbound `X-Serverless-Authorization` and `X-Opt2-*` headers are always stripped, and `Authorization` once exchanged for a user token. Session state is re-checked with identity (`GET /internal/v1/sessions/{sid}/state`) at most once per second.
+- **User tokens.** A site-scoped token per (session, site) from identity `POST /internal/v1/tokens`, cached until an epoch change or until less than 25 s of its lifetime is left (twice the 10 s service-call timeout plus 5 s of clock skew), attached as `Authorization: Bearer` to target-bound requests. Inbound `X-Serverless-Authorization` and `X-Opt2-*` headers are always stripped, and `Authorization` once exchanged for a user token. Session state is re-checked with identity (`GET /internal/v1/sessions/{sid}/state`) at most once per second.
 
 ## Legacy bridge
 

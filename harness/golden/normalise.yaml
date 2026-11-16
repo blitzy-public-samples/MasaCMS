@@ -222,7 +222,7 @@ envelope:
   errorFields: [type, code, message]
   comparison: deep-equal-after-normalisation
   keyCase: exact
-  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, mailpit-id, timestamp]
+  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, mailpit-id, timestamp, chain-hash]
   stacktrace:
     id: error-stacktrace
     optIn: true
@@ -325,7 +325,7 @@ rows:
   order: key
   keyForm: normalised
   keyless: multiset-with-counts
-  apply: [cf-uuid, uuid-rfc4122, timestamp]
+  apply: [cf-uuid, uuid-rfc4122, timestamp, chain-hash]
   literal:
     money: "^-?\\d+\\.\\d{4}$"
     dateOnlyFields: true
@@ -345,6 +345,32 @@ files:
   compare: [variant, name, contentType, sha256, size]
   variants: [original, _source, _small, _medium]
   apply: [cf-uuid, uuid-rfc4122]
+
+chainHashes:
+  id: chain-hash
+  # Audit chain hashes cover the request id and `at`, so they differ per run; entry_hash is checked before it is masked.
+  fields: [prev_hash, entry_hash]
+  fieldMatch: case-insensitive
+  # Case-exact: legacy emits lowercase hex, so an upper-case hash stays a difference.
+  format: "^[0-9a-f]{64}$"
+  placeholder: "<hash:{n}>"
+  ordinal: scenario
+  ordinalKey: exact
+  # The genesis prev_hash: 32 zero bytes.
+  keepLiteral: ["0000000000000000000000000000000000000000000000000000000000000000"]
+  selfConsistency:
+    # The formula of legacy-fixtures/sql/esignature/200_usp_audit_append.sql over the record's own fields.
+    check: usp-audit-append
+    record:
+      requestId: request_id
+      seq: seq
+      action: action
+      actor: actor_user_id
+      detail: detail
+      at: at
+      previous: prev_hash
+      hash: entry_hash
+    mismatchPlaceholder: "<hash:mismatch>"
 
 knownIssues:
   - id: date-mask

@@ -117,7 +117,7 @@ describe.skipIf(!available)('surveys fixture routes', () => {
       taskName: `opt2-survey-${surveyId}-${launch ? 'launch' : `reminder-${n}`}`,
       kind: launch ? 'survey-launch' : 'survey-reminder',
       n,
-      targetRoute: `/internal/v1/tasks/surveys/${surveyId}/launch`,
+      targetRoute: launch ? '/internal/v1/tasks/surveys/launch' : '/internal/v1/tasks/reminders',
       scheduleTime: '2026-07-01T09:00:00.000',
       status: 'scheduled',
       scheduleVersion: 1,

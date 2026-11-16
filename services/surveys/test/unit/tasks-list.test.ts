@@ -24,7 +24,6 @@ const T0 = new Date(2026, 5, 30, 9, 0, 0);
 const USER_ID = '11111111-2222-3333-4444555566667777';
 const UNKNOWN_ID = '00000000-0000-0000-0000000000000000';
 const HASH = 'b'.repeat(64);
-const REMINDER_TASK_ID = 'AAAAAAAA-BBBB-CCCC-DDDDDDDDDDDDDDDD';
 
 /** A stubbed service client recording every call and answering each with `answer`. */
 function stubClient(answer: (req: ServiceRequest) => Promise<ServiceResponse>): { client: ServiceClient; calls: ServiceRequest[] } {
@@ -114,7 +113,7 @@ describe.skipIf(!available)('survey task lists against PostgreSQL', () => {
       taskName: `opt2-survey-${surveyId}-${launch ? 'launch' : `reminder-${n}`}`,
       kind: launch ? 'survey-launch' : 'survey-reminder',
       n,
-      targetRoute: launch ? `/internal/v1/tasks/surveys/${surveyId}/launch` : `/internal/v1/tasks/reminders/${REMINDER_TASK_ID}`,
+      targetRoute: launch ? '/internal/v1/tasks/surveys/launch' : '/internal/v1/tasks/reminders',
       scheduleTime: '2026-06-30T10:00:00.000',
       status: 'scheduled',
       scheduleVersion: 1,

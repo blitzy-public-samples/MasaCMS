@@ -52,7 +52,7 @@ function reminderRow(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRo
     reminder_n: 2,
     schedule_time: new Date(2026, 5, 30, 9, 15, 0),
     status: 'scheduled',
-    target_route: `/internal/v1/tasks/reminders/${TASK_ID}`,
+    target_route: '/internal/v1/tasks/reminders',
     schedule_version: 3,
     origin: 'event',
     enqueued_at: new Date(2026, 5, 29, 8, 0, 0),

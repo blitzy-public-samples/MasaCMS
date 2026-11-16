@@ -167,6 +167,14 @@ export async function leasesOf(ctx: LeaseContext, holderId: string): Promise<Lea
   return rows.map(toLeaseRow).sort(byUnit);
 }
 
+/** Every lease of `units`, whichever holder owns it, in one read sorted by unit; unleased units are absent. */
+export async function leasesOfUnits(ctx: LeaseContext, units: readonly string[]): Promise<LeaseRow[]> {
+  const { rows } = await ctx.db.withMetadata((tx) =>
+    tx.query<LeaseRecord>(`SELECT ${COLUMNS} FROM ${leaseTable(tx)} WHERE unit = ANY($1::text[])`, [units]),
+  );
+  return rows.map(toLeaseRow).sort(byUnit);
+}
+
 /** Holder id of each leased unit among `units`; unleased units are absent. */
 export async function holdersOf(ctx: LeaseContext, units: readonly string[]): Promise<Map<string, string>> {
   const { rows } = await ctx.db.withMetadata((tx) =>

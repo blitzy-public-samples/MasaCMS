@@ -1,8 +1,7 @@
 // Unit tests for the scheduler hand-off of Masa's siteMonitor task and the fixture survey tasks.
 import { encodeRow, type CanonicalColumn } from '@opt2/platform/migration-kit';
 import { SITEMONITOR_QUEUE } from '@opt2/platform/tasks';
-import type { MetadataTx, TenantDb } from '@opt2/platform/tenancy';
-import type { QueryResult, QueryResultRow } from 'pg';
+import type { MetadataTx, QueryResult, QueryResultRow, TenantDb } from '@opt2/platform/tenancy';
 import { describe, expect, it } from 'vitest';
 
 import type {

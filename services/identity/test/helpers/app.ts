@@ -3,8 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { decodeJwt } from 'jose';
-import { LOCAL_USER_TOKEN } from '@opt2/platform/auth';
+import { LOCAL_USER_TOKEN, decodeJwt } from '@opt2/platform/auth';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import {
   ServiceUnavailableError,

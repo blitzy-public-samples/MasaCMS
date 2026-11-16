@@ -3,6 +3,7 @@ import type { CompareKind, Scenario, Step } from '../catalogue.js';
 import { GoldenConfigError } from '../errors.js';
 import type { FileVariant, SideEffects } from '../side-effects.js';
 import type { RecordedResponse, StepRecord } from '../steps.js';
+import { normaliseChainHashes } from './chain-hashes.js';
 import {
   createSessionCookieTracker,
   normaliseAuth,
@@ -20,6 +21,7 @@ import { applyOverrides, ruleEnabled, type KnownIssueId, type NormaliseRules } f
 import { normaliseTasks, type NormalisedTask } from './tasks.js';
 import { isTokenKey, normaliseText, normaliseValue } from './values.js';
 
+export * from './chain-hashes.js';
 export * from './cookies.js';
 export * from './dom-model.js';
 export * from './exports.js';
@@ -250,10 +252,19 @@ function lastKey(at: RawPath): string | undefined {
   return typeof key === 'string' ? key : undefined;
 }
 
-// Element order comes from each element's provisional normalised form, so it never depends on raw ids.
+// Chain hashes are replaced on raw JSON, before the other rules, since their check reads the raw ids and `at`.
+function chainHashed(value: unknown, ids: IdOrdinals, rules: NormaliseRules): unknown {
+  if (!rules.envelope.apply.includes(rules.chainHashes.id)) return value;
+  return normaliseChainHashes(value, ids.chainHashes, rules.chainHashes);
+}
+
+// Element order comes from each element's provisional normalised form, so it never depends on raw ids or hashes.
 function sortProvisionally(items: unknown[], key: string | undefined, env: BodyEnv): unknown[] {
   return items
-    .map((item) => ({ item, order: JSON.stringify(normaliseValue(item, structuredClone(env.ids), env.rules, key)) }))
+    .map((item) => {
+      const ids = structuredClone(env.ids);
+      return { item, order: JSON.stringify(normaliseValue(chainHashed(item, ids, env.rules), ids, env.rules, key)) };
+    })
     .sort((a, b) => codeUnitOrder(a.order, b.order))
     .map(({ item }) => item);
 }
@@ -318,7 +329,7 @@ function jsonBody(parsed: unknown, env: BodyEnv): NormalisedBody {
   const ops: PruneOps = { drop: drop.map(parsePath), sort: applied.sortArrays.map(parsePath) };
   const raw = ops.drop.length === 0 && ops.sort.length === 0 ? parsed : prune(parsed, [], ops, env);
   const jsonEnv: JsonEnv = { ...env, literal: applied.literalPaths.map(parsePath), maskedPaths: {} };
-  const value = walkJson(raw, undefined, [], isEnvelope ? 'envelope' : 'body', jsonEnv);
+  const value = walkJson(chainHashed(raw, env.ids, rules), undefined, [], isEnvelope ? 'envelope' : 'body', jsonEnv);
   const { maskedPaths } = jsonEnv;
   return isEnvelope ? { envelope: value, maskedPaths } : { body: value, maskedPaths };
 }

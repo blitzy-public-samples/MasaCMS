@@ -1,16 +1,18 @@
 /** Site-scoped user tokens: the local RS256 signer and its JWKS, the Identity Platform adapter, and the token service. */
 import { applicationDefault, getApps, initializeApp, type App } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { SignJWT, exportJWK, type JWK } from 'jose';
 import {
   ANONYMOUS_PRINCIPAL_UID,
   LOCAL_USER_TOKEN,
   Roles,
+  SignJWT,
   cloudUserTokenSettings,
+  exportJWK,
   loadLocalSigningKeys,
   signLocalServiceToken,
   untilAborted,
   userClaimsSchema,
+  type JWK,
   type LocalSigningKeys,
   type UserClaims,
 } from '@opt2/platform/auth';
@@ -54,6 +56,8 @@ export interface IdentityPlatformAdapter {
 /** Options of {@link createFirebaseIdentityPlatformAdapter}; `app` defaults to the default Firebase app with application-default credentials. */
 export interface FirebaseIdentityPlatformOptions {
   projectId: string;
+  /** The project's Web API key, which `accounts:signInWithCustomToken` requires as its `key` query parameter. */
+  apiKey: string;
   /** Identity Platform tenant id of a user-pool site id. */
   tenantIdForPool: (poolSiteId: string) => string;
   fetchImpl?: typeof fetch;
@@ -183,10 +187,11 @@ function signInBody(text: string): SignInWithCustomTokenBody {
   }
 }
 
-/** Identity Platform adapter: `createCustomToken`, then `accounts:signInWithCustomToken` as the app's service account, within one timeout. */
+/** Identity Platform adapter: `createCustomToken`, then `accounts:signInWithCustomToken` as the app's service account with the project's Web API key, within one timeout. */
 export function createFirebaseIdentityPlatformAdapter(opts: FirebaseIdentityPlatformOptions): IdentityPlatformAdapter {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? SERVICE_CALL_TIMEOUT_MS;
+  const exchangeUrl = `${SIGN_IN_WITH_CUSTOM_TOKEN_URL}?key=${encodeURIComponent(opts.apiKey)}`;
   let app = opts.app;
   return {
     async mintIdToken(poolSiteId, uid, customClaims) {
@@ -207,7 +212,7 @@ export function createFirebaseIdentityPlatformAdapter(opts: FirebaseIdentityPlat
       let response: Response;
       let text: string;
       try {
-        response = await fetchImpl(SIGN_IN_WITH_CUSTOM_TOKEN_URL, {
+        response = await fetchImpl(exchangeUrl, {
           method: 'POST',
           headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
           body: JSON.stringify({ token: customToken, tenantId, returnSecureToken: true }),

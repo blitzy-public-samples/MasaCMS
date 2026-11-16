@@ -1,9 +1,17 @@
 /** Provider contract of identity: the composition root's routes, the JSON API route keys and every operation's responses, legacy error shapes included, against contracts/openapi.yaml. */
 import { readFileSync } from 'node:fs';
-import { jwtVerify, createLocalJWKSet, type JSONWebKeySet } from 'jose';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { INVOCATION_HEADER, Roles, collectRouteMatrix, transportForPath, type RouteMatrixEntry } from '@opt2/platform/auth';
+import {
+  INVOCATION_HEADER,
+  Roles,
+  collectRouteMatrix,
+  createLocalJWKSet,
+  jwtVerify,
+  transportForPath,
+  type JSONWebKeySet,
+  type RouteMatrixEntry,
+} from '@opt2/platform/auth';
 import { subscriptionName } from '@opt2/platform/events';
 import {
   CSRF_FIELD_EXPIRES,
@@ -1173,6 +1181,34 @@ const CASES: Record<string, Case[]> = {
       verify: (body) => expect(JSON.stringify(body)).toContain(ADMIN_GROUP),
     },
     { name: 'refuses a list without ispublic', method: 'GET', url: '/internal/v1/groups', headers: relay('people', 'editor'), status: 400 },
+  ],
+  listSiteGroupsV2: [
+    {
+      name: "lists tenant-a's private-pool groups in one page with their total",
+      method: 'GET',
+      url: '/internal/v2/groups?ispublic=0',
+      headers: relay('people', 'editor'),
+      status: 200,
+      verify: (body) => {
+        const { items, total, nextOffset } = body as { items: unknown[]; total: number; nextOffset: number | null };
+        expect(JSON.stringify(items)).toContain(ADMIN_GROUP);
+        expect([total, nextOffset]).toEqual([items.length, null]);
+      },
+    },
+    {
+      name: "pages tenant-a's private-pool groups one at a time",
+      method: 'GET',
+      url: '/internal/v2/groups?ispublic=0&limit=1',
+      headers: relay('people', 'editor'),
+      status: 200,
+      verify: (body) => {
+        const { items, total, nextOffset } = body as { items: unknown[]; total: number; nextOffset: number | null };
+        expect([items.length, nextOffset]).toEqual([1, 1]);
+        expect(total).toBeGreaterThan(1);
+      },
+    },
+    { name: 'refuses a list without ispublic', method: 'GET', url: '/internal/v2/groups', headers: relay('people', 'editor'), status: 400 },
+    { name: 'refuses a limit above 1000', method: 'GET', url: '/internal/v2/groups?ispublic=0&limit=1001', headers: relay('people', 'editor'), status: 400 },
   ],
 };
 

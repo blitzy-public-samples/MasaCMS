@@ -268,6 +268,8 @@ Commands, from `seed/`:
 | Command | Effect |
 |---|---|
 | `npm ci && npm run build && npm test` | Install (the `postinstall` builds `../../platform`), compile, run the tests with coverage |
+| `npm run test:contract` | `test/contract/`: the fixture table registry and direct mode's apply bodies against the fixture DDL |
+| `npm run test:security` | `test/security/`: credential generation and owner-only storage |
 | `npm run generate` | Writes `dataset.json`, its part files and `manifest.json` to `${OPT2_STATE_DIR}/seed/` (`--out` overrides), plus `credentials.json` there and in `${OPT2_STATE_DIR}/secrets/seed-credentials.json` |
 | `npm run generate:direct` | `--direct`: sends the `dataset.json` that `npm run generate` wrote (same `--out` default) to the owning services' `/internal/v1/migration/apply` through `OPT2_SERVICE_URLS`, signed as the `migration` workload with the local key pair. The owning services must be running |
 

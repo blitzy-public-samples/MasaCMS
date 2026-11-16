@@ -21,6 +21,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { CfTimestamp } from '../legacy/cfjson.js';
 import type { CommentFeedArgs, CommentFindRow, ContentRepository } from '../repo/repository.js';
 import type { CommentRow } from '../repo/tables.js';
 import {
@@ -116,6 +117,8 @@ interface CommentBean {
   name: string;
   email: string;
   entered: Date;
+  /** Whether `entered` came from a row's datetime cell, which legacy keeps as a java.sql.Timestamp rather than a CF date. */
+  enteredCell: boolean;
   subscribe: number;
   isApproved: number;
   isSpam: number;
@@ -165,6 +168,7 @@ function newBean(now: Date): CommentBean {
     name: '',
     email: '',
     entered: now,
+    enteredCell: false,
     subscribe: 0,
     isApproved: 0,
     isSpam: 0,
@@ -200,8 +204,8 @@ function beanDate(value: unknown): Date | undefined {
   return cfParseDateTimeText(value);
 }
 
-/** bean.setValue of one value: strings trimmed, the numeric setters taking numeric values only, setEntered dates only. */
-function setBeanValue(bean: CommentBean, key: string, value: unknown): void {
+/** bean.setValue of one value: strings trimmed, the numeric setters taking numeric values only, setEntered dates only; `cell` marks a row value. */
+function setBeanValue(bean: CommentBean, key: string, value: unknown, cell = false): void {
   const lowered = key.toLowerCase();
   const stringProperty = STRING_PROPERTIES.get(lowered);
   if (stringProperty !== undefined) {
@@ -216,14 +220,17 @@ function setBeanValue(bean: CommentBean, key: string, value: unknown): void {
   }
   if (lowered === 'entered') {
     const date = beanDate(value);
-    if (date !== undefined) bean.entered = date;
+    if (date !== undefined) {
+      bean.entered = date;
+      bean.enteredCell = cell;
+    }
   }
 }
 
 /** bean.set(rs) of a `getQuery` row: NULL cells arrive as '' and leave the numeric and date fields at their defaults. */
 function applyRow(bean: CommentBean, row: CommentFindRow, photo: CommenterPhoto | null): void {
   for (const [column, value] of Object.entries(row)) {
-    setBeanValue(bean, column, value);
+    setBeanValue(bean, column, value, true);
   }
   bean.isNew = 0;
   bean.photo = photo ?? { fileId: '', fileExt: '' };
@@ -1174,9 +1181,16 @@ export function saveComment(deps: DomainDeps, actor: Actor, input: SaveCommentIn
 
 // ---- commentsProxy data methods ----
 
+/** commentsProxy `get` values: an `entered` set from the row stays the cfquery timestamp, which Mura.json encodes by ToString. */
+export type CommentGetValues = Omit<CommentValues, 'entered'> & { entered: Date | CfTimestamp };
+
 /** commentsProxy `get` (88-95): `getAllValues()` of the comment `load()` finds, or of a new bean holding the requested id. */
-export function getCommentValues(deps: DomainDeps, tenantId: string, commentId: string, view: CommentValuesView): Promise<CommentValues> {
-  return withTenant(deps.db, tenantId, async (tx) => beanValues(await loadBean(tx, deps, commentId, view.commenterPhoto), view.scheme));
+export function getCommentValues(deps: DomainDeps, tenantId: string, commentId: string, view: CommentValuesView): Promise<CommentGetValues> {
+  return withTenant(deps.db, tenantId, async (tx) => {
+    const bean = await loadBean(tx, deps, commentId, view.commenterPhoto);
+    const values = beanValues(bean, view.scheme);
+    return bean.enteredCell ? { ...values, entered: new CfTimestamp(bean.entered) } : values;
+  });
 }
 
 // ---- JSON API bean reads ----

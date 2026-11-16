@@ -207,7 +207,7 @@ describe('export source producers', () => {
       const [before, checksBefore] = [t.client.requests.length, t.client.scopeChecks.length];
       const run = await t.app.inject({
         method: 'POST',
-        url: RUN_QUEUE.targetPath.replace('{exportId}', jobId),
+        url: RUN_QUEUE.targetPath,
         headers: { authorization: `Bearer ${await mintTasksInvokerToken({ audience: SERVICE })}` },
         payload: { ...queuedRun(t, jobId) },
       });

@@ -1,4 +1,4 @@
-// Matcher precedence and destinations, then whole-gateway dispatch to legacy, the stub, the bridge guard and the no-version 503.
+// Matcher precedence and destinations, then whole-gateway dispatch to legacy, the stub, the bridge guard, internal 404s and the no-version 503.
 import { Buffer } from 'node:buffer';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,7 @@ import { createResponseModes } from '../../src/admin/response-modes.js';
 import type { CutoverEntry, InventoryFacts, OwningService, ResponseMode, RouteFacts, RoutingIndex } from '../../src/cutover/types.js';
 import { bodyParamsFrom } from '../../src/dispatcher/body.js';
 import { BUCKET_OWNERS, RELAY_ALIAS_PREFIX, createMatcher, type MatchOutcome, type Matcher } from '../../src/dispatcher/match.js';
-import { buildTestGateway, type TestGateway } from '../helpers/app.js';
+import { buildTestGateway, operatorHeaders, type TestGateway } from '../helpers/app.js';
 import { TEST_CLOCK, TEST_STORAGE_HMAC_KEY, prepareTestStateDir, testEnv } from '../helpers/env.js';
 import type { LegacyOrigin } from '../helpers/legacy-origin.js';
 import { fakeEdgeRequest, type FakeEdgeRequestInit } from '../helpers/requests.js';
@@ -279,6 +279,52 @@ describe('edge dispatch', () => {
     const bridgeRequests = new Set(legacy.bridgeCalls.map((call) => call.request));
     return legacy.requests.filter((request) => !bridgeRequests.has(request)).map((request) => request.url);
   }
+
+  /** Requests received by legacy, identity, migration and every target, web included, by name. */
+  function receivedCounts({ legacy, identity, migration, targets }: TestGateway): Record<string, number> {
+    const doubles = { legacy, identity, migration, ...targets };
+    return Object.fromEntries(Object.entries(doubles).map(([name, double]) => [name, double.requests.length]));
+  }
+
+  it.each<[string, 'GET' | 'HEAD' | 'OPTIONS' | 'POST', string]>([
+    ['a GET of the POST-only activate route', 'GET', '/internal/v1/cutover/activate'],
+    ['a HEAD of the GET-only status route', 'HEAD', '/internal/v1/cutover/status'],
+    ['an OPTIONS of the relay', 'OPTIONS', '/internal/v1/relay/people/v1/persons'],
+    ['an unknown internal path', 'POST', '/internal/v1/no-such-operation?siteid=default'],
+    ['the namespace itself', 'GET', '/internal/v1'],
+    ['the namespace with a trailing slash', 'GET', '/internal/v1/?x=1'],
+    ['a percent-encoded spelling the router decodes', 'GET', '/%69nternal/v1/cutover/activate'],
+  ])('answers %s with the gateway 404, reaching no upstream', async (_label, method, url) => {
+    const gw = await started('v0001');
+    const before = receivedCounts(gw);
+    const res = await gw.app.inject({ method, url, headers: await operatorHeaders() });
+    expect(res.statusCode).toBe(404);
+    if (method !== 'HEAD') expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
+    expect(receivedCounts(gw)).toEqual(before);
+  });
+
+  it('still serves a registered internal route itself', async () => {
+    const gw = await started('v0001');
+    const before = receivedCounts(gw);
+    const res = await gw.app.inject({ method: 'GET', url: '/internal/v1/cutover/status', headers: await operatorHeaders() });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ tableVersion: 'v0001' });
+    expect(receivedCounts(gw)).toEqual(before);
+  });
+
+  it.each([
+    '/internal',
+    '/internalx/v1',
+    '/internal/v1x',
+    '/internal/v2/cutover/activate',
+    '/INTERNAL/v1/cutover/activate',
+    '/internal%2Fv1/x',
+  ])('forwards %s, outside the gateway namespace as the router reads it, to legacy', async (url) => {
+    const { app, legacy } = await started('v0001');
+    const res = await app.inject({ method: 'GET', url });
+    expect(res.statusCode).toBe(200);
+    expect(forwardedToLegacy(legacy)).toEqual([url]);
+  });
 
   it('forwards an unmoved public page to legacy', async () => {
     const { app, legacy, targets } = await started('v0001');

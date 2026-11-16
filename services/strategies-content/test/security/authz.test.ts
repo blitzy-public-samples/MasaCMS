@@ -126,6 +126,7 @@ const SERVICE = 'strategies-content';
 const SITE_A = TENANT_A.siteId;
 const SITE_B = TENANT_B.siteId;
 const COMMENTS_PROXY_URL = '/core/modules/v1/comments/ajax/commentsProxy.cfc';
+const RATER_URL = '/core/modules/v1/rater/ajax/saveRate.cfm';
 const FORM: Headers = Object.freeze({ 'content-type': 'application/x-www-form-urlencoded' });
 const JSON_BODY: Headers = Object.freeze({ 'content-type': 'application/json' });
 const CSRF_FIELDS = 'csrf_token=TOKEN&csrf_token_expires=260630130000000';
@@ -496,6 +497,14 @@ const FAMILIES: readonly Family[] = [
     declared: PUBLIC_LENIENT,
     allow: userTokenOnly,
     strictArguments: true,
+    siteScoped: true,
+  },
+  {
+    family: 'rater',
+    match: [at('POST', RATER_URL)],
+    transport: 'service',
+    declared: PUBLIC_LENIENT,
+    allow: userTokenOnly,
     siteScoped: true,
   },
   {
@@ -927,6 +936,11 @@ function rawFields(site: string): string {
   }).toString();
 }
 
+/** The rater's save form: a rating of tenant-a's first page in `site`. */
+function raterFields(site: string): string {
+  return `contentID=${IDS.content.pageOne}&siteID=${site}&userID=${SUBJECT_USER_IDS.member}&rate=4`;
+}
+
 /** The request a family sends to `entry` when no override names it. */
 function familyProbe(family: Family, entry: RouteMatrixEntry, site: string): Probe {
   const url = fillPath(entry.url, site);
@@ -945,6 +959,8 @@ function familyProbe(family: Family, entry: RouteMatrixEntry, site: string): Pro
       const fields = `method=getContentStats&contentID=${IDS.content.pageOne}&siteid=${site}`;
       return method === 'GET' ? get(`${url}?${fields}`) : postForm(url, fields);
     }
+    case 'rater':
+      return postForm(url, raterFields(site));
     case 'queue control':
       return postJson(url, {});
     default:
@@ -1616,6 +1632,7 @@ describe('site binding and tenancy', () => {
         ['the form', () => postForm('/v1/raw/carch/unlocknode', `${rawFields(SITE_B)}&${CSRF_FIELDS}`)],
         ['the JSON API path', () => get(`/_api/json/v1/${SITE_B}/notanentity`)],
         ['the comments proxy call', () => get(`${COMMENTS_PROXY_URL}?method=getContentStats&contentID=${IDS.content.pageOne}&siteid=${SITE_B}`)],
+        ['the rater form', () => postForm(RATER_URL, raterFields(SITE_B))],
         ['the feed request', () => get(`/_api/feed/v1?feedid=${IDS.feeds.local}&siteid=${SITE_B}`)],
       ] as const
     ).map(([where, probe]) => ({ where, probe })),

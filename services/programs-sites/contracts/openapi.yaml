@@ -3384,6 +3384,35 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /internal/v1/sites/{siteId}/image-sizes:
+    get:
+      operationId: listSiteCustomImageSizes
+      summary: Lists the custom image sizes settingsManager.getSite(siteId).getCustomImageSizeIterator() returns, for strategies-content's JSON API content images.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:strategies-content
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: siteId
+          in: path
+          required: true
+          description: Site id as legacy passes it to `getSite`; one naming no registered site resolves to `default`, ignoring case.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 25
+      responses:
+        '200':
+          $ref: '#/components/responses/ImageSizes'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /internal/v1/migration/apply:
     post:
       operationId: migrationApply

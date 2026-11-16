@@ -129,7 +129,7 @@ In the cloud the download URL is a v4 signed Cloud Storage URL. Locally it is a 
 |---|---|---|---|
 | `GET` | `/opt2/files/reporting-exports/{tenantId}/{objectName}` | public; the signature is the credential | Serves the local storage adapter's downloads |
 | `GET` | `/internal/v1/exports/{exportId}/source-scope` | `service:finance`, `service:timesheets` | Returns a job's stored scope. The producer checks it before serving the job's source read |
-| `POST` | `/internal/v1/tasks/exports/{exportId}/run` (`QUEUES['reporting-export-run'].targetPath`) | `service:tasks-invoker` only | Runs one job to `done` or `failed`. A `running` job, left by an interrupted delivery, is reclaimed: `started_at` restarts and the run takes a new claim, so the earlier delivery's finish is skipped and its object deleted. A `done` or `failed` job is answered with its state unchanged; a job the task's tenant does not hold answers 400 `badRequest`. The fixture's runner thread leaves any job past `queued` unchanged |
+| `POST` | `/internal/v1/tasks/exports/run` (`QUEUES['reporting-export-run'].targetPath`) | `service:tasks-invoker` only | Runs the job the task payload's `jobId` names to `done` or `failed`. A `running` job, left by an interrupted delivery, is reclaimed: `started_at` restarts and the run takes a new claim, so the earlier delivery's finish is skipped and its object deleted. A `done` or `failed` job is answered with its state unchanged; a job the task's tenant does not hold answers 400 `badRequest`. The fixture's runner thread leaves any job past `queued` unchanged |
 | `POST` | `/internal/v1/task-queues/{queue}/{pause,resume,ensure}` | `platform.migration`, `platform.operator` | Queue control for `reporting-export-run`. `ensure` answers 400, because the queue is not a recurring chain |
 | `POST` | `/internal/v1/events/reporting.programs-sites.site.changed.v1` | `service:pubsub-invoker` (the local push key locally) | Push delivery into `reporting.tenant_registry` |
 | `GET`, `POST` | `/internal/v1/migration/{apply,export,changes,position,watermark,gate}` | `platform.migration` | Backfill, feed, reconciliation and unit gates. `export` also returns the `reporting-exports` object manifest |
@@ -137,7 +137,7 @@ In the cloud the download URL is a v4 signed Cloud Storage URL. Locally it is a 
 
 ## Integration
 
-- **Tasks.** Queue `reporting-export-run` runs one task per job, named `reporting-export-run-<job_id>`. The run acts as System and carries no user credential.
+- **Tasks.** Queue `reporting-export-run` runs one task per job, named `reporting-export-run-<job_id>`, at the fixed URL path `/internal/v1/tasks/exports/run`; Cloud Run admits a task's OIDC token only for an exact audience. The job id and `asOf` travel in the task payload, and the job is looked up under the wire body's tenant. The run acts as System and carries no user credential.
 - **Storage.** Export outputs are kept in bucket `reporting-exports`; locally under `${OPT2_STATE_DIR}/storage/reporting-exports/`.
 - **Events.** The service consumes `programs-sites.site.changed.v1` into `reporting.tenant_registry`, which resolves site ids and pools to tenants. It produces no topic, so it has no outbox sweep.
 - **Sources.** Source rows are read only through the producers' OpenAPIs, never their schemas:

@@ -6,10 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deleteApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { decodeJwt } from 'jose';
 import { parse } from 'yaml';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { cloudUserTokenSettings, collectRouteMatrix } from '@opt2/platform/auth';
+import { cloudUserTokenSettings, collectRouteMatrix, decodeJwt } from '@opt2/platform/auth';
 import { subscriptionName } from '@opt2/platform/events';
 import { createLogger, serializeError } from '@opt2/platform/logging';
 import { EnvValidationError, baseEnvSchema, loadEnv, type BaseEnv, type FastifyInstance } from '@opt2/platform/service-kit';
@@ -31,7 +30,7 @@ import { SERVICE_NAME, SERVICE_VERSION, buildApp, identityEnvSchema, type BuildA
 import { SIGN_IN_WITH_CUSTOM_TOKEN_URL, type Jwks, type TokenSigner } from '../../src/domain/tokens.js';
 import { createIdentityTaskPort } from '../../src/tasks/port.js';
 import { createFakeTaskPort, createTestStateDir, headersFor, testEnv } from '../helpers/app.js';
-import { recordTenantListing, testFirebaseApp } from '../helpers/firebase.js';
+import { TEST_EXCHANGE_URL, TEST_WEB_API_KEY, recordTenantListing, testFirebaseApp } from '../helpers/firebase.js';
 import { createRecordingDb } from '../helpers/memory-repo.js';
 import { SITE_ADMIN_A, loginSnapshotFixture, sessionRow } from '../helpers/rows.js';
 import { CLOCK } from '../helpers/service.js';
@@ -123,10 +122,10 @@ function envIssues(overrides: Readonly<Record<string, string | undefined>>): str
 }
 
 describe('identity composition constants', () => {
-  it('names the service, versions it as the contract does and reads only the base variables', () => {
+  it('names the service, versions it as the contract does and reads the base variables plus the Identity Platform Web API key', () => {
     expect(SERVICE_NAME).toBe('identity');
     expect(SERVICE_VERSION).toBe(OPENAPI.info.version);
-    expect(Object.keys(identityEnvSchema.shape)).toStrictEqual(Object.keys(baseEnvSchema.shape));
+    expect(Object.keys(identityEnvSchema.shape)).toStrictEqual([...Object.keys(baseEnvSchema.shape), 'OPT2_IDENTITY_PLATFORM_API_KEY']);
   });
 
   const everyCallee = [
@@ -135,6 +134,8 @@ describe('identity composition constants', () => {
     'OPT2_SERVICE_URLS.programs-sites: is required',
     'OPT2_SERVICE_URLS.strategies-content: is required',
   ];
+  const cloudBase = { OPT2_ENV: 'cloud', GOOGLE_CLOUD_PROJECT: 'opt2-test', PUBSUB_EMULATOR_HOST: undefined };
+  const apiKeyIssue = 'OPT2_IDENTITY_PLATFORM_API_KEY: is required when OPT2_ENV=cloud';
   it.each<[string, Record<string, string | undefined>, string[]]>([
     ['parses a map naming every callee beside OPT2_GATEWAY_URL', {}, []],
     [
@@ -168,6 +169,16 @@ describe('identity composition constants', () => {
       'reports only its own issue for a JSON array',
       { OPT2_GATEWAY_URL: undefined, OPT2_SERVICE_URLS: '[]' },
       [expect.stringMatching(/^OPT2_SERVICE_URLS: /)],
+    ],
+    ['parses a local environment whose Web API key is blank', { OPT2_IDENTITY_PLATFORM_API_KEY: '' }, []],
+    ['parses a cloud environment carrying the Web API key', { ...cloudBase, OPT2_IDENTITY_PLATFORM_API_KEY: TEST_WEB_API_KEY }, []],
+    ['names the Web API key when the cloud lacks it', cloudBase, [apiKeyIssue]],
+    ['names the Web API key when the cloud sets it blank', { ...cloudBase, OPT2_IDENTITY_PLATFORM_API_KEY: ' ' }, [apiKeyIssue]],
+    ['names the Web API key beside every missing callee in the cloud', { ...cloudBase, OPT2_SERVICE_URLS: '{}' }, [apiKeyIssue, ...everyCallee]],
+    [
+      'names the Web API key beside a cloud map that is not JSON',
+      { ...cloudBase, OPT2_GATEWAY_URL: undefined, OPT2_SERVICE_URLS: 'not-json' },
+      ['OPT2_SERVICE_URLS: OPT2_SERVICE_URLS must be a JSON object', apiKeyIssue],
     ],
   ])('identityEnvSchema %s', (_case, overrides, issues) => {
     expect(envIssues(overrides)).toStrictEqual(issues);
@@ -225,6 +236,7 @@ describe('identity buildApp in the cloud', () => {
         OPT2_TASKS_ADAPTER: 'cloud',
         OPT2_STORAGE_ADAPTER: 'cloud',
         GOOGLE_CLOUD_PROJECT: 'proj',
+        OPT2_IDENTITY_PLATFORM_API_KEY: TEST_WEB_API_KEY,
         OPT2_TOKEN_ISSUER: issuer,
         OPT2_TOKEN_AUDIENCE: audience,
         LOG_LEVEL: 'error',
@@ -247,9 +259,12 @@ describe('identity buildApp in the cloud', () => {
       { tenants: [{ tenantId: 'tenant-a-8d0f2', displayName: 'tenant-a' }] },
     ]);
     const exchanges: string[] = [];
+    const exchangeUrls: string[] = [];
     const passThrough = globalThis.fetch;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
-      if (String(input) !== SIGN_IN_WITH_CUSTOM_TOKEN_URL) return passThrough(input, init);
+      const url = input instanceof Request ? input.url : input.toString();
+      if (!url.startsWith(SIGN_IN_WITH_CUSTOM_TOKEN_URL)) return passThrough(input, init);
+      exchangeUrls.push(url);
       exchanges.push(String(init?.body));
       return Promise.resolve(new Response(JSON.stringify({ idToken: 'recorded-id-token', expiresIn: '3600', refreshToken: 'refresh' })));
     });
@@ -269,12 +284,36 @@ describe('identity buildApp in the cloud', () => {
       expect(res.json()).toMatchObject({ token: 'recorded-id-token', epoch: 3, claims: { iss: issuer, aud: 'proj', sub: user, sid: session, site: TENANT_A.siteId } });
       expect(pageTokens).toEqual([undefined, 'page-2']);
       expect(exchanges).toHaveLength(1);
+      expect(exchangeUrls).toEqual([TEST_EXCHANGE_URL]);
       const body = JSON.parse(exchanges[0] ?? '{}') as { token: string; tenantId: string };
       expect(body.tenantId).toBe('tenant-a-8d0f2');
       expect(decodeJwt(body.token)).toMatchObject({ uid: user, tenant_id: 'tenant-a-8d0f2' });
     } finally {
       await app?.close();
       fetchSpy.mockRestore();
+      await deleteApp(firebaseApp);
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('builds no Identity Platform adapter for a cloud environment without the Web API key', async () => {
+    const { issuer, audience } = cloudUserTokenSettings('proj');
+    const stateDir = await createTestStateDir();
+    const cloudOverrides = {
+      OPT2_ENV: 'cloud', OPT2_DB_AUTH: undefined, OPT2_TASKS_ADAPTER: 'cloud', OPT2_STORAGE_ADAPTER: 'cloud', GOOGLE_CLOUD_PROJECT: 'proj',
+      OPT2_IDENTITY_PLATFORM_API_KEY: TEST_WEB_API_KEY, OPT2_TOKEN_ISSUER: issuer, OPT2_TOKEN_AUDIENCE: audience, LOG_LEVEL: 'error',
+    };
+    const env = { ...testEnv(cloudOverrides, stateDir), OPT2_IDENTITY_PLATFORM_API_KEY: undefined };
+    const firebaseApp = await testFirebaseApp('identity-app-cloud-no-api-key');
+    const pageTokens = recordTenantListing(firebaseApp, [{ tenants: [] }]);
+    try {
+      const built = buildApp({
+        env, clock: CLOCK, verifierOverride: testVerifier(SERVICE_NAME), db: createRecordingDb(), publisher: createCapturingPublisher(), taskPort: createFakeTaskPort(), firebaseApp,
+      });
+
+      await expect(built).rejects.toThrow('An Identity Platform adapter is required to mint tokens in the cloud');
+      expect(pageTokens).toEqual([]);
+    } finally {
       await deleteApp(firebaseApp);
       await rm(stateDir, { recursive: true, force: true });
     }
@@ -385,7 +424,7 @@ describe.skipIf(!available)('identity buildApp over a throwaway schema', () => {
     const db = Object.create(handle.app, { end: { value: end } }) as TenantDb;
     const publisherClose = vi.spyOn(publisher, 'close');
     const portClose = vi.spyOn(port, 'close');
-    const cloud = envFor(stateDir, { OPT2_ENV: 'cloud', GOOGLE_CLOUD_PROJECT: 'opt2-test', PUBSUB_EMULATOR_HOST: undefined, OPT2_JWKS_URL: undefined });
+    const cloud = envFor(stateDir, { OPT2_ENV: 'cloud', GOOGLE_CLOUD_PROJECT: 'opt2-test', OPT2_IDENTITY_PLATFORM_API_KEY: TEST_WEB_API_KEY, PUBSUB_EMULATOR_HOST: undefined, OPT2_JWKS_URL: undefined });
     const firebaseApp = await testFirebaseApp('identity-app-refused-listing');
     getAuth(firebaseApp).tenantManager().listTenants = () => Promise.reject(new Error('PERMISSION_DENIED: identitytoolkit.tenants.list'));
 

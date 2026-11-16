@@ -294,7 +294,9 @@ describe('permission operations over the memory repository', () => {
 describe('cperm routes of the composed identity app', () => {
   type Method = 'GET' | 'PUT' | 'POST';
 
-  const LIST_GROUPS_SQL = /^SELECT \* FROM "identity"\."group_account" WHERE tenant_id = \$1 AND type = 1 AND ispublic = \$2 AND siteid = \$3/;
+  // listGroups declares a cursor over its listing and reads the rows by FETCH.
+  const LIST_GROUPS_SQL = /^DECLARE (\w+) NO SCROLL CURSOR FOR SELECT \* FROM "identity"\."group_account" WHERE tenant_id = \$1 AND type = 1 AND ispublic = \$2 AND siteid = \$3/;
+  const FETCH_SQL = /^FETCH FORWARD \d+ FROM (\w+)$/;
   const PERMISSIONS_SQL = /^SELECT \* FROM "identity"\."permission" WHERE tenant_id = \$1 AND contentid = \$2 AND siteid = \$3/;
   const SESSION_SQL = /FROM "identity"\."session" WHERE/;
   // What PostgreSQL would select for each pool listing: the private pool without Admin, the public pool whole.
@@ -333,7 +335,18 @@ describe('cperm routes of the composed identity app', () => {
   beforeAll(async () => {
     const { db } = testApp;
     db.respond(REGISTRY_SQL, registryAnswer);
-    db.respond(LIST_GROUPS_SQL, (_sql, values) => POOL_LISTS.get(`${String(values[0])}/${String(values[1])}`) ?? []);
+    // Each declared listing answers its rows on the cursor's first FETCH and none after.
+    const cursors = new Map<string, (typeof AUTHORS)[]>();
+    db.respond(LIST_GROUPS_SQL, (sql, values) => {
+      cursors.set(LIST_GROUPS_SQL.exec(sql)?.[1] ?? '', POOL_LISTS.get(`${String(values[0])}/${String(values[1])}`) ?? []);
+      return [];
+    });
+    db.respond(FETCH_SQL, (sql) => {
+      const cursor = FETCH_SQL.exec(sql)?.[1] ?? '';
+      const rows = cursors.get(cursor) ?? [];
+      cursors.delete(cursor);
+      return rows;
+    });
     db.respond(PERMISSIONS_SQL, (_sql, values) =>
       STORED_PERMISSIONS.filter((row) => row.tenant_id === values[0] && row.contentid === values[1] && (values[3] === null || row.type === values[3])),
     );

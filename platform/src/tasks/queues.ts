@@ -29,7 +29,7 @@ export interface QueueDefinition {
   readonly name: string;
   /** Service whose route the task calls. */
   readonly targetService: string;
-  /** Route on the target service; `{param}` segments are filled by `targetUrl`. */
+  /** Fixed route on the target service, with no `{param}` segment: its URL is the task's exact OIDC audience. */
   readonly targetPath: string;
   /** Services that create tasks on the queue: they hold its local rows and need the enqueuer role in the cloud. */
   readonly creators: readonly string[];
@@ -104,14 +104,14 @@ export const QUEUES = withNames({
   'surveys-launch': {
     targetService: 'surveys',
     // Under /internal/v1/tasks/ because task requests carry only the cloud-tasks transport credential.
-    targetPath: '/internal/v1/tasks/surveys/{surveyId}/launch',
+    targetPath: '/internal/v1/tasks/surveys/launch',
     creators: ['communications'],
     deadlineS: 60,
     retry: DEFAULT_RETRY,
   },
   'communications-reminders': {
     targetService: 'communications',
-    targetPath: '/internal/v1/tasks/reminders/{scheduledTaskId}',
+    targetPath: '/internal/v1/tasks/reminders',
     creators: ['communications'],
     deadlineS: 60,
     retry: DEFAULT_RETRY,
@@ -132,7 +132,7 @@ export const QUEUES = withNames({
   },
   'reporting-export-run': {
     targetService: 'reporting',
-    targetPath: '/internal/v1/tasks/exports/{exportId}/run',
+    targetPath: '/internal/v1/tasks/exports/run',
     creators: ['reporting'],
     deadlineS: 1800,
     retry: DEFAULT_RETRY,

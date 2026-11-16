@@ -18,7 +18,7 @@ import {
   usedTokensFor,
   type CsrfDeps,
 } from '../../src/domain/csrf.js';
-import { ANONYMOUS_LOGIN_SNAPSHOT, applyLogin, endSession, type SessionDeps } from '../../src/domain/sessions.js';
+import { ANONYMOUS_LOGIN_SNAPSHOT, adoptLegacySession, applyLogin, endSession, type LegacyDescribe, type SessionDeps } from '../../src/domain/sessions.js';
 import type { BridgeRelay, LegacyUsedToken } from '../../src/legacy/bridge-relay.js';
 import { createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
 import type { CsrfClaimRow } from '../../src/repo/tables.js';
@@ -386,5 +386,40 @@ describe.skipIf(!available)('csrf arbitration against PostgreSQL', () => {
     expect((await claims(sessionId)).map((row) => row.token)).toEqual([later.token.toUpperCase()]);
     expect(await inTenant(SYSTEM_TENANT_ID, (tx) => clearClaims(repo, tx, sessionId))).toBe(1);
     expect(await claims(sessionId)).toEqual([]);
+  });
+
+  it('consumes distinct tokens of one adopted session concurrently with its re-adoptions, each valid exactly once', async () => {
+    sessionSeq += 1;
+    const sessionId = `S-${sessionSeq}`;
+    const relay = recordingRelay();
+    const relayed = (): string[] => relay.calls.flatMap((call) => call.tokens.map((entry) => entry.token));
+    const described = (usedTokens: readonly string[]): LegacyDescribe => ({
+      legacySessionId: sessionId,
+      siteId: 'tenant-a',
+      describe: { user: { isLoggedIn: false }, roles: [], csrfSecretKey: SECRET, usedTokens },
+    });
+    await adoptLegacySession(sessionDeps(), described([]), { mode: 'legacy-primary' });
+    const requests = Array.from({ length: 20 }, (_, i) => ({
+      sessionId,
+      ...issueTokens({ csrfSecret: SECRET }, { context: CONTEXT, clock: fixedClock(NOW.getTime() - i) }),
+      context: CONTEXT,
+    }));
+    const tokens = requests.map((request) => request.token).sort();
+
+    const [results] = await Promise.all([
+      Promise.all(requests.map((request) => consumeToken(depsFor(relay), request))),
+      Promise.all(
+        Array.from({ length: 10 }, async (_, i) => {
+          await new Promise((resolve) => setTimeout(resolve, i * 10));
+          return adoptLegacySession(sessionDeps(), described(relayed()), { mode: 'legacy-primary' });
+        }),
+      ),
+    ]);
+
+    expect(new Set(tokens).size).toBe(requests.length);
+    expect(results).toEqual(requests.map(() => ({ valid: true })));
+    expect(relayed().sort()).toEqual(tokens);
+    expect(await Promise.all(requests.map((request) => consumeToken(depsFor(relay), request)))).toEqual(requests.map(() => ({ valid: false })));
+    expect((await claims(sessionId)).map((row) => [row.token, row.state]).sort()).toEqual(tokens.map((token) => [token, 'used']));
   });
 });

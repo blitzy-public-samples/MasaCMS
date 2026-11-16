@@ -20,7 +20,7 @@ import { pinnedSha } from '../../../src/lib/pin.js';
 
 const PIN = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const ENV: EnvLike = { PORT: '8500' };
-// The committed file and its strict schema carry the scenario-override operations as a 19th section.
+// The committed file and its strict schema carry the scenario-override operations as a 20th section.
 const SECTIONS = [
   'sourceSha',
   'version',
@@ -39,6 +39,7 @@ const SECTIONS = [
   'rows',
   'tasks',
   'files',
+  'chainHashes',
   'knownIssues',
   'overrides',
 ];

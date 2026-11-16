@@ -3350,6 +3350,8 @@ paths:
     get:
       operationId: listSiteGroups
       summary: Lists the groups of the site's private or public user pool, as `getPrivateGroups` and `getPublicGroups` do.
+      description: Superseded by `listSiteGroupsV2` (`GET /internal/v2/groups`), which answers one page.
+      deprecated: true
       tags: [internal]
       x-opt2-transport: service
       x-opt2-requires:
@@ -3373,6 +3375,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SiteGroupList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A legacy write window executed or imported on `identity.group_account` for 30 s.
+  /internal/v2/groups:
+    get:
+      operationId: listSiteGroupsV2
+      summary: Lists one page of the groups of the site's private or public user pool, as `getPrivateGroups` and `getPublicGroups` list them.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:people
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - name: ispublic
+          in: query
+          required: true
+          description: '`0` for the private pool''s system groups, `1` for the public pool''s member groups.'
+          schema:
+            type: string
+            enum:
+              - '0'
+              - '1'
+        - $ref: '#/components/parameters/ListOffset'
+        - $ref: '#/components/parameters/ListLimit'
+      responses:
+        '200':
+          description: The page of the groups, by `Perm` descending, then group name, with the pool's total; none when the pool site's own pool of that kind is another site, as legacy's settings join gives.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteGroupPage'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -6855,6 +6895,22 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SiteGroup'
+    SiteGroupPage:
+      type: object
+      required:
+        - items
+        - total
+        - nextOffset
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SiteGroup'
+        total:
+          $ref: '#/components/schemas/ListTotal'
+        nextOffset:
+          $ref: '#/components/schemas/NextOffset'
     TaskWireBody:
       type: object
       description: JSON body both task adapters post; `tenantId` is null on system tasks.

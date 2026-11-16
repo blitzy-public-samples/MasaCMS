@@ -11,6 +11,7 @@ import {
   isCfUuid,
   isLegacyFindOneId,
   javaTrim,
+  LegacyApiError,
   LegacyServiceUnavailableError,
 } from '@opt2/platform/legacy-compat';
 import { withTenant } from '@opt2/platform/tenancy';
@@ -21,6 +22,7 @@ import {
   getComments,
   saveComment,
   type CommentSaveSite,
+  type CommentValues,
   type CommentValuesView,
 } from '../../domain/comments.js';
 import type { Actor } from '../../domain/context.js';
@@ -202,6 +204,12 @@ function commentScope(ctx: Ctx, call: JsonApiCall): CommentScope {
   return scope;
 }
 
+/** `$.getBean('comment').loadBy(commentID=id)`: a bean no row filled keeps the site `$.getBean` gave it, the request's. */
+async function apiBeanValues(scope: CommentScope, id: string, overlay: Readonly<Struct> = {}): Promise<CommentValues> {
+  const values = await findCommentValues(scope.ctx.domain, scope.call.tenantId, id, scope.view, overlay);
+  return values.isNew === 0 ? values : { ...values, siteID: scope.call.siteId };
+}
+
 /** findOne's getFilteredValues (2292-2384) of the comment `loadBy` finds, else of a new bean under a fresh id. */
 async function commentData(
   scope: CommentScope,
@@ -209,10 +217,10 @@ async function commentData(
   id: string,
   opts: ExpansionOptions,
 ): Promise<Struct> {
-  const { ctx, call } = scope;
+  const { call } = scope;
   assertNoHumanCheck(call);
   paramUrl(call.apiContext, 'entityname', entityName);
-  const values = await findCommentValues(ctx.domain, call.tenantId, id, scope.view);
+  const values = await apiBeanValues(scope, id);
   return serializeContentEntity(commentView({ ...values }), call.apiContext, scope.resolver, {
     expanded: opts.expanded,
     expandLinks: opts.expand,
@@ -299,7 +307,7 @@ async function findMany(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
 async function findNew(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
   const scope = commentScope(ctx, call);
   assertNoHumanCheck(call);
-  const values = await findCommentValues(ctx.domain, call.tenantId, cfUuid(), scope.view);
+  const values = await apiBeanValues(scope, cfUuid());
   const data = await serializeContentEntity(commentView({ ...values }), call.apiContext, scope.resolver, {
     expanded: true,
     expandLinks: expandOf(call),
@@ -314,12 +322,14 @@ async function findProperties(_ctx: Ctx, call: JsonApiCall): Promise<JsonApiResu
   return jsonApiResultOf(findPropertiesFor(config, call), 'comment');
 }
 
-/** findPermissions (2240-2266): bean.getPermissions of the comment a CF UUID or 35-character id loads. */
+/** findPermissions (2240-2266): bean.getPermissions of the comment a CF UUID or 35-character id loads, else of a new bean of the request site. */
 async function findPermissions(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
-  const id = call.id ?? '';
+  // Legacy reads the undefined `arguments.id`.
+  if (call.id === undefined) throw new LegacyApiError('server_error');
+  const id = call.id;
   const stored = isCfUuid(id) || id.length === 35 ? await findCommentValues(ctx.domain, call.tenantId, id, valuesView(call)) : undefined;
   const permissions = permissionsOf({
-    hasSiteId: stored !== undefined && stored.siteID !== '',
+    hasSiteId: (stored?.isNew === 0 ? stored.siteID : call.siteId) !== '',
     readAllowed: true,
     actionAllowed: entityActionAllowed(call.actor, config),
     // contentCommentBean.allowSave (777-783): module access, or a comment that does not exist yet.
@@ -382,7 +392,7 @@ async function save(ctx: Ctx, call: JsonApiCall): Promise<JsonApiResult> {
   });
   const saveErrors = storedValue(values, 'saveErrors');
   const overlay = Object.keys(saved.errors).length > 0 && !(cfIsBoolean(saveErrors) && cfToBoolean(saveErrors));
-  const reloaded = await findCommentValues(ctx.domain, call.tenantId, saved.value.commentID, scope.view, overlay ? values : {});
+  const reloaded = await apiBeanValues(scope, saved.value.commentID, overlay ? values : {});
   const data = await serializeContentEntity(commentView({ ...reloaded }), call.apiContext, scope.resolver, {
     expanded: true,
     expandLinks: expandOf(call),

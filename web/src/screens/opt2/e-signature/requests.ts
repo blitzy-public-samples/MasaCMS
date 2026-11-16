@@ -72,8 +72,8 @@ export const CREATE_REQUEST_FIELDS: readonly CreateRequestField[] = Object.freez
   CREATE_CONTROLS.map(({ name }) => name),
 );
 
-// The legacy create validates its CSRF pair under the route id, which the request list leaves empty; v1 takes the
-// same pair although its contract declares no CSRF header.
+// The legacy create validates its CSRF pair under the route id, which the request list leaves empty; v1 consumes the
+// same pair.
 const CREATE_CSRF_CONTEXT = '';
 
 /** One page of the tenant's signature requests; `null` for a reader without the signer role, which the list refuses. */

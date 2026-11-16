@@ -277,13 +277,14 @@ function answerFrom(db: RecordingDb, tables: Tables): void {
 
   db.respond(VERSION_SELECT, (params, sql, { tenantId }) => {
     const where = sql.slice(sql.indexOf(' WHERE '));
-    const key = /^ WHERE (?:tcontent\.(contenthistid|contentid) = ANY\(\$1::bpchar\[\]\)|lower\(rtrim\(tcontent\.(\w+)\)\) = lower\(rtrim\(\$1::text\)\))/.exec(where);
+    const key =
+      /^ WHERE (?:tcontent\.(contenthistid|contentid) = ANY\(\$1::bpchar\[\]\)|lower\(rtrim\(tcontent\.(\w+)\)\) = lower\(rtrim\(\$1::text\)\)|\(\(\(tcontent\.(\w+)::bpchar\) COLLATE "content"\."lookup_ci"\) = \$1::text::bpchar AND )/.exec(where);
     const site = bound(where, params, /tcontent\.siteid = \$(\d+)/);
     const types = [...where.matchAll(/lower\(rtrim\(tcontent\.type\)\) IN \(([^)]*)\)/g)].map((match) => (match[1] ?? '').replace(/'/g, '').split(', '));
     return own('content', tenantId)
       .filter((row) => {
         if (key?.[1] === 'contenthistid') return anyOf(params[0], row.contenthistid);
-        const matched = key?.[1] === 'contentid' ? anyOf(params[0], row.contentid) : ci(row[key?.[2] ?? '']) === ci(params[0]);
+        const matched = key?.[1] === 'contentid' ? anyOf(params[0], row.contentid) : ci(row[key?.[2] ?? key?.[3] ?? '']) === ci(params[0]);
         return matched && row.active === 1 && row.siteid === site && types.every((list) => list.includes(ci(row.type)));
       })
       .map(versionRow);

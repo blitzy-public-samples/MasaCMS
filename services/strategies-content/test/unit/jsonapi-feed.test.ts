@@ -73,7 +73,7 @@ function callFor(method: Op, a: CallArgs = {}): JsonApiCall & { validateCsrf: Re
     user: { loggedIn: caller.isLoggedIn, systemUser: caller.isLoggedIn },
     allowAction: () => false,
     site: { ...SITE.urls, siteId: site.siteId },
-    customImageSizes: [],
+    customImageSizes: () => Promise.resolve([]),
   };
   return {
     mode: 'json',
