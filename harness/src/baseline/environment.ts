@@ -478,6 +478,47 @@ async function getJson(baseUrl: string, pathAndQuery: string, fetchImpl: Environ
   return res.json();
 }
 
+/** Check one `run.cfm?info=1` value must pass; `parent` is the object that holds it. */
+type FieldCheck = (value: unknown, parent: Record<string, unknown>) => boolean;
+
+const hasText = (value: unknown): boolean => (text(value) ?? '').trim() !== '';
+const isFlag = (value: unknown): boolean => flag(value) !== null;
+const isCount = (value: unknown): boolean => count(value) !== null;
+
+/** Required top-level fields of the `run.cfm?info=1` answer, by producer name. */
+const INFO_FIELDS: Readonly<Record<string, FieldCheck>> = {
+  productVersion: hasText,
+  productLevel: hasText,
+  edition: hasText,
+  javaVersion: hasText,
+  testboxEnabled: isFlag,
+  testboxInstalled: isFlag,
+  ping: isFlag,
+  siteMonitorTaskRegistered: isFlag,
+  timeZone: (value) => typeof value === 'string' && hasText(value),
+  utcTotalOffset: isCount,
+  cfpmPackages: (value, parent) =>
+    Array.isArray(value) ? value.every((line) => text(line) !== null) : value === null && hasText(parent.cfpmerror),
+  cluster: isRecord,
+};
+
+/** Required fields of the answer's `cluster` object, by producer name. */
+const CLUSTER_FIELDS: Readonly<Record<string, FieldCheck>> = {
+  broadcastClusterCommands: isFlag,
+  broadcastCachePurges: isFlag,
+  broadcastAppreloads: isFlag,
+  peerCount: isCount,
+};
+
+/** Producer names of the required fields the lower-cased `info` answer lacks or mistypes. */
+function malformedInfo(info: Record<string, unknown>): string[] {
+  const bad = (fields: Readonly<Record<string, FieldCheck>>, parent: Record<string, unknown>, prefix: string): string[] =>
+    Object.entries(fields)
+      .filter(([name, valid]) => !valid(parent[name.toLowerCase()], parent))
+      .map(([name]) => `${prefix}${name}`);
+  return [...bad(INFO_FIELDS, info, ''), ...(isRecord(info.cluster) ? bad(CLUSTER_FIELDS, info.cluster, 'cluster.') : [])];
+}
+
 /** `harness/legacy-baseline/cfml/run.cfm?info=1`, read direct from legacy, with lower-cased keys. */
 async function legacyInfo(env: EnvLike, fetchImpl: EnvironmentDeps['fetch']): Promise<Record<string, unknown>> {
   const info = lowerKeysDeep(await getJson(legacyOrigin(env), INFO_PATH, fetchImpl));
@@ -611,14 +652,19 @@ export async function probeServices(deps: EnvironmentDeps = {}): Promise<Service
   const mailpitApi = envValue(env, 'MAILPIT_API_URL') ?? DEFAULT_MAILPIT_API;
 
   const info = await attempt(() => legacyInfo(env, deps.fetch));
+  const malformed = info.ok ? malformedInfo(info.value) : [];
   const sql = onMssql ? await attempt(() => sqlServerFacts(env, deps.mssqlFactory ?? createReadOnlyMssql)) : null;
   const pg = await attempt(() => postgresVersion(env, deps.pgFactory ?? createCatalogClient));
   const mailpit = await attempt(() => mailpitVersion(mailpitApi, deps.fetch));
   const nativeTasks = await nativeTaskCapture(env);
 
   const fromInfo = infoRows(info);
+  const coldfusion =
+    malformed.length === 0
+      ? fromInfo.coldfusion
+      : { ...fromInfo.coldfusion, detail: why([fromInfo.coldfusion.detail, `run.cfm?info=1 lacks or mistypes: ${malformed.join(', ')}`]) };
   const probes: ProbeRow[] = [
-    fromInfo.coldfusion,
+    coldfusion,
     fromInfo.edition,
     fromInfo.cfpm,
     sql === null
@@ -636,7 +682,7 @@ export async function probeServices(deps: EnvironmentDeps = {}): Promise<Service
     fromInfo.java,
   ];
   const failed: string[] = [
-    info.ok ? null : SERVICE_ROWS.coldfusion.id,
+    info.ok && malformed.length === 0 ? null : SERVICE_ROWS.coldfusion.id,
     sql === null || sql.ok ? null : SERVICE_ROWS.sqlserver.id,
     pg.ok ? null : SERVICE_ROWS.postgresql.id,
     mailpit.ok ? null : SERVICE_ROWS.mailpit.id,

@@ -2,6 +2,8 @@
 import { copyFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
+import { z } from '@opt2/platform/service-kit';
+
 import { isMainModule, parseFlags, runCli, type CliOutcome } from '../lib/cli.js';
 import { REPO_ROOT, isInsideRepo, repoPath, reportsDir, type EnvLike } from '../lib/paths.js';
 import { readJson, writeJsonReport, writeMarkdown } from '../lib/report.js';
@@ -678,19 +680,68 @@ export function renderBaselineMarkdown(report: BaselineReport): string[] {
   ];
 }
 
+const sourceRefSchema = z.looseObject({ path: z.string(), lines: z.array(z.number()) });
+
+/** Shape of `expected-baseline.json`; each failure group names its spec by exactly one of `title` and `titlePattern`. */
+const expectedBaselineSchema: z.ZodType<ExpectedBaseline> = z.looseObject({
+  sourceSha: z.string(),
+  provenance: z.string(),
+  totals: z.looseObject({
+    bundles: z.number().int(),
+    specs: z.number().int(),
+    passed: z.number().int(),
+    failed: z.number().int(),
+    errored: z.number().int(),
+  }),
+  bundles: z.array(z.string()),
+  failures: z.array(
+    z
+      .looseObject({
+        bundle: z.string(),
+        suite: z.string().optional(),
+        count: z.number().int(),
+        timingSensitive: z.boolean().optional(),
+        thresholdMs: z.number().optional(),
+        observedMs: z.array(z.number()).optional(),
+        reason: z.string(),
+        source: sourceRefSchema,
+        title: z.string().optional(),
+        titlePattern: z.string().optional(),
+      })
+      .refine((group) => (group.title === undefined) !== (group.titlePattern === undefined), {
+        error: 'needs exactly one of title and titlePattern',
+      })
+      .transform((group) => group as ExpectedFailureGroup),
+  ),
+  excludedBundles: z.array(z.looseObject({ bundle: z.string(), reason: z.string(), source: sourceRefSchema })),
+  officialRunner: z.looseObject({
+    url: z.string(),
+    expectedHttpStatus: z.number().int(),
+    expectedSpecs: z.number().int(),
+    reason: z.string(),
+  }),
+});
+
+/** Envelope of a saved runner response; `body` stays unknown so a body that is not TestBox JSON is a reported difference. */
+const savedRunnerSchema: z.ZodType<SavedRunnerResponse> = z.looseObject({
+  runner: z.enum(['official', 'diagnostic']),
+  url: z.string(),
+  httpStatus: z.number().int(),
+  contentType: z.string().nullable(),
+  startedAt: z.string(),
+  durationMs: z.number(),
+  bodyKind: z.enum(['json', 'text']),
+  specs: z.number(),
+  body: z.unknown(),
+});
+
 async function readExpected(file: string): Promise<ExpectedBaseline> {
-  const json = await readJson<Partial<ExpectedBaseline>>(file);
-  const named = Array.isArray(json.failures) && json.failures.every((group) => typeof (group.title ?? group.titlePattern) === 'string');
-  const shaped = Array.isArray(json.bundles) && Array.isArray(json.excludedBundles) && isRecord(json.totals) && isRecord(json.officialRunner);
-  if (!named || !shaped) {
-    throw new Error(`${file}: not an expected baseline (totals, bundles, excludedBundles, officialRunner, failures named by title or titlePattern)`);
-  }
-  return json as ExpectedBaseline;
+  return readJson(file, expectedBaselineSchema);
 }
 
 async function readSaved(file: string): Promise<SavedRunnerResponse> {
   try {
-    return await readJson<SavedRunnerResponse>(file);
+    return await readJson(file, savedRunnerSchema);
   } catch (err) {
     const cause = (err as Error).cause as NodeJS.ErrnoException | undefined;
     if (cause?.code === 'ENOENT') throw new Error(`${file} is missing: run baseline:run first`, { cause: err });

@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -40,7 +40,8 @@ type RunInfo = Record<string, unknown> & { cluster: Record<string, unknown> };
 const FIXTURE = new URL('../fixtures/testbox/run-info.json', import.meta.url);
 const RUN_INFO_TEXT = await fs.readFile(FIXTURE, 'utf8');
 const RUN_INFO = JSON.parse(RUN_INFO_TEXT) as RunInfo;
-const COMMITTED_REPORT = path.join(REPO_ROOT, 'opt2', 'reports', 'environment.md');
+/** `opt2/reports/environment.md` as committed at HEAD, since `up.sh` rewrites the working-tree copy. */
+const COMMITTED_REPORT_TEXT = execFileSync('git', ['show', 'HEAD:opt2/reports/environment.md'], { cwd: REPO_ROOT, encoding: 'utf8' });
 const PIN_SHA = (JSON.parse(await fs.readFile(path.join(REPO_ROOT, 'opt2', 'source-pin.json'), 'utf8')) as { sha: string }).sha;
 
 const LEGACY = 'http://legacy.test';
@@ -712,23 +713,33 @@ describe('probeServices', () => {
     });
   });
 
-  it.each<[string, Record<string, unknown>, string, Partial<ProbeRow>]>([
-    ['no productVersion', { productVersion: undefined }, 'coldfusion', { status: 'unavailable', detail: 'no productVersion in the answer' }],
+  it.each<[string, Record<string, unknown>, string, Partial<ProbeRow>, string[]]>([
     [
-      'another release without name or level',
-      { productName: undefined, productLevel: undefined, productVersion: '2021,0,0,1' },
+      'no productVersion',
+      { productVersion: undefined },
       'coldfusion',
-      { status: 'mismatch', recorded: 'ColdFusion 2021,0,0,1 (level unknown)' },
+      { status: 'unavailable', detail: 'no productVersion in the answer; run.cfm?info=1 lacks or mistypes: productVersion' },
+      ['coldfusion'],
     ],
-    ['no edition', { edition: undefined }, 'coldfusion-edition', { status: 'unavailable', detail: 'no edition in the answer' }],
-    ['no expiration', { expiration: undefined }, 'coldfusion-edition', { status: 'ok', recorded: 'Developer; expiration none' }],
+    ['another release', { productVersion: '2021,0,0,1' }, 'coldfusion', { status: 'mismatch', recorded: 'ColdFusion Server 2021,0,0,1 (Developer)', detail: null }, []],
+    [
+      'no name or level',
+      { productName: undefined, productLevel: undefined },
+      'coldfusion',
+      { status: 'ok', recorded: 'ColdFusion 2023,0,13,330833 (level unknown)', detail: 'run.cfm?info=1 lacks or mistypes: productLevel' },
+      ['coldfusion'],
+    ],
+    ['no edition', { edition: undefined }, 'coldfusion-edition', { status: 'unavailable', detail: 'no edition in the answer' }, ['coldfusion']],
+    ['no expiration', { expiration: undefined }, 'coldfusion-edition', { status: 'ok', recorded: 'Developer; expiration none' }, []],
     [
       'a cfpm failure',
       { cfpmPackages: null, cfpmError: 'cfpm.sh: Permission denied' },
       'cfpm',
       { status: 'unavailable', detail: 'cfpm.sh: Permission denied' },
+      [],
     ],
-    ['no package list', { cfpmPackages: undefined }, 'cfpm', { status: 'unavailable', detail: 'no package list in the answer' }],
+    ['no package list', { cfpmPackages: undefined }, 'cfpm', { status: 'unavailable', detail: 'no package list in the answer' }, ['coldfusion']],
+    ['a null package list without cfpmError', { cfpmPackages: null }, 'cfpm', { status: 'unavailable', detail: 'no package list in the answer' }, ['coldfusion']],
     [
       'packages listed with versions, two missing',
       { cfpmPackages: ['adminapi 2023.0.13.330833', 'mail 2023.0.13.330833', 'scheduler 2023.0.13.330833'] },
@@ -738,23 +749,65 @@ describe('probeServices', () => {
         recorded: 'adminapi 2023.0.13.330833; mail 2023.0.13.330833; scheduler 2023.0.13.330833',
         detail: 'missing: spreadsheet, document',
       },
+      [],
     ],
-    ['an empty package list', { cfpmPackages: [] }, 'cfpm', { status: 'mismatch', recorded: 'none', detail: 'missing: spreadsheet, document, mail, scheduler' }],
+    [
+      'an empty package list',
+      { cfpmPackages: [] },
+      'cfpm',
+      { status: 'mismatch', recorded: 'none', detail: 'missing: spreadsheet, document, mail, scheduler' },
+      [],
+    ],
     [
       'no testbox flags',
       { testboxEnabled: undefined, testboxInstalled: undefined },
       'testbox',
       { status: 'unavailable', detail: 'no testbox flags in the answer' },
+      ['coldfusion'],
     ],
-    ['testbox disabled', { testboxEnabled: 'false' }, 'testbox', { status: 'mismatch', recorded: 'enabled false; installed true' }],
-    ['no javaVersion', { javaVersion: undefined }, 'coldfusion-java', { status: 'unavailable', detail: 'no javaVersion in the answer' }],
-    ['a Java 8 runtime', { javaVersion: '1.8.0_402' }, 'coldfusion-java', { status: 'mismatch', recorded: '1.8.0_402' }],
-    ['a javaVersion serialised as a number', { javaVersion: 17 }, 'coldfusion-java', { status: 'ok', recorded: '17' }],
-  ])('records %s in the run.cfm rows', async (_name, patch, id, expected) => {
+    ['testbox disabled', { testboxEnabled: 'false' }, 'testbox', { status: 'mismatch', recorded: 'enabled false; installed true' }, []],
+    ['no javaVersion', { javaVersion: undefined }, 'coldfusion-java', { status: 'unavailable', detail: 'no javaVersion in the answer' }, ['coldfusion']],
+    ['a Java 8 runtime', { javaVersion: '1.8.0_402' }, 'coldfusion-java', { status: 'mismatch', recorded: '1.8.0_402' }, []],
+    ['a javaVersion serialised as a number', { javaVersion: 17 }, 'coldfusion-java', { status: 'ok', recorded: '17' }, []],
+  ])('records %s in the run.cfm rows', async (_name, patch, id, expected, failedIds) => {
     const { services, failed } = await probeServices(rig({ routes: info(patch) }).deps);
 
     expect(probe(services, id)).toMatchObject(expected);
-    expect(failed).toEqual([]);
+    expect(failed).toEqual(failedIds);
+  });
+
+  const readable = { recorded: 'ColdFusion Server 2023,0,13,330833 (Developer)', status: 'ok' } as const;
+
+  it.each<[string, Record<string, () => Response>, Partial<ProbeRow>]>([
+    [
+      'an empty object',
+      { [INFO_URL]: () => respond({}) },
+      {
+        recorded: null,
+        status: 'unavailable',
+        detail:
+          'no productVersion in the answer; run.cfm?info=1 lacks or mistypes: productVersion, productLevel, edition, javaVersion, testboxEnabled, testboxInstalled, ping, siteMonitorTaskRegistered, timeZone, utcTotalOffset, cfpmPackages, cluster',
+      },
+    ],
+    ['a ping that is no flag', info({ ping: 'maybe' }), { ...readable, detail: 'run.cfm?info=1 lacks or mistypes: ping' }],
+    ['a numeric time zone', info({ timeZone: 42 }), { ...readable, detail: 'run.cfm?info=1 lacks or mistypes: timeZone' }],
+    ['a non-integer utcTotalOffset', info({ utcTotalOffset: 'x' }), { ...readable, detail: 'run.cfm?info=1 lacks or mistypes: utcTotalOffset' }],
+    ['cluster settings that are no object', info({ cluster: 'n/a' }), { ...readable, detail: 'run.cfm?info=1 lacks or mistypes: cluster' }],
+    [
+      'cluster settings with a non-flag and a non-integer peer count',
+      info({ cluster: cluster({ broadcastAppreloads: 'sometimes', peerCount: 'many' }) }),
+      { ...readable, detail: 'run.cfm?info=1 lacks or mistypes: cluster.broadcastAppreloads, cluster.peerCount' },
+    ],
+    [
+      'no siteMonitorTaskRegistered and a package line that is no text',
+      info({ siteMonitorTaskRegistered: undefined, cfpmPackages: ['mail', { name: 'scheduler' }] }),
+      { ...readable, detail: 'run.cfm?info=1 lacks or mistypes: siteMonitorTaskRegistered, cfpmPackages' },
+    ],
+  ])('fails coldfusion and names the malformed fields on %s', async (_name, routes, expected) => {
+    const { services, failed } = await probeServices(rig({ routes }).deps);
+
+    expect(failed).toEqual(['coldfusion']);
+    expect(probe(services, 'coldfusion')).toMatchObject(expected);
   });
 
   it('flags SQL Server and PostgreSQL releases outside the plan without failing the phase', async () => {
@@ -932,8 +985,8 @@ describe('mergeRecord', () => {
 describe('renderEnvironmentMarkdown and recordedSections', () => {
   const empty: EnvironmentRecord = { local: null, services: null, settings: null };
 
-  it('renders the committed placeholder rows when nothing is recorded, followed by the rows added since', async () => {
-    const committed = (await fs.readFile(COMMITTED_REPORT, 'utf8')).split('\n');
+  it('renders the committed placeholder rows when nothing is recorded, followed by the rows added since', () => {
+    const committed = COMMITTED_REPORT_TEXT.split('\n');
 
     const rendered = renderEnvironmentMarkdown(empty);
 
@@ -956,8 +1009,8 @@ describe('renderEnvironmentMarkdown and recordedSections', () => {
     );
   });
 
-  it('finds no recorded section in the committed placeholder', async () => {
-    expect(recordedSections(await fs.readFile(COMMITTED_REPORT, 'utf8'))).toEqual({});
+  it('finds no recorded section in the committed placeholder', () => {
+    expect(recordedSections(COMMITTED_REPORT_TEXT)).toEqual({});
   });
 
   it('round-trips recorded sections verbatim, from LF or CRLF text', async () => {
@@ -1243,12 +1296,33 @@ describe('runEnvironment', () => {
       ['mailpit'],
       true,
     ],
+    ['an empty run.cfm answer', 'services', { routes: { [INFO_URL]: () => respond({}) } }, 1, ['coldfusion'], false],
+    [
+      'the MySQL fallback with an empty run.cfm answer',
+      'services',
+      { env: { MURA_DBTYPE: 'mysql' }, routes: { [INFO_URL]: () => respond({}) } },
+      4,
+      ['coldfusion'],
+      true,
+    ],
     ['all services on mssql', 'services', {}, 0, [], false],
   ])('exits with the code for %s', async (_name, phase, opts, code, failed, mysqlFallback) => {
     const outcome = await runEnvironment(phase, rig(opts).deps);
 
     expect(outcome.code).toBe(code);
     expect(outcome.summary).toMatchObject({ phase, failed, mysqlFallback });
+  });
+
+  it('names the fields a run.cfm answer mistypes in the report and keeps the rows it could read', async () => {
+    const outcome = await runEnvironment('services', rig({ routes: info({ ping: 'maybe' }) }).deps);
+
+    const md = await readReport();
+    expect(outcome).toMatchObject({ code: 1, summary: { failed: ['coldfusion'], ping: null, timeZone: 'America/New_York' } });
+    expect(recordedCell(md, HEADINGS.services, 'ColdFusion product version and level')).toBe(
+      'ColdFusion Server 2023,0,13,330833 (Developer); run.cfm?info=1 lacks or mistypes: ping',
+    );
+    expect(recordedCell(md, HEADINGS.services, 'Java (ColdFusion runtime)')).toBe('17.0.12');
+    expect(recordedCell(md, HEADINGS.settings, '`ping` (running)')).toBe('unavailable');
   });
 
   it('keeps a recorded MySQL deviation on a later local run, which exits on its own probes', async () => {

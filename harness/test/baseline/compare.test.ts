@@ -205,6 +205,21 @@ async function stage(official: SavedRunnerResponse, diagnostic: SavedRunnerRespo
   await fs.writeFile(path.join(stateDir, 'baseline', 'diagnostic.json'), stableStringify(diagnostic), 'utf8');
 }
 
+/** Stages matching runner responses, then overwrites one saved response with `value` as JSON. */
+async function stageSaved(file: 'official.json' | 'diagnostic.json', value: unknown): Promise<Partial<CompareDeps>> {
+  await stage(OFFICIAL_500, diagnosticResponse(BODIES.match));
+  await fs.writeFile(path.join(stateDir, 'baseline', file), JSON.stringify(value), 'utf8');
+  return {};
+}
+
+/** Stages matching runner responses and an expected baseline holding `value` as JSON. */
+async function stageExpected(value: unknown): Promise<Partial<CompareDeps>> {
+  await stage(OFFICIAL_500, diagnosticResponse(BODIES.match));
+  const expectedPath = path.join(tmp, 'expected-baseline.json');
+  await fs.writeFile(expectedPath, JSON.stringify(value), 'utf8');
+  return { expectedPath };
+}
+
 /** Fake re-run that saves `diagnostic-rerun.json` and resolves with the saved response, as the real runner does. */
 function fakeRunDiagnostic(body: TestBoxBody = BODIES.match): Mock<RunDiagnostic> {
   return vi.fn<RunDiagnostic>(async () => {
@@ -887,12 +902,49 @@ describe('compareBaseline', () => {
         await fs.writeFile(expectedPath, JSON.stringify({ totals: EXPECTED.totals, failures: [{ bundle: 'entities' }] }), 'utf8');
         return { expectedPath };
       },
-      /not an expected baseline/,
+      /expected-baseline\.json: does not match its schema:\n[\s\S]*→ at failures\[0\]\.count\n/,
+    ],
+    [
+      'a saved diagnostic of null',
+      () => stageSaved('diagnostic.json', null),
+      /diagnostic\.json: does not match its schema:\n✖ Invalid input: expected object, received null$/,
+    ],
+    [
+      'a saved diagnostic that is an array',
+      () => stageSaved('diagnostic.json', [diagnosticResponse(BODIES.match)]),
+      /diagnostic\.json: does not match its schema:\n✖ Invalid input: expected object, received array$/,
+    ],
+    [
+      'an empty saved official response',
+      () => stageSaved('official.json', {}),
+      /official\.json: does not match its schema:\n[\s\S]*→ at runner\n[\s\S]*→ at httpStatus\n[\s\S]*→ at body$/,
+    ],
+    [
+      'a saved official httpStatus given as a string',
+      () => stageSaved('official.json', { ...OFFICIAL_500, httpStatus: '500' }),
+      /official\.json: does not match its schema:\n✖ Invalid input: expected number, received string\n\s+→ at httpStatus$/,
+    ],
+    [
+      'an expected baseline of null',
+      () => stageExpected(null),
+      /expected-baseline\.json: does not match its schema:\n✖ Invalid input: expected object, received null$/,
+    ],
+    [
+      'an expected failure group of null',
+      () => stageExpected({ ...EXPECTED, failures: [failureGroup('entities'), null] }),
+      /expected-baseline\.json: does not match its schema:\n✖ Invalid input: expected object, received null\n\s+→ at failures\[1\]$/,
+    ],
+    [
+      'an expected failure group with neither title nor titlePattern',
+      () => stageExpected({ ...EXPECTED, failures: [{ ...failureGroup('utility'), title: undefined }] }),
+      /expected-baseline\.json: does not match its schema:\n✖ needs exactly one of title and titlePattern\n\s+→ at failures\[0\]$/,
     ],
   ])('rejects %s and writes nothing', async (_label, prepare, message) => {
     const overrides = await prepare();
+    const outcome = compareBaseline(deps(fakeRunDiagnostic(), overrides));
 
-    await expect(compareBaseline(deps(fakeRunDiagnostic(), overrides))).rejects.toThrow(message);
+    await expect(outcome).rejects.toThrow(message);
+    await expect(outcome).rejects.not.toBeInstanceOf(TypeError);
     expect(await exists(path.join(reportsDir, 'baseline.json'))).toBe(false);
     expect(await exists(masaPath)).toBe(false);
   });

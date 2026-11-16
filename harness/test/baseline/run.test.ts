@@ -1,8 +1,10 @@
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { request as httpRequest, type RequestOptions } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import {
@@ -24,6 +26,16 @@ import { HttpRequestError } from '../../src/lib/http.js';
 import { REPO_ROOT, type EnvLike } from '../../src/lib/paths.js';
 import { stableStringify } from '../../src/lib/report.js';
 
+vi.mock('node:http', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:http')>();
+  return { ...actual, request: vi.fn() };
+});
+
+vi.mock('node:https', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:https')>();
+  return { ...actual, request: vi.fn() };
+});
+
 const LEGACY = 'http://legacy.test';
 const COMMAND = 'harness/src/baseline/run.ts';
 const USAGE = 'usage: npm run baseline:run (takes no flags)';
@@ -43,24 +55,51 @@ interface FakeFetch {
   sent: Sent[];
 }
 
-type Handler = (req: IncomingMessage, res: ServerResponse, body: string) => void;
+/** One request the in-memory `node:http`/`node:https` transport received. */
+interface Exchange {
+  transport: 'http' | 'https';
+  method: string | undefined;
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/** IncomingMessage stand-in: a body stream with the status line, raw headers and `complete`. */
+class FakeResponse extends PassThrough {
+  complete = false;
+
+  constructor(
+    readonly statusCode: number,
+    readonly statusMessage: string,
+    readonly rawHeaders: string[],
+  ) {
+    super();
+  }
+
+  /** Ends the body and marks the message complete, as node does before 'end'. */
+  finish(body = ''): void {
+    this.complete = true;
+    this.end(body);
+  }
+}
+
+/** Answers one exchange by passing a response to `respond`, or by emitting 'error' on `req`. */
+type Script = (exchange: Exchange, respond: (res: FakeResponse) => void, req: EventEmitter) => void;
 
 let tmp: string;
 let env: EnvLike;
-let servers: Server[];
+let exchanges: Exchange[];
 
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'opt2-baseline-run-'));
   env = { OPT2_STATE_DIR: tmp, LEGACY_ORIGIN: LEGACY };
-  servers = [];
+  exchanges = [];
 });
 
 afterEach(async () => {
   vi.unstubAllEnvs();
-  for (const server of servers) {
-    server.closeAllConnections();
-    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
-  }
+  vi.mocked(httpRequest).mockReset();
+  vi.mocked(httpsRequest).mockReset();
   await fs.rm(tmp, { recursive: true, force: true });
 });
 
@@ -98,15 +137,36 @@ function tickingClock(startIso: string, stepMs: number): () => Date {
   return () => new Date(start + stepMs * calls++);
 }
 
-async function startServer(handler: Handler): Promise<string> {
-  const server = createServer((req, res) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
-    req.on('end', () => handler(req, res, Buffer.concat(chunks).toString('utf8')));
-  });
-  servers.push(server);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+/** `request` stand-in for `transport`: records each exchange on `end` and runs `script` on a later turn. */
+function fakeRequest(transport: Exchange['transport'], script: Script) {
+  return (url: URL, options: RequestOptions, onResponse: (res: FakeResponse) => void): EventEmitter => {
+    const req = new EventEmitter();
+    const { signal } = options;
+    const abort = (): void => {
+      req.emit('error', Object.assign(new Error('The operation was aborted'), { name: 'AbortError', code: 'ABORT_ERR' }));
+    };
+    if (signal?.aborted) queueMicrotask(abort);
+    else signal?.addEventListener('abort', abort, { once: true });
+    return Object.assign(req, {
+      end(body?: Buffer): void {
+        const exchange: Exchange = {
+          transport,
+          method: options.method,
+          url: url.href,
+          headers: { ...(options.headers as Record<string, string>) },
+          body: body?.toString('utf8') ?? '',
+        };
+        exchanges.push(exchange);
+        setImmediate(() => script(exchange, onResponse, req));
+      },
+    });
+  };
+}
+
+/** Routes `node:http` and `node:https` requests to `script`. */
+function serve(script: Script): void {
+  vi.mocked(httpRequest).mockImplementation(fakeRequest('http', script) as unknown as typeof httpRequest);
+  vi.mocked(httpsRequest).mockImplementation(fakeRequest('https', script) as unknown as typeof httpsRequest);
 }
 
 async function readSaved(file: string): Promise<{ text: string; saved: SavedRunnerResponse }> {
@@ -390,17 +450,19 @@ describe('lowerKeysDeep', () => {
   });
 });
 
-describe('longRequestFetch against a local server', () => {
+describe('longRequestFetch over node:http and node:https', () => {
   it('returns a delayed 500 with its headers and JSON body', async () => {
-    const origin = await startServer((_req, res) => {
+    serve((_exchange, respond) => {
       setTimeout(() => {
-        res.writeHead(500, 'Internal Server Error', { 'content-type': 'application/json', 'X-Opt2-Probe': 'delayed' });
-        res.end(JSON.stringify({ error: 'boom', totalSpecs: 0 }));
+        const rawHeaders = ['content-type', 'application/json', 'X-Opt2-Probe', 'delayed'];
+        const res = new FakeResponse(500, 'Internal Server Error', rawHeaders);
+        respond(res);
+        res.finish(JSON.stringify({ error: 'boom', totalSpecs: 0 }));
       }, 50);
     });
     const started = performance.now();
 
-    const res = await longRequestFetch(`${origin}${OFFICIAL_RUNNER_PATH}`);
+    const res = await longRequestFetch(`${LEGACY}${OFFICIAL_RUNNER_PATH}`);
 
     expect(performance.now() - started).toBeGreaterThanOrEqual(45);
     expect(res.status).toBe(500);
@@ -411,27 +473,31 @@ describe('longRequestFetch against a local server', () => {
   });
 
   it('returns a 200 text body and sends a GET to the requested path', async () => {
-    const seen: { method?: string; url?: string }[] = [];
-    const origin = await startServer((req, res) => {
-      seen.push({ method: req.method, url: req.url });
-      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
-      res.end('runner ready');
+    serve((_exchange, respond) => {
+      const res = new FakeResponse(200, 'OK', ['content-type', 'text/plain; charset=utf-8']);
+      respond(res);
+      res.finish('runner ready');
     });
 
-    const res = await longRequestFetch(new URL(`${origin}${DIAGNOSTIC_RUNNER_PATH}`));
+    const res = await longRequestFetch(new URL(`${LEGACY}${DIAGNOSTIC_RUNNER_PATH}`));
 
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('runner ready');
-    expect(seen).toEqual([{ method: 'GET', url: DIAGNOSTIC_RUNNER_PATH }]);
+    expect(exchanges).toEqual([
+      { transport: 'http', method: 'GET', url: `${LEGACY}${DIAGNOSTIC_RUNNER_PATH}`, headers: {}, body: '' },
+    ]);
+    expect(httpsRequest).not.toHaveBeenCalled();
   });
 
-  it('sends a POST body and headers, which the server echoes', async () => {
-    const origin = await startServer((req, res, body) => {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ method: req.method, contentType: req.headers['content-type'], body }));
+  it('sends a POST body and headers, which the transport echoes', async () => {
+    serve((exchange, respond) => {
+      const res = new FakeResponse(200, 'OK', ['content-type', 'application/json']);
+      respond(res);
+      const { method, headers, body } = exchange;
+      res.finish(JSON.stringify({ method, contentType: headers['content-type'], body }));
     });
 
-    const res = await longRequestFetch(`${origin}/echo`, {
+    const res = await longRequestFetch(`${LEGACY}/echo`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ reporter: 'json' }),
@@ -440,13 +506,28 @@ describe('longRequestFetch against a local server', () => {
     expect(await res.json()).toEqual({ method: 'POST', contentType: 'application/json', body: '{"reporter":"json"}' });
   });
 
-  it('returns a null body for a 204', async () => {
-    const origin = await startServer((_req, res) => {
-      res.writeHead(204);
-      res.end();
+  it('sends an https: URL through node:https', async () => {
+    serve((_exchange, respond) => {
+      const res = new FakeResponse(200, 'OK', ['content-type', 'text/plain']);
+      respond(res);
+      res.finish('tls ok');
     });
 
-    const res = await longRequestFetch(`${origin}/empty`);
+    const res = await longRequestFetch('https://legacy.test/secure');
+
+    expect(await res.text()).toBe('tls ok');
+    expect(exchanges).toMatchObject([{ transport: 'https', method: 'GET', url: 'https://legacy.test/secure' }]);
+    expect(httpRequest).not.toHaveBeenCalled();
+  });
+
+  it('returns a null body for a 204', async () => {
+    serve((_exchange, respond) => {
+      const res = new FakeResponse(204, 'No Content', []);
+      respond(res);
+      res.finish();
+    });
+
+    const res = await longRequestFetch(`${LEGACY}/empty`);
 
     expect(res.status).toBe(204);
     expect(res.body).toBeNull();
@@ -454,39 +535,42 @@ describe('longRequestFetch against a local server', () => {
   });
 
   it('rejects with the RangeError a Response raises for a status outside 200-599', async () => {
-    const origin = await startServer((_req, res) => {
-      res.writeHead(600);
-      res.end('odd');
+    serve((_exchange, respond) => {
+      const res = new FakeResponse(600, '', []);
+      respond(res);
+      res.finish('odd');
     });
 
-    await expect(longRequestFetch(`${origin}/odd`)).rejects.toBeInstanceOf(RangeError);
+    await expect(longRequestFetch(`${LEGACY}/odd`)).rejects.toBeInstanceOf(RangeError);
   });
 
   it('rejects when the connection is refused', async () => {
-    const closed = createServer();
-    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
-    const { port } = closed.address() as AddressInfo;
-    await new Promise<void>((resolve) => closed.close(() => resolve()));
+    const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:80'), { code: 'ECONNREFUSED', syscall: 'connect' });
+    serve((_exchange, _respond, req) => req.emit('error', refused));
 
-    await expect(longRequestFetch(`http://127.0.0.1:${port}/`)).rejects.toMatchObject({ code: 'ECONNREFUSED' });
+    await expect(longRequestFetch(`${LEGACY}/`)).rejects.toMatchObject({ code: 'ECONNREFUSED' });
   });
 
   it("rejects with the caller's abort reason", async () => {
-    const origin = await startServer(() => undefined);
+    serve(() => undefined);
     const controller = new AbortController();
     const reason = new Error('caller gave up');
     setTimeout(() => controller.abort(reason), 20);
 
-    await expect(longRequestFetch(`${origin}/never`, { signal: controller.signal })).rejects.toBe(reason);
+    await expect(longRequestFetch(`${LEGACY}/never`, { signal: controller.signal })).rejects.toBe(reason);
+    expect(exchanges).toHaveLength(1);
   });
 
   it('rejects when the response closes before it completes', async () => {
-    const origin = await startServer((_req, res) => {
-      res.writeHead(200, { 'content-length': '100' });
-      res.write('partial', () => res.socket?.destroy());
+    serve((_exchange, respond) => {
+      const res = new FakeResponse(200, 'OK', ['content-length', '100']);
+      respond(res);
+      res.write('partial', () => res.destroy());
     });
 
-    await expect(longRequestFetch(`${origin}/truncated`)).rejects.toThrow(/aborted|closed before it completed/);
+    await expect(longRequestFetch(`${LEGACY}/truncated`)).rejects.toThrow(
+      `response from ${LEGACY} closed before it completed`,
+    );
   });
 });
 
@@ -561,21 +645,21 @@ describe('main', () => {
   });
 
   it('uses longRequestFetch by default against the legacy origin', async () => {
-    const seen: (string | undefined)[] = [];
-    const origin = await startServer((req, res) => {
-      seen.push(req.url);
-      if (req.url === OFFICIAL_RUNNER_PATH) {
-        res.writeHead(500, { 'content-type': 'text/html;charset=UTF-8' });
-        res.end(OFFICIAL_FIXTURE.body as string);
-      } else {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(DIAGNOSTIC_TEXT);
-      }
+    serve((exchange, respond) => {
+      const official = exchange.url.endsWith(OFFICIAL_RUNNER_PATH);
+      const res = official
+        ? new FakeResponse(500, 'Internal Server Error', ['content-type', 'text/html;charset=UTF-8'])
+        : new FakeResponse(200, 'OK', ['content-type', 'application/json']);
+      respond(res);
+      res.finish(official ? (OFFICIAL_FIXTURE.body as string) : DIAGNOSTIC_TEXT);
     });
 
-    const outcome = await main([], { env: { OPT2_STATE_DIR: tmp, LEGACY_ORIGIN: origin } });
+    const outcome = await main([], { env: { OPT2_STATE_DIR: tmp, LEGACY_ORIGIN: LEGACY } });
 
-    expect(seen).toEqual([OFFICIAL_RUNNER_PATH, DIAGNOSTIC_RUNNER_PATH]);
+    expect(exchanges.map(({ transport, method, url }) => ({ transport, method, url }))).toEqual([
+      { transport: 'http', method: 'GET', url: `${LEGACY}${OFFICIAL_RUNNER_PATH}` },
+      { transport: 'http', method: 'GET', url: `${LEGACY}${DIAGNOSTIC_RUNNER_PATH}` },
+    ]);
     expect(outcome.code).toBe(0);
     expect(outcome.summary).toMatchObject({
       official: { httpStatus: 500, specs: 0 },
