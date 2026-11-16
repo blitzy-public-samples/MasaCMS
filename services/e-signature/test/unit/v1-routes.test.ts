@@ -1,9 +1,9 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** `/v1/esignature` routes through `app.inject` over a throwaway `esignature` schema, every answer checked against the contract. */
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { Roles, collectRouteMatrix, hasAnyRole, type RouteMatrixEntry } from '@opt2/platform/auth';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
@@ -19,16 +19,12 @@ import { OWNER, UNITS } from '../../src/repo/tables.js';
 import { V1_PREFIX, registerV1Routes, type EsignatureV1Deps } from '../../src/routes/v1.js';
 import { AUDITOR_USER_ID, OTHER_USER_ID, SIGNER_USER_ID, SUBJECTS, headersFor, userHeaders } from '../helpers/tokens.js';
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-
 interface ContractOperation {
   'x-opt2-transport'?: string;
   'x-opt2-requires'?: string[];
 }
 
-const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 

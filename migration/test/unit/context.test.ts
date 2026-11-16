@@ -314,19 +314,26 @@ describe('createMigrationContext', () => {
     else expect(outcome).toBe(failure);
   });
 
-  it('writes default log lines to stderr, leaving stdout to the command summary', async () => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const stdout = vi.spyOn(process.stdout, 'write');
-    const { logger: _injected, ...ports } = injectedPorts();
-    const ctx = await createMigrationContext({ env: envWith({ LOG_LEVEL: 'debug' }), ...ports });
+  it.each(['opt2-cli', 'migration'])(
+    'writes default log lines as service %s to stderr, leaving stdout to the command summary',
+    async (service) => {
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const stdout = vi.spyOn(process.stdout, 'write');
+      const { logger: _injected, ...ports } = injectedPorts();
+      const ctx = await createMigrationContext({ env: envWith({ LOG_LEVEL: 'debug', OPT2_SERVICE_NAME: service }), ...ports });
 
-    ctx.logger.info('migration context ready');
+      ctx.logger.info('migration context ready');
 
-    expect(ctx.logger.level).toBe('debug');
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('"message":"migration context ready"'));
-    expect(stdout).not.toHaveBeenCalledWith(expect.stringContaining('migration context ready'));
-    await ctx.close();
-  });
+      expect(ctx.logger.level).toBe('debug');
+      const lines = stderr.mock.calls
+        .map(([chunk]) => String(chunk))
+        .filter((chunk) => chunk.includes('"message":"migration context ready"'))
+        .map((chunk): unknown => JSON.parse(chunk));
+      expect(lines).toEqual([expect.objectContaining({ service, version: '1.0.0', env: 'local' })]);
+      expect(stdout).not.toHaveBeenCalledWith(expect.stringContaining('migration context ready'));
+      await ctx.close();
+    },
+  );
 
   it('loads the local signing keys at the first call and retries a failed load at the next', async () => {
     const { base, close } = await probeServer([]);

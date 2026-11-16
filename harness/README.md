@@ -45,8 +45,9 @@ A variable without a default is required by the commands under "Needed by"; the 
 | `OPT2_LEGACY_START_TIMEOUT_S` | `up.sh`, `test-all.sh`, `down.sh` | `900` | Seconds to wait for a legacy start |
 | `MAILPIT_API_URL` | `up.sh` | `http://127.0.0.1:8025` | Mailpit API for `legacy-fixtures/load-fixtures.sh` |
 | `OPT2_STATE_DIR`, `OPT2_PRISTINE_DIR` | all | see [State outside the checkout](#state-outside-the-checkout) | Run state and the pristine baseline |
+| `OPT2_REPORTS_DIR` | `up.sh`, `test-all.sh` | `opt2/reports` | Reports directory; a relative value resolves against the checkout. Also passed to the migration service and the `opt2-*` CLIs |
 
-`clean-checkout-proof.sh` passes its environment to the other three and reads `OPT2_CLONE_PARENT`, the clone's parent directory (default `$HOME/.opt2`). Other exported `MURA_*` settings reach Masa and, credentials aside, the target processes. `up.sh` sets each target process's own variables (`PORT`, `OPT2_SERVICE_NAME`, `OPT2_SERVICE_URLS`, `PG_USER` and the rest) from `repro/ports.env` and the generated secrets; see [platform configuration](../platform/README.md#configuration).
+`clean-checkout-proof.sh` passes its environment to the other three except `OPT2_REPORTS_DIR`, so the clone writes its reports inside the clone. It reads `OPT2_CLONE_PARENT`, the clone's parent directory (default `$HOME/.opt2`). Other exported `MURA_*` settings reach Masa and, credentials aside, the target processes, except that `MURA_APPRELOADKEY` reaches only gateway, web, identity, people, programs-sites, strategies-content and migration, `MURA_S3ASSETS`, which can embed S3 credentials, reaches only web, and every process gets `MURA_PORT` and `MURA_PROXYPORT` set to the gateway port, as legacy's `server.json` does. `up.sh` sets each target process's own variables (`PORT`, `OPT2_SERVICE_NAME`, `OPT2_SERVICE_URLS`, `PG_USER` and the rest) from `repro/ports.env` and the generated secrets; see [platform configuration](../platform/README.md#configuration).
 
 ### `up.sh`
 

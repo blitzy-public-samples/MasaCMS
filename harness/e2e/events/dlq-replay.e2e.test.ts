@@ -17,6 +17,7 @@ import {
   type RawMessage,
   type TopicValidator,
 } from '@opt2/platform/events';
+import { cfDateTimeFormat, cfUuid } from '@opt2/platform/legacy-compat';
 import { parseSlotName, queueDefinition } from '@opt2/platform/tasks';
 import {
   TENANT_A,
@@ -82,7 +83,7 @@ const SOURCE = 'harness/e2e/events/dlq-replay.e2e.test.ts';
 const TABLE_VERSION = 'v0002';
 const ARCHIVED_TOPIC = 'people.person.archived.v1';
 const FIXTURE_API = '/legacy-fixtures/cfml/api.cfm';
-/** Path of the owners' `migrationPosition` operation in the stub contract. */
+/** Path of the owners' `migrationPosition` operation, which every service serves. */
 const POSITION_PATH = '/internal/v1/migration/position';
 const SWEEP_QUEUE = 'stub-outbox-sweep';
 const OPT2_TASKS_BIN = path.join(HARNESS_ROOT, 'node_modules', '.bin', 'opt2-tasks');
@@ -100,8 +101,7 @@ const NO_DROP_SURFACE = 'no supported control surface drops a live task without 
 /** Keys this suite records; `fanoutRedelivery` belongs to seams.e2e.test.ts. */
 const OWN_KEYS: readonly EventE2EKey[] = [...EVENT_CHECK_IDS.filter((id) => id !== 'fanoutRedelivery'), 'outboxReplay'];
 
-// Rule "WIP - Minimal Change 2" (no timeouts) does not bind this refactor run; each bound keeps a stalled delivery from
-// hanging test-all stage 7.
+// Each bound keeps a stalled delivery from hanging the run.
 const SETUP_TIMEOUT_MS = 120_000;
 const DELIVERY_TEST_TIMEOUT_MS = 120_000;
 /** Checks that stop, kill or restart a process: the 60 s sweep interval or the push backoff, plus the restart and restore. */
@@ -116,6 +116,13 @@ const PULL_POLL: Required<PollBounds> = { timeoutMs: 30_000, intervalMs: 1_000 }
 const PULL_WINDOW_MS = 5_000;
 /** Quiet period after the delivery evidence before an effect is read again. */
 const SETTLE_MS = 5_000;
+/** Out-of-order process check: three receipts and two blackout polls at their bound, the envelope pull and the reads around them. */
+const PROCESS_ORDER_TEST_TIMEOUT_MS = 5 * DELIVERY_POLL.timeoutMs + PULL_POLL.timeoutMs + 90_000;
+/** Aggregate versions of the out-of-order archives: the later archive is delivered first. */
+const LATE_VERSION = 2;
+const EARLY_VERSION = 1;
+/** CFML mask of the contract's local `timestamp(3)` text, `yyyy-MM-dd HH:mm:ss.SSS`. */
+const LOCAL_TIMESTAMP_MASK = 'yyyy-MM-dd HH:nn:ss.lll';
 
 type Evidence = Record<string, unknown>;
 type Row = Record<string, unknown>;
@@ -131,17 +138,26 @@ interface StubNote {
   rowVersion: number;
 }
 
-/** Fields of the stub contract's `PositionResponse` this suite reads. */
+/** Fields of the owners' `PositionResponse` this suite reads. */
 interface PositionAnswer {
   outbox: { unpublished: number; held: number } | null;
   inbox: { bySubscription: Record<string, number>; receipts?: Record<string, string[]> } | null;
 }
 
-/** Unpublished outbox rows, inbox rows of the note subscription and receipt tenants by lower-cased event id. */
-interface StubPosition {
-  unpublished: number;
-  subscription: number;
+/** Unpublished outbox rows (null without an outbox), inbox rows by subscription and receipt tenants by lower-cased event id. */
+interface ServicePosition {
+  unpublished: number | null;
+  bySubscription: Record<string, number>;
   receipts: Record<string, string[]>;
+}
+
+/** Payload of `people.person.archived.v1`. */
+interface PersonArchived {
+  personId: string;
+  siteId: string;
+  effectiveFrom: string;
+  archiveId: string;
+  archivedAt: string;
 }
 
 /** One `opt2-tasks reconcile` result line. */
@@ -166,19 +182,60 @@ interface ArchivePerson {
   siteId: string;
 }
 
-/** Expected and observed blackout day ids of one person in one registry-derived destination tenant. */
-interface BlackoutDestination {
+/** A registry-derived destination tenant of a person's archive. */
+interface ArchiveTarget {
   siteId: string;
   tenantId: string;
   reason: 'person-tenant' | 'userPool';
+}
+
+/** Expected and observed blackout day ids of one person in one registry-derived destination tenant. */
+interface BlackoutDestination extends ArchiveTarget {
   expectedDayIds: string[];
   blackoutDayIds: string[];
 }
 
-/** An archived person with every destination the consumer's registry derives for it. */
-interface ArchiveSubject extends ArchivePerson {
+/** A person with the gateway's answer to its archive, null until archived. */
+interface ArchivedPerson extends ArchivePerson {
   archive: { status: number; body: string } | null;
+}
+
+/** An archived person with every destination the consumer's registry derives for it. */
+interface ArchiveSubject extends ArchivedPerson {
   destinations: BlackoutDestination[];
+}
+
+/** One `timesheets.blackout` row: its day and the archive that wrote it, case-folded. */
+interface BlackoutRecord {
+  dayId: string;
+  archiveId: string;
+}
+
+/** The out-of-order subject in one destination tenant: the days each archive adds, the rows held before and the rows read last. */
+interface OrderDestination extends ArchiveTarget {
+  /** Days open on or after the later effective date, which the version 2 archive blacks out. */
+  lateDayIds: string[];
+  /** Days open from the earlier effective date until the later one, which only the version 1 archive blacks out. */
+  earlyDayIds: string[];
+  held: BlackoutRecord[];
+  rows: BlackoutRecord[];
+}
+
+/** A person archived twice out of order; `laterFrom` is its latest open work date, the version 2 archive's effective date. */
+interface OrderSubject extends ArchivedPerson {
+  laterFrom: string;
+  destinations: OrderDestination[];
+}
+
+/** One out-of-order archive envelope, its delivery and the tenants holding its inbox receipt. */
+interface OrderEvent {
+  eventId: string;
+  aggregateVersion: number;
+  archiveId: string;
+  effectiveFrom: string;
+  messageId: string | null;
+  receipts: string[];
+  blackouts: { polls: number; elapsedMs: number; timedOut: boolean } | null;
 }
 
 interface TenantTimesheets {
@@ -189,8 +246,8 @@ interface TenantTimesheets {
 let fixtures: ReturnType<typeof fixtureStatus> | undefined;
 let noteSession: HttpSession | undefined;
 let archiveSession: HttpSession | undefined;
-let sharedNote: StubNote | undefined;
 let noteValidator: TopicValidator<StubNote> | undefined;
+let archivedValidator: TopicValidator<PersonArchived> | undefined;
 let seedStore: SeedStore | undefined;
 
 function messageOf(err: unknown): string {
@@ -286,6 +343,16 @@ function notePayload(candidate: unknown): StubNote {
   return checked.value;
 }
 
+/** `candidate` as a `people.person.archived.v1` payload; throws with the schema errors when it is not one. */
+function archivedPayload(candidate: unknown): PersonArchived {
+  archivedValidator ??= compileTopicSchema<PersonArchived>(readTopicSchema(repoPath(topicSchemaRelativePath(ARCHIVED_TOPIC))));
+  const checked = archivedValidator.validatePayload(candidate);
+  if (!checked.ok) {
+    throw new Error(`not a ${ARCHIVED_TOPIC} payload (${checked.errors.join('; ')}): ${JSON.stringify(candidate)}`);
+  }
+  return checked.value;
+}
+
 /** A tenant-a `stub.note.created.v1` envelope of `note` at `version`; a fresh `eventId` unless one is given. */
 function noteEnvelope(note: StubNote, version: number, eventId?: string): EventEnvelope<StubNote> {
   return testEnvelope({
@@ -333,40 +400,53 @@ async function awaitProjection(
   return outcome.value;
 }
 
-/** The note `duplicateDelivery` created and saw projected, else a fresh one once projected. */
-async function projectedNote(): Promise<StubNote> {
-  if (sharedNote !== undefined) return sharedNote;
+/** A new tenant-a note and the projection of its first delivery. */
+async function freshProjectedNote(): Promise<{ note: StubNote; projection: StubProjection }> {
   const note = await createNote(notes(), { title: `Delivery guarantees note ${tag()}`, body: 'Event delivery guarantee evidence.' });
-  await awaitProjection(note.noteId, () => true, 'the first delivery');
-  sharedNote = note;
-  return note;
+  const projection = await awaitProjection(note.noteId, () => true, 'the first delivery');
+  return { note, projection };
 }
 
-/** The stub's outbox and inbox position with the receipts of `eventIds`, read as `platform.migration`. */
-async function stubPosition(eventIds: readonly string[]): Promise<StubPosition> {
-  const base = serviceUrl('stub');
+/** `service`'s outbox and inbox position with the receipts of `eventIds`, read as `platform.migration`. */
+async function positionOf(service: ServiceName, eventIds: readonly string[]): Promise<ServicePosition> {
+  const base = serviceUrl(service);
   const url = new URL(POSITION_PATH, base);
   if (eventIds.length > 0) url.searchParams.set('eventIds', eventIds.join(','));
-  const headers = await (await migrationInvoker()).headersFor({ callee: 'stub', url: url.href });
+  const headers = await (await migrationInvoker()).headersFor({ callee: service, url: url.href });
   const result = await createHttpSession({ baseUrl: base }).get(url.href, { headers });
-  if (result.status !== 200) throw new Error(`stub migration position answered ${result.status}: ${result.text}`);
+  if (result.status !== 200) throw new Error(`${service} migration position answered ${result.status}: ${result.text}`);
   const { outbox, inbox } = result.json<PositionAnswer>();
-  if (outbox === null || inbox === null) throw new Error(`stub migration position lacks its outbox or inbox: ${result.text}`);
-  return {
-    unpublished: outbox.unpublished,
-    subscription: inbox.bySubscription[STUB_DLQ_SUBSCRIPTION] ?? 0,
-    receipts: inbox.receipts ?? {},
-  };
+  if (inbox === null) throw new Error(`${service} migration position lacks its inbox: ${result.text}`);
+  return { unpublished: outbox?.unpublished ?? null, bySubscription: inbox.bySubscription, receipts: inbox.receipts ?? {} };
 }
 
-/** Polls until `eventId` holds a tenant-a inbox receipt at the stub, so its delivery was consumed and acknowledged. */
-async function awaitReceipt(eventId: string): Promise<StubPosition> {
-  const id = eventId.toLowerCase();
-  const tenant = TENANT_A.tenantId.toLowerCase();
-  const outcome = await pollUntil(() => stubPosition([id]), (position) => (position.receipts[id] ?? []).includes(tenant), {
-    poll: DELIVERY_POLL,
-  });
-  if (outcome.timedOut) throw new Error(`no tenant-a inbox receipt of event ${id} within ${DELIVERY_POLL.timeoutMs} ms`);
+/** Inbox rows of the stub's note subscription in `position`. */
+function noteInboxRows(position: ServicePosition): number {
+  return position.bySubscription[STUB_DLQ_SUBSCRIPTION] ?? 0;
+}
+
+/** Sorted, lower-cased tenants holding an inbox receipt of `eventId` in `position`. */
+function receiptTenants(position: ServicePosition, eventId: string): string[] {
+  return (position.receipts[eventId.toLowerCase()] ?? []).map((tenantId) => tenantId.toLowerCase()).sort();
+}
+
+/** Polls until `eventId` holds an inbox receipt at `service` in each of `tenantIds`, so each destination consumed it. */
+async function awaitReceipt(service: ServiceName, eventId: string, tenantIds: readonly string[]): Promise<ServicePosition> {
+  const tenants = tenantIds.map((tenantId) => tenantId.toLowerCase());
+  const outcome = await pollUntil(
+    () => positionOf(service, [eventId]),
+    (position) => {
+      const held = receiptTenants(position, eventId);
+      return tenants.every((tenant) => held.includes(tenant));
+    },
+    { poll: DELIVERY_POLL },
+  );
+  if (outcome.timedOut) {
+    throw new Error(
+      `no ${service} inbox receipt of event ${eventId} in each of ${tenants.join(', ')} within ${DELIVERY_POLL.timeoutMs} ms; ` +
+        `last receipts ${JSON.stringify(receiptTenants(outcome.value, eventId))}`,
+    );
+  }
   return outcome.value;
 }
 
@@ -442,13 +522,26 @@ function sheetOwners(data: TenantTimesheets): Map<string, string> {
   return new Map(data.sheets.map((sheet) => [idKey(text(sheet, 'timesheet_id')), idKey(text(sheet, 'person_id'))]));
 }
 
-/** Ids of `personId`'s days in `data` that are open on or after `effectiveFrom`. */
-function openDayIds(data: TenantTimesheets, personId: string, effectiveFrom: string): string[] {
+/** `personId`'s days in `data` that are open on or after `effectiveFrom`. */
+function openDays(data: TenantTimesheets, personId: string, effectiveFrom: string): Row[] {
   const owners = sheetOwners(data);
   const person = idKey(personId);
-  return data.days
-    .filter((day) => owners.get(idKey(text(day, 'timesheet_id'))) === person && isOpenDay(day, effectiveFrom))
-    .map((day) => idKey(text(day, 'day_id')));
+  return data.days.filter((day) => owners.get(idKey(text(day, 'timesheet_id'))) === person && isOpenDay(day, effectiveFrom));
+}
+
+/** Comparison form of a day's id. */
+function dayIdOf(day: Row): string {
+  return idKey(text(day, 'day_id'));
+}
+
+/** `yyyy-mm-dd` date of a day's canonical `work_date` text. */
+function workDateOf(day: Row): string {
+  return text(day, 'work_date').slice(0, 10);
+}
+
+/** Ids of `personId`'s days in `data` that are open on or after `effectiveFrom`. */
+function openDayIds(data: TenantTimesheets, personId: string, effectiveFrom: string): string[] {
+  return openDays(data, personId, effectiveFrom).map(dayIdOf);
 }
 
 /** Persons of `reserved.rehearsal`, whom only the GS-PE-RH scenarios may touch. */
@@ -459,13 +552,15 @@ function reservedPersons(): Set<string> {
 }
 
 /**
- * `count` tenant-a persons, in sheet key order, with open timesheet days on or after `effectiveFrom`, outside
- * `reserved.rehearsal` and without an archive record, chosen as seams.ts chooses its seam-1 person.
+ * `count` tenant-a persons, in sheet key order, with open timesheet days on at least `minOpenDates` work dates on or
+ * after `effectiveFrom`, outside `reserved.rehearsal` and without an archive record, chosen as seams.ts chooses its
+ * seam-1 person.
  */
 async function freshPersons(
   count: number,
   effectiveFrom: string,
   cache: Map<string, TenantTimesheets>,
+  minOpenDates = 1,
 ): Promise<ArchivePerson[]> {
   const tenantId = TENANT_A.tenantId;
   const excluded = reservedPersons();
@@ -473,17 +568,20 @@ async function freshPersons(
   for (const row of archives.rows) excluded.add(idKey(text(row, 'person_id')));
   const data = await timesheetsOf(tenantId, cache);
   const owners = sheetOwners(data);
-  const open = new Set<string>();
+  const openDates = new Map<string, Set<string>>();
   for (const day of data.days) {
     const owner = owners.get(idKey(text(day, 'timesheet_id')));
-    if (owner !== undefined && isOpenDay(day, effectiveFrom)) open.add(owner);
+    if (owner === undefined || !isOpenDay(day, effectiveFrom)) continue;
+    const dates = openDates.get(owner) ?? new Set<string>();
+    dates.add(workDateOf(day));
+    openDates.set(owner, dates);
   }
   const chosen: ArchivePerson[] = [];
   const seen = new Set<string>();
   for (const sheet of data.sheets) {
     const userId = text(sheet, 'person_id');
     const key = idKey(userId);
-    if (seen.has(key) || excluded.has(key) || !open.has(key)) continue;
+    if (seen.has(key) || excluded.has(key) || (openDates.get(key)?.size ?? 0) < minOpenDates) continue;
     seen.add(key);
     const user = asRecord(seed().select({ as: 'person', source: 'dataset', path: 'masa.users', where: { userID: userId } }));
     const siteId = text(user, 'siteID');
@@ -493,44 +591,58 @@ async function freshPersons(
   }
   throw new Error(
     `only ${chosen.length} of ${count} ${TENANT_A.siteId} persons outside reserved.rehearsal and without an archive ` +
-      `have open days on or after ${effectiveFrom}`,
+      `have open days on ${minOpenDates} or more work dates on or after ${effectiveFrom}`,
   );
 }
 
-/** Sorted day ids of `personId`'s `timesheets.blackout` rows in `tenantId`, one entry per row. */
-async function blackoutRowsFor(personId: string, tenantId: string): Promise<string[]> {
+/** Blackout records in day id order, the order a default string sort gives the ids. */
+function byDayId(a: BlackoutRecord, b: BlackoutRecord): number {
+  return a.dayId < b.dayId ? -1 : a.dayId > b.dayId ? 1 : 0;
+}
+
+/** `personId`'s `timesheets.blackout` rows in `tenantId`, sorted by day id, one entry per row. */
+async function blackoutsOf(personId: string, tenantId: string): Promise<BlackoutRecord[]> {
   const unit = unitFor('timesheets', 'blackout');
   const { rows } = await readOwnerExport({ service: 'timesheets', unit, tenantId }, await seamDeps());
   const person = idKey(personId);
   return rows
     .filter((row) => idKey(text(row, 'person_id')) === person)
-    .map((row) => idKey(text(row, 'day_id')))
-    .sort();
+    .map((row) => ({ dayId: idKey(text(row, 'day_id')), archiveId: idKey(text(row, 'archive_id')) }))
+    .sort(byDayId);
+}
+
+/** Sorted day ids of `personId`'s `timesheets.blackout` rows in `tenantId`, one entry per row. */
+async function blackoutRowsFor(personId: string, tenantId: string): Promise<string[]> {
+  return (await blackoutsOf(personId, tenantId)).map((row) => row.dayId);
 }
 
 /**
- * `person` with each destination the consumer's registry derives: its own site's tenant and every tenant whose public or
- * private user pool is that site. Each expects one blackout per open day plus the blackouts it already held.
+ * Destinations the consumer's registry derives for `person`: its own site's tenant and every tenant whose public or
+ * private user pool is that site.
  */
+function archiveTargets(person: ArchivePerson, registry: readonly RegistrySite[]): ArchiveTarget[] {
+  const site = person.siteId.toLowerCase();
+  const own = registry.find((entry) => entry.siteId.toLowerCase() === site);
+  if (own === undefined) throw new Error(`the site registry holds no ${person.siteId}`);
+  const targets: ArchiveTarget[] = [{ siteId: own.siteId, tenantId: own.tenantId, reason: 'person-tenant' }];
+  for (const entry of registry) {
+    const known = targets.some((target) => target.tenantId === entry.tenantId);
+    if (!known && (entry.publicUserPoolId === site || entry.privateUserPoolId === site)) {
+      targets.push({ siteId: entry.siteId, tenantId: entry.tenantId, reason: 'userPool' });
+    }
+  }
+  return targets;
+}
+
+/** `person` with each registry-derived destination, which expects one blackout per open day plus the blackouts it already held. */
 async function archiveSubject(
   person: ArchivePerson,
   effectiveFrom: string,
   registry: readonly RegistrySite[],
   cache: Map<string, TenantTimesheets>,
 ): Promise<ArchiveSubject> {
-  const site = person.siteId.toLowerCase();
-  const own = registry.find((entry) => entry.siteId.toLowerCase() === site);
-  if (own === undefined) throw new Error(`the site registry holds no ${person.siteId}`);
-  const reasons = new Map<string, { siteId: string; reason: BlackoutDestination['reason'] }>([
-    [own.tenantId, { siteId: own.siteId, reason: 'person-tenant' }],
-  ]);
-  for (const entry of registry) {
-    if (!reasons.has(entry.tenantId) && (entry.publicUserPoolId === site || entry.privateUserPoolId === site)) {
-      reasons.set(entry.tenantId, { siteId: entry.siteId, reason: 'userPool' });
-    }
-  }
   const destinations: BlackoutDestination[] = [];
-  for (const [tenantId, { siteId, reason }] of reasons) {
+  for (const { siteId, tenantId, reason } of archiveTargets(person, registry)) {
     const open = openDayIds(await timesheetsOf(tenantId, cache), person.userId, effectiveFrom);
     const held = await blackoutRowsFor(person.userId, tenantId);
     const expectedDayIds = [...new Set([...open, ...held])].sort();
@@ -550,8 +662,60 @@ async function freshSubjects(count: number, effectiveFrom: string): Promise<Arch
   return subjects;
 }
 
+/**
+ * A fresh tenant-a person with open days on two or more work dates from `earlierFrom`, its open days without a blackout
+ * split at the latest of their work dates; throws unless both sides of the split hold a day in some destination.
+ */
+async function orderSubject(earlierFrom: string): Promise<OrderSubject> {
+  const cache = new Map<string, TenantTimesheets>();
+  const registry = await siteRegistry(await seamDeps());
+  const [person] = await freshPersons(1, earlierFrom, cache, 2);
+  if (person === undefined) throw new Error(`no ${TENANT_A.siteId} person to archive out of order`);
+  const reads: { target: ArchiveTarget; held: BlackoutRecord[]; open: Row[] }[] = [];
+  for (const target of archiveTargets(person, registry)) {
+    const held = await blackoutsOf(person.userId, target.tenantId);
+    const heldDays = new Set(held.map((row) => row.dayId));
+    const days = openDays(await timesheetsOf(target.tenantId, cache), person.userId, earlierFrom);
+    reads.push({ target, held, open: days.filter((day) => !heldDays.has(dayIdOf(day))) });
+  }
+  const laterFrom = reads.flatMap(({ open }) => open.map(workDateOf)).sort().at(-1) ?? earlierFrom;
+  const destinations = reads.map(({ target, held, open }): OrderDestination => ({
+    ...target,
+    lateDayIds: open.filter((day) => isOpenDay(day, laterFrom)).map(dayIdOf).sort(),
+    earlyDayIds: open.filter((day) => !isOpenDay(day, laterFrom)).map(dayIdOf).sort(),
+    held,
+    rows: held,
+  }));
+  const late = destinations.reduce((total, destination) => total + destination.lateDayIds.length, 0);
+  const early = destinations.reduce((total, destination) => total + destination.earlyDayIds.length, 0);
+  if (late === 0 || early === 0) {
+    throw new Error(
+      `${person.userId} has ${late} open days without a blackout from ${laterFrom} and ${early} from ${earlierFrom} until ` +
+        'then in its destinations; the out-of-order check needs both',
+    );
+  }
+  return { ...person, archive: null, laterFrom, destinations };
+}
+
+/** Tenant-a `people.person.archived.v1` envelope of `person` at `version`: a new archive from the local midnight of `from`. */
+function archiveEnvelope(person: ArchivePerson, version: number, from: string): EventEnvelope<PersonArchived> {
+  return testEnvelope({
+    topic: ARCHIVED_TOPIC,
+    tenantId: TENANT_A.tenantId,
+    aggregateId: person.userId,
+    aggregateVersion: version,
+    payload: archivedPayload({
+      personId: person.userId,
+      siteId: person.siteId,
+      effectiveFrom: `${from} 00:00:00.000`,
+      archiveId: cfUuid(),
+      archivedAt: cfDateTimeFormat(new Date(), LOCAL_TIMESTAMP_MASK),
+    }),
+  });
+}
+
 /** Archives `subject` from `effectiveFrom` through the gateway as tenant-a's site admin and asserts the success answer. */
-async function archive(subject: ArchiveSubject, effectiveFrom: string): Promise<void> {
+async function archive(subject: ArchivedPerson, effectiveFrom: string): Promise<void> {
   const session = archiver();
   const result = await session.post(`${FIXTURE_API}/people/persons/${encodeURIComponent(subject.userId)}/archive`, {
     query: { siteid: subject.siteId },
@@ -606,28 +770,89 @@ function archivedPersonOf(message: PulledMessage): string {
   return idKey(text(payload, 'personId'));
 }
 
-/** The archive envelope of each of `subjects` pulled from `subscription`, in subject order; throws naming one still missing. */
-async function pullArchives(subscription: TestSubscription, subjects: readonly ArchiveSubject[]): Promise<PulledMessage[]> {
-  const wanted = new Set(subjects.map((subject) => idKey(subject.userId)));
-  const found = new Map<string, PulledMessage>();
-  await pollUntil(
-    async () => {
-      for (const message of await subscription.pull(10, PULL_WINDOW_MS)) {
-        const personId = archivedPersonOf(message);
-        if (wanted.has(personId) && !found.has(personId)) found.set(personId, message);
-      }
-      return found.size;
-    },
-    (size) => size === wanted.size,
+/** Event id of the first archive envelope of `personId` pulled from `subscription`; throws when none arrives within the pull poll. */
+async function pullArchiveEventId(subscription: TestSubscription, personId: string): Promise<string> {
+  const person = idKey(personId);
+  const outcome = await pollUntil(
+    async () => (await subscription.pull(10, PULL_WINDOW_MS)).find((message) => archivedPersonOf(message) === person),
+    (message) => message !== undefined,
     { poll: PULL_POLL },
   );
-  return subjects.map((subject) => {
-    const message = found.get(idKey(subject.userId));
-    if (message === undefined) {
-      throw new Error(`no ${ARCHIVED_TOPIC} envelope of ${subject.userId} on ${subscription.name} within ${PULL_POLL.timeoutMs} ms`);
-    }
-    return message;
+  if (outcome.value === undefined) {
+    throw new Error(`no ${ARCHIVED_TOPIC} envelope of ${personId} on ${subscription.name} within ${PULL_POLL.timeoutMs} ms`);
+  }
+  return text(asRecord(decodeEnvelopeData(outcome.value.data)), 'eventId');
+}
+
+/** Rows `destination` holds once both archives applied: the held rows, late days under `laterId`, early days under `earlierId`. */
+function expectedOrderRows(destination: OrderDestination, laterId: string, earlierId: string): BlackoutRecord[] {
+  return [
+    ...destination.held,
+    ...destination.lateDayIds.map((dayId) => ({ dayId, archiveId: idKey(laterId) })),
+    ...destination.earlyDayIds.map((dayId) => ({ dayId, archiveId: idKey(earlierId) })),
+  ].sort(byDayId);
+}
+
+/** Polls each destination of `subject` until it holds its held rows plus the `added` days, storing the rows; returns poll statistics. */
+async function awaitOrderBlackouts(
+  subject: OrderSubject,
+  added: (destination: OrderDestination) => readonly string[],
+): Promise<{ polls: number; elapsedMs: number; timedOut: boolean }> {
+  const { destinations } = subject;
+  const expected = destinations.map((destination) => [...destination.held.map((row) => row.dayId), ...added(destination)]);
+  const outcome = await pollUntil(
+    () => Promise.all(destinations.map((destination) => blackoutsOf(subject.userId, destination.tenantId))),
+    (observed) =>
+      destinations.every((_, i) => blackoutState(expected[i] ?? [], (observed[i] ?? []).map((row) => row.dayId)) !== 'pending'),
+    { poll: DELIVERY_POLL },
+  );
+  destinations.forEach((destination, i) => {
+    destination.rows = outcome.value[i] ?? [];
   });
+  return { polls: outcome.polls, elapsedMs: outcome.elapsedMs, timedOut: outcome.timedOut };
+}
+
+/** The delivery record of `envelope`, before it is published. */
+function orderEvent(envelope: EventEnvelope<PersonArchived>): OrderEvent {
+  const { eventId, aggregateVersion, payload } = envelope;
+  return {
+    eventId,
+    aggregateVersion,
+    archiveId: payload.archiveId,
+    effectiveFrom: payload.effectiveFrom,
+    messageId: null,
+    receipts: [],
+    blackouts: null,
+  };
+}
+
+/** Publishes `envelope`, then waits for its inbox receipt in each destination of `subject` and for `added` days' blackouts there. */
+async function deliverArchive(
+  subject: OrderSubject,
+  envelope: EventEnvelope<PersonArchived>,
+  event: OrderEvent,
+  added: (destination: OrderDestination) => readonly string[],
+): Promise<void> {
+  event.messageId = await publishTo(ARCHIVED_TOPIC, envelope);
+  const tenantIds = subject.destinations.map((destination) => destination.tenantId);
+  event.receipts = receiptTenants(await awaitReceipt('timesheets', envelope.eventId, tenantIds), envelope.eventId);
+  event.blackouts = await awaitOrderBlackouts(subject, added);
+}
+
+/**
+ * Archives `subject` from `effectiveFrom` through the gateway and waits for that event's inbox receipt in each destination,
+ * so the person searches, which skip persons with an archive record, pass it over afterwards.
+ */
+async function retire(subject: OrderSubject, effectiveFrom: string): Promise<{ eventId: string; archive: ArchivedPerson['archive'] }> {
+  const subscription = await createTestSubscription({ name: ARCHIVED_TOPIC }, { consumer: 'opt2-order-check' });
+  try {
+    await archive(subject, effectiveFrom);
+    const eventId = await pullArchiveEventId(subscription, subject.userId);
+    await awaitReceipt('timesheets', eventId, subject.destinations.map((destination) => destination.tenantId));
+    return { eventId, archive: subject.archive };
+  } finally {
+    await subscription.delete();
+  }
 }
 
 describe('event delivery guarantees', () => {
@@ -646,29 +871,30 @@ describe('event delivery guarantees', () => {
 
   it(`duplicate delivery of one eventId gives one effect ${CHECK_TAG('duplicateDelivery')}`, { timeout: DELIVERY_TEST_TIMEOUT_MS }, (ctx) =>
     runCheck('duplicateDelivery', ctx, async (evidence) => {
-      const note = await projectedNote();
+      const { note, projection: before } = await freshProjectedNote();
       evidence.noteId = note.noteId;
-      const before = await awaitProjection(note.noteId, () => true, 'the first delivery');
       evidence.before = before;
       expect(before.applyCount, 'apply count after the first delivery').toBe(1);
       const original = before.lastEventId;
-      const inboxBefore = await stubPosition([original]);
+      const inboxBefore = await positionOf('stub', [original]);
       const copy = noteEnvelope(note, before.aggregateVersion, original);
       evidence.copyMessageIds = [await publishTo(STUB_NOTE_TOPIC, copy), await publishTo(STUB_NOTE_TOPIC, copy)];
       // A stale event on the same ordering key is consumed after both copies, so its receipt bounds their delivery.
       const sentinel = noteEnvelope(note, before.aggregateVersion);
       evidence.sentinelEventId = sentinel.eventId;
       await publishTo(STUB_NOTE_TOPIC, sentinel);
-      await awaitReceipt(sentinel.eventId);
+      await awaitReceipt('stub', sentinel.eventId, [TENANT_A.tenantId]);
       await delay(SETTLE_MS);
       const after = await projectionOf(notes(), note.noteId);
-      const inboxAfter = await stubPosition([original]);
+      const inboxAfter = await positionOf('stub', [original]);
       const receipts = inboxAfter.receipts[original] ?? [];
+      const subscriptionBefore = noteInboxRows(inboxBefore);
+      const subscriptionAfter = noteInboxRows(inboxAfter);
       evidence.after = after;
-      evidence.inbox = { subscriptionBefore: inboxBefore.subscription, subscriptionAfter: inboxAfter.subscription, receipts };
+      evidence.inbox = { subscriptionBefore, subscriptionAfter, receipts };
       expect(after, 'projection after two duplicate deliveries').toEqual(before);
       expect(receipts, `inbox receipt tenants of ${original}`).toEqual([TENANT_A.tenantId.toLowerCase()]);
-      expect(inboxAfter.subscription - inboxBefore.subscription, 'inbox rows added besides the sentinel').toBe(1);
+      expect(subscriptionAfter - subscriptionBefore, 'inbox rows added besides the sentinel').toBe(1);
     }),
   );
 
@@ -677,9 +903,8 @@ describe('event delivery guarantees', () => {
     { timeout: DELIVERY_TEST_TIMEOUT_MS },
     (ctx) =>
       runCheck('outOfOrderState', ctx, async (evidence) => {
-        const note = await projectedNote();
+        const { note, projection: before } = await freshProjectedNote();
         evidence.noteId = note.noteId;
-        const before = await awaitProjection(note.noteId, () => true, 'the current version');
         evidence.before = before;
         const pubsub = emulatorDlqPubSub(stackPubSub());
         const dlqTopic = dlqTopicName(STUB_DLQ_SUBSCRIPTION);
@@ -689,7 +914,7 @@ describe('event delivery guarantees', () => {
           const stale = noteEnvelope({ ...note, title: `${note.title} (stale)` }, before.aggregateVersion);
           evidence.staleEventId = stale.eventId;
           await publishTo(STUB_NOTE_TOPIC, stale);
-          await awaitReceipt(stale.eventId);
+          await awaitReceipt('stub', stale.eventId, [TENANT_A.tenantId]);
           const isOurs = isLetterOf(stale.eventId);
           const letters = await pubsub.pull(observer, {
             timeoutMs: SETTLE_MS,
@@ -738,7 +963,7 @@ describe('event delivery guarantees', () => {
           await waitHealthy('stub');
           const note = await createNote(notes(), { title: `Unpublished row ${tag()}`, body: 'Committed while publishing fails.' });
           evidence.noteId = note.noteId;
-          const position = await stubPosition([]);
+          const position = await positionOf('stub', []);
           evidence.unpublishedBeforeKill = position.unpublished;
           expect(position.unpublished, 'unpublished stub outbox rows before the kill').toBeGreaterThanOrEqual(1);
           const early = await projectionOf(notes(), note.noteId);
@@ -775,40 +1000,51 @@ describe('event delivery guarantees', () => {
   );
 
   it(
-    `person archives delivered out of order each apply once per destination ${CHECK_TAG('outOfOrderProcess')}`,
-    { timeout: RESTART_TEST_TIMEOUT_MS },
+    `archive versions 2 then 1 of one person each black out their own days once per destination ${CHECK_TAG('outOfOrderProcess')}`,
+    { timeout: PROCESS_ORDER_TEST_TIMEOUT_MS },
     async (ctx) => {
       await skipWithoutFixtures('outOfOrderProcess', ctx);
       await runCheck('outOfOrderProcess', ctx, async (evidence) => {
-        const effectiveFrom = seed().businessDate();
-        const subjects = await freshSubjects(2, effectiveFrom);
-        Object.assign(evidence, { effectiveFrom, subjects });
+        // The retirement pulls its archive envelope through the runner's emulator client.
         await assertRunnerOnStackEmulator();
-        const subscription = await createTestSubscription({ name: ARCHIVED_TOPIC }, { consumer: 'opt2-order-check' });
+        const effectiveFrom = seed().businessDate();
+        const subject = await orderSubject(effectiveFrom);
+        const later = archiveEnvelope(subject, LATE_VERSION, subject.laterFrom);
+        const earlier = archiveEnvelope(subject, EARLY_VERSION, effectiveFrom);
+        const laterEvent = orderEvent(later);
+        const earlierEvent = orderEvent(earlier);
+        const events = [laterEvent, earlierEvent];
+        Object.assign(evidence, { effectiveFrom, subject, events });
+        let failure: unknown;
         try {
-          await withRestoredServices(['timesheets'], async () => {
-            await stopService('timesheets');
-            for (const subject of subjects) await archive(subject, effectiveFrom);
-            const pulled = await pullArchives(subscription, subjects);
-            evidence.eventIds = pulled.map((message) => message.attributes.eventId ?? null);
-            evidence.republishedMessageIds = await withStackPublisher(async (publisher) => {
-              const ids: string[] = [];
-              for (const { data, attributes, orderingKey } of [...pulled].reverse()) {
-                ids.push(await publisher.publishRaw(ARCHIVED_TOPIC, { data, attributes, orderingKey }));
-              }
-              return ids;
-            });
-            await startService('timesheets');
-            await waitHealthy('timesheets');
-            evidence.poll = await awaitBlackouts(subjects);
-            // Each copy is ordered behind its original on the person's ordering key, so it arrives within the settle.
-            await delay(SETTLE_MS);
-            evidence.settled = await awaitBlackouts(subjects);
-          });
+          // Version 1 is published only once version 2 holds a receipt in every destination, so it is consumed second.
+          await deliverArchive(subject, later, laterEvent, (destination) => destination.lateDayIds);
+          await deliverArchive(subject, earlier, earlierEvent, (destination) => [...destination.lateDayIds, ...destination.earlyDayIds]);
+          await delay(SETTLE_MS);
+          const position = await positionOf('timesheets', events.map((event) => event.eventId));
+          for (const event of events) event.receipts = receiptTenants(position, event.eventId);
+          for (const destination of subject.destinations) destination.rows = await blackoutsOf(subject.userId, destination.tenantId);
+          for (const destination of subject.destinations) {
+            expect(destination.rows, `blackouts of ${subject.userId} in ${destination.siteId}`).toEqual(
+              expectedOrderRows(destination, later.payload.archiveId, earlier.payload.archiveId),
+            );
+          }
+          const tenantIds = subject.destinations.map((destination) => destination.tenantId.toLowerCase()).sort();
+          for (const event of events) {
+            expect(event.receipts, `receipt tenants of version ${event.aggregateVersion} (${event.eventId})`).toEqual(tenantIds);
+          }
+        } catch (err) {
+          failure = err;
+          throw err;
         } finally {
-          await subscription.delete();
+          try {
+            evidence.retirement = await retire(subject, effectiveFrom);
+          } catch (err) {
+            // A failed check keeps its own error; the retirement's joins the evidence.
+            if (failure === undefined) throw err;
+            evidence.retirementError = messageOf(err);
+          }
         }
-        expectOneBlackoutPerOpenDay(subjects);
       });
     },
   );

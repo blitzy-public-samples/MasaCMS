@@ -296,6 +296,11 @@ export function appReloadKey(env: EnvLike = process.env): string {
   return envValue(env, APP_RELOAD_KEY_VARIABLE) ?? DEFAULT_APP_RELOAD_KEY;
 }
 
+/** `MURA_APPRELOADKEY` when set and non-empty, the reload key that is a secret; undefined for Masa's public default. */
+export function configuredAppReloadKey(env: EnvLike = process.env): string | undefined {
+  return envValue(env, APP_RELOAD_KEY_VARIABLE);
+}
+
 /**
  * Secret store over `env` and `seed-credentials.json`, read once on first use. `appreload` is {@link appReloadKey},
  * listed by `values()` only when configured; `seed:<username>` needs one distinct password across sites;

@@ -128,7 +128,6 @@ export type EnvironmentSummary = {
   timeZone: string | null;
 };
 
-// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: a hung tool would otherwise stall up.sh.
 /** Longest wait for one tool probe; `box` starts a JVM. */
 export const PROBE_TIMEOUT_MS = 120_000;
 

@@ -1,7 +1,7 @@
 /** Authorisation matrix of every strategies-content route through `app.inject`: declarations, legacy gates, transports, site binding and tenancy. */
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import {
   AuthDenial,
@@ -24,8 +24,16 @@ import {
   type RouteMatrixEntry,
   type Transport,
 } from '@opt2/platform/auth';
-import { LEGACY_ERROR_MAP, WWW_AUTHENTICATE } from '@opt2/platform/legacy-compat';
-import { IDENTITY_SERVICE, createService, loadEnv, type Clock, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import { LEGACY_ERROR_MAP, LEGACY_ERROR_PAGE_HTML, WWW_AUTHENTICATE } from '@opt2/platform/legacy-compat';
+import {
+  IDENTITY_SERVICE,
+  createService,
+  loadEnv,
+  type Clock,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from '@opt2/platform/service-kit';
 import { SIGNED_URL_TTL_S } from '@opt2/platform/storage';
 import {
   ROLE_SET,
@@ -57,6 +65,7 @@ import {
   SITE_CHANGED_TOPIC,
 } from '../../src/events/consumers.js';
 import { FEED_AUTO_IMPORT_PATH, PUBLISH_SCHEDULED_CHANGESETS_PATH } from '../../src/jobs/index.js';
+import type * as RouteRegistry from '../../src/routes/index.js';
 import { CIRCUIT_ROUTE_REQUIRES, FEED_MANAGER_FLAG_SOURCE, adminDenial, type GatedContentAdminCircuit } from '../../src/routes/v1/access.js';
 import { contentQueues } from '../../src/tasks/port.js';
 import { TEST_CLOCK, buildTestApp, testEnv, type ClientHandlers, type RecordedStatement, type TestApp } from '../helpers/app.js';
@@ -72,6 +81,43 @@ import {
   type ContentServiceCaller,
   type TokenSubject,
 } from '../helpers/tokens.js';
+
+/** A route handler that ran: its `METHOD url` and what it threw, if anything. */
+interface HandlerEntry {
+  route: string;
+  error?: unknown;
+}
+
+/** Handlers entered since the last reset. */
+const HANDLER_ENTRIES = vi.hoisted((): HandlerEntry[] => []);
+
+// Wraps the handler of every route registered from the content routes on, migration, consumer, job and queue-control routes included.
+vi.mock('../../src/routes/index.js', async (importOriginal) => {
+  const registry = await importOriginal<typeof RouteRegistry>();
+  const registerRoutes = async (app: FastifyInstance, deps: RouteRegistry.RouteDeps): Promise<void> => {
+    app.addHook('onRoute', (route) => {
+      const handler = route.handler;
+      route.handler = function (this: FastifyInstance, request: FastifyRequest, reply: FastifyReply) {
+        const entry: HandlerEntry = { route: `${request.method} ${route.url}` };
+        HANDLER_ENTRIES.push(entry);
+        try {
+          const answer = handler.call(this, request, reply);
+          if (answer instanceof Promise) {
+            answer.catch((error: unknown) => {
+              entry.error = error;
+            });
+          }
+          return answer;
+        } catch (error) {
+          entry.error = error;
+          throw error;
+        }
+      };
+    });
+    await registry.registerRoutes(app, deps);
+  };
+  return { ...registry, registerRoutes };
+});
 
 type Headers = Record<string, string>;
 type HttpMethod = 'DELETE' | 'GET' | 'POST' | 'PUT';
@@ -647,11 +693,14 @@ function familiesOf(entry: Pick<RouteMatrixEntry, 'method' | 'url'>): Family[] {
 const routeKey = (entry: Pick<RouteMatrixEntry, 'method' | 'url'>): string => `${entry.method} ${entry.url}`;
 
 /** What a cell answers: admitted, refused by the platform's credential, role or site checks, or refused by a circuit's `before()` gate. */
-type Outcome = { kind: 'allowed' } | { kind: 'denied-auth' | 'denied-gate'; status: 401 | 403; challenge?: string };
+type Outcome = { kind: 'allowed' } | Denial;
+
+/** A refusal, with legacy's WWW-Authenticate where its handler sends one. */
+type Denial = { kind: 'denied-auth' | 'denied-gate'; status: 401 | 403; challenge?: string };
 
 const ALLOWED: Outcome = Object.freeze({ kind: 'allowed' });
-const AUTH_401: Outcome = Object.freeze({ kind: 'denied-auth', status: 401 });
-const AUTH_403: Outcome = Object.freeze({ kind: 'denied-auth', status: 403 });
+const AUTH_401: Denial = Object.freeze({ kind: 'denied-auth', status: 401 });
+const AUTH_403: Denial = Object.freeze({ kind: 'denied-auth', status: 403 });
 
 /** The roles the platform verifies from what `subject` presents: user roles without workload ones, then the workload's. */
 function verifiedRoles(subject: Subject): Role[] {
@@ -681,11 +730,15 @@ function expectedOutcome(family: Family, subject: Subject, feedManager = true): 
   return ALLOWED;
 }
 
-function sameOutcome(a: Outcome, b: Outcome): boolean {
+/** What a cell observed: an outcome, or an answer that is neither a rendered denial nor an admitted handler's. */
+type Observed = Outcome | { kind: 'unexplained'; status: number };
+
+function sameOutcome(a: Observed, b: Outcome): boolean {
   return a.kind === b.kind && (a.kind === 'allowed' || (b.kind !== 'allowed' && a.status === b.status));
 }
 
-function outcomeLabel(outcome: Outcome): string {
+function outcomeLabel(outcome: Observed): string {
+  if (outcome.kind === 'unexplained') return `unexplained (${outcome.status})`;
   return outcome.kind === 'allowed' ? 'allowed' : `denied (${outcome.status} ${outcome.kind === 'denied-gate' ? 'gate' : 'auth'})`;
 }
 
@@ -914,10 +967,13 @@ function createHashHex(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-/** A request's response and every effect it left: statements, writes, storage puts and reads, tasks, CSRF consumes, session lookups. */
+/** A request's response and every effect it left: handlers entered, statements, writes, storage puts and reads, tasks, CSRF consumes, session lookups. */
 interface ProbeResult {
   res: InjectResponse;
+  /** `METHOD path` as sent, without the query. */
+  request: string;
   query: Record<string, string>;
+  handlers: HandlerEntry[];
   statements: RecordedStatement[];
   writes: RecordedStatement[];
   puts: number;
@@ -929,6 +985,7 @@ interface ProbeResult {
 
 /** Empties every recorder a cell reads and lets identity validate CSRF tokens again. */
 function resetRecorders(): void {
+  HANDLER_ENTRIES.length = 0;
   t.db.clear();
   t.storage.clear();
   t.taskPort.clear();
@@ -941,7 +998,9 @@ function resultOf(res: InjectResponse): ProbeResult {
   const sent = new URL(res.raw.req.url ?? '/', 'http://strategies-content.test');
   return {
     res,
+    request: `${res.raw.req.method ?? ''} ${sent.pathname}`,
     query: Object.fromEntries(sent.searchParams),
+    handlers: HANDLER_ENTRIES.map((entry) => ({ ...entry })),
     statements: [...t.db.statements],
     writes: t.db.writes(),
     puts: t.storage.calls.filter((call) => call.op === 'put').length,
@@ -993,10 +1052,165 @@ function renderedDenialOf(result: ProbeResult): DenialResponse | undefined {
     .find((rendered) => rendered.body === result.res.body);
 }
 
-function outcomeOf(result: ProbeResult): Outcome {
-  if (renderedDenialOf(result) === undefined) return ALLOWED;
-  const status = result.res.statusCode === 401 ? 401 : 403;
-  return { kind: result.sessionLookups > 0 ? 'denied-gate' : 'denied-auth', status };
+/** A handler's own 4xx/5xx answer to its probe that still shows admission: its routes, status and identifying predicate. */
+interface HandlerAnswer {
+  routes: readonly string[];
+  status: number;
+  matches(result: ProbeResult): boolean;
+}
+
+/** `<class>: <message>` of what the entered handler threw; undefined when it threw nothing. */
+function thrownBy(result: ProbeResult): string | undefined {
+  const error = result.handlers[0]?.error;
+  return error instanceof Error ? `${error.constructor.name}: ${error.message}` : undefined;
+}
+
+const threw =
+  (expected: string | RegExp) =>
+  (result: ProbeResult): boolean => {
+    const thrown = thrownBy(result);
+    return thrown !== undefined && (typeof expected === 'string' ? thrown === expected : expected.test(thrown));
+  };
+const answered = (body: string) => (result: ProbeResult): boolean => result.res.body === body;
+const halted = (action: string) => threw(new RegExp(`^CarchHaltedError: carch\\.${action}: `));
+
+/** The JSON API error envelope legacy answers `method` with for the map row `type`. */
+function legacyEnvelope(type: keyof typeof LEGACY_ERROR_MAP, method: string): string {
+  const { message, code } = LEGACY_ERROR_MAP[type];
+  return JSON.stringify({ apiversion: 'v1', method, error: { message, code } });
+}
+
+const apiRoutes = (suffix: string): string[] =>
+  ['/_api/json/v1', '/_api/ajax/v1', '/_api/rest/v1'].flatMap((lead) => ['DELETE', 'GET', 'POST', 'PUT'].map((method) => `${method} ${lead}${suffix}`));
+const rawRoutes = (circuit: string, action: string): string[] => ['GET', 'POST'].map((method) => `${method} /v1/raw/${circuit}/${action}`);
+
+const HANDLER_ANSWERS: readonly HandlerAnswer[] = [
+  // Legacy's JSON API envelopes for a request naming no entity or method, the site alone (findall) and /notanentity.
+  { routes: apiRoutes(''), status: 400, matches: answered(legacyEnvelope('invalidParameters', 'invalid')) },
+  { routes: apiRoutes('/:siteid'), status: 404, matches: answered(legacyEnvelope('invalidMethodCall', 'findall')) },
+  { routes: apiRoutes('/:siteid/*'), status: 404, matches: answered(legacyEnvelope('invalidMethodCall', 'invalid')) },
+  // Halted views: they print values another service holds, so the handler answers legacy's 503.
+  {
+    routes: ['GET /_api/feed/v1', 'GET /_api/feed/v1/*', 'GET /tasks/feed', 'GET /tasks/feed/*'],
+    status: 503,
+    matches: threw('LegacyServiceUnavailableError: Rendered feeds print site settings this service does not hold'),
+  },
+  ...['loadsite', 'siteparents'].map((action) => ({
+    routes: rawRoutes('cfeed', action),
+    status: 503,
+    matches: threw('LegacyServiceUnavailableError: The collection search fragments print labels and site names this service does not hold'),
+  })),
+  {
+    routes: ['GET /v1/sites/:siteid/feeds/:feedid'],
+    status: 503,
+    matches: threw('LegacyServiceUnavailableError: The collection edit model needs site values this service does not hold'),
+  },
+  ...(
+    [
+      ['', 'list prints preview URLs'],
+      ['/:changesetid', 'edit prints a preview URL'],
+      ['/:changesetid/assignments', 'assignments prints preview URLs'],
+    ] as const
+  ).map(([suffix, prints]) => ({
+    routes: [`GET /v1/sites/:siteid/changesets${suffix}`],
+    status: 503,
+    matches: threw(`LegacyServiceUnavailableError: cChangesets.${prints} built from site settings this service does not hold`),
+  })),
+  ...['loadclassconfigurator', 'loadexpirenotify', 'loadnotify'].map((action) => ({ routes: rawRoutes('carch', action), status: 503, matches: halted(action) })),
+  { routes: ['GET /v1/sites/:siteid/content/:contentid/multi-file-upload'], status: 503, matches: halted('multifileupload') },
+  { routes: ['GET /v1/sites/:siteid/files/image-details'], status: 503, matches: halted('imagedetails') },
+  // The probe omits a field the action reads, which legacy's CFML fails on with the same undefined-element error.
+  ...(
+    [
+      ['carch', 'assocfiles', 'UndefinedLegacyElementError: Element PROPERTY is undefined in RC.'],
+      ['carch', 'downloaddata', 'Error: Element SORTBY is undefined in a CFML structure referenced as part of an expression.'],
+      ['carch', 'loadcategoryassignment', 'UndefinedLegacyElementError: Element CATEGORYASSIGNMENT is undefined in RC.'],
+      ['carch', 'loadcategoryfeaturestartstop', 'UndefinedLegacyElementError: Element CATEGORYASSIGNMENT is undefined in RC.'],
+      ['carch', 'loadclass', 'UndefinedLegacyElementError: Element CLASSID is undefined in RC.'],
+      ['carch', 'loadsitesection', 'RangeError: Element RSTOP is undefined in RC.'],
+      ['carch', 'refreshsitesection', 'RangeError: Element RSTOP is undefined in RC.'],
+      ['carch', 'savecopyinfo', 'UndefinedLegacyElementError: Element COPYALL is undefined in RC.'],
+      ['carch', 'savequickedit', 'UndefinedLegacyElementError: Element RC.attribute is undefined in ARGUMENTS.'],
+      ['carch', 'update', 'UndefinedLegacyElementError: Element RC.contentBean is undefined in ARGUMENTS.'],
+      ['cfeed', 'update', 'FeedElementUndefinedError: Element FEEDID is undefined in ARGUMENTS.RC.'],
+      ['cform', 'getdataset', 'CformRequestError: Element RC.fieldID is undefined in ARGUMENTS.'],
+      ['cform', 'getdialog', 'CformRequestError: Element RC.dialog is undefined in ARGUMENTS.'],
+      ['cform', 'getfield', 'CformRequestError: Element RC.formID is undefined in ARGUMENTS.'],
+      ['cform', 'getfieldtemplate', 'CformRequestError: Element RC.fieldtype is undefined in ARGUMENTS.'],
+    ] as const
+  ).map(([circuit, action, error]) => ({ routes: rawRoutes(circuit, action), status: 500, matches: threw(error) })),
+  {
+    routes: ['POST /v1/sites/:siteid/content/versions/:contenthistid/object-params'],
+    status: 500,
+    matches: threw('UndefinedLegacyElementError: Element RC.approved is undefined in ARGUMENTS.'),
+  },
+  { routes: ['POST /v1/sites/:siteid/forms/import'], status: 500, matches: threw('CformRequestError: Element FORMZIP is undefined in FORM.') },
+  { routes: ['POST /v1/sites/:siteid/variation-targeting'], status: 500, matches: threw('UndefinedLegacyElementError: Element INITJS is undefined in RC.') },
+  // RecordingDb answers every seeded row of a table, unfiltered and without joined or aliased columns, so these reads fail past admission.
+  ...(
+    [
+      [rawRoutes('carch', 'draftpromptdata'), "TypeError: Cannot read properties of undefined (reading 'getTime')"],
+      [rawRoutes('carch', 'loadsiteflat'), 'SyntaxError: Cannot convert NaN0 to a BigInt'],
+      [rawRoutes('carch', 'loadtagarray'), 'TypeError: text is not iterable'],
+      [['GET /v1/sites/:siteid/approval-chains/:chainid/pending'], "TypeError: Cannot read properties of undefined (reading 'toUpperCase')"],
+      [['GET /v1/sites/:siteid/content'], "TypeError: Cannot read properties of null (reading 'toLowerCase')"],
+      [['POST /internal/v1/content::links'], "TypeError: Cannot read properties of undefined (reading 'replace')"],
+      [['GET /v1/sites/:siteid/categories', 'GET /v1/sites/:siteid/categories/:categoryid'], `Error: Category ${IDS.categories.pooledParent} is its own ancestor`],
+    ] as const
+  ).map(([routes, error]) => ({ routes, status: 500, matches: threw(error) })),
+  // Past RecordingDb's ignored publishdate cutoff the seed's change sets fail to save, inside the job's tenant transaction.
+  {
+    routes: ['POST /internal/v1/jobs/publish-scheduled-changesets'],
+    status: 500,
+    matches: (result) =>
+      threw("ContentSaveDataError: The attribute 'PARENTID' is required when saving content.")(result) &&
+      result.statements.some((statement) => statement.tenantId !== null),
+  },
+  // Every url field is a call argument, so the push key's `key` field makes legacy's component call unrunnable.
+  {
+    routes: [`GET ${COMMENTS_PROXY_URL}`, `POST ${COMMENTS_PROXY_URL}`],
+    status: 500,
+    matches: (result) => 'key' in result.query && answered(LEGACY_ERROR_PAGE_HTML)(result),
+  },
+  // A tenant-b caller's render of tenant-a's file finds no row in its own tenant: legacy's empty 404.
+  {
+    routes: ['GET /_api/render/:size', 'GET /tasks/render/:size'],
+    status: 404,
+    matches: (result) => {
+      const tenants = new Set(result.statements.flatMap((statement) => (statement.tenantId === null ? [] : [statement.tenantId.toLowerCase()])));
+      return result.res.body === '' && tenants.size === 1 && tenants.has(TENANT_B.tenantId.toLowerCase());
+    },
+  },
+  // No manifest row records the probe's key: the handler's legacy 404 envelope.
+  { routes: ['GET /internal/v1/migration/objects'], status: 404, matches: answered(legacyEnvelope('invalidMethodCall', 'invalid')) },
+  // The probe's empty body names no change, watermark or queue settings: the handler's Invalid parameters answer.
+  {
+    routes: ['POST /internal/v1/migration/apply', 'POST /internal/v1/migration/watermark', 'POST /internal/v1/task-queues/:queue/ensure'],
+    status: 400,
+    matches: threw('LegacyApiError: invalidParameters: Invalid parameters'),
+  },
+  // The probed local feed has no channel link, so the import's fetch of '' fails before any request is sent.
+  { routes: ['GET /v1/sites/:siteid/feeds/:feedid/import'], status: 500, matches: threw('TypeError: Failed to parse URL from ') },
+];
+
+/** createService registers /healthz before the handler witness, so its exact answer stands in for entry. */
+const HEALTHZ_BODY = JSON.stringify({ status: 'ok' });
+
+/** Whether a route handler ran and answered 2xx/3xx or with one of its enumerated answers. */
+function admitted(result: ProbeResult): boolean {
+  const status = result.res.statusCode;
+  const [handler] = result.handlers;
+  if (handler === undefined) return result.request === 'GET /healthz' && status === 200 && result.res.body === HEALTHZ_BODY;
+  if (status >= 200 && status < 400) return true;
+  return HANDLER_ANSWERS.some((answer) => answer.routes.includes(handler.route) && answer.status === status && answer.matches(result));
+}
+
+function outcomeOf(result: ProbeResult): Observed {
+  if (renderedDenialOf(result) !== undefined) {
+    const status = result.res.statusCode === 401 ? 401 : 403;
+    return { kind: result.sessionLookups > 0 ? 'denied-gate' : 'denied-auth', status };
+  }
+  return admitted(result) ? ALLOWED : { kind: 'unexplained', status: result.res.statusCode };
 }
 
 /** Every way a refused `result` departs from the rendered denial, with legacy's `challenge` where it sends one, before any handler effect. */
@@ -1020,7 +1234,8 @@ function denialProblems(result: ProbeResult, at: string, challenge?: string): st
 }
 
 function describeResult(result: ProbeResult): string {
-  return `${result.res.statusCode} ${result.res.body.slice(0, 200)}`;
+  const thrown = thrownBy(result);
+  return `${result.res.statusCode} ${result.res.body.slice(0, 200)}${thrown === undefined ? '' : ` (the handler threw ${thrown})`}`;
 }
 
 const unexpectedAllows: string[] = [];
@@ -1072,6 +1287,11 @@ describe('strategies-content authorisation matrix', () => {
       });
       expect(drift).toEqual([]);
       expect(MATRIX.filter((entry) => entry.edge === true).map(routeKey)).toEqual([]);
+    });
+
+    it('enumerates handler answers of registered routes only', () => {
+      const registered = new Set(MATRIX.map(routeKey));
+      expect(HANDLER_ANSWERS.flatMap((answer) => answer.routes).filter((route) => !registered.has(route))).toEqual([]);
     });
 
     it('declares on every route the transport transportForPath gives its url', () => {
@@ -1141,11 +1361,18 @@ describe('strategies-content authorisation matrix', () => {
         if (!sameOutcome(observed, expected)) {
           const line = `${title}: observed ${outcomeLabel(observed)}, ${describeResult(result)}`;
           problems.push(line);
-          if (observed.kind === 'allowed') unexpectedAllows.push(line);
+          // An expected denial that is not rendered counts as an allow; an expected allow that is not admitted, as a deny.
+          if (expected.kind !== 'allowed' && (observed.kind === 'allowed' || observed.kind === 'unexplained')) unexpectedAllows.push(line);
           else if (expected.kind === 'allowed') unexpectedDenies.push(line);
           else wrongDenials.push(line);
         }
-        if (observed.kind !== 'allowed') problems.push(...denialProblems(result, title, expected.kind === 'allowed' ? undefined : expected.challenge));
+        const [handler] = result.handlers;
+        if (observed.kind === 'allowed' && handler !== undefined && handler.route !== routeKey(entry)) {
+          problems.push(`${title}: answered by the ${result.handlers.map((entered) => entered.route).join(', ')} handler`);
+        }
+        if (observed.kind === 'denied-auth' || observed.kind === 'denied-gate') {
+          problems.push(...denialProblems(result, title, expected.kind === 'allowed' ? undefined : expected.challenge));
+        }
         expect(problems).toEqual([]);
       });
     });

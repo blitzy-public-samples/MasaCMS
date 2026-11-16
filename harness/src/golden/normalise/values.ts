@@ -5,7 +5,7 @@ import {
   CSRF_HEADER_EXPIRES,
   CSRF_HEADER_TOKEN,
 } from '@opt2/platform/legacy-compat';
-import { normaliseIdsInString, type IdOrdinals } from './ids.js';
+import { keyedOrdinalFor, normaliseIdsInString, type IdOrdinals } from './ids.js';
 import type { NormaliseRules, OriginRules, TimestampClassRule } from './rules.js';
 
 /** Name of a timestamp format class declared in `timestamps.classes` of the rules, e.g. `serializer`, `http-date`. */
@@ -25,6 +25,10 @@ const URL_IN_TEXT = /\bhttps?:\/\/[^\s"'<>`]+/gi;
 const TRAILING_PUNCTUATION = /[.,;:!?)\]}]+$/;
 const ABSOLUTE_URL = /^https?:\/\/\S+$/i;
 const RELATIVE_URL = /^(?:\/(?!\/)|\?|\.\.?\/)\S*$/;
+// A query in text, up to a quote, space, tag or fragment; `<secret>`, which redact() leaves for a secret, is a value.
+const QUERY_IN_TEXT = /(?<=\?)(?:<secret>|[^\s"'<>#])+/g;
+// What splitting a query at `&` leaves of an `&amp;` separator.
+const AMP_ENTITY_REST = 'amp;';
 
 interface CompiledClass {
   readonly name: string;
@@ -42,6 +46,8 @@ interface Compiled {
   readonly tokenFields: ReadonlySet<string>;
   readonly tokenHeaders: ReadonlySet<string>;
   readonly tokenQueryParams: ReadonlySet<string>;
+  /** Folded `tokens.valuelessParamsNamedBy`. */
+  readonly namingParams: ReadonlySet<string>;
   readonly signedQueryParams: ReadonlySet<string>;
   readonly lowerCaseParams: ReadonlySet<string>;
   readonly foldField: Fold;
@@ -134,6 +140,7 @@ function compile(rules: NormaliseRules): Compiled {
     tokenFields: new Set([...tokens.fields, CSRF_FIELD_TOKEN, CSRF_FIELD_EXPIRES].map(foldField)),
     tokenHeaders: new Set([...tokens.headers, CSRF_HEADER_TOKEN, CSRF_HEADER_EXPIRES].map(foldHeader)),
     tokenQueryParams: new Set(queryNames.map(foldQuery)),
+    namingParams: new Set(tokens.valuelessParamsNamedBy.map(foldQuery)),
     signedQueryParams: new Set(urls.signedQueryParams.map(foldQuery)),
     lowerCaseParams: new Set(dom.actionUrl.lowerCaseValuesOf.map(foldActionParam)),
     foldField,
@@ -242,21 +249,77 @@ function replaceOrigins(s: string, rules: NormaliseRules, compiled: Compiled): s
   return s.replace(compiled.origins, () => rules.origins.placeholder);
 }
 
-// Token parameters anywhere in text, including `&amp;`-separated ones in HTML; an empty value stays visible.
-function maskTextQueryTokens(s: string, rules: NormaliseRules, compiled: Compiled): string {
-  return s.replace(compiled.textQueryTokens, (match: string, name: string, value: string) =>
-    value === '' ? match : `${name}=${rules.tokens.placeholder}`,
-  );
+/** One `name[=value]` pair of a query as written; `value` is undefined for a valueless parameter. */
+interface QueryParam {
+  readonly text: string;
+  readonly rawName: string;
+  readonly name: string;
+  readonly value: string | undefined;
+}
+
+function decodeComponent(raw: string): string {
+  try {
+    return decodeURIComponent(raw.replaceAll('+', ' '));
+  } catch {
+    return raw;
+  }
 }
 
 // Parameter name as a server reads it; `amp;` is left by an `&amp;` separator in markup.
 function decodeParamName(raw: string): string {
-  const name = raw.startsWith('amp;') ? raw.slice(4) : raw;
-  try {
-    return decodeURIComponent(name.replaceAll('+', ' '));
-  } catch {
-    return name;
+  return decodeComponent(raw.startsWith(AMP_ENTITY_REST) ? raw.slice(AMP_ENTITY_REST.length) : raw);
+}
+
+function queryParams(query: string): QueryParam[] {
+  return query.split('&').map((text) => {
+    const eq = text.indexOf('=');
+    const rawName = eq < 0 ? text : text.slice(0, eq);
+    return { text, rawName, name: decodeParamName(rawName), value: eq < 0 ? undefined : text.slice(eq + 1) };
+  });
+}
+
+function isNamingParam(param: QueryParam, compiled: Compiled): boolean {
+  return param.value !== undefined && param.value !== '' && compiled.namingParams.has(compiled.foldQuery(param.name));
+}
+
+// Decoded values of the query's naming parameters: each names a valueless token parameter of the same query.
+function tokenParamNames(params: readonly QueryParam[], compiled: Compiled): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const param of params) {
+    if (isNamingParam(param, compiled)) names.add(decodeComponent(param.value ?? ''));
   }
+  return names;
+}
+
+// Placeholder text of a valueless parameter `names` holds, keeping the `amp;` of an `&amp;` separator.
+function namedTokenText(param: QueryParam, names: ReadonlySet<string>, placeholder: string): string | undefined {
+  if (param.value !== undefined || !names.has(param.name)) return undefined;
+  return param.rawName.startsWith(AMP_ENTITY_REST) ? `${AMP_ENTITY_REST}${placeholder}` : placeholder;
+}
+
+// In each query in text, valueless parameters a naming parameter names, and its value, become the token placeholder.
+function maskTextNamedTokens(s: string, rules: NormaliseRules, compiled: Compiled): string {
+  if (compiled.namingParams.size === 0) return s;
+  const { placeholder } = rules.tokens;
+  return s.replace(QUERY_IN_TEXT, (query: string) => {
+    const params = queryParams(query);
+    const names = tokenParamNames(params, compiled);
+    if (names.size === 0) return query;
+    return params
+      .map((param) => {
+        if (isNamingParam(param, compiled)) return `${param.rawName}=${placeholder}`;
+        return namedTokenText(param, names, placeholder) ?? param.text;
+      })
+      .join('&');
+  });
+}
+
+// Token parameters anywhere in text, including `&amp;`-separated ones in HTML; an empty value stays visible.
+function maskTextQueryTokens(s: string, rules: NormaliseRules, compiled: Compiled): string {
+  return maskTextNamedTokens(s, rules, compiled).replace(
+    compiled.textQueryTokens,
+    (match: string, name: string, value: string) => (value === '' ? match : `${name}=${rules.tokens.placeholder}`),
+  );
 }
 
 function urlRuleApplies(id: string, rules: NormaliseRules): boolean {
@@ -266,19 +329,21 @@ function urlRuleApplies(id: string, rules: NormaliseRules): boolean {
 // Raw `name=value` pairs are edited in place, so encoding, order and repeats stay as each side sent them.
 function normaliseQuery(query: string, rules: NormaliseRules, compiled: Compiled): string {
   const maskTokens = urlRuleApplies(rules.tokens.id, rules);
-  const params = query.split('&').map((param) => {
-    const eq = param.indexOf('=');
-    const rawName = eq < 0 ? param : param.slice(0, eq);
-    const name = decodeParamName(rawName);
-    const value = eq < 0 ? '' : param.slice(eq + 1);
+  const all = queryParams(query);
+  const names = maskTokens ? tokenParamNames(all, compiled) : new Set<string>();
+  const params = all.map((param) => {
+    const { text, rawName, name } = param;
+    const value = param.value ?? '';
     if (maskTokens && value !== '' && compiled.tokenQueryParams.has(compiled.foldQuery(name))) {
       return { name, text: `${rawName}=${rules.tokens.placeholder}` };
     }
+    const named = namedTokenText(param, names, rules.tokens.placeholder);
+    if (named !== undefined) return { name: rules.tokens.placeholder, text: named };
     // FW/1 lower-cases the action (admin/framework.cfc:602-626), so its case is not observable.
     if (value !== '' && compiled.lowerCaseParams.has(compiled.foldActionParam(name))) {
       return { name, text: `${rawName}=${value.toLowerCase()}` };
     }
-    return { name, text: param };
+    return { name, text };
   });
   if (rules.urls.otherwise.sortQuery) params.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return params.map((param) => param.text).join('&');
@@ -351,7 +416,8 @@ function textOf(
 
 /**
  * URL `url` normalised: a signed URL (signed query parameter or `urls.pathPrefixes` path) becomes the URL
- * placeholder; otherwise token parameters become the token placeholder, `muraAction`/`fuseaction` values are
+ * placeholder; otherwise token parameters, and valueless parameters a `tokens.valuelessParamsNamedBy` parameter
+ * names, become the token placeholder, `muraAction`/`fuseaction` values are
  * lower-cased, configured origins become the origin placeholder and ids become ordinals. Path, parameter order and
  * fragment are kept; unparseable input is normalised as text.
  */
@@ -417,7 +483,10 @@ function walk(
   compiled: Compiled,
 ): unknown {
   if (key !== undefined && isTokenKeyIn(key, compiled) && !isEmpty(value)) return rules.tokens.placeholder;
-  if (typeof value === 'string') return normaliseString(value, key, state, rules, compiled);
+  if (typeof value === 'string') {
+    const keyed = key === undefined ? undefined : keyedOrdinalFor(key, value, state, rules.ids);
+    return keyed ?? normaliseString(value, key, state, rules, compiled);
+  }
   if (typeof value === 'number') return normaliseNumber(value, key, rules, compiled);
   // Array elements take the key of the array.
   if (Array.isArray(value)) return value.map((item: unknown) => walk(item, key, state, rules, compiled));
@@ -435,7 +504,8 @@ function walk(
 
 /**
  * New copy of `value` with every rule of this module applied at any depth: token keys become the token
- * placeholder, URL-like strings go through {@link normaliseUrl}, other strings through {@link normaliseText}
+ * placeholder, non-empty strings under keyed id keys (`mailpit_id`, …) their keyed ordinal, URL-like strings go
+ * through {@link normaliseUrl}, other strings through {@link normaliseText}
  * (date-only fields keep their dates), object keys are visited sorted with their ids replaced. Booleans and null
  * are kept; numbers are kept unless a key-bound timestamp class matches them.
  * @param key Name `value` is stored under, when the caller knows it.

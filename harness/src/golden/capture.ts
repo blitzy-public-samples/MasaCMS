@@ -1,5 +1,6 @@
 // Captures golden outputs from legacy directly and writes one committed set per catalogue scenario.
 import path from 'node:path';
+import { serializeError, type Logger } from '@opt2/platform/logging';
 import { z } from '@opt2/platform/service-kit';
 import {
   CATALOGUE_PATH,
@@ -39,6 +40,7 @@ import {
 } from './normalise/index.js';
 import { RULES_PATH, loadRules } from './normalise/rules.js';
 import {
+  configuredAppReloadKey,
   createScenarioContext,
   loadSecretStore,
   loadSeedStore,
@@ -57,7 +59,9 @@ import {
 } from './side-effects.js';
 import {
   GAP_REASON,
+  holdsReloadKey,
   redact,
+  redactReloadKey,
   runScenarioSteps,
   type CandidateChoice,
   type RecordedBody,
@@ -67,6 +71,8 @@ import {
   type StepRunOptions,
 } from './steps.js';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
+import { safeDiagnostic } from '../lib/diagnostics.js';
+import { createHarnessLogger } from '../lib/logger.js';
 import { opt2Path, repoPath, stateDir, type EnvLike } from '../lib/paths.js';
 import { readPin } from '../lib/pin.js';
 import { readJson, stableStringify, writeJsonReport, type ReportOptions } from '../lib/report.js';
@@ -595,15 +601,16 @@ export interface CaptureDeps {
   seed?: SeedStore;
   sideEffects?: Omit<SideEffectDeps, 'fetch'>;
   clock?: () => Date;
-  /** Progress lines; default stderr. */
-  log?: (line: string) => void;
+  /** Progress and failure log; default {@link createHarnessLogger} on stderr. */
+  logger?: Logger;
   exceptions?: AppendExceptionOptions;
   /** Route-key registries and variants recorded keys use; default the coverage gate's committed ones. */
   routeKeyOptions?: StepRunOptions['routeKeyOptions'];
 }
 
-function stderrLine(line: string): void {
-  process.stderr.write(`${line}\n`);
+/** `err`'s name and message with `secrets` redacted, then masked by {@link safeDiagnostic}. */
+function describeFailure(err: unknown, secrets: readonly string[], env: EnvLike): string {
+  return safeDiagnostic(redact(err instanceof Error ? `${err.name}: ${err.message}` : String(err), secrets), env);
 }
 
 function emptySideEffects(): GoldenSideEffects {
@@ -611,13 +618,18 @@ function emptySideEffects(): GoldenSideEffects {
 }
 
 /** JSON-string and plain forms of each secret; throws when any occurs in `text`, never naming the value. */
-function assertNoSecrets(text: string, secrets: readonly string[], what: string): void {
+export function assertNoSecrets(text: string, secrets: readonly string[], what: string): void {
   for (const secret of secrets) {
     if (secret === '') continue;
     if (text.includes(secret) || text.includes(JSON.stringify(secret).slice(1, -1))) {
       throw new Error(`${what}: a secret value remains after redaction`);
     }
   }
+}
+
+/** Throws when `text` holds reload key `key` as a URL query parameter name or reload value, never naming the value. */
+export function assertNoReloadKey(text: string, key: string | undefined, what: string): void {
+  if (holdsReloadKey(text, key)) throw new Error(`${what}: a secret value remains after redaction`);
 }
 
 /**
@@ -628,7 +640,7 @@ function assertNoSecrets(text: string, secrets: readonly string[], what: string)
  */
 export async function captureScenario(scenario: Scenario, deps: CaptureDeps): Promise<CapturedScenario | null> {
   const env = deps.env ?? process.env;
-  const log = deps.log ?? stderrLine;
+  const logger = deps.logger ?? createHarnessLogger('harness-golden-capture', env);
   const capturedAt = (deps.clock ?? (() => new Date()))().toISOString();
   const base = {
     sourceSha: deps.sourceSha,
@@ -640,11 +652,12 @@ export async function captureScenario(scenario: Scenario, deps: CaptureDeps): Pr
   };
   const skipped = skipReason(scenario, deps.fixtures);
   if (skipped !== null) {
-    log(`${scenario.id}: ${skipped}`);
+    logger.info(safeDiagnostic(`${scenario.id}: ${skipped}`, env));
     return { set: { ...base, skipped, steps: [], sideEffects: emptySideEffects() }, gaps: [] };
   }
   if (scenario.browser !== undefined) {
-    log(`${scenario.id}: browser flow ${scenario.browser.flow}, captured by harness/e2e/ui/interactions.e2e.ts`);
+    const flow = scenario.browser.flow;
+    logger.info(safeDiagnostic(`${scenario.id}: browser flow ${flow}, captured by harness/e2e/ui/interactions.e2e.ts`, env));
     return null;
   }
 
@@ -666,29 +679,35 @@ export async function captureScenario(scenario: Scenario, deps: CaptureDeps): Pr
   });
   const effects = await collectSideEffects(ctx, scenario, 'legacy', sideDeps);
   const secrets = secretValues(ctx);
+  const reloadKey = configuredAppReloadKey(env);
+  const scrub = <T>(value: T): T => redactReloadKey(redact(value, secrets), reloadKey);
 
   const builder = createGoldenStepBuilder(scenario, deps.rules);
   const steps: GoldenStep[] = [];
   const gaps: string[] = [];
-  for (const record of redact(records, secrets)) {
+  for (const record of scrub(records)) {
     let exceptionId = record.exceptionId;
     if (record.gap !== undefined) {
       const entry = gapEntry(scenario, record, record.gap, deps.sourceSha);
       const stored = await appendExceptionEntry(entry, deps.exceptions);
       exceptionId ??= stored.id;
       gaps.push(stored.id);
-      log(`${scenario.id} step ${record.name}: ${record.gap.reason}; recorded ${stored.id}`);
+      logger.warn(safeDiagnostic(`${scenario.id} step ${record.name}: ${record.gap.reason}; recorded ${stored.id}`, env));
     }
     steps.push(await builder.step(exceptionId === undefined ? record : { ...record, exceptionId }));
   }
-  const redactedEffects = redact(effects, secrets);
+  const redactedEffects = scrub(effects);
   const sideEffects = await builder.sideEffects(redactedEffects, steps);
 
-  const set = redact<GoldenSet>({ ...base, steps, sideEffects }, secrets);
-  const raw = redact<RawCapture>({ ...base, records, sideEffects: effects }, secrets);
-  assertNoSecrets(stableStringify(set), secrets, `${scenario.id} golden set`);
-  assertNoSecrets(stableStringify(raw), secrets, `${scenario.id} raw capture`);
-  log(`${scenario.id}: captured ${steps.length} exchanges`);
+  const set = scrub<GoldenSet>({ ...base, steps, sideEffects });
+  const raw = scrub<RawCapture>({ ...base, records, sideEffects: effects });
+  const setText = stableStringify(set);
+  const rawText = stableStringify(raw);
+  assertNoSecrets(setText, secrets, `${scenario.id} golden set`);
+  assertNoReloadKey(setText, reloadKey, `${scenario.id} golden set`);
+  assertNoSecrets(rawText, secrets, `${scenario.id} raw capture`);
+  assertNoReloadKey(rawText, reloadKey, `${scenario.id} raw capture`);
+  logger.info(safeDiagnostic(`${scenario.id}: captured ${steps.length} exchanges`, env));
   return { set, raw, gaps };
 }
 
@@ -715,7 +734,7 @@ const HELP = [
 ].join('\n');
 
 /** Collaborators of {@link main} beyond the environment. */
-export type MainDeps = Pick<CaptureDeps, 'fetch' | 'secrets' | 'seed' | 'sideEffects' | 'clock' | 'log'>;
+export type MainDeps = Pick<CaptureDeps, 'fetch' | 'secrets' | 'seed' | 'sideEffects' | 'clock' | 'logger'>;
 
 /** Scenarios `--only` names, in catalogue order; every id must exist. */
 function selectedScenarios(catalogue: Catalogue, only: string | undefined): Scenario[] {
@@ -740,7 +759,7 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
     help: HELP,
   });
   if (values.catalogue === '') throw new UsageError('--catalogue needs a path', USAGE);
-  const log = deps.log ?? stderrLine;
+  const logger = deps.logger ?? createHarnessLogger('harness-golden-capture', env);
   const pin = readPin();
   const cataloguePath = values.catalogue === undefined ? CATALOGUE_PATH : path.resolve(values.catalogue);
   const catalogue = await loadCatalogue(cataloguePath);
@@ -766,6 +785,7 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
         secrets,
         seed,
         sideEffects,
+        logger,
       });
       if (captured === null) {
         counts.browser += 1;
@@ -776,10 +796,8 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
       else counts.skipped += 1;
       gaps.push(...captured.gaps);
     } catch (err) {
-      const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-      const error = redact(message, secretValues({ secrets }));
-      failed.push({ id: scenario.id, error });
-      log(`${scenario.id}: capture failed: ${error}`);
+      failed.push({ id: scenario.id, error: describeFailure(err, secretValues({ secrets }), env) });
+      logger.error({ error: serializeError(err) }, safeDiagnostic(`${scenario.id}: capture failed`, env));
     }
   }
   return { code: failed.length > 0 ? 1 : 0, summary: { ...counts, gaps, failed } };

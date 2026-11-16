@@ -696,5 +696,32 @@ describe('main flags', () => {
     ]);
     expect((await readSessionState('GS-ID-09', env))?.completed).toBe(true);
   });
+
+  it('masks a configured reload key in the admin reload link of the saved sessions and the replay output', async () => {
+    const invoker = await operatorInvoker();
+    const key = ['FIXTURE', 'reload', 'key'].join('-');
+    const keyed = { ...env, MURA_APPRELOADKEY: key };
+    const page =
+      '<html><head><title>Masa CMS</title></head><body>' +
+      `<a href="/admin/?${key}&amp;reload=${key}">Reload</a></body></html>`;
+    const gateway = (sent: Sent): Response | undefined =>
+      sent.url.pathname.startsWith('/admin/')
+        ? new Response(page, { headers: { 'content-type': 'text/html; charset=utf-8' } })
+        : undefined;
+    const run = (phase: string, tableVersion: string): ReturnType<typeof main> => {
+      const argv = ['--phase', phase, '--only', 'GS-ID-09', '--catalogue', catalogueFile];
+      return main(argv, keyed, mainDeps(fakeStack({ tableVersion, gateway }), invoker));
+    };
+
+    const paused = await run('pre-transition', 'v0001');
+    const saved = await readFile(sessionStatePath('GS-ID-09', keyed), 'utf8');
+    const resumed = await run('resume', 'v0002');
+    const output = await readFile(replayOutputPath('GS-ID-09', keyed), 'utf8');
+
+    expect([paused.code, resumed.code]).toEqual([0, 0]);
+    expect(saved).toContain('/admin/?<secret>&amp;reload=<secret>');
+    expect(output).toContain('/admin/?<token>&reload=<token>');
+    for (const text of [saved, output]) expect(text).not.toContain(key);
+  });
 });
 

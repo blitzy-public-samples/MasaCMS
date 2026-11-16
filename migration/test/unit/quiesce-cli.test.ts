@@ -1,16 +1,19 @@
-// Unit tests for the `opt2-ops` CLI: argument parsing, the summary line and exit codes, with tracing, the context and the quiesce commands stubbed.
+// Unit tests for the `opt2-ops` CLI: argument parsing, help, the summary line and exit codes, with tracing, the context and the quiesce commands stubbed.
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { validateLogRecord } from '@opt2/platform/logging';
+import { EnvValidationError } from '@opt2/platform/service-kit';
 import { shutdownTracing, startTracing } from '@opt2/platform/tracing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMigrationContext, type MigrationContext } from '../../src/context.js';
+import { MIGRATION_ENVIRONMENT_HELP } from '../../src/env-help.js';
 import { OwnerCallError } from '../../src/owners/index.js';
-import { OpsUsageError, USAGE, main, parseOpsCommand, type OpsCommand, type OpsIo } from '../../src/quiesce/cli.js';
+import { HELP, OpsUsageError, USAGE, main, parseOpsCommand, type OpsCommand, type OpsIo } from '../../src/quiesce/cli.js';
 import {
   BackgroundCallError,
   DrainTimeoutError,
@@ -45,6 +48,9 @@ const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const CLI_SOURCE = path.join(PACKAGE_DIR, 'src/quiesce/cli.ts');
 const TO = '2026-06-30T00:00:00.000Z';
 const PUSH_KEY = 'local-push-key-value';
+const PUSH_ENDPOINT = `http://127.0.0.1:21815/internal/v1/events/communications.surveys.survey.scheduled.v1?key=${PUSH_KEY}`;
+// Assembled at run time so no credential literal sits in source.
+const SECRET = ['s3cr3t', 'ops', 'credential'].join('-');
 
 const EMPTY_RECORD = { suspended: false, since: null, reason: null, pushConfigs: {}, pausedQueues: [], pausedTasks: [] };
 
@@ -98,6 +104,18 @@ function summaryLine(stdout: string): Record<string, unknown> {
   return JSON.parse(lines[0] ?? '') as Record<string, unknown>;
 }
 
+/** The stderr lines, each parsed and validated against log-record.v1. */
+function logRecords(stderr: string): Record<string, unknown>[] {
+  return stderr
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      expect(validateLogRecord(record)).toEqual({ valid: true, errors: [] });
+      return record;
+    });
+}
+
 beforeEach(() => {
   vi.mocked(createMigrationContext).mockResolvedValue(ctx);
   vi.mocked(drainAndSuspend).mockResolvedValue(SUSPEND_RESULT);
@@ -139,11 +157,24 @@ describe('parseOpsCommand', () => {
   });
 });
 
+describe('HELP', () => {
+  it('extends the usage with the migration environment, exit codes, documentation and an example', () => {
+    expect(HELP.startsWith(USAGE)).toBe(true);
+    expect(HELP).toContain(`\n${MIGRATION_ENVIRONMENT_HELP}Exit codes: 0 success, 1 failure (an invalid environment included), 2 usage error.\n`);
+    expect(HELP.split('\n').slice(-4)).toEqual([
+      'Documentation: migration/README.md, sections "Runtime forms" and "Environment".',
+      'Example, from the repository root with the variables above exported:',
+      '  node migration/dist/quiesce/cli.js seek-subscriptions --to 2026-06-30T00:00:00Z',
+      '',
+    ]);
+  });
+});
+
 describe('main', () => {
-  it('prints the usage for --help without tracing or a context', async () => {
+  it('prints the help for --help without tracing or a context', async () => {
     const out = capture();
     await expect(main(['--help'], out.io)).resolves.toBe(0);
-    expect(out.stdout()).toBe(USAGE);
+    expect(out.stdout()).toBe(HELP);
     expect(out.stderr()).toBe('');
     expect(startTracing).not.toHaveBeenCalled();
     expect(createMigrationContext).not.toHaveBeenCalled();
@@ -192,25 +223,89 @@ describe('main', () => {
     },
     { error: new MissingSubscriptionError(['timesheets.people.person.archived.v1']), details: { subscriptions: ['timesheets.people.person.archived.v1'] } },
     {
-      error: new ResumeReconcileError([{ queue: 'people-outbox-sweep', service: 'people', ok: false, error: 'HTTP 503' }]),
-      details: { failed: [{ queue: 'people-outbox-sweep', service: 'people', ok: false, error: 'HTTP 503' }] },
+      error: new ResumeReconcileError([{ queue: 'people-outbox-sweep', service: 'people', ok: false, error: 'Service people unavailable (ECONNREFUSED)' }]),
+      details: { failed: [{ queue: 'people-outbox-sweep', service: 'people', ok: false, error: 'Service people unavailable (ECONNREFUSED)' }] },
     },
     { error: new BackgroundCallError('backgroundSuspend', 409, { error: { message: 'busy' } }), details: { operation: 'backgroundSuspend', status: 409 } },
-    { error: new OwnerCallError('people', 'GET', '/internal/v1/migration/position', 503, { secret: 'body' }), details: { owner: 'people', status: 503 } },
+    {
+      error: new OwnerCallError('people', 'GET', '/internal/v1/migration/position', 503, { secret: 'body' }),
+      details: { owner: 'people', method: 'GET', status: 503 },
+    },
     { error: new Error('plain failure'), details: {} },
-  ])('reports $error.name with exit code 1', async ({ error, details }) => {
+  ])('reports $error.name by its type, safe message and fields, with exit code 1', async ({ error, details }) => {
     vi.mocked(drainAndSuspend).mockRejectedValueOnce(error);
     const out = capture();
     await expect(main(['drain-and-suspend'], out.io)).resolves.toBe(1);
     expect(summaryLine(out.stdout())).toEqual({
       command: 'drain-and-suspend',
       ok: false,
-      error: { type: error.name, message: error.message, ...details },
+      error: { type: error.name, message: '[REDACTED]', ...details },
     });
     expect(out.stdout()).not.toContain('body');
-    expect(out.stderr()).toContain(error.message);
+    const records = logRecords(out.stderr());
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ severity: 'ERROR', error: { type: error.name, message: '[REDACTED]' } });
+    expect(records[0]?.message).toMatch(/^opt2-ops drain-and-suspend failed/);
+    expect(out.stderr()).not.toContain(error.message);
     expect(ctx.close).toHaveBeenCalledOnce();
     expect(shutdownTracing).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      name: 'a connection string',
+      error: new Error(`connect postgres://migration_app:${SECRET}@127.0.0.1:5432/masa_services failed`),
+      summary: { type: 'Error', message: '[REDACTED]' },
+      messages: ['opt2-ops drain-and-suspend failed'],
+    },
+    {
+      name: 'a password in an upstream answer',
+      error: new BackgroundCallError('backgroundSuspend', 500, { error: { message: `password=${SECRET}` } }),
+      summary: { type: 'BackgroundCallError', message: '[REDACTED]', operation: 'backgroundSuspend', status: 500 },
+      messages: ['opt2-ops drain-and-suspend failed (status=500 operation=backgroundSuspend)'],
+    },
+    {
+      name: 'a credential in a chain error text',
+      error: new ResumeReconcileError([{ queue: 'people-outbox-sweep', service: 'people', ok: false, error: `token ${SECRET} rejected` }]),
+      summary: {
+        type: 'ResumeReconcileError',
+        message: '[REDACTED]',
+        failed: [{ queue: 'people-outbox-sweep', service: 'people', ok: false, error: '[REDACTED]' }],
+      },
+      messages: ['opt2-ops drain-and-suspend failed'],
+    },
+    {
+      name: 'a cause chain ending in node-mssql originalError',
+      error: new Error(`login with ${SECRET} failed`, {
+        cause: Object.assign(new Error(`socket for ${SECRET} closed`), {
+          code: 'ESOCKET',
+          originalError: Object.assign(new Error(`read ECONNRESET ${SECRET}`), { code: 'ECONNRESET', syscall: 'read' }),
+        }),
+      }),
+      summary: {
+        type: 'Error',
+        message: '[REDACTED]',
+        causes: [
+          { type: 'Error', message: '[REDACTED]', code: 'ESOCKET' },
+          { type: 'Error', message: 'read ECONNRESET', code: 'ECONNRESET' },
+        ],
+      },
+      messages: ['opt2-ops drain-and-suspend failed', 'caused by (code=ESOCKET)', 'caused by (code=ECONNRESET)'],
+    },
+  ])('keeps $name out of stdout and stderr, printing its type and identifiers', async ({ error, summary, messages }) => {
+    vi.stubEnv('OPT2_SERVICE_NAME', 'opt2-cli');
+    try {
+      vi.mocked(drainAndSuspend).mockRejectedValueOnce(error);
+      const out = capture();
+      await expect(main(['drain-and-suspend'], out.io)).resolves.toBe(1);
+      expect(summaryLine(out.stdout())).toEqual({ command: 'drain-and-suspend', ok: false, error: summary });
+      const records = logRecords(out.stderr());
+      expect(records.map((record) => record.message)).toEqual(messages);
+      expect(records[0]).toMatchObject({ severity: 'ERROR', service: 'opt2-cli', version: '1.0.0', error: { type: summary.type } });
+      expect(`${out.stdout()}${out.stderr()}`).not.toContain(SECRET);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('reports a failed seek verification with the non-empty subscriptions', async () => {
@@ -224,11 +319,15 @@ describe('main', () => {
     });
   });
 
-  it('reports a context that cannot be built, with nothing to close', async () => {
-    vi.mocked(createMigrationContext).mockRejectedValueOnce(new TypeError('MURA_DBHOST: is required'));
+  it('reports a context that cannot be built by the variables it names, with nothing to close', async () => {
+    vi.mocked(createMigrationContext).mockRejectedValueOnce(new EnvValidationError(['MURA_DBHOST: is required', 'PG_PORT: Invalid input'], 'migration'));
     const out = capture();
     await expect(main(['resume'], out.io)).resolves.toBe(1);
-    expect(summaryLine(out.stdout())).toEqual({ command: 'resume', ok: false, error: { type: 'TypeError', message: 'MURA_DBHOST: is required' } });
+    expect(summaryLine(out.stdout())).toEqual({
+      command: 'resume',
+      ok: false,
+      error: { type: 'EnvValidationError', message: 'migration: invalid environment (MURA_DBHOST, PG_PORT)' },
+    });
     expect(resume).not.toHaveBeenCalled();
     expect(ctx.close).not.toHaveBeenCalled();
     expect(shutdownTracing).toHaveBeenCalledOnce();
@@ -238,34 +337,51 @@ describe('main', () => {
     vi.mocked(ctx.close).mockRejectedValueOnce(new Error('pool end failed'));
     const out = capture();
     await expect(main(['resume'], out.io)).resolves.toBe(1);
-    expect(summaryLine(out.stdout())).toEqual({ command: 'resume', ok: false, error: { type: 'Error', message: 'pool end failed' } });
+    expect(summaryLine(out.stdout())).toEqual({ command: 'resume', ok: false, error: { type: 'Error', message: '[REDACTED]' } });
   });
 
   it('keeps the command error when closing fails too', async () => {
-    vi.mocked(resume).mockRejectedValueOnce(new Error('resume failed'));
+    vi.mocked(resume).mockRejectedValueOnce(new BackgroundCallError('backgroundResume', 503, null));
     vi.mocked(ctx.close).mockRejectedValueOnce(new Error('pool end failed'));
     const out = capture();
     await expect(main(['resume'], out.io)).resolves.toBe(1);
-    expect(summaryLine(out.stdout())).toMatchObject({ ok: false, error: { message: 'resume failed' } });
-    expect(out.stderr()).toContain('pool end failed');
+    expect(summaryLine(out.stdout())).toMatchObject({ ok: false, error: { type: 'BackgroundCallError', operation: 'backgroundResume', status: 503 } });
+    expect(logRecords(out.stderr()).map((record) => record.message)).toEqual([
+      'opt2-ops resume: closing the context failed',
+      'opt2-ops resume failed (status=503 operation=backgroundResume)',
+    ]);
+    expect(out.stderr()).not.toContain('pool end failed');
   });
 
-  it('keeps the exit code when the final span export fails', async () => {
+  it('keeps the exit code when the final span export fails, logging it as a warning', async () => {
     vi.mocked(shutdownTracing).mockRejectedValueOnce(new Error('export to http://127.0.0.1:4318/v1/traces failed'));
     const out = capture();
     await expect(main(['resume'], out.io)).resolves.toBe(0);
     expect(summaryLine(out.stdout())).toMatchObject({ command: 'resume', ok: true });
-    expect(out.stderr()).toContain('opt2-ops: exporting traces failed');
+    const records = logRecords(out.stderr());
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ severity: 'WARNING', message: 'opt2-ops: exporting traces failed', error: { type: 'Error', message: '[REDACTED]' } });
+    expect(out.stderr()).not.toContain('/v1/traces');
   });
 
-  it('strips URL queries, where a local push key travels, from every output', async () => {
-    const endpoint = `http://127.0.0.1:21815/internal/v1/events/communications.surveys.survey.scheduled.v1?key=${PUSH_KEY}`;
-    vi.mocked(drainAndSuspend).mockRejectedValueOnce(new Error(`modifyPushConfig ${endpoint} refused`));
+  it.each([
+    { where: 'a failure message', code: 1, arrange: () => vi.mocked(drainAndSuspend).mockRejectedValueOnce(new Error(`modifyPushConfig ${PUSH_ENDPOINT} refused`)) },
+    {
+      where: 'a result field',
+      code: 0,
+      arrange: () =>
+        vi.mocked(drainAndSuspend).mockResolvedValueOnce({
+          ...SUSPEND_RESULT,
+          record: { ...SUSPEND_RESULT.record, pushConfigs: { 'communications.surveys.survey.scheduled.v1': { pushEndpoint: PUSH_ENDPOINT } } },
+        }),
+    },
+  ])('keeps the local push key of a URL query in $where out of every output', async ({ code, arrange }) => {
+    arrange();
     const out = capture();
-    await expect(main(['drain-and-suspend'], out.io)).resolves.toBe(1);
-    expect(summaryLine(out.stdout())).toMatchObject({
-      error: { message: 'modifyPushConfig http://127.0.0.1:21815/internal/v1/events/communications.surveys.survey.scheduled.v1 refused' },
-    });
+    await expect(main(['drain-and-suspend'], out.io)).resolves.toBe(code);
+    const line = summaryLine(out.stdout());
+    if (code === 0) expect(JSON.stringify(line)).toContain(PUSH_ENDPOINT.slice(0, PUSH_ENDPOINT.indexOf('?')));
+    else expect(line).toEqual({ command: 'drain-and-suspend', ok: false, error: { type: 'Error', message: '[REDACTED]' } });
     expect(out.stdout()).not.toContain(PUSH_KEY);
     expect(out.stderr()).not.toContain(PUSH_KEY);
   });
@@ -293,7 +409,7 @@ describe('opt2-ops as a process', () => {
   ])('exits $status for $args', ({ args, status }) => {
     const child = runCli(CLI_SOURCE, args);
     expect(child.status, child.stderr).toBe(status);
-    if (status === 0) expect(child.stdout).toBe(USAGE);
+    if (status === 0) expect(child.stdout).toBe(HELP);
     else expect(child.stderr).toContain(USAGE);
   });
 
@@ -304,6 +420,6 @@ describe('opt2-ops as a process', () => {
     symlinkSync(CLI_SOURCE, link);
     const child = runCli(link, ['--help']);
     expect(child.status, child.stderr).toBe(0);
-    expect(child.stdout).toBe(USAGE);
+    expect(child.stdout).toBe(HELP);
   });
 });

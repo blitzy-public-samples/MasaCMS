@@ -339,3 +339,17 @@ describe('canonicalAdminUrl on the fixture links', () => {
     );
   });
 });
+
+describe('domModel on the admin reload link', () => {
+  it.each([
+    ['a configured key', ['Fixture', 'Reload', 'Key'].join('-')],
+    ['a URL-encoded configured key', encodeURIComponent(['Fixture', 'Reload Key/'].join('-'))],
+    ["Masa's default key", 'appreload'],
+    ['a key redaction masked', '<secret>'],
+  ])('models the admin reload link with %s as tokens, keeping its text', (_label, key) => {
+    // admin/common/layouts/includes/nav.cfm:338
+    const nav = `<ul><li><a href="/admin/?${key}&amp;reload=${key}" onclick="return actionModal(this.href);"><span>Reload Application</span></a></li></ul>`;
+    const { model } = modelOf(nav);
+    expect(model.links).toStrictEqual([{ href: `/admin/?${TOKEN}&reload=${TOKEN}`, text: 'Reload Application' }]);
+  });
+});

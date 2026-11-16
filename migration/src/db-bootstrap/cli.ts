@@ -3,26 +3,57 @@
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-import { createLogger, serializeError, type Logger } from '@opt2/platform/logging';
+import * as logging from '@opt2/platform/logging';
 
+import { logFailure, safeFailure, stderrLogger, writeLine } from '../cli-diagnostics.js';
 import type { MigrateIo } from '../cli.js';
 import { loadConfig } from '../config.js';
 import { BOOTSTRAP_TARGETS, loadBootstrapEnv, missingForTarget, type BootstrapTarget } from './env.js';
 import { bootstrap, BootstrapEnvError } from './index.js';
+import { MigrationFailedError, SchemaNotEmptyError } from './migrations.js';
 
 const CLI_NAME = 'opt2-db';
+const LOGGER_IDENTITY = { service: 'db-bootstrap', version: '1.0.0' } as const;
 const TARGET_FLAG = '--target';
 const HELP_TOKENS: ReadonlySet<string> = new Set(['--help', '-h', 'help']);
 
-/** Usage text, written on `--help` and after a usage error. */
-export const USAGE = [
+const SYNOPSIS = [
   `Usage: ${CLI_NAME} bootstrap ${TARGET_FLAG} ${BOOTSTRAP_TARGETS.join('|')}`,
   `       ${CLI_NAME} --help`,
   '',
   '  local  drops and recreates every OPT-2 schema and role; role passwords from $OPT2_STATE_DIR/secrets/db-<schema>-{app,migrator}',
   '  cloud  Cloud SQL as the built-in postgres admin plus IAM users; refuses schemas that already hold tables',
   '',
-  'Prints one JSON summary line on stdout. Exit codes: 0 success, 1 failure or role-assertion finding, 2 usage error.',
+];
+const SUMMARY_NOTE = 'Prints one JSON summary line on stdout.';
+const EXIT_CODES = 'Exit codes: 0 success, 1 failure (an invalid environment included) or role-assertion finding, 2 usage error.';
+
+/** Usage text, written after a usage error. */
+export const USAGE = [...SYNOPSIS, `${SUMMARY_NOTE} ${EXIT_CODES}`, ''].join('\n');
+
+/** Help, written on `--help`: usage, the variables of each target, exit codes, documentation and an example. */
+export const HELP = [
+  ...SYNOPSIS,
+  SUMMARY_NOTE,
+  'Environment:',
+  '  OPT2_ENV                      local or cloud (required)',
+  '  PG_DATABASE                   PostgreSQL database of every OPT-2 schema (required)',
+  '  PG_HOST                       PostgreSQL host (required for --target local)',
+  '  PG_PORT                       PostgreSQL port (required for --target local)',
+  '  PG_USER                       administrator role with CREATEROLE and CREATE on PG_DATABASE, never a <svc>_app role',
+  '                                (required for --target local)',
+  '  PG_PASSWORD                   password of PG_USER (required for --target local)',
+  '  OPT2_STATE_DIR                absolute directory outside the checkout; --target local reads the role passwords',
+  '                                from its secrets/db-<schema>-{app,migrator} (default: ~/.opt2/state)',
+  '  CLOUD_SQL_INSTANCE            <project>:<region>:<instance> (required for --target cloud)',
+  '  GOOGLE_CLOUD_PROJECT          project of the service accounts and their IAM database users',
+  '                                (required for --target cloud)',
+  "  OPT2_CLOUDSQL_ADMIN_PASSWORD  password of Cloud SQL's built-in postgres user, in the cloud the Secret Manager",
+  '                                secret cloudsql-admin-password (required for --target cloud)',
+  EXIT_CODES,
+  'Documentation: migration/README.md, section "Bootstrap environment".',
+  'Example, from the repository root with the local variables above exported:',
+  `  OPT2_ENV=local node migration/dist/db-bootstrap/cli.js bootstrap ${TARGET_FLAG} local`,
   '',
 ].join('\n');
 
@@ -67,8 +98,19 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   return { kind: 'bootstrap', target };
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/** `safeFailure` of `error`, then the fields naming what failed. */
+function failureOf(error: unknown): Record<string, unknown> {
+  return { ...safeFailure(logging, error), ...detailsOf(error) };
+}
+
+/** File, SQLSTATE and location of a failed migration, or the schemas a refused cloud bootstrap found holding tables. */
+function detailsOf(error: unknown): Record<string, unknown> {
+  if (error instanceof MigrationFailedError) {
+    const { file, sqlState, line, position } = error;
+    return { file, sqlState, line, position };
+  }
+  if (error instanceof SchemaNotEmptyError) return { schemas: error.schemas };
+  return {};
 }
 
 /**
@@ -82,7 +124,7 @@ export async function main(
 ): Promise<number> {
   const parsed = parseArgs(argv);
   if (parsed.kind === 'help') {
-    io.stdout.write(USAGE);
+    io.stdout.write(HELP);
     return 0;
   }
   if (parsed.kind === 'usage-error') {
@@ -90,7 +132,7 @@ export async function main(
     return 2;
   }
   const { target } = parsed;
-  let logger: Logger | undefined;
+  let logger: logging.Logger | undefined;
   try {
     const env = loadBootstrapEnv(source);
     // Checked before the logger exists: a cloud logger needs GOOGLE_CLOUD_PROJECT, and its refusal would hide the other missing names.
@@ -98,9 +140,8 @@ export async function main(
     if (missing.length > 0) throw new BootstrapEnvError(missing);
     const config = loadConfig();
     // stderr, so stdout carries only the summary line; `env: target` gives cloud runs the Cloud Logging trace keys.
-    logger = createLogger({
-      service: 'db-bootstrap',
-      version: '1.0.0',
+    logger = logging.createLogger({
+      ...LOGGER_IDENTITY,
       env: target,
       googleCloudProject: env.GOOGLE_CLOUD_PROJECT,
       destination: io.stderr,
@@ -109,9 +150,11 @@ export async function main(
     io.stdout.write(`${JSON.stringify(summary)}\n`);
     return summary.ok ? 0 : 1;
   } catch (error) {
-    if (logger === undefined) io.stderr.write(`${CLI_NAME}: bootstrap failed: ${messageOf(error)}\n`);
-    else logger.error({ error: serializeError(error) }, 'bootstrap failed');
-    io.stdout.write(`${JSON.stringify({ command: 'bootstrap', target, ok: false, error: messageOf(error) })}\n`);
+    // Before the logger exists, the same identity logs on stderr, as local when the cloud project cannot form the trace key.
+    const failureLogger =
+      logger ?? stderrLogger(logging, io, { ...LOGGER_IDENTITY, env: target, googleCloudProject: source.GOOGLE_CLOUD_PROJECT });
+    logFailure(logging, failureLogger, 'bootstrap failed', error);
+    writeLine(logging, io, { command: 'bootstrap', target, ok: false, error: failureOf(error) });
     return 1;
   }
 }

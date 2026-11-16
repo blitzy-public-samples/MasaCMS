@@ -38,6 +38,15 @@ ids:
     placeholder: "<uuid:{n}>"
     ordinal: scenario
     ordinalKey: exact
+  # Opaque ids known by their key only; a non-empty string value takes the rule's own ordinal, an empty one stays.
+  keyed:
+    - id: mailpit-id
+      # Mailpit message ID: fixture communications.cfc detail() history and DeliveryStatusEntry; mailpitId in events.
+      keys: [mailpit_id, mailpitId]
+      keyMatch: case-insensitive
+      placeholder: "<mailpit:{n}>"
+      ordinal: scenario
+      ordinalKey: exact
 
 timestamps:
   id: timestamp
@@ -118,7 +127,12 @@ tokens:
     - X-Goog-Date
     - expires
     - Expires
+    # FW/1's reload password, which is the reload key (admin/Application.cfc:196).
+    - reload
   queryParamMatch: exact
+  # A valueless parameter named by one of these parameters' value in the same query is a token too: the admin reload
+  # link is `?<key>&reload=<key>` (admin/common/layouts/includes/nav.cfm:338).
+  valuelessParamsNamedBy: [reload]
   htmlInputs: ["input[name=csrf_token]", "input[name=csrf_token_expires]"]
 
 urls:
@@ -208,7 +222,7 @@ envelope:
   errorFields: [type, code, message]
   comparison: deep-equal-after-normalisation
   keyCase: exact
-  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, timestamp]
+  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, mailpit-id, timestamp]
   stacktrace:
     id: error-stacktrace
     optIn: true
@@ -220,7 +234,7 @@ dom:
   screenshots: review-only
   exclude: [script, style, noscript, "comment()"]
   whitespace: collapse-and-trim
-  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, timestamp]
+  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, mailpit-id, timestamp]
   extract:
     title:
       selector: "title"
@@ -269,7 +283,7 @@ dom:
 
 exports:
   id: exports
-  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, timestamp]
+  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, mailpit-id, timestamp]
   csv:
     parser: csv-parse
     compare: cells

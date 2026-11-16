@@ -4,13 +4,17 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { LEGACY_ERROR_MAP, cfHash } from '@opt2/platform/legacy-compat';
+import { LEGACY_ERROR_MAP, cfHash, esapiUrlEncode } from '@opt2/platform/legacy-compat';
+import { createLogger, type Logger } from '@opt2/platform/logging';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EXCEPTIONS_LIST_PATH,
   GENERATED_BY,
   appendExceptionEntry,
+  assertNoReloadKey,
+  assertNoSecrets,
   captureScenario,
   gapExceptionId,
   goldenSetPath,
@@ -38,6 +42,7 @@ import {
 import { haltEvidence, type ExceptionEntry } from '../../src/golden/errors.js';
 import { ETAG_OK } from '../../src/golden/normalise/index.js';
 import { RULES_PATH, loadRules, type NormaliseRules } from '../../src/golden/normalise/rules.js';
+import { loadSecretStore, secretValues } from '../../src/golden/session.js';
 import { GAP_REASON } from '../../src/golden/steps.js';
 import { REPO_ROOT, isInsideRepo, type EnvLike } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
@@ -234,6 +239,17 @@ function envFor(dir: string): EnvLike {
   return { PORT: LEGACY_PORT, MAILPIT_API_URL: MAILPIT, OPT2_STATE_DIR: dir, MURA_ADMIN_PASSWORD: ADMIN_PASSWORD };
 }
 
+/** A log-record.v1 logger that pushes each line's message to `messages`. */
+function messageLogger(messages: string[]): Logger {
+  const destination = new Writable({
+    write(chunk, _encoding, done) {
+      messages.push((JSON.parse(String(chunk)) as { message: string }).message);
+      done();
+    },
+  });
+  return createLogger({ service: 'test', version: '1', env: 'local', destination });
+}
+
 function captureDeps(fake: FakeLegacy, env: EnvLike, logs: string[] = []): CaptureDeps {
   return {
     rules,
@@ -242,7 +258,7 @@ function captureDeps(fake: FakeLegacy, env: EnvLike, logs: string[] = []): Captu
     env,
     fetch: fake.fetch,
     clock: () => CAPTURED_AT,
-    log: (line) => logs.push(line),
+    logger: messageLogger(logs),
   };
 }
 
@@ -390,6 +406,86 @@ describe('captureScenario against legacy', () => {
       expect(text).not.toContain(ADMIN_PASSWORD);
     }
   });
+
+  it('keeps a configured reload key no step resolves out of the set and raw capture, its admin link a token', async () => {
+    const key = ['Fixture', 'Reload Key/"', '24'].join('-');
+    const encoded = esapiUrlEncode(key);
+    const env = { ...envFor(stateDir), MURA_APPRELOADKEY: key };
+    const reloadLink = `/admin/?${encoded}&amp;reload=${encoded}`;
+    // admin/common/layouts/includes/nav.cfm:338 renders this link on every admin page.
+    const page =
+      `<html><head><title>Masa CMS</title></head><body><a href="${reloadLink}" ` +
+      'onclick="return actionModal(this.href);"><span>Reload Application</span></a></body></html>';
+    const fake = fakeLegacy((req) =>
+      req.method === 'GET' && req.url.pathname === '/admin/' && req.url.searchParams.get('muraAction') !== 'cLogin.main'
+        ? html(page)
+        : undefined,
+    );
+    const scenario = scenarioById(await loadCatalogue(CATALOGUE_FIXTURE), 'GS-ID-01');
+    expect(JSON.stringify(scenario)).not.toContain('secret:appreload');
+    const file = await writeCapture(await capture(scenario, captureDeps(fake, env)), env);
+
+    const set = await readGoldenSet('GS-ID-01');
+    const home = set.steps.find((step) => step.name === 'home');
+    const reloadHrefs = [home?.response.domModel, home?.normalised.domModel].map(
+      (model) => model?.links.find((link) => link.text === 'Reload Application')?.href,
+    );
+    expect(reloadHrefs).toStrictEqual(['/admin/?<token>&reload=<token>', '/admin/?<token>&reload=<token>']);
+    const forms = [key, encoded, encodeURIComponent(key), JSON.stringify(key).slice(1, -1)];
+    for (const written of [file, rawCapturePath('GS-ID-01', env)]) {
+      const text = await readFile(written, 'utf8');
+      expect(forms.filter((form) => text.includes(form))).toStrictEqual([]);
+    }
+    const raw = await readJsonFile<RawCapture>(rawCapturePath('GS-ID-01', env));
+    expect(raw.records.find((record) => record.name === 'home')?.response).toMatchObject({
+      text: expect.stringContaining('/admin/?<secret>&amp;reload=<secret>'),
+    });
+    const leaked = (await readFile(file, 'utf8')).replace('?<token>&reload=<token>', `?${encoded}&reload=${encoded}`);
+    expect(() => assertNoReloadKey(leaked, key, 'GS-ID-01 golden set')).toThrow(
+      'GS-ID-01 golden set: a secret value remains after redaction',
+    );
+  });
+
+  it.each([
+    { word: 'a page title', key: ['Ho', 'me'].join('') },
+    { word: 'the admin path', key: ['ad', 'min'].join('') },
+  ])('keeps text equal to a configured reload key that is $word, masking only the reload link', async ({ key }) => {
+    const env = { ...envFor(stateDir), MURA_APPRELOADKEY: key };
+    const reloadLink = `/admin/?${key}&amp;reload=${key}`;
+    const page =
+      '<html><head><title>Home</title></head><body><h1>Home</h1>' +
+      '<a href="/admin/?muraAction=cUsers.list&amp;ispublic=0">Users</a>' +
+      `<a href="${reloadLink}"><span>Reload Application</span></a></body></html>`;
+    const contentBody = FINDONE_BODY.replace('"title":"About Us"', '"title":"Home"');
+    const fake = fakeLegacy((req) => {
+      if (req.url.pathname === FINDONE_PATH) {
+        return new Response(contentBody, { headers: { ...ETAG_FIXTURE.headers, ETag: cfHash(contentBody) } });
+      }
+      const login = req.url.searchParams.get('muraAction') === 'cLogin.main';
+      return req.method === 'GET' && req.url.pathname === '/admin/' && !login ? html(page) : undefined;
+    });
+    const admin = await capture(scenarioById(await loadCatalogue(CATALOGUE_FIXTURE), 'GS-ID-01'), captureDeps(fake, env));
+    const content = await capture(catalogueCo05, captureDeps(fake, env));
+
+    const urls = ['/admin/?muraAction=cLogin.main', '/admin/index.cfm', '/admin/', '/admin/?muraAction=cLogin.logout'];
+    expect(admin.set.steps.map((step) => step.request.url)).toStrictEqual(urls);
+    expect(admin.raw?.records.map((record) => record.request.url)).toStrictEqual(urls);
+    expect(admin.raw?.records.find((record) => record.name === 'home')?.response).toMatchObject({
+      text: page.replace(reloadLink, '/admin/?<secret>&amp;reload=<secret>'),
+    });
+    const home = admin.set.steps.find((step) => step.name === 'home');
+    expect(home?.normalised.domModel?.title).toBe('Home');
+    expect(home?.normalised.domModel?.links.map((link) => link.href)).toStrictEqual([
+      '/admin/?muraAction=cusers.list&ispublic=0',
+      '/admin/?<token>&reload=<token>',
+    ]);
+    expect(content.raw?.records[0]?.response).toMatchObject({ text: contentBody });
+    expect(content.set.steps[0]?.request.url).toBe(FINDONE_PATH);
+    expect(content.set.steps[0]?.normalised.envelope).toMatchObject({ data: { title: 'Home' } });
+    const ordinary = JSON.stringify({ title: 'Home' });
+    expect(() => assertNoSecrets(ordinary, secretValues({ secrets: loadSecretStore(env) }), 'title')).not.toThrow();
+    expect(() => assertNoReloadKey(ordinary, key, 'title')).not.toThrow();
+  });
 });
 
 
@@ -487,7 +583,7 @@ describe('skipped scenarios and Mailpit resets', () => {
     const outcome = await main(['--only', 'GS-CO-05,GS-ID-01', '--catalogue', CATALOGUE_FIXTURE], env, {
       fetch: fake.fetch,
       clock: () => CAPTURED_AT,
-      log: (line) => logs.push(line),
+      logger: messageLogger(logs),
     });
 
     expect(outcome).toStrictEqual({ code: 0, summary: { captured: 2, skipped: 0, browser: 0, gaps: [], failed: [] } });
@@ -529,7 +625,7 @@ describe('skipped scenarios and Mailpit resets', () => {
     const fake = fakeLegacy();
     const outcome = await main(['--catalogue', catalogue], envFor(stateDir), {
       fetch: fake.fetch,
-      log: () => undefined,
+      logger: messageLogger([]),
     });
 
     expect(outcome).toStrictEqual({

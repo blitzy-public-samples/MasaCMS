@@ -83,6 +83,20 @@ export interface MaskContext {
 const WILDCARD = '*';
 // The path of one whole cookie entry, as cookie locations resolve it.
 const COOKIE_ENTRY = /^auth\.cookies\[\d+\]$/;
+const PLACEHOLDER_OPEN = '<known-issue:';
+const PLACEHOLDER_SPLIT = new RegExp(`(${PLACEHOLDER_OPEN}[^<>]*>)`);
+// What a placeholder may stand for besides itself: one non-empty run of non-space text holding no placeholder.
+const COUNTERPART_RUN = `(?:(?!${PLACEHOLDER_OPEN})\\S)+`;
+
+/** Placeholder that known-issue mask `id` leaves in model text where it lifted a text component out. */
+export function maskedTextPlaceholder(id: KnownIssueId): string {
+  return `${PLACEHOLDER_OPEN}${id}>`;
+}
+
+/** `text` split around known-issue placeholders: literal text at even indexes, placeholders at odd ones. */
+export function splitMaskedText(text: string): string[] {
+  return text.split(PLACEHOLDER_SPLIT);
+}
 
 // Body representations of a normalised step, with the compare kind each belongs to.
 const BODY_KINDS: ReadonlyArray<readonly [keyof MaskableStep, CompareKind | undefined]> = [
@@ -284,13 +298,54 @@ function maskedPathsFor(
   return ctx.maskedPathsByStep.get(step);
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
- * Classifies each difference: `known-issue` with its `maskId` when a masked path of its step covers it, otherwise
- * `difference`. Returns new objects in input order.
+ * The mask whose lifted text accounts for `other` differing from `text`: `other` reads as `text` with each placeholder
+ * standing for itself or one counterpart run, and each placeholder standing for a run is of a mask `masked` names.
+ * The first such placeholder names it.
+ */
+function liftedMask(
+  text: string,
+  other: string,
+  masked: Readonly<Record<string, KnownIssueId>> | undefined,
+): KnownIssueId | undefined {
+  const parts = splitMaskedText(text);
+  if (parts.length === 1) return undefined;
+  const placeholders = parts.filter((_part, i) => i % 2 === 1);
+  const source = parts
+    .map((part, i) => (i % 2 === 0 ? escapeRegExp(part) : `(${escapeRegExp(part)}|${COUNTERPART_RUN})`))
+    .join('');
+  const match = new RegExp(`^${source}$`).exec(other);
+  if (match === null) return undefined;
+  const inStep = new Set<string>(Object.values(masked ?? {}));
+  const replaced = placeholders.flatMap((placeholder, k) =>
+    match[k + 1] === placeholder ? [] : [placeholder.slice(PLACEHOLDER_OPEN.length, -1)],
+  );
+  const [first] = replaced;
+  return first !== undefined && isKnownIssueId(first) && replaced.every((id) => inStep.has(id)) ? first : undefined;
+}
+
+// A changed text differing only where a mask of the step lifted text out of one side; each side reads its own masks.
+function liftedResidual(ctx: MaskContext, step: string, expected: unknown, actual: unknown): KnownIssueId | undefined {
+  if (typeof expected !== 'string' || typeof actual !== 'string') return undefined;
+  const sides = ctx.maskedSidesByStep?.get(step);
+  const both = ctx.maskedPathsByStep.get(step);
+  return liftedMask(expected, actual, sides?.golden ?? both) ?? liftedMask(actual, expected, sides?.replay ?? both);
+}
+
+/**
+ * Classifies each difference: `known-issue` with its `maskId` when a masked path of its step covers it, or when it is
+ * a changed text that differs only where a mask of its step lifted text out (see {@link maskedTextPlaceholder}),
+ * otherwise `difference`. Returns new objects in input order.
  */
 export function applyMasks(differences: readonly Difference[], ctx: MaskContext): Difference[] {
   return differences.map(({ step, path, kind, expected, actual }): Difference => {
-    const maskId = coveringMask(path, kind, maskedPathsFor(ctx, step, kind));
+    const maskId =
+      coveringMask(path, kind, maskedPathsFor(ctx, step, kind)) ??
+      (kind === 'changed' ? liftedResidual(ctx, step, expected, actual) : undefined);
     return maskId === undefined
       ? { step, path, kind, expected, actual, classification: 'difference' }
       : { step, path, kind, expected, actual, classification: 'known-issue', maskId };

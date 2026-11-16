@@ -3,12 +3,12 @@
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import http from 'node:http';
-import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { ANONYMOUS_PRINCIPAL_UID, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { cfHash } from '@opt2/platform/legacy-compat';
 import { createLogger, validateLogRecord } from '@opt2/platform/logging';
@@ -70,9 +70,7 @@ type Injected = Awaited<ReturnType<FastifyInstance['inject']>>;
 /** Status, headers and body of an answer, from `app.inject` or a socket. */
 type Answer = Pick<Injected, 'statusCode' | 'headers' | 'body'>;
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const { load } = createRequire(createRequire(import.meta.url).resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
-const CONTRACT = load(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const CONTRACT = parse(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 /** Asserts that `res`, the answer to `method` on `url`, is a response the contract declares for that operation; returns `res`. */
 function conforms<T extends Answer>(res: T, method: string, url: string): T {

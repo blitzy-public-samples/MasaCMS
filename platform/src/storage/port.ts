@@ -1,5 +1,5 @@
 import type { Readable } from 'node:stream';
-import { cfUuid, isCfUuid } from '../legacy-compat/index.js';
+import { cfUuid, isCfUuid, LegacyServiceUnavailableError } from '../legacy-compat/index.js';
 
 /** Logical buckets; each is written only by the service that owns it. */
 export const BUCKETS = ['content-files', 'reporting-exports', 'finance-attachments', 'esignature-documents'] as const;
@@ -15,6 +15,9 @@ export const LOCAL_SIGNED_URL_PREFIX = '/opt2/files/';
 
 /** Object metadata key holding the lowercase hex SHA-256 of the stored bytes. */
 export const SHA256_METADATA_KEY = 'sha256';
+
+/** Longest single wait on Cloud Storage, in ms: one request's answer, or the next chunk of a streamed transfer; equal to the service-call budget. */
+export const STORAGE_TIMEOUT_MS = 10_000;
 
 /** Object bytes accepted by `put`. */
 export type PutBody = Buffer | Uint8Array | Readable;
@@ -111,6 +114,20 @@ export class InvalidObjectKeyError extends Error {
     reason: string,
   ) {
     super(`Invalid object key ${JSON.stringify(key)}: ${reason}`);
+  }
+}
+
+/** Raised when Cloud Storage leaves a wait of `operation` unanswered for `timeoutMs`; its requests are cancelled and it answers as the legacy 503. */
+export class StorageTimeoutError extends LegacyServiceUnavailableError {
+  override readonly name: string = 'StorageTimeoutError';
+
+  constructor(
+    readonly operation: 'put' | 'get' | 'stream' | 'open' | 'delete' | 'head' | 'signedUrl',
+    readonly bucket: string,
+    readonly key: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`Storage ${operation} of ${bucket}/${key} did not answer within ${timeoutMs} ms`, 'auto', 'storage-timeout');
   }
 }
 

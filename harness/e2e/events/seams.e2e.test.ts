@@ -36,8 +36,8 @@ const SOURCE = 'harness/e2e/events/seams.e2e.test.ts';
 const TABLE_VERSION = 'v0002';
 /** Owner exports plus the seam's own push-delivery poll. */
 const SEAM_TIMEOUT_MS = 180_000;
-/** Two quiescence waits at their bound, plus the replay and the export reads around it. */
-const FANOUT_TIMEOUT_MS = 2 * DEFAULT_DRAIN.timeoutMs + 60_000;
+/** Its own seam 1 archive, two quiescence waits at their bound, plus the replay and the export reads around it. */
+const FANOUT_TIMEOUT_MS = SEAM_TIMEOUT_MS + 2 * DEFAULT_DRAIN.timeoutMs + 60_000;
 const REPLAY_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 /** Result keys this suite records. */
@@ -76,8 +76,6 @@ interface FanoutEvidence {
 const execFileAsync = promisify(execFile);
 
 let deps: SeamDeps = {};
-let since: string | undefined;
-let seam1: SeamResult<Seam1Evidence> | undefined;
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -208,10 +206,7 @@ describe('event seams', () => {
   it(
     `archive creates one blackout per open day in the person's tenant and every user-pool fan-out tenant ${seamTag('archiveToBlackout')}`,
     async ({ skip }) => {
-      // Before the archive, so the redelivery check's replay window holds its outbox row.
-      since = new Date().toISOString();
       const seam = await recordSeam('archiveToBlackout', () => runSeam1(deps));
-      seam1 = seam;
       if (seam.skipped !== undefined) return skip(`${seam.skipped}: ${seam.evidence.reason ?? 'no reason recorded'}`);
       expect(seam.passed, seam1Detail(seam.evidence)).toBe(true);
     },
@@ -231,14 +226,15 @@ describe('event seams', () => {
   it(
     `a redelivered archive fan-out leaves each authorised tenant exactly one blackout per open day ${CHECK_TAG('fanoutRedelivery')}`,
     async ({ skip }) => {
-      if (seam1?.skipped !== undefined) {
+      // Taken before the archive, so the replay window holds its outbox row.
+      const since = new Date().toISOString();
+      const seam1 = await failOnThrow('fanoutRedelivery', () => runSeam1(deps));
+      if (seam1.skipped !== undefined) {
         await recordEventResult('fanoutRedelivery', { result: seam1.skipped, evidence: seam1.evidence, source: SOURCE });
         return skip(`${seam1.skipped}: ${seam1.evidence.reason ?? 'no reason recorded'}`);
       }
       const evidence = await failOnThrow('fanoutRedelivery', async (): Promise<FanoutEvidence> => {
-        if (seam1 === undefined || since === undefined || !seam1.passed) {
-          throw new Error(`seam 1 ${seam1 === undefined ? 'did not complete' : 'did not pass'}; this check redelivers its archive`);
-        }
+        if (!seam1.passed) throw new Error(`seam 1 did not pass, so its archive cannot be redelivered: ${seam1Detail(seam1.evidence)}`);
         const { personId, destinations, otherTenants } = seam1.evidence;
         const personTenant = destinations.find((destination) => destination.reason === 'person-tenant');
         if (personTenant === undefined) throw new Error(`seam 1 evidence names no person-tenant destination for ${personId}`);

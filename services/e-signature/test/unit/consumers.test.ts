@@ -3,10 +3,10 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { LOCAL_SECRET_FILES, PUBSUB_INVOKER_ROLE, localSecretPath, recordedRoutes } from '@opt2/platform/auth';
 import { compileTopicSchema, pushPath, registerConsumers, subscriptionName } from '@opt2/platform/events';
 import { createLogger } from '@opt2/platform/logging';
@@ -21,15 +21,9 @@ const producerContract = JSON.parse(
   readFileSync(new URL('../../../programs-sites/contracts/events/programs-sites.site.changed.v1.json', import.meta.url), 'utf8'),
 ) as Record<string, unknown>;
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as {
-  load: (text: string) => unknown;
-};
-
 /** Push operations the e-signature OpenAPI contract declares under `/internal/v1/events/`. */
 function contractPushOperations(): Array<{ method: string; url: string; operationId: unknown }> {
-  const contract = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+  const contract = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
     paths: Record<string, Record<string, { operationId?: unknown }>>;
   };
   return Object.entries(contract.paths)

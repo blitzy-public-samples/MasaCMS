@@ -1,12 +1,16 @@
 import { createHash, createHmac } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import net from 'node:net';
+import http, { type IncomingMessage, type ServerResponse } from 'node:http';
+import net, { type AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
-import type { Storage } from '@google-cloud/storage';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { Storage } from '@google-cloud/storage';
 import { fastify, type FastifyInstance } from 'fastify';
+import { GoogleAuth, OAuth2Client, type CredentialBody } from 'google-auth-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LegacyServiceUnavailableError } from '../../src/legacy-compat/index.js';
 import { createCloudStorageAdapter } from '../../src/storage/cloud-adapter.js';
 import * as storageBarrel from '../../src/storage/index.js';
 import { legacyFileHeaders, legacyHeaderValue, sendLegacyFile } from '../../src/storage/legacy-stream.js';
@@ -24,7 +28,9 @@ import {
   LOCAL_SIGNED_URL_PREFIX,
   SHA256_METADATA_KEY,
   SIGNED_URL_TTL_S,
+  STORAGE_TIMEOUT_MS,
   StorageObjectNotFoundError,
+  StorageTimeoutError,
   UnknownBucketError,
   assertBucket,
   assertObjectKey,
@@ -230,9 +236,11 @@ describe('storage barrel', () => {
       SIGNED_URL_TTL_S,
       LOCAL_SIGNED_URL_PREFIX,
       SHA256_METADATA_KEY,
+      STORAGE_TIMEOUT_MS,
       StorageObjectNotFoundError,
       UnknownBucketError,
       InvalidObjectKeyError,
+      StorageTimeoutError,
       isBucketName,
       assertBucket,
       assertObjectKey,
@@ -247,7 +255,7 @@ describe('storage barrel', () => {
       legacyFileHeaders,
       legacyHeaderValue,
     });
-    expect(Object.keys(storageBarrel)).toHaveLength(20);
+    expect(Object.keys(storageBarrel)).toHaveLength(22);
     expect(storageBarrel).not.toHaveProperty('createCloudStorageAdapter');
   });
 });
@@ -683,11 +691,12 @@ interface FakeCall {
   generation?: number | string;
 }
 
-/** In-memory stand-in for the `Storage` client surface the cloud adapter calls; a pinned generation reads only while current. */
+/** In-memory stand-in for the `Storage` client surface the cloud adapter calls; a pinned generation reads only while current, and a stalled call or `write` never answers. */
 function fakeStorage() {
   const objects = new Map<string, StoredObject>();
   const calls: FakeCall[] = [];
   const failures = new Map<string, unknown>();
+  const stalls = new Set<string>();
   const bucketNames: string[] = [];
   let generation = 0;
 
@@ -721,7 +730,7 @@ function fakeStorage() {
         return new Writable({
           write(chunk: Buffer, _encoding, callback) {
             chunks.push(chunk);
-            callback();
+            if (!stalls.has('write')) callback();
           },
           final(callback) {
             file.metadata.generation = ++generation;
@@ -777,6 +786,15 @@ function fakeStorage() {
         return [`https://storage.googleapis.com/${bucket}/${name}?X-Goog-Algorithm=GOOG4-RSA-SHA256`];
       },
     };
+    for (const op of stalls) {
+      if (op === 'write') continue;
+      Object.assign(file, {
+        [op]: (...args: unknown[]) => {
+          record(op, args);
+          return new Promise<never>(() => undefined);
+        },
+      });
+    }
     return file;
   };
 
@@ -788,7 +806,103 @@ function fakeStorage() {
       };
     },
   };
-  return { storage: storage as unknown as Storage, objects, calls, failures, bucketNames };
+  return { storage: storage as unknown as Storage, objects, calls, failures, stalls, bucketNames };
+}
+
+/** Budget of the timed-out waits the Cloud Storage tests provoke, in ms. */
+const SHORT_TIMEOUT_MS = 50;
+
+/** Budget of the loopback Cloud Storage tests, in ms; wide enough for a loaded host to answer the calls that must succeed. */
+const LOOPBACK_TIMEOUT_MS = 500;
+
+const loopbackServers: http.Server[] = [];
+
+/** Service account that signs the loopback URLs. */
+const SIGNER_EMAIL = 'opt2-unit-signer@opt2-unit.iam.gserviceaccount.com';
+
+/** IAM Credentials signBlob path for `SIGNER_EMAIL` under a loopback base URL. */
+const SIGN_BLOB_PATH = `/v1/projects/-/serviceAccounts/${SIGNER_EMAIL}:signBlob`;
+
+// Assembled at run time, so no literal token appears in source.
+const SIGNER_ACCESS_TOKEN = ['opt2', 'unit', 'access', 'token'].join('-');
+
+/** GoogleAuth holding an access token but no private key, so it signs through IAM signBlob at `signBlobBase`. */
+class KeylessSigningAuth extends GoogleAuth {
+  constructor(private readonly signBlobBase: string) {
+    super({
+      authClient: new OAuth2Client({
+        credentials: { access_token: SIGNER_ACCESS_TOKEN, expiry_date: Date.UTC(2100, 0, 1) },
+      }),
+    });
+  }
+
+  override getCredentials(): Promise<CredentialBody> {
+    return Promise.resolve({ client_email: SIGNER_EMAIL });
+  }
+
+  override sign(data: string, endpoint?: string): Promise<string> {
+    return super.sign(data, endpoint ?? `${this.signBlobBase}/v1/projects/-/serviceAccounts/`);
+  }
+}
+
+/** A real Storage client against a loopback HTTP server that `answer` serves, signing with `authFor(<server base URL>)` when given; `requests` records each request and when its socket closes. */
+async function loopbackStorage(
+  answer: (req: IncomingMessage, res: ServerResponse) => void,
+  authFor?: (base: string) => GoogleAuth,
+) {
+  const requests: { method: string; url: string; closed: Promise<void> }[] = [];
+  const server = http.createServer((req, res) => {
+    requests.push({
+      method: req.method ?? '',
+      url: req.url ?? '',
+      closed: new Promise((resolve) => req.socket.once('close', () => resolve())),
+    });
+    answer(req, res);
+  });
+  loopbackServers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  const base = `http://127.0.0.1:${port}`;
+  const storage = new Storage({
+    apiEndpoint: base,
+    projectId: 'opt2-unit',
+    useAuthWithCustomEndpoint: false,
+    ...(authFor ? { authClient: authFor(base) } : {}),
+  });
+  return { storage, requests };
+}
+
+/** Whether `promise` settles within `ms`. */
+async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([promise.then(() => true), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Answers a Cloud Storage object-metadata request for `bytes` in `bucket`/`name` at generation 7. */
+function answerMetadata(res: ServerResponse, bucket: string, name: string, bytes: Buffer): void {
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(
+    JSON.stringify({
+      bucket,
+      name,
+      generation: '7',
+      size: String(bytes.length),
+      contentType: 'application/pdf',
+      metadata: { sha256: sha256Hex(bytes) },
+    }),
+  );
+}
+
+/** Whether `req` asks for an object's bytes rather than its metadata. */
+function isMediaRequest(req: IncomingMessage): boolean {
+  return new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('alt') === 'media';
 }
 
 describe('Cloud Storage adapter', () => {
@@ -1024,6 +1138,268 @@ describe('Cloud Storage adapter', () => {
   it('builds its own Storage client when none is injected', () => {
     expect(createCloudStorageAdapter({ projectId: 'opt2-unit' }).kind).toBe('cloud');
     expect(createCloudStorageAdapter().kind).toBe('cloud');
+  });
+
+  describe('deadlines', () => {
+    const contentType = 'application/pdf';
+
+    afterEach(async () => {
+      await Promise.all(
+        loopbackServers.splice(0).map(
+          (server) =>
+            new Promise<void>((resolve) => {
+              server.closeAllConnections();
+              server.close(() => resolve());
+            }),
+        ),
+      );
+    });
+
+    it('reports a missed budget as a legacy 503 naming the operation, the object and the 10 s default budget', () => {
+      const err = new StorageTimeoutError('signedUrl', bucket, key, STORAGE_TIMEOUT_MS);
+
+      expect(STORAGE_TIMEOUT_MS).toBe(10_000);
+      expect(err).toBeInstanceOf(LegacyServiceUnavailableError);
+      expect(err).toMatchObject({
+        name: 'StorageTimeoutError',
+        operation: 'signedUrl',
+        bucket,
+        key,
+        timeoutMs: 10_000,
+        surface: 'auto',
+        reason: 'storage-timeout',
+      });
+      expect(err.message).toBe(`Storage signedUrl of ${bucket}/${key} did not answer within 10000 ms`);
+    });
+
+    it.each<[string, string, StorageTimeoutError['operation'], (a: StoragePort) => Promise<unknown>]>([
+      ['head', 'getMetadata', 'head', (a) => a.head(bucket, key)],
+      ['get', 'download', 'get', (a) => a.get(bucket, key)],
+      ['delete', 'delete', 'delete', (a) => a.delete(bucket, key)],
+      ['signedUrl', 'getSignedUrl', 'signedUrl', (a) => a.signedUrl(bucket, key)],
+      ['a Buffer put', 'save', 'put', (a) => a.put(bucket, key, pdf, { contentType })],
+      ['a streamed put', 'setMetadata', 'put', (a) => a.put(bucket, key, Readable.from([pdf]), { contentType })],
+      ['stream', 'getMetadata', 'stream', (a) => a.stream(bucket, key)],
+      ['open', 'getMetadata', 'open', (a) => a.open(bucket, key)],
+    ])('fails %s with StorageTimeoutError when %s never answers', async (_case, stalledCall, operation, run) => {
+      const fake = fakeStorage();
+      fake.objects.set(`${bucket}/${key}`, { bytes: pdf, generation: 1 });
+      fake.stalls.add(stalledCall);
+      const adapter = createCloudStorageAdapter({ storage: fake.storage, timeoutMs: SHORT_TIMEOUT_MS });
+
+      const failure = await run(adapter).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+
+      expect(failure).toBeInstanceOf(StorageTimeoutError);
+      expect(failure).toBeInstanceOf(LegacyServiceUnavailableError);
+      expect(failure).toMatchObject({ operation, bucket, key, timeoutMs: SHORT_TIMEOUT_MS, reason: 'storage-timeout' });
+      expect(fake.calls.map((c) => c.op)).toContain(stalledCall);
+    });
+
+    it('fails a streamed put with StorageTimeoutError and destroys its body when Cloud Storage never takes a write', async () => {
+      const fake = fakeStorage();
+      fake.stalls.add('write');
+      const adapter = createCloudStorageAdapter({ storage: fake.storage, timeoutMs: SHORT_TIMEOUT_MS });
+      const body = Readable.from([pdf, pdf]);
+
+      await expect(adapter.put(bucket, key, body, { contentType })).rejects.toMatchObject({
+        name: 'StorageTimeoutError',
+        operation: 'put',
+        timeoutMs: SHORT_TIMEOUT_MS,
+      });
+      expect(body.destroyed).toBe(true);
+      expect(fake.calls.map((c) => c.op)).toEqual(['createWriteStream']);
+    });
+
+    it('never counts a body that pauses between chunks against a streamed put', async () => {
+      const fake = fakeStorage();
+      const adapter = createCloudStorageAdapter({ storage: fake.storage, timeoutMs: SHORT_TIMEOUT_MS });
+      const bytes = Buffer.from('col1,col2\n1,2\n');
+      async function* slowRows(): AsyncGenerator<Buffer> {
+        yield bytes.subarray(0, 10);
+        await sleep(SHORT_TIMEOUT_MS * 4);
+        yield bytes.subarray(10);
+      }
+
+      const result = await adapter.put('reporting-exports', key, Readable.from(slowRows()), { contentType: 'text/csv' });
+
+      expect(result).toEqual({ size: bytes.length, sha256: sha256Hex(bytes) });
+      expect(fake.objects.get(`reporting-exports/${key}`)?.bytes).toEqual(bytes);
+    });
+
+    it.each<[string, StorageTimeoutError['operation'], (a: StoragePort) => Promise<unknown>]>([
+      ['head', 'head', (a) => a.head(bucket, key)],
+      ['get', 'get', (a) => a.get(bucket, key)],
+      ['delete', 'delete', (a) => a.delete(bucket, key)],
+      ['a Buffer put', 'put', (a) => a.put(bucket, key, pdf, { contentType })],
+      ['a streamed put', 'put', (a) => a.put(bucket, key, Readable.from([pdf]), { contentType })],
+    ])('cancels the HTTP request of %s that Cloud Storage accepts and never answers', async (_case, operation, run) => {
+      const loopback = await loopbackStorage((req) => {
+        req.resume();
+      });
+      const adapter = createCloudStorageAdapter({ storage: loopback.storage, timeoutMs: LOOPBACK_TIMEOUT_MS });
+
+      const failure = await run(adapter).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+
+      expect(failure).toBeInstanceOf(StorageTimeoutError);
+      expect(failure).toMatchObject({ operation, bucket, key, timeoutMs: LOOPBACK_TIMEOUT_MS });
+      expect(loopback.requests).toHaveLength(1);
+      expect(await settlesWithin(loopback.requests[0]!.closed, 5_000)).toBe(true);
+    });
+
+    it('fails a signedUrl with StorageTimeoutError and cancels its IAM signBlob request when the signer accepts and never answers', async () => {
+      const loopback = await loopbackStorage(
+        (req) => {
+          req.resume();
+        },
+        (base) => new KeylessSigningAuth(base),
+      );
+      const adapter = createCloudStorageAdapter({ storage: loopback.storage, timeoutMs: LOOPBACK_TIMEOUT_MS });
+
+      const failure = await adapter.signedUrl(bucket, key).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+
+      expect(failure).toBeInstanceOf(StorageTimeoutError);
+      expect(failure).toMatchObject({ operation: 'signedUrl', bucket, key, timeoutMs: LOOPBACK_TIMEOUT_MS });
+      expect(loopback.requests.map(({ method, url }) => ({ method, url }))).toEqual([
+        { method: 'POST', url: SIGN_BLOB_PATH },
+      ]);
+      expect(await settlesWithin(loopback.requests[0]!.closed, 5_000)).toBe(true);
+    });
+
+    it('signs a v4 URL within the budget through IAM signBlob when the signer answers', async () => {
+      const signature = Buffer.from('opt2-unit-signature', 'utf8');
+      const exchanges: { authorization: string | undefined; payload: string }[] = [];
+      const loopback = await loopbackStorage(
+        (req, res) => {
+          const chunks: Buffer[] = [];
+          req.on('data', (chunk: Buffer) => chunks.push(chunk));
+          req.on('end', () => {
+            const { payload } = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { payload: string };
+            exchanges.push({
+              authorization: req.headers.authorization,
+              payload: Buffer.from(payload, 'base64').toString('utf8'),
+            });
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ keyId: 'k1', signedBlob: signature.toString('base64') }));
+          });
+        },
+        (base) => new KeylessSigningAuth(base),
+      );
+      // The SDK dates the URL by its own clock; frozen at the adapter's clock, X-Goog-Date and X-Goog-Expires are exact.
+      vi.useFakeTimers({ toFake: ['Date'], now: NOW_MS });
+      try {
+        const adapter = createCloudStorageAdapter({
+          storage: loopback.storage,
+          timeoutMs: LOOPBACK_TIMEOUT_MS,
+          now: () => NOW_MS,
+        });
+
+        const url = new URL(await adapter.signedUrl(bucket, key));
+
+        expect(url.pathname).toBe(`/${bucket}/${key}`);
+        expect(Object.fromEntries(url.searchParams)).toEqual({
+          'X-Goog-Algorithm': 'GOOG4-RSA-SHA256',
+          'X-Goog-Credential': `${SIGNER_EMAIL}/20260115/auto/storage/goog4_request`,
+          'X-Goog-Date': '20260115T120000Z',
+          'X-Goog-Expires': '900',
+          'X-Goog-SignedHeaders': 'host',
+          'X-Goog-Signature': signature.toString('hex'),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(loopback.requests.map(({ method, url }) => ({ method, url }))).toEqual([
+        { method: 'POST', url: SIGN_BLOB_PATH },
+      ]);
+      expect(exchanges).toEqual([
+        {
+          authorization: `Bearer ${SIGNER_ACCESS_TOKEN}`,
+          payload: expect.stringMatching(
+            /^GOOG4-RSA-SHA256\n20260115T120000Z\n20260115\/auto\/storage\/goog4_request\n[0-9a-f]{64}$/,
+          ),
+        },
+      ]);
+    });
+
+    it.each<[StorageTimeoutError['operation'], (a: StoragePort) => Promise<Readable>]>([
+      ['stream', (a) => a.stream(bucket, key)],
+      ['open', async (a) => (await a.open(bucket, key)).body],
+    ])('fails a %s body with StorageTimeoutError and cancels its request when Cloud Storage stops sending', async (operation, read) => {
+      const loopback = await loopbackStorage((req, res) => {
+        req.resume();
+        if (!isMediaRequest(req)) {
+          answerMetadata(res, bucket, key, Buffer.concat([pdf, pdf]));
+          return;
+        }
+        res.writeHead(200, { 'content-type': contentType });
+        res.write(pdf);
+      });
+      const adapter = createCloudStorageAdapter({ storage: loopback.storage, timeoutMs: LOOPBACK_TIMEOUT_MS });
+      const body = await read(adapter);
+      const received: Buffer[] = [];
+      body.on('data', (chunk: Buffer) => received.push(chunk));
+
+      const failure = await new Promise((resolve) => body.once('error', resolve));
+
+      expect(failure).toBeInstanceOf(StorageTimeoutError);
+      expect(failure).toMatchObject({ operation, bucket, key, timeoutMs: LOOPBACK_TIMEOUT_MS });
+      expect(Buffer.concat(received)).toEqual(pdf);
+      const media = loopback.requests.find((r) => r.url.includes('alt=media'));
+      expect(media).toBeDefined();
+      expect(await settlesWithin(media!.closed, 5_000)).toBe(true);
+    });
+
+    it('cancels the media request when the consumer destroys a body mid-transfer', async () => {
+      const loopback = await loopbackStorage((req, res) => {
+        req.resume();
+        if (!isMediaRequest(req)) {
+          answerMetadata(res, bucket, key, Buffer.concat([pdf, pdf]));
+          return;
+        }
+        res.writeHead(200, { 'content-type': contentType });
+        res.write(pdf);
+      });
+      const adapter = createCloudStorageAdapter({ storage: loopback.storage, timeoutMs: LOOPBACK_TIMEOUT_MS * 20 });
+      const body = await adapter.stream(bucket, key);
+
+      await new Promise((resolve) => body.once('data', resolve));
+      body.destroy();
+
+      const media = loopback.requests.find((r) => r.url.includes('alt=media'));
+      expect(await settlesWithin(media!.closed, 5_000)).toBe(true);
+    });
+
+    it('delivers every byte to a consumer that pauses longer than the budget between chunks', async () => {
+      const big = Buffer.alloc(4 * 1024 * 1024);
+      for (let i = 0; i < big.length; i += 1) big[i] = i % 251;
+      const loopback = await loopbackStorage((req, res) => {
+        req.resume();
+        if (!isMediaRequest(req)) {
+          answerMetadata(res, bucket, key, big);
+          return;
+        }
+        res.writeHead(200, { 'content-type': contentType });
+        res.end(big);
+      });
+      const adapter = createCloudStorageAdapter({ storage: loopback.storage, timeoutMs: LOOPBACK_TIMEOUT_MS });
+      const body = await adapter.stream(bucket, key);
+      const received: Buffer[] = [];
+
+      for await (const chunk of body) {
+        received.push(chunk as Buffer);
+        if (received.length === 1) await sleep(LOOPBACK_TIMEOUT_MS * 3);
+      }
+
+      expect(Buffer.concat(received).equals(big)).toBe(true);
+    });
   });
 });
 

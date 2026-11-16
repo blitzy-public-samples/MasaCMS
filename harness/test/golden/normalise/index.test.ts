@@ -327,6 +327,73 @@ describe('scenario normalisationOverrides', () => {
   });
 });
 
+describe('Mailpit message ids in the GS-CM-02 envelopes', () => {
+  // Mailpit message IDs: 22-character base57 short UUIDs.
+  const SENT = 'jP4qsXbu9KJuRQ9KBXVkPu';
+  const OTHER = 'Gq3nC7ZJm7dxuRPjZpUFrd';
+  const MESSAGE = '7A8B9C0D-1E2F-4A3B-8C4D5E6F7A8B9C0D';
+  let delivery: Scenario;
+
+  beforeAll(async () => {
+    delivery = scenarioById(await loadCatalogue(), 'GS-CM-02');
+  });
+
+  // The fixture detail() envelope: queued, sent and delivered rows, the delivered one carrying the Mailpit ID.
+  const detail = (method: string, mailpitId: string): string =>
+    JSON.stringify({
+      apiversion: 'v1',
+      method,
+      params: {},
+      data: {
+        message_id: MESSAGE,
+        state: 'delivered',
+        history: ['queued', 'sent', 'delivered'].map((status) => ({
+          status,
+          mailpit_id: status === 'delivered' ? mailpitId : '',
+        })),
+      },
+    });
+
+  const record = (name: string, index: number, mailpitId: string): StepRecord =>
+    stepRecord({ name, index, routeKey: 'fixture:communications/messages', contentType: JSON_TYPE, text: detail(name, mailpitId) });
+
+  const side = async (sent: string, polled: string, scenario: Scenario = delivery): Promise<NormalisedStep[]> =>
+    normalise([record('send', 0, sent), record('history', 1, polled)], scenario);
+
+  const mailpitIds = (steps: readonly NormalisedStep[]): string[][] =>
+    steps.map((step) => (step.envelope as { data: { history: { mailpit_id: string }[] } }).data.history.map((row) => row.mailpit_id));
+
+  it('gives a repeated Mailpit ID one ordinal across the steps and keeps the empty ones', async () => {
+    expect(mailpitIds(await side(SENT, SENT))).toStrictEqual([
+      ['', '', '<mailpit:1>'],
+      ['', '', '<mailpit:1>'],
+    ]);
+  });
+
+  it.each<[string, string, string, string[]]>([
+    ['another Mailpit ID for the same message', OTHER, OTHER, []],
+    ['a second Mailpit ID on the later step', SENT, OTHER, ['history:envelope.data.history[2].mailpit_id']],
+    ['no Mailpit ID', '', '', ['send', 'history'].map((step) => `${step}:envelope.data.history[2].mailpit_id`)],
+  ])('compares a replay carrying %s', async (_label, sent, polled, paths) => {
+    const differences = compareNormalised(run(await side(SENT, SENT)), run(await side(sent, polled)), {
+      rules,
+      scenario: delivery,
+    });
+    expect(differences.map((diff) => `${diff.step}:${diff.path}`)).toStrictEqual(paths);
+  });
+
+  it('keeps Mailpit IDs literal on a literalPaths override', async () => {
+    const literal = scenarioSchema.parse({
+      ...delivery,
+      normalisationOverrides: { literalPaths: ['data.history[*].mailpit_id'] },
+    });
+    expect(mailpitIds(await side(SENT, SENT, literal))).toStrictEqual([
+      ['', '', SENT],
+      ['', '', SENT],
+    ]);
+  });
+});
+
 describe('compareNormalised steps', () => {
   it('normalises a legacy response and its gateway replay to the same step', async () => {
     const served = { ...legacyHeaders(), date: 'Tue, 30 Jun 2026 12:00:00 GMT' };
@@ -579,6 +646,53 @@ describe('compareNormalised known-issue masks', () => {
       [controlPath(golden, named('isPublic', '0'), 'checked')]: verdict,
     });
   });
+
+  // Text carriers of date-mask selectors, each with the model path that holds the lifted date's placeholder.
+  const CARRIERS: readonly [string, (text: string) => string, string][] = [
+    ['td', (text) => `<table><tr><th>Last Login</th></tr><tr><td>${text}</td></tr></table>`, 'tables[0].rows[0][0]'],
+    [
+      '.meta-label span',
+      (text) => `<a href="#"><span class="meta-label">Last Update: <span>${text}</span></span></a>`,
+      'links[0].text',
+    ],
+  ];
+  // date-mask is narrowed to MASKED_IN, so GS-CO-05 shows the same pages unmasked.
+  const MASKED_IN = 'GS-PE-01';
+  const DATE_MASK = 'known-issue:date-mask';
+  // Golden and replay text, the scenario, and the verdicts of the lifted date and of its carrier.
+  const DATE_TEXTS: readonly [string, string, string, string, string | undefined, string][] = [
+    ['a day-of-year date against an ISO date', '11/317/2026', '2026-11-13', MASKED_IN, DATE_MASK, DATE_MASK],
+    ['a date with a time', '11/317/2026 10:30 AM', '2026-11-13 10:30 AM', MASKED_IN, DATE_MASK, DATE_MASK],
+    ['other words changed', 'Updated 11/317/2026 by admin', 'Updated 2026-11-13 by root', MASKED_IN, DATE_MASK, 'difference'],
+    ['a date outside the mask scenarios', '11/317/2026', '2026-11-13', 'GS-CO-05', undefined, 'difference'],
+  ];
+  const CARRIED = CARRIERS.flatMap(([carrier, page, path]) =>
+    DATE_TEXTS.map((text) => [carrier, ...text, page, path] as const),
+  );
+
+  it.each(CARRIED)(
+    'classifies a %s carrying %s',
+    async (_carrier, _label, goldenText, replayText, scenarioId, liftedVerdict, carrierVerdict, page, path) => {
+      const narrowed: NormaliseRules = {
+        ...rules,
+        knownIssues: rules.knownIssues.map((issue) =>
+          issue.id === 'date-mask' ? { ...issue, appliesTo: [MASKED_IN] } : issue,
+        ),
+      };
+      const scenario = scenarioId === MASKED_IN ? scenarioById(catalogue, scenarioId) : comparing(['status', 'dom']);
+      expect(scenario.id).toBe(scenarioId);
+      const side = async (text: string): Promise<NormalisedRun> => {
+        const record = stepRecord({ name: 'list', routeKey: 'admin:cusers.list', contentType: HTML_TYPE, text: page(text) });
+        return run([await normaliseStep(record, { state: createNormaliseState(), rules: narrowed, scenario })]);
+      };
+      const opts = { rules: narrowed, scenario };
+      const differences = compareNormalised(await side(goldenText), await side(replayText), opts);
+      expect(verdicts(differences)).toStrictEqual({
+        ...(liftedVerdict === undefined ? {} : { 'domModel.maskedText[0]': liftedVerdict }),
+        [`domModel.${path}`]: carrierVerdict,
+      });
+    },
+  );
 });
 
 describe('NormaliseState', () => {

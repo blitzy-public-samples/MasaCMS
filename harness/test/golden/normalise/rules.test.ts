@@ -46,7 +46,7 @@ const SECTIONS = [
 interface RulesDoc {
   sourceSha: string;
   headers: { drop: string[] };
-  tokens: { fields: string[] };
+  tokens: { fields: string[]; queryParams: string[] };
   [section: string]: unknown;
 }
 
@@ -142,6 +142,40 @@ describe('loadRules', () => {
       },
       'tokens/fields',
       'tokens.fields: must include csrf_token',
+    ],
+    [
+      'a parameter naming valueless tokens that is not a token query parameter',
+      (doc) => {
+        doc.tokens.queryParams = doc.tokens.queryParams.filter((name) => name !== 'reload');
+      },
+      'tokens/valuelessParamsNamedBy/0',
+      'tokens.valuelessParamsNamedBy.0: reload is not in queryParams',
+    ],
+    [
+      'a keyed id key named by two keyed ids',
+      (doc) => {
+        const ids = doc.ids as { keyed: Record<string, unknown>[] };
+        ids.keyed.push({ ...ids.keyed[0], id: 'mailpit-copy', placeholder: '<mailpit-copy:{n}>' });
+      },
+      'ids/keyed',
+      'ids.keyed: names keyed id key mailpit_id more than once',
+    ],
+    [
+      'a keyed id sharing the CF UUID placeholder',
+      (doc) => {
+        const ids = doc.ids as { keyed: Record<string, unknown>[] };
+        ids.keyed[0] = { ...ids.keyed[0], placeholder: '<id:{n}>' };
+      },
+      'ids/keyed',
+      'ids.keyed: uses placeholder <id:{n}> for more than one id kind',
+    ],
+    [
+      'an envelope applying an undeclared keyed id',
+      (doc) => {
+        (doc.ids as { keyed: unknown[] }).keyed = [];
+      },
+      'envelope/apply/5',
+      'envelope.apply.5: names unknown rule id mailpit-id',
     ],
   ])('rejects a copy with %s', async (_label, mutate, pointer, message) => {
     const doc = parse(committedText) as RulesDoc;

@@ -151,6 +151,8 @@ render_server_json() {
   [[ -n $engine ]] || die "no engine: $CAPTURE_FILE has no cfengine and OPT2_CF_ENGINE is unset"
   [[ -n $jvm ]] || die "no JVM arguments: $CAPTURE_FILE has no jvmArgs and OPT2_CF_JVM_ARGS is unset (setup §3 add-opens)"
   [[ $LEGACY_PORT =~ ^[1-9][0-9]*$ ]] || die "legacy port '$LEGACY_PORT' is not a port number"
+  [[ ${OPT2_PORT_GATEWAY:-} =~ ^[1-9][0-9]*$ ]] ||
+    die "gateway port '${OPT2_PORT_GATEWAY:-}' from $REPRO_DIR/ports.env is not a port number"
   # shellcheck disable=SC2016 # JavaScript source
   node -e '
 const fs = require("fs");
@@ -176,7 +178,8 @@ fs.writeFileSync(temp, `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 });
 fs.renameSync(temp, out);
 ' -- "$REPRO_DIR/server.json.template" "$SERVER_JSON" \
     @SERVER_NAME@ "$LEGACY_SERVER_NAME" @CFENGINE@ "$engine" @SERVER_HOME@ "$home" @WEBROOT@ "$REPO" \
-    @HOST@ 127.0.0.1 @PORT@ "$LEGACY_PORT" @JVM_ARGS@ "$jvm" || die "cannot render $SERVER_JSON"
+    @HOST@ 127.0.0.1 @PORT@ "$LEGACY_PORT" @JVM_ARGS@ "$jvm" @GATEWAY_PORT@ "$OPT2_PORT_GATEWAY" ||
+    die "cannot render $SERVER_JSON"
 }
 
 # Runs a CommandBox command with its output on stderr and no stdin.

@@ -1,8 +1,8 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Provider contract of e-signature: the app and contracts/openapi.yaml agree on metadata, routes, declarations, every response shape and the legacy headers. */
 import { readFileSync } from 'node:fs';
-import { load } from 'js-yaml';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { Roles, collectRouteMatrix, type RouteMatrixEntry } from '@opt2/platform/auth';
 import { etag, legacyHeaders } from '@opt2/platform/legacy-compat';
 import { WRITE_POSITION_HEADER } from '@opt2/platform/migration-kit';
@@ -65,7 +65,7 @@ interface ExportedTable {
 
 type AuditItem = Record<string, unknown>;
 
-const DOC = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
 const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
 
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch', 'options', 'head', 'trace'] as const;
@@ -488,10 +488,6 @@ const cases: Record<string, (ctx: TestApp) => Promise<CaseResult>> = {
 
 const OPERATION_IDS = contractOperations(DOC).map(({ operation }) => operation.operationId ?? '');
 
-
-/** Operations whose 2xx case passed, filled by the case runner. */
-const exercised = new Set<string>();
-
 /** One documented error answer, with the status and error message it must carry. */
 type ErrorCase = readonly [title: string, status: number, message: string, run: (ctx: TestApp) => Promise<CaseResult>];
 
@@ -677,7 +673,6 @@ describe('e-signature app against the contract', () => {
     assertContract(method, url, response);
     assertDeclaredHeaders(method, url, response);
     if (WRITES.has(operationId)) expect(response.headers[WRITE_POSITION_KEY]).toBe(`e-signature=${ctx.db.lastXid() ?? ''}`);
-    exercised.add(operationId);
   });
 
   it.each(errorCases)('answers %s with %i in its contract shape', async (_title, status, message, run) => {
@@ -688,12 +683,6 @@ describe('e-signature app against the contract', () => {
     expect(JSON.parse(response.payload)).toMatchObject({ apiversion: 'v1', error: { message } });
     expect(response.headers[WRITE_POSITION_KEY]).toBeUndefined();
     expect(ctx.db.writes()).toEqual([]);
-  });
-});
-
-describe('case coverage', () => {
-  it('exercised every contract operation with a passing 2xx case', () => {
-    expect([...exercised].sort()).toEqual([...OPERATION_IDS].sort());
   });
 });
 

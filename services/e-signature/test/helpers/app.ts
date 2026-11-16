@@ -1188,14 +1188,31 @@ function toBytea(value: unknown): Buffer {
   return Buffer.from(text, 'utf8');
 }
 
-/** `value` as jsonb stores it and node-pg returns it: parsed JSON; text is read as JSON input. */
-function toJsonb(value: unknown): unknown {
+/** Whether a string in `value`, reached through arrays and, when `objects`, object keys and values, holds U+0000. */
+function holdsNul(value: unknown, objects: boolean): boolean {
+  if (typeof value === 'string') return value.includes('\u0000');
+  if (Array.isArray(value)) return value.some((item) => holdsNul(item, objects));
+  if (!objects || typeof value !== 'object' || value === null) return false;
+  return Object.entries(value).some(([key, item]) => key.includes('\u0000') || holdsNul(item, objects));
+}
+
+/** `value` as json reads it and node-pg returns it: parsed JSON; text is read as JSON input. */
+function toJson(value: unknown): unknown {
   if (typeof value !== 'string' && !(value instanceof Bpchar)) return JSON.parse(JSON.stringify(value)) as unknown;
   try {
     return JSON.parse(textOf(value)) as unknown;
   } catch {
     throw invalidInput('json', value);
   }
+}
+
+/** `value` as jsonb stores it: as json reads it, refusing the `\u0000` escape in any string or key. */
+function toJsonb(value: unknown): unknown {
+  const parsed = toJson(value);
+  if (holdsNul(parsed, true)) {
+    throw pgError('22P05', 'unsupported Unicode escape sequence', { detail: '\\u0000 cannot be converted to text.', file: 'jsonfuncs.c', routine: 'json_errsave_error' });
+  }
+  return parsed;
 }
 
 function storeScalar(value: unknown, type: ColumnType): unknown {
@@ -1299,6 +1316,7 @@ function castValue(value: unknown, type: string): unknown {
     case 'bytea':
       return toBytea(value);
     case 'json':
+      return toJson(value);
     case 'jsonb':
       return toJsonb(value);
     case 'float8':
@@ -2442,6 +2460,12 @@ class RecordingStore {
     this.queryLog.push({ sql, params: [...params], pattern: pattern?.name ?? 'unmatched', tenantId: tx === undefined ? null : this.loggedTenant(tx) });
     if (tx?.aborted === true && pattern?.whenAborted !== true) {
       throw pgError('25P02', 'current transaction is aborted, commands ignored until end of transaction block');
+    }
+    // node-pg binds every parameter but a Buffer as text, which the server refuses to decode when it holds a NUL.
+    const nul = params.findIndex((param) => holdsNul(param, false));
+    if (nul !== -1) {
+      if (tx !== undefined) tx.aborted = true;
+      throw pgError('22021', 'invalid byte sequence for encoding "UTF8": 0x00', { where: `unnamed portal parameter $${nul + 1}`, file: 'mbutils.c', routine: 'report_invalid_encoding_int' });
     }
     const failure = this.failures.findIndex((candidate) => candidate.matches(sql, normalized));
     if (failure !== -1) {

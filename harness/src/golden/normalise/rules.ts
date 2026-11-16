@@ -133,14 +133,41 @@ function checkIdPattern(rule: { pattern: string; flags: string }, ctx: z.Refinem
   }
 }
 
+const keyedIdSchema = z.strictObject({
+  id: ruleId,
+  keys: nonEmptyNames,
+  keyMatch: matchMode,
+  placeholder: ordinalPlaceholder,
+  ordinal: z.literal('scenario'),
+  ordinalKey: z.enum(['exact', 'case-insensitive']),
+});
+/** An opaque id known only by the JSON key, form field or column it is stored under, e.g. a Mailpit message ID. */
+export type KeyedIdRule = z.infer<typeof keyedIdSchema>;
+
+// Each key names one keyed rule, and each id kind has its own placeholder, so two kinds' ordinals never read alike.
+function checkKeyedIds(
+  rules: { placeholder: string; rfc4122: { placeholder: string }; keyed: readonly KeyedIdRule[] },
+  ctx: z.RefinementCtx,
+): void {
+  for (const key of duplicates(rules.keyed.flatMap((rule) => rule.keys), lowerCase)) {
+    ctx.addIssue({ code: 'custom', message: `names keyed id key ${key} more than once`, path: ['keyed'] });
+  }
+  const placeholders = [rules.placeholder, rules.rfc4122.placeholder, ...rules.keyed.map((rule) => rule.placeholder)];
+  for (const repeated of duplicates(placeholders)) {
+    ctx.addIssue({ code: 'custom', message: `uses placeholder ${repeated} for more than one id kind`, path: ['keyed'] });
+  }
+}
+
 const idsSchema = z
   .strictObject({
     ...idPatternFields,
     keepLiteral: names,
     rfc4122: z.strictObject(idPatternFields).superRefine(checkIdPattern),
+    keyed: z.array(keyedIdSchema),
   })
-  .superRefine(checkIdPattern);
-/** CF UUID ordinals, plus the RFC 4122 variant. */
+  .superRefine(checkIdPattern)
+  .superRefine(checkKeyedIds);
+/** CF UUID ordinals, plus the RFC 4122 variant and the keyed ids. */
 export type IdRules = z.infer<typeof idsSchema>;
 
 const timestampClassSchema = z.strictObject({
@@ -180,18 +207,39 @@ const timestampsSchema = z.strictObject({
 /** Timestamp classification and the date-only fields. */
 export type TimestampRules = z.infer<typeof timestampsSchema>;
 
-const tokensSchema = z.strictObject({
-  id: ruleId,
-  placeholder,
-  fields: nonEmptyNames.superRefine(requireMembers(REQUIRED_TOKEN_FIELDS, lowerCase)),
-  fieldMatch: matchMode,
-  headers: names,
-  headerMatch: matchMode,
-  queryParams: names,
-  queryParamMatch: matchMode,
-  htmlInputs: names,
-});
-/** Fields, headers, query parameters and inputs whose values become the token placeholder. */
+// A parameter naming a valueless token must be a token parameter itself, or its value would stay compared.
+function checkNamingParams(
+  tokens: { queryParams: readonly string[]; queryParamMatch: string; valuelessParamsNamedBy: readonly string[] },
+  ctx: z.RefinementCtx,
+): void {
+  const fold = tokens.queryParamMatch === 'case-insensitive' ? lowerCase : identity;
+  const declared = new Set(tokens.queryParams.map(fold));
+  tokens.valuelessParamsNamedBy.forEach((name, index) => {
+    if (!declared.has(fold(name))) {
+      const path = ['valuelessParamsNamedBy', index];
+      ctx.addIssue({ code: 'custom', message: `${name} is not in queryParams`, path });
+    }
+  });
+}
+
+const tokensSchema = z
+  .strictObject({
+    id: ruleId,
+    placeholder,
+    fields: nonEmptyNames.superRefine(requireMembers(REQUIRED_TOKEN_FIELDS, lowerCase)),
+    fieldMatch: matchMode,
+    headers: names,
+    headerMatch: matchMode,
+    queryParams: names,
+    queryParamMatch: matchMode,
+    valuelessParamsNamedBy: names,
+    htmlInputs: names,
+  })
+  .superRefine(checkNamingParams);
+/**
+ * Fields, headers, query parameters and inputs whose values become the token placeholder, and the parameters whose
+ * value names a valueless token parameter of the same query.
+ */
 export type TokenRules = z.infer<typeof tokensSchema>;
 
 const urlsSchema = z.strictObject({

@@ -270,6 +270,26 @@ describe('normaliseUrl', () => {
   });
 });
 
+describe('the admin reload link', () => {
+  const key = ['Fixture', 'Reload', 'Key'].join('-');
+  const masked = '/admin/?<token>&reload=<token>';
+  const maskedInHtml = '<a href="/admin/?<token>&amp;reload=<token>">Reload</a>';
+
+  it.each<[string, typeof normaliseUrl, string, string]>([
+    ['a URL with a configured key', normaliseUrl, `/admin/?${key}&reload=${key}`, masked],
+    ["a URL with Masa's default key", normaliseUrl, '/admin/?appreload&reload=appreload', masked],
+    ['a URL whose key redaction masked', normaliseUrl, '/admin/?<secret>&reload=<secret>', masked],
+    ['a URL with &amp; separators', normaliseUrl, `/admin/?${key}&amp;reload=${key}`, '/admin/?<token>&amp;reload=<token>'],
+    ['an absolute URL', normaliseUrl, `${LEGACY_ORIGIN}/admin/?${key}&reload=${key}`, `<origin>${masked}`],
+    ['a URL whose other valueless parameter stays', normaliseUrl, `/admin/?other&reload=${key}`, '/admin/?other&reload=<token>'],
+    ['markup with a configured key', normaliseText, `<a href="/admin/?${key}&amp;reload=${key}">Reload</a>`, maskedInHtml],
+    ['markup whose key redaction masked', normaliseText, '<a href="/admin/?<secret>&amp;reload=<secret>">Reload</a>', maskedInHtml],
+    ['text naming the key after another parameter', normaliseText, `?a=1&amp;${key}&amp;reload=${key} x`, '?a=1&amp;<token>&amp;reload=<token> x'],
+  ])('masks the key parameter and reload value in %s', (_label, normalise, input, expected) => {
+    expect(normalise(input, createIdOrdinals(), rules)).toBe(expected);
+  });
+});
+
 describe('normaliseValue over the findQuery envelope', () => {
   it('leaves no CF UUID, token, legacy origin or serializer timestamp in any key or string', () => {
     const source = fixture();

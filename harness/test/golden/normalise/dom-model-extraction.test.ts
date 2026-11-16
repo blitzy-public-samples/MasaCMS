@@ -523,8 +523,17 @@ describe('domModel', () => {
 });
 
 describe('canonicalAdminUrl', () => {
-  it.each(['#', '', '  ', 'javascript:void(0)', 'JavaScript:submitForm()', '#tabBasic'])('keeps %j verbatim', (url) => {
+  it.each(['#', ' # ', '', '  ', 'javascript:void(0)', 'JavaScript:submitForm()', '#tabBasic'])('keeps %j verbatim', (url) => {
     expect(canonicalAdminUrl(url, createIdOrdinals(), rules)).toBe(url);
+  });
+
+  it.each([
+    [`#comment-${A}`, '#comment-<id:1>'],
+    [`#comment-${A.toLowerCase()}`, '#comment-<id:1>'],
+    [`#${A}`, '#<id:1>'],
+    [`#comment-${A}-${B}`, '#comment-<id:1>-<id:2>'],
+  ])('numbers the ids of fragment-only href %j', (url, expected) => {
+    expect(canonicalAdminUrl(url, createIdOrdinals(), rules)).toBe(expected);
   });
 
   it.each([
@@ -564,3 +573,78 @@ describe('canonicalAdminUrl', () => {
     );
   });
 });
+
+describe('comment anchors on the GS-CO-11 moderation list', () => {
+  const C = '4D5E6F7A-8B9C-4DAE-9F0A1B2C3D4E5F6A';
+  const D = '5E6F7A8B-9C0D-4EBF-8A1B2C3D4E5F6A7B';
+  let comments: Scenario;
+
+  beforeAll(async () => {
+    comments = scenarioById(await loadCatalogue(), 'GS-CO-11');
+  });
+
+  // One row per comment id, with the anchors ccomments/loadcomments.cfm:246-296 renders.
+  const listing = (ids: readonly string[], anchorOf: (id: string) => string = (id) => id): string =>
+    `<table>${ids
+      .map(
+        (id) =>
+          `<tr><td><a href="#comment-${anchorOf(id)}" data-toggle="modal">Comments</a></td>` +
+          `<td><input type="checkbox" name="ckUpdate" value="${id}" /></td>` +
+          `<td><a href="#comment-${anchorOf(id)}" data-toggle="modal">GS Commenter</a></td>` +
+          `<td><a href="./?muraAction=cComments.default&amp;siteid=tenant-a&amp;commentid=${id}">Open</a></td></tr>`,
+      )
+      .join('')}</table>`;
+
+  const record = (name: string, contentType: string, text: string): StepRecord => ({
+    name,
+    index: comments.steps.findIndex((step) => step.name === name),
+    routeKey: name === 'comment' ? 'api:comment.save' : 'admin:ccomments.loadcomments',
+    request: { method: 'GET', url: '/admin/', headers: {}, body: { kind: 'none' } },
+    response: { status: 200, headers: { 'content-type': contentType }, contentType, sha256: '', hops: [], text },
+    extracted: {},
+  });
+
+  // The comment save envelope, then the moderation list, normalised on one scenario side.
+  async function side(saved: string, ids: readonly string[], anchorOf?: (id: string) => string) {
+    const state = createNormaliseState();
+    const ctx = { state, rules, scenario: comments };
+    const envelope = JSON.stringify({ apiversion: 'v1', method: 'save', params: {}, data: { id: saved } });
+    return {
+      steps: [
+        await normaliseStep(record('comment', 'application/json', envelope), ctx),
+        await normaliseStep(record('load', 'text/html', listing(ids, anchorOf)), ctx),
+      ],
+      sideEffects: {},
+    };
+  }
+
+  it('numbers each anchor with the ordinal its checkbox, its action link and the saved comment use', async () => {
+    const { steps } = await side(B, [A, B]);
+    const load = steps[1]?.domModel;
+    expect(load?.controls.map((control) => control.value)).toStrictEqual(['<id:2>', '<id:1>']);
+    expect(load?.links.map((link) => link.href)).toStrictEqual([
+      '#comment-<id:2>',
+      '#comment-<id:2>',
+      './?muraAction=ccomments.default&siteid=tenant-a&commentid=<id:2>',
+      '#comment-<id:1>',
+      '#comment-<id:1>',
+      './?muraAction=ccomments.default&siteid=tenant-a&commentid=<id:1>',
+    ]);
+  });
+
+  it.each<[string, ((id: string) => string) | undefined, string[]]>([
+    ['other CF UUIDs', undefined, []],
+    [
+      'anchors naming the other row',
+      (id) => (id === C ? D : C),
+      [0, 1, 3, 4].map((i) => `load:domModel.links[${i}].href`),
+    ],
+  ])('compares a replay whose rows carry %s', async (_label, anchorOf, paths) => {
+    const differences = compareNormalised(await side(B, [A, B]), await side(D, [C, D], anchorOf), {
+      rules,
+      scenario: comments,
+    });
+    expect(differences.map((diff) => `${diff.step}:${diff.path}`)).toStrictEqual(paths);
+  });
+});
+

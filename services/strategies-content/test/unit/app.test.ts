@@ -1,8 +1,10 @@
 /** Composition root of strategies-content: start-up, contract-equal routes, consumer-only events, write positions, environment and shutdown. */
 import { existsSync, readFileSync } from 'node:fs';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { parse } from 'yaml';
+import { serializeError, type Logger } from '@opt2/platform/logging';
 import { WRITE_POSITION_HEADER, hasWritePositionHeader } from '@opt2/platform/migration-kit';
+import { createService } from '@opt2/platform/service-kit';
 import { TENANT_A, createCapturingPublisher, testVerifier } from '@opt2/platform/testing';
 import { buildApp, contentEnvSchema, type BuildAppOptions, type ContentEnv } from '../../src/app.js';
 import * as consumers from '../../src/events/consumers.js';
@@ -27,6 +29,11 @@ vi.mock('../../src/tasks/port.js', async (importOriginal) => {
 vi.mock('../../src/jobs/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/jobs/index.js')>();
   return { ...actual, registerJobRoutes: vi.fn(actual.registerJobRoutes) };
+});
+
+vi.mock('@opt2/platform/service-kit', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@opt2/platform/service-kit')>();
+  return { ...actual, createService: vi.fn(actual.createService) };
 });
 
 /** Pub/Sub emulator address of the publisher buildApp creates itself; nothing is published, so nothing connects. */
@@ -302,6 +309,7 @@ describe('strategies-content buildApp resources', () => {
     // Drops unconsumed one-off results and restores the real factories later builds in this file run through.
     vi.mocked(createContentTaskPort).mockReset();
     vi.mocked(registerJobRoutes).mockReset();
+    vi.mocked(createService).mockReset();
   });
 
   it('rejects a local start-up without PUBSUB_EMULATOR_HOST before acquiring a task port', async () => {
@@ -350,11 +358,34 @@ describe('strategies-content buildApp resources', () => {
     expect(db.end).not.toHaveBeenCalled();
   });
 
-  it('closes its own task port and the pool createService opened, and rethrows when a step after createService fails', async () => {
+  /** Has createService, asked for the `content` pool, open a recording pool whose end rejects with `endFailure` if given; returns it and the app's cleanup failure logs. */
+  function openRecordingPool(endFailure?: Error) {
+    // The recording pool is frozen, so its end is observed on a copy.
+    const pool = { ...createRecordingDb(), end: vi.fn((): Promise<void> => (endFailure === undefined ? Promise.resolve() : Promise.reject(endFailure))) };
+    let logError: MockInstance<Logger['error']> | undefined;
+    vi.mocked(createService).mockImplementationOnce(async (options) => {
+      const actual = await vi.importActual<typeof import('@opt2/platform/service-kit')>('@opt2/platform/service-kit');
+      const app = await actual.createService({ ...options, schema: undefined, pool });
+      logError = vi.spyOn(app.opt2.logger, 'error');
+      return app;
+    });
+    const cleanupFailures = () => logError?.mock.calls.filter(([, message]) => message === 'start-up cleanup failed');
+    return { pool, cleanupFailures };
+  }
+
+  it.each<[string, Error | undefined]>([
+    ['ends', undefined],
+    ['logs the failure to end', new Error('pool end failed')],
+  ])('closes its own task port, %s the pool createService opened and rethrows when a step after createService fails', async (_, endFailure) => {
     const { failure, portClose } = failAfterTaskPort();
+    const { pool, cleanupFailures } = openRecordingPool(endFailure);
 
     await expect(build(t.env, { publisher: createCapturingPublisher() })).rejects.toBe(failure);
+    expect(vi.mocked(createService).mock.lastCall?.[0]).toMatchObject({ schema: 'content' });
+    expect(vi.mocked(createService).mock.lastCall?.[0]).not.toHaveProperty('pool');
     expect(portClose).toHaveBeenCalledTimes(1);
+    expect(pool.end).toHaveBeenCalledTimes(1);
+    expect(cleanupFailures()).toEqual(endFailure === undefined ? [] : [[{ error: serializeError(endFailure) }, 'start-up cleanup failed']]);
   });
 
   it('rethrows the start-up failure when closing its own task port also fails, leaving the injected publisher open', async () => {

@@ -133,7 +133,7 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 
 | Condition | Action | Result |
 |---|---|---|
-| Abort before activation: any failure in steps 1–6, a `rollback-before` difference included | Read `error.step` and `error.message` from the summary line, or `abortReason` in `transitions.json`; fix the cause; rerun from section 2 | The transition reopens the gates it closed, unfreezes, resumes queues and tasks and releases its leases; `v0002` stays active |
+| Abort before activation: any failure in steps 1–6, a `rollback-before` difference included | Read `error.step` from the summary line, whose `error.message` is `[REDACTED]` unless it is a fixed safe text, and the full reason as `abortReason` in `transitions.json`; fix the cause; rerun from section 2 | The transition reopens the gates it closed, unfreezes, resumes queues and tasks and releases its leases; `v0002` stays active |
 | Orphaned legacy-bound in-flight write at step 3 | None; the transition runs `OPT2_LEGACY_RESTART_CMD`, a controlled ColdFusion restart, and clears the orphan | Without `OPT2_LEGACY_RESTART_CMD`, as in the cloud, the transition aborts and names the orphan |
 | Step 1 aborts naming a write window in phase `import-pending` on a unit of `T` | Confirm its legacy request can no longer commit, run `opt2-migrate resolve-window <windowId>` (ids in `opt2/reports/windows.json`), then rerun from section 2 | The window imports, closes and releases its leases |
 | Halted roster operation | `opt2-people resolve-operation <operationId> --to rolled-back` or `--to done`, then rerun from section 2 | The operation ends and its user's units reopen |

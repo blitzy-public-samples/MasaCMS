@@ -1414,8 +1414,8 @@ describe('pubsub-redelivery fault script', () => {
       expect(output.assertions[1]).toStrictEqual({
         name: 'resume-witnesses-deleted',
         status: 'fail',
-        detail: { left: [leftovers[0]] },
-        reason: `witness subscriptions not deleted: ${String(leftovers[0])}: Error: 7 PERMISSION_DENIED: delete`,
+        detail: { left: [leftovers[0]], error: `witness subscriptions not deleted: ${String(leftovers[0])}: Error: 7 PERMISSION_DENIED: delete` },
+        reason: 'witness subscriptions were not deleted',
       });
       expect(broker.sub(leftovers[1] ?? '')).toBeUndefined();
       expect(output.assertions[2]).toMatchObject({ name: 'resume-drained', status: 'pass' });

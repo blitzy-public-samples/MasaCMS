@@ -95,16 +95,35 @@ _opt2_env_line() {
   printf '%s=%s\n' "$1" "$2"
 }
 
+# Prints $1 as one single-quoted POSIX sh word, each embedded ' written as '\''.
+_opt2_sh_quote() {
+  local escaped="'\\''"
+  printf "'%s'\n" "${1//"'"/"$escaped"}"
+}
+
 # Masa reads each setting from MURA_<KEY> (core/appcfc/onApplicationStart_include.cfm:136-141) and the target processes
-# read them the same way, so every process gets the caller's Masa settings; the legacy database connection and the
-# credentials are withheld here and handed to migration alone.
-# Prints every exported MURA_* setting except the database connection and any credential, sorted by name.
+# read them the same way. Prints the exported MURA_* settings for process <name>, sorted by name: the password
+# policy, never the database connection, a password, the admin login, the encryption key or the reCAPTCHA secret,
+# the reload key only to the processes that mirror legacy's appreloadkey, s3assets, which can embed S3 credentials,
+# only to web, and no port pair, which process_env sets.
 _opt2_masa_settings_env() {
-  local name
+  local process=${1:?_opt2_masa_settings_env needs a process name} name
   while IFS= read -r name; do
     case $name in
-      MURA_DATASOURCE | MURA_DATABASE | MURA_DBHOST | MURA_DBPORT | MURA_DBUSERNAME | MURA_DBPASSWORD | MURA_ADMIN_* | \
-        *PASSWORD*) ;;
+      MURA_AUTORESETPASSWORDS | MURA_BCRYPTPASSWORDS | MURA_ENCRYPTPASSWORDS | MURA_EXPIREPASSWORDS | \
+        MURA_STRONGPASSWORDREGEX | MURA_STRONGPASSWORDS) _opt2_env_line "$name" "${!name}" ;;
+      MURA_DATASOURCE | MURA_DATABASE | MURA_DBHOST | MURA_DBPORT | MURA_DBUSERNAME | MURA_ADMIN_* | *PASSWORD* | \
+        MURA_ENCRYPTIONKEY | MURA_RECAPTCHASECRET | MURA_PORT | MURA_PROXYPORT) ;;
+      MURA_APPRELOADKEY)
+        case $process in
+          gateway | web | identity | people | programs-sites | strategies-content | migration)
+            _opt2_env_line "$name" "${!name}"
+            ;;
+        esac
+        ;;
+      MURA_S3ASSETS)
+        if [[ $process == web ]]; then _opt2_env_line "$name" "${!name}"; fi
+        ;;
       MURA_*) _opt2_env_line "$name" "${!name}" ;;
     esac
   done < <(compgen -e | LC_ALL=C sort)
@@ -112,7 +131,7 @@ _opt2_masa_settings_env() {
 
 # Prints the environment of target process <name>, one KEY=value per line, for `env -i`.
 process_env() {
-  local name=${1:?process_env needs a process name} port schema tz password origin bridge_key
+  local name=${1:?process_env needs a process name} port schema tz password origin bridge_key reports
   port="$(process_port "$name")" || exit 1
   schema="$(process_schema "$name")" || exit 1
   service_urls_json >/dev/null
@@ -134,7 +153,10 @@ process_env() {
   _opt2_env_line OPT2_SERVICE_URLS "$_OPT2_SERVICE_URLS_JSON"
   _opt2_env_line OPT2_TASKS_ADAPTER local
   _opt2_env_line OPT2_STORAGE_ADAPTER local
-  _opt2_masa_settings_env
+  _opt2_masa_settings_env "$name"
+  # The values server.json.template gives legacy, so absolute URLs built here match legacy's.
+  _opt2_env_line MURA_PORT "$OPT2_PORT_GATEWAY"
+  _opt2_env_line MURA_PROXYPORT "$OPT2_PORT_GATEWAY"
 
   # The caller's admin PG_USER and PG_PASSWORD serve the local bootstrap only; a process connects as its <schema>_app.
   if [[ -n $schema ]]; then
@@ -174,7 +196,14 @@ process_env() {
         _opt2_env_line OPT2_MSSQL_TRUST_SERVER_CERT "$OPT2_MSSQL_TRUST_SERVER_CERT"
       fi
       _opt2_env_line OPT2_PRISTINE_DIR "$OPT2_PRISTINE_DIR"
-      _opt2_env_line OPT2_LEGACY_RESTART_CMD "$REPO/harness/repro/lib/legacy-start.sh"
+      # Resolved as test-all.sh and harness/src/lib/paths.ts resolve it: a relative value against the checkout.
+      if [[ -n ${OPT2_REPORTS_DIR:-} ]]; then
+        reports=$OPT2_REPORTS_DIR
+        [[ $reports == /* ]] || reports="$REPO/$reports"
+        _opt2_env_line OPT2_REPORTS_DIR "$reports"
+      fi
+      # A command line that migration runs through /bin/sh.
+      _opt2_env_line OPT2_LEGACY_RESTART_CMD "$(_opt2_sh_quote "$REPO/harness/repro/lib/legacy-start.sh")"
       ;;
     communications)
       _opt2_env_line SMTP_HOST 127.0.0.1

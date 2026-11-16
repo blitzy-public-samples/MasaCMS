@@ -3,9 +3,11 @@ import * as cheerio from 'cheerio';
 import type { CheerioAPI } from 'cheerio';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, parseAdminUrl } from '@opt2/platform/legacy-compat';
 import type { IdOrdinals } from './ids.js';
-import type { KnownIssueMask, MaskLocation } from './masks.js';
+import { maskedTextPlaceholder, splitMaskedText, type KnownIssueMask, type MaskLocation } from './masks.js';
 import type { KnownIssueId, NormaliseRules } from './rules.js';
 import { normaliseText, normaliseUrl, normaliseValue } from './values.js';
+
+export { maskedTextPlaceholder };
 
 /** A heading `h1`…`h6`: its level and text. */
 export interface DomHeading {
@@ -155,13 +157,12 @@ const ALWAYS_EXCLUDED = ['script', 'style', 'noscript'];
 const COMMENT_EXCLUSION = 'comment()';
 const COMMENT_NODE = 8;
 const TEXT_NODE = 3;
-// Placeholders an earlier lift left; split out so later patterns never match inside them.
-const LIFTED_PLACEHOLDER = /(<known-issue:[^<>]*>)/;
 // CFML form and URL scopes read names case-insensitively.
 const CSRF_NAMES: ReadonlySet<string> = new Set([CSRF_FIELD_TOKEN, CSRF_FIELD_EXPIRES].map((name) => name.toLowerCase()));
 const CHECKABLE_TYPES: ReadonlySet<string> = new Set(['checkbox', 'radio']);
-// The header search action is `#` (admin/common/layouts/includes/header.cfm:162); such values are not URLs to rewrite.
-const VERBATIM_URL = /^\s*(?:#|javascript:|$)/i;
+// Empty, bare `#` (the header search action, admin/common/layouts/includes/header.cfm:162) and `javascript:` values are
+// not URLs to rewrite; other fragments, such as `#comment-<id>` (ccomments/loadcomments.cfm:246), carry ids.
+const VERBATIM_URL = /^\s*(?:#\s*$|javascript:|$)/i;
 
 const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
 const isCsrfName = (name: string | undefined): boolean => name !== undefined && CSRF_NAMES.has(name.toLowerCase());
@@ -170,11 +171,6 @@ const isTextNode = (node: AnyNode): node is TextNode => node.nodeType === TEXT_N
 // A text location's matches are lifted out of the text rather than masking the fields that hold them.
 const isTextLocation = (location: DomLocation): boolean =>
   location.textPattern !== undefined && location.attributes === undefined;
-
-/** Placeholder that known-issue mask `id` leaves in model text where it lifted a text component out. */
-export function maskedTextPlaceholder(id: KnownIssueId): string {
-  return `<known-issue:${id}>`;
-}
 
 function decodeName(raw: string): string {
   try {
@@ -219,7 +215,8 @@ function canonicalQuery(url: string, rules: NormaliseRules): string {
 /**
  * Admin URL `url` normalised: one carrying `muraAction`/`fuseaction` goes through {@link normaliseUrl} with its query
  * made canonical before and after (so id ordinals follow the canonical order); any other URL through
- * {@link normaliseUrl} only. Empty, `#…` and `javascript:` values are returned verbatim.
+ * {@link normaliseUrl} only, fragment-only values such as `#comment-<id>` included. Empty, bare `#` and `javascript:`
+ * values are returned verbatim.
  */
 export function canonicalAdminUrl(url: string, state: IdOrdinals, rules: NormaliseRules): string {
   if (VERBATIM_URL.test(url)) return url;
@@ -523,7 +520,7 @@ function textNodesOf(node: AnyNode, out: TextNode[] = []): TextNode[] {
 function matchSpans(text: string, global: RegExp): [number, number][] {
   const spans: [number, number][] = [];
   let offset = 0;
-  text.split(LIFTED_PLACEHOLDER).forEach((part, i) => {
+  splitMaskedText(text).forEach((part, i) => {
     if (i % 2 === 0) {
       for (const { 0: match, index } of part.matchAll(global)) {
         if (match !== '') spans.push([offset + index, offset + index + match.length]);

@@ -19,7 +19,6 @@ import { createLegacyDb, type LegacyDb } from './legacy/legacy-db.js';
 import { createOwnersClient, type OwnersClient } from './owners/client.js';
 import { loadUnitCatalog, type UnitCatalog } from './owners/units.js';
 
-const SERVICE_NAME = 'migration';
 const SERVICE_VERSION = '1.0.0';
 const MIGRATION_SCHEMA = 'migration';
 
@@ -135,7 +134,7 @@ export async function createMigrationContext(options: CreateContextOptions = {})
   const logger =
     options.logger ??
     createLogger({
-      service: SERVICE_NAME,
+      service: env.OPT2_SERVICE_NAME,
       version: SERVICE_VERSION,
       env: env.OPT2_ENV,
       level: env.LOG_LEVEL,

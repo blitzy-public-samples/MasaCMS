@@ -1,8 +1,8 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Offline checks of the e-signature OpenAPI contract's metadata and x-opt2 annotations. */
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { routeKeyForEntryPoint } from '@opt2/platform/legacy-compat';
 import { OUTBOX_SWEEP_PATH, QUEUES } from '@opt2/platform/tasks';
 
@@ -33,13 +33,7 @@ const METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'tr
 // A fixture route checks an optional user token itself, so it is reachable without one.
 const OPTIONAL_USER_SECURITY: SecurityRequirement[] = [{}, { userToken: [], invocationCredential: [] }];
 
-// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
-const requireHere = createRequire(import.meta.url);
-const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as {
-  load: (text: string) => unknown;
-};
-
-const contract = load(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as Contract;
+const contract = parse(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as Contract;
 const pin = JSON.parse(await readFile(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as {
   sha?: unknown;
 };

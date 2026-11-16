@@ -466,10 +466,10 @@ describe('tenant scoping of the fixture checks', () => {
   const tenantB = { site: TENANT_B.siteId, roles: [SYSTEM_USER, SIGNER, AUDITOR] };
 
   it.each(['audit', 'verify'])('answers a tenant-b reader of a tenant-a request %s notFound, never its data', async (action) => {
-    const { res } = await send('GET', `/${SIGNED_ID}/${action}`, tenantB);
+    const sent = await send('GET', `/${SIGNED_ID}/${action}`, tenantB);
 
-    expectFailure({ res, writes: [] }, 'notFound', `esignature.requests.${action}`);
-    expect(res.body).not.toContain(SIGNED_ID);
+    expectFailure(sent, 'notFound', `esignature.requests.${action}`);
+    expect(sent.res.body).not.toContain(SIGNED_ID);
   });
 
   it('answers a tenant-b signer signing a tenant-a request notFound', async () => {
@@ -483,9 +483,7 @@ describe('tenant scoping of the fixture checks', () => {
   });
 
   it('answers a tenant-b token naming siteid tenant-a forbidden, as its login holds no tenant-a role group', async () => {
-    const { res } = await send('GET', `/${SIGNED_ID}/audit${siteQuery(TENANT_A.siteId)}`, tenantB);
-
-    expectFailure({ res, writes: [] }, 'forbidden', 'esignature.requests.audit');
+    expectFailure(await send('GET', `/${SIGNED_ID}/audit${siteQuery(TENANT_A.siteId)}`, tenantB), 'forbidden', 'esignature.requests.audit');
   });
 });
 

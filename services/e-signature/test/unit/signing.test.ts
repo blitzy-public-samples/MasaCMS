@@ -412,6 +412,19 @@ describe('sign', () => {
     expect(t.db.rows('signature_request')[0]?.state).toBe('PENDING');
   });
 
+  it.each(SURFACES)('answers invalidParameters to a typed name holding U+0000 through %s and rolls the signature back', async (surface, prefix) => {
+    const id = await createRequest();
+    t.db.clear();
+    // The name passes the typed-name rule; PostgreSQL refuses it, and on /v1 service-kit's handler answers it.
+    const res = await post(`${prefix}/requests/${id}/sign`, signer(), { typedName: 'A\u0000B' });
+    const method = surface === 'fixture' ? 'esignature.requests.sign' : 'invalid';
+    expect([res.statusCode, res.json()]).toEqual([400, errorBody(method, INVALID_PARAMETERS)]);
+    expect(dataWrites(t.db.writes())).toEqual([]);
+    expect(t.db.rows('signature_request')[0]?.state).toBe('PENDING');
+    expect(t.db.rows('signature')).toEqual([]);
+    expect(storedChain(t.db, id).map((row) => row.action)).toEqual([AUDIT_ACTIONS.created]);
+  });
+
   it.each<[string, () => Promise<string>, () => Promise<Headers>, Payload, number, string]>([
     ['an unknown request before the signer check', () => Promise.resolve(MISSING_ID), requester, { typedName: 'Ann' }, 404, NOT_FOUND],
     ['another signer before the typed-name rule', createRequest, requester, { typedName: '' }, 403, FORBIDDEN],

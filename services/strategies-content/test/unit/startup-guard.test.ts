@@ -304,13 +304,15 @@ describe.skipIf(!(await pgAvailable()))('content write paths over a seeded schem
   });
 
   it('publish of a File, with and without a new upload, and of a Link activates a bodied version', async () => {
-    const node = { siteid: SITE_ID, contentid: IDS.content.fileNode, parentid: HOME, type: 'File', title: 'Guide' };
+    const fileId = (await newFile('publish-file', 'publish-file.pdf')).contentId();
+    const node = { siteid: SITE_ID, contentid: fileId, parentid: HOME, type: 'File', title: 'publish-file' };
     const kept = await publish(deps, ADMIN, SITE, node);
-    expect(await active(IDS.content.fileNode)).toMatchObject({ contenthistid: kept.bean.contentHistId(), body: 'guide.pdf' });
-    const replaced = await publish(deps, ADMIN, SITE, node, { files: [part('guide-2.pdf')] });
-    expect(await active(IDS.content.fileNode)).toMatchObject({ contenthistid: replaced.bean.contentHistId(), body: 'guide-2.pdf' });
-    const link = await publish(deps, ADMIN, SITE, { siteid: SITE_ID, contentid: IDS.content.linkNode, parentid: HOME, type: 'Link', title: 'Example Link', body: 'https://example.org/v2' });
-    expect(await active(IDS.content.linkNode)).toMatchObject({ contenthistid: link.bean.contentHistId(), body: 'https://example.org/v2' });
+    expect(await active(fileId)).toMatchObject({ contenthistid: kept.bean.contentHistId(), body: 'publish-file.pdf' });
+    const replaced = await publish(deps, ADMIN, SITE, node, { files: [part('publish-file-2.pdf')] });
+    expect(await active(fileId)).toMatchObject({ contenthistid: replaced.bean.contentHistId(), body: 'publish-file-2.pdf' });
+    const linkId = (await save({ type: 'Link', title: 'publish-link', body: 'https://example.com/publish-link' })).bean.contentId();
+    const link = await publish(deps, ADMIN, SITE, { siteid: SITE_ID, contentid: linkId, parentid: HOME, type: 'Link', title: 'publish-link', body: 'https://example.com/publish-link/v2' });
+    expect(await active(linkId)).toMatchObject({ contenthistid: link.bean.contentHistId(), body: 'https://example.com/publish-link/v2' });
     const written = [kept, replaced, link].flatMap((result) => result.written);
     expect(written.filter((stored) => stored.active === 0).length).toBeGreaterThan(0);
     await expectPredicateEmpty(written);

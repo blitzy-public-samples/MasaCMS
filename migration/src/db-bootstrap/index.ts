@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { AuthTypes, Connector, IpAddressTypes } from '@google-cloud/cloud-sql-connector';
 import { serviceAccountEmail } from '@opt2/platform/auth';
-import type { Logger } from '@opt2/platform/logging';
+import { SAFE_ERROR_TEXT, type Logger } from '@opt2/platform/logging';
 import { iamDbUser, sessionTimeZoneSetter } from '@opt2/platform/tenancy';
 import pg from 'pg';
 import type { MigrationConfig, OwnerName } from '../config.js';
@@ -89,6 +89,11 @@ export class BootstrapEnvError extends Error {
   constructor(missing: readonly string[]) {
     super(`db-bootstrap needs ${missing.join(', ')}`);
     this.missing = [...missing];
+  }
+
+  /** `db-bootstrap: invalid environment (<missing names>)`, the safe text logs and summaries keep. */
+  get [SAFE_ERROR_TEXT](): string {
+    return `db-bootstrap: invalid environment${this.missing.length > 0 ? ` (${this.missing.join(', ')})` : ''}`;
   }
 }
 

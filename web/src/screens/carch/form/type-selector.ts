@@ -2,8 +2,7 @@
 import { cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
 import { legacySettings } from '@/lib/env';
 import { encodeJs, raw, type SafeHtml } from '@/lib/html';
-// Not one of this view's planned inputs: reused so the selector prints the theme path partials/js.ts prints on the
-// same edit page, rather than deriving `getThemeAssetPath()` a second way.
+// The shared site-path helper keeps the theme asset path the same as partials/js.ts prints on the edit page.
 import { siteBeanOf, sitePaths } from '@/lib/site-paths';
 import { isSuperOrAdminUser, structOf, structText } from '../model';
 import { cfListHas, type EditFormInput, type EditFormState, type SubTypeRow } from './custom-tags';

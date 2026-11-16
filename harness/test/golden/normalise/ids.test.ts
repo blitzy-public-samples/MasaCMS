@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   CF_UUID_IN_TEXT,
   createIdOrdinals,
+  keyedOrdinalFor,
   normaliseIds,
   normaliseIdsInString,
   ordinalFor,
@@ -185,6 +186,62 @@ describe('normaliseIds', () => {
     expect(state.next).toBe(3);
     expect(state.rfc4122.next).toBe(2);
     expect(normaliseIdsInString(`${RFC4122} ${A}`, createIdOrdinals())).toBe(`${RFC4122} <id:1>`);
+  });
+});
+
+describe('keyed ids', () => {
+  // Mailpit message IDs: 22-character base57 short UUIDs.
+  const SENT = 'jP4qsXbu9KJuRQ9KBXVkPu';
+  const OTHER = 'Gq3nC7ZJm7dxuRPjZpUFrd';
+
+  it('declares the Mailpit ID under its fixture, contract and event keys with its own placeholder', () => {
+    expect(ids.keyed).toStrictEqual([
+      {
+        id: 'mailpit-id',
+        keys: ['mailpit_id', 'mailpitId'],
+        keyMatch: 'case-insensitive',
+        placeholder: '<mailpit:{n}>',
+        ordinal: 'scenario',
+        ordinalKey: 'exact',
+      },
+    ]);
+  });
+
+  it.each(['mailpit_id', 'MAILPIT_ID', 'mailpitId', 'MailpitID'])(
+    'numbers values under %s by first sight, apart from CF UUIDs',
+    (key) => {
+      const state = createIdOrdinals();
+      expect([SENT, OTHER, SENT].map((value) => keyedOrdinalFor(key, value, state, ids))).toStrictEqual([
+        '<mailpit:1>',
+        '<mailpit:2>',
+        '<mailpit:1>',
+      ]);
+      expect(keyedOrdinalFor(key, SENT.toLowerCase(), state, ids)).toBe('<mailpit:3>');
+      expect(ordinalFor(A, state, ids)).toBe('<id:1>');
+    },
+  );
+
+  it.each([
+    ['an empty value', 'mailpit_id', ''],
+    ['a key no keyed rule names', 'message_id', SENT],
+    ['a key that only contains a keyed key', 'mailpit_id_old', SENT],
+  ])('assigns nothing to %s', (_label, key, value) => {
+    const state = createIdOrdinals();
+    expect(keyedOrdinalFor(key, value, state, ids)).toBeUndefined();
+    expect(keyedOrdinalFor(key, value, state)).toBeUndefined();
+    expect(state).toStrictEqual(createIdOrdinals());
+  });
+
+  it('replaces keyed values inside objects and arrays and keeps empty ones', () => {
+    const history = { history: [{ mailpit_id: '' }, { mailpit_id: SENT, message_id: A }], mailpitId: [SENT, OTHER] };
+    expect(normaliseIds(history, createIdOrdinals(), ids)).toStrictEqual({
+      history: [{ mailpit_id: '' }, { mailpit_id: '<mailpit:1>', message_id: '<id:1>' }],
+      mailpitId: ['<mailpit:1>', '<mailpit:2>'],
+    });
+    expect(normaliseIds(history, createIdOrdinals())).toStrictEqual({
+      history: [{ mailpit_id: '' }, { mailpit_id: SENT, message_id: '<id:1>' }],
+      mailpitId: [SENT, OTHER],
+    });
   });
 });
 

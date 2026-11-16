@@ -1,19 +1,21 @@
 // Unit tests for the `opt2-db` CLI: argument parsing, help and usage output, the summary line and exit codes, plus a gated run against PostgreSQL.
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { validateLogRecord } from '@opt2/platform/logging';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { MigrateIo } from '../../src/cli.js';
 import { loadConfig } from '../../src/config.js';
-import { USAGE, main, parseArgs, type ParsedArgs } from '../../src/db-bootstrap/cli.js';
-import { bootstrap, bootstrapOwners, secretPathsFor, type BootstrapSummary } from '../../src/db-bootstrap/index.js';
-import { resetLocalSchemas, SchemaNotEmptyError } from '../../src/db-bootstrap/migrations.js';
+import { HELP, USAGE, main, parseArgs, type ParsedArgs } from '../../src/db-bootstrap/cli.js';
+import { BOOTSTRAP_TARGETS, bootstrapEnvSchema, loadBootstrapEnv, missingForTarget } from '../../src/db-bootstrap/env.js';
+import { bootstrap, BootstrapStatementError, bootstrapOwners, secretPathsFor, type BootstrapSummary } from '../../src/db-bootstrap/index.js';
+import { MigrationFailedError, resetLocalSchemas, SchemaNotEmptyError } from '../../src/db-bootstrap/migrations.js';
 
 vi.mock('../../src/db-bootstrap/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/db-bootstrap/index.js')>();
@@ -25,6 +27,7 @@ const CLI_SOURCE = path.join(PACKAGE_DIR, 'src', 'db-bootstrap', 'cli.ts');
 const config = loadConfig();
 // Sample credentials are assembled at run time so no password literal sits in source.
 const SAMPLE_PASSWORD = ['sample', 'admin', 'value'].join('-');
+const SECRET = ['s3cr3t', 'db', 'credential'].join('-');
 
 let tmp: string;
 let stateDir: string;
@@ -61,6 +64,23 @@ function onlyJsonLine(text: string): Record<string, unknown> {
   const lines = text.slice(0, -1).split('\n');
   expect(lines).toHaveLength(1);
   return JSON.parse(lines[0] ?? '') as Record<string, unknown>;
+}
+
+/** The stderr lines, each parsed and validated against log-record.v1. */
+function logRecords(text: string): Record<string, unknown>[] {
+  return text
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      expect(validateLogRecord(record)).toEqual({ valid: true, errors: [] });
+      return record;
+    });
+}
+
+/** A PostgreSQL server error as `pg` raises it: SQLSTATE `code`, `severity` and optional `position`. */
+function pgError(message: string, code: string, position?: string): Error {
+  return Object.assign(new Error(message), { code, severity: 'ERROR', ...(position === undefined ? {} : { position }) });
 }
 
 const localSource = (): NodeJS.ProcessEnv => ({
@@ -130,13 +150,48 @@ describe('parseArgs', () => {
   });
 });
 
+describe('HELP', () => {
+  /** Each `Environment:` entry of HELP, its continuation lines joined, keyed by variable name. */
+  const entries = new Map<string, string>();
+  for (const line of HELP.slice(HELP.indexOf('Environment:\n')).split('\n').slice(1)) {
+    const entry = /^ {2}([A-Z][A-Z0-9_]*) +(.+)$/.exec(line);
+    const continuation = /^ {32}(.+)$/.exec(line);
+    const last = [...entries.keys()].at(-1);
+    if (entry?.[1] !== undefined && entry[2] !== undefined) entries.set(entry[1], entry[2]);
+    else if (continuation?.[1] !== undefined && last !== undefined) entries.set(last, `${entries.get(last) ?? ''} ${continuation[1]}`);
+    else break;
+  }
+
+  it('lists every variable of bootstrapEnvSchema', () => {
+    expect([...entries.keys()].sort()).toEqual(Object.keys(bootstrapEnvSchema.shape).sort());
+  });
+
+  it.each(BOOTSTRAP_TARGETS)('marks as required for --target %s exactly the variables that target needs', (target) => {
+    const required = [...entries].filter(([, text]) => text.endsWith('(required)') || text.endsWith(`(required for --target ${target})`));
+    const needed = ['OPT2_ENV', ...missingForTarget(loadBootstrapEnv({ OPT2_ENV: target }), target)];
+    expect(required.map(([name]) => name).sort()).toEqual(needed.sort());
+  });
+
+  it('closes with exit codes, a README section that exists and an example', async () => {
+    const readme = await readFile(path.join(PACKAGE_DIR, 'README.md'), 'utf8');
+    expect(readme.split('\n')).toContain('### Bootstrap environment');
+    expect(HELP.split('\n').slice(-5)).toEqual([
+      'Exit codes: 0 success, 1 failure (an invalid environment included) or role-assertion finding, 2 usage error.',
+      'Documentation: migration/README.md, section "Bootstrap environment".',
+      'Example, from the repository root with the local variables above exported:',
+      '  OPT2_ENV=local node migration/dist/db-bootstrap/cli.js bootstrap --target local',
+      '',
+    ]);
+  });
+});
+
 describe('main', () => {
-  it('writes the usage to stdout and returns 0 for help', async () => {
+  it('writes the help to stdout and returns 0 for help', async () => {
     const io = captureIo();
     expect(await main(['--help'], io, {})).toBe(0);
-    expect(io.out()).toBe(USAGE);
+    expect(io.out()).toBe(HELP);
     expect(io.err()).toBe('');
-    expect(USAGE).toMatch(/^Usage: opt2-db bootstrap --target local\|cloud\n {7}opt2-db --help\n/);
+    expect(HELP).toMatch(/^Usage: opt2-db bootstrap --target local\|cloud\n {7}opt2-db --help\n/);
   });
 
   it('writes the message and the usage to stderr and returns 2 for a usage error', async () => {
@@ -147,12 +202,14 @@ describe('main', () => {
     expect(bootstrap).not.toHaveBeenCalled();
   });
 
-  it('fails with one JSON line naming the variable an empty environment lacks', async () => {
+  it('fails with one JSON line naming the variable an empty environment lacks, logged as a local record', async () => {
     const io = captureIo();
     expect(await main(['bootstrap', '--target', 'cloud'], io, {})).toBe(1);
-    const line = onlyJsonLine(io.out());
-    expect(line).toEqual({ command: 'bootstrap', target: 'cloud', ok: false, error: expect.stringContaining('OPT2_ENV') as unknown });
-    expect(io.err()).toMatch(/^opt2-db: bootstrap failed: db-bootstrap: invalid environment/);
+    const error = { type: 'EnvValidationError', message: 'db-bootstrap: invalid environment (OPT2_ENV)' };
+    expect(onlyJsonLine(io.out())).toEqual({ command: 'bootstrap', target: 'cloud', ok: false, error });
+    const records = logRecords(io.err());
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ severity: 'ERROR', message: 'bootstrap failed', service: 'db-bootstrap', version: '1.0.0', env: 'local', error });
     expect(bootstrap).not.toHaveBeenCalled();
   });
 
@@ -160,13 +217,23 @@ describe('main', () => {
     const io = captureIo();
     const source = { OPT2_ENV: 'cloud', PG_PASSWORD: SAMPLE_PASSWORD };
     expect(await main(['bootstrap', '--target=cloud'], io, source)).toBe(1);
-    expect(onlyJsonLine(io.out())).toEqual({
-      command: 'bootstrap',
-      target: 'cloud',
-      ok: false,
-      error: 'db-bootstrap needs PG_DATABASE, CLOUD_SQL_INSTANCE, GOOGLE_CLOUD_PROJECT, OPT2_CLOUDSQL_ADMIN_PASSWORD',
-    });
+    const error = {
+      type: 'BootstrapEnvError',
+      message: 'db-bootstrap: invalid environment (PG_DATABASE, CLOUD_SQL_INSTANCE, GOOGLE_CLOUD_PROJECT, OPT2_CLOUDSQL_ADMIN_PASSWORD)',
+    };
+    expect(onlyJsonLine(io.out())).toEqual({ command: 'bootstrap', target: 'cloud', ok: false, error });
+    expect(logRecords(io.err())).toMatchObject([{ message: 'bootstrap failed', env: 'local', error }]);
     expect(`${io.out()}${io.err()}`).not.toContain(SAMPLE_PASSWORD);
+    expect(bootstrap).not.toHaveBeenCalled();
+  });
+
+  it('names each badly formatted variable, never its value', async () => {
+    const io = captureIo();
+    expect(await main(['bootstrap', '--target', 'local'], io, { ...localSource(), PG_PORT: SECRET, OPT2_STATE_DIR: `relative/${SECRET}` })).toBe(1);
+    const error = { type: 'EnvValidationError', message: 'db-bootstrap: invalid environment (PG_PORT, OPT2_STATE_DIR)' };
+    expect(onlyJsonLine(io.out())).toEqual({ command: 'bootstrap', target: 'local', ok: false, error });
+    expect(logRecords(io.err())).toMatchObject([{ message: 'bootstrap failed', error }]);
+    expect(`${io.out()}${io.err()}`).not.toContain(SECRET);
     expect(bootstrap).not.toHaveBeenCalled();
   });
 
@@ -201,7 +268,7 @@ describe('main', () => {
       command: 'bootstrap',
       target: 'cloud',
       ok: false,
-      error: 'refusing to apply migrations: schemas already hold tables: identity',
+      error: { type: 'SchemaNotEmptyError', message: '[REDACTED]', schemas: ['identity'] },
     });
     const records = io
       .err()
@@ -219,11 +286,62 @@ describe('main', () => {
     expect(io.err()).not.toContain(SAMPLE_PASSWORD);
   });
 
-  it('reports a thrown non-Error value by its text', async () => {
-    vi.mocked(bootstrap).mockRejectedValueOnce('connection lost');
+  it('reports a thrown non-Error value by its type alone', async () => {
+    vi.mocked(bootstrap).mockRejectedValueOnce(`connection lost: ${SECRET}`);
     const io = captureIo();
     expect(await main(['bootstrap', '--target', 'local'], io, localSource())).toBe(1);
-    expect(onlyJsonLine(io.out())).toEqual({ command: 'bootstrap', target: 'local', ok: false, error: 'connection lost' });
+    expect(onlyJsonLine(io.out())).toEqual({ command: 'bootstrap', target: 'local', ok: false, error: { type: 'string', message: '[REDACTED]' } });
+    expect(`${io.out()}${io.err()}`).not.toContain(SECRET);
+  });
+
+  it.each([
+    {
+      name: 'a connection string',
+      error: new Error(`connect postgres://admin_role:${SECRET}@127.0.0.1:5432/opt2_test failed`, {
+        cause: Object.assign(new Error(`connect ECONNREFUSED ${SECRET}`), { code: 'ECONNREFUSED', syscall: 'connect' }),
+      }),
+      summary: {
+        type: 'Error',
+        message: 'connect ECONNREFUSED',
+        causes: [{ type: 'Error', message: 'connect ECONNREFUSED', code: 'ECONNREFUSED' }],
+      },
+      messages: ['bootstrap failed', 'caused by (code=ECONNREFUSED)'],
+    },
+    {
+      name: 'a password quoted by a failed migration',
+      error: new MigrationFailedError('people', '0002_people.sql', pgError(`syntax error at or near '${SECRET}'`, '42601', '17'), 3),
+      summary: {
+        type: 'MigrationFailedError',
+        message: 'PostgreSQL error 42601',
+        schema: 'people',
+        file: '0002_people.sql',
+        sqlState: '42601',
+        line: 3,
+        position: 17,
+        causes: [{ type: 'Error', message: 'PostgreSQL error 42601', code: '42601' }],
+      },
+      messages: ['bootstrap failed (schema=people)', 'caused by (code=42601)'],
+    },
+    {
+      name: 'a password in a failed statement',
+      error: new BootstrapStatementError(`ALTER ROLE people_app PASSWORD '${SECRET}'`, pgError(`role people_app with password ${SECRET} does not exist`, '42704')),
+      summary: {
+        type: 'BootstrapStatementError',
+        message: 'PostgreSQL error 42704',
+        causes: [{ type: 'Error', message: 'PostgreSQL error 42704', code: '42704' }],
+      },
+      messages: ['bootstrap failed', 'caused by (code=42704)'],
+    },
+  ])('keeps $name out of stdout and stderr, printing its type, identifiers and causes', async ({ error, summary, messages }) => {
+    vi.mocked(bootstrap).mockRejectedValueOnce(error);
+    const io = captureIo();
+    expect(await main(['bootstrap', '--target', 'local'], io, localSource())).toBe(1);
+    expect(onlyJsonLine(io.out())).toEqual({ command: 'bootstrap', target: 'local', ok: false, error: summary });
+    const records = logRecords(io.err());
+    expect(records.map((record) => record.message)).toEqual(messages);
+    expect(records[0]).toMatchObject({ severity: 'ERROR', service: 'db-bootstrap', env: 'local', error: { type: summary.type, message: summary.message } });
+    expect(`${io.out()}${io.err()}`).not.toContain(SECRET);
+    expect(`${io.out()}${io.err()}`).not.toContain(SAMPLE_PASSWORD);
   });
 });
 
@@ -245,8 +363,11 @@ describe('opt2-db as a process', () => {
   ])('exits $status for $args', ({ args, status }) => {
     const child = runCli(CLI_SOURCE, args);
     expect(child.status, child.stderr).toBe(status);
-    if (status === 0) expect(child.stdout).toBe(USAGE);
-    if (status === 1) expect(onlyJsonLine(child.stdout)).toMatchObject({ command: 'bootstrap', target: 'cloud', ok: false });
+    if (status === 0) expect(child.stdout).toBe(HELP);
+    if (status === 1) {
+      expect(onlyJsonLine(child.stdout)).toMatchObject({ command: 'bootstrap', target: 'cloud', ok: false, error: { type: 'EnvValidationError' } });
+      expect(logRecords(child.stderr)).toMatchObject([{ severity: 'ERROR', message: 'bootstrap failed' }]);
+    }
     if (status === 2) expect(child.stderr).toMatch(/^opt2-db: /);
   });
 
@@ -255,7 +376,7 @@ describe('opt2-db as a process', () => {
     await symlink(CLI_SOURCE, link);
     const child = runCli(link, ['--help']);
     expect(child.status, child.stderr).toBe(0);
-    expect(child.stdout).toBe(USAGE);
+    expect(child.stdout).toBe(HELP);
   });
 });
 

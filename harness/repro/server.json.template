@@ -30,7 +30,7 @@
     "args": "@JVM_ARGS@"
   },
   "env": {
-    "MURA_PORT": "8100",
-    "MURA_PROXYPORT": "8100"
+    "MURA_PORT": "@GATEWAY_PORT@",
+    "MURA_PROXYPORT": "@GATEWAY_PORT@"
   }
 }

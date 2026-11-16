@@ -81,6 +81,14 @@ function answerFileReads(db: RecordingDb): void {
   );
 }
 
+/** Asserts one render request signed and stored nothing and points neither its body nor its Location at /opt2/files/. */
+function expectNoSigning(res: InjectResponse, calls: MemoryStorage['calls'], signedUrls: readonly string[]): void {
+  expect(calls.filter(({ op }) => op === 'signedUrl' || op === 'put')).toEqual([]);
+  expect(signedUrls).toEqual([]);
+  expect(res.body).not.toContain('/opt2/files/');
+  expect(String(res.headers.location ?? '')).not.toContain('/opt2/files/');
+}
+
 describe('renderRequestOf', () => {
   const id = IDS.files.pdf;
   const file = (size: string, method = 'inline'): ParsedRenderRequest => ({ matched: true, kind: 'file', fileId: id, method, size });
@@ -103,12 +111,13 @@ describe('render routes over memory storage', () => {
   let t: TestApp;
   let storage: MemoryStorage;
   let db: RecordingDb;
-  const responses: InjectResponse[] = [];
 
-  /** GETs `url`, checks the answer against the contract operation it reaches, and keeps it for the signed-URL sweep. */
+  /** GETs `url`, holds it to {@link expectNoSigning}, and checks the answer against the contract operation it reaches. */
   async function get(url: string, headers: Record<string, string>): Promise<InjectResponse> {
+    const calls = storage.calls.length;
+    const signed = storage.signedUrls.length;
     const res = await t.app.inject({ method: 'GET', url, headers });
-    responses.push(res);
+    expectNoSigning(res, storage.calls.slice(calls), storage.signedUrls.slice(signed));
     assertResponseMatchesOpenApi(OPENAPI, {
       method: 'GET',
       path: (url.split('?')[0] ?? url).replace(/\/$/, ''),
@@ -276,13 +285,20 @@ describe('render routes over memory storage', () => {
     expect(storage.objects.has(missing)).toBe(false);
   });
 
-  it('never signs a URL nor points a body or Location at /opt2/files/ across every render request', () => {
-    expect(responses.length).toBeGreaterThan(0);
-    expect(storage.signedUrls).toEqual([]);
-    expect(storage.calls.filter(({ op }) => op === 'signedUrl' || op === 'put')).toEqual([]);
-    for (const res of responses) {
-      expect(res.body).not.toContain('/opt2/files/');
-      expect(String(res.headers.location ?? '')).not.toContain('/opt2/files/');
-    }
+  it.each<[string, () => string, number]>([
+    ['/_api/render/file/', () => `/_api/render/file/?fileid=${IDS.files.pdf}`, 200],
+    ['method=attachment', () => `/_api/render/file/?fileid=${IDS.files.pdf}&method=attachment`, 200],
+    ['/_api/render/small/', () => `/_api/render/small/?fileid=${PNG}`, 200],
+    ['/_api/render/medium/', () => `/_api/render/medium/?fileid=${PNG}`, 200],
+    ['/tasks/render/file/', () => `/tasks/render/file/?fileid=${IDS.files.pdf}`, 200],
+    ['/tasks/render/medium/', () => `/tasks/render/medium/?fileid=${IDS.files.image}`, 200],
+    ['an unknown UUID', () => `/_api/render/file/?fileid=${UNKNOWN}`, 404],
+    ['a rendition never stored', () => `/_api/render/file/?fileid=${PNG}&size=thumb`, 503],
+  ])('never signs a URL nor points a body or Location at /opt2/files/ for %s', async (_name, url, status) => {
+    const calls = storage.calls.length;
+    const signed = storage.signedUrls.length;
+    const res = await get(url(), await member());
+    expect(res.statusCode).toBe(status);
+    expectNoSigning(res, storage.calls.slice(calls), storage.signedUrls.slice(signed));
   });
 });

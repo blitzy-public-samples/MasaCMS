@@ -408,7 +408,7 @@ async function witnessesDeletedAssertion(pubsub: PubSubLike): Promise<FaultAsser
     await deleteWitnesses(pubsub, leftover);
   } catch (error) {
     if (!(error instanceof WitnessCleanupError)) throw error;
-    return fail(RESUME_WITNESSES_DELETED, { left: error.subscriptions }, error.message);
+    return fail(RESUME_WITNESSES_DELETED, { left: error.subscriptions, error: error.message }, 'witness subscriptions were not deleted');
   }
   return pass(RESUME_WITNESSES_DELETED, { deleted: leftover });
 }

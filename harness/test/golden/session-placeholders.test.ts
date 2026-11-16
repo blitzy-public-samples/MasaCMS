@@ -10,6 +10,7 @@ import {
   SEED_CONFIG_PATH,
   SEED_CREDENTIALS_FILE,
   appReloadKey,
+  configuredAppReloadKey,
   createScenarioContext,
   loadSecretStore,
   loadSeedStore,
@@ -511,10 +512,12 @@ describe('loadSecretStore', () => {
     ['unset', undefined, 'appreload', []],
     ['empty', '', 'appreload', []],
   ])(
-    'resolves appreload with MURA_APPRELOADKEY %s to the effective key, listed only when configured',
+    'resolves appreload with MURA_APPRELOADKEY %s to the effective key, listed once resolved only when configured',
     (_label, configured, key, listed) => {
       const vars = { ...env, MURA_APPRELOADKEY: configured };
       const store = loadSecretStore(vars);
+      expect(store.values()).toEqual([]);
+      expect(configuredAppReloadKey(vars)).toBe(listed[0]);
       expect(appReloadKey(vars)).toBe(key);
       expect(store.secret('appreload')).toBe(key);
       store.secret('admin');
@@ -1030,6 +1033,13 @@ describe('secretValues', () => {
     );
     expect(secretValues(ctx)).toEqual([SITE_ADMIN_PW, ADMIN_PASSWORD, OAUTH_SECRET]);
     expect(secretValues(ctx)).toEqual(ctx.secrets.values());
+  });
+
+  it('leaves out a configured reload key no placeholder resolved', () => {
+    env = { ...env, MURA_APPRELOADKEY: RESERVED_KEY };
+    const ctx = contextFor();
+    resolvePlaceholders({ admin: '${secret:admin}' }, ctx);
+    expect(secretValues(ctx)).toEqual([ADMIN_PASSWORD]);
   });
 
   /** Route key of a GET of `route` under legacy reload parameter `key`. */

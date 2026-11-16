@@ -7,6 +7,7 @@ import {
   CSRF_FIELD_EXPIRES,
   CSRF_FIELD_TOKEN,
   LEGACY_ERROR_MAP,
+  esapiUrlEncode,
   scannedRouteKey,
   type RouteKeyOptions,
   type ScannedRouteKeyRequest,
@@ -212,6 +213,40 @@ export function redact<T>(value: T, secrets: readonly string[]): T {
     return forms.reduce((out, form) => out.replaceAll(form, SECRET_MASK), basic);
   };
   return mapStrings(value, mask) as T;
+}
+
+// A query parameter name follows `?`, `&` or markup's `&amp;`; so does `reload`, FW/1's reload password parameter
+// (admin/Application.cfc:196), whose name ColdFusion's url scope reads in any case.
+const QUERY_NAME_AFTER = '(?<=[?&]|&amp;)';
+const RELOAD_VALUE_AFTER = '(?<=(?:[?&]|&amp;)[Rr][Ee][Ll][Oo][Aa][Dd]=)';
+// A query component ends at the next parameter, a fragment, the end, or a quote, space, tag bracket or escape.
+const COMPONENT_END = String.raw`[&#"'\s<>\\]|$`;
+
+/** `key`, plain or `esapiEncode('url')`d, in each {@link secretForms} form, as a query name or reload value. */
+function reloadKeyPattern(key: string | undefined): RegExp | undefined {
+  if (key === undefined || key === '') return undefined;
+  const forms = [...new Set([key, esapiUrlEncode(key)].flatMap(secretForms))]
+    .filter((form) => form !== '')
+    .sort((a, b) => b.length - a.length)
+    .map((form) => form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
+  const name = `${QUERY_NAME_AFTER}(?:${forms})(?==|${COMPONENT_END})`;
+  return new RegExp(`${name}|${RELOAD_VALUE_AFTER}(?:${forms})(?=${COMPONENT_END})`, 'g');
+}
+
+/**
+ * Copy of `value`, object keys included, with reload key `key` replaced by `<secret>` where it stands as a URL query
+ * parameter name or `reload` value ({@link holdsReloadKey}); other text equal to it is kept. No key, no change.
+ */
+export function redactReloadKey<T>(value: T, key: string | undefined): T {
+  const pattern = reloadKeyPattern(key);
+  if (pattern === undefined) return value;
+  return mapStrings(value, (text) => text.replace(pattern, SECRET_MASK)) as T;
+}
+
+/** Whether `text` holds reload key `key`, in any {@link secretForms} form, as a query name or reload value. */
+export function holdsReloadKey(text: string, key: string | undefined): boolean {
+  return reloadKeyPattern(key)?.test(text) ?? false;
 }
 
 function sha256Hex(bytes: Uint8Array): string {

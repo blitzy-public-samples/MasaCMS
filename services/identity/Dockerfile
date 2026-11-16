@@ -14,6 +14,7 @@ COPY services/identity/package.json services/identity/package-lock.json services
 RUN npm ci
 # Producer contracts `npm run generate` compiles; the two event schemas are also read at run time.
 COPY services/strategies-content/contracts/openapi.yaml /app/services/strategies-content/contracts/
+COPY services/programs-sites/contracts/openapi.yaml /app/services/programs-sites/contracts/
 COPY services/programs-sites/contracts/events/programs-sites.site.changed.v1.json /app/services/programs-sites/contracts/events/
 COPY services/people/contracts/events/people.person.changed.v1.json /app/services/people/contracts/events/
 COPY services/identity/contracts/ ./contracts/

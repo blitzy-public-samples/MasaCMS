@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createLogger } from '@opt2/platform/logging';
 import { routeKeyConflictCases } from '@opt2/platform/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { captureScenario, type CaptureDeps } from '../../src/golden/capture.js';
@@ -80,7 +81,7 @@ function captureDeps(fake: FakeOrigin, env: EnvLike): CaptureDeps {
     sourceSha: 'FIXTURE-SHA',
     env,
     fetch: fake.fetch,
-    log: () => undefined,
+    logger: createLogger({ service: 'test', version: '1', env: 'local', level: 'silent', destination: process.stderr }),
   };
 }
 

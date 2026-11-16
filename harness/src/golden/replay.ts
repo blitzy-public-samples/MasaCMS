@@ -51,6 +51,7 @@ import {
 import { RULES_PATH, loadRules, type NormaliseRules } from './normalise/rules.js';
 import { haltedRosterOperations, recordRosterHalts, rosterHaltId } from './roster-halts.js';
 import {
+  configuredAppReloadKey,
   createScenarioContext,
   loadSecretStore,
   loadSeedStore,
@@ -70,7 +71,15 @@ import {
   type SideEffectDeps,
   type SideEffects,
 } from './side-effects.js';
-import { redact, runScenarioSteps, type FieldValues, type RecordedRequest, type StepRecord, type StepRunOptions } from './steps.js';
+import {
+  redact,
+  redactReloadKey,
+  runScenarioSteps,
+  type FieldValues,
+  type RecordedRequest,
+  type StepRecord,
+  type StepRunOptions,
+} from './steps.js';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
 import { safeDiagnostic } from '../lib/diagnostics.js';
 import { createHttpSession, type FetchLike, type HttpResult } from '../lib/http.js';
@@ -767,7 +776,7 @@ async function saveSessions(
     completed: false,
     jars,
     bindings: [...ctx.bindings].filter(([key]) => !key.startsWith('matrix.')),
-    records: redact([...records], secretValues(ctx)),
+    records: redactReloadKey(redact([...records], secretValues(ctx)), configuredAppReloadKey(ctx.env)),
   };
   const file = sessionStatePath(ctx.scenarioId, ctx.env);
   await writePrivateJson(file, state);
@@ -934,14 +943,16 @@ async function replayRun(
   }
 
   const secrets = secretValues(ctx);
+  const reloadKey = configuredAppReloadKey(env);
+  const scrub = <T>(value: T): T => redactReloadKey(redact(value, secrets), reloadKey);
   const builder = createGoldenStepBuilder(scenario, deps.rules);
   const steps: GoldenStep[] = [];
-  for (const [index, record] of redact(records, secrets).entries()) {
+  for (const [index, record] of scrub(records).entries()) {
     const exceptionId = record.exceptionId ?? ids.get(index);
     steps.push(await builder.step(exceptionId === undefined ? record : { ...record, exceptionId }));
   }
-  const sideEffects = await builder.sideEffects(redact(effects, secrets), steps);
-  const body = redact<OutputBody>({ steps, sideEffects, halted, ...(error === undefined ? {} : { error }) }, secrets);
+  const sideEffects = await builder.sideEffects(scrub(effects), steps);
+  const body = scrub<OutputBody>({ steps, sideEffects, halted, ...(error === undefined ? {} : { error }) });
   const result = await io.write(error === undefined ? 'replayed' : 'error', body);
   if (range.state !== undefined) {
     await writePrivateJson(sessionStatePath(scenario.id, env), { ...range.state, completed: true });

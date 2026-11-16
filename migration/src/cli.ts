@@ -4,12 +4,17 @@ import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseArgs, type ParseArgsOptionsConfig } from 'node:util';
 
+import type { Logger } from '@opt2/platform/logging';
 import { shutdownTracing, startTracing } from '@opt2/platform/tracing';
 
+import { logFailure, safeFailure, scrub, stderrLogger, withSafeErrors, writeLine } from './cli-diagnostics.js';
 import type { MigrationContext } from './context.js';
+import { MIGRATION_ENVIRONMENT_HELP } from './env-help.js';
 import type { SnapshotKind } from './snapshot/index.js';
 
 type WindowsModule = typeof import('./windows/index.js');
+// The logging barrel loads Fastify, so it is imported only once tracing has started or failed, or when tracing never starts.
+type LoggingModule = typeof import('@opt2/platform/logging');
 
 /** The writers' keyScope values, or the whole table, as `windowOpen` takes them. */
 export type WindowScope = NonNullable<Parameters<WindowsModule['openWindowViaService']>[1]['scope']>;
@@ -65,6 +70,8 @@ const TRACING = { serviceName: 'migration', version: '1.0.0' } as const;
 
 // The migration config has no transition poll interval, so the CLI keeps its own default; `--poll-ms` overrides it.
 export const DEFAULT_TRANSITION_POLL_MS = 1_000;
+// Largest delay Node timers honour; a longer one fires after 1 ms.
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 // Snapshot kinds as the migration.snapshot CHECK constraint allows them; `satisfies` fails the build if they drift from
 // SnapshotKind. Listed here because parsing runs before tracing starts, when snapshot/ must not be loaded yet.
@@ -81,12 +88,6 @@ const SNAPSHOT_KINDS = Object.keys(SNAPSHOT_KIND_SET) as SnapshotKind[];
 
 // Module errors their modules document as usage errors of this CLI.
 const MODULE_USAGE_ERRORS: ReadonlySet<string> = new Set(['FaultUsageError', 'ReconcileUsageError']);
-
-// Secret values never written to stdout or stderr.
-const SECRET_VARIABLES = ['MURA_DBPASSWORD', 'OPT2_BRIDGE_HMAC_KEY', 'PG_PASSWORD'] as const;
-const REDACTED = '[redacted]';
-// Task URLs carry opt2TaskToken and local push endpoints the push key in their query, so no URL keeps its query or fragment.
-const URL_QUERY = /(\bhttps?:\/\/[^\s?#"'<>]*)[?#][^\s"'<>]*/g;
 
 const VERSION_ID = /^v\d{4}$/;
 const NON_NEGATIVE_INT = /^\d+$/;
@@ -130,10 +131,11 @@ function seqOf(flag: string, value: string): number {
   return seq;
 }
 
-function positiveIntOf(flag: string, value: string): number {
+/** A positive integer no greater than `max`. */
+function positiveIntOf(flag: string, value: string, max: number): number {
   const parsed = Number(value);
-  if (!POSITIVE_INT.test(value) || !Number.isSafeInteger(parsed)) {
-    throw new InvalidArgument(`--${flag} must be a positive integer, got ${JSON.stringify(value)}`);
+  if (!POSITIVE_INT.test(value) || parsed > max) {
+    throw new InvalidArgument(`--${flag} must be a positive integer up to ${String(max)}, got ${JSON.stringify(value)}`);
   }
   return parsed;
 }
@@ -157,11 +159,12 @@ function listOf(flag: string, value: string): string[] {
   return items;
 }
 
+/** `value` parsed as JSON; a syntax error names only the flag, because the parser's message quotes the value. */
 function jsonOf(flag: string, value: string): unknown {
   try {
     return JSON.parse(value) as unknown;
-  } catch (error) {
-    throw new InvalidArgument(`--${flag} is not JSON: ${error instanceof Error ? error.message : String(error)}`);
+  } catch {
+    throw new InvalidArgument(`--${flag} is not valid JSON`);
   }
 }
 
@@ -220,7 +223,11 @@ const SPECS = {
     build: (values) => {
       const pollMs = optional(values, 'poll-ms');
       const to = versionOf(required(values, 'to'));
-      return { kind: 'transition', to, pollMs: pollMs === undefined ? DEFAULT_TRANSITION_POLL_MS : positiveIntOf('poll-ms', pollMs) };
+      return {
+        kind: 'transition',
+        to,
+        pollMs: pollMs === undefined ? DEFAULT_TRANSITION_POLL_MS : positiveIntOf('poll-ms', pollMs, MAX_TIMER_DELAY_MS),
+      };
     },
   },
   reconcile: {
@@ -305,13 +312,24 @@ function usageLine(name: CommandName): string {
   return `${CLI_NAME} ${name}${args === '' ? '' : ` ${args}`}`;
 }
 
-/** Usage text of every command. */
-export const USAGE = [
-  ...COMMAND_NAMES.map(usageLine),
-  `${CLI_NAME} [<command>] --help`,
+const COMMAND_USAGE = [...COMMAND_NAMES.map(usageLine), `${CLI_NAME} [<command>] --help`];
+const SUMMARY_NOTE = 'Each command except serve prints one JSON summary line on stdout.';
+const EXIT_CODES = 'Exit codes: 0 success, 1 failure (an invalid environment included) or reconciliation difference, 2 usage error.';
+const DOCUMENTATION = 'Documentation: migration/README.md, sections "Runtime forms" and "Environment".';
+
+/** Usage text of every command, written after a usage error. */
+export const USAGE = [...COMMAND_USAGE, '', SUMMARY_NOTE, EXIT_CODES, ''].join('\n');
+
+/** Help of the whole CLI, written on `--help`: usage, environment, exit codes, documentation and an example. */
+export const HELP = [
+  ...COMMAND_USAGE,
   '',
-  'Each command except serve prints one JSON summary line on stdout.',
-  'Exit codes: 0 success, 1 failure or reconciliation difference, 2 usage error.',
+  'Serves the migration service, or runs one orchestration command against the legacy database, schema migration',
+  `and the services. ${SUMMARY_NOTE}`,
+  `${MIGRATION_ENVIRONMENT_HELP}${EXIT_CODES}`,
+  DOCUMENTATION,
+  'Example, from the repository root with the variables above exported:',
+  '  node migration/dist/cli.js scheduler status',
   '',
 ].join('\n');
 
@@ -320,6 +338,14 @@ export function usageFor(topic: string | null): string {
   if (topic === null) return USAGE;
   const names = COMMAND_NAMES.filter((name) => name === topic || name.startsWith(`${topic} `));
   return names.length === 0 ? USAGE : `${names.map(usageLine).join('\n')}\n`;
+}
+
+/** Help of `topic`: its usage with the environment pointer, exit codes and documentation; `HELP` for `null` or an unknown topic. */
+export function helpFor(topic: string | null): string {
+  const usage = usageFor(topic);
+  if (usage === USAGE) return HELP;
+  const environment = `Environment: the variables ${CLI_NAME} --help lists, read before the command connects.`;
+  return [usage, environment, EXIT_CODES, DOCUMENTATION, ''].join('\n');
 }
 
 function isCommandName(value: string): value is CommandName {
@@ -385,11 +411,13 @@ export async function main(
     command = parseCommand(argv);
   } catch (error) {
     if (!(error instanceof MigrateUsageError)) throw error;
-    io.stderr.write(`${CLI_NAME}: ${error.message}\n${error.usage}`);
+    // No tracing starts after a usage error, so loading the logging barrel here leaves nothing uninstrumented.
+    const logging = await import('@opt2/platform/logging');
+    io.stderr.write(`${CLI_NAME}: ${scrub(logging, error.message)}\n${error.usage}`);
     return 2;
   }
   if (command.kind === 'help') {
-    io.stdout.write(usageFor(command.topic));
+    io.stdout.write(helpFor(command.topic));
     return 0;
   }
   return command.kind === 'serve' ? serve(io) : execute(command, io);
@@ -404,7 +432,9 @@ async function serve(io: MigrateIo): Promise<number> {
     await startServer();
     return 0;
   } catch (error) {
-    writeFailure(io, 'serve', error);
+    // stdout, as the service's own log lines; serve prints no summary line.
+    const { logStartupFailure } = await import('@opt2/platform/logging');
+    await logStartupFailure(error, { service: TRACING.serviceName, version: TRACING.version, destination: io.stdout });
     await stopTracing(io);
     return exitCodeOf(error);
   }
@@ -426,26 +456,28 @@ async function execute(command: ContextCommand, io: MigrateIo): Promise<number> 
   } catch (error) {
     outcome = { ok: false, error };
   }
+  // Tracing has started or failed by now.
+  const logging = await import('@opt2/platform/logging');
 
   try {
     await ctx?.close();
   } catch (error) {
     // A close failure becomes the outcome only when the command succeeded; otherwise the command's error is reported.
     if (outcome.ok) outcome = { ok: false, error };
-    else writeStack(io, error);
+    else logFailure(logging, diagnosticLogger(logging, io), `${CLI_NAME} ${command.kind}: closing the context failed`, error);
   }
 
   let code: number;
   if (outcome.ok) {
     code = outcome.code;
-    const line: Record<string, unknown> = { command: command.kind, ok: code === 0, ...outcome.result };
+    const line: Record<string, unknown> = withSafeErrors(logging, { command: command.kind, ok: code === 0, ...outcome.result });
     // Reassigned, so a result field of the same name can neither replace them nor move them from the front.
     line.command = command.kind;
     line.ok = code === 0;
-    writeLine(io, line);
+    writeLine(logging, io, line);
   } else {
     code = exitCodeOf(outcome.error);
-    writeFailure(io, command.kind, outcome.error);
+    writeFailure(logging, io, command.kind, outcome.error);
   }
   await stopTracing(io);
   return code;
@@ -496,10 +528,12 @@ async function dispatch(command: ContextCommand, ctx: MigrationContext): Promise
       const input = { units: command.units, routeKey: command.routeKey, scope: command.scope };
       return completed(await (await import('./windows/index.js')).openWindowViaService(ctx, input));
     }
-    case 'window complete':
-      return completed(
-        await (await import('./windows/index.js')).completeWindowViaService(ctx, command.windowId, { forwarded: command.forwarded }),
-      );
+    case 'window complete': {
+      const { completeWindowViaService } = await import('./windows/index.js');
+      const completion = await completeWindowViaService(ctx, command.windowId, { forwarded: command.forwarded });
+      // `unknown` answers an id that names no window.
+      return { result: completion, code: completion.state === 'unknown' ? 1 : 0 };
+    }
     case 'scheduler import':
       return completed(await (await import('./scheduler/index.js')).importSchedulerState(ctx, command.file));
     case 'scheduler status':
@@ -516,48 +550,29 @@ function exitCodeOf(error: unknown): 1 | 2 {
   return error instanceof Error && MODULE_USAGE_ERRORS.has(error.name) ? 2 : 1;
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/** The stderr logger of CLI diagnostics: service OPT2_SERVICE_NAME or `migration`, env `cloud` only with a usable project. */
+function diagnosticLogger(logging: LoggingModule, io: MigrateIo): Logger {
+  const { OPT2_ENV, OPT2_SERVICE_NAME, GOOGLE_CLOUD_PROJECT } = process.env;
+  const service = OPT2_SERVICE_NAME || TRACING.serviceName;
+  return stderrLogger(logging, io, { service, version: TRACING.version, env: OPT2_ENV, googleCloudProject: GOOGLE_CLOUD_PROJECT });
 }
 
-/** `text` with every secret value replaced and every URL query or fragment removed. */
-function redact(text: string): string {
-  let out = text;
-  for (const name of SECRET_VARIABLES) {
-    const secret = process.env[name];
-    if (secret !== undefined && secret !== '') out = out.split(secret).join(REDACTED);
-  }
-  return out.replace(URL_QUERY, '$1');
+/** Logs `error` and its causes to stderr and writes `{command, ok: false, error: {type, message, ...identifiers, causes?}}` to stdout. */
+function writeFailure(logging: LoggingModule, io: MigrateIo, command: ContextCommand['kind'], error: unknown): void {
+  logFailure(logging, diagnosticLogger(logging, io), `${CLI_NAME} ${command} failed`, error);
+  const summary = safeFailure(logging, error);
+  // A module usage error states only fixed phrases, configured names and the operator's own names and parameter keys, so its text stays readable.
+  if (exitCodeOf(error) === 2 && error instanceof Error) summary.message = error.message;
+  writeLine(logging, io, { command, ok: false, error: summary });
 }
 
-/** Writes `value` as one JSON line on stdout, every string redacted and every bigint as its decimal string. */
-function writeLine(io: MigrateIo, value: object): void {
-  const json = JSON.stringify(value, (_key, item: unknown) => {
-    if (typeof item === 'string') return redact(item);
-    return typeof item === 'bigint' ? item.toString() : item;
-  });
-  io.stdout.write(`${json}\n`);
-}
-
-/** Writes the stack of `error`, redacted, to stderr. */
-function writeStack(io: MigrateIo, error: unknown): void {
-  const text = error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error);
-  io.stderr.write(`${redact(text)}\n`);
-}
-
-/** Writes the stack to stderr and `{command, ok: false, error: {type, message}}` to stdout. */
-function writeFailure(io: MigrateIo, command: CommandName, error: unknown): void {
-  writeStack(io, error);
-  const type = error instanceof Error ? error.name : typeof error;
-  writeLine(io, { command, ok: false, error: { type, message: messageOf(error) } });
-}
-
-/** Flushes and stops tracing; a failed final export is noted on stderr and leaves the exit code unchanged. */
+/** Flushes and stops tracing; a failed final export is logged on stderr and leaves the exit code unchanged. */
 async function stopTracing(io: MigrateIo): Promise<void> {
   try {
     await shutdownTracing();
   } catch (error) {
-    io.stderr.write(`${CLI_NAME}: exporting traces failed: ${redact(messageOf(error))}\n`);
+    const logging = await import('@opt2/platform/logging');
+    diagnosticLogger(logging, io).warn({ error: logging.serializeError(error) }, `${CLI_NAME}: exporting traces failed`);
   }
 }
 

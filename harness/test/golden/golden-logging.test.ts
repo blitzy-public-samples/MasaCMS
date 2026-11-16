@@ -4,10 +4,13 @@ import path from 'node:path';
 import { Writable } from 'node:stream';
 import { REDACTED, createLogger, validateLogRecord, type Logger } from '@opt2/platform/logging';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { GoldenSet, GoldenStep } from '../../src/golden/capture.js';
+import { captureScenario, main as captureMain, type CaptureDeps, type GoldenSet, type GoldenStep } from '../../src/golden/capture.js';
 import { FIXTURES_UNAVAILABLE, scenarioSchema, type Scenario } from '../../src/golden/catalogue.js';
 import { RULES_PATH, loadRules } from '../../src/golden/normalise/rules.js';
 import { replayOutputPath, replayScenario, sessionStatePath, type ReplayDeps } from '../../src/golden/replay.js';
+import type { SecretStore } from '../../src/golden/session.js';
+import { GAP_REASON } from '../../src/golden/steps.js';
+import { runCli } from '../../src/lib/cli.js';
 import type { FetchLike } from '../../src/lib/http.js';
 import { pinnedSha } from '../../src/lib/pin.js';
 
@@ -219,6 +222,122 @@ describe('replayScenario logging', () => {
     const written = stderr.mock.calls.map(([chunk]) => String(chunk));
     expect(records(written)).toEqual([
       expect.objectContaining({ severity: 'INFO', message: BROWSER_MESSAGE, service: 'harness-golden-replay', env: 'local' }),
+    ]);
+  });
+});
+
+describe('capture logging', () => {
+  const LEGACY_PORT = '18580';
+  const CAPTURE_BROWSER_MESSAGE = 'GS-ID-02: browser flow admin-login, captured by harness/e2e/ui/interactions.e2e.ts';
+  const CAPTURED_MESSAGE = 'GS-CO-15: captured 1 exchanges';
+  const AVAILABLE = { available: true, reason: null };
+  const GAP_ROUTE = '/_api/json/v1/tenant-a/content/?pageIndex=gs';
+  const GAP = { steps: [{ name: 'read', route: GAP_ROUTE, expected: 'gap', candidates: [{ method: 'GET', route: GAP_ROUTE }] }] };
+  // Assembled at run time so secret scanning does not read them as credentials.
+  const RESOLVED = ['resolved', 'store', 'value'].join('-');
+  const PASSWORD = ['leaked', 'pass', 'word'].join('-');
+  const BEARER = ['leaked', 'bearer', 'value'].join('.');
+  const FAILURE = `clock refused ${RESOLVED} with ${SECRET}, password=${PASSWORD} and Bearer ${BEARER}`;
+  const SAFE_FAILURE = `clock refused <secret> with ${REDACTED}, password=${REDACTED} and Bearer ${REDACTED}`;
+
+  let root: string;
+  let env: Record<string, string>;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'golden-capture-logging-'));
+    env = { OPT2_STATE_DIR: path.join(root, 'state'), PORT: LEGACY_PORT, MAILPIT_API_URL: MAILPIT, MURA_ADMIN_PASSWORD: SECRET };
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /** Legacy answering every request with an empty 200, plus an empty Mailpit. */
+  const fetch: FetchLike = async (input, init) => {
+    if (new URL(input).origin === MAILPIT) return Response.json(init.method === 'DELETE' ? {} : { total: 0, messages: [] });
+    return new Response('', { status: 200 });
+  };
+
+  function deps(over: Partial<CaptureDeps> = {}): CaptureDeps {
+    return { rules: loadRules(RULES_PATH, env), fixtures: AVAILABLE, sourceSha: pinnedSha(), env, fetch, ...over };
+  }
+
+  it.each<[string, Record<string, unknown>, CaptureDeps['fixtures'], Record<string, unknown>[]]>([
+    [
+      'a fixture-dependent scenario without fixtures as one INFO line',
+      { fixtures: 'required' },
+      { available: false, reason: 'no CREATE SCHEMA' },
+      [{ severity: 'INFO', message: `GS-CO-15: ${FIXTURES_UNAVAILABLE}` }],
+    ],
+    ['a browser scenario as one INFO line', BROWSER, AVAILABLE, [{ severity: 'INFO', message: CAPTURE_BROWSER_MESSAGE }]],
+    ['a captured scenario as one INFO line', {}, AVAILABLE, [{ severity: 'INFO', message: CAPTURED_MESSAGE }]],
+    [
+      'a recorded gap as a WARNING line before the INFO outcome',
+      GAP,
+      AVAILABLE,
+      [
+        { severity: 'WARNING', message: `GS-CO-15 step read: ${GAP_REASON}; recorded EX-GAP-GS-CO-15-READ` },
+        { severity: 'INFO', message: CAPTURED_MESSAGE },
+      ],
+    ],
+  ])('logs %s', async (_label, over, fixtures, expected) => {
+    const exceptionsPath = path.join(root, 'exceptions-list.json');
+    await writeFile(exceptionsPath, JSON.stringify({ sourceSha: pinnedSha(), entries: [] }), 'utf8');
+    const { logger, lines } = collectingLogger();
+
+    await captureScenario(scenario(over), deps({ fixtures, logger, exceptions: { path: exceptionsPath } }));
+
+    expect(records(lines)).toEqual(expected.map((line) => expect.objectContaining(line)));
+  });
+
+  it.each<[string, unknown, string, Record<string, unknown>]>([
+    ['an Error', new Error(FAILURE), `Error: ${SAFE_FAILURE}`, { type: 'Error', message: REDACTED, stack: expect.any(String) }],
+    ['a thrown string', FAILURE, SAFE_FAILURE, { type: 'string', message: REDACTED }],
+  ])('logs a failed capture of %s as one ERROR line with secrets masked and keeps the summary line', async (_label, thrown, error, logged) => {
+    const catalogue = path.join(root, 'catalogue.json');
+    await writeFile(catalogue, JSON.stringify({ sourceSha: pinnedSha(), scenarios: [scenario()] }), 'utf8');
+    const secrets: SecretStore = { secret: () => RESOLVED, username: () => 'admin', values: () => [RESOLVED] };
+    const clock = (): Date => {
+      throw thrown;
+    };
+    const { logger, lines } = collectingLogger();
+    const stdout: string[] = [];
+
+    const code = await runCli((argv) => captureMain(argv, env, { fetch, secrets, clock, logger }), {
+      argv: ['--only', 'GS-CO-15', '--catalogue', catalogue],
+      stdout: { write: (chunk: string) => stdout.push(chunk) },
+      exit: () => undefined,
+      command: 'golden:capture',
+    });
+
+    expect(code).toBe(1);
+    expect(stdout).toHaveLength(1);
+    expect(JSON.parse(stdout[0] as string)).toStrictEqual({
+      command: 'golden:capture',
+      ok: false,
+      code: 1,
+      captured: 0,
+      skipped: 0,
+      browser: 0,
+      gaps: [],
+      failed: [{ id: 'GS-CO-15', error }],
+    });
+    expect(records(lines)).toEqual([
+      expect.objectContaining({ severity: 'ERROR', message: 'GS-CO-15: capture failed', error: logged }),
+    ]);
+    const written = [...lines, ...stdout].join('');
+    for (const value of [RESOLVED, SECRET, PASSWORD, BEARER]) expect(written).not.toContain(value);
+  });
+
+  it('defaults to the harness-golden-capture logger on stderr', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await captureScenario(scenario(BROWSER), deps());
+
+    const written = stderr.mock.calls.map(([chunk]) => String(chunk));
+    expect(records(written)).toEqual([
+      expect.objectContaining({ severity: 'INFO', message: CAPTURE_BROWSER_MESSAGE, service: 'harness-golden-capture', env: 'local' }),
     ]);
   });
 });

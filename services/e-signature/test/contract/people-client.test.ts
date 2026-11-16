@@ -1,8 +1,8 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Consumer contract of e-signature on people: the pool-user read the people client sends, and its reading of each answer, against people's contract. */
 import { readFileSync } from 'node:fs';
-import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { AuthDenial, renderAuthDenial, serviceRole } from '@opt2/platform/auth';
 import {
   LegacyServiceUnavailableError,
@@ -30,8 +30,8 @@ import {
 import { PEOPLE_SERVICE, PeopleReadDeniedError, createPeopleClient, type PersonSummary } from '../../src/legacy/people-client.js';
 import { OTHER_USER_ID, SIGNER_USER_ID } from '../helpers/tokens.js';
 
-const peopleDoc = load(readFileSync(new URL('../../../people/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
-const ownDoc = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as { 'x-opt2-calls'?: unknown };
+const peopleDoc = parse(readFileSync(new URL('../../../people/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const ownDoc = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as { 'x-opt2-calls'?: unknown };
 
 const SITE_ID = 'tenant-a';
 const READ_PATH = '/internal/v1/users/pool-user';

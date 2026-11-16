@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { crc32, inflateSync } from 'node:zlib';
-import { routeKeyForRequest, type RouteKeyRequest } from '@opt2/platform/legacy-compat';
+import { esapiUrlEncode, routeKeyForRequest, type RouteKeyRequest } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   loadCatalogue,
@@ -21,7 +21,9 @@ import {
   SETTLE_TIMEOUT_MS,
   bodyRepresentation,
   fixtureBytes,
+  holdsReloadKey,
   redact,
+  redactReloadKey,
   runScenarioSteps,
   runStep,
   type CandidateChoice,
@@ -254,6 +256,72 @@ describe('redact', () => {
   it.each([{ secrets: [] }, { secrets: [''] }])('returns the value itself for secrets $secrets', ({ secrets }) => {
     const value = { text: 'FIXTURE' };
     expect(redact(value, secrets)).toBe(value);
+  });
+});
+
+describe('redactReloadKey and holdsReloadKey', () => {
+  const key = RELOAD_KEY;
+
+  it.each([
+    { context: 'a bare parameter before &', text: `/admin/?${key}&reload=x`, masked: `/admin/?${MASK}&reload=x` },
+    { context: 'a bare parameter before &amp;', text: `href="/a/?${key}&amp;b=1"`, masked: `href="/a/?${MASK}&amp;b=1"` },
+    { context: 'a bare parameter after &amp;', text: `/a/?b=1&amp;${key}"`, masked: `/a/?b=1&amp;${MASK}"` },
+    { context: 'a bare parameter at the end', text: `/?${key}`, masked: `/?${MASK}` },
+    { context: 'a bare parameter before #', text: `/?a=1&${key}#top`, masked: `/?a=1&${MASK}#top` },
+    { context: 'a bare parameter before =', text: `/?${key}=true`, masked: `/?${MASK}=true` },
+    { context: 'a bare parameter before a space', text: `GET /?${key} HTTP/1.1`, masked: `GET /?${MASK} HTTP/1.1` },
+    { context: 'a bare parameter before <', text: `<p>/?${key}</p>`, masked: `<p>/?${MASK}</p>` },
+    { context: 'a bare parameter before \\', text: `"\\/?${key}\\"`, masked: `"\\/?${MASK}\\"` },
+    { context: 'the reload value', text: `/admin/?x&reload=${key}`, masked: `/admin/?x&reload=${MASK}` },
+    { context: 'the RELOAD value', text: `/admin/?RELOAD=${key}#f`, masked: `/admin/?RELOAD=${MASK}#f` },
+    {
+      context: 'the admin reload link',
+      text: `<a href="/admin/?${key}&amp;reload=${key}">`,
+      masked: `<a href="/admin/?${MASK}&amp;reload=${MASK}">`,
+    },
+  ])('masks the key as $context', ({ text, masked }) => {
+    expect(redactReloadKey(text, key)).toBe(masked);
+    expect(holdsReloadKey(text, key)).toBe(true);
+    expect(holdsReloadKey(masked, key)).toBe(false);
+  });
+
+  it.each([
+    { context: 'a title', text: `<title>${key}</title>` },
+    { context: 'a path segment', text: `/${key}/?muraAction=cUsers.list&ispublic=0` },
+    { context: 'a JSON value', text: JSON.stringify({ title: key }) },
+    { context: 'a JSON key', text: JSON.stringify({ [key]: 1 }) },
+    { context: 'the value of another parameter', text: `/?muraAction=${key}&x=${key}` },
+    { context: 'part of a longer parameter', text: `/?${key}x&x${key}&reload=${key}x` },
+    { context: 'plain text', text: `${key} and &${key};` },
+  ])('keeps the key in $context', ({ text }) => {
+    expect(redactReloadKey(text, key)).toBe(text);
+    expect(holdsReloadKey(text, key)).toBe(false);
+  });
+
+  const reserved = `FIXTURE reload/"ü`;
+  it.each([
+    { form: 'plain', text: reserved },
+    { form: 'URI component', text: 'FIXTURE%20reload%2F%22%C3%BC' },
+    { form: 'form-encoded', text: 'FIXTURE+reload%2F%22%C3%BC' },
+    { form: 'URL query', text: 'FIXTURE%20reload/%22%C3%BC' },
+    { form: 'esapiEncode url', text: esapiUrlEncode(reserved) },
+    { form: 'JSON-escaped', text: 'FIXTURE reload/\\"ü' },
+    { form: 'JSON-escaped with escaped slashes', text: 'FIXTURE reload\\/\\"ü' },
+  ])('masks the $form form of the key as the bare parameter and the reload value', ({ text }) => {
+    const link = `/admin/?${text}&amp;reload=${text}`;
+    expect(redactReloadKey(link, reserved)).toBe(`/admin/?${MASK}&amp;reload=${MASK}`);
+    expect(holdsReloadKey(link, reserved)).toBe(true);
+  });
+
+  it('masks object keys and nested strings, keeping other text equal to the key', () => {
+    const value = { [`/?${key}`]: [`/admin/?reload=${key}`, 7, null, { title: key }] };
+    expect(redactReloadKey(value, key)).toStrictEqual({ [`/?${MASK}`]: [`/admin/?reload=${MASK}`, 7, null, { title: key }] });
+  });
+
+  it.each([{ configured: undefined }, { configured: '' }])('changes nothing for key $configured', ({ configured }) => {
+    const value = { href: '/admin/?appreload&reload=appreload' };
+    expect(redactReloadKey(value, configured)).toBe(value);
+    expect(holdsReloadKey(value.href, configured)).toBe(false);
   });
 });
 

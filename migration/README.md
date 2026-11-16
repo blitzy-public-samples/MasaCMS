@@ -17,7 +17,7 @@ The migration package moves data between the legacy Masa SQL Server database and
 
 ### `opt2-migrate` (`src/cli.ts`)
 
-Run as `node migration/dist/cli.js <command>` or through the `opt2-migrate` bin. Every command except `serve` prints one JSON summary line on stdout. Exit codes: 0 success, 1 failure or reconciliation difference, 2 usage error. `MURA_DBPASSWORD`, `OPT2_BRIDGE_HMAC_KEY`, `PG_PASSWORD` and URL queries are redacted from all output. `<command> --help` prints that command's usage.
+Run as `node migration/dist/cli.js <command>` or through the `opt2-migrate` bin. Every command except `serve` prints one JSON summary line on stdout. Exit codes: 0 success, 1 failure or reconciliation difference, 2 usage error. `MURA_DBPASSWORD`, `OPT2_BRIDGE_HMAC_KEY`, `PG_PASSWORD`, URL queries and userinfo, credentials and email addresses are redacted from all output. A malformed `--params` or `--scope` is reported as not valid JSON, never echoed. A failed command prints `{"command","ok":false,"error":{"type","message",…,"causes"}}` and nothing else of the error: its class; the safe message of `@opt2/platform/logging` (`[REDACTED]` unless it is a fixed text such as `read ECONNRESET` or a SQLSTATE; a `FaultUsageError` or `ReconcileUsageError` keeps its own text); the identifier-shaped properties `code`, `number`, `status`, `database`, `table`, `unit`, `owner`, `operation`, `op`, `method`, `step` and `schema`; and up to eight causes (`cause`, or node-mssql's `originalError`), each with its class, safe message and identifiers. A returned result, an aborted transition or failed fault included, keeps its fields but carries error payloads only as safe metadata: every `error`, key ending in `Error`, `failedAfterRestart` and `stderrTail`, at any depth, is reduced to the safe message of its text, or of an object's `message` beside that object's number, boolean and identifier fields. stderr carries `log-record.v1` lines, the failure and then one `caused by` line per cause, each with the error's class, safe message and stack frames and its identifiers in the message. `serve` prints no summary line: a start-up failure is one `log-record.v1` `start-up failed` line on stdout. `<command> --help` prints that command's usage.
 
 | Command | Does |
 |---|---|
@@ -28,7 +28,7 @@ Run as `node migration/dist/cli.js <command>` or through the `opt2-migrate` bin.
 | `snapshot drop --seq <n>` | Drops snapshot `n`'s database, backup and manifest rows; the `migration.snapshot` row stays |
 | `backfill --snapshot <n>` | Loads snapshot `n` into the owners in dependency order, transfers its files, reconciles `after-backfill` |
 | `feed [--snapshot <n>]` | Takes a feed snapshot (or resumes on `n`), applies each table's changes since its watermark, reconciles `after-feed-<n>` |
-| `transition --to <vNNNN> [--poll-ms <ms>]` | Asks the service for the transition to a cut-over version and waits; exit 1 unless it completes |
+| `transition --to <vNNNN> [--poll-ms <ms>]` | Asks the service for the transition to a cut-over version and waits, reading it every `--poll-ms` (1–2147483647, default 1000); exit 1 unless it completes |
 | `reconcile --point <name> [--units <unit,...>]` | Reconciles at a named point and writes its report |
 | `rollback-set` | Computes the people-roster group set `R` and checks it against `v0003` |
 | `rollback rebaseline` | Restarts the forward feed for `R`'s units from a fresh `rebaseline` snapshot |
@@ -36,7 +36,7 @@ Run as `node migration/dist/cli.js <command>` or through the `opt2-migrate` bin.
 | `fault <name> [--params <json>]` | Runs one scripted fault end to end: fault, resume, reconcile |
 | `resolve-window <windowId>` | Imports and closes an `import-pending` window after operator review |
 | `window open --units <unit,...> [--route <key>] [--scope <table\|json>]` | Opens a write window as `platform.operator` |
-| `window complete <windowId> [--forwarded]` | Reports the legacy outcome of an operator window and closes it |
+| `window complete <windowId> [--forwarded]` | Reports the legacy outcome of an operator window and closes it; exit 1 for an id that names no window (`state` `unknown`) |
 | `scheduler import --file <path>` | Loads the captured native tasks and `ping` (`${OPT2_PRISTINE_DIR}/native-tasks.json`) into `migration.scheduler_state` |
 | `scheduler status` | Prints the stored scheduler state beside the live ColdFusion tasks |
 | `files manifest --snapshot <n>` | Lists the legacy file store through the bridge into `migration.file_manifest` |
@@ -54,7 +54,7 @@ Run as `node migration/dist/cli.js <command>` or through the `opt2-migrate` bin.
 | `opt2-ops resume` | Undoes `drain-and-suspend` from its record and runs the recurring-task reconcile |
 | `opt2-ops seek-subscriptions --to <ISO-8601 time>` | Seeks every OPT-2 consumer subscription to the checkpoint time and verifies none holds a message |
 
-Both print one JSON summary line; exit 0, 1 or 2 as above (`opt2-db` also exits 1 on a role-assertion finding).
+Both print one JSON summary line; exit 0, 1 or 2 as above (`opt2-db` also exits 1 on a role-assertion finding). A usage error prints its message and the usage on stderr. A failure prints `{"command",…,"ok":false,"error":{"type","message",…,"causes"}}` (`opt2-db` adds `"target"`), redacted and built as for `opt2-migrate`: the class, the safe message of `@opt2/platform/logging`, the identifier-shaped properties and up to eight causes, never the raw message or stack. `opt2-ops` adds its failure's fields `timeoutMs`, `owners`, `queues`, `rows`, `nonEmpty`, `subscriptions`, `failed`, `operation`, `status` and `owner`, each nested `error` text reduced to its safe message. `opt2-db` adds a failed migration's `file`, `sqlState`, `line` and `position`, and the `schemas` a cloud bootstrap refused. stderr carries `log-record.v1` lines, the failure and then one `caused by` line per cause, as service `OPT2_SERVICE_NAME` or `opt2-ops` for `opt2-ops` and as `db-bootstrap` for `opt2-db`. A failed final trace export of `opt2-ops` is a `WARNING` line.
 
 ### Service (`src/server.ts`)
 
@@ -236,7 +236,7 @@ State files (snapshot backups, manifests, tars, the rebaseline record) go to `${
 
 ## Environment
 
-`@opt2/platform/service-kit` `baseEnvSchema` (see [`platform/README.md`](../platform/README.md#configuration)) plus:
+Read by the service, `opt2-migrate` and `opt2-ops`, whose `--help` lists every variable with its requiredness or default. `@opt2/platform/service-kit` `baseEnvSchema` (see [`platform/README.md`](../platform/README.md#configuration)) plus:
 
 | Variable | Use |
 |---|---|
@@ -248,11 +248,32 @@ State files (snapshot backups, manifests, tars, the rebaseline record) go to `${
 | `OPT2_BRIDGE_HMAC_KEY` | Bridge assertion key; locally from `${OPT2_STATE_DIR}/secrets/`, in the cloud the secret `legacy-bridge-hmac` |
 | `OPT2_LEGACY_RESTART_CMD` | Controlled ColdFusion restart; locally `harness/repro/lib/legacy-start.sh`, whose no-argument form restarts. Absent in the cloud, so orphaned legacy writes need `opt2-migrate resolve-window <id>` |
 | `OPT2_REPORTS_DIR` | Absolute reports directory; default `<repo>/opt2/reports` |
-| `OPT2_PRISTINE_DIR` | Absolute pristine-baseline directory (`native-tasks.json`) |
+| `OPT2_PRISTINE_DIR` | Absolute pristine-baseline directory (`native-tasks.json`); default `~/.opt2/pristine` |
 
 - With `OPT2_ENV=local`, `GOOGLE_CLOUD_PROJECT` and `PUBSUB_EMULATOR_HOST` are required.
-- The database role is `migration_app`. `opt2-db` reads only its bootstrap variables (`src/db-bootstrap/env.ts`).
+- The service, `opt2-migrate` and `opt2-ops` use schema `migration` as `migration_app`: locally `PG_USER=migration_app` with the password the bootstrap set from `${OPT2_STATE_DIR}/secrets/db-migration-app`, in the cloud (`OPT2_DB_AUTH=iam`) the migration service account's IAM database user, a member of `migration_app`. They never connect as the bootstrap administrator below. `opt2-db` reads only the variables of [Bootstrap environment](#bootstrap-environment).
 - Static settings (batch sizes, waits, start-up predicate, file-store naming, faults, reconciliation points, rollback set, owners) are in [`config/migration.config.json`](config/migration.config.json).
+
+### Bootstrap environment
+
+`opt2-db bootstrap` (`src/db-bootstrap/env.ts`) connects as a database administrator, not as a runtime role. Locally `up.sh` runs it in the caller's environment as the admin `${PG_USER}`. The cloud job `db-bootstrap` logs in as Cloud SQL's built-in `postgres` user, then as its own IAM database user through the Cloud SQL connector (AAP 0.4.6). `opt2-db --help` prints the same list.
+
+| Variable | Type | `--target local` | `--target cloud` | Default |
+|---|---|---|---|---|
+| `OPT2_ENV` | `local` or `cloud` | Required | Required | None |
+| `PG_DATABASE` | String: database name | Required | Required | None |
+| `PG_HOST` | String: host name | Required | Not used | None |
+| `PG_PORT` | Integer: TCP port, 1–65535 | Required | Not used | None |
+| `PG_USER` | String: role name | Required: the administrator role, with `CREATEROLE` and `CREATE` on `PG_DATABASE` | Not used: the IAM user derives from the `db-bootstrap` service account | None |
+| `PG_PASSWORD` | String, secret | Required: password of `PG_USER` | Not used | None |
+| `OPT2_STATE_DIR` | String: absolute path outside the checkout | Read: role passwords from `secrets/db-<schema>-{app,migrator}` | Not used | `~/.opt2/state` |
+| `CLOUD_SQL_INSTANCE` | String: `<project>:<region>:<instance>` | Not used | Required | None |
+| `GOOGLE_CLOUD_PROJECT` | String: project id | Not used | Required: the project of the service accounts and their IAM database users | None |
+| `OPT2_CLOUDSQL_ADMIN_PASSWORD` | String, secret | Not used | Required: password of the built-in `postgres` user | None |
+
+- `OPT2_CLOUDSQL_ADMIN_PASSWORD` is cloud-only and has no default. The `db-bootstrap` job in `infra/terraform/envs/plan/main.tf` takes it from the Secret Manager secret `cloudsql-admin-password` (version `latest`), a container with no version in this run; no file in the repository holds its value.
+- The job also sets `OPT2_DB_AUTH=iam` and `PG_USER`; `opt2-db` uses neither for `--target cloud`.
+- A variable that is set is format-checked whatever the target. A missing required one fails before any connection, with exit 1 and an error naming it: `error.message` is `db-bootstrap: invalid environment (<names>)` for a missing or a badly formatted variable, and never holds a value.
 
 ## Build and test
 

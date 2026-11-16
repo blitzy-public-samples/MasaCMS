@@ -166,7 +166,7 @@ function literalRules(rules: NormaliseRules): NormaliseRules {
   if (literal === undefined) {
     literal = {
       ...rules,
-      ids: { ...rules.ids, pattern: NEVER, rfc4122: { ...rules.ids.rfc4122, pattern: NEVER } },
+      ids: { ...rules.ids, pattern: NEVER, rfc4122: { ...rules.ids.rfc4122, pattern: NEVER }, keyed: [] },
       timestamps: { ...rules.timestamps, classes: [] },
     };
     literalRulesOf.set(rules, literal);

@@ -16,6 +16,7 @@ import { domModel, type DomControl, type DomModelResult } from '../../../src/gol
 import { createIdOrdinals } from '../../../src/golden/normalise/ids.js';
 import {
   applyMasks,
+  maskedTextPlaceholder,
   masksFor,
   pathMasks,
   type Difference,
@@ -363,6 +364,32 @@ describe('date-mask', () => {
       [domPath(controlPath(golden, datepicker, 'value'))]: 'date-mask',
       [domPath(controlPath(golden, named('fname'), 'value'))]: 'difference',
     });
+  });
+});
+
+describe('lifted text residuals', () => {
+  const LIFTED = maskedTextPlaceholder('date-mask');
+  const UPDATED = `Updated ${LIFTED} by admin`;
+  const CELL = domPath('tables[0].rows[0][0]');
+  const lifted = (id: KnownIssueId): Record<string, KnownIssueId> => ({ [domPath('maskedText[0]')]: id });
+  const DATE = lifted('date-mask');
+  const MEMBER = lifted('default-member');
+  const MEMBER_LIFTED = maskedTextPlaceholder('default-member');
+
+  // Golden and replay cell text, each side's masked paths, and the cell's verdict.
+  it.each<[string, string, string, Record<string, KnownIssueId>, Record<string, KnownIssueId>, string]>([
+    ['a lifted date against another date', LIFTED, '<ts:iso-date>', DATE, {}, 'date-mask'],
+    ['a date the replay lifted', '<ts:iso-date>', LIFTED, {}, DATE, 'date-mask'],
+    ['a lifted date between kept words', UPDATED, 'Updated 2026-11-13 by admin', DATE, {}, 'date-mask'],
+    ['one of two lifted dates', `${LIFTED} to ${LIFTED}`, `${LIFTED} to <ts:iso-date>`, DATE, DATE, 'date-mask'],
+    ['another word changed', UPDATED, 'Updated 2026-11-13 by root', DATE, {}, 'difference'],
+    ['a word inserted beside the date', UPDATED, 'Updated 2026-11-13 again by admin', DATE, {}, 'difference'],
+    ['the date dropped', `${LIFTED} Alice`, 'Alice', DATE, {}, 'difference'],
+    ["another mask's placeholder in its place", LIFTED, MEMBER_LIFTED, DATE, MEMBER, 'difference'],
+    ['a placeholder of a mask that lifted nothing on its side', LIFTED, '<ts:iso-date>', {}, DATE, 'difference'],
+  ])('classifies a changed cell with %s', (_label, expected, actual, golden, replay, verdict) => {
+    const result = applyMasks([change(EDIT_STEP, CELL, expected, actual)], stepContext(EDIT_STEP, golden, replay));
+    expect(verdicts(result)).toStrictEqual({ [CELL]: verdict });
   });
 });
 

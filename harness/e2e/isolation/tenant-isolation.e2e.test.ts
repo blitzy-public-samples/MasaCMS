@@ -26,9 +26,7 @@ import { fixtureStatus, gatewayUrl, requireTableVersion } from '../helpers/stack
 const TABLE_VERSION = 'v0002';
 const FIXTURE_ROUTE_PREFIX = '/legacy-fixtures/cfml/api.cfm/';
 
-// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: the matrix logs in every
-// seeded actor and sends each probe through the gateway one at a time, which outlasts the config's 5-minute hook bound.
-/** Longest run of the whole gateway matrix. */
+/** Longest run of the whole gateway matrix: serial logins and probes outlast the config's 5-minute hook bound. */
 const MATRIX_TIMEOUT_MS = 30 * 60_000;
 
 /** Header names that would assert tenant, caller or platform context instead of leaving it to the verified session. */
