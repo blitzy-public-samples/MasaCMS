@@ -26,6 +26,27 @@ export const REPORT_TITLE = 'Legacy TestBox baseline';
 
 const GENERATED_BY = 'harness/src/baseline/compare.ts';
 const USAGE = 'usage: npm run baseline:compare (takes no flags)';
+const HELP = `${USAGE}
+
+Compares the saved diagnostic TestBox run with ${EXPECTED_BASELINE_PATH}, re-running the
+diagnostic runner once when the only differences are timing-sensitive specs, and writes the baseline report.
+
+Options:
+  --help  print this help and exit 0
+
+Environment:
+  OPT2_STATE_DIR    state directory (default: $HOME/.opt2/state); reads <state>/baseline/official.json and
+                    <state>/baseline/diagnostic.json, saved by npm run baseline:run
+  OPT2_REPORTS_DIR  report directory, relative to the repository root (default: opt2/reports); receives
+                    baseline.json and baseline.md, and baseline.json is copied to ${MASA_BASELINE_PATH}
+  LEGACY_ORIGIN     legacy ColdFusion origin of the re-run (default: http://127.0.0.1:\${PORT})
+  PORT              legacy ColdFusion port, used when LEGACY_ORIGIN is unset
+
+Output: one JSON summary line on stdout with the result, the totals and the number of differences.
+Exit: 0 match, 3 timing-variance, 1 mismatch or failure, 2 usage error or a re-run with neither LEGACY_ORIGIN
+nor PORT set.
+
+Example (from harness/): npm run baseline:compare`;
 const RERUN_REASON = 'the first run differed only by timing-sensitive specs that passed under their threshold';
 const NOT_RUN = 'not run';
 
@@ -808,7 +829,7 @@ export async function compareBaseline(deps: CompareDeps = {}): Promise<CompareRe
 
 /** CLI entry: takes no flags; exits 0 on `match`, 3 on `timing-variance`, 1 on `mismatch`. */
 export const main = async (argv: string[], deps: CompareDeps = {}): Promise<CliOutcome> => {
-  parseFlags(argv, { options: {}, usage: USAGE });
+  parseFlags(argv, { options: {}, usage: USAGE, help: HELP });
   const { code: exitCode, summary } = await compareBaseline(deps);
   return { code: exitCode, summary };
 };

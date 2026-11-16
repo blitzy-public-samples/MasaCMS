@@ -76,6 +76,7 @@ fs.linkSync = (...args) => {
 interface Run {
   code: number | null;
   signal: NodeJS.Signals | null;
+  stdout: string;
   stderr: string;
 }
 
@@ -103,6 +104,19 @@ function writeExport(name: string, doc: unknown): string {
   return file;
 }
 
+/** Runs the script with `args`, after the node options `preload`. */
+function runScript(args: string[], preload: string[] = []): Promise<Run> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [...preload, SCRIPT, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
+    child.on('error', reject);
+    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+}
+
 /** Runs `capture` of `exportFile` into the pristine directory, optionally preloading `hook`. */
 function runCapture(exportFile: string, hook?: string): Promise<Run> {
   const preload = hook === undefined ? [] : ['--import', pathToFileURL(hook).href];
@@ -110,13 +124,7 @@ function runCapture(exportFile: string, hook?: string): Promise<Run> {
     ...['capture', '--export', exportFile, '--ping', 'false', '--webroot', WEBROOT],
     ...['--out-native', nativeFile, '--out-cfconfig', copyFile, '--captured-at', CAPTURED_AT],
   ];
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [...preload, SCRIPT, ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
-    let stderr = '';
-    child.stderr.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
-    child.on('error', reject);
-    child.on('close', (code, signal) => resolve({ code, signal, stderr }));
-  });
+  return runScript(args, preload);
 }
 
 /** Runs a capture of `exportFile` killed right after its first publication, leaving the copy without native-tasks.json. */
@@ -190,5 +198,25 @@ describe('cfconfig-tasks.mjs capture', () => {
     expect(JSON.parse(readFileSync(copyFile, 'utf8'))).toEqual(EXPORT);
     expect(JSON.parse(readFileSync(nativeFile, 'utf8'))).toEqual(NATIVE);
     expect(readdirSync(pristine).sort()).toEqual(['native-tasks.cfconfig.json', 'native-tasks.json']);
+  });
+});
+
+describe('cfconfig-tasks.mjs command line', () => {
+  it.each([['--help'], ['-h']])('prints the usage on stdout and exits 0 for %s', async (flag) => {
+    const run = await runScript([flag]);
+
+    expect(run).toMatchObject({ code: 0, stderr: '' });
+    expect(run.stdout).toMatch(/^Usage: node cfconfig-tasks\.mjs <command> \[options\]\n/);
+    expect(run.stdout).toContain('\n  -h, --help\n');
+  });
+
+  it.each([
+    { args: ['bogus'], message: 'unknown command bogus' },
+    { args: ['--help', 'extra'], message: 'unknown command --help' },
+  ])('exits 2 with the usage on stderr for $args', async ({ args, message }) => {
+    const [help, run] = await Promise.all([runScript(['--help']), runScript(args)]);
+
+    expect(run).toMatchObject({ code: 2, stdout: '' });
+    expect(run.stderr).toBe(`cfconfig-tasks: ${message}\n\n${help.stdout}`);
   });
 });

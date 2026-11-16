@@ -1544,6 +1544,29 @@ describe('main', () => {
     expect(existsSync(reportsPath())).toBe(false);
   });
 
+  it('prints the help text naming its environment for --help, exits 0 and neither reads up.json nor sends a request', async () => {
+    const stack = fakeStack();
+    const env = await stageMain(stack, { fixtures: false });
+    const readUp = vi.fn(readUpState);
+    const lines: string[] = [];
+    const exits: number[] = [];
+
+    const cli = runCli((args) => main(args, { ...stack.deps(env), readUpState: readUp }), { ...cliIo(lines, exits), argv: ['--help'] });
+    await expect(cli).resolves.toBe(0);
+
+    const text = lines.join('');
+    expect(exits).toStrictEqual([0]);
+    expect(text.startsWith(`${USAGE}\n`)).toBe(true);
+    for (const name of ['OPT2_STATE_DIR', 'OPT2_REPORTS_DIR', 'LEGACY_ORIGIN', 'OPT2_GATEWAY_URL', 'MURA_ADMIN_PASSWORD', '--help']) {
+      expect(text).toContain(name);
+    }
+    expect(text).not.toMatch(/^\{/m);
+    expect(readUp).not.toHaveBeenCalled();
+    expect(stack.requests).toStrictEqual([]);
+    expect(stack.spawned.size).toBe(0);
+    expect(existsSync(reportsPath('performance.json'))).toBe(false);
+  });
+
   it('falls back to the global fetch, process.kill, the system clock and timers, and up.json in OPT2_STATE_DIR', async () => {
     const stack = fakeStack({ healthFailures: 1 });
     const env = await stageMain(stack, {

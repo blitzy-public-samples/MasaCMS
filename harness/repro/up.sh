@@ -2,24 +2,55 @@
 # Command one of the OPT-2 reproducibility pair: boots legacy Masa and every target process with seed data.
 set -euo pipefail
 
-case ${1:-} in
-  '') ;;
-  -h | --help)
-    cat <<'EOF'
+# Prints the one-line usage to stderr and exits 2.
+usage_error() {
+  printf 'usage: harness/repro/up.sh [-h|--help]\n' >&2
+  exit 2
+}
+
+case $# in
+  0) ;;
+  1)
+    case $1 in
+      -h | --help)
+        cat <<'EOF'
 usage: harness/repro/up.sh
 
 Boots legacy Masa (CommandBox server opt2-legacy) and the OPT-2 target stack, activates cut-over version v0001,
 seeds both sides and records the stack in ${OPT2_STATE_DIR:-$HOME/.opt2/state}/up.json. Takes no arguments; it is
-configured through the environment. harness/repro/down.sh stops the stack and releases the run lock.
+configured through the environment below. harness/repro/down.sh stops the stack and releases the run lock.
+
+Environment (* = secret):
+  required
+    PORT                               legacy ColdFusion port
+    MURA_DBHOST MURA_DBPORT MURA_DATABASE MURA_DBUSERNAME MURA_DBPASSWORD*
+                                       legacy SQL Server database
+    MURA_ADMIN_PASSWORD*               legacy admin password
+    PG_HOST PG_PORT PG_DATABASE PG_USER PG_PASSWORD*
+                                       PostgreSQL database and the admin login that bootstraps its schemas and roles
+    CFCONFIG_ADMINPASSWORD*            ColdFusion Administrator password, passed to the legacy start
+  optional
+    MURA_ADMIN_USERNAME                legacy admin user (default admin)
+    MURA_DBTYPE                        unset or mssql; any other value stops up.sh
+    GOOGLE_CLOUD_PROJECT               Pub/Sub emulator project (default opt2-local)
+    OPT2_STATE_DIR OPT2_PRISTINE_DIR   absolute, outside the checkout (default $HOME/.opt2/state, $HOME/.opt2/pristine)
+    OPT2_TZ                            legacy time zone (default: legacy JVM's -Duser.timezone, else TZ or host zone)
+    OPT2_LEGACY_SERVER_NAME            original CommandBox server (default the one serving this checkout or PORT)
+  OPT2_CF_*, OPT2_MSSQL_*, OPT2_SQLSERVR_CMD, OPT2_PG_START_CMD, OPT2_LEGACY_START_TIMEOUT_S and MAILPIT_API_URL
+  override further defaults; harness/README.md describes every variable. up.sh derives each target process's
+  variables from harness/repro/ports.env.
+
+Example, with the required variables exported:
+  OPT2_STATE_DIR=/srv/opt2/state harness/repro/up.sh
 
 Exit: 0 stack up, 1 failure, 2 usage error.
 EOF
-    exit 0
+        exit 0
+        ;;
+      *) usage_error ;;
+    esac
     ;;
-  *)
-    printf 'usage: harness/repro/up.sh [-h|--help]\n' >&2
-    exit 2
-    ;;
+  *) usage_error ;;
 esac
 
 # shellcheck source=SCRIPTDIR/lib/common.sh

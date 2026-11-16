@@ -19,6 +19,25 @@ step() {
   "${args[@]}" || fail "step '$name' failed"
 }
 
+if (($# == 1)) && [[ $1 == -h || $1 == --help ]]; then
+  cat <<EOF
+usage: infra/terraform/plan.sh [-h|--help]
+
+Plan-only check of infra/terraform/envs/plan, run from infra/terraform/ with no credentials: terraform init
+(no backend), fmt -check, validate, plan (no refresh, no lock) and show -json, whose output is written with the
+Cloud Run minimum instance counts to \$OPT2_REPORTS_DIR/terraform-plan.json.
+
+Requires: terraform $TF_REQUIRED and node on PATH.
+
+Environment:
+  OPT2_STATE_DIR    state directory holding tfplan, the binary plan (default: \$HOME/.opt2/state)
+  OPT2_REPORTS_DIR  report directory, relative to the repository root (default: opt2/reports)
+
+Exit: 0 plan report written, 1 failure or usage error.
+EOF
+  exit 0
+fi
+
 (($# == 0)) || fail "usage: infra/terraform/plan.sh (env: OPT2_STATE_DIR, OPT2_REPORTS_DIR)"
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

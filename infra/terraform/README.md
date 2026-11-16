@@ -50,7 +50,7 @@ Guards in the code: a `check "topology"` block requires `cloud_run_services` to 
 
 ## Running the plan
 
-Requires Terraform 1.17.1 exactly and Node 22 on `PATH`. The script takes no arguments.
+Requires Terraform 1.17.1 exactly and Node 22 on `PATH`. The script takes no arguments; `--help` prints its usage and variables.
 
 ```sh
 infra/terraform/plan.sh

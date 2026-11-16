@@ -4,7 +4,7 @@ import path from 'node:path';
 import { redactText } from '@opt2/platform/logging';
 import { z } from '@opt2/platform/service-kit';
 
-import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
+import { HelpRequest, isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
 import { jsonSyntaxDetail } from '../lib/diagnostics.js';
 import { stateDir, type EnvLike } from '../lib/paths.js';
 import { stableStringify } from '../lib/report.js';
@@ -194,6 +194,27 @@ const USAGE = [
   '         [--started-at <iso>] [--fixtures-file <path>] [--snapshot-json <json>] [--ports-json <json>]',
   '       tsx src/repro/up-state.ts read [--field <dot.path>]',
 ].join('\n');
+const HELP = `${USAGE}
+
+Records the processes harness/repro/up.sh started in up.json, or prints its public projection; a process's env
+and command are never printed.
+
+Commands:
+  write  merge one patch (--patch, --patch-file or the --process flags) and the top-level flags into up.json,
+         replacing the file atomically with mode 0600; a process entry is replaced whole by name
+  read   print the public projection, or only the field --field names
+
+Options:
+  --help  print this help and exit 0 (alone, or after write or read)
+
+Environment: OPT2_STATE_DIR, the state directory holding up.json (default: $HOME/.opt2/state).
+
+Output: one JSON summary line on stdout: the path and process names (write), or the path and value (read).
+Exit: 0 ok, 1 failure (up.json missing on read included), 2 usage error.
+
+Examples (from harness/):
+  npm run repro:up-state -- read --field ports
+  npm run repro:up-state -- write --started-at 2026-01-01T00:00:00.000Z`;
 
 const PROCESS_FLAGS = ['process', 'pid', 'cwd', 'command', 'command-json', 'port', 'env-json', 'log'] as const;
 
@@ -265,6 +286,7 @@ function writeCommand(argv: string[], env: EnvLike): CliOutcome {
       'ports-json': { type: 'string' },
     },
     usage: USAGE,
+    help: HELP,
   });
 
   const usesProcessFlags = PROCESS_FLAGS.some((flag) => values[flag] !== undefined);
@@ -319,7 +341,7 @@ function fieldValue(value: unknown, field: string, file: string): unknown {
 }
 
 function readCommand(argv: string[], env: EnvLike): CliOutcome {
-  const { values } = parseFlags(argv, { options: { field: { type: 'string' } }, usage: USAGE });
+  const { values } = parseFlags(argv, { options: { field: { type: 'string' } }, usage: USAGE, help: HELP });
   const file = upStatePath(env);
   const state = redactUpState(readUpState({ path: file }));
   return { summary: { path: file, value: values.field === undefined ? state : fieldValue(state, values.field, file) } };
@@ -328,6 +350,7 @@ function readCommand(argv: string[], env: EnvLike): CliOutcome {
 /** CLI entry: `write` merges a patch into up.json, `read` prints its public projection (or one field of it). */
 export function main(argv: string[], env: EnvLike = process.env): CliOutcome {
   const [subcommand, ...rest] = argv;
+  if (subcommand === '--help' && rest.length === 0) throw new HelpRequest(HELP);
   if (subcommand === 'write') return writeCommand(rest, env);
   if (subcommand === 'read') return readCommand(rest, env);
   throw new UsageError(

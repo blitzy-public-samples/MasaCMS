@@ -994,4 +994,21 @@ describe('main', () => {
     expect(JSON.parse(lines[0] ?? '')).toMatchObject({ command: COMMAND, ok: false, code: 2, usage: USAGE });
     expect(await exists(path.join(reportsDir, 'baseline.json'))).toBe(false);
   });
+
+  it('prints the help text naming its environment for --help, exits 0 and compares nothing', async () => {
+    await stage(OFFICIAL_500, diagnosticResponse(BODIES.match));
+
+    const { code, lines, exit } = await run(['--help']);
+
+    expect(code).toBe(0);
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(lines[0]).toBe(USAGE);
+    const text = lines.join('\n');
+    for (const name of ['OPT2_STATE_DIR', 'OPT2_REPORTS_DIR', 'LEGACY_ORIGIN', MASA_BASELINE_PATH, '--help']) {
+      expect(text).toContain(name);
+    }
+    expect(lines.some((line) => line.startsWith('{'))).toBe(false);
+    expect(await exists(path.join(reportsDir, 'baseline.json'))).toBe(false);
+    expect(await exists(masaPath)).toBe(false);
+  });
 });

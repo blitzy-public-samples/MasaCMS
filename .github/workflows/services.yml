@@ -68,8 +68,9 @@ jobs:
           gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=opt2-ci
       - name: Wait for Pub/Sub emulator
         run: |
-          for _ in $(seq 1 60); do
-            if curl -sf http://localhost:8085 >/dev/null; then
+          deadline=$((SECONDS + 120))
+          while remaining=$((deadline - SECONDS)); ((remaining > 0)); do
+            if curl -sf --connect-timeout 2 --max-time $((remaining < 5 ? remaining : 5)) http://localhost:8085 >/dev/null; then
               exit 0
             fi
             sleep 2

@@ -8,7 +8,7 @@ The pin is recorded once, in [`source-pin.json`](source-pin.json); every deliver
 
 ## Reproduce
 
-Prerequisites: Node 22.23.4, npm 11.21.0, PostgreSQL 16, the Pub/Sub emulator, otelcol-contrib, and the existing ACF 2023 / SQL Server 2022 / Mailpit environment.
+Prerequisites: Node 22.23.4, npm 11.21.0, PostgreSQL 16, the Pub/Sub emulator, otelcol-contrib, and the existing ACF 2023 / SQL Server 2022 / Mailpit environment, with the variables in [harness environment](../harness/README.md#environment).
 
 Run from the repository root:
 
@@ -28,7 +28,7 @@ Paths are relative to `opt2/`.
 | Size report | [`inventory/cloc.json`](inventory/cloc.json), [`inventory/cloc.md`](inventory/cloc.md) | `harness/src/inventory/cloc.ts` |
 | Owner of every legacy table, with its target tables and units | [`table-ownership.json`](table-ownership.json), [`table-ownership.md`](table-ownership.md) | Reviewed source; read by `harness/src/inventory/` and `gateway/src/cutover/` |
 | Items awaiting the user, all withheld | [`decision-list.json`](decision-list.json), [`decision-list.md`](decision-list.md) | Reviewed source; read by `harness/src/inventory/` and `gateway/src/cutover/` |
-| Halts and proposed differences | [`exceptions-list.json`](exceptions-list.json), [`exceptions-list.md`](exceptions-list.md) | `harness/src/golden/compare.ts` |
+| Halts and proposed differences | [`exceptions-list.json`](exceptions-list.json), [`exceptions-list.md`](exceptions-list.md) | JSON: reviewed source; `harness/src/golden/capture.ts` appends gap entries and `harness/src/golden/replay.ts` halted cases. Markdown: rendered by `harness/src/golden/compare.ts` |
 | Generated reports | [`reports/`](reports/) | See [Reports](#reports) |
 | Per-service activity bounds of the generating run | [`speed/blitzy-activity.json`](speed/blitzy-activity.json) | The generating run |
 | Leadership deck (rule "Executive Presentation") | [`executive-summary/index.html`](executive-summary/index.html) | Authored from `reports/`; checked by `harness/src/reporting/check-deck.ts` |
@@ -53,7 +53,7 @@ Paths are relative to `opt2/`.
 | [`reports/transitions.json`](reports/transitions.json) | `migration/src/transition/` |
 | [`reports/migration-order.json`](reports/migration-order.json) | `migration/src/order/dependency-order.ts` |
 | [`reports/terraform-plan.json`](reports/terraform-plan.json) | `infra/terraform/plan.sh` |
-| [`reports/pre-existing-defects.md`](reports/pre-existing-defects.md) | Authored; run findings added by `harness/src/golden/compare.ts` |
+| [`reports/pre-existing-defects.md`](reports/pre-existing-defects.md) | Authored, with source locations at the pin; linked from `exceptions-list.md` by `harness/src/golden/compare.ts` |
 | [`reports/rollback-rehearsal.md`](reports/rollback-rehearsal.md) | `opt2-migrate` (`migration/src/rollback/`), following [`migration/runbooks/people-roster-rollback.md`](../migration/runbooks/people-roster-rollback.md) |
 | [`reports/reconciliation/`](reports/reconciliation/) | `opt2-migrate reconcile` (`migration/src/reconcile/`) |
 | [`reports/state-machines/`](reports/state-machines/) | `services/finance/scripts/export-transitions.ts`, `services/timesheets/scripts/export-transitions.ts` |

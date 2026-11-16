@@ -9,6 +9,7 @@ import { z } from '@opt2/platform/service-kit';
 import { FIXTURES_UNAVAILABLE, readFixtureStatus } from '../golden/catalogue.js';
 import {
   adminLogin,
+  GATEWAY_PORT,
   loadSecretStore,
   originBaseUrl,
   SEED_CONFIG_PATH,
@@ -863,6 +864,30 @@ export interface MainDeps {
 }
 
 const USAGE = 'usage: tsx src/performance/run.ts';
+const HELP = `${USAGE}
+
+Measures legacy and gateway latency over the fixed read set (${String(REQUESTS_PER_SET)} requests per set and side), restarts each
+target service recorded in up.json once to time its cold start and scale-to-zero recovery, and writes the
+performance report. Needs the stack harness/repro/up.sh started.
+
+Options:
+  --help  print this help and exit 0
+
+Environment:
+  OPT2_STATE_DIR       state directory (default: $HOME/.opt2/state) holding up.json, fixtures.json and
+                       secrets/seed-credentials.json
+  LEGACY_ORIGIN        legacy ColdFusion origin (default: http://127.0.0.1:\${PORT})
+  PORT                 legacy ColdFusion port, used when LEGACY_ORIGIN is unset
+  OPT2_GATEWAY_URL     gateway base URL (default: http://127.0.0.1:${String(GATEWAY_PORT)})
+  MURA_ADMIN_USERNAME  admin login on both sides (default: admin)
+  MURA_ADMIN_PASSWORD  its password (secret)
+  OPT2_REPORTS_DIR     report directory, relative to the repository root (default: opt2/reports); reads
+                       terraform-plan.json and windows.json, writes performance.json and performance.md
+
+Output: one JSON summary line on stdout with the report path, measured sets, finding count and health.
+Exit: 0 report written, 1 up.json missing, a restarted service not back or a failure, 2 usage error.
+
+Example (from harness/): npm run performance`;
 
 const seedConfigSchema = z.object({ businessDate: z.iso.date() }).loose();
 
@@ -964,7 +989,7 @@ function probeRoles(): string[] {
  * restarted service did not come back.
  */
 export async function main(argv: string[], deps: MainDeps = {}): Promise<CliOutcome> {
-  parseFlags(argv, { options: {}, usage: USAGE });
+  parseFlags(argv, { options: {}, usage: USAGE, help: HELP });
   const env = deps.env ?? process.env;
   const upOptions: UpStateOptions = { env };
   const readUp = deps.readUpState ?? readUpState;

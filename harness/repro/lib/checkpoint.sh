@@ -53,6 +53,49 @@ _ck_pg() {
   PGPASSWORD="$PG_PASSWORD" PGOPTIONS="$options" "$tool" -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DATABASE" "$@"
 }
 
+# _ck_restore <tenant|-> <dump> <pg_restore args…>: restores <dump> via _ck_pg, dying with row-free diagnostics only.
+_ck_restore() {
+  local tenant=$1 dump=$2 err toc line id rest desc names entry code at="" status=0 sqlstate=unclassified
+  local q='"[^"]*"' word='[A-Za-z_][A-Za-z0-9_$]*'
+  local -a ids=()
+  local -a descs=("TABLE DATA" "SEQUENCE SET" "SEQUENCE OWNED BY" "FK CONSTRAINT" "CHECK CONSTRAINT" "ROW SECURITY"
+    "DEFAULT ACL" TABLE SEQUENCE CONSTRAINT INDEX POLICY DEFAULT SCHEMA FUNCTION COLLATION ACL)
+  local -A states=([23505]="duplicate key value violates unique constraint $q"
+    [23503]="insert or update on table $q violates foreign key constraint $q"
+    [23502]="null value in column $q of relation $q violates not-null constraint"
+    [23514]="new row for relation $q violates check constraint $q"
+    [42501]="new row violates row-level security policy for table $q")
+  shift 2
+  # --verbose adds the `from TOC entry <id>` line naming the failing entry.
+  err="$(_ck_pg "$tenant" pg_restore --verbose "$@" "$dump" 2>&1 >/dev/null)" || status=$?
+  if ((status == 0)); then return 0; fi
+  while IFS= read -r line; do
+    if [[ $line =~ ^pg_restore:\ from\ TOC\ entry\ ([0-9]+)\; ]]; then ids+=("${BASH_REMATCH[1]}"); fi
+    [[ $line == "pg_restore: error: "* ]] || continue
+    for code in "${!states[@]}"; do
+      if [[ $line =~ ERROR:\ +${states[$code]}$ ]]; then sqlstate=$code; fi
+    done
+  done <<<"$err"
+  # The TOC listing, unlike the error output, names each entry's schema.
+  if ((${#ids[@]} > 0)) && toc="$(pg_restore -l "$dump" 2>/dev/null)"; then
+    while IFS= read -r line; do
+      [[ $line =~ ^([0-9]+)\;\ [0-9]+\ [0-9]+\ (.+)$ ]] || continue
+      id=${BASH_REMATCH[1]} rest=${BASH_REMATCH[2]}
+      _ck_contains "$id" "${ids[@]}" || continue
+      for desc in "${descs[@]}"; do
+        [[ $rest == "$desc "* ]] || continue
+        names=${rest#"$desc "}
+        names=${names% *}
+        entry=$desc
+        if [[ $names =~ ^$word( $word)+$ ]]; then entry+=" ${names%% *}.${names#* }"; fi
+        if [[ "$at, " != *", $entry, "* ]]; then at+=", $entry"; fi
+        break
+      done
+    done <<<"$toc"
+  fi
+  die "pg_restore of $dump failed (exit $status)$at, sqlstate $sqlstate"
+}
+
 # Prints `<schema>\t<table>\t<t|f>` (row security enabled) for every table of the OPT-2 schemas, sorted; dies naming
 # the schemas that do not exist.
 _ck_tables() {
@@ -246,7 +289,8 @@ checkpoint_take() {
       dumps+=("$tenant")
     done <<<"$tenants"
   fi
-  checkpoint_checksums >"$CK_DIR/checksums.tsv"
+  checkpoint_checksums >"$CK_DIR/checksums.tsv" ||
+    die "cannot write the checksums of the OPT-2 tables to $CK_DIR/checksums.tsv"
 
   log_step ck-take.5 "local object storage"
   if [[ -d $storage ]]; then
@@ -328,7 +372,7 @@ checkpoint_restore() {
   done <<<"$output"
 
   log_step ck-restore.4 "empty Mailpit"
-  curl -fsS -o /dev/null -X DELETE "$MAILPIT_API_LOCAL/api/v1/messages" ||
+  curl -fsS --connect-timeout 10 --max-time 60 -o /dev/null -X DELETE "$MAILPIT_API_LOCAL/api/v1/messages" ||
     die "DELETE $MAILPIT_API_LOCAL/api/v1/messages failed"
 
   log_step ck-restore.5 "start ColdFusion with Ck's scheduled tasks, all paused"
@@ -361,11 +405,10 @@ process.stdout.write(`${JSON.stringify(extra)}\n${ck.length}\n`);
   fi
 
   log_step ck-restore.7 "OPT-2 schemas of $PG_DATABASE"
-  _ck_pg - pg_restore --clean --if-exists --single-transaction --exit-on-error "$CK_DIR/target.dump" >&2 ||
-    die "pg_restore of $CK_DIR/target.dump failed"
+  _ck_restore - "$CK_DIR/target.dump" --clean --if-exists --single-transaction --exit-on-error
   for i in "${!dump_files[@]}"; do
-    _ck_pg "${dump_tenants[i]}" pg_restore --data-only --enable-row-security --single-transaction --exit-on-error \
-      "$CK_DIR/${dump_files[i]}" >&2 || die "pg_restore of $CK_DIR/${dump_files[i]} failed"
+    _ck_restore "${dump_tenants[i]}" "$CK_DIR/${dump_files[i]}" --data-only --enable-row-security --single-transaction \
+      --exit-on-error
   done
 
   log_step ck-restore.8 "local object storage"
@@ -402,7 +445,8 @@ checkpoint_verify() {
   mkdir -m 0700 -- "$now" || die "cannot create $now"
 
   log_step ck-verify.1 "table checksums"
-  checkpoint_checksums >"$now/checksums.tsv"
+  checkpoint_checksums >"$now/checksums.tsv" ||
+    die "cannot write the checksums of the OPT-2 tables to $now/checksums.tsv"
   _ck_diff checksums "$CK_DIR/checksums.tsv" "$now/checksums.tsv" || failed+=(checksums)
 
   log_step ck-verify.2 "legacy file store and local object storage"
@@ -412,7 +456,7 @@ checkpoint_verify() {
   _ck_diff storage "$CK_DIR/storage.manifest" "$now/storage.manifest" || failed+=(storage)
 
   log_step ck-verify.3 "Mailpit"
-  total="$(curl -fsS "$MAILPIT_API_LOCAL/api/v1/messages?limit=1" | json_get - total)" ||
+  total="$(curl -fsS --connect-timeout 10 --max-time 60 "$MAILPIT_API_LOCAL/api/v1/messages?limit=1" | json_get - total)" ||
     die "cannot read the message count of $MAILPIT_API_LOCAL"
   if [[ $total != 0 ]]; then
     printf 'opt2: checkpoint Mailpit holds %s messages, Ck: 0\n' "$total" >&2
@@ -421,7 +465,7 @@ checkpoint_verify() {
 
   log_step ck-verify.4 "ACF scheduled tasks"
   describe="$(_ck_scheduler describe)" || die "scheduler.cfm describe failed"
-  # Prints each task name whose definition differs from Ck's; exit 1 on a difference, 3 on unreadable input.
+  # Prints the tasks one side lacks and the names of fields that differ; exit 1 on a difference, 3 on unreadable input.
   # shellcheck disable=SC2016 # JavaScript source
   printf '%s' "$describe" | node -e '
 const fs = require("fs");
@@ -429,19 +473,25 @@ const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).joi
   : value !== null && typeof value === "object"
     ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`
     : JSON.stringify(value);
-const byName = (text, where) => {
-  let doc;
+const byName = (source, where) => {
+  let text, doc;
+  try { text = fs.readFileSync(source, "utf8"); } catch { process.stderr.write(`opt2: ${where} is unreadable\n`); process.exit(3); }
   try { doc = JSON.parse(text); } catch { doc = undefined; }
   if (!Array.isArray(doc?.tasks)) { process.stderr.write(`opt2: ${where} is not a scheduler describe answer\n`); process.exit(3); }
-  return new Map(doc.tasks.map((task) => [String(task.task), canonical(task)]));
+  return new Map(doc.tasks.map((task) => [String(task.task), { task, text: canonical(task) }]));
 };
-const ck = byName(fs.readFileSync(process.argv[1], "utf8"), process.argv[1]);
-const now = byName(fs.readFileSync(0, "utf8"), "scheduler.cfm describe");
+const ck = byName(process.argv[1], process.argv[1]);
+const now = byName(0, "scheduler.cfm describe");
 const lines = [];
 for (const name of [...new Set([...ck.keys(), ...now.keys()])].sort()) {
   if (!now.has(name)) lines.push(`opt2: checkpoint task ${name} is missing`);
   else if (!ck.has(name)) lines.push(`opt2: checkpoint task ${name} is not in Ck`);
-  else if (ck.get(name) !== now.get(name)) lines.push(`opt2: checkpoint task ${name} differs, Ck: ${ck.get(name)}, now: ${now.get(name)}`);
+  else if (ck.get(name).text !== now.get(name).text) {
+    const [ckTask, nowTask] = [ck.get(name).task, now.get(name).task];
+    const fields = [...new Set([...Object.keys(ckTask), ...Object.keys(nowTask)])].sort()
+      .filter((key) => canonical(ckTask[key]) !== canonical(nowTask[key]));
+    lines.push(`opt2: checkpoint task ${name} differs${fields.length > 0 ? ` in ${fields.join(", ")}` : ""}`);
+  }
 }
 if (lines.length > 0) process.stderr.write(`${lines.join("\n")}\n`);
 process.exit(lines.length > 0 ? 1 : 0);

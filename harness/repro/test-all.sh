@@ -3,10 +3,18 @@
 # shellcheck disable=SC2317 # the stage functions run through STAGE_FUNCS
 set -euo pipefail
 
-case ${1:-} in
-  '') ;;
-  -h | --help)
-    cat <<'EOF'
+# Prints the one-line usage to stderr and exits 1.
+usage_error() {
+  printf 'usage: harness/repro/test-all.sh [-h|--help]\n' >&2
+  exit 1
+}
+
+case $# in
+  0) ;;
+  1)
+    case $1 in
+      -h | --help)
+        cat <<'EOF'
 usage: harness/repro/test-all.sh
 
 Runs stages 0-9 against the stack harness/repro/up.sh started: pin and label checks, legacy baseline, platform on the
@@ -17,12 +25,12 @@ with its output in stage-<n>.out; a failing stage stops the later ones. Takes no
 Exit: 0 every acceptance item met, 2 completed with acceptance items unmet (listed in opt2/reports/test-all.md),
 1 a stage failed or the run could not start.
 EOF
-    exit 0
+        exit 0
+        ;;
+      *) usage_error ;;
+    esac
     ;;
-  *)
-    printf 'usage: harness/repro/test-all.sh [-h|--help]\n' >&2
-    exit 1
-    ;;
+  *) usage_error ;;
 esac
 
 # shellcheck source=SCRIPTDIR/lib/common.sh
@@ -275,9 +283,9 @@ process.stdout.write(`${names.join("\n")}\n`);
 # Empties Mailpit and dies unless it then holds no message.
 clear_mailpit() {
   local total
-  curl -fsS -o /dev/null -X DELETE "$MAILPIT_API_LOCAL/api/v1/messages" ||
+  curl -fsS --connect-timeout 10 --max-time 60 -o /dev/null -X DELETE "$MAILPIT_API_LOCAL/api/v1/messages" ||
     die "DELETE $MAILPIT_API_LOCAL/api/v1/messages failed"
-  total="$(curl -fsS "$MAILPIT_API_LOCAL/api/v1/messages?limit=1" | json_get - total)" ||
+  total="$(curl -fsS --connect-timeout 10 --max-time 60 "$MAILPIT_API_LOCAL/api/v1/messages?limit=1" | json_get - total)" ||
     die "cannot read the message count of $MAILPIT_API_LOCAL"
   [[ $total == 0 ]] || die "Mailpit still holds $total messages after DELETE /api/v1/messages"
   printf 'Mailpit empty\n'

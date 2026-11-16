@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { UsageError } from '../../src/lib/cli.js';
+import { runCli, UsageError } from '../../src/lib/cli.js';
 import { REPO_ROOT } from '../../src/lib/paths.js';
 import { readPin } from '../../src/lib/pin.js';
 import {
@@ -1127,6 +1127,31 @@ describe('main', () => {
     await expect(main(argv, { run, env: { OPT2_STATE_DIR: root }, repoRoot: repo })).rejects.toThrowError(UsageError);
     await expect(main(argv)).rejects.toMatchObject({ usage: 'security:scan (takes no arguments)' });
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it('prints the help text naming both tools and OPT2_STATE_DIR for --help, exits 0 and runs no tool', async () => {
+    const state = await mkdtemp(path.join(root, 'state-'));
+    const run = scriptedRunner();
+    const chunks: string[] = [];
+    const exit = vi.fn<(code: number) => void>();
+
+    const code = await runCli((args) => main(args, { run, env: { OPT2_STATE_DIR: state }, repoRoot: repo }), {
+      argv: ['--help'],
+      command: 'security:scan',
+      stdout: { write: (chunk: string) => chunks.push(chunk) },
+      exit,
+    });
+
+    const text = chunks.join('');
+    expect(code).toBe(0);
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(text.startsWith('security:scan (takes no arguments)\n')).toBe(true);
+    for (const name of [`osv-scanner ${OSV_SCANNER_VERSION}`, `gitleaks ${GITLEAKS_VERSION}`, 'OPT2_STATE_DIR', '--help']) {
+      expect(text).toContain(name);
+    }
+    expect(text).not.toMatch(/^\{/m);
+    expect(run).not.toHaveBeenCalled();
+    expect(await readdir(state)).toEqual([]);
   });
 });
 

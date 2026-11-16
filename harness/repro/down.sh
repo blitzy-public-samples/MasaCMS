@@ -2,10 +2,18 @@
 # Stops the OPT-2 stack up.sh recorded and restores legacy Masa from the pristine captures, then releases the run lock.
 set -euo pipefail
 
-case ${1:-} in
-  '') ;;
-  -h | --help)
-    cat <<'EOF'
+# Prints the one-line usage to stderr and exits 2.
+usage_error() {
+  printf 'usage: harness/repro/down.sh [-h|--help]\n' >&2
+  exit 2
+}
+
+case $# in
+  0) ;;
+  1)
+    case $1 in
+      -h | --help)
+        cat <<'EOF'
 usage: harness/repro/down.sh
 
 Stops every target process recorded in ${OPT2_STATE_DIR:-$HOME/.opt2/state}/up.json and the tooling up.sh started,
@@ -13,14 +21,26 @@ stops ColdFusion, restores the legacy database and file store from the pristine 
 scheduled tasks, restores the /muraWRM mapping, restarts the original legacy server without the OPT-2 start variables
 and releases the run lock. Takes no arguments; run again after a completed teardown, it reports nothing running.
 
+Environment (* = secret):
+  OPT2_STATE_DIR OPT2_PRISTINE_DIR   the directories up.sh used (default $HOME/.opt2/state, $HOME/.opt2/pristine)
+  PORT or OPT2_LEGACY_PORT           legacy ColdFusion port, when up.sh captured a legacy server (OPT2_LEGACY_PORT wins)
+  MURA_DBHOST MURA_DBUSERNAME MURA_DBPASSWORD* MURA_DATABASE
+                                     legacy SQL Server database, when a pristine baseline exists (MURA_DBPORT default 1433)
+  PG_HOST PG_PORT                    PostgreSQL, when up.sh started it
+  OPT2_PG_STOP_CMD                   stops that PostgreSQL (default pg_ctlcluster 16 main stop)
+  OPT2_MSSQL_TRUST_SERVER_CERT and OPT2_LEGACY_START_TIMEOUT_S apply as for up.sh; harness/README.md describes each.
+
+Example, in the environment up.sh ran with:
+  harness/repro/down.sh
+
 Exit: 0 stopped and restored (or nothing running), 1 failure, 2 usage error.
 EOF
-    exit 0
+        exit 0
+        ;;
+      *) usage_error ;;
+    esac
     ;;
-  *)
-    printf 'usage: harness/repro/down.sh [-h|--help]\n' >&2
-    exit 2
-    ;;
+  *) usage_error ;;
 esac
 
 # shellcheck source=SCRIPTDIR/lib/common.sh

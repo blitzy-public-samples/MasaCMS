@@ -356,7 +356,7 @@ run_original() {
   # opt2-legacy shares the original's server home, so both report its pid file's state until opt2-legacy is stopped.
   state="$(server_state "$LEGACY_SERVER_NAME")"
   if [[ -n $state && $state != stopped* ]]; then
-    log_step 1 "stop $LEGACY_SERVER_NAME"
+    log_step a "stop $LEGACY_SERVER_NAME"
     box_cmd server stop name="$LEGACY_SERVER_NAME" || die "box server stop name=$LEGACY_SERVER_NAME failed"
     wait_port_closed "$LEGACY_PORT" 120
   fi
@@ -367,10 +367,10 @@ run_original() {
     return 0
   fi
   unset MURA_PING OPT2_BRIDGE_HMAC_KEY OPT2_GATEWAY_ORIGIN
-  log_step 2 "start the original server $name"
+  log_step b "start the original server $name"
   PORT="$LEGACY_PORT" setsid --wait box server start name="$name" --noSaveSettings </dev/null >&2 ||
     die "box server start name=$name failed"
-  log_step 3 "wait for legacy start-up on port $port"
+  log_step c "wait for legacy start-up on port $port"
   wait_http "http://127.0.0.1:$port/" "$START_TIMEOUT_S" 200,301,302
   print_summary original "" "$name" "$port" "" "[]" "[]" "$SECONDS"
 }

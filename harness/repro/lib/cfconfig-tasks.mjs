@@ -20,6 +20,8 @@ Commands:
       Prints the names of the tasks that are not paused, one per line or as a JSON array.
   names --in <file> [--prefix <p>] [--json]
       Prints task names, optionally only those starting with <p>.
+  -h, --help
+      Prints this help.
 
 unpaused and names also read a bridge scheduler.cfm?op=describe answer or a native-tasks.json capture.
 Exit status: 0 done, 1 failure, 2 usage.
@@ -52,8 +54,12 @@ class UsageError extends Error {}
 /** Unusable input or output file; exits 1. */
 class InputError extends Error {}
 
-/** Parses `<command> --name value … --flag` against COMMANDS; every option value must be non-empty. */
+/**
+ * Parses `<command> --name value … --flag` against COMMANDS; every option value must be non-empty.
+ * @returns `{run, opts}`, or `{help: true}` for a lone -h/--help.
+ */
 function parseCommandLine(argv) {
+  if (argv.length === 1 && (argv[0] === '-h' || argv[0] === '--help')) return { help: true };
   const [command, ...rest] = argv;
   if (command === undefined || !Object.hasOwn(COMMANDS, command)) {
     throw new UsageError(command === undefined ? 'missing command' : `unknown command ${command}`);
@@ -341,8 +347,9 @@ function names(opts) {
 }
 
 try {
-  const { run, opts } = parseCommandLine(process.argv.slice(2));
-  run(opts);
+  const { help, run, opts } = parseCommandLine(process.argv.slice(2));
+  if (help === true) process.stdout.write(USAGE);
+  else run(opts);
 } catch (error) {
   if (error instanceof UsageError) {
     process.stderr.write(`cfconfig-tasks: ${error.message}\n\n${USAGE}`);

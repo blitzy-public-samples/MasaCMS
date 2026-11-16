@@ -2,10 +2,18 @@
 # Proves up.sh and test-all.sh from a fresh clone of HEAD; records the result in opt2/reports/reproducibility.md.
 set -euo pipefail
 
-case ${1:-} in
-  '') ;;
-  -h | --help)
-    cat <<'EOF'
+# Prints the one-line usage to stderr and exits 2.
+usage_error() {
+  printf 'usage: harness/repro/clean-checkout-proof.sh [-h|--help]\n' >&2
+  exit 2
+}
+
+case $# in
+  0) ;;
+  1)
+    case $1 in
+      -h | --help)
+        cat <<'EOF'
 usage: harness/repro/clean-checkout-proof.sh
 
 Stops this checkout's OPT-2 stack (harness/repro/down.sh), clones the current commit with `git clone --no-local`
@@ -17,12 +25,12 @@ Takes no arguments.
 
 Exit: 0 proof passed and the clone's stack stopped, 1 proof failed or a step could not run, 2 usage error.
 EOF
-    exit 0
+        exit 0
+        ;;
+      *) usage_error ;;
+    esac
     ;;
-  *)
-    printf 'usage: harness/repro/clean-checkout-proof.sh [-h|--help]\n' >&2
-    exit 2
-    ;;
+  *) usage_error ;;
 esac
 
 # shellcheck source=SCRIPTDIR/lib/common.sh

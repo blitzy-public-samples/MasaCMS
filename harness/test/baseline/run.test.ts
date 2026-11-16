@@ -630,6 +630,28 @@ describe('main', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('prints the help text naming LEGACY_ORIGIN, PORT and OPT2_STATE_DIR for --help, exits 0 and sends nothing', async () => {
+    const { fetch } = routedFetch();
+    const chunks: string[] = [];
+    const exits: number[] = [];
+
+    const code = await runCli((args) => main(args, { env, fetch }), {
+      argv: ['--help'],
+      command: COMMAND,
+      stdout: { write: (chunk: string) => chunks.push(chunk) },
+      exit: (status) => exits.push(status),
+    });
+
+    const text = chunks.join('');
+    expect(code).toBe(0);
+    expect(exits).toEqual([0]);
+    expect(text.startsWith(`${USAGE}\n`)).toBe(true);
+    for (const name of ['LEGACY_ORIGIN', 'PORT', 'OPT2_STATE_DIR', '--help']) expect(text).toContain(name);
+    expect(text).not.toMatch(/^\{/m);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await exists(path.join(tmp, 'baseline'))).toBe(false);
+  });
+
   it('exits 1 when a runner request fails', async () => {
     const { fetch } = recordingFetch(() => Promise.reject(new Error('socket hang up')));
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);

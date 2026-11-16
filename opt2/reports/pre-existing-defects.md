@@ -1,7 +1,7 @@
 # Pre-existing legacy defects
 
 Source SHA: 696383140578f8dea3ece26f80cd7bfb370ddf0f
-Status: authored (planning); run findings appended by harness/src/golden/compare.ts
+Status: authored (planning)
 
 None of these is fixed: the target reproduces each one on carried routes (AAP 0.2.2, 0.11.1).
 

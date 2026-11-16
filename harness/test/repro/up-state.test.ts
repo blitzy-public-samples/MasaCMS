@@ -691,6 +691,7 @@ describe('repro:up-state CLI', () => {
   it.each<[string, string[], RegExp]>([
     ['no subcommand', [], /^a subcommand is required$/],
     ['an unknown subcommand', ['status'], /^unknown subcommand 'status'$/],
+    ['--help followed by a subcommand', ['--help', 'write'], /^unknown subcommand '--help'$/],
     ['write without input', ['write'], /^write needs --patch, --patch-file, --process or a top-level flag$/],
     ['an unknown flag', ['write', '--bogus', 'x'], /--bogus/],
     ['a positional argument to read', ['read', 'extra'], /extra/],
@@ -734,5 +735,33 @@ describe('repro:up-state CLI', () => {
     expect(await fs.readFile(file, 'utf8')).toBe(before);
     expect(await fs.readdir(stateDir)).toEqual(['up.json']);
   });
+
+  it.each([[['--help']], [['write', '--help']], [['read', '--help']]])(
+    'prints the help text naming OPT2_STATE_DIR for %j, exits 0 and leaves up.json unchanged',
+    async (argv) => {
+      writeUpState(sampleState(), { env });
+      const before = await fs.readFile(file, 'utf8');
+      const chunks: string[] = [];
+      const exits: number[] = [];
+
+      const code = await runCli((args) => main(args, env), {
+        argv,
+        command: COMMAND,
+        stdout: { write: (chunk: string) => chunks.push(chunk) },
+        exit: (exitCode) => exits.push(exitCode),
+      });
+
+      const text = chunks.join('');
+      expect(code).toBe(0);
+      expect(exits).toEqual([0]);
+      expect(text.startsWith(`${USAGE_HEAD} `)).toBe(true);
+      for (const name of ['OPT2_STATE_DIR', 'write', 'read', '--help']) expect(text).toContain(name);
+      expect(text).not.toMatch(/^\{/m);
+      expect(leaked(text)).toEqual([]);
+      expect(await fs.readFile(file, 'utf8')).toBe(before);
+      expect(await fs.readdir(stateDir)).toEqual(['up.json']);
+      expect(renameSync).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 

@@ -19,6 +19,24 @@ export const DIAGNOSTIC_RUNNER_PATH = '/harness/legacy-baseline/cfml/run.cfm?rep
 export const DIAGNOSTIC_TIMEOUT_MS = 35 * 60 * 1000;
 
 const USAGE = 'usage: npm run baseline:run (takes no flags)';
+const HELP = `${USAGE}
+
+Calls the official Masa TestBox runner, then the diagnostic runner, and saves each raw response; every HTTP status
+is a recorded result. Each request waits up to ${String(DIAGNOSTIC_TIMEOUT_MS / 60_000)} minutes.
+
+Options:
+  --help  print this help and exit 0
+
+Environment:
+  LEGACY_ORIGIN   legacy ColdFusion origin (default: http://127.0.0.1:\${PORT}); one of the two is required
+  PORT            legacy ColdFusion port, used when LEGACY_ORIGIN is unset
+  OPT2_STATE_DIR  state directory (default: $HOME/.opt2/state); the responses are saved as
+                  <state>/baseline/official.json and <state>/baseline/diagnostic.json
+
+Output: one JSON summary line on stdout with each runner's HTTP status and spec count.
+Exit: 0 both responses saved, 1 failure, 2 usage error or neither LEGACY_ORIGIN nor PORT set.
+
+Example (from harness/): npm run baseline:run`;
 const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 
 /** One runner response as saved under `${OPT2_STATE_DIR}/baseline/`. */
@@ -156,7 +174,7 @@ export async function runDiagnostic(opts: { rerun?: boolean } = {}, deps: RunDep
 
 /** CLI entry: runs the official then the diagnostic runner; every HTTP status is a recorded result. */
 export async function main(argv: string[], deps: RunDeps = {}): Promise<CliOutcome> {
-  parseFlags(argv, { options: {}, usage: USAGE });
+  parseFlags(argv, { options: {}, usage: USAGE, help: HELP });
   const official = await runOfficial(deps);
   const diagnostic = await runDiagnostic({}, deps);
   return {

@@ -6,7 +6,7 @@ The harness produces the evidence for OPT-2 and runs the commands that reproduce
 
 ## Reproduce
 
-Run from the repository root. The commands take no arguments, are configured through the environment, and print their usage with `--help`.
+Run from the repository root. The commands take no arguments, are configured through the variables in [Environment](#environment), and print their usage with `--help`.
 
 | Command | Does | Exit |
 |---|---|---|
@@ -14,6 +14,39 @@ Run from the repository root. The commands take no arguments, are configured thr
 | `harness/repro/test-all.sh` | Runs stages 0–9 against that stack and writes `opt2/reports/test-all.{json,md}`. The stack stays up | 0 every acceptance item met; 2 completed with acceptance items unmet, such as legacy fixtures unavailable, each listed in `opt2/reports/test-all.md`; 1 a stage failed or the run could not start |
 | `harness/repro/down.sh` | Stops the stack and restores legacy | 0 stopped and restored, or nothing running; 1 failure; 2 usage error |
 | `harness/repro/clean-checkout-proof.sh` | Proves `up.sh` and `test-all.sh` from a fresh clone | 0 proof passed; 1 proof failed; 2 usage error |
+
+### Environment
+
+A variable without a default is required by the commands under "Needed by"; the setup environment provides each. Secrets are named here, never given. `up.sh` stops before starting anything when a required one is missing, naming it.
+
+| Variable | Needed by | Default | Purpose |
+|---|---|---|---|
+| `PORT` | `up.sh`; `down.sh` once a legacy server is captured | — | Legacy ColdFusion port. `test-all.sh` reads it from `up.json` |
+| `OPT2_LEGACY_PORT` | `down.sh`, instead of `PORT` | `PORT` | Legacy port, read before `PORT`. `up.sh` starts legacy on `PORT`, so leave it unset or equal there |
+| `MURA_DBHOST`, `MURA_DBPORT`, `MURA_DATABASE`, `MURA_DBUSERNAME` | `up.sh`; `down.sh` once a pristine baseline exists | `down.sh`: `MURA_DBPORT` 1433 | Legacy SQL Server database. `test-all.sh` reads them from `up.json` |
+| `MURA_DBPASSWORD` (secret) | as `MURA_DBUSERNAME` | — | Password of `MURA_DBUSERNAME` |
+| `MURA_DBTYPE` | `up.sh` | unset | Unset or `mssql`; any other value stops `up.sh` |
+| `MURA_ADMIN_USERNAME` | `up.sh`, `test-all.sh` | `admin` | Legacy admin login for the seed and the golden runs |
+| `MURA_ADMIN_PASSWORD` (secret) | `up.sh`, `test-all.sh` | — | Password of `MURA_ADMIN_USERNAME` |
+| `MASA_TEST_EDITOR_PASSWORD` (secret) | `test-all.sh` | — | Password of `qa_editor` |
+| `PG_HOST`, `PG_PORT`, `PG_DATABASE` | `up.sh`; `down.sh` (`PG_HOST`, `PG_PORT`) when `up.sh` started PostgreSQL | — | PostgreSQL server and the database of every OPT-2 schema. `test-all.sh` reads them from `up.json` |
+| `PG_USER` | `up.sh`, `test-all.sh` | — | Admin login that bootstraps the schemas and roles and takes the checkpoints; target processes log in as `<schema>_app` |
+| `PG_PASSWORD` (secret) | as `PG_USER` | — | Password of `PG_USER` |
+| `CFCONFIG_ADMINPASSWORD` (secret) | `up.sh` | — | ColdFusion Administrator password, passed to the legacy start for CommandBox CFConfig |
+| `GOOGLE_CLOUD_PROJECT` | `up.sh` | `opt2-local` | Pub/Sub emulator project. `test-all.sh` reads it from `up.json` |
+| `OPT2_TZ` | `up.sh` | the legacy JVM's `-Duser.timezone`, else `TZ` or the host zone | Legacy time zone, exported as `TZ` to every process |
+| `OPT2_LEGACY_SERVER_NAME` | `up.sh`, first run | the server whose webroot is this checkout, else the one on `PORT` | Original CommandBox server, captured once in `server-capture.json` |
+| `OPT2_CF_SERVER_HOME`, `OPT2_CF_ENGINE`, `OPT2_CF_JVM_ARGS` | `up.sh`, `test-all.sh` | from `server-capture.json` | Server home, engine and JVM arguments of `opt2-legacy`; required when no server can be captured |
+| `OPT2_MSSQL_BACKUP_DIR` | `up.sh`, first run | SQL Server's default backup directory | Pristine backup location when SQL Server cannot write `${OPT2_PRISTINE_DIR}` |
+| `OPT2_MSSQL_TRUST_SERVER_CERT` | `up.sh`, `down.sh` | `true` | `false` stops `sqlcmd` and the migration service trusting SQL Server's certificate |
+| `OPT2_SQLSERVR_CMD` | `up.sh` | `/opt/mssql/bin/sqlservr` | Starts SQL Server when it is not answering |
+| `OPT2_PG_START_CMD` | `up.sh` | `pg_ctlcluster 16 main start` | Starts PostgreSQL when it is not answering |
+| `OPT2_PG_STOP_CMD` | `down.sh` | `pg_ctlcluster 16 main stop` | Stops the PostgreSQL `up.sh` started |
+| `OPT2_LEGACY_START_TIMEOUT_S` | `up.sh`, `test-all.sh`, `down.sh` | `900` | Seconds to wait for a legacy start |
+| `MAILPIT_API_URL` | `up.sh` | `http://127.0.0.1:8025` | Mailpit API for `legacy-fixtures/load-fixtures.sh` |
+| `OPT2_STATE_DIR`, `OPT2_PRISTINE_DIR` | all | see [State outside the checkout](#state-outside-the-checkout) | Run state and the pristine baseline |
+
+`clean-checkout-proof.sh` passes its environment to the other three and reads `OPT2_CLONE_PARENT`, the clone's parent directory (default `$HOME/.opt2`). Other exported `MURA_*` settings reach Masa and, credentials aside, the target processes. `up.sh` sets each target process's own variables (`PORT`, `OPT2_SERVICE_NAME`, `OPT2_SERVICE_URLS`, `PG_USER` and the rest) from `repro/ports.env` and the generated secrets; see [platform configuration](../platform/README.md#configuration).
 
 ### `up.sh`
 
@@ -100,7 +133,10 @@ No Docker is used locally. `up.sh` starts every process natively; each package's
 
 ## Package
 
+The package scripts run in `harness/`. From the repository root:
+
 ```sh
+cd harness
 npm ci              # installs, then builds ../platform through postinstall
 npm run build       # generates the gateway and migration client types, then type-checks (tsc, no emit)
 npm test            # test/** only, with coverage (>= 90% statements); needs no legacy oracle or running stack

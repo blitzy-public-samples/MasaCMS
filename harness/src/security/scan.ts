@@ -494,10 +494,28 @@ export async function runSecurityScan(deps: ScanDeps = {}): Promise<ScanResult> 
 }
 
 const USAGE = 'security:scan (takes no arguments)';
+const HELP = `${USAGE}
+
+Runs osv-scanner over the ${String(OPT2_LOCKFILES.length)} OPT-2 lockfiles and gitleaks over the checkout (config ${GITLEAKS_CONFIG},
+baseline ${GITLEAKS_BASELINE}) from the repository root, and writes their reports and a summary
+for test-all.
+
+Options:
+  --help  print this help and exit 0
+
+Requires: osv-scanner ${OSV_SCANNER_VERSION} and gitleaks ${GITLEAKS_VERSION} on PATH.
+Environment: OPT2_STATE_DIR, the state directory (default: $HOME/.opt2/state); osv.json, gitleaks.json and
+summary.json are written to <state>/security/.
+
+Output: one JSON summary line on stdout with the verdict, failing production advisories and new secret findings.
+Exit: 0 clean; 1 a production advisory with CVSS ${FAILING_CVSS.toFixed(1)}+ or ${FAILING_DATABASE_SEVERITIES.join('/')} severity,
+a new secret finding or a failure; 2 a missing lockfile or tool, a wrong tool version, a tool error or a usage error.
+
+Example (from harness/): npm run security:scan`;
 
 /** CLI entry: runs both scans and returns their exit code with the summary line fields. */
 export async function main(argv: string[], deps: ScanDeps = {}): Promise<CliOutcome> {
-  parseFlags(argv, { options: {}, usage: USAGE });
+  parseFlags(argv, { options: {}, usage: USAGE, help: HELP });
   const { code, summary, summaryPath } = await runSecurityScan(deps);
   return {
     code,
