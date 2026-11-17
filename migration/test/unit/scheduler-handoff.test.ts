@@ -134,6 +134,7 @@ function harness(tasks: ScheduledTaskDefinition[], monitor?: Partial<SiteMonitor
     targetCursor: TARGET_CURSOR as string | null,
     pendingOnTarget: new Set<string>(),
     adoptRequests: [] as unknown[],
+    restoreBodies: [] as SchedulerRestoreRequest[],
     ensureStatus: 200,
     failNext: null as string | null,
     nowMs: NOW.getTime(),
@@ -148,9 +149,12 @@ function harness(tasks: ScheduledTaskDefinition[], monitor?: Partial<SiteMonitor
       return Promise.reject(new Error(`bridge ${name} failed`));
     }
     const hit = h.live.filter((task) => sel.tasks?.includes(task.task) === true || (sel.prefix !== undefined && task.task.startsWith(sel.prefix)));
-    if (name === 'pause' || name === 'resume') hit.forEach((task) => (task.paused = name === 'pause'));
+    // As scheduler.cfm: pause and resume leave an expired task as it is and name it in `expired`.
+    const acted = name === 'delete' ? hit : hit.filter((task) => task.expired !== true);
+    if (name === 'pause' || name === 'resume') acted.forEach((task) => (task.paused = name === 'pause'));
     if (name === 'delete') h.live = h.live.filter((task) => !hit.includes(task));
-    return Promise.resolve({ op: name, tasks: hit.map((task) => task.task), serverTime: '' });
+    const expired = name === 'delete' ? {} : { expired: hit.filter((task) => !acted.includes(task)).map((task) => task.task) };
+    return Promise.resolve({ op: name, tasks: acted.map((task) => task.task), ...expired, serverTime: '' });
   };
 
   const bridge = {
@@ -163,8 +167,13 @@ function harness(tasks: ScheduledTaskDefinition[], monitor?: Partial<SiteMonitor
     schedulerDelete: (sel: SchedulerSelection) => op('delete', sel),
     schedulerRestore: (body: SchedulerRestoreRequest) => {
       h.calls.push(`bridge.restore ${JSON.stringify({ tasks: body.tasks.map((task) => task.task), repoint: body.repoint, paused: body.paused })}`);
-      for (const task of body.tasks) h.live = [...h.live.filter((other) => other.task !== task.task), { ...task, paused: body.paused }];
-      return Promise.resolve({ op: 'restore', tasks: body.tasks.map((task) => task.task), serverTime: '' });
+      h.restoreBodies.push(structuredClone(body));
+      // A definition captured expired is recreated expired, neither paused nor resumed.
+      for (const task of body.tasks) {
+        h.live = [...h.live.filter((other) => other.task !== task.task), { ...task, paused: task.expired === true ? false : body.paused }];
+      }
+      const expired = body.tasks.filter((task) => task.expired === true).map((task) => task.task);
+      return Promise.resolve({ op: 'restore', tasks: body.tasks.map((task) => task.task), expired, serverTime: '' });
     },
     schedulerRepoint: (task: Partial<ScheduledTaskDefinition> = {}) => {
       h.calls.push(`bridge.repoint ${task.task ?? ''}`);
@@ -442,6 +451,51 @@ describe('survey task hand-off', () => {
     expect(h.calls.filter((call) => call.startsWith('communications.cancel'))).toEqual(names.map((name) => `communications.cancel ${name}`));
     expect(h.table.stored('surveyTasks')).toMatchObject({ state: 'legacy', adoptedNames: [], paused: null });
     expect(h.table.stored('surveyTasks').definitions.map((task) => task.task)).toEqual([REMINDER_1.task, REMINDER_2.task]);
+  });
+
+  it.each([
+    { label: 'listed expired', restarted: false },
+    { label: 'listed paused after a restart imported every task paused', restarted: true },
+  ])('keeps a survey task captured expired, then $label, from adoption and restores it expired', async ({ restarted }) => {
+    const expired = { ...REMINDER_2, expired: true };
+    const { h, service } = harness([MONITOR, LAUNCH, expired], NATIVE);
+    const svc = service();
+
+    expect((await svc.pauseFor(['surveys.survey_schedule'], STAYS)).surveys).toEqual([LAUNCH.task]);
+    expect(h.table.stored('surveyTasks').definitions.find((task) => task.task === expired.task)).toMatchObject({ paused: false, expired: true });
+    expect(h.logs).toContain(`scheduler hand-off pause survey tasks (transition): ${LAUNCH.task}; expired, left as they are: ${expired.task}`);
+    if (restarted) h.live.forEach((task) => Object.assign(task, { paused: true, expired: false }));
+
+    expect(await svc.handOffSurveysToTarget()).toEqual({ adopted: [LAUNCH.task], deleted: [LAUNCH.task, expired.task] });
+    expect(h.adoptRequests).toMatchObject([{ tasks: [{ name: LAUNCH.task }] }]);
+    expect(h.logs).toContain(`scheduler hand-off skip expired survey tasks: ${expired.task}`);
+    expect(h.table.stored('surveyTasks')).toMatchObject({ state: 'adopted', adoptedNames: [LAUNCH.task] });
+
+    expect((await svc.restoreToLegacy(['surveys.survey_schedule'], STAYS)).surveys).toEqual([LAUNCH.task, expired.task]);
+    expect(h.calls.filter((call) => call.startsWith('communications.cancel'))).toEqual([`communications.cancel ${LAUNCH.task}`]);
+    expect(h.restoreBodies.map((body) => body.tasks.map((task) => [task.task, task.expired === true]))).toEqual([
+      [
+        [LAUNCH.task, false],
+        [expired.task, true],
+      ],
+    ]);
+    expect(h.logs).toContain(`scheduler hand-off restore survey tasks: ${LAUNCH.task}, ${expired.task}; expired: ${expired.task}`);
+  });
+
+  it.each([
+    { label: 'listed expired', restarted: false },
+    { label: 'listed paused after a restart imported every task paused', restarted: true },
+  ])('resumes after an aborted transition no survey task captured expired, then $label', async ({ restarted }) => {
+    const expired = { ...REMINDER_2, expired: true };
+    const { h, service } = harness([LAUNCH, REMINDER_1, expired]);
+    const svc = service();
+    await svc.pauseFor(['surveys.survey'], STAYS);
+    if (restarted) h.live.forEach((task) => Object.assign(task, { paused: true, expired: false }));
+
+    expect(await svc.resumePaused()).toEqual({ siteMonitor: [], surveys: [LAUNCH.task] });
+    expect(h.calls.filter((call) => call.startsWith('bridge.resume'))).toEqual([`bridge.resume {"tasks":["${LAUNCH.task}"]}`]);
+    expect(h.live.find((task) => task.task === expired.task)?.paused).toBe(restarted);
+    expect(h.table.stored('surveyTasks').paused).toBeNull();
   });
 
   it('resumes after an aborted transition only what was running before the pause', async () => {

@@ -326,7 +326,7 @@ describe('main', () => {
     expect(summaryLine(out.stdout())).toEqual({
       command: 'resume',
       ok: false,
-      error: { type: 'EnvValidationError', message: 'migration: invalid environment (MURA_DBHOST, PG_PORT)' },
+      error: { type: 'EnvValidationError', message: 'migration: invalid environment (MURA_DBHOST: is required; PG_PORT: is invalid)' },
     });
     expect(resume).not.toHaveBeenCalled();
     expect(ctx.close).not.toHaveBeenCalled();

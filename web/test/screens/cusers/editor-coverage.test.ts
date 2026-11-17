@@ -17,7 +17,6 @@ import {
   editUserScreen,
   loadEditUser,
   renderEditUser,
-  UNSERVED_EDIT_USER_SOURCES,
   type EditUserSources,
 } from '@/screens/cusers/edituser';
 import { USER_BEAN_RC_KEY, updateUserAction } from '@/screens/cusers/update';
@@ -41,6 +40,11 @@ const PHOTO_ID = 'BBBBBBBB-1111-2222-3333444455556666';
 const NOW = new Date('2026-06-30T12:00:00Z');
 
 const EDIT_ROUTE = routeKey('GET', 'people', '/v1/users/edit');
+// The oracle's sites hold no interest groups, so strategies-content answers each token site's top level empty.
+const NO_INTEREST_GROUPS: FakeReply = { status: 200, body: { items: [] } };
+const INTEREST_ROUTES = Object.fromEntries(
+  ['default', 'tenant-a'].map((site) => [routeKey('GET', 'strategies-content', `/v1/sites/${site}/private-interest-groups`), NO_INTEREST_GROUPS]),
+);
 
 // The form region (`mura-header` to `</form>`) of the legacy ACF 2023 server's cUsers.editUser for the admin on
 // `default`, its CSRF pair replaced by FIXED_CSRF: a new user with address fields in the URL, and qa_editor.
@@ -126,7 +130,7 @@ const editUserRequest = (rc: Readonly<Record<string, string>>, partial: Paramete
 /** A screen context for `req` over a gateway answering people's edit read with `edit`, or with `reply`. */
 function contextFor(req: AdminRequest, edit: UserEditData | FakeReply): ScreenContext & { gateway: FakeGatewayClient } {
   const reply: FakeReply = 'status' in edit ? edit : { status: 200, body: edit };
-  return makeScreenContext({ req, gateway: fakeGatewayClient({ [EDIT_ROUTE]: reply }), now: NOW });
+  return makeScreenContext({ req, gateway: fakeGatewayClient({ [EDIT_ROUTE]: reply, ...INTEREST_ROUTES }), now: NOW });
 }
 
 /** The form body the registered screen loads and renders, optionally with `sources` in place of the unserved ones. */
@@ -585,7 +589,7 @@ describe('cUsers.editUser sources no contract serves yet', () => {
       { token: 'T0K3N-1', clientName: 'Mobile <App>' },
       { token: 'T0K3N-2', clientName: 'Reports' },
     ];
-    const interestCategories = vi.fn(UNSERVED_EDIT_USER_SOURCES.interestCategories);
+    const interestCategories = vi.fn(() => Promise.resolve([]));
     const webServiceTokens = vi.fn(() => Promise.resolve(tokens));
     const ctx = contextFor(editUserRequest({ userid: EDITOR_ID, siteid: 'default' }), editData());
 
@@ -602,10 +606,10 @@ describe('cUsers.editUser sources no contract serves yet', () => {
   });
 
   it('asks for no tokens of a new user and shows no Web Services block', async () => {
-    const webServiceTokens = vi.fn(UNSERVED_EDIT_USER_SOURCES.webServiceTokens);
+    const webServiceTokens = vi.fn(() => Promise.resolve([]));
     const ctx = contextFor(editUserRequest({ userid: '' }), NEW_USER);
 
-    const body = await formOf(ctx, { ...UNSERVED_EDIT_USER_SOURCES, webServiceTokens });
+    const body = await formOf(ctx, { interestCategories: () => Promise.resolve([]), webServiceTokens });
 
     expect(webServiceTokens).not.toHaveBeenCalled();
     expect(body).not.toContain('Web Services');

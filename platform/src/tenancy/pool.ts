@@ -175,12 +175,13 @@ async function iamPool({ env, max, applicationName }: CreatePoolOptions): Promis
     throw new Error('OPT2_DB_AUTH=iam requires CLOUD_SQL_INSTANCE');
   }
   const connector = new Connector();
+  // Outside the try: a failed first load schedules no refresh, and close() would then reject unhandled on its cache entry.
+  const clientOpts = await connector.getOptions({
+    instanceConnectionName: env.CLOUD_SQL_INSTANCE,
+    authType: AuthTypes.IAM,
+    ipType: IpAddressTypes.PRIVATE,
+  });
   try {
-    const clientOpts = await connector.getOptions({
-      instanceConnectionName: env.CLOUD_SQL_INSTANCE,
-      authType: AuthTypes.IAM,
-      ipType: IpAddressTypes.PRIVATE,
-    });
     const user = env.PG_USER || (await serviceAccountDbUser());
     // No password: the connector's stream authenticates with short-lived IAM tokens.
     const pool = new pg.Pool({

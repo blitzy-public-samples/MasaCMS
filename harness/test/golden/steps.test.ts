@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +36,8 @@ import type { EnvLike } from '../../src/lib/paths.js';
 
 // No listener on this port; every request goes to the scripted fetch of its test.
 const BASE = 'http://127.0.0.1:8500';
+/** tenant-a's seeded domain on the legacy port, where a session with `site: tenant-a` sends its requests. */
+const SITE = 'http://tenant-a.localhost:8500';
 const SCENARIO = 'GS-CO-15';
 const ADMIN_PASSWORD = 'FIXTURE-ADMIN-PASSWORD';
 const RELOAD_KEY = 'FIXTURE-reload-key';
@@ -102,10 +104,10 @@ afterEach(() => {
 });
 
 /**
- * Fetch answering `routes`, keyed `<METHOD> <path?query>`: each call takes the route's next reply and the last one
- * repeats. Any other request is recorded as unmatched and rejected.
+ * Fetch answering `routes` on `origin`, keyed `<METHOD> <path?query>`: each call takes the route's next reply and the
+ * last one repeats. Any other request is recorded as unmatched and rejected.
  */
-function fakeOrigin(routes: Record<string, Reply | Reply[]>): FakeOrigin {
+function fakeOrigin(routes: Record<string, Reply | Reply[]>, origin = BASE): FakeOrigin {
   const queues = new Map(Object.entries(routes).map(([key, replies]) => [key, [replies].flat()]));
   const fake: FakeOrigin = {
     calls: [],
@@ -117,7 +119,7 @@ function fakeOrigin(routes: Record<string, Reply | Reply[]>): FakeOrigin {
       const raw = init.body;
       const body = typeof raw === 'string' || raw instanceof Uint8Array ? Buffer.from(raw) : undefined;
       fake.calls.push({ method, target, headers: { ...(init.headers as Record<string, string>) }, body });
-      const queue = parsed.origin === BASE ? queues.get(`${method} ${target}`) : undefined;
+      const queue = parsed.origin === origin ? queues.get(`${method} ${target}`) : undefined;
       const reply = queue === undefined ? undefined : queue.length > 1 ? queue.shift() : queue[0];
       if (reply === undefined) {
         fake.unmatched.push(`${method} ${url}`);
@@ -443,21 +445,34 @@ describe('runStep requests', () => {
     expect(record.request.headers.authorization).toBe(recorded);
   });
 
-  it('sends an anonymous step from an empty jar that the scenario session never sees', async () => {
-    const fake = fakeOrigin({
-      'GET /admin/?muraAction=cDashboard.main': html('<p>mine</p>'),
-      'GET /tenant-a/': html('<p>public</p>', [['set-cookie', 'CFID=FIXTURE-anon; Path=/']]),
-    });
-    const s = scenario([
-      { name: 'mine', route: '/admin/?muraAction=cDashboard.main' },
-      { name: 'anon', route: '/tenant-a/', auth: 'anonymous' },
-    ]);
+  it.each([
+    { host: 'the origin', origin: BASE, sessions: NO_LOGIN },
+    { host: 'its session site host', origin: SITE, sessions: { default: { login: 'none', via: 'public', site: 'tenant-a' } } },
+  ])('sends an anonymous step from an empty jar on $host that the scenario session never sees', async (c) => {
+    const dataset = { masa: { sites: [{ siteID: 'tenant-a', domain: new URL(SITE).hostname }] } };
+    mkdirSync(path.join(stateDir, 'seed'), { recursive: true });
+    writeFileSync(path.join(stateDir, 'seed', 'dataset.json'), JSON.stringify(dataset));
+    const fake = fakeOrigin(
+      {
+        'GET /admin/?muraAction=cDashboard.main': html('<p>mine</p>'),
+        'GET /': html('<p>public</p>', [['set-cookie', 'CFID=FIXTURE-anon; Path=/']]),
+      },
+      c.origin,
+    );
+    const s = scenario(
+      [
+        { name: 'mine', route: '/admin/?muraAction=cDashboard.main' },
+        { name: 'anon', route: '/', auth: 'anonymous' },
+      ],
+      c.sessions,
+    );
     const ctx = contextFor(s, fake);
-    await session(ctx).jar.setCookie('CFID=FIXTURE-cfid; Path=/', BASE);
+    await session(ctx).jar.setCookie('CFID=FIXTURE-cfid; Path=/', c.origin);
     await runStep(ctx, s, stepAt(s, 0), { mode: 'capture', fetch: fake.fetch });
-    await runStep(ctx, s, stepAt(s, 1), { mode: 'capture', fetch: fake.fetch });
+    const [anon] = await runStep(ctx, s, stepAt(s, 1), { mode: 'capture', fetch: fake.fetch });
     expect(callAt(fake, 0).headers.cookie).toBe('CFID=FIXTURE-cfid');
     expect(callAt(fake, 1).headers.cookie).toBeUndefined();
+    expect(anon?.response.hops.map((hop) => hop.url)).toStrictEqual([`${c.origin}/`]);
     expect(await session(ctx).cookieHeader()).toBe('CFID=FIXTURE-cfid');
   });
 
@@ -717,7 +732,17 @@ describe('runStep route keys', () => {
 });
 
 describe('runStep CSRF', () => {
-  it('fills a fetch-form step from its csrfFrom page, explicit fields overriding hidden ones in any case', async () => {
+  const hiddenLoginFields: [string, string][] = [
+    ['returnUrl', ''],
+    ['isAdminLogin', 'true'],
+    ['compactDisplay', 'true'],
+  ];
+
+  it.each<{ label: string; mergeHidden?: boolean; hidden: [string, string][] }>([
+    { label: 'with hidden fields by default', hidden: hiddenLoginFields },
+    { label: 'with hidden fields under mergeHidden true', mergeHidden: true, hidden: hiddenLoginFields },
+    { label: 'without hidden fields under mergeHidden false', mergeHidden: false, hidden: [] },
+  ])('fills a fetch-form step from its csrfFrom page $label, explicit fields winning in any case', async (input) => {
     const fake = fakeOrigin({
       [`GET ${LOGIN_PAGE}`]: html(ADMIN_LOGIN_HTML),
       'POST /admin/?muraAction=cLogin.login': html('<p>signed in</p>'),
@@ -730,6 +755,7 @@ describe('runStep CSRF', () => {
         route: '/admin/?muraAction=cLogin.login',
         csrf: 'fetch-form',
         csrfFrom: 'loginPage',
+        ...(input.mergeHidden === undefined ? {} : { mergeHidden: input.mergeHidden }),
         form: { username: 'admin', password: '${secret:admin}', MURAACTION: 'cLogin.login' },
       },
     ]);
@@ -739,9 +765,7 @@ describe('runStep CSRF', () => {
       'POST /admin/?muraAction=cLogin.login',
     ]);
     expect(formEntries(callAt(fake, 1))).toStrictEqual([
-      ['returnUrl', ''],
-      ['isAdminLogin', 'true'],
-      ['compactDisplay', 'true'],
+      ...input.hidden,
       ['csrf_token', LOGIN_TOKEN],
       ['csrf_token_expires', LOGIN_EXPIRES],
       ['username', 'admin'],

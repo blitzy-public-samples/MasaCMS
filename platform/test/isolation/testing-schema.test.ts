@@ -5,7 +5,7 @@ import { createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { rlsSql, tenantIdForSite } from '../../src/tenancy/index.js';
 import { runCleanup } from '../../src/testing/cleanup.js';
 import {
@@ -118,6 +118,7 @@ describe('pgAvailable', () => {
     ['PG_HOST is unset', { ...SYNTHETIC_PG, PG_HOST: undefined }],
     ['PG_HOST is empty', { ...SYNTHETIC_PG, PG_HOST: '' }],
     ['no PG_* variable is set', {}],
+    ['PG_HOST is unset and OPT2_TEST_REQUIRE_PG is not 1', { OPT2_TEST_REQUIRE_PG: '0' }],
   ])('resolves false when %s', async (_label, env) => {
     await expect(pgAvailable(env)).resolves.toBe(false);
   });
@@ -125,13 +126,17 @@ describe('pgAvailable', () => {
   it.each([
     ['PG_PASSWORD is unset', { ...SYNTHETIC_PG, PG_PASSWORD: undefined }, 'need PG_PASSWORD in the environment'],
     ['PG_PORT is invalid', { ...SYNTHETIC_PG, PG_PORT: 'abc' }, 'need PG_PORT to be an integer from 1 to 65535, got "abc"'],
+    ['OPT2_TEST_REQUIRE_PG=1 and PG_HOST is unset', { OPT2_TEST_REQUIRE_PG: '1' }, 'require PostgreSQL (OPT2_TEST_REQUIRE_PG=1), but PG_HOST is unset'],
+    ['OPT2_TEST_REQUIRE_PG=1 and PG_HOST is empty', { ...SYNTHETIC_PG, PG_HOST: '', OPT2_TEST_REQUIRE_PG: '1' }, 'but PG_HOST is unset'],
   ])('rejects naming the variable when %s', async (_label, env, message) => {
     await expect(pgAvailable(env)).rejects.toThrow(message);
   });
 
-  it('resolves false when nothing listens on the port', async () => {
+  it('rejects naming PG_HOST and PG_PORT, with the connect error as cause, when nothing listens on the port', async () => {
     const port = await closedPort();
-    await expect(pgAvailable({ ...SYNTHETIC_PG, PG_HOST: '127.0.0.1', PG_PORT: String(port) })).resolves.toBe(false);
+    const probe = pgAvailable({ ...SYNTHETIC_PG, PG_HOST: '127.0.0.1', PG_PORT: String(port) });
+    await expect(probe).rejects.toThrow(`PostgreSQL at PG_HOST=127.0.0.1 PG_PORT=${String(port)} is unreachable`);
+    await expect(probe).rejects.toMatchObject({ cause: expect.objectContaining({ code: 'ECONNREFUSED' }) });
   });
 
   it.skipIf(!available)('rejects with the server error on a wrong PG_PASSWORD', async () => {
@@ -361,6 +366,40 @@ describe.skipIf(!available)('createThrowawaySchema lifecycle', () => {
     expect(await residue(service.replace('-', '_'))).toEqual([]);
   });
 
+  it('removes a creation that commits after a drop() requested past its drop() check, its CONNECT grant included', async () => {
+    type Query = typeof pg.Client.prototype.query;
+    const stem = `inflight_${randomBytes(3).toString('hex')}`;
+    const query = pg.Client.prototype.query as (this: pg.Client, ...args: unknown[]) => unknown;
+    let sweeping: Promise<void> | undefined;
+    let handle: ThrowawaySchema | undefined;
+    // Requests the sweep as the creation sends its CONNECT grant, after its drop() check and before its commit.
+    pg.Client.prototype.query = function (this: pg.Client, ...args: unknown[]): unknown {
+      const text = typeof args[0] === 'string' ? args[0] : '';
+      if (sweeping === undefined && text.startsWith('GRANT CONNECT ON DATABASE') && text.includes(stem)) {
+        sweeping = dropThrowawaySchemas();
+      }
+      return query.apply(this, args);
+    } as unknown as Query;
+    try {
+      handle = await createThrowawaySchema({ service: stem });
+      await sweeping;
+    } finally {
+      pg.Client.prototype.query = query as unknown as Query;
+    }
+
+    expect(sweeping).toBeDefined();
+    expect(await residue(stem)).toEqual([]);
+    expect(() => handle?.connect('app')).toThrow('has been dropped');
+    const client = new pg.Client(testPgConfig());
+    await client.connect();
+    try {
+      const { rows } = await client.query<{ acl: string | null }>('SELECT datacl::text AS acl FROM pg_database WHERE datname = current_database()');
+      expect(rows[0]?.acl ?? '').not.toContain(stem);
+    } finally {
+      await client.end();
+    }
+  });
+
   it.each([
     ['nobody dropped', async (): Promise<void> => undefined],
     [
@@ -376,6 +415,17 @@ describe.skipIf(!available)('createThrowawaySchema lifecycle', () => {
     await before(handle);
 
     await expect(dropThrowawaySchemas()).resolves.toBeUndefined();
+
+    expect(await residue(stemOf(handle))).toEqual([]);
+    expect(() => handle.connect('app')).toThrow('has been dropped');
+  });
+
+  it('sweeps a schema created through a module instance vi.resetModules() created', async () => {
+    vi.resetModules();
+    const fresh = await import('../../src/testing/schema.js');
+    const handle = await fresh.createThrowawaySchema({ service: 'testing-schema' });
+
+    await dropThrowawaySchemas();
 
     expect(await residue(stemOf(handle))).toEqual([]);
     expect(() => handle.connect('app')).toThrow('has been dropped');

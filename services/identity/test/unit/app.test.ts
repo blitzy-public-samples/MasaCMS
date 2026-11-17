@@ -29,7 +29,7 @@ import {
 import { SERVICE_NAME, SERVICE_VERSION, buildApp, identityEnvSchema, type BuildAppOptions } from '../../src/app.js';
 import { SIGN_IN_WITH_CUSTOM_TOKEN_URL, type Jwks, type TokenSigner } from '../../src/domain/tokens.js';
 import { createIdentityTaskPort } from '../../src/tasks/port.js';
-import { createFakeTaskPort, createTestStateDir, headersFor, testEnv } from '../helpers/app.js';
+import { CLOUD_DB_OVERRIDES, createFakeTaskPort, createTestStateDir, headersFor, testEnv } from '../helpers/app.js';
 import { TEST_EXCHANGE_URL, TEST_WEB_API_KEY, recordTenantListing, testFirebaseApp } from '../helpers/firebase.js';
 import { createRecordingDb } from '../helpers/memory-repo.js';
 import { SITE_ADMIN_A, loginSnapshotFixture, sessionRow } from '../helpers/rows.js';
@@ -97,6 +97,12 @@ function envFor(stateDir: string, overrides: Readonly<Record<string, string | un
     PORT: '8111',
     OPT2_SERVICE_NAME: SERVICE_NAME,
     OPT2_ENV: 'local',
+    OPT2_DB_AUTH: 'password',
+    PG_HOST: '127.0.0.1',
+    PG_PORT: '5432',
+    PG_DATABASE: 'opt2_identity_test',
+    PG_USER: 'identity_app',
+    PG_PASSWORD: 'unused',
     OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
     OPT2_TOKEN_ISSUER: 'opt2-local-identity',
     OPT2_TOKEN_AUDIENCE: 'opt2-local',
@@ -134,7 +140,7 @@ describe('identity composition constants', () => {
     'OPT2_SERVICE_URLS.programs-sites: is required',
     'OPT2_SERVICE_URLS.strategies-content: is required',
   ];
-  const cloudBase = { OPT2_ENV: 'cloud', GOOGLE_CLOUD_PROJECT: 'opt2-test', PUBSUB_EMULATOR_HOST: undefined };
+  const cloudBase = { OPT2_ENV: 'cloud', ...CLOUD_DB_OVERRIDES, GOOGLE_CLOUD_PROJECT: 'opt2-test', PUBSUB_EMULATOR_HOST: undefined };
   const apiKeyIssue = 'OPT2_IDENTITY_PLATFORM_API_KEY: is required when OPT2_ENV=cloud';
   it.each<[string, Record<string, string | undefined>, string[]]>([
     ['parses a map naming every callee beside OPT2_GATEWAY_URL', {}, []],
@@ -143,6 +149,15 @@ describe('identity composition constants', () => {
       { OPT2_GATEWAY_URL: undefined, OPT2_SERVICE_URLS: JSON.stringify({ ...CALLEE_URLS, gateway: 'http://127.0.0.1:8100' }) },
       [],
     ],
+    ...Object.keys(CALLEE_URLS).map((callee): [string, Record<string, string | undefined>, string[]] => [
+      `names ${callee} when only it is missing from the map`,
+      { OPT2_SERVICE_URLS: JSON.stringify(Object.fromEntries(Object.entries(CALLEE_URLS).filter(([name]) => name !== callee))) },
+      [`OPT2_SERVICE_URLS.${callee}: is required`],
+    ]),
+    ['refuses the name of people', { OPT2_SERVICE_NAME: 'people' }, ['OPT2_SERVICE_NAME: must be identity']],
+    ['refuses the name of the gateway', { OPT2_SERVICE_NAME: 'gateway' }, ['OPT2_SERVICE_NAME: must be identity']],
+    ['names OPT2_DB_AUTH when it is unset', { OPT2_DB_AUTH: undefined }, ['OPT2_DB_AUTH: is required']],
+    ['names PG_DATABASE when it is unset', { PG_DATABASE: undefined }, ['PG_DATABASE: is required']],
     ['names every callee when OPT2_SERVICE_URLS is unset', { OPT2_SERVICE_URLS: undefined }, everyCallee],
     ['names every callee when OPT2_SERVICE_URLS is {}', { OPT2_SERVICE_URLS: '{}' }, everyCallee],
     [
@@ -182,6 +197,25 @@ describe('identity composition constants', () => {
     ],
   ])('identityEnvSchema %s', (_case, overrides, issues) => {
     expect(envIssues(overrides)).toStrictEqual(issues);
+  });
+
+  it.each<[string, Record<string, string | undefined>, string]>([
+    [
+      'every missing callee',
+      { OPT2_SERVICE_URLS: undefined },
+      'identity: invalid environment (OPT2_SERVICE_URLS.identity: is required; OPT2_SERVICE_URLS.people: is required; ' +
+        'OPT2_SERVICE_URLS.programs-sites: is required; OPT2_SERVICE_URLS.strategies-content: is required)',
+    ],
+    ['the missing database settings', { OPT2_DB_AUTH: undefined, PG_DATABASE: undefined }, 'identity: invalid environment (OPT2_DB_AUTH: is required; PG_DATABASE: is required)'],
+  ])('logs a refusal naming %s with its reason and no value', (_case, overrides, text) => {
+    let refused: unknown;
+    try {
+      envFor(tmpdir(), overrides);
+    } catch (err) {
+      refused = err;
+    }
+    expect(refused).toBeInstanceOf(EnvValidationError);
+    expect(serializeError(refused).message).toBe(text);
   });
 });
 
@@ -232,7 +266,7 @@ describe('identity buildApp in the cloud', () => {
     const env = testEnv(
       {
         OPT2_ENV: 'cloud',
-        OPT2_DB_AUTH: undefined,
+        ...CLOUD_DB_OVERRIDES,
         OPT2_TASKS_ADAPTER: 'cloud',
         OPT2_STORAGE_ADAPTER: 'cloud',
         GOOGLE_CLOUD_PROJECT: 'proj',
@@ -300,7 +334,7 @@ describe('identity buildApp in the cloud', () => {
     const { issuer, audience } = cloudUserTokenSettings('proj');
     const stateDir = await createTestStateDir();
     const cloudOverrides = {
-      OPT2_ENV: 'cloud', OPT2_DB_AUTH: undefined, OPT2_TASKS_ADAPTER: 'cloud', OPT2_STORAGE_ADAPTER: 'cloud', GOOGLE_CLOUD_PROJECT: 'proj',
+      OPT2_ENV: 'cloud', ...CLOUD_DB_OVERRIDES, OPT2_TASKS_ADAPTER: 'cloud', OPT2_STORAGE_ADAPTER: 'cloud', GOOGLE_CLOUD_PROJECT: 'proj',
       OPT2_IDENTITY_PLATFORM_API_KEY: TEST_WEB_API_KEY, OPT2_TOKEN_ISSUER: issuer, OPT2_TOKEN_AUDIENCE: audience, LOG_LEVEL: 'error',
     };
     const env = { ...testEnv(cloudOverrides, stateDir), OPT2_IDENTITY_PLATFORM_API_KEY: undefined };
@@ -424,7 +458,14 @@ describe.skipIf(!available)('identity buildApp over a throwaway schema', () => {
     const db = Object.create(handle.app, { end: { value: end } }) as TenantDb;
     const publisherClose = vi.spyOn(publisher, 'close');
     const portClose = vi.spyOn(port, 'close');
-    const cloud = envFor(stateDir, { OPT2_ENV: 'cloud', GOOGLE_CLOUD_PROJECT: 'opt2-test', OPT2_IDENTITY_PLATFORM_API_KEY: TEST_WEB_API_KEY, PUBSUB_EMULATOR_HOST: undefined, OPT2_JWKS_URL: undefined });
+    const cloud = envFor(stateDir, {
+      OPT2_ENV: 'cloud',
+      ...CLOUD_DB_OVERRIDES,
+      GOOGLE_CLOUD_PROJECT: 'opt2-test',
+      OPT2_IDENTITY_PLATFORM_API_KEY: TEST_WEB_API_KEY,
+      PUBSUB_EMULATOR_HOST: undefined,
+      OPT2_JWKS_URL: undefined,
+    });
     const firebaseApp = await testFirebaseApp('identity-app-refused-listing');
     getAuth(firebaseApp).tenantManager().listTenants = () => Promise.reject(new Error('PERMISSION_DENIED: identitytoolkit.tenants.list'));
 

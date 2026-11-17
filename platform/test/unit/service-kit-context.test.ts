@@ -6,8 +6,10 @@ import {
   NoRequestContextError,
   REQUEST_ID_HEADER,
   RequestAbortedError,
+  UnpublishedEventsError,
   currentRequestContext,
   newRequestContext,
+  recordUnpublishedEvents,
   recordWritePosition,
   requestContext,
   requestIdFrom,
@@ -278,5 +280,34 @@ describe('recordWritePosition', () => {
       });
     }).toThrow(SyntaxError);
     expect(store.writePositions.size).toBe(0);
+  });
+});
+
+describe('recordUnpublishedEvents', () => {
+  it('appends every non-empty list to the active request store, in call order', () => {
+    const store = newRequestContext();
+    runWithRequestContext(store, () => {
+      recordUnpublishedEvents([]);
+      recordUnpublishedEvents(['e-1', 'e-2']);
+      recordUnpublishedEvents(['e-3']);
+    });
+    expect(store.unpublishedEvents).toStrictEqual(['e-1', 'e-2', 'e-3']);
+  });
+
+  it('leaves the store untouched for an empty list and does nothing outside a request', () => {
+    const store = newRequestContext();
+    runWithRequestContext(store, () => recordUnpublishedEvents([]));
+    expect(store).not.toHaveProperty('unpublishedEvents');
+    expect(() => recordUnpublishedEvents(['e-1'])).not.toThrow();
+  });
+
+  it('names the event count, and only it, in the UnpublishedEventsError of the recorded ids', () => {
+    const error = new UnpublishedEventsError(['e-1', 'e-2']);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({
+      name: 'UnpublishedEventsError',
+      eventIds: ['e-1', 'e-2'],
+      message: 'Outbox publish of 2 committed event(s) incomplete before the answer; left to the sweep',
+    });
   });
 });

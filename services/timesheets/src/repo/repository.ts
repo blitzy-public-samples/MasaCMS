@@ -34,6 +34,24 @@ export interface SheetPage {
   total: number;
 }
 
+/** A day's lifecycle state and whether a blackout closes it: all a sheet status reads of the day. */
+export interface DayState {
+  state: TimesheetDayRow['state'];
+  blackout: boolean;
+}
+
+/** A sheet and the states of its days, in no particular order. */
+export interface SheetWithDayStates {
+  sheet: TimesheetRow;
+  days: DayState[];
+}
+
+/** One page of the tenant's matching sheets, each with its day states, and the count of all of them. */
+export interface SheetDayStatePage {
+  sheets: SheetWithDayStates[];
+  total: number;
+}
+
 /** A day, the sheet columns its checks read, and whether a blackout closes it. */
 export interface DayWithBlackout {
   day: TimesheetDayRow;
@@ -60,6 +78,8 @@ export type TimesheetsRepository = Repository & {
   insertBlackoutsIfAbsent(tx: TenantTx, rows: readonly NewRow<BlackoutRow>[], ctx?: WriteContext): Promise<number>;
   /** One page of the tenant's sheets matching `filter`, as `usp_timesheet_status_list` pages them, and their count; RangeError for paging out of bounds. */
   listSheets(tx: TenantTx, filter: SheetFilter): Promise<SheetPage>;
+  /** The `listSheets` page with the states of its sheets' days, read in one more query; RangeError for paging out of bounds. */
+  listSheetsWithDayStates(tx: TenantTx, filter: SheetFilter): Promise<SheetDayStatePage>;
   /** The sheet `timesheetId`, or null. */
   getSheet(tx: TenantTx, timesheetId: string): Promise<TimesheetRow | null>;
   /** The days of sheet `timesheetId`, by work date, then day id. */
@@ -76,6 +96,9 @@ export type TimesheetsRepository = Repository & {
 
 /** A `dayWithBlackout` result row before it is split into day and sheet. */
 type DayBlackoutRow = TimesheetDayRow & { sheet_person_id: string; sheet_siteid: string; blackout: boolean };
+
+/** A `dayStatesOfSheets` result row before it is grouped by sheet. */
+type SheetDayStateRow = DayState & Pick<TimesheetDayRow, 'timesheet_id'>;
 
 /** The quoted `columns`, each prefixed by `alias`. */
 function columnList(columns: readonly { name: string }[], alias: string): string {
@@ -105,6 +128,8 @@ function statementsFor(schema: string) {
     daysOfSheets:
       `SELECT ${dayColumns} FROM ${days} d WHERE d."timesheet_id" = ANY($1::bpchar[])` +
       ' ORDER BY d."timesheet_id" COLLATE "C", d."work_date", d."day_id" COLLATE "C"',
+    // A sheet status counts its days in any order, so they are read unsorted.
+    dayStatesOfSheets: `SELECT d."timesheet_id", d."state", EXISTS (${dayBlackout}) AS "blackout" FROM ${days} d WHERE d."timesheet_id" = ANY($1::bpchar[])`,
     lockDay: `SELECT 1 FROM ${days} WHERE "day_id" = $1::bpchar FOR UPDATE`,
     dayWithBlackout:
       `SELECT ${dayColumns}, t."person_id" AS sheet_person_id, t."siteid" AS sheet_siteid, EXISTS (${dayBlackout}) AS blackout` +
@@ -144,16 +169,32 @@ export function createTimesheetsRepository(options: { clock?: Clock; schema?: st
     return (await base.insertAbsent(tx, BLACKOUT.table, rows, ['day_id'], ctx)).length;
   }
 
-  async function listSheets(tx: TenantTx, { siteid, personId, pageIndex, itemsPerPage }: SheetFilter): Promise<SheetPage> {
+  /** The `listSheets` page after fencing `units`; RangeError for paging out of bounds, before any query. */
+  async function readSheetPage(tx: TenantTx, { siteid, personId, pageIndex, itemsPerPage }: SheetFilter, units: readonly string[]): Promise<SheetPage> {
     if (!Number.isSafeInteger(pageIndex) || pageIndex < 1 || !Number.isInteger(itemsPerPage) || itemsPerPage < 1 || itemsPerPage > MAX_SHEETS_PER_PAGE) {
       throw new RangeError(`Sheet page out of range: pageIndex ${pageIndex}, itemsPerPage ${itemsPerPage}`);
     }
-    await awaitReadable(tx, [TIMESHEET.unit]);
+    await awaitReadable(tx, units);
     const filter = [siteid ?? null, personId ?? null];
     const [{ total }] = (await tx.query<{ total: number }>(sql.countSheets, filter)).rows as [{ total: number }];
     const offset = (pageIndex - 1) * itemsPerPage;
     if (offset >= total) return { rows: [], total };
     return { rows: (await tx.query<TimesheetRow>(sql.sheets, [...filter, itemsPerPage, offset])).rows, total };
+  }
+
+  function listSheets(tx: TenantTx, filter: SheetFilter): Promise<SheetPage> {
+    return readSheetPage(tx, filter, [TIMESHEET.unit]);
+  }
+
+  async function listSheetsWithDayStates(tx: TenantTx, filter: SheetFilter): Promise<SheetDayStatePage> {
+    // One fence of every unit read, so a window on the days or blackouts is waited out before any gate lock is held.
+    const { rows, total } = await readSheetPage(tx, filter, [TIMESHEET.unit, TIMESHEET_DAY.unit, BLACKOUT.unit]);
+    if (rows.length === 0) return { sheets: [], total };
+    const bySheet = new Map<string, DayState[]>(rows.map((sheet) => [sheet.timesheet_id, []]));
+    for (const { timesheet_id, state, blackout } of (await tx.query<SheetDayStateRow>(sql.dayStatesOfSheets, [[...bySheet.keys()]])).rows) {
+      bySheet.get(timesheet_id)?.push({ state, blackout });
+    }
+    return { sheets: rows.map((sheet) => ({ sheet, days: bySheet.get(sheet.timesheet_id) ?? [] })), total };
   }
 
   async function getSheet(tx: TenantTx, timesheetId: string): Promise<TimesheetRow | null> {
@@ -203,6 +244,7 @@ export function createTimesheetsRepository(options: { clock?: Clock; schema?: st
     insertApprovalAction,
     insertBlackoutsIfAbsent,
     listSheets,
+    listSheetsWithDayStates,
     getSheet,
     daysOfSheet,
     daysOfSheets,

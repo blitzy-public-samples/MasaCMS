@@ -65,7 +65,7 @@ const BY_TITLE = /AS approvalgroupid FROM "content"\."content" tcontent .* WHERE
 const BY_REMOTE_ID = /AS approvalgroupid FROM "content"\."content" tcontent .* WHERE \(\(\(tcontent\.remoteid::bpchar\) COLLATE "content"\."lookup_ci"\) = \$1::text::bpchar AND lower\(rtrim\(tcontent\.remoteid\)\)/;
 const NEST = /AND tcontent\.parentid = ANY\(\$2::bpchar\[\]\) AND tcontent\.active = 1/;
 const STATS = /FROM "content"\."content_stats" s WHERE/;
-const DRAFTS = /^SELECT \* FROM \(SELECT draft\.contenthistid/;
+const DRAFTS = /^(?:DECLARE content_rows_\d+ NO SCROLL CURSOR FOR )?SELECT \* FROM \(SELECT draft\.contenthistid/;
 const SEARCH = /AS supersort FROM "content"\."content" tcontent/;
 const ITEM_COUNT = /^SELECT tcontent\.menutitle, tcontent\.title, tcontent\.filename, tcontent\.lastupdate, tcontent\.type FROM/;
 const PAGE_COUNT = /AS counter FROM "content"\."content"/;
@@ -623,7 +623,6 @@ describe('carch.draft', () => {
     crumb(CHILD, { type: 'Folder', menutitle: 'Home', restricted: 1 }),
     crumb(GRANDCHILD, { type: 'Component', moduleid: COMPONENTS, parentid: COMPONENTS, menutitle: 'Footer' }),
   ];
-  const crumbIds = (): unknown[] => statementsOf(CRUMBS).map((statement) => (statement.params[0] as string[])[0]);
   const nodeCrumbdata = [
     expect.objectContaining({ contentid: NODE, type: 'Page', subtype: 'Landing', restricted: 0, parentarray: [NODE, CHILD], iconclass: 'mi-star' }),
     expect.objectContaining({ contentid: CHILD, type: 'Folder', menutitle: 'Home', restricted: 1, iconclass: 'mi-folder-open-o' }),
@@ -638,11 +637,13 @@ describe('carch.draft', () => {
     t.db.respond(GRANTS, grants.map(([contentId, type]) => ({ tenant_id: TENANT_A.tenantId, group_id: GROUP, site_id: SITE, content_id: contentId, type })));
   }
 
-  it('reads the session user’s drafts of the site, and no crumbs, groups or icons when there are none', async () => {
+  it('reads the session user’s drafts of the site after its memberships and icons, and no crumbs or grants when there are none', async () => {
     const rc = await rcOf(DRAFTS_URL);
     expect(rc.rsList).toEqual([]);
     expect(JSON.stringify(paramsOfFirst(DRAFTS))).toContain(USER_ID);
-    expect([ran(CRUMBS), ran(MEMBERSHIPS), ran(SUBTYPES)]).toEqual([false, false, false]);
+    expect([ran(CRUMBS), ran(GRANTS), ran(MEMBERSHIPS), ran(SUBTYPES)]).toEqual([false, false, true, true]);
+    const at = (pattern: RegExp): number => t.db.statements.findLastIndex((statement) => pattern.test(statement.sql));
+    expect(t.db.statements.findIndex((statement) => DRAFTS.test(statement.sql))).toBeGreaterThan(Math.max(at(MEMBERSHIPS), at(SUBTYPES)));
   });
 
   it.each([
@@ -664,7 +665,7 @@ describe('carch.draft', () => {
     ]);
   });
 
-  it('keeps every draft and its columns in list order, reading crumbs per draft and memberships and icons once', async () => {
+  it('keeps every draft and its columns in list order, reading the batch’s crumbs once per level and memberships and icons once', async () => {
     const component = draftRow(GRANDCHILD, { type: 'Component', subtype: 'Default', moduleid: COMPONENTS, parentid: COMPONENTS, menutitle: 'Footer', module: 'Components' });
     t.db.respond(DRAFTS, [component, draftRow(NODE)]);
     respondCrumbsAndGroups([[NODE, 'Author']]);
@@ -674,7 +675,7 @@ describe('carch.draft', () => {
       { ...component, lastupdate: UPDATED_AT_TEXT, verdict: 'none', crumbdata: [expect.objectContaining({ contentid: GRANDCHILD, iconclass: 'mi-align-justify' })] },
       { ...draftRow(NODE), lastupdate: UPDATED_AT_TEXT, verdict: 'author', crumbdata: nodeCrumbdata },
     ]);
-    expect(crumbIds()).toEqual([GRANDCHILD, COMPONENTS, NODE, CHILD]);
+    expect(statementsOf(CRUMBS).map((statement) => (statement.params[0] as string[]).filter((id) => id === id.toUpperCase()))).toEqual([[GRANDCHILD, NODE], [COMPONENTS, CHILD]]);
     expect(new Set(statementsOf(CRUMBS).map((statement) => statement.tenantId))).toEqual(new Set([TENANT_A.tenantId]));
     expect(statementsOf(MEMBERSHIPS).map((statement) => statement.tenantId)).toEqual([TENANT_UMBRELLA.tenantId, TENANT_A.tenantId]);
     expect(statementsOf(SUBTYPES).map((statement) => [statement.tenantId, statement.params])).toEqual([[TENANT_A.tenantId, expect.arrayContaining([SITE])]]);

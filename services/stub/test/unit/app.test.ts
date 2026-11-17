@@ -151,8 +151,18 @@ describe.skipIf(!available)('buildApp against PostgreSQL', () => {
 describe('buildApp without a database', () => {
   it.each([
     ['no emulator host for its own publisher', {}, undefined, 'stub: invalid environment\n  PUBSUB_EMULATOR_HOST: is required when OPT2_ENV=local'],
-    ['an emulator host but no database', { PUBSUB_EMULATOR_HOST: '127.0.0.1:9' }, undefined, 'Schema stub needs OPT2_DB_AUTH and PG_DATABASE'],
-    ['an injected publisher but no database', {}, createCapturingPublisher(), 'Schema stub needs OPT2_DB_AUTH and PG_DATABASE'],
+    [
+      'an emulator host but no database',
+      { PUBSUB_EMULATOR_HOST: '127.0.0.1:9' },
+      undefined,
+      'stub: invalid environment\n  OPT2_DB_AUTH: is required\n  PG_DATABASE: is required',
+    ],
+    [
+      'an injected publisher but no database',
+      {},
+      createCapturingPublisher(),
+      'stub: invalid environment\n  OPT2_DB_AUTH: is required\n  PG_DATABASE: is required',
+    ],
   ])('fails start-up with %s', async (_case, extra, publisher, message) => {
     const sigterm = process.listenerCount('SIGTERM');
     await expect(buildApp({ env: envFor(extra), publisher, verifierOverride: testVerifier('stub'), clock })).rejects.toThrow(message);

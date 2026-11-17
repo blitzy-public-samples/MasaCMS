@@ -435,9 +435,10 @@ function resolveBody(ctx: ScenarioContext, shape: RequestShape): ResolvedBody {
   };
 }
 
-/** `body` with a form's CSRF pair and hidden fields beneath its explicit fields. */
+/** `body` with a form's CSRF pair, and its hidden fields unless `mergeHidden` is false, beneath its explicit fields. */
 function withFormTokens(ctx: ScenarioContext, step: Step, body: ResolvedBody, tokens: FormTokens): ResolvedBody {
-  const base: FieldValues = { ...tokens.fields, [CSRF_FIELD_TOKEN]: tokens.token, [CSRF_FIELD_EXPIRES]: tokens.expires };
+  const hidden = step.mergeHidden === false ? {} : tokens.fields;
+  const base: FieldValues = { ...hidden, [CSRF_FIELD_TOKEN]: tokens.token, [CSRF_FIELD_EXPIRES]: tokens.expires };
   switch (body.kind) {
     case 'none':
       return { kind: 'form', fields: base };
@@ -510,9 +511,9 @@ function authHeaders(auth: string): Record<string, string> {
 }
 
 function stepSession(ctx: ScenarioContext, step: Step, auth: string, opts: StepRunOptions): HttpSession {
-  // An anonymous request starts from an empty jar, so no cookie the scenario's sessions hold reaches it.
-  if (auth === 'anonymous') return createHttpSession({ baseUrl: ctx.baseUrl, fetch: opts.fetch });
-  return session(ctx, step.as === undefined ? undefined : resolvedText(ctx, step, step.as, 'as'));
+  const s = session(ctx, step.as === undefined ? undefined : resolvedText(ctx, step, step.as, 'as'));
+  // An anonymous request starts from an empty jar on its session's host, so no cookie the scenario holds reaches it.
+  return auth === 'anonymous' ? createHttpSession({ baseUrl: s.baseUrl, fetch: opts.fetch }) : s;
 }
 
 function requestBody(body: ResolvedBody): Pick<HttpRequest, 'form' | 'json' | 'multipart'> {

@@ -1,7 +1,7 @@
 // Category manager secondary menu of `ccategory/dsp_secondary_menu.cfm`, placed by the list and edit screens (server-only).
 import { html, raw, type SafeHtml } from '@/lib/html';
 import { tokenServesSite, type AdminRequest } from '@/lib/request-context';
-import { rbFor } from '@/lib/resource-bundles/rb';
+import { adminRbFor } from '@/lib/resource-bundles/rb';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellHooks } from '@/shell/types';
 
@@ -26,7 +26,7 @@ function seesPermissions(ctx: AdminRequest): boolean {
 export const ccategorySecondaryMenu: NonNullable<ShellHooks['secondaryMenus']['ccategory']> = (
   ctx: AdminRequest,
 ): SafeHtml => {
-  const rb = rbFor(ctx.session.rb);
+  const rb = adminRbFor(ctx.session.rb);
   // Labels and hrefs are written unencoded, as legacy writes them.
   const label = (key: string): SafeHtml => raw(rb.rbKey(`categorymanager.${key}`));
   const siteid = ctx.rc.siteid ?? '';

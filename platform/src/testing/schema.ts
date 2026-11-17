@@ -63,13 +63,14 @@ const LONGEST_ROLE_SUFFIX = '_migrator';
 // t_<base>_<suffix> and <base>_<suffix>_migrator must both fit; the role name is the longer one.
 const MAX_BASE_LENGTH = MAX_IDENTIFIER_BYTES - 1 - SUFFIX_BYTES * 2 - LONGEST_ROLE_SUFFIX.length;
 const PASSWORD_BYTES = 24;
-const CONNECT_TIMEOUT_MS = 2000;
+const CONNECT_TIMEOUT_MS = 10000;
 const PG_PORT = optionalEnvString(envPort());
 const DEFAULT_PG_PORT = 5432;
 // Concurrent GRANT/REVOKE on the same pg_database row fail with "tuple concurrently updated".
 const BOOTSTRAP_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('opt2.testing.throwaway-schema'))";
-// drop() of every schema created or being created and not yet dropped.
-const live = new Set<() => Promise<void>>();
+const LIVE_KEY = Symbol.for('opt2.testing.throwaway-schemas');
+// drop() of every schema created or being created and not yet dropped, on globalThis so instances vi.resetModules() creates share it.
+const live = ((globalThis as { [LIVE_KEY]?: Set<() => Promise<void>> })[LIVE_KEY] ??= new Set<() => Promise<void>>());
 
 /** Reads the bootstrap user's connection settings; throws naming every missing required variable or an invalid PG_PORT. */
 export function testPgConfig(env: NodeJS.ProcessEnv = process.env): PgConfig {
@@ -90,19 +91,23 @@ export function testPgConfig(env: NodeJS.ProcessEnv = process.env): PgConfig {
   };
 }
 
-/** True when the `PG_*` server accepts a connection within 2 s; false when PG_HOST is unset or the server is unreachable; rejects on other bad settings or server errors. */
+/** True when the `PG_*` server accepts a connection within 10 s; false only when PG_HOST is unset and OPT2_TEST_REQUIRE_PG is not `1`; otherwise rejects. */
 export async function pgAvailable(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
   if (!env.PG_HOST) {
+    if (env.OPT2_TEST_REQUIRE_PG === '1') {
+      throw new Error('The isolation and event suites require PostgreSQL (OPT2_TEST_REQUIRE_PG=1), but PG_HOST is unset');
+    }
     return false;
   }
-  const client = new pg.Client({ ...testPgConfig(env), connectionTimeoutMillis: CONNECT_TIMEOUT_MS });
+  const config = testPgConfig(env);
+  const client = new pg.Client({ ...config, connectionTimeoutMillis: CONNECT_TIMEOUT_MS });
   try {
     await client.connect();
   } catch (err) {
     if (err instanceof pg.DatabaseError) {
       throw err;
     }
-    return false;
+    throw new Error(`PostgreSQL at PG_HOST=${config.host} PG_PORT=${String(config.port)} is unreachable`, { cause: err });
   }
   await client.end();
   return true;
@@ -156,9 +161,11 @@ export async function createThrowawaySchema(opts: ThrowawaySchemaOptions): Promi
   const pools = new Set<pg.Pool>();
   const clients = new Set<pg.PoolClient>();
   let dropping: Promise<void> | undefined;
+  let bootstrapping: Promise<void> = Promise.resolve();
   const drop = (): Promise<void> => {
     live.delete(drop);
-    return (dropping ??= dropAll(adminPool, pools, clients, schema, roles));
+    // Starts once an in-flight bootstrap settles, so DROP SCHEMA sees whatever it committed; the creation reports its failure.
+    return (dropping ??= bootstrapping.catch(() => undefined).then(() => dropAll(adminPool, pools, clients, schema, roles)));
   };
   live.add(drop);
   const connect = (role: ThrowawayRole, { max = 1 }: { max?: number } = {}): pg.Pool => {
@@ -178,7 +185,8 @@ export async function createThrowawaySchema(opts: ThrowawaySchemaOptions): Promi
   const appPool = connect('app', { max: 4 });
   let step = 'bootstrap';
   try {
-    await bootstrap(adminPool, config.database, schema, roles, passwords, () => dropping !== undefined);
+    bootstrapping = bootstrap(adminPool, config.database, schema, roles, passwords, () => dropping !== undefined);
+    await bootstrapping;
     for (const { label, sql } of await scripts(opts)) {
       step = label;
       await inTransaction(migratorPool, async (client) => {
@@ -208,7 +216,7 @@ export async function createThrowawaySchema(opts: ThrowawaySchemaOptions): Promi
   });
 }
 
-/** Drops every throwaway schema not yet dropped, including those still being created, without waiting for their creation. */
+/** Drops every throwaway schema not yet dropped, including those still being created, waiting only for an in-flight bootstrap transaction. */
 export function dropThrowawaySchemas(): Promise<void> {
   return runCleanup('Throwaway schema', [...live]);
 }
@@ -227,11 +235,6 @@ async function bootstrap(
   const migrator = quoteIdent(roles.migrator);
   // Role chain and grants mirror opt2-db bootstrap, including UPDATE on sequences, so isolation results transfer to the real roles.
   await inTransaction(adminPool, async (client) => {
-    await client.query(BOOTSTRAP_LOCK_SQL);
-    // A drop() that ran first may already have found nothing under this lock, so creating now would leak.
-    if (isDropped()) {
-      throw new Error('drop() was called before the schema was created');
-    }
     for (const statement of [
       // A non-superuser CREATEROLE creator needs SET for CREATE SCHEMA … AUTHORIZATION and INHERIT for drop().
       "SET LOCAL createrole_self_grant = 'set, inherit'",
@@ -244,10 +247,16 @@ async function bootstrap(
       `ALTER DEFAULT PRIVILEGES FOR ROLE ${owner} IN SCHEMA ${s} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${app}`,
       `ALTER DEFAULT PRIVILEGES FOR ROLE ${owner} IN SCHEMA ${s} GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO ${app}`,
       `REVOKE ALL ON SCHEMA ${s} FROM PUBLIC`,
-      `GRANT CONNECT ON DATABASE ${quoteIdent(database)} TO ${app}, ${migrator}`,
     ]) {
       await client.query(statement);
     }
+    // Only the CONNECT grant updates the shared pg_database row, so only it runs under the lock.
+    await client.query(BOOTSTRAP_LOCK_SQL);
+    // drop() waits for this transaction, so a drop() requested by now only needs it rolled back.
+    if (isDropped()) {
+      throw new Error('drop() was called before the schema was created');
+    }
+    await client.query(`GRANT CONNECT ON DATABASE ${quoteIdent(database)} TO ${app}, ${migrator}`);
   });
 }
 
@@ -279,8 +288,9 @@ async function dropAll(
       roles.migrator,
     ]);
     await inTransaction(adminPool, async (client) => {
-      await client.query(BOOTSTRAP_LOCK_SQL);
       await client.query(`DROP SCHEMA IF EXISTS ${quoteIdent(schema)} CASCADE`);
+      // DROP OWNED revokes CONNECT on the shared pg_database row, so it runs under the lock.
+      await client.query(BOOTSTRAP_LOCK_SQL);
       const names = [roles.owner, roles.app, roles.migrator];
       const { rows } = await client.query<{ rolname: string }>('SELECT rolname FROM pg_roles WHERE rolname = ANY($1::text[])', [names]);
       const existing = new Set(rows.map((row) => row.rolname));

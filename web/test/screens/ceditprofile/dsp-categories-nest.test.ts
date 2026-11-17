@@ -38,7 +38,6 @@ const ZED = '3386D65B-FF49-5253-B59B6D2EDFB4FF16';
 const row = (categoryID: string, name: string, isOpen: number | boolean, hasKids: number): ProfileInterestCategoryRow => ({
   categoryID,
   name,
-  site: 'Default',
   isOpen,
   hasKids,
 });

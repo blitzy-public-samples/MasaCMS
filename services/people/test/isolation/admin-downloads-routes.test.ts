@@ -117,15 +117,7 @@ class FakeIdentity implements IdentityReads {
   }
 }
 
-/** pgAvailable asked up to three times, so one connect slower than its 2 s limit under host load does not skip the suite. */
-async function pgReachable(): Promise<boolean> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (await pgAvailable()) return true;
-  }
-  return false;
-}
-
-const available = await pgReachable();
+const available = await pgAvailable();
 
 describe.skipIf(!available)('cUsers CSV downloads against PostgreSQL', () => {
   const identity = new FakeIdentity();

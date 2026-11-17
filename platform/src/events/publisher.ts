@@ -24,7 +24,7 @@ export interface RawMessage {
 
 /** Publishes to Pub/Sub; every publish resolves to the Pub/Sub message id. */
 export interface EventPublisher {
-  /** Checks `envelope` against the envelope contract, the topic name and the topic's payload validator, then publishes it ordered by `aggregateId`. */
+  /** Checks `envelope` against the envelope contract, the topic name, the topic's payload validator and the publish size limit, then publishes it ordered by `aggregateId`. */
   publish(topic: string, envelope: EventEnvelope): Promise<string>;
   /** Publishes `message` unchanged, without envelope checks. */
   publishRaw(topic: string, message: RawMessage): Promise<string>;
@@ -41,6 +41,36 @@ export class EnvelopePublishError extends Error {
     super(`Envelope rejected for topic ${JSON.stringify(topic)}: ${errors.join('; ')}`);
     this.errors = errors;
   }
+}
+
+/** Pub/Sub's limit on one publish request, in bytes. */
+export const PUBSUB_PUBLISH_LIMIT_BYTES = 10_000_000;
+
+/** Largest published size of an envelope; the rest of the publish limit covers the topic resource name and the request's protobuf framing. */
+export const MAX_PUBLISHED_ENVELOPE_BYTES = PUBSUB_PUBLISH_LIMIT_BYTES - 4_096;
+
+// The message the publisher hands Pub/Sub for `envelope`.
+function envelopeMessage(envelope: EventEnvelope): RawMessage {
+  return { data: encodeEnvelope(envelope), attributes: envelopeAttributes(envelope), orderingKey: envelope.aggregateId };
+}
+
+// Bytes Pub/Sub counts for `message`: its data, attribute keys and values, and ordering key.
+function messageBytes({ data, attributes, orderingKey = '' }: RawMessage): number {
+  let bytes = data.byteLength + Buffer.byteLength(orderingKey);
+  for (const [key, value] of Object.entries(attributes)) bytes += Buffer.byteLength(key) + Buffer.byteLength(value);
+  return bytes;
+}
+
+/** Bytes `envelope` occupies as published: its encoded data, attribute keys and values, and ordering key. */
+export function publishedSize(envelope: EventEnvelope): number {
+  return messageBytes(envelopeMessage(envelope));
+}
+
+/** The `"/ <message>"` rejection of a published size over MAX_PUBLISHED_ENVELOPE_BYTES, or undefined when it fits. */
+export function publishedSizeError(bytes: number): string | undefined {
+  return bytes > MAX_PUBLISHED_ENVELOPE_BYTES
+    ? `/ is ${String(bytes)} bytes as published, over the ${String(MAX_PUBLISHED_ENVELOPE_BYTES)}-byte Pub/Sub publish limit`
+    : undefined;
 }
 
 // Payload errors are relative to the payload; rebasing them under /payload keeps one path space with the envelope errors.
@@ -94,11 +124,9 @@ export function createPublisher(options: PublisherOptions): EventPublisher {
   async function publish(name: string, envelope: EventEnvelope): Promise<string> {
     const errors = rejections(name, envelope, payloadValidators?.get(name));
     if (errors.length > 0) throw new EnvelopePublishError(name, errors);
-    const message: RawMessage = {
-      data: encodeEnvelope(envelope),
-      attributes: envelopeAttributes(envelope),
-      orderingKey: envelope.aggregateId,
-    };
+    const message = envelopeMessage(envelope);
+    const oversize = publishedSizeError(messageBytes(message));
+    if (oversize !== undefined) throw new EnvelopePublishError(name, [oversize]);
     // The span joins the envelope's trace, so a sweep long after the request still publishes within the producer's trace.
     return withExtractedContext({ traceparent: envelope.traceparent, tracestate: envelope.tracestate }, () =>
       startSpan(

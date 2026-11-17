@@ -4,10 +4,12 @@ import { createPublisher, registerConsumers, type EventPublisher } from '@opt2/p
 import { serializeError } from '@opt2/platform/logging';
 import { registerMigrationHandlers, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import {
+  IDENTITY_SERVICE,
   baseEnvSchema,
   createService,
   loadEnv,
   optionalEnvString,
+  processEnvSchema,
   publisherEmulatorHost,
   systemClock,
   z,
@@ -34,12 +36,18 @@ const LOCAL_PROJECT_ID = 'opt2-local';
 const CF_BOOLEAN = /^(?:true|yes|1|false|no|0)$/i;
 const CF_TRUE = /^(?:true|yes|1)$/i;
 
-/** Base variables plus configBean `variations` from `MURA_VARIATIONS`, a ColdFusion boolean that is false when unset. */
-export const contentEnvSchema = baseEnvSchema.extend({
-  MURA_VARIATIONS: optionalEnvString(z.string().regex(CF_BOOLEAN, 'must be true, yes, 1, false, no or 0')).transform(
-    (value) => value !== undefined && CF_TRUE.test(value),
-  ),
-});
+/**
+ * Base variables plus configBean `variations` from `MURA_VARIATIONS`, a ColdFusion boolean that is false when unset;
+ * requires this service's own name, its database and the URLs of identity and of itself, the target of its own tasks.
+ */
+export const contentEnvSchema = processEnvSchema(
+  baseEnvSchema.extend({
+    MURA_VARIATIONS: optionalEnvString(z.string().regex(CF_BOOLEAN, 'must be true, yes, 1, false, no or 0')).transform(
+      (value) => value !== undefined && CF_TRUE.test(value),
+    ),
+  }),
+  { service: OWNER, callees: [OWNER, IDENTITY_SERVICE], database: true },
+);
 
 // LoadedEnv rather than z.infer: createService, the storage port and the task port need the adapter choices loadEnv always sets.
 /** Parsed strategies-content environment, as `loadEnv(contentEnvSchema)` returns it. */

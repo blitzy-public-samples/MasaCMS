@@ -29,6 +29,8 @@ export type RbLookup = {
 /** Admin chain (`application.rbFactory`) and site chain (`settingsBean.getRBFactory`) lookups. */
 export type ResourceBundles = {
   rbFor(locale: string): RbLookup;
+  /** Admin chain under the `resource_bundles/` overrides, without core assets; the admin screens' labels. */
+  adminRbFor(locale: string): RbLookup;
   siteRbFor(locale: string): RbLookup;
   /** Admin-chain label; `<key>_missing` when absent. */
   rbKey(locale: string, key: string): string;
@@ -134,7 +136,8 @@ function createFactory(dir: BundleDir, parent: Factory | null): Factory {
   return { bundle, getKeyValue };
 }
 
-function createLookups(factory: Factory): (locale: string) => RbLookup {
+/** Lookups whose labels come from `factory` and whose `messageFormat` loads `formatFactory`'s bundle. */
+function createLookups(factory: Factory, formatFactory: Factory = factory): (locale: string) => RbLookup {
   const lookups = new Map<string, RbLookup>();
   return (locale) => {
     let lookup = lookups.get(locale);
@@ -144,7 +147,7 @@ function createLookups(factory: Factory): (locale: string) => RbLookup {
         rbKey: (key: string) => factory.getKeyValue(locale, key, false),
         messageFormat: (pattern: string, args: MessageFormatArgs) => {
           // Legacy formats through getResourceBundle(locale), which fails first on a broken bundle file.
-          factory.bundle(locale);
+          formatFactory.bundle(locale);
           return messageFormat(pattern, args, locale);
         },
       });
@@ -154,13 +157,20 @@ function createLookups(factory: Factory): (locale: string) => RbLookup {
   };
 }
 
-/** Builds the admin chain and the site chain (admin, then core assets, then global) over `bundles`. */
+/** Builds the admin chain, the admin chain under global overrides, and the site chain (admin, then core assets, then global) over `bundles`. */
 export function createResourceBundles(bundles: GeneratedBundles): ResourceBundles {
   const admin = createFactory(bundles.admin, null);
   const coreAssets = bundles.coreAssets === null ? admin : createFactory(bundles.coreAssets, admin);
   const site = bundles.global === null ? coreAssets : createFactory(bundles.global, coreAssets);
+  const overriddenAdmin = bundles.global === null ? admin : createFactory(bundles.global, admin);
   const rbFor = createLookups(admin);
-  return { rbFor, siteRbFor: createLookups(site), rbKey: (locale, key) => rbFor(locale).rbKey(key) };
+  return {
+    rbFor,
+    // Admin views format through application.rbFactory, so messageFormat loads the admin bundle.
+    adminRbFor: createLookups(overriddenAdmin, admin),
+    siteRbFor: createLookups(site),
+    rbKey: (locale, key) => rbFor(locale).rbKey(key),
+  };
 }
 
 type NumberStyle = 'number' | 'integer';
@@ -575,4 +585,4 @@ export function isSupportedLocale(locale: string): boolean {
 }
 
 /** Default chains over the build-time bundles. */
-export const { rbFor, siteRbFor, rbKey } = createResourceBundles(data);
+export const { rbFor, adminRbFor, siteRbFor, rbKey } = createResourceBundles(data);

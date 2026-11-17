@@ -1,6 +1,7 @@
 // Route key → active cut-over entry → destination; routing changes only through the active version.
 import { stripInboundAuthHeaders } from '@opt2/platform/auth';
 import {
+  fixtureDispatchPath,
   matchRouteKey,
   scannedRouteKey,
   type RouteKeyOptions,
@@ -12,12 +13,15 @@ import { LOCAL_SIGNED_URL_PREFIX, loadStorageHmacKey, verifySignedUrl, type Buck
 import { AdminMappingError, mapAdminToWeb, type AdminRequestLike, type AdminWebTarget } from '../admin/map.js';
 import type { AdminResponseMode, ResponseModes } from '../admin/response-modes.js';
 import type { CutoverState } from '../cutover/state.js';
-import type { CutoverEntry, OwningService, RoutingIndex, VariantsFile } from '../cutover/types.js';
+import type { CutoverEntry, EntryKind, OwningService, RoutingIndex, VariantsFile } from '../cutover/types.js';
 import type { BodyParams } from './body.js';
 import { failContextFor, type FailContext } from './fail-closed.js';
 
 /** Gateway path prefix web relays its service calls through (`GATEWAY_SERVICE_PREFIX` of the gateway ↔ web contract). */
 export const RELAY_ALIAS_PREFIX = '/opt2/svc';
+
+/** Entry kinds whose requests write: they read the epoch and register in `gateway.inflight` before they are routed. */
+export const WRITE_KINDS: ReadonlySet<EntryKind> = new Set<EntryKind>(['write', 'legacy-write', 'job']);
 
 /** Owner of each bucket, the service its `/opt2/files/<bucket>/**` entry names. */
 export const BUCKET_OWNERS: Readonly<Record<BucketName, OwningService>> = Object.freeze({
@@ -67,7 +71,7 @@ export interface TargetDestination {
   readonly kind: 'target';
   readonly service: OwningService;
   readonly serviceUrl: string;
-  /** Path and query sent to the service: `request.url`, or the web path of an admin action. */
+  /** Path and query sent to the service: `request.url`, a fixture route's api.cfm dispatch path and query, or an admin action's web path. */
   readonly path: string;
   readonly isWeb: boolean;
   /** Gateway-authored headers web receives for an admin action. */
@@ -102,6 +106,8 @@ export interface RoutedOutcome {
   readonly urlScope: Record<string, string>;
   /** Whether legacy's start-up scan fails on the request's url or form scope. */
   readonly scanFailed: boolean;
+  /** Cut-over routes besides the entry's whose freeze also holds the request: a reload's own entry and the one behind it. */
+  readonly holdRoutes?: readonly string[];
 }
 
 /** Outcome of matching one request. */
@@ -156,6 +162,32 @@ export function routedFailContext(
 /** A halted request's entry: its unhalted key's entry on legacy, a writer as `legacy-write` so its write window still opens. */
 function haltedEntry(entry: CutoverEntry): CutoverEntry {
   return Object.freeze({ ...entry, state: 'legacy', kind: entry.kind === 'write' ? 'legacy-write' : entry.kind });
+}
+
+/** The entry of `index` that `key` resolves to, if any. */
+function entryOf(index: RoutingIndex, key: RouteKeyResult): CutoverEntry | undefined {
+  const route = matchRouteKey(key, index.matchKeys);
+  return route === undefined ? undefined : index.entryFor(route);
+}
+
+/** A reload request's entry and the other routes whose freeze holds it. */
+interface ReloadRouting {
+  readonly entry: CutoverEntry | undefined;
+  readonly holdRoutes: readonly string[];
+}
+
+/**
+ * Routing of a reload, which legacy serves and then runs the route behind it: a writer behind it becomes the entry, on
+ * legacy as `legacy-write` over its own and the reload's units so its window gates both; otherwise the reload's entry stays.
+ */
+function reloadRouting(reload: CutoverEntry | undefined, served: CutoverEntry | undefined): ReloadRouting {
+  let entry = reload;
+  if (served !== undefined && WRITE_KINDS.has(served.kind)) {
+    const units = [...new Set([...served.units, ...(reload?.units ?? [])])];
+    entry = Object.freeze({ ...served, state: 'legacy', kind: 'legacy-write', units });
+  }
+  const holdRoutes = [reload, served].flatMap((held) => (held === undefined || held.route === entry?.route ? [] : [held.route]));
+  return { entry, holdRoutes: Object.freeze(holdRoutes) };
 }
 
 /** Path and `?query` (or '') of a request target. */
@@ -244,7 +276,12 @@ export function createMatcher(deps: MatcherDeps): Matcher {
       }
       return toWeb(web);
     }
-    return toService(entry.owningService, { path: request.url, isWeb: entry.owningService === 'web' });
+    const { path, search } = splitTarget(request.url);
+    const fixturePath = result.family === 'fixture' ? fixtureDispatchPath(path, options) : undefined;
+    return toService(entry.owningService, {
+      path: fixturePath === undefined ? request.url : `${fixturePath}${search}`,
+      isWeb: entry.owningService === 'web',
+    });
   };
 
   return {
@@ -273,24 +310,31 @@ export function createMatcher(deps: MatcherDeps): Matcher {
       const { result: keyed, urlScope, scanFailed, unhalted } = scannedRouteKey(keyRequest, options);
       // A key the halt variant replaced has no entry, so legacy serves the request as its unhalted key's legacy entry would.
       const result = unhalted ?? keyed;
-      const routed = (entry: CutoverEntry | undefined, destination: RoutedOutcome['destination']): RoutedOutcome => ({
+      const routed = (
+        entry: CutoverEntry | undefined,
+        destination: RoutedOutcome['destination'],
+        holdRoutes?: readonly string[],
+      ): RoutedOutcome => ({
         result,
         entry,
         destination,
         failContext: routedFailContext(result, entry, destination, request.url),
         urlScope,
         scanFailed,
+        ...(holdRoutes === undefined ? {} : { holdRoutes }),
       });
 
       if (index === undefined) return routed(undefined, unavailable('no-active-version'));
-      const route = matchRouteKey(result, index.matchKeys);
-      const matched = route === undefined ? undefined : index.entryFor(route);
-      const entry = matched !== undefined && unhalted !== undefined ? haltedEntry(matched) : matched;
-      if (entry === undefined) return routed(undefined, LEGACY);
+      const matched = entryOf(index, result);
+      const reload = result.afterReload === undefined ? undefined : reloadRouting(matched, entryOf(index, result.afterReload));
+      const halted = matched !== undefined && unhalted !== undefined ? haltedEntry(matched) : matched;
+      const entry = reload === undefined ? halted : reload.entry;
+      const holdRoutes = reload?.holdRoutes;
+      if (entry === undefined) return routed(undefined, LEGACY, holdRoutes);
       // The legacy bridge is reachable only from the gateway and migration, never through the edge.
-      if (entry.owningService === 'gateway') return routed(entry, NOT_FOUND);
-      if (entry.state === 'legacy') return routed(entry, LEGACY);
-      return routed(entry, await targetDestination(request, body, result, entry));
+      if (entry.owningService === 'gateway') return routed(entry, NOT_FOUND, holdRoutes);
+      if (entry.state === 'legacy') return routed(entry, LEGACY, holdRoutes);
+      return routed(entry, await targetDestination(request, body, result, entry), holdRoutes);
     },
   };
 }

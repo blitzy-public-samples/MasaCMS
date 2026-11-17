@@ -148,7 +148,6 @@ const FILE_A = 'B1C2D3E4-0001-4A5B-8C7D9E0F1A2B3C4D';
 const FILE_B = 'B1C2D3E4-0002-4A5B-8C7D9E0F1A2B3C4D';
 const FILE_MISSING = 'B1C2D3E4-0003-4A5B-8C7D9E0F1A2B3C4D';
 const CHANGESET_1 = 'D1E2F3A4-0001-4A5B-8C7D9E0F1A2B3C4D';
-const CHANGESET_2 = 'D1E2F3A4-0002-4A5B-8C7D9E0F1A2B3C4D';
 const contentId = (n: number): string => `E1F2A3B4-000${n}-4A5B-8C7D9E0F1A2B3C4D`;
 const SITE_MANAGER = '00000000000000000000000000000000000';
 const CHANGESETS = '00000000000000000000000000000000014';
@@ -321,20 +320,15 @@ describe('getHeaderPrompts', () => {
   /** The groups the membership projection stores for the user, spelled as identity sent them. */
   const projectedGroup = GROUP_ID.toLowerCase();
 
-  /** Answers each list the header counts with rows: duplicate and null content ids count once each. */
+  /** Answers each count the header reads; the pending sum only for the token site's unpublished change sets. */
   function seedLists(): void {
-    t.db.respond(/^SELECT \* FROM \(SELECT draft\.contenthistid, module\.title AS module, active\./, [
-      { contentid: contentId(1) },
-      { contentid: contentId(1) },
-      { contentid: null },
-    ]);
-    t.db.respond(/^SELECT \* FROM \(SELECT DISTINCT draft\.contenthistid/, (_params, sql) =>
-      sql.includes('tapprovalrequests.userid') ? [{ contentid: contentId(2) }] : [{ contentid: contentId(3) }, { contentid: contentId(4) }, { contentid: contentId(3) }],
-    );
-    t.db.respond(/^SELECT contentid FROM "content"\."content" WHERE lower\(rtrim\(lastupdatebyid\)\)/, [{ contentid: contentId(5) }]);
+    t.db.respond(/ AS total FROM \(SELECT \* FROM \(SELECT draft\.contenthistid, module\.title AS module, active\./, [{ total: 2 }]);
+    t.db.respond(/ AS total FROM \(SELECT \* FROM \(SELECT DISTINCT draft\.contenthistid/, (_params, sql) => [{ total: sql.includes('tapprovalrequests.userid') ? 1 : 2 }]);
+    t.db.respond(/ AS total FROM \(SELECT contentid FROM "content"\."content" WHERE lower\(rtrim\(lastupdatebyid\)\)/, [{ total: 1 }]);
     t.db.respond(/FROM "content"\."membership_projection"/, [{ group_id: projectedGroup }]);
-    t.db.respond(/FROM "content"\."changeset" WHERE/, [{ changesetid: CHANGESET_1 }, { changesetid: CHANGESET_2 }]);
-    t.db.respond(/AS pending FROM "content"\."content" c/, (params) => [{ pending: flat(params).includes(CHANGESET_1) ? 2 : 1 }]);
+    t.db.respond(/AS pending FROM \(SELECT changesetid, .* FROM "content"\."changeset" WHERE /, (params) => [
+      { pending: params[1] === SITE_A && params[2] === 0 ? 3 : 0 },
+    ]);
   }
 
   it('counts a system user’s lists, approvals limited to the groups the membership projection holds', async () => {
@@ -373,6 +367,37 @@ describe('getHeaderPrompts', () => {
   ])('refuses %s with the contract %i', async (_label, status, headers, target) => {
     const res = await call({ method: 'GET', url: target, headers: await headers() });
     expect(res.statusCode).toBe(status);
+  });
+});
+
+describe('listPrivateInterestGroups', () => {
+  const url = `/v1/sites/${SITE_A}/private-interest-groups`;
+  const INTEREST_GROUPS = /FROM unnest\(\$\d+::text\[\], \$\d+::text\[\]\) AS s\(siteid, site\) INNER JOIN "content"\."category" c/;
+  const systemUser = () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.systemUser] });
+
+  it("answers one level of the token site's private pool in that site's tenant, SQL NULL text as empty", async () => {
+    t.db.respond(INTEREST_GROUPS, [{ site: null, categoryid: GROUP_ID, name: null, filename: 'interests', urltitle: null, isopen: null, haskids: 2 }]);
+    const res = await call({ method: 'GET', url: `${url}?groupsiteid=${SITE_A.toUpperCase()}&parentid=`, headers: await systemUser() });
+    expect({ status: res.statusCode, body: res.json() }).toEqual({
+      status: 200,
+      body: { items: [{ siteID: SITE_A, categoryID: GROUP_ID, name: '', filename: 'interests', urltitle: '', isOpen: null, hasKids: 2 }] },
+    });
+    const reads = t.db.statements.filter((statement) => INTEREST_GROUPS.test(statement.sql));
+    expect(reads.map((statement) => [statement.tenantId, flat(statement.params), /c\.parentid IS NULL/.test(statement.sql)])).toEqual([
+      [TENANT_A.tenantId, [TENANT_A.tenantId, SITE_A, null], true],
+    ]);
+  });
+
+  it.each<[string, number, () => Promise<Record<string, string>>, string]>([
+    ['no credential', 401, async () => ({}), `${url}?groupsiteid=${SITE_A}`],
+    ['a site outside the token site’s private pool', 403, systemUser, `${url}?groupsiteid=${SITE_B}`],
+    ['a user of another site', 403, () => userHeaders({ sub: USER_ID, site: SITE_B, roles: [Roles.s2] }), `${url}?groupsiteid=${SITE_A}`],
+    ['a service without a user token', 401, () => serviceHeaders('people'), `${url}?groupsiteid=${SITE_A}`],
+    ['no groupsiteid', 400, systemUser, url],
+  ])('refuses %s with the contract %i', async (_label, status, headers, target) => {
+    const res = await call({ method: 'GET', url: target, headers: await headers() });
+    expect(res.statusCode).toBe(status);
+    expect(t.db.statements.filter((statement) => INTEREST_GROUPS.test(statement.sql))).toEqual([]);
   });
 });
 

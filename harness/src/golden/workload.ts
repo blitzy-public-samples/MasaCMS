@@ -412,6 +412,9 @@ function contentEditItems(row: WorkloadContent, n: number): PlanPart {
       as: ADMIN_SESSION,
       csrf: 'fetch-form',
       csrfFrom: `${base}-form`,
+      // The edit form carries one hidden input per pooled category, more than ACF's 100 POST parameters, so the save
+      // posts only its named fields and the CSRF pair.
+      mergeHidden: false,
       form: {
         ...contentFields(site, title, `<p>OPT-2 workload edit ${n}</p>`),
         contentid: row.contentID,

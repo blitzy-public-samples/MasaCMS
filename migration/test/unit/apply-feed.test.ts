@@ -607,6 +607,7 @@ function installFakes(): void {
     Promise.resolve({
       ...buildReport({
         point: resolvePoint(ctx.config, options.point),
+        startedAt: ctx.clock.now().toISOString(),
         tableVersion: 'v0002',
         snapshotSeq: options.snapshotSeq ?? null,
         legacyDatabase: options.database,
@@ -952,7 +953,10 @@ describe('runFeed', () => {
       database: 'snap_1',
       snapshotSeq: 1,
     });
-    expect(writeReconciliationReport).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ point: 'after-feed-1', result: outcome }));
+    expect(writeReconciliationReport).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ point: 'after-feed-1', result: outcome, feed: { startedAt: CLOCK.now().toISOString() } }),
+    );
   });
 });
 

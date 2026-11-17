@@ -1,7 +1,7 @@
 // Reconciliation: the folder's public API, per-unit and per-tenant comparison of legacy with the owners' exports, and the CLI command.
 import type { ResolvedPaths } from '../config.js';
 import type { MigrationContext } from '../context.js';
-import { CutoverDataError, currentAuthority, loadGroups, loadVersion } from '../cutover/index.js';
+import { CutoverDataError, currentAuthority, loadGroups, loadVersion, rollbackRefGroups } from '../cutover/index.js';
 import { listLegacyTables, migratableTables, type LegacyTableRef } from '../extract/index.js';
 import { SUPPORTED_FILE_STORE } from '../files/index.js';
 import { UnknownUnitError, type UnitCatalog } from '../owners/index.js';
@@ -23,6 +23,7 @@ import {
   buildUnitReport,
   resolvePoint,
   writeReconciliationReport,
+  type EmptyUnitReport,
   type FileStoreReport,
   type LegacySource,
   type ReconcileReport,
@@ -267,6 +268,7 @@ export async function reconcileUnits(
   options: ReconcileUnitsOptions,
   sources: ReconcileSources = {},
 ): Promise<ReconcileReport> {
+  const startedAt = ctx.clock.now().toISOString();
   const point = resolvePoint(ctx.config, options.point);
   const legacySource = options.legacySource ?? point.legacySource;
   const snapshotSeq = options.snapshotSeq ?? null;
@@ -282,6 +284,7 @@ export async function reconcileUnits(
 
   const entries: UnitReport[] = [];
   const skippedUnits: SkippedUnitReport[] = [];
+  const emptyUnits: EmptyUnitReport[] = [];
   for (const unit of units) {
     // A halted store's units never move, so they are not compared.
     if (fileStore.haltedUnits.includes(unit)) continue;
@@ -293,15 +296,31 @@ export async function reconcileUnits(
       else skippedUnits.push({ unit, legacyTable, reason });
     }
     if (fileUnit && tables.length === 0) {
-      entries.push(...(await reconcileObjectsOnly(ctx, reads, { unit, tenants, objects })));
+      const compared = await reconcileObjectsOnly(ctx, reads, { unit, tenants, objects });
+      entries.push(...compared);
+      if (compared.length === 0) emptyUnits.push({ unit, legacyTable: null });
       continue;
     }
     for (const [index, legacyTable] of tables.entries()) {
       const tableObjects = fileUnit && index === 0 ? objects : null;
-      entries.push(...(await reconcileTable(ctx, reads, { unit, legacyTable, database, tenants, objects: tableObjects })));
+      const compared = await reconcileTable(ctx, reads, { unit, legacyTable, database, tenants, objects: tableObjects });
+      entries.push(...compared);
+      // A table empty on both sides in every tenant has no entry, so it is listed to show it was compared.
+      if (compared.length === 0) emptyUnits.push({ unit, legacyTable });
     }
   }
-  return buildReport({ point, legacySource, tableVersion, snapshotSeq, legacyDatabase: database, units: entries, skippedUnits, fileStore });
+  return buildReport({
+    point,
+    startedAt,
+    legacySource,
+    tableVersion,
+    snapshotSeq,
+    legacyDatabase: database,
+    units: entries,
+    skippedUnits,
+    emptyUnits,
+    fileStore,
+  });
 }
 
 /** `--units` ids, each a catalog unit or a file unit, sorted and without repeats. @throws ReconcileUsageError */
@@ -322,14 +341,9 @@ function requestedUnits(ctx: Pick<ReconcileContext, 'catalog' | 'config'>, units
 
 /** Units of the roster group set R: every unit of the groups `v0003.rollbackRefs` names. @throws CutoverDataError */
 function rosterGroupUnits(paths: Pick<ResolvedPaths, 'cutoverDir' | 'groupsFile'>): string[] {
-  const named = sortedUnion(loadVersion(paths.cutoverDir, ROLLBACK_VERSION).rollbackRefs.flatMap((ref) => ref.groups));
-  const groups = new Map(loadGroups(paths.groupsFile).groups.map((group) => [group.id, group]));
-  const missing = named.filter((id) => !groups.has(id));
-  if (named.length === 0 || missing.length > 0) {
-    const problem = named.length === 0 ? 'name no group' : `name groups missing from ${paths.groupsFile}: ${missing.join(', ')}`;
-    throw new CutoverDataError(`${ROLLBACK_VERSION} rollbackRefs ${problem}, so the roster group set R is unknown`);
-  }
-  return sortedUnion(named.flatMap((id) => groups.get(id)?.units ?? []));
+  const named = rollbackRefGroups(loadVersion(paths.cutoverDir, ROLLBACK_VERSION), loadGroups(paths.groupsFile), paths.groupsFile);
+  if (named.length === 0) throw new CutoverDataError(`${ROLLBACK_VERSION} rollbackRefs name no group, so the roster group set R is unknown`);
+  return sortedUnion(named.flatMap((group) => group.units));
 }
 
 /** Units a point reconciles without `--units`: R for rollback points, otherwise every unit with a migratable legacy table plus the file units. */

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { LOCAL_USER_TOKEN } from '@opt2/platform/auth';
 import type { EventPublisher } from '@opt2/platform/events';
-import { baseEnvSchema, loadEnv, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
+import { loadEnv, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
 import type { CreateTaskInput, CreateTaskResult, DeleteTaskResult, QueueState, TaskInfo, TaskPage, TaskPort } from '@opt2/platform/tasks';
 import {
   isNonTenantTable,
@@ -33,7 +33,7 @@ import {
   type TenantFixture,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
-import { buildApp } from '../../src/app.js';
+import { buildApp, stubEnvSchema } from '../../src/app.js';
 import type { NoteProjectionRow, NoteRow } from '../../src/domain/note.js';
 import { STUB_OWNER, STUB_SCHEMA } from '../../src/repo/repository.js';
 import { STUB_UNITS } from '../../src/repo/tables.js';
@@ -74,7 +74,7 @@ function prepareStateDir(dir: string): Promise<void> {
   return prepared;
 }
 
-/** Raw environment that `loadEnv(baseEnvSchema)` accepts for the stub in local mode; an override of `undefined` removes the variable. */
+/** Raw environment that `loadEnv(stubEnvSchema)` accepts for the stub in local mode; an override of `undefined` removes the variable. */
 export function testEnv(overrides: Readonly<Record<string, string | undefined>> = {}): Record<string, string> {
   const merged: Record<string, string | undefined> = {
     PORT: '8199',
@@ -907,7 +907,7 @@ async function buildReadyApp<D extends TenantDb, P extends EventPublisher>(
   opts: Omit<TestAppOptions<P>, 'db' | 'env'>,
 ): Promise<TestApp<D, P>> {
   const env = testEnv(envOverrides);
-  const parsed = loadEnv(baseEnvSchema, env);
+  const parsed = loadEnv(stubEnvSchema, env);
   await prepareStateDir(parsed.OPT2_STATE_DIR);
   const clock = opts.clock ?? TEST_CLOCK;
   // P defaults to CapturingPublisher, which is what is created when no publisher is given.

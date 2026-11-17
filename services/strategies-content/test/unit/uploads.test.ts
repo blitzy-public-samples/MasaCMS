@@ -1,6 +1,6 @@
 /** EX-FILE-RENDITION upload rules: image uploads halted, restricted files refused, non-image uploads stored under the file pool tenant, in the domain and through carch.update and the JSON API file save. */
 import { readFileSync } from 'node:fs';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { sha256Hex } from '@opt2/platform/migration-kit';
@@ -21,6 +21,7 @@ import { createContentRepository } from '../../src/repo/repository.js';
 import { TEST_CLOCK, buildTestApp, createMemoryStorage, createRecordingDb, type RecordedStatement, type RecordingDb, type TestApp } from '../helpers/app.js';
 import { IDS, seedRecordingDb } from '../helpers/seed.js';
 import { SUBJECT_CLAIMS, SUBJECT_USER_IDS, contentHeaders, subjectSessionId, type TokenSubject } from '../helpers/tokens.js';
+import { uploadedFile } from '../helpers/uploads.js';
 
 type Json = Record<string, unknown>;
 
@@ -46,7 +47,7 @@ const bytesOf = (fileName: string): Buffer => Buffer.from(`%PDF-1.4 bytes of ${f
 
 /** A posted `newfile` part of `fileName`. */
 function upload(fileName: string, contentType = 'application/pdf'): UploadedFile {
-  return { fieldName: 'newfile', fileName, contentType, bytes: bytesOf(fileName) };
+  return uploadedFile({ fieldName: 'newfile', fileName, contentType }, bytesOf(fileName));
 }
 
 /** Recorded INSERTs into `content.<table>`. */
@@ -108,6 +109,7 @@ describe('storeUploadedFile', () => {
     ['tenant-a, whose file pool is umbrella', 's2', IDS.content.fileNode, TENANT_UMBRELLA],
     ['tenant-b, which pools nothing', 'other-tenant', IDS.content.bPage, TENANT_B],
   ])('stores a PDF of %s once in content-files under the file pool tenant, with its file row and only its original object row in that tenant', async (_case, subject, contentId, pool) => {
+    const bytes = bytesOf('Quarterly Report.PDF');
     const file = upload('Quarterly Report.PDF');
     const stored = await storeUploadedFile(deps, actorOf(subject), { file, contentId });
     if (stored.kind !== 'stored') throw new Error(`expected a stored upload, got ${stored.kind}`);
@@ -115,7 +117,7 @@ describe('storeUploadedFile', () => {
     const key = contentFileKey({ tenantId: pool.tenantId, fileId: stored.fileid, variant: '', ext: 'pdf' });
     expect(key.split('/')[0]).toBe(pool.tenantId);
     expect(storage.calls).toEqual([
-      { op: 'put', bucket: CONTENT_FILES_BUCKET, key, size: file.bytes.length, sha256: sha256Hex(file.bytes), contentType: 'application/pdf' },
+      { op: 'put', bucket: CONTENT_FILES_BUCKET, key, size: bytes.length, sha256: sha256Hex(bytes), contentType: 'application/pdf' },
     ]);
 
     expect(isCfUuid(stored.file.fileid)).toBe(true);
@@ -128,7 +130,7 @@ describe('storeUploadedFile', () => {
       fileext: 'pdf',
       contenttype: 'application',
       contentsubtype: 'pdf',
-      filesize: file.bytes.length,
+      filesize: bytes.length,
       created: TEST_CLOCK.now(),
     });
 
@@ -136,18 +138,19 @@ describe('storeUploadedFile', () => {
     const objects = insertsInto(db, 'file_object');
     expect(files.map((statement) => statement.tenantId)).toEqual([pool.tenantId]);
     expect(objects.map((statement) => statement.tenantId)).toEqual([pool.tenantId]);
-    expect(files.map(boundRow)).toEqual([expect.objectContaining({ fileid: stored.fileid, siteid: pool.siteId, fileext: 'pdf', filesize: file.bytes.length })]);
+    expect(files.map(boundRow)).toEqual([expect.objectContaining({ fileid: stored.fileid, siteid: pool.siteId, fileext: 'pdf', filesize: bytes.length })]);
     expect(objects.map(boundRow)).toEqual([
-      expect.objectContaining({ file_id: stored.fileid, variant: '', ext: 'pdf', object_key: key, size: String(file.bytes.length), sha256: sha256Hex(file.bytes) }),
+      expect.objectContaining({ file_id: stored.fileid, variant: '', ext: 'pdf', object_key: key, size: String(bytes.length), sha256: sha256Hex(bytes) }),
     ]);
   });
 
-  it.each([...IMAGE_UPLOAD_EXTS, 'JPG'])('halts a .%s upload under EX-FILE-RENDITION before storing or writing anything', async (ext) => {
-    const error = await storeUploadedFile(deps, actorOf('s2'), { file: upload(`photo.${ext}`, 'image/jpeg'), contentId: IDS.content.fileNode }).catch(
-      (err: unknown) => err,
-    );
+  it.each([...IMAGE_UPLOAD_EXTS, 'JPG'])('halts a .%s upload under EX-FILE-RENDITION before storing, writing or opening its part', async (ext) => {
+    const file = upload(`photo.${ext}`, 'image/jpeg');
+    const stream = vi.spyOn(file, 'stream');
+    const error = await storeUploadedFile(deps, actorOf('s2'), { file, contentId: IDS.content.fileNode }).catch((err: unknown) => err);
     expect(error).toBeInstanceOf(ImageUploadHaltedError);
     expect(error).toMatchObject({ ext, message: expect.stringContaining('EX-FILE-RENDITION') });
+    expect(stream).not.toHaveBeenCalled();
     expect(storage.calls).toEqual([]);
     expect(db.writes()).toEqual([]);
   });
@@ -159,7 +162,11 @@ type Part = { name: string; value: string } | { name: string; filename: string; 
 const fields = (values: Readonly<Record<string, string>>): Part[] => Object.entries(values).map(([name, value]) => ({ name, value }));
 
 /** A file part of `filename` under form field `name`. */
-const filePart = (name: string, filename: string, type = 'application/pdf'): Part => ({ name, filename, type, data: bytesOf(filename) });
+const filePart = (name: string, filename: string, type = 'application/pdf', data = bytesOf(filename)): Part => ({ name, filename, type, data });
+
+/** A stored upload's payload: binary, several stream chunks long, with CR, LF and dashes inside. */
+const GUIDE_HALF = Buffer.from(Uint8Array.from({ length: 160 * 1024 }, (_, i) => (i * 131 + (i >> 8)) & 0xff));
+const GUIDE = Buffer.concat([Buffer.from('%PDF-1.4\n'), GUIDE_HALF, Buffer.from('\r\n--opt2\r\n'), GUIDE_HALF]);
 
 /** A multipart/form-data payload of `parts` in order. */
 function multipart(parts: readonly Part[]): { payload: Buffer; headers: Record<string, string> } {
@@ -332,7 +339,7 @@ describe('upload routes', () => {
     [
       'carch.update adding a File',
       UPDATE_URL,
-      fileAdd(filePart('newfile', 'guide-2.pdf')),
+      fileAdd(filePart('newfile', 'guide-2.pdf', 'application/pdf', GUIDE)),
       (res, fileId) => {
         expectContract(UPDATE_URL, res);
         expect(res.statusCode).toBe(302);
@@ -343,40 +350,36 @@ describe('upload routes', () => {
     [
       'carch.update multiFileUpload',
       UPDATE_URL,
-      multiFileUpload([filePart('files', 'guide-2.pdf')], 'guide-2.pdf'),
+      multiFileUpload([filePart('files', 'guide-2.pdf', 'application/pdf', GUIDE)], 'guide-2.pdf'),
       (res, fileId) => {
         expect([res.statusCode, res.headers['content-type']]).toEqual([200, 'text/plain; charset=utf-8']);
-        expect(JSON.parse(res.body)).toEqual({ files: [expect.objectContaining({ filename: 'guide-2.pdf', body: 'guide-2.pdf', size: bytesOf('guide-2.pdf').length })] });
+        expect(JSON.parse(res.body)).toEqual({ files: [expect.objectContaining({ filename: 'guide-2.pdf', body: 'guide-2.pdf', size: GUIDE.length })] });
         expect(content.at(-1)).toMatchObject({ type: 'File', fileid: fileId, body: 'guide-2.pdf' });
       },
     ],
     [
       'the JSON API file save',
       FILE_SAVE_URL,
-      fileSave([filePart('newfile', 'guide-2.pdf')]),
+      fileSave([filePart('newfile', 'guide-2.pdf', 'application/pdf', GUIDE)]),
       (res, fileId) => {
         expectContract(FILE_SAVE_URL, res);
         expect(res.statusCode).toBe(200);
         expect(JSON.parse(res.body)).toMatchObject({ data: { fileid: fileId } });
       },
     ],
-  ])('stores a PDF through %s once at its content-files key in the umbrella file pool', async (_case, url, parts, answers) => {
+  ])('stores a PDF through %s once at its content-files key in the umbrella file pool, byte for byte as posted', async (_case, url, parts, answers) => {
     const res = await post(url, parts);
     const files = insertsInto(db, 'file');
     expect(files.map((statement) => statement.tenantId)).toEqual([TENANT_UMBRELLA.tenantId]);
     const fileId = String(boundRow(files[0] as RecordedStatement).fileid);
     expect(isCfUuid(fileId)).toBe(true);
-    const bytes = bytesOf('guide-2.pdf');
-    expect(storage.calls).toEqual([
-      {
-        op: 'put',
-        bucket: CONTENT_FILES_BUCKET,
-        key: contentFileKey({ tenantId: TENANT_UMBRELLA.tenantId, fileId, variant: '', ext: 'pdf' }),
-        size: bytes.length,
-        sha256: sha256Hex(bytes),
-        contentType: 'application/pdf',
-      },
-    ]);
+    const key = contentFileKey({ tenantId: TENANT_UMBRELLA.tenantId, fileId, variant: '', ext: 'pdf' });
+    const posted = { size: GUIDE.length, sha256: sha256Hex(GUIDE) };
+    expect(storage.calls).toEqual([{ op: 'put', bucket: CONTENT_FILES_BUCKET, key, ...posted, contentType: 'application/pdf' }]);
+    expect(storage.objects.get(key)?.bytes).toEqual(GUIDE);
+    expect(files.map(boundRow)).toEqual([expect.objectContaining({ fileid: fileId, filesize: GUIDE.length })]);
+    expect(insertsInto(db, 'staged_object').map(boundRow)).toEqual([expect.objectContaining({ object_key: key, kind: 'upload', ...posted })]);
+    expect(insertsInto(db, 'file_object').map(boundRow)).toEqual([expect.objectContaining({ object_key: key, size: String(GUIDE.length), sha256: posted.sha256 })]);
     answers(res, fileId);
   });
 });

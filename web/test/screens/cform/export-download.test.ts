@@ -1,12 +1,14 @@
 // cform.export relay: forwarded siteid and contentid, zip bytes and download headers passed through unchanged.
 import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createCsrfRenderer } from '@/lib/csrf';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { createResourceBundles } from '@/lib/resource-bundles/rb';
 import { downloadResponse } from '@/lib/responses';
 import { exportForm } from '@/screens/cform/export';
-import type { ScreenContext } from '@/screens/registry';
+import type { RawBody, ScreenContext } from '@/screens/registry';
 import { fixtureBundles } from '../../fixtures/resource-bundles/generated-bundles';
 import { adminS2Request } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
@@ -33,6 +35,10 @@ const SERVICE_HEADERS = {
 
 const rb = createResourceBundles(fixtureBundles).rbFor('en_US');
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+
+/** The relayed bytes, a streamed body read to its end. */
+const bytesOf = async (body: RawBody['body']): Promise<Buffer> =>
+  body instanceof Readable ? buffer(body) : Buffer.from(body as Uint8Array);
 
 let restoreEnv: () => void;
 let gateway: FakeGatewayClient;
@@ -83,8 +89,8 @@ describe('exportForm', () => {
 
     expect(result.status).toBe(200);
     expect(result.contentType).toBe('application/zip');
-    expect(result.body).toBeInstanceOf(Uint8Array);
-    expect(sha256(result.body as Uint8Array)).toBe(sha256(ZIP));
+    expect(result.body).toBeInstanceOf(Readable);
+    expect(sha256(await bytesOf(result.body))).toBe(sha256(ZIP));
     expect(result.headers).toEqual({
       'content-disposition': DISPOSITION,
       generator: 'Masa CMS 7.6.1',
@@ -99,7 +105,7 @@ describe('exportForm', () => {
     const response = downloadResponse({
       status: raw.status ?? 200,
       headers: { 'content-type': raw.contentType, ...raw.headers },
-      body: raw.body as Uint8Array,
+      body: Readable.toWeb(raw.body as Readable) as ReadableStream<Uint8Array>,
     });
 
     expect(response.status).toBe(200);
@@ -108,16 +114,22 @@ describe('exportForm', () => {
     expect(sha256(new Uint8Array(await response.arrayBuffer()))).toBe(sha256(ZIP));
   });
 
-  it.each<[string, FakeReply, string]>([
-    ['a non-denial 4xx', { status: 404, headers: { 'content-type': LEGACY_HTML }, body: '' }, LEGACY_HTML],
-    ['an error page', { status: 500, headers: { 'content-type': LEGACY_HTML }, body: '<h1>Error</h1>' }, LEGACY_HTML],
-    ['an answer without a content type', { status: 200, body: 'PK' }, ''],
-  ])('relays %s as received', async (_label, reply, contentType) => {
+  it.each<[string, FakeReply, string, typeof Buffer | typeof Readable]>([
+    ['a non-denial 4xx', { status: 404, headers: { 'content-type': LEGACY_HTML }, body: '' }, LEGACY_HTML, Buffer],
+    [
+      'an error page',
+      { status: 500, headers: { 'content-type': LEGACY_HTML }, body: '<h1>Error</h1>' },
+      LEGACY_HTML,
+      Buffer,
+    ],
+    ['an answer without a content type', { status: 200, body: 'PK' }, '', Readable],
+  ])('relays %s as received', async (_label, reply, contentType, bodyType) => {
     gateway.setRoute(ROUTE, reply);
 
     const result = await exportForm(contextFor({}));
 
-    expect(result).toEqual({ status: reply.status, contentType, body: Buffer.from(reply.body as string), headers: {} });
+    expect(result).toEqual({ status: reply.status, contentType, body: expect.any(bodyType), headers: {} });
+    expect(await bytesOf(result.body)).toEqual(Buffer.from(reply.body as string));
   });
 
   it.each([401, 403] as const)('raises GatewayDenialError for HTTP %i instead of relaying it', async (status) => {

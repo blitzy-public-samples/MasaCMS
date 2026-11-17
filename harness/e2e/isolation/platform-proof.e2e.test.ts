@@ -454,10 +454,12 @@ async function stubPosition(invoker: Invoker, eventId: string): Promise<StubPosi
     throw new Error(`stub migration position lacks ${lacking}: ${result.text}`);
   }
   return {
-    published: published.map(({ eventId: id, topic, tenantId }) => ({
+    published: published.map(({ eventId: id, topic, tenantId, kind, seq }) => ({
       eventId: id.toLowerCase(),
       topic,
       tenantId: tenantId.toLowerCase(),
+      kind,
+      seq,
     })),
     receipts: receipts.map((tenantId) => tenantId.toLowerCase()).sort(),
     subscription,
@@ -669,7 +671,7 @@ describe('platform proof on the stub', () => {
       const outboxEntries = positionBefore.published.filter(({ eventId }) => eventId === originalEventId);
       const entriesSeen = JSON.stringify(outboxEntries);
       expect(outboxEntries, `published stub outbox entries of ${originalEventId}: ${entriesSeen}`).toEqual([
-        { eventId: originalEventId, topic: STUB_NOTE_TOPIC, tenantId: tenantAId },
+        { eventId: originalEventId, topic: STUB_NOTE_TOPIC, tenantId: tenantAId, kind: 'state', seq: expect.stringMatching(/^\d+$/) },
       ]);
       const receiptsBefore = positionBefore.receipts;
       const tenantsBefore = describeTenants(receiptsBefore);

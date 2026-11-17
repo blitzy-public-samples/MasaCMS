@@ -13,7 +13,6 @@ import {
   type CanonicalColumn,
   type ChangeRow,
   type LegacyChange,
-  type PublishedEvent,
 } from '@opt2/platform/migration-kit';
 import { ROLE_SET, TENANT_A, assertResponseMatchesOpenApi, authHeadersFor, pgAvailable, testVerifier } from '@opt2/platform/testing';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -67,7 +66,7 @@ import {
   personArchiveRow,
 } from './helpers/fixtures.js';
 import { createGatewayDouble, type GatewayDouble, type GatewayInflightRow } from './helpers/gateway-double.js';
-import type { OwnerDoubleState } from './helpers/owner-double.js';
+import type { DoublePublishedEvent, OwnerDoubleState } from './helpers/owner-double.js';
 
 const m = vi.hoisted(() => ({ restartLegacy: vi.fn(), createPubSub: vi.fn() }));
 
@@ -148,7 +147,12 @@ const ARCHIVE = personArchiveRow();
 const BLACKOUT = blackoutRow({ day_id: fixtureId('timesheet_day:tenant-a/2026-06-16'), archive_id: ARCHIVE.archive_id });
 /** A second archive of the same person that people holds but whose change never reaches legacy. */
 const UNPROJECTED_ARCHIVE = personArchiveRow({ effective_from: new Date(2026, 6, 1) });
-const ARCHIVED_EVENT: PublishedEvent = { eventId: 'b5f0c1d2-7a3e-4c8b-9d10-2e3f4a5b6c7d', topic: ARCHIVED_TOPIC, tenantId: TENANT_A.tenantId };
+const ARCHIVED_EVENT: DoublePublishedEvent = {
+  eventId: 'b5f0c1d2-7a3e-4c8b-9d10-2e3f4a5b6c7d',
+  topic: ARCHIVED_TOPIC,
+  tenantId: TENANT_A.tenantId,
+  kind: 'process',
+};
 
 /** An insert changelog row of `unit` with its one legacy projection, as an owner's `GET /changes` lists it. */
 function insertChange(

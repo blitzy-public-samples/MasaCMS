@@ -1,5 +1,5 @@
 /** carch admin routes: Site Manager page data, content writes and raw responses. */
-import { existsSync, readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import { AuthDenial } from '@opt2/platform/auth';
 import {
@@ -37,30 +37,37 @@ import { poolTenantFor, registryEntries, registryEntryForTenant, type TenantTx }
 import { loadRequest, requiresApproval } from '../../domain/approval-requests.js';
 import { approvalAction } from '../../domain/approvals.js';
 import { readChangeset } from '../../domain/changesets.js';
-import { countCategories, listCategories } from '../../domain/categories.js';
+import { countCategories, readCategoryTree, type CategoryTreeLevels } from '../../domain/categories.js';
 import {
   carchUpdate,
   getActiveContent,
+  getActiveContents,
   getApprovalsQuery,
+  getApprovalsQueryColumns,
   getAudit,
   getAuditTrail,
   getContentVersion,
   getCrumbList,
+  getCrumbLists,
+  getCrumbListsInTx,
   getDraftList,
+  getDraftListColumns,
   getDraftPromptData,
   getHasDrafts,
   getHistory,
   getKidsCount,
+  getKidsCounts,
   getMyApprovalsCount,
   getMyDraftsCount,
   getMyExpiresCount,
   getMyLockedContentCount,
   getMySubmissionsCount,
   getNest,
-  getSubmissionsQuery,
+  getSubmissionsQueryColumns,
   lockFile,
   parseDateArg,
   readContent,
+  readDraftBatches,
   saveContent,
   saveCopyInfo,
   saveQuickEdit,
@@ -85,10 +92,10 @@ import {
   responseValues,
   type AttachmentLinkParts,
 } from '../../domain/forms.js';
-import { FeedBean, feedContent, listFeeds } from '../../domain/feeds.js';
+import { FeedBean, feedContent, listFeedNames } from '../../domain/feeds.js';
 import type { UploadedFile } from '../../domain/files.js';
-import { getModulePerm, getNodePerm, getPerm, loadMemberships, setRestriction, type UserMemberships } from '../../domain/permissions.js';
-import { contentPoolSites, withPoolTenant } from '../../domain/pools.js';
+import { getModulePerm, getNodePerm, getNodePerms, getNodePermsInTx, getPerm, getPerms, loadMemberships, setRestriction, type NodeVerdict, type UserMemberships } from '../../domain/permissions.js';
+import { contentPoolSites, withPoolTenant, type PoolSite } from '../../domain/pools.js';
 import { PRIVATE_SEARCH_RECORDS_PER_PAGE, privateSearch } from '../../domain/search.js';
 import { readVariationTargeting, saveVariationTargetingInTx } from '../../domain/variations.js';
 import {
@@ -184,6 +191,7 @@ import {
   type AdminWriteResult,
   type SessionEffects,
 } from './access.js';
+import { VIEW_MODEL_CONTENT_TYPE, settled, streamModel } from './streamed-model.js';
 
 // ---- module constants ----
 
@@ -232,6 +240,14 @@ type Rc = Record<string, unknown>;
 type DraftListRow = Awaited<ReturnType<typeof getDraftList>>[number];
 /** A pending approval row (`getApprovalsQuery`, `getSubmissionsQuery`). */
 type ApprovalListRow = Awaited<ReturnType<typeof getApprovalsQuery>>[number];
+/** The draft list columns loadsiteflat's draft report reads. */
+const DRAFT_REPORT_COLUMNS = ['contentid', 'lastupdate'] as const;
+/** The pending list columns loadsiteflat's approval and submission reports read. */
+const PENDING_REPORT_COLUMNS = ['contentid', 'lastupdate', 'publishdate', 'displaystart'] as const;
+/** A draft report row as loadsiteflat reads it. */
+type DraftReportRow = Pick<DraftListRow, (typeof DRAFT_REPORT_COLUMNS)[number]>;
+/** A pending report row as loadsiteflat reads it. */
+type PendingReportRow = Pick<ApprovalListRow, (typeof PENDING_REPORT_COLUMNS)[number]>;
 /** A local feed's content row. */
 type FeedContentRow = Awaited<ReturnType<typeof feedContent>>[number];
 
@@ -301,15 +317,16 @@ function paramsOf(request: FastifyRequest): Rc {
   return { ...legacyParamsOf(request) };
 }
 
-/** The request's spooled upload parts, read into memory for the domain's file writes. */
-async function uploadsOf(request: FastifyRequest): Promise<UploadedFile[]> {
-  const files: UploadedFile[] = [];
-  for (const part of multipartFilesOf(request)) {
-    const chunks: Buffer[] = [];
-    for await (const chunk of part.stream()) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
-    files.push({ fieldName: part.field, fileName: part.filename, contentType: part.mimetype, bytes: Buffer.concat(chunks) });
-  }
-  return files;
+/** The request's spooled upload parts, each with its size, hash and stream factory for the domain's file writes. */
+function uploadsOf(request: FastifyRequest): UploadedFile[] {
+  return multipartFilesOf(request).map((part) => ({
+    fieldName: part.field,
+    fileName: part.filename,
+    contentType: part.mimetype,
+    size: part.size,
+    sha256: part.sha256,
+    stream: () => part.stream(),
+  }));
 }
 
 // ---- verified admin session ----
@@ -517,26 +534,39 @@ function unescapeProperty(token: string): string {
   });
 }
 
-const bundleCache = new Map<string, Record<string, string>>();
+/** Each locale's pending or loaded bundle; a failed load is dropped so a later request reads the files again. */
+const bundleCache = new Map<string, Promise<Record<string, string>>>();
+
+/** The keys of `<rb>.properties` in `dir`; {} when the file does not exist. */
+async function propertiesIn(dir: URL, rb: string): Promise<Record<string, string>> {
+  let text: string;
+  try {
+    text = await readFile(new URL(`${rb}.properties`, dir), 'utf8');
+  } catch (err) {
+    const code = (err as { code?: unknown }).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return {};
+    throw err;
+  }
+  return parseProperties(text);
+}
 
 /** The keys of locale `rb`: the core bundle with the application overrides over it; {} for a locale without files. */
-function bundleOf(rb: string): Record<string, string> {
-  const cached = bundleCache.get(rb);
-  if (cached !== undefined) return cached;
-  const read = (dir: URL): Record<string, string> => {
-    const file = new URL(`${rb}.properties`, dir);
-    return existsSync(file) ? parseProperties(readFileSync(file, 'utf8')) : {};
-  };
-  const bundle = { ...read(CORE_BUNDLE_DIR), ...read(OVERRIDE_BUNDLE_DIR) };
-  bundleCache.set(rb, bundle);
+function bundleOf(rb: string): Promise<Record<string, string>> {
+  let bundle = bundleCache.get(rb);
+  if (bundle === undefined) {
+    bundle = Promise.all([propertiesIn(CORE_BUNDLE_DIR, rb), propertiesIn(OVERRIDE_BUNDLE_DIR, rb)]).then(([core, override]) => ({ ...core, ...override }));
+    bundleCache.set(rb, bundle);
+    void bundle.catch(() => bundleCache.delete(rb));
+  }
   return bundle;
 }
 
 /** `rbFactory` labels of the session's `rb`, falling back to `en` as resourceBundleFactory.cfc does. */
-function labelsOf(rb: string, javaLocale: string): AdminLabels {
+async function labelsOf(rb: string, javaLocale: string): Promise<AdminLabels> {
   // Only the file's base name is taken from the session value, so it can never name another directory.
   const name = /^[A-Za-z]{2,3}(?:_[A-Za-z]{2})?$/.test(rb) ? rb.toLowerCase().split('_')[0] ?? 'en' : 'en';
-  return createAdminLabels(bundleOf(name), bundleOf('en'), javaLocale);
+  const [bundle, fallback] = await Promise.all([bundleOf(name), bundleOf('en')]);
+  return createAdminLabels(bundle, fallback, javaLocale);
 }
 
 // ---- site settings ----
@@ -628,7 +658,7 @@ async function renderBaseOf(request: FastifyRequest, ctx: ContentRouteContext, a
     locale,
   };
   return {
-    labels: labelsOf(session.rb, locale),
+    labels: await labelsOf(session.rb, locale),
     session,
     site: site.urls,
     siteSettings: {
@@ -981,22 +1011,26 @@ function safeValues(row: Parameters<typeof responseValues>[0]): unknown {
   }
 }
 
-/** The getDraftList rows draft.cfm reads, each with its `getCrumbList(contentid, rc.siteid)` crumbdata, their icon classes and its node verdict. */
-async function draftRows(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor, siteId: string): Promise<Rc[]> {
-  const drafts = await getDraftList(ctx.domain, actor, { siteId });
-  if (drafts.length === 0) return [];
-  const memberships = await membershipsOf(request, ctx, actor);
-  const customIcons = await customIconsOf(ctx, actor, siteId);
-  const rows: Rc[] = [];
-  for (const row of drafts) {
-    const crumbs = await getCrumbList(ctx.domain, actor, { contentId: row.contentid ?? '', siteId });
-    rows.push({
-      ...row,
-      verdict: await getNodePerm(ctx.domain, actor, crumbs, memberships),
-      crumbdata: crumbs.map((crumb) => ({ ...crumb, iconclass: iconClass(customIcons, crumb) })),
-    });
-  }
-  return rows;
+/** The getDraftList rows draft.cfm reads, handed to `write` batch by batch as page-model values with their crumbdata, icon classes and node verdict. */
+async function draftRows(request: FastifyRequest, ctx: ContentRouteContext, actor: Actor, siteId: string, write: (rows: unknown[]) => Promise<boolean>): Promise<void> {
+  // Read before the cursor's transaction holds a connection; a failure still surfaces at the first batch.
+  const lookups = await settled(
+    (async () => ({ memberships: await membershipsOf(request, ctx, actor), customIcons: await customIconsOf(ctx, actor, siteId) }))(),
+  );
+  await readDraftBatches(ctx.domain, actor, { siteId }, async (drafts, tx) => {
+    const { memberships, customIcons } = lookups();
+    const crumbLists = await getCrumbListsInTx(tx, ctx.domain.repository, { siteId, items: drafts.map((row) => ({ contentId: row.contentid ?? '' })) });
+    const verdicts = await getNodePermsInTx(tx, ctx.domain, actor, crumbLists, memberships);
+    return write(
+      drafts.map((row, at) =>
+        modelValue({
+          ...row,
+          verdict: verdicts[at] ?? 'none',
+          crumbdata: (crumbLists[at] ?? []).map((crumb) => ({ ...crumb, iconclass: iconClass(customIcons, crumb) })),
+        }),
+      ),
+    );
+  });
 }
 
 /** The history and audit screens' rc: the screen model under legacy names, the site and configBean flags, and `rc.deletable` (hist.cfm:96). */
@@ -1085,11 +1119,15 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
     });
   });
 
-  /** carch.draft (carch.cfc:250-252): the session user's drafts. */
-  app.get<Site>('/v1/sites/:siteid/content/drafts', { config }, async (request) => {
+  /** carch.draft (carch.cfc:250-252): the session user's drafts, streamed batch by batch. */
+  app.get<Site>('/v1/sites/:siteid/content/drafts', { config }, async (request, reply) => {
     const actor = await requireCircuitAccess(request, ctx, 'carch', request.params.siteid);
     const { rc } = await carchContext(pageParams(request, { siteid: request.params.siteid }), actor, () => storedSession(request));
-    return viewModel({ ...rc, rsList: await draftRows(request, ctx, actor, rcText(rc, 'siteid')) });
+    const body = await streamModel(['rsList'], (out) => {
+      out.head((slot) => viewModel({ ...rc, rsList: slot.rsList }));
+      return draftRows(request, ctx, actor, rcText(rc, 'siteid'), (rows) => out.batch('rsList', rows));
+    });
+    return reply.type(VIEW_MODEL_CONTENT_TYPE).send(body);
   });
 
   /** carch.edit and carch.editLive: the edit screen model, or the node editLive opens. */
@@ -1185,7 +1223,7 @@ export async function registerCarchRoutes(app: FastifyInstance, ctx: ContentRout
     const state = await storedSession(request);
     const result = await dataManagerAction(ctx.domain, actor, rc, {
       validateCsrfTokens: (context) => validateCsrf(request, context, reply),
-      files: await uploadsOf(request),
+      files: uploadsOf(request),
       locale: state.locale ?? 'en_US',
       requestId: request.id,
     });
@@ -1617,17 +1655,20 @@ interface NestScope {
 
 /**
  * The rows dsp_nest.cfm shows under `parentId`, its `nextN` from `startRow`, each with its verdict, child count and,
- * for an open section with children, the rows of the level below.
+ * for an open section with children, the rows of the level below; a level reads its rows' counts and verdicts at once.
  */
 async function nestNodes(scope: NestScope, parentId: string, sort: { sortBy: string; sortDirection: string }, startRow: number, ancestors: ReadonlySet<string> = new Set()): Promise<NestNode[]> {
   const { ctx, actor, siteId } = scope;
   const page = await getNest(ctx.domain, actor, { parentId, siteId, sortBy: sort.sortBy, sortDirection: sort.sortDirection, startRow, maxRows: scope.nextN });
   const level = new Set([...ancestors, parentId.toLowerCase()]);
+  const contentIds = page.rows.map((row) => row.contentid ?? '');
+  const kidsCounts = await getKidsCounts(ctx.domain, actor, { parents: page.rows.map((row) => ({ parentId: row.contentid ?? '', siteId: row.siteid ?? siteId })), liveOnly: false });
+  const verdicts = await getPerms(ctx.domain, actor, contentIds.map((contentId) => ({ contentId, siteId })), scope.memberships);
   const nodes: NestNode[] = [];
-  for (const row of page.rows) {
-    const contentId = row.contentid ?? '';
-    const kidsCount = await getKidsCount(ctx.domain, actor, { parentId: contentId, siteId: row.siteid ?? siteId, liveOnly: false });
-    const verdict = await getPerm(ctx.domain, actor, contentId, siteId, scope.memberships);
+  for (const [at, row] of page.rows.entries()) {
+    const contentId = contentIds[at] as string;
+    const kidsCount = kidsCounts[at] as number;
+    const verdict = verdicts[at] as NodeVerdict;
     const open = kidsCount > 0 && cfListToArray(scope.openSections).includes(contentId) && !level.has(contentId.toLowerCase());
     const kids = open ? await nestNodes(scope, contentId, { sortBy: row.sortby ?? '', sortDirection: row.sortdirection ?? '' }, 1, level) : undefined;
     nodes.push({ ...row, verdict, kidsCount, ...(kids === undefined ? {} : { kids }) });
@@ -1835,7 +1876,7 @@ function byDates<R>(rows: readonly R[], direction: string, ...keys: Array<(row: 
 type FlatFeedRow = FeedContentRow & { approvalstatus?: string | null; duedate?: Date | null };
 
 /** loadsiteflat.cfm:62-213: the flat view's feed over the request's filters and report. */
-async function siteFlatFeed(ctx: ContentRouteContext, actor: Actor, event: SiteFlatEvent, adminOnly: readonly ExtendSubtypeRow[], customTagGroups: string): Promise<{ feed: FeedBean; rows: FlatFeedRow[]; drafts: ApprovalListRow[] | DraftListRow[] }> {
+async function siteFlatFeed(ctx: ContentRouteContext, actor: Actor, event: SiteFlatEvent, adminOnly: readonly ExtendSubtypeRow[], customTagGroups: string): Promise<{ feed: FeedBean; rows: FlatFeedRow[]; drafts: PendingReportRow[] | DraftReportRow[] }> {
   const ev = (name: string): string => eventText(event, name);
   const siteId = ev('siteid');
   const now = ctx.clock.now();
@@ -1883,7 +1924,7 @@ async function siteFlatFeed(ctx: ContentRouteContext, actor: Actor, event: SiteF
     feed.setValue('sortBy', 'desc');
   }
   if (ev('sortDirection') !== '') feed.setValue('sortDirection', ev('sortDirection'));
-  let drafts: ApprovalListRow[] | DraftListRow[] = [];
+  let drafts: PendingReportRow[] | DraftReportRow[] = [];
   if (cfEq(report, 'lockedfiles')) {
     addFeedParam(feed, { field: 'tcontentstats.lockid', condition: '>', criteria: '' });
   } else if (cfEq(report, 'mylockedcontent')) {
@@ -1895,10 +1936,12 @@ async function siteFlatFeed(ctx: ContentRouteContext, actor: Actor, event: SiteF
     const expiring = await inTenant(ctx, actor, (tx) => ctx.domain.repository.content.expiringContent(tx, { siteId, userId: actor.userId, today: now }));
     addFeedParam(feed, { field: 'tcontent.contentID', datatype: 'varchar', condition: 'in', criteria: contentIdList(expiring) });
   } else if (cfEq(report, 'mydrafts')) {
-    drafts = await getDraftList(ctx.domain, actor, { siteId, startDate: cfDateAdd('m', -3, now) });
+    drafts = await getDraftListColumns(ctx.domain, actor, { siteId, startDate: cfDateAdd('m', -3, now) }, DRAFT_REPORT_COLUMNS);
     addFeedParam(feed, { field: 'tcontent.contentid', datatype: 'varchar', condition: 'in', criteria: contentIdList(drafts) });
   } else if (cfEq(report, 'myapprovals') || cfEq(report, 'mysubmissions')) {
-    drafts = cfEq(report, 'myapprovals') ? await getApprovalsQuery(ctx.domain, actor, { siteId }) : await getSubmissionsQuery(ctx.domain, actor, { siteId });
+    drafts = cfEq(report, 'myapprovals')
+      ? await getApprovalsQueryColumns(ctx.domain, actor, { siteId }, PENDING_REPORT_COLUMNS)
+      : await getSubmissionsQueryColumns(ctx.domain, actor, { siteId }, PENDING_REPORT_COLUMNS);
     addFeedParam(feed, { field: 'tcontent.contentid', datatype: 'varchar', condition: 'in', criteria: contentIdList(drafts) });
   }
   if (ev('keywords') !== '') {
@@ -1929,10 +1972,10 @@ function listFindNoCaseOf(list: string, value: string): boolean {
 }
 
 /** loadsiteflat.cfm:249-303: a pending report's rows with their latest draft dates, or the draft report's with its latest draft. */
-function withReportColumns(rows: FlatFeedRow[], report: string, sortBy: string, direction: string, drafts: ReadonlyArray<ApprovalListRow | DraftListRow>): FlatFeedRow[] {
+function withReportColumns(rows: FlatFeedRow[], report: string, sortBy: string, direction: string, drafts: ReadonlyArray<PendingReportRow | DraftReportRow>): FlatFeedRow[] {
   if (rows.length === 0) return rows;
   if (listFindNoCaseOf('mysubmissions,myapprovals', report)) {
-    const pending = drafts as readonly ApprovalListRow[];
+    const pending = drafts as readonly PendingReportRow[];
     const updated = rows.map((row): FlatFeedRow => {
       const own = rowsOfItem(pending, row.contentid);
       const publish = maxDate(own.map((draft) => draft.publishdate));
@@ -1994,11 +2037,11 @@ function categoryNamesOf(ctx: ContentRouteContext, actor: Actor, contentHistIds:
 }
 
 /** dsp_categories_nest.cfm's tree: each pool level by name, with the levels under rows that have children. */
-async function categoryTreeOf(ctx: ContentRouteContext, actor: Actor, parentId = '', ancestors: ReadonlySet<string> = new Set()): Promise<SiteFlatCategory[]> {
+function categoryTreeOf(tree: CategoryTreeLevels, parentId = '', ancestors: ReadonlySet<string> = new Set()): SiteFlatCategory[] {
   const nodes: SiteFlatCategory[] = [];
-  for (const row of await listCategories(ctx.domain, actor, { parentId })) {
+  for (const row of tree.level(parentId)) {
     const id = row.categoryid.toLowerCase();
-    const kids = row.haskids > 0 && !ancestors.has(id) ? await categoryTreeOf(ctx, actor, row.categoryid, new Set([...ancestors, id])) : [];
+    const kids = row.haskids > 0 && !ancestors.has(id) ? categoryTreeOf(tree, row.categoryid, new Set([...ancestors, id])) : [];
     nodes.push({ categoryid: row.categoryid, name: row.name, isopen: row.isopen, kids });
   }
   return nodes;
@@ -2059,7 +2102,7 @@ async function runLoadSiteFlat(request: FastifyRequest, ctx: ContentRouteContext
       mylockedcontent: await getMyLockedContentCount(ctx.domain, actor, { siteId: sessionSite }),
     },
     categoryCount: await countCategories(ctx.domain, actor),
-    categories: await categoryTreeOf(ctx, actor),
+    categories: categoryTreeOf(await readCategoryTree(ctx.domain, actor)),
     customIcons: await customIconsOf(ctx, actor, siteId),
   };
   return siteManagerFragment('loadsiteflat', await renderWithTokens(request, base, (rctx) => renderLoadSiteFlat(model, rctx)));
@@ -2096,15 +2139,18 @@ async function runAssocFiles(request: FastifyRequest, ctx: ContentRouteContext, 
   if (keywords !== '') {
     const found = await privateSearch(ctx.domain, actor, { siteId, keywords, searchType: type, startRow: 1 });
     const memberships = await membershipsOf(request, ctx, actor);
-    const verdicts = new Map<string, NodePerm>();
+    // One verdict per content id ignoring case, read for the first spelling of each.
+    const distinctIds = new Map<string, string>();
     for (const row of found.rows) {
       const contentId = row.contentid ?? '';
-      let perm = verdicts.get(contentId.toLowerCase());
-      if (perm === undefined) {
-        perm = await getNodePerm(ctx.domain, actor, await getCrumbList(ctx.domain, actor, { contentId, siteId }), memberships);
-        verdicts.set(contentId.toLowerCase(), perm);
-      }
-      rows.push({ fileid: row.fileid, contentid: contentId, fileext: row.fileext, assocfilename: row.assocfilename, perm });
+      if (!distinctIds.has(contentId.toLowerCase())) distinctIds.set(contentId.toLowerCase(), contentId);
+    }
+    const crumbLists = await getCrumbLists(ctx.domain, actor, { siteId, items: [...distinctIds.values()].map((contentId) => ({ contentId })) });
+    const perms = await getNodePerms(ctx.domain, actor, crumbLists, memberships);
+    const verdicts = new Map<string, NodePerm>([...distinctIds.keys()].map((key, at) => [key, perms[at] ?? 'none']));
+    for (const row of found.rows) {
+      const contentId = row.contentid ?? '';
+      rows.push({ fileid: row.fileid, contentid: contentId, fileext: row.fileext, assocfilename: row.assocfilename, perm: verdicts.get(contentId.toLowerCase()) ?? 'none' });
     }
   }
   return panelResult(await renderRaw(request, ctx, actor, (rctx) => renderAssocFiles({ keywords, type, property, rows }, rctx)));
@@ -2290,12 +2336,47 @@ async function relatedContentSetsOf(ctx: ContentRouteContext, actor: Actor, acti
   return sets;
 }
 
-/** contentManager.getCrumbList(contentid, siteid) for the token's site or a registered content-pool site in its tenant; AuthDenial 403 for any other site. */
-async function crumbsAt(ctx: ContentRouteContext, actor: Actor, contentId: string, siteId: string): Promise<Crumb[]> {
-  if (cfEq(siteId, actor.siteId)) return getCrumbList(ctx.domain, actor, { contentId, siteId });
-  const site = (await contentPoolSites(ctx.domain.db, actor.tenantId)).find((pooled) => cfEq(pooled.siteId, siteId));
-  if (site === undefined) throw AuthDenial.forbidden('site-mismatch');
-  return ctx.domain.db.withTenant(site.tenantId, (tx) => ctx.domain.repository.content.crumbPath(tx, { contentId, siteId: site.siteId }));
+/** contentManager.getCrumbList(contentid, siteid) of many rows: each row's site checked as it is added, then all crumbs read per site. */
+interface CrumbBatch {
+  /** Queues the row's crumbs in the token's site or a registered content-pool site in its tenant; AuthDenial 403 for any other site. */
+  add(row: { contentid: string; siteid: string }): Promise<void>;
+  /** The queued rows' crumbs in queue order: one getCrumbLists per token-site spelling, one transaction per pool tenant. */
+  read(): Promise<Crumb[][]>;
+}
+
+/** A new {@link CrumbBatch}, reading the content pool at most once. */
+function crumbBatch(ctx: ContentRouteContext, actor: Actor): CrumbBatch {
+  let pool: Promise<PoolSite[]> | undefined;
+  const groups = new Map<string, { siteId: string; tenantId: string | null; at: number[]; items: Array<{ contentId: string }> }>();
+  let size = 0;
+  return {
+    async add(row) {
+      let site: { siteId: string; tenantId: string | null } = { siteId: row.siteid, tenantId: null };
+      if (!cfEq(row.siteid, actor.siteId)) {
+        pool ??= contentPoolSites(ctx.domain.db, actor.tenantId);
+        const pooled = (await pool).find((candidate) => cfEq(candidate.siteId, row.siteid));
+        if (pooled === undefined) throw AuthDenial.forbidden('site-mismatch');
+        site = pooled;
+      }
+      const key = `${site.tenantId ?? ''}\u0000${site.siteId}`;
+      const group = groups.get(key) ?? { ...site, at: [], items: [] };
+      groups.set(key, group);
+      group.at.push(size);
+      group.items.push({ contentId: row.contentid });
+      size += 1;
+    },
+    async read() {
+      const crumbs: Crumb[][] = Array.from({ length: size }, () => []);
+      for (const { siteId, tenantId, at, items } of groups.values()) {
+        const read =
+          tenantId === null
+            ? await getCrumbLists(ctx.domain, actor, { siteId, items })
+            : await ctx.domain.db.withTenant(tenantId, (tx) => ctx.domain.repository.content.crumbPaths(tx, { siteId, items }));
+        at.forEach((index, n) => (crumbs[index] = read[n] ?? []));
+      }
+      return crumbs;
+    },
+  };
 }
 
 /** contentGateway.getRelatedContent over the site's content pool: links of this tenant's version, rows of each pool tenant, merged. */
@@ -2315,9 +2396,17 @@ async function relatedRowsOf(ctx: ContentRouteContext, actor: Actor, args: Relat
   });
 }
 
-/** A related-content row with the crumbs of its own site. */
-async function relatedItemOf(ctx: ContentRouteContext, actor: Actor, row: { contentid: string; siteid: string; type: string; subtype: string }): Promise<RelatedContentItem> {
-  return { ...row, crumbs: await crumbsAt(ctx, actor, row.contentid, row.siteid) };
+/** A related-content row before its crumbs are read. */
+type RelatedRow = Omit<RelatedContentItem, 'crumbs'>;
+
+/** The related-content row of a content row, its site defaulting to `siteId`. */
+function relatedRowOf(row: { contentid: string | null; siteid: string | null; type: string | null; subtype: string | null }, siteId: string): RelatedRow {
+  return { contentid: row.contentid ?? '', siteid: row.siteid ?? siteId, type: row.type ?? '', subtype: row.subtype ?? '' };
+}
+
+/** Each related-content row with the crumbs of its own site, in order. */
+function withCrumbs(rows: readonly RelatedRow[], crumbs: readonly Crumb[][]): RelatedContentItem[] {
+  return rows.map((row, at) => ({ ...row, crumbs: crumbs[at] ?? [] }));
 }
 
 /** `parseDateArg(value)` as a date, raising ACF's error where `dateAdd` meets a value that is no date. */
@@ -2392,13 +2481,12 @@ async function runLoadRelatedContent(request: FastifyRequest, ctx: ContentRouteC
     // `getSite().getSite()`: site names are programs-sites settings the registry does not hold.
     if (poolIds.length > 0) throw new CarchHaltedError('loadrelatedcontent', "results over a content pool print each pool site's name, a programs-sites setting the registry does not hold");
     const memberships = await membershipsOf(request, ctx, actor);
-    results = [];
-    for (const row of (await relatedSearchRows(ctx, actor, rc, contentPoolId)).slice(0, 100)) {
-      const itemSite = row.siteid ?? siteId;
-      const crumbs = await crumbsAt(ctx, actor, row.contentid ?? '', itemSite);
-      const verdict = await getNodePerm(ctx.domain, actor, crumbs, memberships);
-      results.push({ contentid: row.contentid ?? '', siteid: itemSite, type: row.type ?? '', subtype: row.subtype ?? '', crumbs, verdict });
-    }
+    const rows = (await relatedSearchRows(ctx, actor, rc, contentPoolId)).slice(0, 100).map((row) => relatedRowOf(row, siteId));
+    const batch = crumbBatch(ctx, actor);
+    for (const row of rows) await batch.add(row);
+    const crumbLists = await batch.read();
+    const verdicts = await getNodePerms(ctx.domain, actor, crumbLists, memberships);
+    results = withCrumbs(rows, crumbLists).map((item, at) => ({ ...item, verdict: verdicts[at] ?? 'none' }));
   }
   const model: LoadRelatedContentModel = {
     siteId,
@@ -2413,7 +2501,7 @@ async function runLoadRelatedContent(request: FastifyRequest, ctx: ContentRouteC
     entityType,
     relatedContentSets,
     subTypes: (await subtypesOf(ctx, actor, siteId, true)).map((row) => ({ type: row.type, subtype: row.subtype, iconclass: row.iconclass, adminonly: row.adminonly })),
-    categories: categoryNodesOf(await categoryTreeOf(ctx, actor)),
+    categories: categoryNodesOf(categoryTreeOf(await readCategoryTree(ctx.domain, actor))),
     contentPoolId,
     siteNames: {},
     ...(results === undefined ? {} : { results }),
@@ -2424,26 +2512,30 @@ async function runLoadRelatedContent(request: FastifyRequest, ctx: ContentRouteC
 
 /** The ad-hoc set's rows: each listed id whose node exists, or each row the client sent, with their crumbs. */
 async function relatedItemsFor(ctx: ContentRouteContext, actor: Actor, raw: string, siteId: string): Promise<RelatedContentItem[]> {
-  const items: RelatedContentItem[] = [];
-  for (const ref of relatedItemsOf(raw)) {
+  const refs = relatedItemsOf(raw);
+  const active = await getActiveContents(ctx.domain, actor, { siteId, contentIds: refs.flatMap((ref) => ('contentId' in ref ? [ref.contentId] : [])) });
+  const batch = crumbBatch(ctx, actor);
+  const items: RelatedRow[] = [];
+  for (const ref of refs) {
+    let row: RelatedRow;
     if ('contentId' in ref) {
-      const found = await getActiveContent(ctx.domain, actor, { contentId: ref.contentId, siteId });
-      if (found.isNew === 1) continue;
-      const v = found.version;
-      items.push(await relatedItemOf(ctx, actor, { contentid: v.contentid ?? '', siteid: v.siteid ?? siteId, type: v.type ?? '', subtype: v.subtype ?? '' }));
+      const v = active.get(ref.contentId);
+      if (v === undefined) continue;
+      row = relatedRowOf(v, siteId);
     } else {
       const cell = (name: string): string => {
         if (!(name in ref.row)) throw new UndefinedLegacyElementError(`Element ${name.toUpperCase()} is undefined in ITEM.`);
         const value = ref.row[name];
         return typeof value === 'number' ? cfNumberString(value) : value === null || value === undefined ? '' : String(value);
       };
-      const row = { contentid: cell('contentid'), siteid: cell('siteid'), type: cell('type'), subtype: cell('subtype') };
+      row = { contentid: cell('contentid'), siteid: cell('siteid'), type: cell('type'), subtype: cell('subtype') };
       cell('url');
       cell('title');
-      items.push(await relatedItemOf(ctx, actor, row));
     }
+    await batch.add(row);
+    items.push(row);
   }
-  return items;
+  return withCrumbs(items, await batch.read());
 }
 
 /** loadselectedrelatedcontent.cfm: the related content of each set the request selects. */
@@ -2457,12 +2549,20 @@ async function runLoadSelectedRelatedContent(request: FastifyRequest, ctx: Conte
   const all = await relatedContentSetsOf(ctx, actor, 'loadselectedrelatedcontent', siteId, rcRequired(rc, 'type'), rcRequired(rc, 'subtype'));
   const match = setId === '' || adHoc ? undefined : all.find((set) => cfEq(set.relatedcontentsetid, setId));
   const printed = adHoc ? [] : match === undefined ? all : [match];
-  const relatedContent: Record<string, RelatedContentItem[]> = {};
+  // Each set's rows are site-checked as they are read; the crumbs of every set are then read per site at once.
+  const batch = crumbBatch(ctx, actor);
+  const setRows: Array<[string, RelatedRow[]]> = [];
   for (const set of printed) {
-    const rows = await relatedRowsOf(ctx, actor, { siteId, contentHistId: bean.contentHistId(), relatedContentSetId: set.relatedcontentsetid, liveOnly: false, today: ctx.clock.now() });
-    const items: RelatedContentItem[] = [];
-    for (const row of rows) items.push(await relatedItemOf(ctx, actor, { contentid: row.contentid ?? '', siteid: row.siteid ?? siteId, type: row.type ?? '', subtype: row.subtype ?? '' }));
-    relatedContent[set.relatedcontentsetid] = items;
+    const rows = (await relatedRowsOf(ctx, actor, { siteId, contentHistId: bean.contentHistId(), relatedContentSetId: set.relatedcontentsetid, liveOnly: false, today: ctx.clock.now() })).map((row) => relatedRowOf(row, siteId));
+    for (const row of rows) await batch.add(row);
+    setRows.push([set.relatedcontentsetid, rows]);
+  }
+  const crumbs = await batch.read();
+  const relatedContent: Record<string, RelatedContentItem[]> = {};
+  let offset = 0;
+  for (const [relatedContentSetId, rows] of setRows) {
+    relatedContent[relatedContentSetId] = withCrumbs(rows, crumbs.slice(offset, offset + rows.length));
+    offset += rows.length;
   }
   const model: LoadSelectedRelatedContentModel = {
     relatedContentSetId: setId,
@@ -2505,7 +2605,7 @@ async function sectionsOf(ctx: ContentRouteContext, actor: Actor, siteId: string
 
 /** The query loadclass.cfm's include for `classid` reads, halted where its table is another service's. */
 async function objectClassData(ctx: ContentRouteContext, actor: Actor, classid: string, siteId: string): Promise<ObjectClassData> {
-  const feedsOf = async (kind: 'rsLocal' | 'rsRemote'): Promise<ObjectClassFeed[]> => (await listFeeds(ctx.domain, actor, siteId))[kind].map((row) => ({ feedid: row.feedid, name: row.name }));
+  const feedsOf = async (type: 'Local' | 'Remote'): Promise<ObjectClassFeed[]> => (await listFeedNames(ctx.domain, actor, siteId, type)).map((row) => ({ feedid: row.feedid, name: row.name }));
   switch (classid.toLowerCase()) {
     case 'component':
       return { components: await inTenant(ctx, actor, (tx) => ctx.domain.repository.content.components(tx, { moduleId: SITE_MANAGER_MODULE, siteId })) };
@@ -2517,9 +2617,9 @@ async function objectClassData(ctx: ContentRouteContext, actor: Actor, classid: 
       return { sections: await sectionsOf(ctx, actor, siteId, classid.toLowerCase() === 'folder' ? 'Folder' : classid.toLowerCase() === 'calendar' ? 'Calendar' : 'Gallery') };
     case 'localfeed':
     case 'slideshow':
-      return { localFeeds: await feedsOf('rsLocal') };
+      return { localFeeds: await feedsOf('Local') };
     case 'remotefeed':
-      return { remoteFeeds: await feedsOf('rsRemote') };
+      return { remoteFeeds: await feedsOf('Remote') };
     case 'mailinglist':
       throw new CarchHaltedError('loadclass', "mailing lists are communications' tmailinglist rows");
     case 'system':
@@ -2812,7 +2912,7 @@ async function runUpdate(request: FastifyRequest, ctx: ContentRouteContext, acto
   const topIdsByModule = Object.fromEntries(Object.entries(state.moduleTopIds ?? {}).filter(([key]) => !/^m/i.test(key)));
   const result = await carchUpdate({ ...ctx.domain, storage: ctx.storage }, actor, site, {
     rc,
-    files: await uploadsOf(request),
+    files: uploadsOf(request),
     validateCsrf: (context) => validateCsrf(request, context),
     session: { openSectionList: state.openSectionList ?? '', multiFileUpload: cfIsBoolean(multiFileUpload) && cfToBoolean(multiFileUpload), topIdsByModule },
     qqfile,

@@ -1,6 +1,7 @@
-/** People's environment schema: the base variables with every `OPT2_SERVICE_URLS` callee required at start-up. */
+/** People's environment schema: the base variables with its own name, its database and every `OPT2_SERVICE_URLS` callee required at start-up. */
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
+import { serializeError } from '@opt2/platform/logging';
 import { EnvValidationError, baseEnvSchema, loadEnv } from '@opt2/platform/service-kit';
 import { peopleEnvSchema } from '../../src/app.js';
 
@@ -12,12 +13,18 @@ const EVERY_CALLEE = [
   'OPT2_SERVICE_URLS.strategies-content: is required',
 ];
 
-/** The issues `loadEnv(peopleEnvSchema)` reports for a valid local environment with `overrides`; none when it parses. */
-function envIssues(overrides: Readonly<Record<string, string | undefined>>): string[] {
+/** What `loadEnv(peopleEnvSchema)` throws for a valid local environment with `overrides`; undefined when it parses. */
+function refusal(overrides: Readonly<Record<string, string | undefined>>): unknown {
   const source: Record<string, string | undefined> = {
     PORT: '8112',
     OPT2_SERVICE_NAME: 'people',
     OPT2_ENV: 'local',
+    OPT2_DB_AUTH: 'password',
+    PG_HOST: '127.0.0.1',
+    PG_PORT: '5432',
+    PG_DATABASE: 'opt2_people_test',
+    PG_USER: 'people_app',
+    PG_PASSWORD: 'unused',
     OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
     OPT2_TOKEN_ISSUER: 'opt2-local-identity',
     OPT2_TOKEN_AUDIENCE: 'opt2-local',
@@ -31,11 +38,18 @@ function envIssues(overrides: Readonly<Record<string, string | undefined>>): str
       peopleEnvSchema,
       Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined)),
     );
-    return [];
+    return undefined;
   } catch (err) {
-    if (err instanceof EnvValidationError) return err.issues;
-    throw err;
+    return err;
   }
+}
+
+/** The issues `loadEnv(peopleEnvSchema)` reports for a valid local environment with `overrides`; none when it parses. */
+function envIssues(overrides: Readonly<Record<string, string | undefined>>): string[] {
+  const err = refusal(overrides);
+  if (err === undefined) return [];
+  if (err instanceof EnvValidationError) return err.issues;
+  throw err;
 }
 
 describe('peopleEnvSchema', () => {
@@ -45,6 +59,14 @@ describe('peopleEnvSchema', () => {
 
   it.each<[string, Record<string, string | undefined>, string[]]>([
     ['parses a map naming every callee', {}, []],
+    ...Object.keys(CALLEE_URLS).map((callee): [string, Record<string, string | undefined>, string[]] => [
+      `names ${callee} when only it is missing from the map`,
+      { OPT2_SERVICE_URLS: JSON.stringify(Object.fromEntries(Object.entries(CALLEE_URLS).filter(([name]) => name !== callee))) },
+      [`OPT2_SERVICE_URLS.${callee}: is required`],
+    ]),
+    ['refuses the name of identity', { OPT2_SERVICE_NAME: 'identity' }, ['OPT2_SERVICE_NAME: must be people']],
+    ['names OPT2_DB_AUTH when it is unset', { OPT2_DB_AUTH: undefined }, ['OPT2_DB_AUTH: is required']],
+    ['names PG_DATABASE when it is unset', { PG_DATABASE: undefined }, ['PG_DATABASE: is required']],
     ['names every callee when OPT2_SERVICE_URLS is unset', { OPT2_SERVICE_URLS: undefined }, EVERY_CALLEE],
     ['names every callee when OPT2_SERVICE_URLS is {}', { OPT2_SERVICE_URLS: '{}' }, EVERY_CALLEE],
     [
@@ -65,5 +87,18 @@ describe('peopleEnvSchema', () => {
     ['reports only its own issue for a JSON array', { OPT2_SERVICE_URLS: '[]' }, [expect.stringMatching(/^OPT2_SERVICE_URLS: /)]],
   ])('%s', (_case, overrides, issues) => {
     expect(envIssues(overrides)).toStrictEqual(issues);
+  });
+
+  it.each<[string, Record<string, string | undefined>, string]>([
+    [
+      'every missing callee',
+      { OPT2_SERVICE_URLS: undefined },
+      'people: invalid environment (OPT2_SERVICE_URLS.people: is required; OPT2_SERVICE_URLS.identity: is required; OPT2_SERVICE_URLS.strategies-content: is required)',
+    ],
+    ['the missing database settings', { OPT2_DB_AUTH: undefined, PG_DATABASE: undefined }, 'people: invalid environment (OPT2_DB_AUTH: is required; PG_DATABASE: is required)'],
+  ])('logs a refusal naming %s with its reason and no value', (_case, overrides, text) => {
+    const err = refusal(overrides);
+    expect(err).toBeInstanceOf(EnvValidationError);
+    expect(serializeError(err).message).toBe(text);
   });
 });

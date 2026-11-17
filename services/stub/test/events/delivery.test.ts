@@ -49,8 +49,7 @@ type RegistryRow = {
 };
 
 const NOTE_DLQ = dlqTopicName(NOTE_CREATED_SUBSCRIPTION);
-// An unset PG_HOST means no PostgreSQL is configured, so the suites skip; pgAvailable still rejects on bad settings.
-const pg = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const pg = await pgAvailable();
 const publisher = createCapturingPublisher();
 let schema: ThrowawaySchema | undefined;
 let service: TestApp<TenantDb> | undefined;

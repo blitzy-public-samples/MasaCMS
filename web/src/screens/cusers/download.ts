@@ -1,6 +1,6 @@
 // The `cUsers.download` action: the users CSV of `cusers/inc/dsp_download.cfm`, built by its owning service (server-only).
 import { cfToBoolean } from '@opt2/platform/legacy-compat';
-import { assertNotDenied, type GatewayClient, type GatewayResponse, type WebServiceName } from '@/lib/gateway-client';
+import { assertNotDenied, type GatewayClient, type StreamedResponse, type WebServiceName } from '@/lib/gateway-client';
 import { relayFields } from '@/lib/request-context';
 import type { DownloadScreen, RawBody, ScreenContext } from '../registry';
 import { cusersGate, normaliseCusersRc, type CusersRc } from './gate';
@@ -10,7 +10,7 @@ import { relayUsersCsv, type UsersCsvSource } from './inc/dsp_download';
 interface UsersCsvCall {
   readonly service: WebServiceName;
   readonly operation: string;
-  send(gateway: GatewayClient): Promise<GatewayResponse<Buffer>>;
+  send(gateway: GatewayClient): Promise<StreamedResponse>;
 }
 
 /**
@@ -32,7 +32,7 @@ function usersCsvCall(req: ScreenContext['req'], rc: CusersRc): UsersCsvCall {
     return {
       service: 'people',
       operation: 'downloadUsersCsv',
-      send: (gateway) => gateway.people.raw('get', '/v1/users/download', { query }),
+      send: (gateway) => gateway.people.stream('get', '/v1/users/download', { query }),
     };
   }
   const source = sourceOf(String(rc.records));
@@ -41,7 +41,7 @@ function usersCsvCall(req: ScreenContext['req'], rc: CusersRc): UsersCsvCall {
     return {
       service: 'identity',
       operation: 'downloadGroupMembers',
-      send: (gateway) => gateway.identity.raw('get', '/v1/groups/{groupId}/members.csv', { params }),
+      send: (gateway) => gateway.identity.stream('get', '/v1/groups/{groupId}/members.csv', { params }),
     };
   }
   // The search ran with the site and pool of the action that stored it, not this request's.
@@ -49,7 +49,7 @@ function usersCsvCall(req: ScreenContext['req'], rc: CusersRc): UsersCsvCall {
   return {
     service: 'people',
     operation: 'downloadAdvancedSearchCsv',
-    send: (gateway) => gateway.people.raw('get', '/v1/users/advanced-search.csv', { query }),
+    send: (gateway) => gateway.people.stream('get', '/v1/users/advanced-search.csv', { query }),
   };
 }
 
@@ -58,7 +58,7 @@ function usersCsvCall(req: ScreenContext['req'], rc: CusersRc): UsersCsvCall {
  * @throws GatewayDenialError When the service answers 401 or 403.
  * @throws GatewayUnavailableError When the service is unavailable.
  */
-async function loadUsersCsv({ req, gateway }: ScreenContext): Promise<GatewayResponse<Buffer>> {
+async function loadUsersCsv({ req, gateway }: ScreenContext): Promise<StreamedResponse> {
   const call = usersCsvCall(req, normaliseCusersRc(req));
   const response = await call.send(gateway);
   // Legacy answers a denied caller with its access gate's redirect, never a service error body, so only a denial
@@ -67,13 +67,13 @@ async function loadUsersCsv({ req, gateway }: ScreenContext): Promise<GatewayRes
   return response;
 }
 
-/** `cUsers.download` behind the cUsers `before()` gate; the view relays the loaded answer unchanged. */
-export const downloadScreen: DownloadScreen<GatewayResponse<Buffer>> = Object.freeze({
+/** `cUsers.download` behind the cUsers `before()` gate; the view relays the loaded answer unchanged as it arrives. */
+export const downloadScreen: DownloadScreen<StreamedResponse> = Object.freeze({
   circuit: 'cusers',
   action: 'download',
   mode: 'download',
   owner: 'people',
   gate: cusersGate,
   load: loadUsersCsv,
-  download: (_ctx: ScreenContext, response: GatewayResponse<Buffer>): RawBody => relayUsersCsv(response),
+  download: (_ctx: ScreenContext, response: StreamedResponse): RawBody => relayUsersCsv(response),
 });

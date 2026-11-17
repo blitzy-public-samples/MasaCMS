@@ -29,9 +29,9 @@ import { TIMESHEET_ACTIONS, timesheetsLifecycle, type TimesheetAction, type Time
 import { deriveSheetStatus, type SheetStatusResult } from '../domain/sheet-status.js';
 import type { components } from '../generated/openapi.js';
 import { fixtureOutcomeReason } from '../legacy/envelope.js';
-import { MAX_SHEETS_PER_PAGE, type DayWithBlackout, type TimesheetsRepository } from '../repo/repository.js';
+import { MAX_SHEETS_PER_PAGE, type DayWithBlackout, type SheetWithDayStates, type TimesheetsRepository } from '../repo/repository.js';
 import type { TimesheetRow } from '../repo/tables.js';
-import { parseFixtureAsOf, sheetsWithDays } from './fixture.js';
+import { listedSheetStatus, parseFixtureAsOf, sheetsWithDays } from './fixture.js';
 
 // Declared here rather than imported from the route registry, which imports this module; the registry's deps stay assignable.
 /** Options of the `/v1` plugin: the timesheets tenant database, repository and injected clock. */
@@ -227,8 +227,8 @@ function timesheetDayOf({ day, blackout }: Pick<DayWithBlackout, 'day' | 'blacko
 }
 
 /** The contract `SheetStatusRow` of a sheet as of `asOf`, as `tvf_timesheet_status` returns it. */
-function statusRowOf(read: SheetWithDays, asOf: string): SheetStatusRow {
-  const { status, overdue, dayCount, blackoutCount, approvedCount } = statusOf(read, asOf);
+function statusRowOf(read: SheetWithDayStates, asOf: string): SheetStatusRow {
+  const { status, overdue, dayCount, blackoutCount, approvedCount } = listedSheetStatus(read, asOf);
   return {
     timesheetId: read.sheet.timesheet_id,
     siteId: read.sheet.siteid,
@@ -249,9 +249,8 @@ export async function sheetStatusPage(
   paging: Pick<SheetListQuery, 'pageIndex' | 'itemsPerPage'>,
   asOf: string,
 ): Promise<SheetStatusPage> {
-  const page = await repository.listSheets(tx, paging);
-  const sheets = await withDays(tx, repository, page.rows);
-  return { items: sheets.map((read) => statusRowOf(read, asOf)), total: page.total };
+  const page = await repository.listSheetsWithDayStates(tx, paging);
+  return { items: page.sheets.map((read) => statusRowOf(read, asOf)), total: page.total };
 }
 
 /**
@@ -333,9 +332,8 @@ export const timesheetsV1Plugin: FastifyPluginAsync<V1RouteDeps> = async (app, {
       if (!asOf.ok) return sendError(reply, SHEETS_METHOD, invalidParameters(asOf.message), 'invalidParameters');
       const { pageIndex, itemsPerPage } = request.query;
       const body = await withTenant(db, claims.tid, async (tx): Promise<TimesheetList> => {
-        const page = await repository.listSheets(tx, { pageIndex, itemsPerPage });
-        const sheets = await withDays(tx, repository, page.rows);
-        return { items: sheets.map((read) => timesheetOf(read.sheet, statusOf(read, asOf.asOf))), total: page.total };
+        const page = await repository.listSheetsWithDayStates(tx, { pageIndex, itemsPerPage });
+        return { items: page.sheets.map((read) => timesheetOf(read.sheet, listedSheetStatus(read, asOf.asOf))), total: page.total };
       });
       return reply.code(200).send(body);
     },

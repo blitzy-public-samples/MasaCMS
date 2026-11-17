@@ -826,7 +826,38 @@ const CASES: Record<string, Case[]> = {
       status: 200,
       verify: ({ body }, _ctx, { surveyId }) => {
         expect(record(body).data).toEqual([expect.objectContaining({ surveyId, siteId: SITE_B, groupName: 'Staff' })]);
+        expect(record(body).next).toBeNull();
       },
+    },
+    {
+      name: 'lists one page of the seeded survey targets with the cursor of the next',
+      method: 'GET',
+      url: (seeded) => `${v1Url('/targets')(seeded)}&limit=1`,
+      as: MANAGER,
+      seed: 'draft',
+      setup: async (ctx, seeded) => {
+        const res = await ctx.app.inject({
+          method: 'POST',
+          url: v1Url('/targets/bulk')(seeded),
+          headers: { ...(await subjectHeaders(MANAGER)), ...CSRF_HEADERS },
+          payload: { targets: [{ siteId: SITE_B, groupName: 'Staff' }, { siteId: SITE_A }] },
+        });
+        expect(res.statusCode, res.body).toBe(200);
+      },
+      status: 200,
+      verify: ({ body }) => {
+        expect(record(body).data).toEqual([expect.objectContaining({ siteId: SITE_A, groupName: null })]);
+        expect(record(body).next).toEqual(expect.any(String));
+      },
+    },
+    {
+      name: 'answers an after value that is no cursor as invalidParameters',
+      method: 'GET',
+      url: (seeded) => `${v1Url('/targets')(seeded)}&after=not-a-cursor`,
+      as: MANAGER,
+      seed: 'draft',
+      status: 400,
+      verify: ({ body }) => expect(record(body).error).toEqual(INVALID_PARAMETERS),
     },
   ],
   bulkTargetSurvey: [
@@ -878,8 +909,30 @@ const CASES: Record<string, Case[]> = {
       status: 200,
       verify: ({ body }, ctx) => {
         expect(record(body).data).not.toEqual([]);
+        expect(record(body).next).toBeNull();
         expect(ctx.client.requests.map(({ service }) => service)).toContain('communications');
       },
+    },
+    {
+      name: 'answers one page of tasks and the cursor of the next for a limit',
+      method: 'GET',
+      url: (seeded) => `${v1Url('/tasks')(seeded)}&limit=1`,
+      as: MANAGER,
+      seed: 'scheduled',
+      status: 200,
+      verify: ({ body }) => {
+        expect(record(body).data).toHaveLength(1);
+        expect(record(body).next).toEqual(expect.stringMatching(/^[A-Za-z0-9_-]+$/));
+      },
+    },
+    {
+      name: 'answers invalidParameters for an after that is no cursor',
+      method: 'GET',
+      url: (seeded) => `${v1Url('/tasks')(seeded)}&after=no.cursor`,
+      as: MANAGER,
+      seed: 'scheduled',
+      status: 400,
+      verify: ({ body }) => expect(record(body).error).toEqual(INVALID_PARAMETERS),
     },
     {
       name: 'answers the legacy 503 when communications is unreachable',

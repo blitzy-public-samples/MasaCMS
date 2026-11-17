@@ -212,10 +212,17 @@ function matchedRows(columns: readonly CanonicalColumn[], rows: Row[], match: Ex
   return rows.filter((row) => entries.some(({ column, values }) => values.has(norm(row[column?.name ?? '']))));
 }
 
-/** Fake owners: exports served per unit and tenant in pages of two rows, filtered by `match` when `honourMatch`; export params, applies and object uploads recorded. */
-function fakeOwners(units: Record<string, UnitExportSpec>, options: { failApply?: Error; honourMatch?: boolean } = {}) {
+/**
+ * Fake owners: exports served per unit and tenant in pages of two rows, filtered by `match` when `honourMatch`; export params,
+ * applies, object uploads and deletes recorded. A delete of a key in `absentKeys` answers `deleted: false`.
+ */
+function fakeOwners(
+  units: Record<string, UnitExportSpec>,
+  options: { failApply?: Error; honourMatch?: boolean; failDelete?: Error; absentKeys?: readonly string[] } = {},
+) {
   const applies: { owner: string; request: ApplyRequest }[] = [];
   const puts: { params: PutObjectParams; bytes: Uint8Array }[] = [];
+  const deletes: string[] = [];
   const exports: ExportParams[] = [];
   let xid = 100;
   const siteOf = (tenantId: string, spec: UnitExportSpec | undefined): string | undefined =>
@@ -258,13 +265,18 @@ function fakeOwners(units: Record<string, UnitExportSpec>, options: { failApply?
         writePositions: new Map([['strategies-content', '900']]),
       });
     }),
+    deleteObject: vi.fn((key: string) => {
+      if (options.failDelete !== undefined) return Promise.reject(options.failDelete);
+      deletes.push(key);
+      return Promise.resolve({ key, deleted: !(options.absentKeys ?? []).includes(key), writePositions: new Map([['strategies-content', '950']]) });
+    }),
   } as unknown as OwnersClient;
   /** Applied rows decoded over their batch's columns. */
   const appliedRows = () =>
     applies.flatMap(({ owner, request }) =>
       request.rows.map((row) => ({ owner, op: row.op, discriminator: row.discriminator, tenantId: request.tenantId, values: decodeRow(request.columns, row.row) })),
     );
-  return { owners, applies, puts, appliedRows, exports };
+  return { owners, applies, puts, deletes, appliedRows, exports };
 }
 
 /** Fake bridge: one `fileDir` listing per store directory, with the bytes of each stored name. */
@@ -704,7 +716,7 @@ describe('importWindow', () => {
     expect(fake.appliedRows().map(({ op, owner, values }) => [owner, op, values.Title])).toEqual([['strategies-content', 'upsert', 'Home']]);
   });
 
-  it('transfers a new _small rendition to strategies-content with its SHA-256 and lists stale manifest objects', async () => {
+  it('transfers a new _small rendition to strategies-content with its SHA-256', async () => {
     const original = Buffer.from('original-bytes');
     const source = Buffer.from('source-bytes');
     const small = Buffer.from('small-rendition-bytes');
@@ -722,7 +734,6 @@ describe('importWindow', () => {
           umbrella: [
             { key: keyOf(FILE_1, '', 'jpg'), size: original.byteLength, sha256: sha(original), legacyPath: `umbrella/cache/file/${FILE_1}.jpg` },
             { key: keyOf(FILE_1, '_source', 'jpg'), size: source.byteLength, sha256: sha(source), legacyPath: `umbrella/cache/file/${FILE_1}_source.jpg` },
-            { key: keyOf(FILE_2, '', 'png'), size: 3, sha256: sha('old'), legacyPath: `umbrella/cache/file/${FILE_2}.png` },
           ],
         },
       },
@@ -743,8 +754,91 @@ describe('importWindow', () => {
     expect(fake.puts).toHaveLength(1);
     expect(fake.puts[0]?.params).toEqual({ tenantId: UMBRELLA, fileId: FILE_1, variant: '_small', ext: 'jpg', contentType: 'image/jpeg', sha256: sha(small) });
     expect(Buffer.from(fake.puts[0]?.bytes ?? []).equals(small)).toBe(true);
-    expect(result).toMatchObject({ objectsTransferred: 1, objectsRemoved: [keyOf(FILE_2, '', 'png')], rowsImported: 0 });
+    expect(result).toMatchObject({ objectsTransferred: 1, objectsRemoved: [], rowsImported: 0 });
+    expect(fake.deletes).toEqual([]);
     expect(result.writePositions.get('strategies-content')).toBe('900');
+  });
+
+  describe('objects whose legacy file is gone', () => {
+    const FILE_3 = 'C1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+    const FILE_4 = 'D1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+    const FILE_5 = 'E1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+    const original = Buffer.from('original-bytes');
+    const orphanCopy = Buffer.from('orphan-copy-bytes');
+    const fileRow = (fileID: string, siteID: string) => ({ fileID, siteID, contentType: 'image', contentSubType: 'png', fileExt: 'png' });
+    // FILE_2 and FILE_3 have no row, so their objects are orphans under the umbrella tenant.
+    const files: TableSpec = {
+      columns: [varchar('fileID', 35), varchar('siteID', 25), varchar('contentType'), varchar('contentSubType'), varchar('fileExt')],
+      primaryKey: ['fileID'],
+      rows: [{ ...fileRow(FILE_1, 'umbrella'), contentSubType: 'jpeg', fileExt: 'jpg' }, fileRow(FILE_4, 'tenant-b'), fileRow(FILE_5, 'tenant-b')],
+    };
+    const keys = {
+      original: objectKey(UMBRELLA, FILE_1, '', 'jpg'),
+      rendition: objectKey(UMBRELLA, FILE_1, '_medium', 'jpg'),
+      orphan: objectKey(UMBRELLA, FILE_2, '', 'png'),
+      orphanElsewhere: objectKey(UMBRELLA, FILE_3, '', 'png'),
+      movedRow: objectKey(UMBRELLA, FILE_4, '', 'png'),
+      tenantB: objectKey(TENANT_B, FILE_5, '', 'png'),
+    };
+    const entry = (key: string, bytes: Buffer): ObjectManifestEntry => ({ key, size: bytes.byteLength, sha256: sha(bytes) });
+    const setup = (options: Parameters<typeof fakeOwners>[1] = {}) => {
+      const fake = fakeOwners(
+        {
+          'content.file': {
+            legacyTable: 'tfiles',
+            columns: [s('fileID')],
+            objects: {
+              umbrella: [
+                entry(keys.original, original),
+                entry(keys.rendition, Buffer.from('medium')),
+                entry(keys.orphan, Buffer.from('orphan')),
+                entry(keys.orphanElsewhere, orphanCopy),
+                entry(keys.movedRow, Buffer.from('moved')),
+              ],
+              'tenant-b': [entry(keys.tenantB, Buffer.from('b'))],
+            },
+          },
+        },
+        options,
+      );
+      const { bridge } = fakeBridge({
+        umbrella: { files: [{ name: `${FILE_1}.jpg`, bytes: original }] },
+        'tenant-b': { files: [{ name: `${FILE_3}.png`, bytes: orphanCopy }] },
+      });
+      const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'dbo.tfiles': files });
+      return { fake, ctx: contextOf({ legacy, owners: fake.owners, bridge }) };
+    };
+
+    // A key is kept while a directory left unlisted could still hold its file; one no directory can produce goes at once.
+    it.each([
+      ['a window scoped to tenant-a and its umbrella pool', { keys: { siteid: 'tenant-a' } }, [keys.rendition, keys.movedRow]],
+      ['a window scoped to tenant-b', { keys: { siteid: 'tenant-b' } }, [keys.movedRow, keys.tenantB]],
+      ['a whole-store window', { table: true as const }, [keys.rendition, keys.orphan, keys.movedRow, keys.tenantB]],
+    ])('deletes through strategies-content only what %s rules out', async (_label, scope, deleted) => {
+      const { fake, ctx } = setup();
+      const result = await importWindow(ctx, windowInput(['content.file_object'], scope));
+
+      expect(fake.deletes.toSorted()).toEqual(deleted.toSorted());
+      expect(result).toMatchObject({ objectsTransferred: 0, objectsRemoved: deleted.toSorted() });
+      expect(result.writePositions.get('strategies-content')).toBe('950');
+    });
+
+    it('counts no object the owner had already deleted', async () => {
+      const { fake, ctx } = setup({ absentKeys: [keys.orphan] });
+      const result = await importWindow(ctx, windowInput(['content.file_object'], { table: true }));
+
+      expect(fake.deletes).toContain(keys.orphan);
+      expect(result.objectsRemoved).toEqual([keys.rendition, keys.movedRow, keys.tenantB].toSorted());
+    });
+
+    it('fails the attempt with WindowImportError when a delete fails', async () => {
+      const refused = new OwnerCallError('strategies-content', 'DELETE', '/internal/v1/migration/objects', 503, { error: 'unavailable' });
+      const { ctx } = setup({ failDelete: refused });
+      const error = await importWindow(ctx, windowInput(['content.file_object'], { table: true })).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(WindowImportError);
+      expect(error).toMatchObject({ owner: 'strategies-content', table: 'tfiles', cause: refused });
+    });
   });
 
   it('reads the tfiles rows of the listed files only', async () => {

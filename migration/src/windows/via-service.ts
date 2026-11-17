@@ -129,17 +129,30 @@ export async function openWindowViaService(ctx: WindowCallContext, input: OpenWi
   });
 }
 
-/** Reports the legacy outcome of an open window; the service imports legacy changes and closes it, or leaves it import-pending. */
+/**
+ * Bound of a complete or resolve call: the service may first finish a recovery of the window, whose controlled restart
+ * the gateway lease bounds, then waits up to the open budget for the window's claim; plus the call bound.
+ */
+function settleTimeoutMs(ctx: WindowCallContext): number {
+  const { openBudgetMs, gatewayLeaseMs } = ctx.config.windows;
+  return openBudgetMs + gatewayLeaseMs + SERVICE_CALL_TIMEOUT_MS;
+}
+
+/** Reports the legacy outcome of an open window, waiting {@link settleTimeoutMs}; the service imports legacy changes and closes it, or leaves it import-pending. */
 export async function completeWindowViaService(
   ctx: WindowCallContext,
   windowId: string,
   input: CompleteWindowInput,
 ): Promise<WindowCompleteResponse> {
   const body = { forwarded: input.forwarded } satisfies WindowCompleteRequest;
-  return post<WindowCompleteResponse>(ctx, OPERATIONS.complete, windowPath(OPERATIONS.complete, windowId), body);
+  return post<WindowCompleteResponse>(ctx, OPERATIONS.complete, windowPath(OPERATIONS.complete, windowId), body, {
+    timeoutMs: settleTimeoutMs(ctx),
+  });
 }
 
-/** Imports and closes an import-pending window on the operator's evidence that its legacy request can no longer commit. */
+/** Imports and closes an import-pending window on the operator's evidence that its legacy request can no longer commit, waiting {@link settleTimeoutMs}. */
 export async function resolveWindowViaService(ctx: WindowCallContext, windowId: string): Promise<WriteWindow> {
-  return post<WriteWindow>(ctx, OPERATIONS.resolve, windowPath(OPERATIONS.resolve, windowId));
+  return post<WriteWindow>(ctx, OPERATIONS.resolve, windowPath(OPERATIONS.resolve, windowId), undefined, {
+    timeoutMs: settleTimeoutMs(ctx),
+  });
 }

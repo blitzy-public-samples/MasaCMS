@@ -105,6 +105,7 @@ describe('a service answer through the production gateway client', () => {
     return buildAdminRequest({
       params: { circuit: 'cusers', action: 'list' },
       searchParams: new URLSearchParams(target.split('?')[1]),
+      receivedTarget: `/admin/cusers/list?${target.split('?')[1]}`,
       headers: new Headers({ [ORIGINAL_URL_HEADER]: target }),
       auth,
       gateway: createGatewayClient({ userToken: auth.userToken, requestId: 'req-denial', inbound: {} }),

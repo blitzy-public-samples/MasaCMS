@@ -64,7 +64,7 @@ CREATE TRIGGER fail_sentinel_version_changelog BEFORE INSERT ON finance.changelo
   FOR EACH ROW EXECUTE FUNCTION finance.fail_sentinel_version_changelog();
 `;
 
-const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const available = await pgAvailable();
 
 describe.skipIf(!available)('finance record writes', () => {
   let handle: ThrowawaySchema | undefined;

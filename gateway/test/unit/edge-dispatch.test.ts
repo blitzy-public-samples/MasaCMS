@@ -60,7 +60,11 @@ interface Script {
   siteId?: string | null;
   /** The method the route key reads after X-HTTP-Method-Override. Default `GET`. */
   httpMethod?: string;
+  /** Routes besides the entry's whose freeze holds the request. */
+  holdRoutes?: readonly string[];
 }
+
+const RELOAD_KEY = 'reload:application';
 
 interface Harness {
   app: FastifyInstance;
@@ -153,7 +157,7 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
       return { result: undefined, entry: undefined, destination, failContext: { surface: 'api' } };
     }
     const family = s.family ?? (path.startsWith('/admin') ? 'admin' : 'api');
-    const key = s.entry?.route ?? `${family}:unlisted`;
+    const key = family === 'reload' ? RELOAD_KEY : (s.entry?.route ?? `${family}:unlisted`);
     const siteId = s.siteId === undefined ? 'default' : s.siteId;
     const httpMethod = s.httpMethod ?? 'GET';
     const result: RouteKeyResult =
@@ -174,7 +178,8 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
     const destination: Exclude<Destination, { kind: 'relay' }> =
       index === undefined ? { kind: 'unavailable', reason: 'no-active-version' } : destinations[s.destination];
     const failContext = routedFailContext(result, entry, destination, url);
-    return { result, entry, destination, failContext, urlScope: urlScopeOf(url), scanFailed: false };
+    const holds = s.holdRoutes === undefined ? {} : { holdRoutes: s.holdRoutes };
+    return { result, entry, destination, failContext, urlScope: urlScopeOf(url), scanFailed: false, ...holds };
   };
 
   const deps: DispatcherDeps = {
@@ -959,6 +964,22 @@ describe('freeze', () => {
     expect(h.legacy.requests).toHaveLength(0);
   });
 
+  it.each<[string, Script['entry'], string]>([
+    ['a request without an entry', undefined, 'admin:home.redirect'],
+    ['a legacy-write', { route: 'admin:w', kind: 'legacy-write' }, RELOAD_KEY],
+  ])('holds %s while a route its outcome is held by is frozen, serving it once released and answering 503 when not', async (_label, entry, held) => {
+    const h = await harness();
+    h.setScript(() => ({ entry, destination: 'legacy', family: 'reload', holdRoutes: [held] }));
+    h.frozen.add(held);
+    setTimeout(() => h.frozen.delete(held), 50);
+    expect((await h.app.inject({ method: 'POST', url: '/admin/?appreload&muraAction=w' })).statusCode).toBe(200);
+    expect(h.calls).toContain(`wait:${held}`);
+    h.frozen.add(held);
+    vi.mocked(h.deps.state.waitUnfrozen).mockResolvedValueOnce(false);
+    expect((await h.app.inject({ method: 'POST', url: '/admin/?appreload&muraAction=w' })).statusCode).toBe(503);
+    expect(h.legacy.requests).toHaveLength(1);
+  });
+
   it('registers again and re-reads the epoch once a frozen write is released', async () => {
     const h = await harness();
     h.setScript(() => ({ entry: { route: 'admin:w', kind: 'write' }, destination: 'legacy' }));
@@ -1095,6 +1116,33 @@ describe('write windows', () => {
       return { epoch: reads, index: indexOf('v0002', [RATING_UNIT]) };
     });
     expect((await h.app.inject({ method: 'POST', url: '/?doaction=saveRate' })).statusCode).toBe(200);
+    expect(rowCalls(h.calls).slice(0, 7)).toEqual([
+      'register:page:saverate:legacy:-',
+      'readEpoch',
+      'window.open',
+      'remove',
+      'register:page:saverate:legacy:W1',
+      'readEpoch',
+      'window.complete:W1:false:-',
+    ]);
+    expect(h.calls.filter((call) => call === 'window.open')).toHaveLength(2);
+    expect(h.legacy.requests).toHaveLength(1);
+  });
+
+  it("scopes a reload's window by the reload key, and closes it and routes again when a route it is held by froze meanwhile", async () => {
+    const h = await harness({ active: indexOf('v0002', [RATING_UNIT]) });
+    h.setScript(() => ({ ...saveRate(), family: 'reload', holdRoutes: [RELOAD_KEY] }));
+    let reads = 0;
+    vi.mocked(h.deps.state.readEpochForWrite).mockImplementation(async () => {
+      reads += 1;
+      h.calls.push('readEpoch');
+      if (reads === 2) h.frozen.add(RELOAD_KEY);
+      if (reads === 3) h.frozen.delete(RELOAD_KEY);
+      return { epoch: reads, index: indexOf('v0002', [RATING_UNIT]) };
+    });
+    expect((await h.app.inject({ method: 'POST', url: '/?appreload&doaction=saveRate' })).statusCode).toBe(200);
+    expect(vi.mocked(h.deps.windows.scope).mock.calls.map(([route]) => route)).toEqual([RELOAD_KEY, RELOAD_KEY]);
+    expect(h.deps.windows.open).toHaveBeenCalledWith({ routeKey: 'page:saverate', units: [RATING_UNIT], scope: { table: true }, requestId: expect.any(String) });
     expect(rowCalls(h.calls).slice(0, 7)).toEqual([
       'register:page:saverate:legacy:-',
       'readEpoch',

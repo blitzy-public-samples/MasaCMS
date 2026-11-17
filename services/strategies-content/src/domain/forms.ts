@@ -634,7 +634,7 @@ function csvLine(cells: readonly string[]): string {
 }
 
 /** Writes `chunk` to `out` unless destroyed, then waits for its buffer to drain; false once `out` is destroyed. */
-function writeDrained(out: Writable, chunk: string): Promise<boolean> {
+export function writeDrained(out: Writable, chunk: string): Promise<boolean> {
   if (out.destroyed) return Promise.resolve(false);
   if (out.write(chunk)) return Promise.resolve(true);
   return new Promise((resolve) => {

@@ -1,4 +1,4 @@
-// Unit tests for the CLI's write-window calls: request shape, open's longer bound, and failure mapping.
+// Unit tests for the CLI's write-window calls: request shape, the longer bounds of open, complete and resolve, and failure mapping.
 import { Buffer } from 'node:buffer';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -66,6 +66,10 @@ function answeringContext(answer: Partial<ServiceResponse>, config?: LoadedMigra
 }
 
 const withOpenBudget = (openBudgetMs: number): LoadedMigrationConfig => ({ ...CONFIG, windows: { ...CONFIG.windows, openBudgetMs } });
+const withWindowBudgets = (openBudgetMs: number, gatewayLeaseMs: number): LoadedMigrationConfig => ({
+  ...CONFIG,
+  windows: { ...CONFIG.windows, openBudgetMs, gatewayLeaseMs },
+});
 
 type Operation = (ctx: WindowContext) => Promise<unknown>;
 
@@ -116,18 +120,48 @@ describe('window calls via the migration service', () => {
       },
     },
     {
-      name: 'complete posts the legacy outcome under the client default',
+      name: 'complete posts the legacy outcome and waits the open budget, the gateway lease and the call bound',
       call: COMPLETE,
       status: 200,
       answer: { state: 'closed' },
-      request: { service: 'migration', method: 'POST', path: `/internal/v1/windows/${WINDOW_ID}:complete`, json: { forwarded: true }, userToken: null },
+      request: {
+        service: 'migration',
+        method: 'POST',
+        path: `/internal/v1/windows/${WINDOW_ID}:complete`,
+        json: { forwarded: true },
+        userToken: null,
+        timeoutMs: 160_000,
+      },
     },
     {
-      name: 'resolve posts no body under the client default',
+      name: 'complete follows changed window budgets',
+      call: COMPLETE,
+      config: withWindowBudgets(5_000, 20_000),
+      status: 200,
+      answer: { state: 'import-pending' },
+      request: {
+        service: 'migration',
+        method: 'POST',
+        path: `/internal/v1/windows/${WINDOW_ID}:complete`,
+        json: { forwarded: true },
+        userToken: null,
+        timeoutMs: 35_000,
+      },
+    },
+    {
+      name: 'resolve posts no body and waits the open budget, the gateway lease and the call bound',
       call: RESOLVE,
       status: 200,
       answer: RESOLVED,
-      request: { service: 'migration', method: 'POST', path: `/internal/v1/windows/${WINDOW_ID}:resolve`, userToken: null },
+      request: { service: 'migration', method: 'POST', path: `/internal/v1/windows/${WINDOW_ID}:resolve`, userToken: null, timeoutMs: 160_000 },
+    },
+    {
+      name: 'resolve follows changed window budgets',
+      call: RESOLVE,
+      config: withWindowBudgets(5_000, 20_000),
+      status: 200,
+      answer: RESOLVED,
+      request: { service: 'migration', method: 'POST', path: `/internal/v1/windows/${WINDOW_ID}:resolve`, userToken: null, timeoutMs: 35_000 },
     },
   ])('$name', async ({ call, config, status, answer, request }) => {
     const { ctx, calls } = answeringContext({ status, body: answer }, config);
@@ -176,7 +210,7 @@ describe('window calls via the migration service', () => {
 });
 
 describe('window calls with the platform service client', () => {
-  it('lets open outlast the client default while complete stays held to it', async () => {
+  it('lets open, complete and resolve outlast the client default that bounds a call without its own bound', async () => {
     const seen: { url: string; headers: IncomingHttpHeaders; body: string }[] = [];
     const timers = new Set<NodeJS.Timeout>();
     const server = createServer((req, res) => {
@@ -185,9 +219,10 @@ describe('window calls with the platform service client', () => {
       req.on('end', () => {
         seen.push({ url: req.url ?? '', headers: req.headers, body: Buffer.concat(chunks).toString('utf8') });
         const opening = req.url === '/internal/v1/windows';
+        const answer = opening ? OPENED : req.url?.endsWith(':resolve') === true ? RESOLVED : { state: 'closed' };
         const timer = setTimeout(() => {
           timers.delete(timer);
-          res.writeHead(opening ? 201 : 200, { 'content-type': 'application/json' }).end(JSON.stringify(opening ? OPENED : { state: 'closed' }));
+          res.writeHead(opening ? 201 : 200, { 'content-type': 'application/json' }).end(JSON.stringify(answer));
         }, 400);
         timers.add(timer);
       });
@@ -202,9 +237,14 @@ describe('window calls with the platform service client', () => {
     try {
       const ctx = contextOver(client);
 
+      const completePath = `/internal/v1/windows/${WINDOW_ID}:complete`;
       await expect(openWindowViaService(ctx, { units: UNITS })).resolves.toEqual(OPENED);
-      await expect(completeWindowViaService(ctx, WINDOW_ID, { forwarded: false })).rejects.toBeInstanceOf(ServiceUnavailableError);
-      expect(seen.map(({ url }) => url)).toEqual(['/internal/v1/windows', `/internal/v1/windows/${WINDOW_ID}:complete`]);
+      await expect(completeWindowViaService(ctx, WINDOW_ID, { forwarded: false })).resolves.toEqual({ state: 'closed' });
+      await expect(resolveWindowViaService(ctx, WINDOW_ID)).resolves.toEqual(RESOLVED);
+      await expect(
+        client.request({ service: 'migration', method: 'POST', path: completePath, json: { forwarded: false }, userToken: null }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableError);
+      expect(seen.map(({ url }) => url)).toEqual(['/internal/v1/windows', completePath, `/internal/v1/windows/${WINDOW_ID}:resolve`, completePath]);
       expect(JSON.parse(seen[0]?.body ?? '')).toMatchObject({ routeKey: STARTUP_ROUTE_KEY, units: UNITS, scope: { table: true } });
       expect(seen[0]?.headers.authorization).toBeUndefined();
     } finally {

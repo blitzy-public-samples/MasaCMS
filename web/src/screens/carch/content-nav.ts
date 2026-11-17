@@ -1,12 +1,12 @@
 // Site Manager context menu and new-content dialog of `carch/dsp_content_nav.cfm`, the shell's content nav (server-only).
 import { html, raw, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
-import { rbFor } from '@/lib/resource-bundles/rb';
+import { adminRbFor } from '@/lib/resource-bundles/rb';
 import type { ShellHooks } from '@/shell/types';
 
 /** Renders `#newContentMenu` and `#newContentDialog`, ending with the line break legacy emits before `</cfoutput>`. */
 export const carchContentNav: NonNullable<ShellHooks['contentNav']> = (ctx: AdminRequest): SafeHtml => {
-  const rb = rbFor(ctx.session.rb);
+  const rb = adminRbFor(ctx.session.rb);
   // `getKeyValue` output is written unencoded, as legacy writes it.
   const label = (key: string): SafeHtml => raw(rb.rbKey(`sitemanager.${key}`));
   // Legacy's bytes, empty hrefs and inline style included, since architecture.js binds to them; the `\x20\x20` line is

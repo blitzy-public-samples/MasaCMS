@@ -15,8 +15,9 @@ import {
   isCfUuid,
   javaTrim,
 } from '@opt2/platform/legacy-compat';
+import { throwIfRequestAborted } from '@opt2/platform/service-kit';
 import { deleteContentEntity, LegacyContentBean, saveContentEntity, type ContentDeps } from '../../domain/content.js';
-import { getCrumbList, readContent, type ContentRef } from '../../domain/content-tree.js';
+import { getCrumbList, readContent, readContentVersions, type ContentBean, type ContentRef, type ContentVersionRef } from '../../domain/content-tree.js';
 import { ContentNotFoundError, type Actor, type SiteContentSettings } from '../../domain/context.js';
 import { allowContentAction } from '../../domain/permissions.js';
 import { contentPoolSites, type PoolSite } from '../../domain/pools.js';
@@ -251,13 +252,16 @@ async function serializeView(scope: ContentScope, view: ApiEntityView, opts: Fil
   return serializeContentEntity(view, scope.apiContext, scope.resolver, opts);
 }
 
-/** contentManager.read of `ref` in `tenantId` (the request tenant unless a content-pool site's): the stored version, else the new bean. */
-async function loadBean(scope: ContentScope, ref: Omit<ContentRef, 'siteId'> & { siteId?: string }, tenantId = scope.call.tenantId): Promise<LegacyContentBean> {
-  const { ctx, call, reader } = scope;
-  const actor = tenantId === reader.tenantId ? reader : { ...reader, tenantId };
-  const read = await readContent(ctx.domain, actor, { ...ref, siteId: ref.siteId ?? call.siteId });
+/** A contentManager.read result as the serializers read it: the stored version, else the new bean of its site. */
+function legacyBeanOf(scope: ContentScope, read: ContentBean): LegacyContentBean {
+  const { ctx, reader } = scope;
   const now = ctx.domain.clock.now();
   return read.isNew === 0 ? LegacyContentBean.fromVersion(read.version, reader, now) : LegacyContentBean.notFound(reader, now, read.values.siteid);
+}
+
+/** contentManager.read of `ref` in the request tenant: the stored version, else the new bean. */
+async function loadBean(scope: ContentScope, ref: Omit<ContentRef, 'siteId'> & { siteId?: string }): Promise<LegacyContentBean> {
+  return legacyBeanOf(scope, await readContent(scope.ctx.domain, scope.reader, { ...ref, siteId: ref.siteId ?? scope.call.siteId }));
 }
 
 /** The tenant of a content-pool site, from the registry; the request site is the request tenant. */
@@ -268,17 +272,52 @@ async function tenantOfSite(scope: ContentScope, siteId: string): Promise<string
   return site.tenantId;
 }
 
-/** contentNavBean views of `rows`, each with the full version it proxies, read in its site's tenant. */
-async function navViews(scope: ContentScope, rows: readonly NavRow[], opts: FilteredValuesOptions): Promise<ApiEntityView[]> {
-  const views: ApiEntityView[] = [];
-  for (const row of rows) {
-    const siteId = cfText(getNoCase(row, 'siteid'));
-    const tenantId = await tenantOfSite(scope, siteId);
-    const bean = await loadBean(scope, { siteId, contentHistId: cfText(getNoCase(row, 'contenthistid')) }, tenantId);
-    const view = contentView(scope, bean, 'contentnav', row);
-    assertServable(scope, view, opts, tenantId !== scope.call.tenantId);
-    views.push(view);
+/** A NavRow with the version it proxies and the tenant of its site, which that version is read in. */
+interface NavRead extends ContentVersionRef {
+  row: NavRow;
+  tenantId: string;
+}
+
+/** The bean of each read, in order: one readContentVersions per site tenant, under that tenant's reader. */
+async function navBeans(scope: ContentScope, reads: readonly NavRead[]): Promise<LegacyContentBean[]> {
+  const { ctx, reader } = scope;
+  const groups = new Map<string, NavRead[]>();
+  for (const read of reads) {
+    const group = groups.get(read.tenantId);
+    if (group === undefined) groups.set(read.tenantId, [read]);
+    else group.push(read);
   }
+  const loaded = new Map<NavRead, ContentBean>();
+  for (const [tenantId, group] of groups) {
+    throwIfRequestAborted();
+    const actor = tenantId === reader.tenantId ? reader : { ...reader, tenantId };
+    const beans = await readContentVersions(ctx.domain, actor, group);
+    group.forEach((read, at) => loaded.set(read, beans[at] as ContentBean));
+  }
+  return reads.map((read) => legacyBeanOf(scope, loaded.get(read) as ContentBean));
+}
+
+/** contentNavBean views of `rows`, each with the full version it proxies read in its site's tenant; throws the error of the first failing row. */
+async function navViews(scope: ContentScope, rows: readonly NavRow[], opts: FilteredValuesOptions): Promise<ApiEntityView[]> {
+  const reads: NavRead[] = [];
+  let failure: { error: unknown } | undefined;
+  for (const row of rows) {
+    try {
+      const siteId = cfText(getNoCase(row, 'siteid'));
+      const tenantId = await tenantOfSite(scope, siteId);
+      reads.push({ row, siteId, tenantId, contentHistId: cfText(getNoCase(row, 'contenthistid')) });
+    } catch (error) {
+      failure = { error };
+      break;
+    }
+  }
+  const beans = await navBeans(scope, reads);
+  const views = reads.map((read, at) => {
+    const view = contentView(scope, beans[at] as LegacyContentBean, 'contentnav', read.row);
+    assertServable(scope, view, opts, read.tenantId !== scope.call.tenantId);
+    return view;
+  });
+  if (failure !== undefined) throw failure.error;
   return views;
 }
 
@@ -338,6 +377,7 @@ export function contentExpansionResolver(ctx: Ctx, call: JsonApiCall): Expansion
 
 /** getCrumbIterator (contentBean.cfc:1278-1283) of a view: its crumbs, node to root, as one iterator page. */
 async function crumbSource(scope: ContentScope, view: ApiEntityView): Promise<EntityCollectionSource> {
+  throwIfRequestAborted();
   const text = (key: string): string => cfText(heldValue(view, key));
   const crumbs = await getCrumbList(scope.ctx.domain, scope.reader, { contentId: text('contentid'), siteId: text('siteid'), path: text('path') });
   const rows = crumbs.map((crumb): NavRow => Object.fromEntries(Object.entries(crumb)));
@@ -359,6 +399,7 @@ function findOneRef(call: JsonApiCall, id: string): Omit<ContentRef, 'siteId'> {
 /** findOne (2292-2384) without render: the loaded bean, or legacy's new bean, under the `content` config with the editable check. */
 async function contentData(scope: ContentScope, id: string, opts: ExpansionOptions): Promise<Struct> {
   const { call } = scope;
+  throwIfRequestAborted();
   paramUrl(call.apiContext, 'entityname', ENTITY);
   assertNoHumanCheck(call);
   const bean = await loadBean(scope, findOneRef(call, id));
@@ -412,6 +453,7 @@ async function collectionData(
 /** expandEntity's content `kids` (2432-2468): findQuery's expanded branch, every non-excluded param filtering by equality. */
 async function expandedQuery(scope: ContentScope, params: Struct, opts: ExpansionOptions): Promise<Struct> {
   const { ctx, call } = scope;
+  throwIfRequestAborted();
   paramUrl(call.apiContext, 'entityname', ENTITY);
   const result = await findContentQuery(ctx.domain, scope.reader, queryRequest(scope, params, call.query.raw, eventValues(call), opts.expanded));
   const baseUrl = 'count' in result ? undefined : queryBaseUrl(call, result.baseQuery);

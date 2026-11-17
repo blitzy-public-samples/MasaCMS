@@ -95,6 +95,13 @@ export function clockAfter(ms: number, from: Clock = TEST_CLOCK): Clock {
 /** Queue of identity's only recurring chain, the outbox sweep. */
 export const SWEEP_QUEUE = outboxSweepQueue(SERVICE_NAME);
 
+/** Overrides that turn the local database settings into the cloud's IAM ones; suites still inject the database. */
+export const CLOUD_DB_OVERRIDES: Readonly<Record<string, string | undefined>> = Object.freeze({
+  OPT2_DB_AUTH: 'iam',
+  CLOUD_SQL_INSTANCE: 'opt2-test:us-central1:opt2',
+  PG_PASSWORD: undefined,
+});
+
 /** A fresh state directory outside the checkout holding the platform test key pair and push key. */
 export async function createTestStateDir(): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), STATE_DIR_PREFIX));

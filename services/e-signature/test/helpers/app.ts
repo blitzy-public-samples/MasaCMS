@@ -12,7 +12,6 @@ import { UNIT_GATE_TABLE, ensureUnitGates, qualified, type GatePhase, type GateS
 import {
   CSRF_CONSUME_PATH,
   IDENTITY_SERVICE,
-  baseEnvSchema,
   loadEnv,
   type BaseEnv,
   type Clock,
@@ -42,7 +41,7 @@ import {
   type CapturingPublisher,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
-import { buildApp } from '../../src/app.js';
+import { buildApp, esignatureEnvSchema } from '../../src/app.js';
 import { PEOPLE_SERVICE, type PeopleClient, type PersonSummary } from '../../src/legacy/people-client.js';
 import {
   OWNED_TABLES,
@@ -116,7 +115,7 @@ export async function testEnv(overrides: Readonly<Record<string, string | undefi
     TZ: process.env.TZ ?? 'UTC',
     ...overrides,
   };
-  const env = loadEnv(baseEnvSchema, Object.fromEntries(Object.entries(raw).filter((entry): entry is [string, string] => entry[1] !== undefined)));
+  const env = loadEnv(esignatureEnvSchema, Object.fromEntries(Object.entries(raw).filter((entry): entry is [string, string] => entry[1] !== undefined)));
   await writeTestSecrets(env.OPT2_STATE_DIR);
   return env;
 }

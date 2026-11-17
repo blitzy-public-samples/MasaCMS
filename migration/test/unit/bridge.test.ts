@@ -235,7 +235,7 @@ const CALL_CASES: CallCase[] = [
     query: [['op', 'describe']],
     op: 'scheduler.describe',
     siteId: '',
-    answer: { ping: false, siteMonitorTask: NATIVE_TASK.task, tasks: [NATIVE_TASK], serverTime: SERVER_TIME },
+    answer: { ping: false, siteMonitorTask: NATIVE_TASK.task, tasks: [{ ...NATIVE_TASK, expired: false }], serverTime: SERVER_TIME },
     timeoutMs: CALL_MS,
   },
   {
@@ -271,7 +271,7 @@ const CALL_CASES: CallCase[] = [
     op: 'scheduler.pause',
     siteId: '',
     json: { prefix: 'opt2-survey-' },
-    answer: { op: 'pause', tasks: ['opt2-survey-1'], serverTime: SERVER_TIME },
+    answer: { op: 'pause', tasks: ['opt2-survey-1'], expired: ['opt2-survey-2'], serverTime: SERVER_TIME },
     timeoutMs: CALL_MS,
   },
   {
@@ -283,7 +283,7 @@ const CALL_CASES: CallCase[] = [
     op: 'scheduler.resume',
     siteId: '',
     json: { tasks: [NATIVE_TASK.task] },
-    answer: { op: 'resume', tasks: [NATIVE_TASK.task], serverTime: SERVER_TIME },
+    answer: { op: 'resume', tasks: [NATIVE_TASK.task], expired: [], serverTime: SERVER_TIME },
     timeoutMs: CALL_MS,
   },
   {
@@ -307,7 +307,7 @@ const CALL_CASES: CallCase[] = [
     op: 'scheduler.restore',
     siteId: '',
     json: { tasks: [NATIVE_TASK], repoint: true, paused: true },
-    answer: { op: 'restore', tasks: [NATIVE_TASK.task], serverTime: SERVER_TIME },
+    answer: { op: 'restore', tasks: [NATIVE_TASK.task], expired: [], serverTime: SERVER_TIME },
     timeoutMs: CALL_MS,
   },
   {

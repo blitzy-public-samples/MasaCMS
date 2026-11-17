@@ -8,6 +8,7 @@ export type {
   TableDiffContext,
   FeedOptions,
   FeedResult,
+  FeedReportBlock,
   FeedFilesResult,
   ApplyTableDiffOptions,
   TableDiffResult,

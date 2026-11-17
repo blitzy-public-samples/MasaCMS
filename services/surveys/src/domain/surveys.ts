@@ -91,3 +91,27 @@ export async function getSurvey(
   }
   return detail;
 }
+
+/** The survey with its schedule and reminders, without targets; throws the fixture's `notFound` when the tenant has no such survey. */
+export async function getSurveySummary(
+  { db }: Pick<DomainDeps, 'db'>,
+  { tenantId, surveyId }: { tenantId: string; surveyId: string },
+): Promise<queries.SurveySummary> {
+  const summary = await withTenant(db, tenantId, (tx) => queries.getSurveySummary(tx, surveyId));
+  if (summary === null) {
+    throw surveyNotFound();
+  }
+  return summary;
+}
+
+/** One page of the survey's targets in target order, read in its own tenant transaction; throws the fixture's `notFound` when the tenant has no such survey. */
+export async function listSurveyTargets(
+  { db }: Pick<DomainDeps, 'db'>,
+  { tenantId, surveyId, page }: { tenantId: string; surveyId: string; page: queries.TargetPageRequest },
+): Promise<queries.SurveyTargetPage> {
+  const targets = await withTenant(db, tenantId, (tx) => queries.listTargetPage(tx, surveyId, page));
+  if (targets === null) {
+    throw surveyNotFound();
+  }
+  return targets;
+}

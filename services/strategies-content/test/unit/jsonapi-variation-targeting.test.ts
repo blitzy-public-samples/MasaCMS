@@ -20,6 +20,7 @@ import {
   type JsonApiHandlerFn,
   type JsonApiResult,
 } from '../../src/routes/jsonapi/types.js';
+import { scopeRows } from '../helpers/feed.js';
 
 type Row = Record<string, unknown>;
 type RouteContext = Parameters<JsonApiHandlerFn>[0];
@@ -555,7 +556,7 @@ describe.skipIf(!(await pgAvailable()))('over a throwaway content schema', () =>
   });
 
   it('the feed source holds the columns of the tenant rows in primary-key order', async () => {
-    const rows = await withVariationTargetingFeed(deps, CONTENT_EDITOR, {}, (source) => source.all());
+    const rows = await withVariationTargetingFeed(deps, CONTENT_EDITOR, {}, (source) => scopeRows(source));
     expect(rows.map((row) => row.targetingid)).toEqual([ids.first, ids.second].sort());
     expect(Object.keys(rows[0] ?? {}).sort()).toEqual(['contentid', 'initjs', 'siteid', 'targetingid', 'targetingjs']);
   });
@@ -991,7 +992,7 @@ describe.skipIf(!(await pgAvailable()))('feeds read in SQL against the in-memory
       .map((s) => (s.sql.includes('LIMIT') ? 'page' : s.sql.includes('count(*)') ? 'count' : s.sql.includes('targetingid::text ~') ? 'ids' : 'other'));
 
   it('holds the rows the handlers read before, column for column and in their order', async () => {
-    const rows = await withVariationTargetingFeed(feedDeps, CONTENT_EDITOR, {}, (source) => source.all());
+    const rows = await withVariationTargetingFeed(feedDeps, CONTENT_EDITOR, {}, (source) => scopeRows(source));
     const before = await memoryRows();
     expect(rows).toEqual(before);
     expect(rows.map((row) => Object.keys(row))).toEqual(before.map((row) => Object.keys(row)));

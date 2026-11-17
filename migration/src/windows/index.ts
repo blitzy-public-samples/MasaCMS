@@ -1,6 +1,6 @@
-/** Write windows: the window service and its errors, unit leases, window import, legacy steps, the reload guard and the CLI's service calls. */
-export { createWindowService, WindowRefusedError, WindowNotFoundError, WindowStateError } from './service.js';
-export type { WindowService, WindowServiceOptions, WindowHooks } from './service.js';
+/** Write windows: the window service and its errors, the `windows.json` writer, unit leases, window import, legacy steps, the reload guard and the CLI's service calls. */
+export { createWindowService, writeWindowsReport, WindowRefusedError, WindowNotFoundError, WindowStateError } from './service.js';
+export type { WindowService, WindowServiceOptions, WindowHooks, WindowsReportResult } from './service.js';
 
 export { acquireLeases, releaseLeases, leasesOf, leasesOfUnits, holdersOf, LeaseUnavailableError } from './leases.js';
 export type { LeaseKind, LeaseRow, AcquireLeasesInput } from './leases.js';

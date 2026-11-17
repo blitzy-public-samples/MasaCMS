@@ -13,6 +13,7 @@ import { closeGates, ensureUnitGates, openGates, registerWritePositionHeader } f
 import {
   CSRF_CONSUME_PATH,
   IDENTITY_SERVICE,
+  RequestAbortedError,
   createService,
   fixedClock,
   loadEnv,
@@ -22,10 +23,11 @@ import {
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
 import { createLocalStorageAdapter, type LocalStorageAdapter, type StoragePort } from '@opt2/platform/storage';
-import { tenantDbFromPool, tenantIdForSite, type TenantDb } from '@opt2/platform/tenancy';
+import { tenantDbFromPool, tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { assertResponseMatchesOpenApi, createThrowawaySchema, mintServiceToken, mintUserToken, pgAvailable, testVerifier, type ThrowawaySchema } from '@opt2/platform/testing';
 import { createRecord, type FinanceActor, type FinanceDomainDeps, type RecordInput } from '../../src/domain/records.js';
-import { recordRow } from '../../src/legacy/serialize.js';
+import { attachmentRow, recordRow, rollupRow, versionRow } from '../../src/legacy/serialize.js';
+import { findRecord, listAttachments, listRollups, listVersions, type Page, type RecordPaging } from '../../src/repo/queries.js';
 import { createFinanceRepository } from '../../src/repo/repository.js';
 import { UNITS, type FinanceRecordRow } from '../../src/repo/tables.js';
 import { registerV1Routes } from '../../src/routes/v1.js';
@@ -297,7 +299,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       ['a period, paged', '?period=2026-06&pageSize=1&page=2', () => ({ ids: [june[1]], total: 2 })],
       ['a state with no records', '?state=APPROVED', () => ({ ids: [], total: 0 })],
       ['a state and a period', '?state=IN-PROGRESS&period=2026-05', () => ({ ids: [ordered.find((id) => !june.includes(id))], total: 1 })],
-      ['the largest safe page size', '?pageSize=9007199254740991', () => ({ ids: ordered, total: 3 })],
+      ['the largest page size', '?pageSize=1000', () => ({ ids: ordered, total: 3 })],
     ])('pages and filters: %s', async (_case, query, expected) => {
       const res = await call('GET', `${RECORDS}${query}`, { site: SITE_LIST, ...APPROVER });
       const { ids, total } = expected();
@@ -317,11 +319,35 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       '?pageSize=Infinity',
       '?pageSize=-1e400',
       '?page=1e400',
+      '?pageSize=1001',
+      '?pageSize=5000',
+      '?pageSize=999999',
+      '?itemsPerPage=1001',
+      '?itemsPerPage=0',
+      '?pageIndex=0',
+      '?pageIndex=9007199254740992',
+      '?page=1&pageIndex=1',
+      '?pageSize=2&itemsPerPage=2',
+      '?page=2&pageIndex=1&pageSize=2&itemsPerPage=2',
     ])('refuses the query %s as invalidParameters', async (query) => {
       expect(await call('GET', `${RECORDS}${query}`, { site: SITE_LIST })).toMatchObject({
         status: 400,
         body: fixtureError('finance.records', 'Invalid parameters'),
       });
+    });
+
+    it.each([
+      ['?pageIndex=2&itemsPerPage=2', '?page=2&pageSize=2'],
+      ['?page=2&itemsPerPage=2', '?page=2&pageSize=2'],
+      ['?pageIndex=2&pageSize=2', '?page=2&pageSize=2'],
+      ['?pageIndex=3&itemsPerPage=1', '?page=3&pageSize=1'],
+      ['?itemsPerPage=1', '?pageSize=1'],
+      ['?itemsPerPage=1000', '?pageSize=1000'],
+    ])("pages by the other /v1 lists' paging names: %s as %s", async (aliased, named) => {
+      const aliasedRes = await call('GET', `${RECORDS}${aliased}`, { site: SITE_LIST });
+      const namedRes = await call('GET', `${RECORDS}${named}`, { site: SITE_LIST });
+      expect([aliasedRes.status, namedRes.status]).toEqual([200, 200]);
+      expect(aliasedRes.body).toEqual(namedRes.body);
     });
   });
 
@@ -533,11 +559,6 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       expect((await call('GET', url, site)).status).toBe(400);
     });
 
-    it('answers a /v1 record list page above the /v2 page size maximum', async () => {
-      const res = await call('GET', `${RECORDS}?pageSize=1001`, site);
-      expect([res.status, res.body.data.map((row: { record_id: string }) => row.record_id), res.body.total]).toEqual([200, [id], 1]);
-    });
-
     it('answers every /v1 rollup past the 1000-row scan page', async () => {
       const SITE_SCAN = 'v1-scan';
       const SCAN_ROWS = 1001;
@@ -547,6 +568,257 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       expect(complete.map((row) => row.period)).toEqual(periods(SCAN_ROWS));
       const last = await call('GET', `${V2_ROLLUPS}?page=2&pageSize=1000`, { site: SITE_SCAN });
       expect(last.body).toEqual({ data: complete.slice(1000), total: SCAN_ROWS });
+    });
+  });
+
+  describe('streamed complete /v1 lists', () => {
+    const SITE_STREAM = 'v1-stream';
+    /** Row counts around the 1000-row scan page: none, exactly one page, one past it, and two and a half pages. */
+    const COUNTS = [0, 1000, 1001, 2500];
+    const LONG = 2500;
+    /** Transactions and statements of the streaming app's database; statements of transaction `fail` fail, and the first of `hold` waits. */
+    const watch = {
+      transactions: 0,
+      statements: [] as string[],
+      errors: [] as unknown[],
+      fail: undefined as number | undefined,
+      hold: undefined as { transaction: number; reached: () => void; released: Promise<void> } | undefined,
+    };
+    let streamApp: FastifyInstance;
+    /** Origin of the streaming app once a test has it listen for a real HTTP client. */
+    let streamOrigin: string | undefined;
+
+    /** The record holding `n` versions and `n` attachments. */
+    const recordOf = (n: number): string => `${String(n + 1).padStart(8, '0')}-5EED-0000-0000000000000000`;
+    /** The site whose tenant holds `n` rollup rows. */
+    const rollupSiteOf = (n: number): string => `v1-stream-rollups-${n}`;
+
+    /** `db` with each transaction numbered and each statement recorded, failing or holding statements as `watch` asks. */
+    function watched(db: TenantDb): TenantDb {
+      return {
+        schema: db.schema,
+        withTenant: (tenantId, fn, options) =>
+          db
+            .withTenant(
+              tenantId,
+              (tx) => {
+                const transaction = (watch.transactions += 1);
+                const query = (async (text: Parameters<TenantTx['query']>[0], values?: unknown[]) => {
+                  watch.statements.push(typeof text === 'string' ? text : text.text);
+                  if (watch.hold?.transaction === transaction) {
+                    watch.hold.reached();
+                    await watch.hold.released;
+                  }
+                  return watch.fail === transaction ? tx.query('SELECT 1 / 0') : tx.query(text, values);
+                }) as TenantTx['query'];
+                return fn({ ...tx, query });
+              },
+              options,
+            )
+            .catch((error: unknown) => {
+              watch.errors.push(error);
+              throw error;
+            }),
+        withMetadata: (fn, options) => db.withMetadata(fn, options),
+        end: () => db.end(),
+      };
+    }
+
+    /** Every row `list` pages through by OFFSET, 1000 at a time in one transaction, as the routes read them before they streamed. */
+    function everyListed<R>(siteId: string, list: (tx: TenantTx, paging: RecordPaging) => Promise<Page<R>>): Promise<R[]> {
+      return handle.app.withTenant(tenantIdForSite(siteId), async (tx) => {
+        const rows: R[] = [];
+        for (let pageIndex = 1; ; pageIndex += 1) {
+          const page = await list(tx, { pageIndex, itemsPerPage: 1000 });
+          rows.push(...page.rows);
+          if (page.rows.length < 1000) return rows;
+        }
+      });
+    }
+
+    /** The detail body the route answered whole: the record, then every version, then every attachment. */
+    async function wholeDetail(n: number): Promise<string> {
+      const id = recordOf(n);
+      const record = await handle.app.withTenant(tenantIdForSite(SITE_STREAM), (tx) => findRecord(tx, id));
+      const versions = await everyListed(SITE_STREAM, (tx, paging) => listVersions(tx, id, paging));
+      const attachments = await everyListed(SITE_STREAM, (tx, paging) => listAttachments(tx, id, paging));
+      return JSON.stringify({
+        data: { ...recordRow(record as FinanceRecordRow), versions: versions.map(versionRow), attachments: attachments.map(attachmentRow) },
+      });
+    }
+
+    /** Each streamed route: its URL and caller site for `n` rows, its body as answered whole, and the later pages it reads. */
+    const ROUTES: [string, (n: number) => string, (n: number) => string, (n: number) => Promise<string>, (n: number) => number][] = [
+      ['the record detail', (n) => `${RECORDS}/${recordOf(n)}`, () => SITE_STREAM, wholeDetail, (n) => 2 * Math.floor(n / 1000)],
+      [
+        'the version list',
+        (n) => `${RECORDS}/${recordOf(n)}/versions`,
+        () => SITE_STREAM,
+        async (n) => JSON.stringify({ data: (await everyListed(SITE_STREAM, (tx, paging) => listVersions(tx, recordOf(n), paging))).map(versionRow) }),
+        (n) => Math.floor(n / 1000),
+      ],
+      [
+        'the attachment list',
+        (n) => `${RECORDS}/${recordOf(n)}/attachments`,
+        () => SITE_STREAM,
+        async (n) => JSON.stringify({ data: (await everyListed(SITE_STREAM, (tx, paging) => listAttachments(tx, recordOf(n), paging))).map(attachmentRow) }),
+        (n) => Math.floor(n / 1000),
+      ],
+      [
+        'the rollups',
+        () => ROLLUPS,
+        rollupSiteOf,
+        async (n) => JSON.stringify({ data: (await everyListed(rollupSiteOf(n), (tx, paging) => listRollups(tx, paging))).map(rollupRow) }),
+        (n) => Math.floor(n / 1000),
+      ],
+    ];
+
+    /** A preparer's read of `url` as `siteId`, injected into the streaming app without collecting its answer first. */
+    async function inject(url: string, siteId: string, payloadAsStream = false): Promise<Awaited<ReturnType<FastifyInstance['inject']>>> {
+      const headers = {
+        [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'finance' })}`,
+        authorization: `Bearer ${await mintUserToken({ site: siteId, roles: PREPARER.roles, sub: PREPARER_ID, sid: SESSION_ID })}`,
+      };
+      return streamApp.inject({ method: 'GET', url, headers, payloadAsStream });
+    }
+
+    beforeAll(async () => {
+      await setGates('open');
+      await bind(SITE_STREAM, 21);
+      await handle.app.withTenant(tenantIdForSite(SITE_STREAM), async (tx) => {
+        for (const n of COUNTS) {
+          const id = recordOf(n);
+          const prefix = id.slice(0, 9);
+          await tx.query(
+            `INSERT INTO ${handle.schema}.record (tenant_id, record_id, siteid, title, amount, period, state, version, created, createdbyid, legacy_program_id)
+             VALUES ($1, $2, $3, 'Streamed "probe"', 1234.5, '2026-06', 'IN-PROGRESS', $4, $5, $6, 21)`,
+            [tx.tenantId, id, SITE_STREAM, Math.max(n, 1), NOW, PREPARER_ID],
+          );
+          await tx.query(
+            `INSERT INTO ${handle.schema}.record_version (tenant_id, version_id, record_id, version, state, title, amount, period, action, actor_user_id, created, legacy_program_id)
+             SELECT $1, $2 || '1111-1111-' || lpad(k::text, 16, '0'), $3, k, 'IN-PROGRESS', 'Version "' || k || '"', k, '2026-06', 'edit', $4,
+                    $5::timestamp + k * interval '1 second', 21
+             FROM generate_series(1, $6::integer) AS k`,
+            [tx.tenantId, prefix, id, PREPARER_ID, NOW, n],
+          );
+          // Runs of three attachments share one instant, their ids descending in insertion order.
+          await tx.query(
+            `INSERT INTO ${handle.schema}.attachment (tenant_id, attachment_id, record_id, file_name, content_type, size_bytes, sha256, object_key, created, createdbyid, legacy_program_id)
+             SELECT $1, $2 || '2222-2222-' || lpad(($6 - k)::text, 16, '0'), $3, 'f' || k || '.pdf', 'application/pdf', k, repeat('a', 64), 'k-' || $2 || k,
+                    $5::timestamp + (k / 3) * interval '1 second', $4, 21
+             FROM generate_series(0, $6::integer - 1) AS k`,
+            [tx.tenantId, prefix, id, PREPARER_ID, NOW, n],
+          );
+        }
+      });
+      for (const [index, n] of COUNTS.entries()) {
+        await bind(rollupSiteOf(n), 30 + index);
+        // Ten rows a period: five states, each under two programs.
+        await handle.app.withTenant(tenantIdForSite(rollupSiteOf(n)), (tx) =>
+          tx.query(
+            `INSERT INTO ${handle.schema}.rollup (tenant_id, period, state, record_count, total_amount, computed_at, legacy_program_id)
+             SELECT $1, to_char(date '2000-01-01' + (k / 10) * interval '1 month', 'YYYY-MM'),
+                    (ARRAY['REJECTED', 'RE-SUBMITTED', 'APPROVED', 'SUBMITTED', 'IN-PROGRESS'])[k % 5 + 1], k + 1, k * 1.5, $2, 30 + (k / 5) % 2
+             FROM generate_series(0, $3::integer - 1) AS k`,
+            [tx.tenantId, NOW, n],
+          ),
+        );
+      }
+      streamApp = await v1App({ ...depsWith(storage), db: watched(handle.app) });
+    });
+
+    afterAll(async () => {
+      await streamApp?.opt2.shutdown();
+    });
+
+    beforeEach(() => {
+      Object.assign(watch, { transactions: 0, statements: [], errors: [], fail: undefined, hold: undefined });
+    });
+
+    it.each(ROUTES.flatMap(([route, ...rest]) => COUNTS.map((n) => [route, n, ...rest] as const)))(
+      'streams %s of %i rows as the body it answered whole, each later page read by keyset in a transaction of its own',
+      async (_route, n, url, siteOf, whole, laterPages) => {
+        const res = await inject(url(n), siteOf(n));
+        const contentType = res.headers['content-type'];
+        assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: url(n), status: res.statusCode, contentType, body: res.body });
+        expect([res.statusCode, contentType, res.headers['content-length']]).toEqual([200, 'application/json; charset=utf-8', undefined]);
+        expect([watch.transactions, watch.statements.filter((text) => text.includes('OFFSET'))]).toEqual([1 + laterPages(n), []]);
+        expect(res.body).toBe(await whole(n));
+      },
+    );
+
+    it('orders attachments sharing an instant by id across the page boundaries', async () => {
+      const res = await call('GET', `${RECORDS}/${recordOf(LONG)}/attachments`, { site: SITE_STREAM }, streamApp);
+      const order = Array.from({ length: LONG }, (_, k) => k).sort((x, y) => Math.floor(x / 3) - Math.floor(y / 3) || y - x);
+      expect(res.body.data.map((row: { file_name: string }) => row.file_name)).toEqual(order.map((k) => `f${k}.pdf`));
+    });
+
+    it.each(ROUTES)('answers %s failing in its first read with the v1 500 before any row is sent', async (_route, url, siteOf) => {
+      watch.fail = 1;
+      expect(await call('GET', url(LONG), { site: siteOf(LONG) }, streamApp)).toMatchObject({
+        status: 500,
+        body: { error: { code: 'server_error', message: 'Unhandled Exception' } },
+      });
+    });
+
+    it.each(ROUTES)('cuts %s short when a later page fails, logging it and holding no connection', async (_route, url, siteOf) => {
+      watch.fail = 2;
+      const before = logLines.length;
+      await expect(inject(url(LONG), siteOf(LONG))).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
+      expect(watch.transactions).toBe(2);
+      expect(logLines.slice(before).filter(({ message }) => message === 'finance list stream failed')).toEqual([
+        expect.objectContaining({ severity: 'ERROR', error: expect.objectContaining({ message: 'PostgreSQL error 22012' }) }),
+      ]);
+      expect(handle.appPool.idleCount).toBe(handle.appPool.totalCount);
+    });
+
+    it.each(ROUTES)('ends the read in flight of %s once its client disconnects, and reads no further page', async (_route, url, siteOf) => {
+      let reached = (): void => undefined;
+      let release = (): void => undefined;
+      const holding = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      watch.hold = { transaction: 2, reached: () => reached(), released: new Promise<void>((resolve) => (release = resolve)) };
+      const before = logLines.length;
+      const res = await inject(url(LONG), siteOf(LONG), true);
+      expect(res.statusCode).toBe(200);
+      await holding;
+      res.raw.res.destroy();
+      await vi.waitFor(() => expect(watch.errors).toEqual([expect.any(RequestAbortedError)]));
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(watch.transactions).toBe(2);
+      expect(handle.appPool.idleCount).toBe(handle.appPool.totalCount);
+      expect(logLines.slice(before).filter(({ severity }) => severity === 'ERROR')).toEqual([]);
+    });
+
+    it.each(ROUTES)('ends the first read of %s once its client disconnects before the status line, and starts no other', async (_route, url, siteOf) => {
+      let reached = (): void => undefined;
+      let release = (): void => undefined;
+      const holding = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      watch.hold = { transaction: 1, reached: () => reached(), released: new Promise<void>((resolve) => (release = resolve)) };
+      streamOrigin ??= await streamApp.listen({ port: 0, host: '127.0.0.1' });
+      const headers = {
+        [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'finance' })}`,
+        authorization: `Bearer ${await mintUserToken({ site: siteOf(LONG), roles: PREPARER.roles, sub: PREPARER_ID, sid: SESSION_ID })}`,
+      };
+      const client = new AbortController();
+      const before = logLines.length;
+      const pending = fetch(`${streamOrigin}${url(LONG)}`, { headers, signal: client.signal });
+      try {
+        await holding;
+        client.abort();
+        await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+        await vi.waitFor(() => expect(watch.errors).toEqual([expect.any(RequestAbortedError)]));
+      } finally {
+        release();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(watch.transactions).toBe(1);
+      expect(handle.appPool.idleCount).toBe(handle.appPool.totalCount);
+      expect(logLines.slice(before).filter(({ severity }) => severity === 'ERROR')).toEqual([]);
     });
   });
 
@@ -600,6 +872,9 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
 
   it.each([
     ['the record list', RECORDS, 'finance.records'],
+    ['the record detail', `${RECORDS}/${MISSING_ID}`, 'finance.records'],
+    ['the version list', `${RECORDS}/${MISSING_ID}/versions`, 'finance.records.versions'],
+    ['the attachment list', `${RECORDS}/${MISSING_ID}/attachments`, 'finance.records.attachments'],
     ['the rollups', ROLLUPS, 'finance.rollups'],
     ['the /v2 rollups', V2_ROLLUPS, 'finance.rollups'],
   ])('answers a tenant without a program on %s with invalidParameters', async (_case, url, method) => {

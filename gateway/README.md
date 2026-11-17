@@ -121,7 +121,9 @@ Contract: [`contracts/openapi.yaml`](contracts/openapi.yaml). Every operation ex
 | `OPT2_BRIDGE_HMAC_KEY` | Bridge assertion key; locally generated into `${OPT2_STATE_DIR}/secrets/`, in the cloud the Secret Manager secret `legacy-bridge-hmac` |
 | `MURA_APPRELOADKEY` | Masa's reload parameter name for the route key; default `appreload` |
 
+- `OPT2_SERVICE_NAME` must be `gateway`, and `OPT2_DB_AUTH` and `PG_DATABASE` are required.
 - `OPT2_SERVICE_URLS` must name the ten services and `web`, plus `stub` locally; migration comes from `OPT2_MIGRATION_URL` or the map.
+- A cut-over file that cannot be read fails start-up with `cannot read OPT2_CUTOVER_DIR file <path inside the directory> (<syscall> <code>)`.
 - The active version is read from the `gateway` schema, never from the environment.
 - The database role is `gateway_app`, with access to the `gateway` schema only.
 
@@ -139,5 +141,5 @@ npm run cutover:validate   # validates every committed version
 npm start                  # node dist/main.js
 ```
 
-- Suites under `test/cutover/` and `test/session/` that need PostgreSQL use a throwaway schema from the `PG_*` variables and skip when none is reachable; the rest use in-process doubles.
+- Suites under `test/cutover/` and `test/session/` that need PostgreSQL use a throwaway schema from the `PG_*` variables, skip when `PG_HOST` is unset and fail when the server is unreachable; the rest use in-process doubles.
 - Locally, `harness/repro/up.sh` starts the gateway natively with `PORT=8100`. The `Dockerfile` is the Cloud Run artefact, built but never pushed in CI.

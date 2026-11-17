@@ -1,7 +1,7 @@
 // Page-mode entry points over the real screen registry, with the in-memory gateway relay as the only data source.
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
+import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, LEGACY_ERROR_PAGE_HTML, esapiUrlEncode } from '@opt2/platform/legacy-compat';
 import { setServiceClientForTests } from '@/lib/gateway-client';
 import { handleAdminPage, handleOpt2Page } from '@/lib/handlers';
 import { logRequest } from '@/lib/telemetry';
@@ -50,11 +50,35 @@ const timesheetsNav = OPT2_NAV_MODULES.find((entry) => entry.module === 'timeshe
 
 /** The admin set-up cookies of a browser that sends none, in the order legacy sets them. */
 const ADMIN_COOKIES: readonly SentCookie[] = [
-  { name: 'rb', value: '', path: '/', persistent: true, httpOnly: true, sameSite: 'Lax' },
-  { name: 'ADMINCONTROLWIDTH', value: '300', path: '/', persistent: true, httpOnly: false, sameSite: undefined },
-  { name: 'ADMINSIDEBAR', value: 'off', path: '/', persistent: true, httpOnly: false, sameSite: undefined },
+  { name: 'rb', value: '', path: '/', persistent: true, maxAge: '946080000', httpOnly: true, sameSite: 'Lax' },
+  {
+    name: 'ADMINCONTROLWIDTH',
+    value: '300',
+    path: '/',
+    persistent: true,
+    maxAge: '946080000',
+    httpOnly: false,
+    sameSite: undefined,
+  },
+  {
+    name: 'ADMINSIDEBAR',
+    value: 'off',
+    path: '/',
+    persistent: true,
+    maxAge: '946080000',
+    httpOnly: false,
+    sameSite: undefined,
+  },
 ];
-const RB_COOKIE: SentCookie = { name: 'RB', value: 'de', path: '/', persistent: true, httpOnly: true, sameSite: 'Lax' };
+const RB_COOKIE: SentCookie = {
+  name: 'RB',
+  value: 'de',
+  path: '/',
+  persistent: true,
+  maxAge: '946080000',
+  httpOnly: true,
+  sameSite: 'Lax',
+};
 const ADMIN_COOKIE_HEADER = 'rb=; ADMINCONTROLWIDTH=300; ADMINSIDEBAR=off';
 
 /** identity `issueCsrfTokens` answering each requested context with its fixture pair. */
@@ -156,6 +180,7 @@ interface SentCookie {
   readonly path: string | undefined;
   /** Carries an expiry, so it outlives the browser session. */
   readonly persistent: boolean;
+  readonly maxAge: string | undefined;
   readonly httpOnly: boolean;
   readonly sameSite: string | undefined;
 }
@@ -176,6 +201,7 @@ function sentCookies(response: Response): SentCookie[] {
       value: pair.slice(at + 1),
       path: attributes.get('path'),
       persistent: attributes.has('expires'),
+      maxAge: attributes.get('max-age'),
       httpOnly: attributes.has('httponly'),
       sameSite: attributes.get('samesite'),
     };
@@ -409,6 +435,17 @@ describe('handleOpt2Page', () => {
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toBe('/admin/?muraAction=cMessage.noaccess');
     expect(sentCookies(response)).toEqual(ADMIN_COOKIES);
+    expect(gatewayCalls().filter((call) => call.includes('/opt2/svc/timesheets/'))).toEqual([]);
+    expectLogged('opt2:timesheets.sheets', 302);
+  });
+
+  it('sends an anonymous browser to the admin login with the requested screen as its return URL', async () => {
+    const response = await opt2Page('timesheets', 'sheets', { query });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe(
+      `/admin/?muraAction=cLogin.main&returnURL=${esapiUrlEncode('http://localhost/opt2/admin/timesheets/sheets?siteid=tenant-a')}&compactDisplay=false`,
+    );
     expect(gatewayCalls().filter((call) => call.includes('/opt2/svc/timesheets/'))).toEqual([]);
     expectLogged('opt2:timesheets.sheets', 302);
   });

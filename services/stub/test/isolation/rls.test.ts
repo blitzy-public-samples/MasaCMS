@@ -54,7 +54,7 @@ SELECT c.relname::text AS relname, c.relrowsecurity AS enabled, c.relforcerowsec
  WHERE n.nspname = $1 AND c.relname = ANY($2::text[])
  ORDER BY c.relname`;
 
-const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const available = await pgAvailable();
 
 let schema: ThrowawaySchema | undefined;
 let repository: StubRepository | undefined;

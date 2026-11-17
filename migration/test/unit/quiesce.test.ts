@@ -255,7 +255,7 @@ async function cycle(): Promise<Cycle> {
 
 async function cycleOver(t: TestContext): Promise<Cycle> {
   // On an empty project the barrier names every subscription the consumers' contracts declare.
-  const probe = await awaitDrained(t.ctx, { timeoutMs: 0, pubsub: fakePubSub({}).pubsub }).catch((error: unknown) => error);
+  const probe = await awaitDrained(t.ctx, { timeoutMs: 1000, pubsub: fakePubSub({}).pubsub }).catch((error: unknown) => error);
   if (!(probe instanceof MissingSubscriptionError)) throw new Error(`The drain probe answered ${String(probe)}`);
   const declared = [...probe.subscriptions].sort();
   const specs: Record<string, FakeSubscriptionSpec> = Object.fromEntries(

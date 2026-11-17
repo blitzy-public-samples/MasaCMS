@@ -1,10 +1,12 @@
 // Writes `rollback-rehearsal.md`, the evidence of the people-roster rollback rehearsal, from the run's reports and state.
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
+import type { FeedReportBlock } from '../apply/index.js';
 import { resolveReportsDir } from '../config.js';
 import type { MigrationContext } from '../context.js';
 import { stateDirPath } from '../paths.js';
+import { RECONCILIATION_DIR } from '../reconcile/index.js';
 import {
   readJsonReport,
   readLogEntries,
@@ -40,12 +42,33 @@ export interface ReconciliationRef {
   /** Relative to the reports directory. */
   path: string;
   result: string;
+  /** When the comparison began; reports written before it was recorded lack it. */
+  startedAt?: string;
   generatedAt?: string;
   tableVersion?: string;
   /** Units compared. */
   units?: number;
   /** Units with at least one difference. */
   differences?: number;
+}
+
+/** One rehearsal scenario's replay through the gateway, from `${OPT2_STATE_DIR}/golden/replay/<id>.json`. */
+export interface ReplayRun {
+  id: string;
+  /** Cut-over version the gateway had active. */
+  tableVersion: string;
+  startedAt: string;
+  finishedAt: string;
+}
+
+/** One `opt2-migrate feed` run, from the `reconciliation/after-feed-<n>.json` it ended with. */
+export interface FeedRun {
+  /** Relative to the reports directory. */
+  path: string;
+  /** Result of the feed's own reconciliation. */
+  result: string;
+  startedAt: string;
+  finishedAt: string;
 }
 
 /** Parity outcome of one scenario; `result` is `not-run` when `parity.json` does not list it. */
@@ -78,8 +101,10 @@ export interface RollbackReportInput {
   transition?: TransitionLogEntry;
   rebaseline?: RebaselineRecord;
   reconciliation: { before: ReconciliationRef; after: ReconciliationRef };
-  /** `generatedAt` of `parity.json`. */
-  parityGeneratedAt?: string;
+  /** Recorded replays of the rehearsal scenarios. */
+  replays?: ReplayRun[];
+  /** Every recorded feed run. */
+  feeds?: FeedRun[];
   scenarios: ScenarioOutcome[];
   session: ScenarioOutcome;
   fixtures?: FixtureStatus;
@@ -94,16 +119,28 @@ export interface WriteRollbackReportResult {
 
 /** `parity.json` fields the report reads. */
 interface StoredParity {
-  generatedAt?: string | null;
   scenarios?: { id: string; result: string; evidence?: { golden?: string; replay?: string } }[];
 }
 
 /** Reconciliation report fields the report reads; the committed placeholders hold `null` until a run. */
 interface StoredReconciliation {
   result: string;
+  startedAt?: string | null;
   generatedAt?: string | null;
   tableVersion?: string | null;
   summary?: { units?: number | null; unitsWithDifferences?: number | null } | null;
+}
+
+/** `reconciliation/after-feed-<n>.json` fields the report reads; reports written before the feed block lack it. */
+interface StoredFeedReconciliation extends StoredReconciliation {
+  feed?: Partial<FeedReportBlock> | null;
+}
+
+/** Replay output fields the report reads. */
+interface StoredReplay {
+  replayedAt?: string;
+  generatedAt?: string;
+  tableVersion?: string;
 }
 
 /** `${OPT2_STATE_DIR}/fixtures.json` as `legacy-fixtures/load-fixtures.sh` writes it. */
@@ -123,7 +160,8 @@ const GENERATED_BY = 'migration/src/rollback/';
 const RUNBOOK = 'migration/runbooks/people-roster-rollback.md';
 const TRANSITIONS_LOG = 'transitions.json';
 const PARITY_REPORT = 'parity.json';
-const RECONCILIATION_SUMMARY = 'reconciliation/summary.md';
+const FEED_REPORT = /^after-feed-[1-9]\d*\.json$/;
+const REPLAY_DIR = ['golden', 'replay'] as const;
 const FIXTURES_FILE = 'fixtures.json';
 const NOT_RUN = 'not-run';
 const UNFINISHED = 'unfinished';
@@ -182,7 +220,63 @@ function absentValue(ref: ReconciliationRef): string {
 
 function reconciliationCells(ref: ReconciliationRef): StepCells {
   const ran = absentValue(ref) === 'none';
-  return [ran ? UNTRACKED : ref.result, ref.generatedAt ?? absentValue(ref), ref.result];
+  return [ran ? (ref.startedAt ?? UNTRACKED) : ref.result, ref.generatedAt ?? absentValue(ref), ref.result];
+}
+
+/** Milliseconds of an ISO-8601 time; `NaN`, which no comparison accepts, when it does not parse. */
+function ms(time: string): number {
+  return Date.parse(time);
+}
+
+/** True when `time` is at or after `start` and, when `end` is given, at or before it. */
+function within(time: string, start: string, end?: string): boolean {
+  return ms(time) >= ms(start) && (end === undefined || ms(time) <= ms(end));
+}
+
+/**
+ * Steps 5 and 6 up to the reconciliation of `R`. When `before` began inside the latest step 6, projection ended there and
+ * succeeded, and the reconciliation's own outcome is the next row's.
+ */
+function projectionCells(transition: TransitionLogEntry | undefined, before: ReconciliationRef): StepCells {
+  const cells = transitionCells(transition, ['close-gates', 'final-state-and-reconcile']);
+  const step = transition?.steps.findLast((logged) => logged.name === 'final-state-and-reconcile');
+  if (step === undefined || before.startedAt === undefined || !within(before.startedAt, step.startedAt, step.finishedAt)) return cells;
+  return [cells[0], before.startedAt, 'ok'];
+}
+
+/** Replays of the rehearsal scenarios under the rollback version since the re-baseline ended, else since the transition did or began. */
+function rehearsalRuns(input: RollbackReportInput): ReplayRun[] {
+  const since = input.rebaseline?.finishedAt ?? input.transition?.finishedAt ?? input.transition?.startedAt;
+  return (input.replays ?? []).filter(
+    (run) => run.tableVersion === ROLLBACK_VERSION && (since === undefined || within(run.startedAt, since)),
+  );
+}
+
+/** From the first replay's start to the last one's end, with the verdict over every rehearsal outcome. */
+function rehearsalCells(runs: readonly ReplayRun[], verdict: string): StepCells {
+  const [first, ...rest] = runs;
+  if (first === undefined) return verdict === NOT_RUN ? [NOT_RUN, NOT_RUN, NOT_RUN] : [UNTRACKED, UNTRACKED, verdict];
+  const started = rest.reduce((min, run) => (ms(run.startedAt) < ms(min) ? run.startedAt : min), first.startedAt);
+  const finished = rest.reduce((max, run) => (ms(run.finishedAt) > ms(max) ? run.finishedAt : max), first.finishedAt);
+  return [started, finished, verdict];
+}
+
+/**
+ * The last feed run that began at or after `since` and ended by the after-rollback reconciliation's start, or by its end
+ * when the start is not recorded.
+ */
+function feedPass(input: RollbackReportInput, since: string | undefined): FeedRun | undefined {
+  if (since === undefined) return undefined;
+  const { after } = input.reconciliation;
+  const until = after.startedAt ?? after.generatedAt;
+  return (input.feeds ?? [])
+    .filter((run) => within(run.startedAt, since) && (until === undefined || ms(run.finishedAt) <= ms(until)))
+    .reduce<FeedRun | undefined>((last, run) => (last === undefined || ms(run.startedAt) > ms(last.startedAt) ? run : last), undefined);
+}
+
+function feedCells(run: FeedRun | undefined): StepCells {
+  if (run === undefined) return [NOT_RUN, NOT_RUN, NOT_RUN];
+  return [run.startedAt, run.finishedAt, `${run.result} ([${run.path}](${run.path}))`];
 }
 
 function rebaselineCells(record: RebaselineRecord | undefined): StepCells {
@@ -243,15 +337,22 @@ function groupSection({ set, groupDetails }: RollbackReportInput): string[] {
   ];
 }
 
+/** `yes`, `no`, or, when the login group was already legacy before the rollback, `yes` with why the mode stays. */
+function loginGroupCell(set: RollbackSet): string {
+  if (!set.containsLoginGroup) return 'no';
+  return set.sessionModeBefore === 'legacy-primary' ? `yes; already \`legacy\` in \`${ROLLBACK_FROM_VERSION}\`, no mode switch` : 'yes';
+}
+
 function sessionSection(set: RollbackSet): string[] {
   return [
     '## Session mode',
     '',
     `| Before (\`${ROLLBACK_FROM_VERSION}\`) | After (\`${ROLLBACK_VERSION}\`) | \`R\` contains the \`clogin.login\` group |`,
     '|---|---|---|',
-    row([set.sessionModeBefore, set.sessionModeAfter, set.containsLoginGroup ? 'yes' : 'no']),
+    row([set.sessionModeBefore, set.sessionModeAfter, loginGroupCell(set)]),
     '',
-    'Values are `target-primary` or `legacy-primary`; the mode changes only if `R` contains the group of `clogin.login`.',
+    'Values are `target-primary` or `legacy-primary`; the mode changes only if `R` contains the group of `clogin.login` ' +
+      `and \`${ROLLBACK_FROM_VERSION}\` has that group \`target\`-authoritative.`,
   ];
 }
 
@@ -281,7 +382,10 @@ function supersededLines(transition: TransitionLogEntry | undefined): string[] {
 
 function stepsSection(input: RollbackReportInput): string[] {
   const { transition, reconciliation } = input;
-  const rehearsed = input.parityGeneratedAt;
+  const replays = rehearsalRuns(input);
+  const rehearsal = rehearsalCells(replays, rehearsalVerdict([...input.scenarios, input.session]));
+  const rehearsedUntil = replays.length === 0 ? undefined : rehearsal[1];
+  const feed = feedPass(input, rehearsedUntil ?? input.rebaseline?.finishedAt ?? transition?.finishedAt);
   // Rows keep the committed report's runbook steps; each transition step folds into the row whose work it performs.
   const steps: [label: string, cells: StepCells][] = [
     ["Quiesce writers of `R`'s units", transitionCells(transition, ['transition-set', 'stop-new-work', 'confirm-inflight-finished'])],
@@ -292,20 +396,16 @@ function stepsSection(input: RollbackReportInput): string[] {
     [
       "Project `R`'s units to completion, including `timesheets.blackout` → `Program_N.blackout` and " +
         '`identity.credential` → `tusers.Password`',
-      transitionCells(transition, ['close-gates', 'final-state-and-reconcile']),
+      projectionCells(transition, reconciliation.before),
     ],
     [`Reconcile \`R\` → \`${RECONCILIATION_REPORTS.before}\``, reconciliationCells(reconciliation.before)],
     [`Activate \`${ROLLBACK_VERSION}\` and unfreeze`, transitionCells(transition, ['activate', 'hand-off-and-reopen'])],
     ["Re-baseline: fresh snapshot, forward feed restarted for `R`'s units", rebaselineCells(input.rebaseline)],
     [
       `Rehearse GS-PE-RH-01/02/03 through the gateway (served by legacy) and the ${SESSION_SCENARIO} session step across activation`,
-      [
-        rehearsed === undefined ? NOT_RUN : UNTRACKED,
-        rehearsed ?? NOT_RUN,
-        rehearsalVerdict([...input.scenarios, input.session]),
-      ],
+      rehearsal,
     ],
-    ['Feed pass', [UNTRACKED, UNTRACKED, `[${RECONCILIATION_SUMMARY}](${RECONCILIATION_SUMMARY})`]],
+    ['Feed pass', feedCells(feed)],
     [`Reconcile → \`${RECONCILIATION_REPORTS.after}\``, reconciliationCells(reconciliation.after)],
   ];
   return [
@@ -413,6 +513,7 @@ async function readReconciliation(reportsDir: string, relPath: string): Promise<
   return {
     path: relPath,
     result: doc.result,
+    startedAt: doc.startedAt ?? undefined,
     generatedAt: doc.generatedAt ?? undefined,
     tableVersion: doc.tableVersion ?? undefined,
     units: doc.summary?.units ?? undefined,
@@ -426,17 +527,54 @@ function scenarioOutcome(id: string, parity: StoredParity | undefined): Scenario
   return { id, result: found.result, golden: found.evidence?.golden, replay: found.evidence?.replay };
 }
 
-/** The recorded fixture capability, or `undefined` when `fixtures.json` does not exist; other errors propagate. */
-async function readFixtures(stateDir: string): Promise<FixtureStatus | undefined> {
+/** The parsed JSON file at `segments` under the state directory, or `undefined` when it does not exist; other errors propagate. */
+async function readStateJson<T>(stateDir: string, ...segments: string[]): Promise<T | undefined> {
   let text: string;
   try {
-    text = await readFile(stateDirPath(stateDir, FIXTURES_FILE), 'utf8');
+    text = await readFile(stateDirPath(stateDir, ...segments), 'utf8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;
   }
-  const doc = JSON.parse(text) as StoredFixtures;
-  return { available: doc.available, reason: doc.reason ?? undefined };
+  return JSON.parse(text) as T;
+}
+
+/** The recorded fixture capability, or `undefined` when `fixtures.json` does not exist; other errors propagate. */
+async function readFixtures(stateDir: string): Promise<FixtureStatus | undefined> {
+  const doc = await readStateJson<StoredFixtures>(stateDir, FIXTURES_FILE);
+  return doc === undefined ? undefined : { available: doc.available, reason: doc.reason ?? undefined };
+}
+
+/** The rehearsal scenarios' replay outputs under the state directory; a scenario without a complete one is left out. */
+async function readReplays(stateDir: string): Promise<ReplayRun[]> {
+  const runs: ReplayRun[] = [];
+  for (const id of REHEARSAL_SCENARIOS) {
+    const doc = await readStateJson<StoredReplay>(stateDir, ...REPLAY_DIR, `${id}.json`);
+    const { replayedAt, generatedAt, tableVersion } = doc ?? {};
+    if (typeof replayedAt !== 'string' || typeof generatedAt !== 'string' || typeof tableVersion !== 'string') continue;
+    runs.push({ id, tableVersion, startedAt: replayedAt, finishedAt: generatedAt });
+  }
+  return runs;
+}
+
+/** Every feed run its `after-feed-<n>.json` records; a report without a `feed` block, or no reconciliation directory, gives none. */
+async function readFeedRuns(reportsDir: string): Promise<FeedRun[]> {
+  let names: string[];
+  try {
+    names = await readdir(path.join(reportsDir, RECONCILIATION_DIR));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  const runs: FeedRun[] = [];
+  for (const name of names.filter((entry) => FEED_REPORT.test(entry)).sort()) {
+    const relPath = `${RECONCILIATION_DIR}/${name}`;
+    const doc = await readJsonReport<StoredFeedReconciliation>(reportsDir, relPath);
+    const startedAt = doc?.feed?.startedAt;
+    if (typeof startedAt !== 'string' || typeof doc?.generatedAt !== 'string') continue;
+    runs.push({ path: relPath, result: doc.result, startedAt, finishedAt: doc.generatedAt });
+  }
+  return runs;
 }
 
 /** Entry points and units of the groups `ids`, from the groups file `computeRollbackSet` derived them from. */
@@ -476,7 +614,8 @@ export async function writeRollbackReport(
       before: await readReconciliation(target.reportsDir, RECONCILIATION_REPORTS.before),
       after: await readReconciliation(target.reportsDir, RECONCILIATION_REPORTS.after),
     },
-    parityGeneratedAt: parity?.generatedAt ?? undefined,
+    replays: await readReplays(stateDir),
+    feeds: await readFeedRuns(target.reportsDir),
     scenarios: REHEARSAL_SCENARIOS.map((id) => scenarioOutcome(id, parity)),
     session: scenarioOutcome(SESSION_SCENARIO, parity),
     fixtures: await readFixtures(stateDir),

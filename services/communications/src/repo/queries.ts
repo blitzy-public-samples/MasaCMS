@@ -14,6 +14,7 @@ import {
   type MessageSource,
   type MessageState,
   type MessageTemplateRow,
+  type ScheduledTaskKind,
   type ScheduledTaskOrigin,
   type ScheduledTaskQueue,
   type ScheduledTaskRow,
@@ -80,6 +81,34 @@ export interface RecoveryBatch {
   after?: BatchCursor;
 }
 
+/** The columns of a scheduled-task row the contract's `ScheduledTask` shows, with the id that completes its page key. */
+export type ScheduledTaskViewRow = Pick<
+  ScheduledTaskRow,
+  'scheduled_task_id' | 'task_name' | 'kind' | 'reminder_n' | 'target_route' | 'schedule_time' | 'status' | 'schedule_version' | 'queue'
+>;
+
+/** Keyset position of a scheduled-task list page: the last row's schedule version and its schedule time, kind, ordinal and id. */
+export interface ScheduledTaskPageKey {
+  version: number;
+  at: Date;
+  kind: ScheduledTaskKind;
+  n: number | null;
+  id: string;
+}
+
+/** One list page: at most `limit` rows, after `after` and on its schedule version when given, of the tasks named `taskNames` when given. */
+export interface ScheduledTaskPageRequest {
+  limit: number;
+  after?: ScheduledTaskPageKey;
+  taskNames?: readonly string[];
+}
+
+/** One list page and the key that continues it; `next` is null after the last row. */
+export interface ScheduledTaskPage {
+  rows: ScheduledTaskViewRow[];
+  next: ScheduledTaskPageKey | null;
+}
+
 /** The cursor that continues a message batch after `row`. */
 export function messageCursor(row: MessageRow): BatchCursor {
   return { at: row.created, id: row.message_id };
@@ -103,6 +132,9 @@ const ADOPTED_SCHEDULED = `origin = '${ADOPTED}' AND status = '${SCHEDULED}'`;
 const SITE_MATCH = 'lower(rtrim(siteid)) = lower(rtrim($1))';
 // The contract's ScheduledTaskList order; reminder offsets are never negative, so a launch precedes its reminders.
 const TASK_ORDER = 'ORDER BY schedule_time, kind, reminder_n NULLS FIRST, scheduled_task_id';
+// TASK_ORDER as a total key for keyset pages: reminder ordinals start at 1, so 0 sorts a launch's NULL first.
+const TASK_PAGE_KEY = 'schedule_time, kind, coalesce(reminder_n, 0), scheduled_task_id';
+const TASK_VIEW_COLUMNS = 'scheduled_task_id, task_name, kind, reminder_n, target_route, schedule_time, status, schedule_version, queue';
 const MESSAGE_KEY = 'created, message_id';
 const TASK_KEY = 'created_at, scheduled_task_id';
 
@@ -129,6 +161,8 @@ interface SchemaReads {
   readonly history: string;
   readonly messageByEventId: string;
   readonly currentTasks: string;
+  readonly currentTaskPage: BatchReads;
+  readonly currentNamedTaskPage: BatchReads;
   readonly taskByName: string;
   readonly lockedTaskByName: string;
   readonly adoptedTasks: BatchReads;
@@ -147,6 +181,16 @@ function prepareReads(schema: string): SchemaReads {
   const status = qualified(schema, DELIVERY_STATUS.table);
   const task = qualified(schema, SCHEDULED_TASK.table);
   const taskByName = `SELECT * FROM ${task} WHERE queue = $1 AND queue_task_name = $2`;
+  const sourceTasks = `SELECT ${TASK_VIEW_COLUMNS} FROM ${task} WHERE source_type = $1 AND source_id = $2 AND status <> $3`;
+  // A later page stays on the version its key names, so one traversal never mixes schedule versions.
+  const currentTaskPage = (sql: string, next: number): BatchReads => ({
+    first:
+      `${sql} AND schedule_version = (SELECT max(schedule_version) FROM ${task} WHERE source_type = $1 AND source_id = $2)` +
+      ` ORDER BY ${TASK_PAGE_KEY} LIMIT $${next}`,
+    after:
+      `${sql} AND schedule_version = $${next} AND (${TASK_PAGE_KEY}) > ($${next + 1}, $${next + 2}, coalesce($${next + 3}::integer, 0), $${next + 4})` +
+      ` ORDER BY ${TASK_PAGE_KEY} LIMIT $${next + 5}`,
+  });
   return Object.freeze({
     repository: createRepository({ owner: OWNER, schema, tables: OWNED_TABLES }),
     countTemplates: `SELECT count(*)::integer AS total FROM ${template} WHERE ${SITE_MATCH}`,
@@ -159,6 +203,8 @@ function prepareReads(schema: string): SchemaReads {
     currentTasks:
       `SELECT * FROM ${task} WHERE source_type = $1 AND source_id = $2 AND status <> $3` +
       ` AND schedule_version = (SELECT max(schedule_version) FROM ${task} WHERE source_type = $1 AND source_id = $2) ${TASK_ORDER}`,
+    currentTaskPage: currentTaskPage(sourceTasks, 4),
+    currentNamedTaskPage: currentTaskPage(`${sourceTasks} AND task_name = ANY($4::text[])`, 5),
     taskByName,
     lockedTaskByName: `${taskByName} FOR UPDATE`,
     // Constants are literals so the partial indexes' predicates are provable from the statement text.
@@ -269,6 +315,36 @@ export function listScheduledTasksBySource(tx: TenantTx, source: ScheduledTaskSo
     SCHEDULED_TASK.unit,
     async () => (await tx.query<ScheduledTaskRow>(reads.currentTasks, [source.sourceType, source.sourceId, SUPERSEDED])).rows,
   );
+}
+
+/** The key that continues a scheduled-task list page after `row`. */
+function taskPageKey(row: ScheduledTaskViewRow): ScheduledTaskPageKey {
+  return { version: row.schedule_version, at: row.schedule_time, kind: row.kind, n: row.reminder_n, id: row.scheduled_task_id };
+}
+
+/** One page of the source's current tasks in listScheduledTasksBySource's filter and order, view columns only; a page after a key reads its version. */
+export function listScheduledTaskPage(tx: TenantTx, source: ScheduledTaskSource, page: ScheduledTaskPageRequest): Promise<ScheduledTaskPage> {
+  const reads = readsFor(tx);
+  return reads.repository.read(tx, SCHEDULED_TASK.unit, async () => {
+    const { limit, after, taskNames } = page;
+    const statements = taskNames === undefined ? reads.currentTaskPage : reads.currentNamedTaskPage;
+    const values = [source.sourceType, source.sourceId, SUPERSEDED, ...(taskNames === undefined ? [] : [taskNames])];
+    // One row past the page tells whether another page follows.
+    const { rows } =
+      after === undefined
+        ? await tx.query<ScheduledTaskViewRow>(statements.first, [...values, limit + 1])
+        : await tx.query<ScheduledTaskViewRow>(statements.after, [
+            ...values,
+            after.version,
+            after.at,
+            after.kind,
+            after.n,
+            after.id,
+            limit + 1,
+          ]);
+    const last = rows.length > limit ? rows[limit - 1] : undefined;
+    return { rows: rows.slice(0, limit), next: last === undefined ? null : taskPageKey(last) };
+  });
 }
 
 /** The scheduled task with `taskId`; null when the tenant has none. */

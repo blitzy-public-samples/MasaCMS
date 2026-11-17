@@ -148,6 +148,7 @@ export {
   MAX_EXPORT_LIMIT,
   MAX_EXPORT_KEYS,
   MAX_EXPORT_MATCH_LENGTH,
+  MAX_PUBLISHED_LIMIT,
   APPLY_ORIGINS,
   registerMigrationHandlers,
 } from './handlers.js';

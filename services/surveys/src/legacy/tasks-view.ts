@@ -31,15 +31,16 @@ export const FIXTURE_TASK_STATUS: Readonly<Record<ScheduledTaskRecord['status'],
   superseded: 'deleted',
 });
 
-/** The survey's own schedule rows, which give each listed task its offset as the fixture's rows do. */
+/** The survey's own task names with their offsets, which give each listed task its offset as the fixture's rows do. */
 export interface FixtureTaskListOptions {
   /** Stored survey id, which task names and routes carry. */
   surveyId: string;
-  /** The survey's `survey_schedule` row; null when it was never scheduled. */
-  schedule: { readonly task_name: string } | null;
-  /** The survey's `survey_reminder` rows. */
-  reminders: readonly { readonly task_name: string; readonly offset_minutes: number }[];
+  /** Minutes from the launch of each task name the survey recorded: 0 for its launch, its own offset for each reminder. */
+  offsets: ReadonlyMap<string, number>;
 }
+
+/** A task's place in the fixture's task order: its offset, then its name. */
+export type FixtureTaskKey = readonly [offsetMinutes: number, taskName: string];
 
 const TASK_PREFIX = 'opt2-survey-';
 const CALLBACK_PATH = '/legacy-fixtures/cfml/api.cfm/surveys/surveys/';
@@ -66,28 +67,29 @@ export function toFixtureTask(
   };
 }
 
-/** Lists the survey's tasks as the fixture does: listed records whose names the survey recorded, by offset, then name. */
-export function toFixtureTaskList(
-  records: readonly ScheduledTaskRecord[],
-  opts: FixtureTaskListOptions,
-): FixtureTaskItem[] {
+/** The fixture items of the listed records whose names the survey recorded, in the records' order. */
+export function toFixtureTasks(records: readonly ScheduledTaskRecord[], opts: FixtureTaskListOptions): FixtureTaskItem[] {
   // Offsets come from the survey's own rows, as in the fixture; communications moves a past scheduleTime to now.
-  const offsets = new Map<string, number>();
-  if (opts.schedule) offsets.set(opts.schedule.task_name, 0);
-  for (const reminder of opts.reminders) offsets.set(reminder.task_name, reminder.offset_minutes);
-
   const items: FixtureTaskItem[] = [];
   for (const record of records) {
     if (FIXTURE_TASK_STATUS[record.status] === 'deleted') continue;
     const name = fixtureTaskName(opts.surveyId, record);
-    const offsetMinutes = offsets.get(name);
+    const offsetMinutes = opts.offsets.get(name);
     if (record.taskName !== name || offsetMinutes === undefined) continue;
     items.push(toFixtureTask(record, { surveyId: opts.surveyId, offsetMinutes }));
   }
+  return items;
+}
+
+/** The fixture's task order of two keys: offset, then name. */
+export function compareFixtureTaskKeys([offsetA, nameA]: FixtureTaskKey, [offsetB, nameB]: FixtureTaskKey): number {
   // CFML compare() orders names case-sensitively by UTF-16 code unit, as JS string comparison does.
-  return items.sort(
-    (a, b) => a.offsetminutes - b.offsetminutes || (a.taskname < b.taskname ? -1 : a.taskname > b.taskname ? 1 : 0),
-  );
+  return offsetA - offsetB || (nameA < nameB ? -1 : nameA > nameB ? 1 : 0);
+}
+
+/** The fixture's task order: offset, then name. */
+export function compareFixtureTasks(a: FixtureTaskItem, b: FixtureTaskItem): number {
+  return compareFixtureTaskKeys([a.offsetminutes, a.taskname], [b.offsetminutes, b.taskname]);
 }
 
 /** Maps one record to the `/v1/` task view; scheduleTime stays the zone-less local timestamp communications holds. */

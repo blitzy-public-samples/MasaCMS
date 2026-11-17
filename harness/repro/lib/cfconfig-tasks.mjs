@@ -16,8 +16,9 @@ Commands:
       Marks every task Paused (--out may equal --in).
   drop-prefix --prefix <p> --in <file> --out <file>
       Removes every task whose name starts with <p>.
-  unpaused --in <file> [--json]
-      Prints the names of the tasks that are not paused, one per line or as a JSON array.
+  unpaused --in <file> [--json] [--at <iso>]
+      Prints the names of the tasks that are not paused, one per line or as a JSON array. With --at, leaves out
+      ONCE tasks whose start, in this process's time zone, is not after <iso>: their one run had fallen due by then.
   names --in <file> [--prefix <p>] [--json]
       Prints task names, optionally only those starting with <p>.
   -h, --help
@@ -31,7 +32,7 @@ const COMMANDS = {
   capture: { run: capture, required: ['export', 'ping', 'webroot', 'out-native', 'out-cfconfig'], optional: ['captured-at'] },
   'pause-all': { run: pauseAll, required: ['in', 'out'] },
   'drop-prefix': { run: dropPrefix, required: ['prefix', 'in', 'out'] },
-  unpaused: { run: unpaused, required: ['in'], flags: ['json'] },
+  unpaused: { run: unpaused, required: ['in'], optional: ['at'], flags: ['json'] },
   names: { run: names, required: ['in'], optional: ['prefix'], flags: ['json'] },
 };
 
@@ -47,6 +48,9 @@ const PING_VALUES = new Map([
 ]);
 const LUCEE_MONITOR_TASK = 'siteMonitor';
 const MONITOR_URL_PART = '/_api/sitemonitor/';
+const TASK_DATE = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/;
+// 24-hour, or 12-hour with AM/PM as ACF stores it (`7:21:15 PM`).
+const TASK_TIME = /^(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([AaPp])[Mm])?$/;
 
 /** Invalid command line; exits 2. */
 class UsageError extends Error {}
@@ -333,10 +337,26 @@ function dropPrefix(opts) {
   writeReplace(opts.out, withTasks(doc, tasks.filter((task) => !task.name.startsWith(opts.prefix))));
 }
 
-/** `unpaused`: names of the tasks not paused. */
+/** Start of a ONCE task in this process's time zone, or undefined for any other interval. @throws InputError when unreadable */
+function onceStart({ entry, name }) {
+  if (wireString(entry.interval).toLowerCase() !== 'once') return undefined;
+  const date = TASK_DATE.exec(wireString(entry.startDate).trim());
+  const time = TASK_TIME.exec(wireString(entry.startTime).trim());
+  if (date === null || time === null) throw new InputError(`ONCE task ${name} has no mm/dd/yyyy start date and start time`);
+  const meridiem = time[4]?.toLowerCase();
+  const hour = meridiem === undefined ? Number(time[1]) : (Number(time[1]) % 12) + (meridiem === 'p' ? 12 : 0);
+  return new Date(Number(date[3]), Number(date[1]) - 1, Number(date[2]), hour, Number(time[2]), Number(time[3] ?? 0));
+}
+
+/** `unpaused`: names of the tasks not paused, without the ONCE tasks due by `--at`. */
 function unpaused(opts) {
+  const at = opts.at === undefined ? undefined : Date.parse(opts.at);
+  if (at !== undefined && (!ISO_DATETIME.test(opts.at) || Number.isNaN(at))) {
+    throw new UsageError('--at must be an ISO-8601 date-time with seconds and Z or an offset');
+  }
   const { tasks } = readTasks(opts.in);
-  printNames(tasks.filter((task) => !isPaused(task.entry)).map((task) => task.name), opts.json === true);
+  const running = tasks.filter((task) => !isPaused(task.entry) && !(at !== undefined && (onceStart(task)?.getTime() ?? Infinity) <= at));
+  printNames(running.map((task) => task.name), opts.json === true);
 }
 
 /** `names`: task names, optionally filtered by prefix. */

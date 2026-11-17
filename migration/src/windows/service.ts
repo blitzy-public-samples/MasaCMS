@@ -25,9 +25,10 @@ import {
 } from '../legacy/index.js';
 import { GateConflict, OwnerCallError, type DataOwner, type OwnersClient } from '../owners/index.js';
 import {
+  projectReportValue,
+  reportFilePath,
   resolveReportTarget,
-  upsertLogEntry,
-  type ReportTarget,
+  rewriteLogEntries,
   type WindowKind,
   type WindowLogEntry,
   type WindowOutcome,
@@ -38,6 +39,7 @@ import { ProjectionTimeoutError, type Projector } from '../reverse/index.js';
 import { importWindow, type ImportResult } from './import.js';
 import { LEASE_RETRY_INTERVAL_MS, LeaseUnavailableError, acquireLeases, releaseLeases } from './leases.js';
 import { runLegacyStepWith, type LegacyStepInput, type LegacyStepResult, type WindowLifecycle } from './legacy-steps.js';
+import { boundLockWaits, isLockNotAvailable, timeoutSignal } from './lock-waits.js';
 import {
   contentUnits,
   drainExclusions,
@@ -201,11 +203,17 @@ export class WindowStateError extends Error {
 export interface WindowService {
   /** Leases the units, closes the gates of the `target`-authoritative ones and awaits their projection; legacy may then execute. @throws WindowRefusedError */
   open(request: WindowOpenRequest, opts?: { kind?: WindowKind }): Promise<WindowOpenResponse>;
-  /** Imports what legacy wrote and closes the window, or leaves it import-pending with its gates closed. @throws WindowNotFoundError */
+  /**
+   * Imports what legacy wrote and closes the window, or leaves it import-pending with its gates closed.
+   * @throws WindowNotFoundError, WindowStateError, LegacyServiceUnavailableError when its row cannot be read within the open budget
+   */
   complete(windowId: string, request: WindowCompleteRequest): Promise<WindowCompleteResponse>;
   /** @throws WindowNotFoundError */
   get(windowId: string): Promise<WriteWindow>;
-  /** Imports and closes an import-pending window on the operator's evidence that its legacy request can no longer commit. @throws WindowNotFoundError, WindowStateError */
+  /**
+   * Imports and closes an import-pending window on the operator's evidence that its legacy request can no longer commit.
+   * @throws WindowNotFoundError, WindowStateError, LegacyServiceUnavailableError when its row cannot be read within the open budget
+   */
   resolve(windowId: string, opts?: { actor?: string }): Promise<WriteWindow>;
   /** Runs one site-monitor step on legacy, inside a window when it writes `target`-authoritative units. */
   runLegacyStep(input: LegacyStepInput): Promise<LegacyStepResult>;
@@ -217,7 +225,7 @@ export interface WindowService {
   runRecoveryPass(): Promise<void>;
   /** Runs {@link runRecoveryPass} every configured import-retry interval until stopped. */
   startImportRetryLoop(): { stop(): Promise<void> };
-  /** Stops the loop and waits for every window operation in progress. */
+  /** Stops the loop, waits for every window operation in progress, then writes `windows.json` from the window rows. */
   stop(): Promise<void>;
 }
 
@@ -298,7 +306,10 @@ class BudgetExceededError extends Error {
 interface OpeningBudget {
   /** Milliseconds left. @throws BudgetExceededError once none are left */
   within(): number;
-  /** Runs `step` with a signal aborting at the deadline. @throws BudgetExceededError for a failure past the deadline that is no refusal of its own */
+  /**
+   * Runs `step` with a signal aborting, and bounding row-lock waits, at the deadline.
+   * @throws BudgetExceededError for a failure past the deadline or at that bound that is no refusal of its own
+   */
   bounded<T>(step: (signal: AbortSignal) => Promise<T>): Promise<T>;
 }
 
@@ -478,6 +489,85 @@ function toReportEntry(record: WindowRecord): WindowReportEntry {
   };
 }
 
+/** Window rows read per page while `windows.json` is written. */
+const REPORT_PAGE_ROWS = 500;
+
+/** What {@link writeWindowsReport} wrote: the file, its entry count, the entries from window rows and those kept only from the file. */
+export interface WindowsReportResult {
+  reportPath: string;
+  windows: number;
+  fromTable: number;
+  keptFromFile: number;
+}
+
+/** Every `migration.write_window` row in `opened_at, window_id` order, one keyset page per transaction. */
+async function* windowRows(db: MigrationContext['db']): AsyncGenerator<WindowRow> {
+  let last: WindowRow | undefined;
+  for (;;) {
+    const after = last;
+    const { rows } = await db.withMetadata((tx) =>
+      after === undefined
+        ? tx.query<WindowRow>(`SELECT ${COLUMNS} FROM ${writeWindowTable(tx)} ORDER BY opened_at, window_id LIMIT $1`, [REPORT_PAGE_ROWS])
+        : tx.query<WindowRow>(
+            `SELECT ${COLUMNS} FROM ${writeWindowTable(tx)}
+              WHERE (opened_at, window_id) > ($1::timestamp, $2::text) ORDER BY opened_at, window_id LIMIT $3`,
+            [after.opened_at, after.window_id, REPORT_PAGE_ROWS],
+          ),
+    );
+    yield* rows;
+    if (rows.length < REPORT_PAGE_ROWS) return;
+    last = rows.at(-1);
+  }
+}
+
+/** `fileEntries` in order, each window `rowEntries` holds replaced by its row entry, then the other row entries in row order. */
+function mergeWindowEntries(fileEntries: readonly unknown[], rowEntries: readonly WindowReportEntry[]): { entries: unknown[]; keptFromFile: number } {
+  // Stored entries hold their projected ids, so row ids are compared in the same form.
+  const byId = new Map<unknown, WindowReportEntry>(rowEntries.map((entry) => [projectReportValue(entry.windowId, 'windowId'), entry]));
+  const placed = new Set<unknown>();
+  const entries: unknown[] = [];
+  let keptFromFile = 0;
+  for (const entry of fileEntries) {
+    const id = typeof entry === 'object' && entry !== null ? (entry as Record<string, unknown>).windowId : undefined;
+    const row = byId.get(id);
+    if (row === undefined) {
+      entries.push(entry);
+      keptFromFile += 1;
+    } else if (!placed.has(id)) {
+      entries.push(row);
+      placed.add(id);
+    }
+  }
+  for (const [id, row] of byId) if (!placed.has(id)) entries.push(row);
+  return { entries, keptFromFile };
+}
+
+/**
+ * Writes `windows.json` once from every `migration.write_window` row, keeping the entries of windows the table no longer
+ * holds, such as those a schema bootstrap or restore dropped.
+ */
+export async function writeWindowsReport(ctx: Pick<MigrationContext, 'db' | 'config' | 'env' | 'clock'>): Promise<WindowsReportResult> {
+  const target = resolveReportTarget({ reportsDir: resolveReportsDir(ctx.config, ctx.env), sourceShaFile: ctx.config.paths.sourcePin });
+  const rowEntries: WindowReportEntry[] = [];
+  for await (const row of windowRows(ctx.db)) rowEntries.push(toReportEntry(toRecord(row)));
+  let merged: { entries: unknown[]; keptFromFile: number } = { entries: [], keptFromFile: 0 };
+  await rewriteLogEntries(
+    target,
+    REPORT_FILE,
+    (fileEntries) => {
+      merged = mergeWindowEntries(fileEntries, rowEntries);
+      return merged.entries;
+    },
+    { clock: ctx.clock },
+  );
+  return {
+    reportPath: reportFilePath(target.reportsDir, REPORT_FILE),
+    windows: merged.entries.length,
+    fromTable: rowEntries.length,
+    keptFromFile: merged.keptFromFile,
+  };
+}
+
 /** Refusal reason of an open failure; undefined for a failure that is not one of the refusals. */
 function refusalReason(error: unknown): WindowRefusalReason | undefined {
   if (error instanceof BudgetExceededError) return 'budget-exceeded';
@@ -511,7 +601,6 @@ export function createWindowService(base: MigrationContext, options: WindowServi
   const sleep = options.sleep ?? ((ms: number) => delay(ms, undefined, { ref: false }));
   const tails = new Map<string, Promise<void>>();
   const running = new Set<Promise<void>>();
-  let reportTarget: ReportTarget | undefined;
   let loop: { stop(): Promise<void> } | undefined;
 
   const now = (): Date => ctx.clock.now();
@@ -531,6 +620,12 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     claimFences.getStore()?.assert();
   }
 
+  /** Signal aborting once the claim `fence` records lapses; one claim lifetime while it records none. */
+  function claimSignal(fence = claimFences.getStore()): AbortSignal {
+    const validUntil = fence?.validUntil ?? Number.NEGATIVE_INFINITY;
+    return timeoutSignal(Number.isFinite(validUntil) ? validUntil - now().getTime() : claimLifetimeMs);
+  }
+
   function addEvent(record: WindowRecord, phase: WindowEventName, detail?: WindowEventDetail, at: Date = now()): void {
     record.events.push(detail === undefined ? { phase, at: at.toISOString() } : { phase, at: at.toISOString(), detail });
   }
@@ -548,12 +643,12 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     return result;
   }
 
-  async function report(record: WindowRecord): Promise<void> {
+  /** Writes `windows.json` from the window rows; a failure is logged, never thrown. */
+  async function report(): Promise<void> {
     try {
-      reportTarget ??= resolveReportTarget({ reportsDir: resolveReportsDir(ctx.config, ctx.env), sourceShaFile: ctx.config.paths.sourcePin });
-      await upsertLogEntry(reportTarget, REPORT_FILE, 'windowId', toReportEntry(record), { clock: ctx.clock });
+      await writeWindowsReport(ctx);
     } catch (error) {
-      ctx.logger.error({ error: serializeError(error) }, `Recording window ${record.windowId} in ${REPORT_FILE} failed`);
+      ctx.logger.error({ error: serializeError(error) }, `Writing ${REPORT_FILE} from the window rows failed`);
     }
   }
 
@@ -593,12 +688,12 @@ export function createWindowService(base: MigrationContext, options: WindowServi
       { signal },
     );
     claimedUntil(until);
-    await report(record);
   }
 
   /**
    * Writes the record as `next` by compare-and-set on this instance's claim and a persisted state among `from` (default its
-   * own), renewing the claim, then mirrors it into the report; `signal` aborts the transaction. @throws WindowStateError
+   * own), renewing the claim; `signal` aborts the transaction and bounds its row-lock wait, by default once the claim lapses.
+   * @throws WindowStateError
    */
   async function persist(
     record: WindowRecord,
@@ -607,9 +702,11 @@ export function createWindowService(base: MigrationContext, options: WindowServi
   ): Promise<void> {
     record.updatedAt = now();
     const until = claimExpiry();
+    const signal = opts.signal ?? claimSignal();
     const result = await ctx.db.withMetadata(
-      (tx) =>
-        tx.query(
+      async (tx) => {
+        await boundLockWaits(tx, signal);
+        return tx.query(
           `UPDATE ${writeWindowTable(tx)}
               SET state = $2, phase = $3, closed_gates = $4::jsonb, closing_gates = $5::jsonb, phases = $6::jsonb, lease_expires_at = $7,
                   legacy_status = $8, rows_imported = $9, attempts = $10, outcome = $11, error = $12::jsonb, updated_at = $13, closed_at = $14,
@@ -634,55 +731,91 @@ export function createWindowService(base: MigrationContext, options: WindowServi
             instanceId,
             opts.from ?? [record.state],
           ],
-        ),
-      { signal: opts.signal },
-    );
+        );
+      },
+      { signal },
+    ).catch((error: unknown) => {
+      // A write the lapsed claim cut off, at the client or by the lock wait's bound, is refused as one that missed the claim.
+      const lapsed = signal.aborted || isLockNotAvailable(error);
+      throw opts.signal === undefined && lapsed ? new WindowStateError(record.windowId, record.state, `move to ${next}`) : error;
+    });
     if ((result.rowCount ?? 0) === 0) throw new WindowStateError(record.windowId, record.state, `move to ${next}`);
     claimedUntil(until);
     record.state = next;
-    await report(record);
   }
 
-  /** Claims the window for this instance unless another holds an unexpired claim. @returns the claimed row and the claim's expiry, or undefined. */
-  async function tryClaim(windowId: string): Promise<{ record: WindowRecord; until: Date } | undefined> {
+  /**
+   * Claims the window for this instance unless another holds an unexpired claim; `signal` aborts the transaction and bounds
+   * its row-lock wait. @returns the claimed row and the claim's expiry, or undefined.
+   */
+  async function tryClaim(windowId: string, signal: AbortSignal): Promise<{ record: WindowRecord; until: Date } | undefined> {
     const at = now();
     const until = new Date(at.getTime() + claimLifetimeMs);
-    const { rows } = await ctx.db.withMetadata((tx) =>
-      tx.query<WindowRow>(
-        `UPDATE ${writeWindowTable(tx)} SET claimed_by = $2, claim_expires_at = $3
-          WHERE window_id = $1 AND (claimed_by IS NULL OR claimed_by = $2 OR claim_expires_at <= $4)
-          RETURNING ${COLUMNS}`,
-        [windowId, instanceId, until, at],
-      ),
+    const { rows } = await ctx.db.withMetadata(
+      async (tx) => {
+        await boundLockWaits(tx, signal);
+        return tx.query<WindowRow>(
+          `UPDATE ${writeWindowTable(tx)} SET claimed_by = $2, claim_expires_at = $3
+            WHERE window_id = $1 AND (claimed_by IS NULL OR claimed_by = $2 OR claim_expires_at <= $4)
+            RETURNING ${COLUMNS}`,
+          [windowId, instanceId, until, at],
+        );
+      },
+      { signal },
     );
     const row = rows[0];
     return row === undefined ? undefined : { record: toRecord(row), until };
   }
 
-  /** Claims the window, polling while another instance holds it, for at most one open budget. @throws WindowNotFoundError, WindowStateError */
+  /**
+   * Claims the window, polling while another instance holds it, for at most one open budget; each read and claim attempt
+   * is aborted, and each claim's row-lock wait ended, at the deadline.
+   * @throws WindowNotFoundError, WindowStateError, LegacyServiceUnavailableError when no read of the row answers in time
+   */
   async function awaitClaim(windowId: string, action: 'complete' | 'resolve'): Promise<{ record: WindowRecord; until: Date }> {
     const deadline = now().getTime() + openBudgetMs;
+    let state: WindowRowState | undefined;
     for (;;) {
-      const claimed = await tryClaim(windowId);
-      if (claimed !== undefined) return claimed;
-      const current = await load(windowId);
+      const signal = timeoutSignal(deadline - now().getTime());
+      try {
+        // A read waits on no row lock, so the state is known before a claim attempt the deadline may cut off.
+        state = (await load(windowId, signal)).state;
+        const claimed = await tryClaim(windowId, signal);
+        if (claimed !== undefined) return claimed;
+      } catch (error) {
+        if (!signal.aborted && !isLockNotAvailable(error)) throw error;
+        if (state !== undefined) throw new WindowStateError(windowId, state, action);
+        throw Object.assign(
+          new LegacyServiceUnavailableError(
+            `Write window ${windowId} could not be read within the open budget of ${String(openBudgetMs)} ms; cannot ${action}`,
+            'auto',
+            'budget-exceeded',
+          ),
+          { cause: error },
+        );
+      }
       const left = deadline - now().getTime();
-      if (left <= 0) throw new WindowStateError(windowId, current.state, action);
+      if (left <= 0) throw new WindowStateError(windowId, state, action);
       await sleep(Math.min(LEASE_RETRY_INTERVAL_MS, left));
     }
   }
 
   /**
-   * Extends this instance's claim to at least `until`, recording it in `fence`.
+   * Extends this instance's claim to at least `until`, recording it in `fence`; `signal` aborts the transaction and bounds
+   * its row-lock wait, by default once the claim `fence` records lapses.
    * @returns false, marking `fence` taken, when the window is no longer claimed by this instance
    */
-  async function extendClaim(windowId: string, until: Date, fence = claimFences.getStore()): Promise<boolean> {
-    const result = await ctx.db.withMetadata((tx) =>
-      tx.query(`UPDATE ${writeWindowTable(tx)} SET claim_expires_at = GREATEST(claim_expires_at, $3) WHERE window_id = $1 AND claimed_by = $2`, [
-        windowId,
-        instanceId,
-        until,
-      ]),
+  async function extendClaim(windowId: string, until: Date, fence = claimFences.getStore(), signal = claimSignal(fence)): Promise<boolean> {
+    const result = await ctx.db.withMetadata(
+      async (tx) => {
+        await boundLockWaits(tx, signal);
+        return tx.query(`UPDATE ${writeWindowTable(tx)} SET claim_expires_at = GREATEST(claim_expires_at, $3) WHERE window_id = $1 AND claimed_by = $2`, [
+          windowId,
+          instanceId,
+          until,
+        ]);
+      },
+      { signal },
     );
     const kept = (result.rowCount ?? 0) > 0;
     if (kept) claimedUntil(until, fence);
@@ -701,19 +834,36 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     }
   }
 
-  /** Extends this instance's claim, to `until` when given, before a side effect no claim-checked write precedes. @throws WindowStateError when the claim is lost */
+  /**
+   * Extends this instance's claim, to `until` when given, before a side effect no claim-checked write precedes.
+   * @throws WindowStateError when the claim is lost or lapses before the extension commits
+   */
   async function keepClaim(record: WindowRecord, until = claimExpiry()): Promise<void> {
-    if (!(await extendClaim(record.windowId, until))) throw new WindowStateError(record.windowId, record.state, 'keep its claim');
+    const fence = claimFences.getStore();
+    const signal = claimSignal(fence);
+    const kept = await extendClaim(record.windowId, until, fence, signal).catch((error: unknown) => {
+      if (signal.aborted || isLockNotAvailable(error)) return false;
+      throw error;
+    });
+    if (!kept) throw new WindowStateError(record.windowId, record.state, 'keep its claim');
   }
 
-  /** Drops this instance's claim; a failure leaves the claim to lapse at its expiry. */
-  async function releaseClaim(windowId: string): Promise<void> {
+  /**
+   * Drops this instance's claim, aborted, and its row-lock wait ended, once the claim `fence` records lapses; a failure leaves
+   * the claim to lapse at its expiry.
+   */
+  async function releaseClaim(windowId: string, fence: ClaimFence): Promise<void> {
+    const signal = claimSignal(fence);
     try {
-      await ctx.db.withMetadata((tx) =>
-        tx.query(`UPDATE ${writeWindowTable(tx)} SET claimed_by = NULL, claim_expires_at = NULL WHERE window_id = $1 AND claimed_by = $2`, [
-          windowId,
-          instanceId,
-        ]),
+      await ctx.db.withMetadata(
+        async (tx) => {
+          await boundLockWaits(tx, signal);
+          return tx.query(`UPDATE ${writeWindowTable(tx)} SET claimed_by = NULL, claim_expires_at = NULL WHERE window_id = $1 AND claimed_by = $2`, [
+            windowId,
+            instanceId,
+          ]);
+        },
+        { signal },
       );
     } catch (error) {
       ctx.logger.warn({ error: serializeError(error) }, `Releasing the claim on window ${windowId} failed; it lapses at its expiry`);
@@ -734,16 +884,21 @@ export function createWindowService(base: MigrationContext, options: WindowServi
         if (fence.taken || fence.validUntil - now().getTime() < MAX_CALL_MS) throw new WindowStateError(windowId, record.state, 'keep its claim');
       },
     };
-    let renewing = Promise.resolve();
+    // The one renewal in flight, if any.
+    let renewing: Promise<void> | undefined;
     const timer = setInterval(() => {
-      // An opening has nothing to renew before its insert.
-      if (Number.isFinite(fence.validUntil)) renewing = renewing.then(() => renewClaim(windowId, fence));
+      // An opening has nothing to renew before its insert, and a tick while a renewal is pending adds none.
+      if (Number.isFinite(fence.validUntil)) {
+        renewing ??= renewClaim(windowId, fence).finally(() => {
+          renewing = undefined;
+        });
+      }
     }, claimRenewMs);
     timer.unref();
     const teardown = async (): Promise<void> => {
       clearInterval(timer);
       await renewing;
-      await releaseClaim(windowId);
+      await releaseClaim(windowId, fence);
     };
     try {
       return await claimFences.run(fence, fn);
@@ -753,9 +908,11 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     }
   }
 
-  async function load(windowId: string): Promise<WindowRecord> {
-    const { rows } = await ctx.db.withMetadata((tx) =>
-      tx.query<WindowRow>(`SELECT ${COLUMNS} FROM ${writeWindowTable(tx)} WHERE window_id = $1`, [windowId]),
+  /** The window's row; `signal` aborts the read. @throws WindowNotFoundError */
+  async function load(windowId: string, signal: AbortSignal): Promise<WindowRecord> {
+    const { rows } = await ctx.db.withMetadata(
+      (tx) => tx.query<WindowRow>(`SELECT ${COLUMNS} FROM ${writeWindowTable(tx)} WHERE window_id = $1`, [windowId]),
+      { signal },
     );
     const row = rows[0];
     if (row === undefined) throw new WindowNotFoundError(windowId);
@@ -824,6 +981,18 @@ export function createWindowService(base: MigrationContext, options: WindowServi
       await (budget === undefined ? ctx.owners.gate(owner, req) : ctx.owners.gate(owner, req, { timeoutMs: budget.within() }));
     }
     record.phase = phase;
+  }
+
+  /** Sets import-pending at every owner the window gated; an owner that fails is logged and keeps its gates closed in their previous phase. */
+  async function setPendingPhase(record: WindowRecord): Promise<void> {
+    for (const [owner, units] of gatedOwners(record)) {
+      try {
+        await ctx.owners.gate(owner, { op: 'phase', units, holderId: record.windowId, phase: 'import-pending' });
+      } catch (phaseError) {
+        ctx.logger.warn({ error: serializeError(phaseError) }, `Window ${record.windowId} could not mark its gates import-pending; they stay closed`);
+      }
+    }
+    record.phase = 'import-pending';
   }
 
   /**
@@ -908,11 +1077,13 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     const budget: OpeningBudget = {
       within,
       async bounded<T>(step: (signal: AbortSignal) => Promise<T>): Promise<T> {
-        const signal = AbortSignal.timeout(within());
+        const signal = timeoutSignal(within());
         try {
           return await step(signal);
         } catch (error) {
-          throw signal.aborted && refusalReason(error) === undefined ? new BudgetExceededError(openBudgetMs) : error;
+          // A lock wait the signal's server-side bound ended is the deadline too.
+          const cutOff = signal.aborted || isLockNotAvailable(error);
+          throw cutOff && refusalReason(error) === undefined ? new BudgetExceededError(openBudgetMs) : error;
         }
       },
     };
@@ -961,11 +1132,16 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     );
   }
 
-  /** One import attempt over `units`; the attempt number is persisted first, so a retry after a crash never reuses its batch ids. */
-  async function importOnce(record: WindowRecord, units: string[], scope: WindowScope): Promise<ImportResult> {
-    const attempt = record.attempts + 1;
-    record.attempts = attempt;
+  /** Counts and persists one more import attempt, so a retry after a crash never reuses its batch ids; returns its number. */
+  async function countAttempt(record: WindowRecord): Promise<number> {
+    record.attempts += 1;
     await persist(record);
+    return record.attempts;
+  }
+
+  /** One import over `units` as attempt `counted`, already persisted, else as a newly counted attempt. */
+  async function importOnce(record: WindowRecord, units: string[], scope: WindowScope, counted?: number): Promise<ImportResult> {
+    const attempt = counted ?? (await countAttempt(record));
     await options.hooks?.beforeImport?.(record, attempt);
     const result = await importWindow(ctx, { windowId: record.windowId, attempt, units, scope });
     if (result.rowsImported > 0 || result.objectsTransferred > 0 || result.objectsRemoved.length > 0) {
@@ -977,9 +1153,6 @@ export function createWindowService(base: MigrationContext, options: WindowServi
         objectsRemoved: result.objectsRemoved.length,
       });
       await persist(record);
-    }
-    if (result.objectsRemoved.length > 0) {
-      ctx.logger.warn(`Window ${record.windowId}: content-files objects whose legacy file is gone: ${result.objectsRemoved.join(', ')}`);
     }
     return result;
   }
@@ -1071,12 +1244,7 @@ export function createWindowService(base: MigrationContext, options: WindowServi
 
   /** Leaves the window import-pending: its gates stay closed, so target reads and writes of its units wait or answer 503. */
   async function markImportPending(record: WindowRecord, error: unknown): Promise<void> {
-    try {
-      await setPhase(record, 'import-pending');
-    } catch (phaseError) {
-      ctx.logger.warn({ error: serializeError(phaseError) }, `Window ${record.windowId} could not mark its gates import-pending; they stay closed`);
-    }
-    record.phase = 'import-pending';
+    await setPendingPhase(record);
     record.error =
       record.error?.kind === 'guard-frozen'
         ? { ...record.error, message: messageOf(error) }
@@ -1117,7 +1285,10 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     const eventsBefore = record.events.length;
     try {
       const units = closedUnits(record);
-      if (forwarded && units.length > 0 && (await enterImporting(record))) {
+      const importing = forwarded && units.length > 0;
+      // Counted before the importing phase is set, so an attempt failing at an owner's gate still counts.
+      const attempt = importing ? await countAttempt(record) : undefined;
+      if (importing && (await enterImporting(record))) {
         if (evidence !== undefined && evidence.phase !== 'completed') {
           await ctx.gateway.clearOrphans({ side: 'legacy', evidence: { kind: 'legacy-restart', holderId: record.windowId, at: evidence.at } });
         }
@@ -1127,8 +1298,10 @@ export function createWindowService(base: MigrationContext, options: WindowServi
         const whole = widened ? units.filter((unit) => contents.has(unit)) : [];
         const scoped = units.filter((unit) => !whole.includes(unit));
         let touchedContent = false;
-        if (scoped.length > 0) touchedContent = (await importOnce(record, scoped, record.scope)).touchedContent;
-        if (whole.length > 0) touchedContent = (await importOnce(record, whole, { table: true })).touchedContent || touchedContent;
+        if (scoped.length > 0) touchedContent = (await importOnce(record, scoped, record.scope, attempt)).touchedContent;
+        if (whole.length > 0) {
+          touchedContent = (await importOnce(record, whole, { table: true }, scoped.length > 0 ? undefined : attempt)).touchedContent || touchedContent;
+        }
         if (record.error?.kind === 'guard-frozen') await recoverGuard(record, record.error.frozen);
         else if (touchedContent) await guardStartup(record);
       }
@@ -1182,12 +1355,7 @@ export function createWindowService(base: MigrationContext, options: WindowServi
 
   /** Leaves the window import-pending until an operator resolves it; nothing has shown that its legacy request ended. */
   async function awaitEvidence(record: WindowRecord, error: RestartUnavailableError | LegacyRestartError): Promise<void> {
-    try {
-      await setPhase(record, 'import-pending');
-    } catch (phaseError) {
-      ctx.logger.warn({ error: serializeError(phaseError) }, `Window ${record.windowId} could not mark its gates import-pending; they stay closed`);
-    }
-    record.phase = 'import-pending';
+    await setPendingPhase(record);
     record.error = {
       kind: 'awaiting-evidence',
       reason: error instanceof RestartUnavailableError ? 'restart-unavailable' : 'restart-failed',
@@ -1242,7 +1410,7 @@ export function createWindowService(base: MigrationContext, options: WindowServi
    * acted on as its claimed row requires. An opening window's claim is its opener's until released or expired.
    */
   async function recoverOne(windowId: string, restarted = false): Promise<void> {
-    const claimed = await tryClaim(windowId);
+    const claimed = await tryClaim(windowId, timeoutSignal(openBudgetMs));
     if (claimed === undefined) return;
     const { record, until } = claimed;
     await holdClaim(record, { until }, async () => {
@@ -1291,7 +1459,7 @@ export function createWindowService(base: MigrationContext, options: WindowServi
   }
 
   async function get(windowId: string): Promise<WriteWindow> {
-    return toView(await load(windowId));
+    return toView(await load(windowId, timeoutSignal(openBudgetMs)));
   }
 
   function startImportRetryLoop(): { stop(): Promise<void> } {
@@ -1339,6 +1507,7 @@ export function createWindowService(base: MigrationContext, options: WindowServi
     async stop() {
       await loop?.stop();
       await Promise.allSettled([...running]);
+      await report();
     },
   };
 }

@@ -18,7 +18,9 @@ import {
   readFileMedium,
   readFileMeta,
   readFileSmall,
+  siteFilesFeed,
 } from '../../src/repo/files.js';
+import { createContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS, FILE, UNIT_OF } from '../../src/repo/tables.js';
 
 /** A CF-format id whose first group is `<prefix><n>`. */
@@ -330,4 +332,30 @@ describe.skipIf(!(await pgAvailable()))('repo/files', () => {
       }
     },
   );
+
+  // The tenant column aside, the file feed's columns in table order.
+  const FEED_COLUMNS = FILE.columns.map((column) => column.name).filter((name) => name !== 'tenant_id');
+
+  it.each<[string, ReadonlySet<string> | undefined]>([
+    ['every column without a projection', undefined],
+    ['the projected columns in table order', new Set(['filename', 'fileid', 'nosuch'])],
+    ['a projected image column alone of the images', new Set(['fileid', 'imagesmall'])],
+  ])('the site file feed source returns %s, and lists every column', async (_label, projected) => {
+    const returned = (extra: readonly string[]): string[] => FEED_COLUMNS.filter((name) => projected === undefined || projected.has(name) || extra.includes(name));
+    await inA(async (tx) => {
+      const spec = siteFilesFeed(tx, { siteId: TENANT_A.siteId });
+      const source = createContentRepository({ schema: handle.schema }).beanFeed.source<Record<string, unknown>>((fn) => fn(tx), spec, () => projected);
+      expect(source.columns).toEqual(FEED_COLUMNS);
+      // The sort term orders the rows in SQL without its column being selected.
+      const [row] = await source.rows({ order: [{ column: 'caption', field: 'caption', desc: false, type: 'varchar' }] }, 0, 1);
+      expect(Object.keys(row ?? {})).toEqual(returned([]));
+      if (projected === undefined || projected.has('image')) expect(row?.['image']).toEqual(Buffer.from('original'));
+      const scanned: Record<string, unknown>[] = [];
+      const narrow: Record<string, unknown>[] = [];
+      await source.scan({ columns: ['filesize'], rows: true }, (rows) => scanned.push(...rows) > 0);
+      await source.scan({ columns: ['filesize'], rows: false }, (rows) => narrow.push(...rows) > 0);
+      expect(scanned.map((scannedRow) => Object.keys(scannedRow))).toEqual([returned(['filesize']), returned(['filesize'])]);
+      expect(narrow).toEqual([{ filesize: 3 }, { filesize: 3 }]);
+    });
+  });
 });

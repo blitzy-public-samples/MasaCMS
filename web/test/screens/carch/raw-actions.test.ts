@@ -1,5 +1,7 @@
 // rawActionScreens against the carch fragment, JSON and download views (admin/core/views/carch) and their raw relays.
 import { readFileSync } from 'node:fs';
+import { Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
 import { carchScreens } from '@/screens/carch';
@@ -175,12 +177,14 @@ describe('carch raw actions', () => {
     expect(CSV.includes('\r\n')).toBe(true);
     const rc = { contentid: CONTENT_IDS.contactForm };
     const ctx = screenContext('downloaddata', { [svc('GET', 'downloaddata')]: replyOf(downloaddataRelay) }, { rc });
-    await expect(invoke(def, ctx)).resolves.toEqual({
+    const raw = await invoke(def, ctx);
+    expect(raw).toEqual({
       status: 200,
       contentType: 'application/msexcel',
-      body: CSV,
+      body: expect.any(Readable),
       headers: { 'content-disposition': `attachment;filename=${DOWNLOADDATA_FILENAME}`, expires: '0' },
     });
+    expect(await buffer(raw.body as Readable)).toEqual(CSV);
   });
 
   it.each(OTHERS.flatMap((action): Array<[string, Method]> => [[action, 'GET'], [action, 'POST']]))(

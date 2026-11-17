@@ -1,4 +1,5 @@
 // csettings.loadcustomimage through its registered fragment definition: gate, load, render and the wire response.
+import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HTML_CONTENT_TYPE, htmlResponse } from '@/lib/responses';
 import { csettingsScreens } from '@/screens/csettings';
@@ -69,7 +70,7 @@ async function dispatch(req: AdminRequest, gateway: FakeGatewayClient): Promise<
   const hooks: ScreenContext['hooks'] = { secondaryMenus: {} };
   const ctx: ScreenContext = { req, gateway, csrf: CSRF_UNUSED, rb: RB_UNUSED, hooks, now: NOW };
   const raw = await def.render(ctx, await def.load?.(ctx));
-  if (raw.body instanceof Uint8Array) throw new TypeError('expected a markup body');
+  if (raw.body instanceof Uint8Array || raw.body instanceof Readable) throw new TypeError('expected a markup body');
   return htmlResponse(raw.body, { status: raw.status, contentType: raw.contentType });
 }
 

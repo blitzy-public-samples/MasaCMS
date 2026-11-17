@@ -110,9 +110,8 @@ async function underSteppedDate<T>(start: () => Promise<T>): Promise<{ result: T
   }
 }
 
-// An unset PG_HOST means no PostgreSQL is configured; the suite then skips without probing the server.
-const pgReason = process.env.PG_HOST ? 'requires PostgreSQL: server unreachable' : 'requires PostgreSQL: PG_HOST not set';
-const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const pgReason = 'requires PostgreSQL: PG_HOST not set';
+const available = await pgAvailable();
 
 describe.skipIf(!available)(`communications login-mail push route${available ? '' : ` (${pgReason})`}`, () => {
   let schema: ThrowawaySchema;
@@ -308,7 +307,7 @@ async function replayLoginMail(): Promise<unknown> {
 
 const emulatorAvailable = await pubsubEmulatorAvailable();
 const replayAvailable = available && emulatorAvailable;
-const replayReason = available ? 'requires the Pub/Sub emulator: PUBSUB_EMULATOR_HOST unset or unreachable' : pgReason;
+const replayReason = available ? 'requires the Pub/Sub emulator: PUBSUB_EMULATOR_HOST unset' : pgReason;
 
 describe.skipIf(!replayAvailable)(`communications login-mail DLQ replay${replayAvailable ? '' : ` (${replayReason})`}`, () => {
   let schema: ThrowawaySchema;

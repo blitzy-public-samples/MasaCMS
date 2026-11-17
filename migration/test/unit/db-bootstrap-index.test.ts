@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createLogger, type Logger } from '@opt2/platform/logging';
-import { Connector, pg } from '@opt2/platform/tenancy';
+import { AuthTypes, Connector, pg } from '@opt2/platform/tenancy';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type MigrationConfig, type OwnerName } from '../../src/config.js';
 import {
@@ -505,6 +505,49 @@ describe('default database sessions', () => {
     );
     expect(db.calls.filter((call) => call.text === SET_TIME_ZONE)).toHaveLength(opened.length);
     expect(db.connections.every((connection) => connection.ended)).toBe(true);
+  });
+
+  it.each<{ failing: 'admin' | 'iam'; closes: number }>([
+    { failing: 'admin', closes: 0 },
+    { failing: 'iam', closes: 1 },
+  ])('fails with the $failing Cloud SQL load error and closes only the connectors whose load resolved', async ({ failing, closes }) => {
+    const loadError = new Error('Cloud SQL Admin API refused the instance');
+    // As the connector caches each load: its rejection is observed there, and close() chains `.then` on every cached load.
+    vi.spyOn(Connector.prototype, 'getOptions').mockImplementation(async function (this: Connector, opts) {
+      const load = (opts.authType === AuthTypes.IAM) === (failing === 'iam') ? Promise.reject(loadError) : Promise.resolve({ close: vi.fn() });
+      load.catch(() => undefined);
+      (this as unknown as { instances: Map<string, { promise: Promise<unknown> }> }).instances.set(String(opts.authType), { promise: load });
+      await load;
+      return { stream };
+    });
+    const close = vi.spyOn(Connector.prototype, 'close');
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const db = fakeDatabase({ roles: { [iamUser('people')]: true, [iamUser('db-bootstrap')]: true } });
+      servePgClients(db, config.cloud.adminUser);
+
+      const thrown = await failure(
+        bootstrap({
+          target: 'cloud',
+          env: cloudEnv(),
+          config: { ...config, owners: { people: config.owners.people } } as unknown as MigrationConfig,
+          logger: capturingLogger().logger,
+        }),
+      );
+      // Unhandled rejections are reported once the microtasks of the turn have run.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(thrown).toBe(loadError);
+      expect(close).toHaveBeenCalledTimes(closes);
+      expect(unhandled).toEqual([]);
+      expect(db.connections.every((connection) => connection.ended)).toBe(true);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it('ends a default session whose TimeZone cannot be set and fails the bootstrap with that error', async () => {

@@ -1,6 +1,6 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
 import { isCfUuid } from '@opt2/platform/legacy-compat';
-import { ServiceUnavailableError, UnknownServiceError } from '@opt2/platform/service-kit';
+import { EnvFileError, ServiceUnavailableError, UnknownServiceError } from '@opt2/platform/service-kit';
 
 /** How `printable` marks an error; `usage` also points the reader at `--help`. */
 export interface PrintableOptions {
@@ -61,11 +61,16 @@ function isSystemError(err: Error): boolean {
   return typeof code === 'string' && typeof syscall === 'string' && typeof errno === 'number';
 }
 
+/** Whether `err` is a Node system error or an `EnvFileError` wrapping one, whose message it repeats. */
+function isSystemFailure(err: Error): boolean {
+  return isSystemError(err) || (err instanceof EnvFileError && err.cause instanceof Error && isSystemError(err.cause));
+}
+
 /** One-line message of a printable, Node system or service-client error, with the `--help` pointer of a usage mark; otherwise undefined. */
 export function printableMessage(err: unknown): string | undefined {
   if (!(err instanceof Error)) return undefined;
   const mark = (err as Marked)[PRINTABLE];
-  if (mark === undefined && !isSystemError(err) && !(err instanceof UnknownServiceError) && !(err instanceof ServiceUnavailableError)) return undefined;
+  if (mark === undefined && !isSystemFailure(err) && !(err instanceof UnknownServiceError) && !(err instanceof ServiceUnavailableError)) return undefined;
   return `${oneLine(err)}${mark === 'usage' ? ' (see --help)' : ''}`;
 }
 

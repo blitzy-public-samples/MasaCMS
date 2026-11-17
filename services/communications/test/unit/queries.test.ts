@@ -15,6 +15,7 @@ import {
   getMessageDetail,
   listAdoptedScheduledTasks,
   listMessages,
+  listScheduledTaskPage,
   listScheduledTasksBySource,
   listTemplates,
   lockScheduledTaskByName,
@@ -28,6 +29,8 @@ import {
   type BatchCursor,
   type ListPage,
   type RecoveryBatch,
+  type ScheduledTaskPage,
+  type ScheduledTaskPageKey,
   type SiteListFilters,
 } from '../../src/repo/queries.js';
 import { UNITS, type ScheduledTaskRow } from '../../src/repo/tables.js';
@@ -152,6 +155,7 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
     origin?: string;
     scheduleTime?: Date;
     sourceId?: string;
+    queueTaskName?: string;
     createdAt?: Date;
     updatedAt?: Date;
     enqueuedAt?: Date | null;
@@ -167,7 +171,7 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
       scheduled_task_id: cfId(seed.id),
       task_name: `opt2-survey-${sourceId}-${name}`,
       queue: kind === 'survey-launch' ? 'surveys-launch' : 'communications-reminders',
-      queue_task_name: `opt2-survey-${sourceId}-${name}-v${version}`,
+      queue_task_name: seed.queueTaskName ?? `opt2-survey-${sourceId}-${name}-v${version}`,
       kind,
       source_type: 'survey',
       source_id: sourceId,
@@ -184,7 +188,7 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
     });
   }
 
-  function ids(rows: readonly ScheduledTaskRow[]): string[] {
+  function ids(rows: readonly Pick<ScheduledTaskRow, 'scheduled_task_id'>[]): string[] {
     return rows.map((row) => row.scheduled_task_id);
   }
 
@@ -326,6 +330,113 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
     expect(ids(current)).toEqual([11, 12, 13, 14].map(cfId));
     expect(current.every((row) => row.schedule_version === 2 && row.tenant_id === tenantA)).toBe(true);
     expect(unknown).toEqual([]);
+  });
+
+  describe('the paged current schedule of a source', () => {
+    const SOURCE = { sourceType: 'survey', sourceId: SURVEY_ID } as const;
+    const VIEW_COLUMNS = ['kind', 'queue', 'reminder_n', 'schedule_time', 'schedule_version', 'scheduled_task_id', 'status', 'target_route', 'task_name'];
+
+    beforeEach(async () => {
+      await inTenant(tenantA, async (tx) => {
+        await insertTask(tx, { id: 1, kind: 'survey-launch', version: 1, status: 'superseded', scheduleTime: at(30) });
+        // Two launches and a reminder share a schedule time; the launches differ only by id, with no ordinal.
+        await insertTask(tx, { id: 16, kind: 'survey-launch', version: 2, scheduleTime: at(60), queueTaskName: 'adopted-launch-v2' });
+        await insertTask(tx, { id: 11, kind: 'survey-launch', version: 2, status: 'done', scheduleTime: at(60) });
+        await insertTask(tx, { id: 12, n: 1, version: 2, scheduleTime: at(60) });
+        await insertTask(tx, { id: 14, n: 3, version: 2, status: 'cancelled', scheduleTime: at(80) });
+        await insertTask(tx, { id: 13, n: 2, version: 2, scheduleTime: at(80) });
+        await insertTask(tx, { id: 15, n: 4, version: 2, status: 'superseded', scheduleTime: at(90) });
+        await insertTask(tx, { id: 20, kind: 'survey-launch', sourceId: OTHER_SURVEY_ID, version: 3 });
+      });
+    });
+
+    /** Every page of the source at `limit`, following each page's key. */
+    async function pages(limit: number): Promise<ScheduledTaskPage[]> {
+      const read: ScheduledTaskPage[] = [];
+      let after: ScheduledTaskPageKey | undefined;
+      do {
+        const page = await inTenant(tenantA, (tx) => listScheduledTaskPage(tx, SOURCE, { limit, after }));
+        read.push(page);
+        after = page.next ?? undefined;
+      } while (after !== undefined && read.length < 10);
+      return read;
+    }
+
+    it.each([1, 2, 3, 4, 5, 6])('reads the unpaged order in pages of %i, view columns only', async (limit) => {
+      const unpaged = await inTenant(tenantA, (tx) => listScheduledTasksBySource(tx, SOURCE));
+      const read = await pages(limit);
+
+      expect(ids(unpaged)).toEqual([11, 16, 12, 13, 14].map(cfId));
+      expect(ids(read.flatMap((page) => page.rows))).toEqual(ids(unpaged));
+      expect(read.map((page) => page.rows.length)).toEqual(
+        Array.from({ length: Math.ceil(unpaged.length / limit) }, (_, i) => Math.min(limit, unpaged.length - i * limit)),
+      );
+      expect(read.at(-1)?.next).toBeNull();
+      for (const row of read.flatMap((page) => page.rows)) expect(Object.keys(row).sort()).toEqual(VIEW_COLUMNS);
+    });
+
+    it("keys a page by its last row's version, schedule time, kind, ordinal and id", async () => {
+      const [first] = await pages(2);
+
+      expect(first?.next).toEqual({ version: 2, at: at(60), kind: 'survey-launch', n: null, id: cfId(16) });
+    });
+
+    it("stays on the key's schedule version after a newer version arrives", async () => {
+      const [first] = await pages(2);
+      await inTenant(tenantA, async (tx) => {
+        await insertTask(tx, { id: 30, kind: 'survey-launch', version: 3, scheduleTime: at(61) });
+        await insertTask(tx, { id: 31, n: 1, version: 3, scheduleTime: at(70) });
+      });
+
+      const second = await inTenant(tenantA, (tx) => listScheduledTaskPage(tx, SOURCE, { limit: 10, after: first?.next ?? undefined }));
+
+      expect(second.rows.map((row) => [row.scheduled_task_id, row.schedule_version])).toEqual([12, 13, 14].map((id) => [cfId(id), 2]));
+      expect(second.next).toBeNull();
+      const restarted = await inTenant(tenantA, (tx) => listScheduledTaskPage(tx, SOURCE, { limit: 10 }));
+      expect(ids(restarted.rows)).toEqual([30, 31].map(cfId));
+    });
+
+    it.each<[string, string[], number, number[]]>([
+      ['the launches by one name', [`opt2-survey-${SURVEY_ID}-launch`], 1, [11, 16]],
+      ['current reminders, a superseded one excluded', [2, 3, 4].map((n) => `opt2-survey-${SURVEY_ID}-reminder-${n}`), 1, [13, 14]],
+      ['a launch and a reminder', [`opt2-survey-${SURVEY_ID}-reminder-1`, `opt2-survey-${SURVEY_ID}-launch`], 2, [11, 16, 12]],
+      ["another source's task name", [`opt2-survey-${OTHER_SURVEY_ID}-launch`], 5, []],
+      ['a name no task has', [`opt2-survey-${SURVEY_ID}-reminder-9`], 5, []],
+      ['no name', [], 5, []],
+    ])('reads only %s, in the unpaged order and in pages of %i', async (_case, taskNames, limit, expected) => {
+      const read: ScheduledTaskPage[] = [];
+      let after: ScheduledTaskPageKey | undefined;
+      do {
+        const page = await inTenant(tenantA, (tx) => listScheduledTaskPage(tx, SOURCE, { limit, after, taskNames }));
+        read.push(page);
+        after = page.next ?? undefined;
+      } while (after !== undefined && read.length < 10);
+      const whole = await inTenant(tenantA, (tx) => listScheduledTaskPage(tx, SOURCE, { limit: 100, taskNames }));
+
+      expect(ids(read.flatMap((page) => page.rows))).toEqual(expected.map(cfId));
+      expect(ids(whole.rows)).toEqual(expected.map(cfId));
+      expect(whole.next).toBeNull();
+      expect(read.every((page) => page.rows.length <= limit)).toBe(true);
+    });
+
+    it("keeps a named page on the key's schedule version after a newer version arrives", async () => {
+      const taskNames = [`opt2-survey-${SURVEY_ID}-launch`, `opt2-survey-${SURVEY_ID}-reminder-2`];
+      const first = await inTenant(tenantA, (tx) => listScheduledTaskPage(tx, SOURCE, { limit: 1, taskNames }));
+      await inTenant(tenantA, (tx) => insertTask(tx, { id: 32, n: 2, version: 3, scheduleTime: at(65) }));
+
+      const rest = await inTenant(tenantA, (tx) => listScheduledTaskPage(tx, SOURCE, { limit: 10, after: first.next ?? undefined, taskNames }));
+
+      expect(ids(first.rows)).toEqual([cfId(11)]);
+      expect(rest.rows.map((row) => [row.scheduled_task_id, row.schedule_version])).toEqual([16, 13].map((id) => [cfId(id), 2]));
+      expect(ids((await inTenant(tenantA, (tx) => listScheduledTaskPage(tx, SOURCE, { limit: 10, taskNames }))).rows)).toEqual([cfId(32)]);
+    });
+
+    it('reads no rows for a source never scheduled, or after the last key', async () => {
+      const last = { version: 2, at: at(80), kind: 'survey-reminder', n: 3, id: cfId(14) } as const;
+
+      expect(await inTenant(tenantA, (tx) => listScheduledTaskPage(tx, { ...SOURCE, sourceId: cfId(99) }, { limit: 5 }))).toEqual({ rows: [], next: null });
+      expect(await inTenant(tenantA, (tx) => listScheduledTaskPage(tx, SOURCE, { limit: 5, after: last }))).toEqual({ rows: [], next: null });
+    });
   });
 
   it('finds a scheduled task by id and by queue task name', async () => {
@@ -597,6 +708,7 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
       await getMessageDetail(tx, cfId(2)),
       await findMessageByEventId(tx, EVENT_ID),
       await listScheduledTasksBySource(tx, { sourceType: 'survey', sourceId: SURVEY_ID }),
+      await listScheduledTaskPage(tx, { sourceType: 'survey', sourceId: SURVEY_ID }, { limit: 10 }),
       await findScheduledTask(tx, cfId(4)),
       await findScheduledTaskByName(tx, { queue: 'surveys-launch', queueTaskName }),
       await lockScheduledTaskByName(tx, { queue: 'surveys-launch', queueTaskName }),
@@ -605,7 +717,22 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
       await unstampedScheduledTasksOlderThan(tx, at(10)),
     ]);
 
-    expect(seen).toEqual([{ items: [], total: 0 }, null, { items: [], total: 0 }, null, null, null, [], null, null, null, [], [], []]);
+    expect(seen).toEqual([
+      { items: [], total: 0 },
+      null,
+      { items: [], total: 0 },
+      null,
+      null,
+      null,
+      [],
+      { rows: [], next: null },
+      null,
+      null,
+      null,
+      [],
+      [],
+      [],
+    ]);
     expect(await inTenant(tenantB, (tx) => getMessageDetail(tx, cfId(2)))).toMatchObject({ message: { tenant_id: tenantB } });
     for (const table of ['message_template', 'message', 'delivery_status', 'scheduled_task']) {
       const { rows } = await handle.appPool.query<{ n: number }>(`SELECT count(*)::integer AS n FROM ${handle.schema}.${table}`);
@@ -646,6 +773,7 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
     await closeInPhase('communications.scheduled_task');
     const taskReads: Array<(tx: TenantTx) => Promise<unknown>> = [
       (tx) => listScheduledTasksBySource(tx, { sourceType: 'survey', sourceId: SURVEY_ID }),
+      (tx) => listScheduledTaskPage(tx, { sourceType: 'survey', sourceId: SURVEY_ID }, { limit: 10 }),
       (tx) => findScheduledTask(tx, cfId(1)),
       (tx) => lockScheduledTaskByName(tx, { queue: 'surveys-launch', queueTaskName: `opt2-survey-${SURVEY_ID}-launch-v1` }),
       (tx) => listAdoptedScheduledTasks(tx),

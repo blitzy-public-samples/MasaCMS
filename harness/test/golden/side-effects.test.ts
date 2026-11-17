@@ -14,6 +14,7 @@ import {
   type CanonicalColumn,
   type ExportTable,
   type PositionResponse,
+  type PublishedEvent,
 } from '@opt2/platform/migration-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -594,6 +595,22 @@ function userExports(http: FakeHttp): FakeHttp {
 }
 
 const TARGET_USERS = userSnapshots([U1, U5], [U1, U1_TENANT_A, U5], []);
+
+const STATUS_PATH = '/internal/v1/cutover/status';
+const GROUPS: CutoverGroups = {
+  groups: [
+    { id: 'grp:identity', units: ['identity.user_account', 'identity.group_account'] },
+    { id: 'grp:people', units: ['people.person'] },
+    { id: 'grp:communications', units: ['communications.email_stat'] },
+  ],
+};
+
+/** Scripts the gateway's cut-over status reporting `groupAuthority`. */
+function cutover(http: FakeHttp, groupAuthority: Record<string, string>): FakeHttp {
+  return http.route('GET', `${GATEWAY}${STATUS_PATH}`, () =>
+    json({ tableVersion: 'v0002', previous: 'v0001', epoch: 2, groupAuthority, instances: [] }),
+  );
+}
 
 let minted: { name: string; url: string | undefined }[] = [];
 
@@ -2042,7 +2059,9 @@ describe('settleHook', () => {
     let unpublished = 1;
     const http = position(fakeHttp(), 'people', (q) => {
       expect(q.get('publishedTopics')).toBe(TOPIC);
-      const published = [{ eventId: EVENT, topic: TOPIC, tenantId: 'Tenant-A' }];
+      // Unpaged, so the owner lists every published event of the topic.
+      expect([q.get('publishedAfter'), q.get('publishedLimit')]).toStrictEqual([null, null]);
+      const published: PublishedEvent[] = [{ eventId: EVENT, topic: TOPIC, tenantId: 'Tenant-A', kind: 'process', seq: '1' }];
       const answer = { outbox: { ...drained, unpublished }, published };
       unpublished = 0;
       return answer;
@@ -2077,7 +2096,7 @@ describe('settleHook', () => {
   });
 
   it('rejects a seam with SettleTimeoutError naming the deliveries that lack a receipt at its bound', async () => {
-    const published = [{ eventId: EVENT, topic: TOPIC, tenantId: 'tenant-a' }];
+    const published: PublishedEvent[] = [{ eventId: EVENT, topic: TOPIC, tenantId: 'tenant-a', kind: 'process', seq: '1' }];
     const http = position(fakeHttp(), 'people', () => ({ outbox: drained, published }));
     for (const consumer of await consumersOf(TOPIC)) position(http, consumer, () => receipts('tenant-b'));
     const clock = fakeClock();
@@ -2145,20 +2164,12 @@ describe('settleHook', () => {
     'SELECT [owner] AS owner, [tenant_id] AS tenantId, CONVERT(varchar(20), [applied_horizon]) AS horizon ' +
     'FROM [opt2_sync].[projector_checkpoint]';
   const LIVE_SITES_SQL = 'SELECT [SiteID] AS siteId FROM [dbo].[tsettings]';
-  const STATUS_PATH = '/internal/v1/cutover/status';
   // The live sites of legacyDb(): `default` and `tenant-a  `, whose trailing spaces the projector drops.
   const DEFAULT_TENANT = tenantIdForSite('default');
   const TENANT_A = tenantIdForSite('tenant-a');
   const TENANTS = [DEFAULT_TENANT, TENANT_A].sort();
   const TWO_OWNERS = {
     OPT2_SERVICE_URLS: JSON.stringify({ identity: serviceBase('identity'), people: serviceBase('people') }),
-  };
-  const GROUPS: CutoverGroups = {
-    groups: [
-      { id: 'grp:identity', units: ['identity.user_account', 'identity.group_account'] },
-      { id: 'grp:people', units: ['people.person'] },
-      { id: 'grp:communications', units: ['communications.email_stat'] },
-    ],
   };
   const PROJECTION_OWNERSHIP: TableOwnership = {
     tables: OWNERSHIP.tables,
@@ -2169,13 +2180,6 @@ describe('settleHook', () => {
   /** The reverse projector's checkpoint table holding `rows` of `owner`, `tenant_id`, `applied_horizon`. */
   function checkpoints(...rows: [owner: string, tenant: string, horizon: string][]): LegacyTable {
     return { rows: rows.map(([owner, tenant_id, applied_horizon]) => ({ owner, tenant_id, applied_horizon })) };
-  }
-
-  /** Scripts the gateway's cut-over status reporting `groupAuthority`. */
-  function cutover(http: FakeHttp, groupAuthority: Record<string, string>): FakeHttp {
-    return http.route('GET', `${GATEWAY}${STATUS_PATH}`, () =>
-      json({ tableVersion: 'v0002', previous: 'v0001', epoch: 2, groupAuthority, instances: [] }),
-    );
   }
 
   /** Gateway reporting `authority`, positions people 120 and identity 50, legacy sites and `rows` as checkpoints. */
@@ -2559,44 +2563,128 @@ describe('collectSideEffects', () => {
     }
   });
 
-  it('leaves minRows to capture, so legacy rows after a gateway replay are not held to it', async () => {
-    const http = userExports(fakeHttp());
-    const sql = await fakeSql(legacyDb());
-    const ctx = await context(http, 'gateway');
-    const rows = [{ table: 'tusers', where: { username: 'Fixture-Ada' }, minRows: 2 }];
+  const ALL_TARGET = { 'grp:identity': 'target', 'grp:people': 'target', 'grp:communications': 'target' };
+  const ADA_SCOPE = { table: 'tusers', where: { username: '${signup.username}' } } satisfies RowSpec;
+  const STAT_SCOPE = { table: 'temailstats', where: { EmailID: 'FIXTURE-E1' } } satisfies RowSpec;
+  const [ADA_ACCOUNTS, ADA_PERSONS, ADA_GROUPS] = userSnapshots([U1], [U1], []);
+  const [TARGET_ACCOUNTS, TARGET_PERSONS, TARGET_GROUPS] = TARGET_USERS;
+  const STATS = { unit: 'communications.email_stat', owner: 'communications', legacyTable: 'temailstats' };
+  const LEGACY_STATS = snapshot({ ...STATS, columns: STAT_COLUMNS, keyColumns: [], keyless: true }, [STAT, STAT, OTHER_STAT]);
+  const LEGACY_ADA = { 'identity.group_account': ADA_GROUPS, 'identity.user_account': ADA_ACCOUNTS, 'people.person': ADA_PERSONS };
 
-    const effects = await collectSideEffects(ctx, { compare: ['rows'], rows, steps: [] }, 'gateway', {
-      fetch: http.fetch,
-      mssql: sql.mssql,
-      ownership: OWNERSHIP,
-      invoker: await fixtureInvoker(),
-    });
-
-    expect(effects.legacyRows?.['identity.user_account']?.rows).toStrictEqual(encoded(ACCOUNT_COLUMNS, [U1]));
-  });
-
-  it('collects target export rows on the gateway, with the legacy rows after replay beside them', async () => {
-    const http = userExports(fakeHttp());
+  /** Gateway run over the user exports and legacy fixtures; the cut-over status reports `authority` unless `status` answers. */
+  async function gatewayWorld(authority: Record<string, string>, status?: Handler) {
+    const http = userExports(cutover(fakeHttp(), authority));
+    if (status !== undefined) http.route('GET', `${GATEWAY}${STATUS_PATH}`, status);
     const sql = await fakeSql(legacyDb());
     const ctx = await context(http, 'gateway');
     ctx.bindings.set('signup.username', 'Fixture-Ada');
-    const rows = [{ table: 'tusers', where: { username: '${signup.username}' } }];
-    const scenario = { compare: ['rows'] as CompareKind[], rows, steps: [] };
-
-    const effects = await collectSideEffects(ctx, scenario, 'gateway', {
+    const deps: SideEffectDeps = {
       fetch: http.fetch,
       mssql: sql.mssql,
       ownership: OWNERSHIP,
+      groups: GROUPS,
       invoker: await fixtureInvoker(),
-    });
+    };
+    return { http, ctx, deps };
+  }
 
-    expect(effects.rows).toStrictEqual({
-      'identity.group_account': TARGET_USERS[2],
-      'identity.user_account': TARGET_USERS[0],
-      'people.person': TARGET_USERS[1],
-    });
+  /** Owners whose migration export a run read, sorted. */
+  function exported(http: FakeHttp): string[] {
+    const owners = http.calls
+      .filter((call) => call.url.pathname === `${MIGRATION_PATH_PREFIX}/export`)
+      .map((call) => call.url.hostname.split('.')[0] as string);
+    return [...new Set(owners)].sort();
+  }
+
+  it('leaves minRows to capture, so legacy rows after a gateway replay are not held to it', async () => {
+    const { http, ctx, deps } = await gatewayWorld(ALL_TARGET);
+    const rows = [{ ...ADA_SCOPE, minRows: 2 }];
+
+    const effects = await collectSideEffects(ctx, { compare: ['rows'], rows, steps: [] }, 'gateway', deps);
+
     expect(effects.legacyRows?.['identity.user_account']?.rows).toStrictEqual(encoded(ACCOUNT_COLUMNS, [U1]));
-    expect(effects.legacyRows?.['people.person']?.rows).toStrictEqual(encoded(PERSON_COLUMNS, [U1]));
+    expect(exported(http)).toStrictEqual(['identity', 'people']);
+  });
+
+  interface WriterOfRecordCase {
+    label: string;
+    authority: Record<string, string>;
+    scopes: RowSpec[];
+    rows: object;
+    legacy: object;
+    /** Owners whose export the run reads. */
+    owners: string[];
+  }
+
+  it.each<WriterOfRecordCase>([
+    {
+      label: 'every group is target-authoritative',
+      authority: ALL_TARGET,
+      scopes: [ADA_SCOPE],
+      rows: { 'identity.group_account': TARGET_GROUPS, 'identity.user_account': TARGET_ACCOUNTS, 'people.person': TARGET_PERSONS },
+      legacy: LEGACY_ADA,
+      owners: ['identity', 'people'],
+    },
+    {
+      label: 'the active version returns every group to legacy',
+      authority: { 'grp:identity': 'legacy', 'grp:people': 'legacy', 'grp:communications': 'legacy' },
+      scopes: [ADA_SCOPE, STAT_SCOPE],
+      rows: { 'communications.email_stat': LEGACY_STATS, ...LEGACY_ADA },
+      legacy: { 'communications.email_stat': LEGACY_STATS, ...LEGACY_ADA },
+      owners: [],
+    },
+    {
+      label: 'no version is active',
+      authority: {},
+      scopes: [ADA_SCOPE],
+      rows: LEGACY_ADA,
+      legacy: LEGACY_ADA,
+      owners: [],
+    },
+    {
+      label: 'one table holds units of both authorities and another only legacy units',
+      authority: { 'grp:identity': 'target', 'grp:people': 'legacy', 'grp:communications': 'legacy' },
+      scopes: [ADA_SCOPE, STAT_SCOPE],
+      rows: {
+        'communications.email_stat': LEGACY_STATS,
+        'identity.group_account': TARGET_GROUPS,
+        'identity.user_account': TARGET_ACCOUNTS,
+        'people.person': ADA_PERSONS,
+      },
+      legacy: { 'communications.email_stat': LEGACY_STATS, ...LEGACY_ADA },
+      owners: ['identity', 'people'],
+    },
+  ])(
+    "takes each unit's gateway rows from its writer of record when $label, with every legacy row beside them",
+    async ({ authority, scopes, rows, legacy, owners }) => {
+      const { http, ctx, deps } = await gatewayWorld(authority);
+
+      const effects = await collectSideEffects(ctx, { compare: ['rows'], rows: scopes, steps: [] }, 'gateway', deps);
+
+      expect(effects.rows).toStrictEqual(rows);
+      expect(effects.legacyRows).toStrictEqual(legacy);
+      expect(exported(http)).toStrictEqual(owners);
+      expect(http.to(GATEWAY)).toStrictEqual([`GET ${STATUS_PATH}`]);
+      expect(http.calls[0]?.headers[INVOCATION_HEADER]).toBe(TOKEN);
+    },
+  );
+
+  it.each([
+    {
+      label: 'carries no groupAuthority',
+      status: () => json({ tableVersion: null, epoch: 0, instances: [] }),
+      error: /^gateway cut-over status carries no groupAuthority/,
+    },
+    { label: 'answers 403', status: () => json({ error: 'forbidden' }, 403), error: /^gateway cut-over status answered 403$/ },
+  ])('rejects gateway rows with SideEffectError, reading no export, when the cut-over status $label', async ({ status, error }) => {
+    const { http, ctx, deps } = await gatewayWorld(ALL_TARGET, status);
+
+    const err = await failure(collectSideEffects(ctx, { compare: ['rows'], rows: [ADA_SCOPE], steps: [] }, 'gateway', deps));
+
+    expect(err).toBeInstanceOf(SideEffectError);
+    expect(err.message).toMatch(error);
+    expect(exported(http)).toStrictEqual([]);
   });
 
   it('rejects side effects of an origin other than the context', async () => {

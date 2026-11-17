@@ -1,11 +1,15 @@
-// Tests of the fake gateways: recording of fields that shadow Object.prototype members, and the in-memory clients'
-// parity with the production client over HTTP.
-import { afterEach, describe, expect, it } from 'vitest';
+// Tests of the fake gateways: recording of fields that shadow Object.prototype members, the in-memory clients' parity
+// with the production client over HTTP, and the in-memory gateway's parity with the HTTP fake.
+import { PassThrough, Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
-import { ServiceUnavailableError } from '@opt2/platform/service-kit';
+import { ServiceUnavailableError, type ServiceClient } from '@opt2/platform/service-kit';
+import { testVerifier } from '@opt2/platform/testing';
 import {
   GatewayUnavailableError,
   createGatewayClient,
+  discardStreamed,
   setServiceClientForTests,
   type GatewayClient,
   type GatewayResponse,
@@ -14,6 +18,7 @@ import { useTestEnv } from '../helpers/env';
 import {
   fakeGatewayClient,
   fakeServiceClient,
+  inMemoryGateway,
   routeKey,
   startFakeGateway,
   type FakeCall,
@@ -22,6 +27,7 @@ import {
   type FakeReply,
   type FakeRouteTable,
   type FakeServiceClient,
+  type InMemoryGateway,
   type RecordedRequest,
 } from '../helpers/fake-gateway';
 
@@ -339,6 +345,27 @@ describe('in-memory client parity with the production client over HTTP', () => {
     ]);
   });
 
+  it.each<{ label: string; reply: FakeReply }>([
+    {
+      label: 'a 2xx CSV',
+      reply: { status: 200, headers: { 'content-type': 'text/csv;charset=UTF-8' }, body: '"USERID"\n', setCookies: ['a=1'] },
+    },
+    { label: 'a 404 page', reply: { status: 404, headers: { 'content-type': 'text/html' }, body: '<h1>No</h1>' } },
+  ])('answers a streamed call with $label as the production client does over HTTP', async ({ reply }) => {
+    const csvRoute = routeKey('GET', 'people', '/v1/users/download');
+    const read = async (gateway: GatewayClient) => {
+      const response = await gateway.stream('people', { method: 'GET', path: '/v1/users/download' });
+      const { body } = response;
+      const received = body instanceof Readable ? { stream: String(await buffer(body)) } : { bytes: String(body) };
+      return { ...answerOf(response), body: received };
+    };
+
+    const memory = await read(inMemory({ [csvRoute]: reply }));
+    const { outcome: http } = await overHttp((gateway) => gateway.setRoute(csvRoute, reply), read);
+
+    expect(memory).toStrictEqual(http);
+  });
+
   it('rethrows the error given to failWith unchanged after recording the call', async () => {
     const client = inMemory();
     const error = new Error('boom');
@@ -393,3 +420,184 @@ describe('in-memory client parity with the production client over HTTP', () => {
     expect(relay.requests).toHaveLength(1);
   });
 });
+
+describe('inMemoryGateway parity with the HTTP fake beneath the production client', () => {
+  const USER_TOKEN = 'parity-user-token';
+  const REQUEST_ID = 'req-parity';
+  const CSV_PATH = '/v1/users/download';
+  const CSV_ROUTE = routeKey('GET', 'people', CSV_PATH);
+  const CSV_HEADERS = { 'content-type': 'text/csv;charset=UTF-8', 'content-disposition': 'attachment;filename=users.csv' };
+  const MULTIPART_TYPE = 'multipart/form-data; boundary=B0UND';
+  const MULTIPART = Buffer.from(
+    '--B0UND\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n\u0000\u00ff\r\n--B0UND--\r\n',
+    'latin1',
+  );
+  // Sixteen 64 KiB chunks, more than a body stream buffers, so the reader pauses and resumes the producer.
+  const LARGE_CSV = Buffer.alloc(16 * 65_536, '"U1"\n');
+  // Request headers only the socket adds; the invocation credential differs per mint, so it is verified instead.
+  const WIRE_REQUEST_HEADERS: readonly string[] = ['host', 'connection', 'content-length', 'transfer-encoding', INVOCATION_HEADER];
+  const WIRE_RESPONSE_HEADERS: readonly string[] = ['date', 'connection', 'keep-alive', 'content-length', 'transfer-encoding'];
+
+  let http: FakeGateway;
+  let memory: InMemoryGateway;
+  let restoreEnv: () => void;
+
+  beforeEach(async () => {
+    http = await startFakeGateway();
+    fake = http;
+    memory = inMemoryGateway();
+    restoreEnv = useTestEnv({ OPT2_GATEWAY_URL: http.url });
+  });
+
+  afterEach(() => {
+    restoreEnv();
+  });
+
+  const without = <T>(record: Readonly<Record<string, T>>, names: readonly string[]): Record<string, T> =>
+    Object.fromEntries(Object.entries(record).filter(([name]) => !names.includes(name)));
+
+  const comparable = (request: RecordedRequest): RecordedRequest => ({
+    ...request,
+    headers: without(request.headers, WIRE_REQUEST_HEADERS),
+  });
+
+  /** `invoke`'s outcome through the production platform client `client`, the process-wide one when undefined. */
+  async function over<T>(client: ServiceClient | undefined, invoke: (gateway: GatewayClient) => Promise<T>): Promise<T> {
+    const restoreClient = setServiceClientForTests(client);
+    try {
+      return await invoke(createGatewayClient({ userToken: USER_TOKEN, requestId: REQUEST_ID, inbound: {} }));
+    } finally {
+      restoreClient();
+    }
+  }
+
+  /** The parts of `response` a caller sees, a streamed body read whole as text, which compares faster than bytes. */
+  const answerOf = async ({ status, ok, headers, body, setCookies, location }: GatewayResponse) => ({
+    status,
+    ok,
+    headers,
+    body: body instanceof Readable ? { streamed: String(await buffer(body)) } : body,
+    setCookies,
+    location,
+  });
+
+  it.each<{ label: string; routes: FakeRouteTable; invoke: (gateway: GatewayClient) => Promise<GatewayResponse> }>([
+    {
+      label: 'a JSON post answered with one Set-Cookie',
+      routes: { [routeKey('POST', 'identity', '/v1/csrf/tokens')]: { status: 200, body: { tokens: [] }, setCookies: ['a=1'] } },
+      invoke: (gateway) => gateway.identity.csrfTokens(['login', 'updatecore']),
+    },
+    {
+      label: 'a form post with repeated fields and a caller header answered 302 with two cookies',
+      routes: {
+        [routeKey('POST', 'identity', '/v1/login')]: {
+          status: 302,
+          headers: { location: './' },
+          setCookies: ['CFID=1; Path=/', 'CFTOKEN=2; Path=/'],
+        },
+      },
+      invoke: (gateway) =>
+        gateway.postForm(
+          'identity',
+          '/v1/login',
+          [
+            ['groupid', 'g1'],
+            ['username', 'admin'],
+            ['groupid', 'g2'],
+          ],
+          { query: { siteid: 'default' }, headers: { 'X-Csrf-Token': 'T' } },
+        ),
+    },
+    {
+      label: 'a multipart stream of unknown length',
+      routes: {
+        [routeKey('POST', 'strategies-content', '/v1/files')]: {
+          status: 201,
+          headers: { 'content-type': 'text/plain;charset=utf-8' },
+          body: 'stored',
+        },
+      },
+      invoke: (gateway) =>
+        gateway.postMultipart('strategies-content', '/v1/files', {
+          contentType: MULTIPART_TYPE,
+          body: new Blob([new Uint8Array(MULTIPART)]).stream(),
+        }),
+    },
+    {
+      label: 'a streamed 2xx produced as text chunks',
+      routes: { [CSV_ROUTE]: () => ({ status: 200, headers: CSV_HEADERS, body: Readable.from(['"USERID"\n', '"U1"\n']) }) },
+      invoke: (gateway) => gateway.stream('people', { method: 'GET', path: CSV_PATH }),
+    },
+    {
+      label: 'a streamed 2xx larger than the reader buffers',
+      routes: {
+        [CSV_ROUTE]: () => ({
+          status: 200,
+          headers: CSV_HEADERS,
+          body: Readable.from(Array.from({ length: 16 }, (_, index) => LARGE_CSV.subarray(index * 65_536, (index + 1) * 65_536))),
+        }),
+      },
+      invoke: (gateway) => gateway.stream('people', { method: 'GET', path: CSV_PATH }),
+    },
+    {
+      label: 'an unrouted call answered by the empty 404',
+      routes: {},
+      invoke: (gateway) => gateway.get('identity', '/v1/unrouted'),
+    },
+  ])('records and answers $label as the HTTP fake does', async ({ routes, invoke }) => {
+    for (const [key, route] of Object.entries(routes)) {
+      http.setRoute(key, route);
+      memory.setRoute(key, route);
+    }
+
+    const overHttp = await answerOf(await over(undefined, invoke));
+    const inMemory = await answerOf(await over(memory.client, invoke));
+
+    expect(memory.requests).toHaveLength(1);
+    expect(memory.requests.map(comparable)).toStrictEqual(http.requests.map(comparable));
+    await expect(
+      testVerifier('gateway').invocationVerifier.verify(memory.requests[0]?.headers[INVOCATION_HEADER] ?? ''),
+    ).resolves.toMatchObject({ name: 'web' });
+    expect({ ...inMemory, headers: undefined }).toStrictEqual({ ...overHttp, headers: undefined });
+    expect(inMemory.headers).toStrictEqual(without(overHttp.headers, WIRE_RESPONSE_HEADERS));
+  });
+
+  it('fails a refused call as the HTTP fake does, recording neither', async () => {
+    await http.refuse();
+    memory.refuse();
+    const read = (gateway: GatewayClient): Promise<unknown> =>
+      gateway.programsSites.getShellSite('tenant-a').catch((caught: unknown) => caught);
+
+    const overHttp = (await over(undefined, read)) as GatewayUnavailableError;
+    const inMemory = (await over(memory.client, read)) as GatewayUnavailableError;
+
+    for (const error of [overHttp, inMemory]) {
+      expect(error).toBeInstanceOf(GatewayUnavailableError);
+      expect(error).toMatchObject({ service: 'programs-sites', status: undefined, message: overHttp.message });
+      expect(error.cause).toBeInstanceOf(ServiceUnavailableError);
+    }
+    expect(inMemory.cause).toMatchObject({ message: (overHttp.cause as Error).message });
+    expect(memory.requests).toEqual([]);
+    expect(http.requests).toEqual([]);
+  });
+
+  it.each<[string, () => ServiceClient | undefined]>([
+    ['the HTTP fake', () => undefined],
+    ['the in-memory gateway', () => memory.client],
+  ])('ends the producer when the reader discards an unread streamed 2xx over %s', async (_label, client) => {
+    const producer = new PassThrough();
+    producer.write('"USERID"\n');
+    const reply: FakeReply = { status: 200, headers: CSV_HEADERS, body: producer };
+    http.setRoute(CSV_ROUTE, reply);
+    memory.setRoute(CSV_ROUTE, reply);
+    const closed = new Promise((resolve) => producer.once('close', resolve));
+
+    const response = await over(client(), (gateway) => gateway.stream('people', { method: 'GET', path: CSV_PATH }));
+    discardStreamed(response.body);
+    await closed;
+
+    expect(producer.destroyed).toBe(true);
+    expect(producer.writableEnded).toBe(false);
+  });
+});
+

@@ -597,13 +597,11 @@ describe('related content', () => {
       seedSearch();
       const PARENT_CAT = 'D1000000-0001-4A5B-8C7D9E0F1A2B3C4D';
       const CHILD_CAT = 'D1000000-0002-4A5B-8C7D9E0F1A2B3C4D';
-      const cats = [
-        { siteid: SITE, categoryid: PARENT_CAT, name: 'News', parentid: null, isopen: 1, haskids: 1 },
-        { siteid: SITE, categoryid: CHILD_CAT, name: 'Local <Events>', parentid: PARENT_CAT, isopen: 0, haskids: 0 },
-      ];
-      db.respond(/AS haskids FROM "content"\."category" c /, (params, sql) =>
-        / c\.parentid IS NULL/.test(sql) ? cats.filter((cat) => cat.parentid === null) : matching(cats.filter((cat) => cat.parentid !== null), 'c.parentid')(params, sql),
-      );
+      // The pool's tree read, in its name order.
+      db.respond(/AS haskids FROM "content"\."category" c /, [
+        { categoryid: CHILD_CAT, name: 'Local <Events>', parentid: PARENT_CAT, isopen: 0, haskids: 0 },
+        { categoryid: PARENT_CAT, name: 'News', parentid: null, isopen: 1, haskids: 1 },
+      ]);
       const res = await raw('loadrelatedcontent', { query: { contenthistid: NODE_HIST, rcCategoryID: PARENT_CAT } });
       expect(res.statusCode, String(thrown)).toBe(200);
       expect(res.body).toContain(

@@ -29,7 +29,7 @@ import {
   etag,
   legacyErrorResponse,
 } from '../../src/legacy-compat/index.js';
-import { REDACTED, createLogger, validateLogRecord, type Logger } from '../../src/logging/index.js';
+import { REDACTED, createLogger, serializeError, validateLogRecord, type Logger } from '../../src/logging/index.js';
 import { DatabaseUnavailableError, tenantIdForSite, type TenantDb } from '../../src/tenancy/index.js';
 import { mintUserToken } from '../../src/testing/index.js';
 import {
@@ -41,7 +41,7 @@ import {
   startTracing,
 } from '../../src/tracing/index.js';
 import { ServiceUnavailableError, UnknownServiceError } from '../../src/service-kit/client.js';
-import { currentRequestContext, throwIfRequestAborted } from '../../src/service-kit/context.js';
+import { currentRequestContext, recordUnpublishedEvents, throwIfRequestAborted } from '../../src/service-kit/context.js';
 import {
   LEGACY_MAX_POST_CONTENT_LENGTH,
   LEGACY_POST_LIMIT_BYTES,
@@ -62,7 +62,7 @@ import {
   type LegacyParamsOptions,
   type RequestLogScope,
 } from '../../src/service-kit/create-service.js';
-import { loadEnv, type BaseEnv } from '../../src/service-kit/env.js';
+import { EnvValidationError, loadEnv, type BaseEnv } from '../../src/service-kit/env.js';
 import { recordEventScope } from '../../src/service-kit/event-scope.js';
 
 vi.mock('../../src/tracing/index.js', async (importOriginal) => {
@@ -236,8 +236,16 @@ describe('createService options', () => {
     await expect(build({ pool, schema: 'people' })).rejects.toBeInstanceOf(TypeError);
   });
 
-  it('refuses a schema when the environment has no database settings', async () => {
-    await expect(build({ schema: 'people' })).rejects.toThrow(/OPT2_DB_AUTH and PG_DATABASE/);
+  it.each<[string, Partial<BaseEnv>, string[], string]>([
+    ['no database settings', {}, ['OPT2_DB_AUTH: is required', 'PG_DATABASE: is required'], 'people: invalid environment (OPT2_DB_AUTH: is required; PG_DATABASE: is required)'],
+    ['no OPT2_DB_AUTH', { PG_DATABASE: 'unused' }, ['OPT2_DB_AUTH: is required'], 'people: invalid environment (OPT2_DB_AUTH: is required)'],
+    ['no PG_DATABASE', { OPT2_DB_AUTH: 'password' }, ['PG_DATABASE: is required'], 'people: invalid environment (PG_DATABASE: is required)'],
+  ])('refuses a schema with %s by an EnvValidationError naming each missing variable', async (_case, settings, issues, safeText) => {
+    const error = await build({ env: { ...ENV, ...settings }, schema: 'people' }).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(EnvValidationError);
+    expect((error as EnvValidationError).issues).toEqual(issues);
+    expect(serializeError(error).message).toBe(safeText);
   });
 
   it('opens the schema pool from the environment and ends it on shutdown', async () => {
@@ -2042,6 +2050,107 @@ describe('abandoned requests', () => {
     expect(res.json()).toMatchObject({ steps: STEPS });
     expect(abandonedLines(lines)).toStrictEqual([]);
     expect(completedLines(lines)).toMatchObject([{ route: '/scan', httpMethod: method, statusCode: 200 }]);
+  });
+});
+
+describe('requests whose outbox publish was incomplete', () => {
+  const EVENT_IDS = ['0f7c6a52-0c8e-4d8e-9a43-000000000001', '0f7c6a52-0c8e-4d8e-9a43-000000000002'];
+  const ABANDONED = 'request abandoned: outbox publish of its committed events incomplete';
+  const REQUEST = { method: 'POST', url: '/notes', headers: { ...AUTHENTICATED, 'x-request-id': 'req-unpublished' } } as const;
+
+  /** A service whose POST /notes records EVENT_IDS as unpublished, then answers through `answer`, and whose GET /plain records nothing. */
+  async function notesService(answer: (reply: FastifyReply) => unknown = (reply) => reply.send({ ok: true })) {
+    const { app, lines } = await build();
+    app.post('/notes', { config: { opt2: { requires: ['s2'] } } }, async (_request, reply) => {
+      recordUnpublishedEvents(EVENT_IDS);
+      return answer(reply);
+    });
+    app.get('/plain', { config: { opt2: { requires: ['s2'] } } }, async () => ({ ok: true }));
+    return { app, lines };
+  }
+
+  const abandonedLines = (lines: LogLine[]): LogLine[] => lines.filter((line) => line.message === ABANDONED);
+
+  it.each([200, 201, 302])('abandons a %i answer without sending it and logs one WARNING with the request id', async (status) => {
+    const { app, lines } = await notesService((reply) => reply.code(status).send({ ok: true }));
+
+    await expect(app.inject(REQUEST)).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
+
+    const [abandoned] = await vi.waitFor(() => {
+      const found = abandonedLines(lines);
+      expect(found).toHaveLength(1);
+      return found;
+    });
+    expect(validateLogRecord(abandoned).errors).toStrictEqual([]);
+    expect(abandoned).toMatchObject({
+      severity: 'WARNING',
+      requestId: 'req-unpublished',
+      route: '/notes',
+      httpMethod: 'POST',
+      tenantId: TENANT_A_ID,
+      userId: USER_ID,
+      error: { type: 'UnpublishedEventsError', message: 'Outbox publish of 2 committed event(s) incomplete before the answer; left to the sweep' },
+    });
+    expect(abandoned?.latencyMs).toEqual(expect.any(Number));
+    expect(completedLines(lines)).toStrictEqual([]);
+    expect(lines.filter((line) => line.severity === 'ERROR')).toStrictEqual([]);
+  });
+
+  it.each([
+    { label: 'a 400 the handler sends', answer: (reply: FastifyReply) => reply.code(400).send({ ok: false }), status: 400 },
+    {
+      label: 'the legacy 503 of an unavailable dependency',
+      answer: () => {
+        throw new LegacyServiceUnavailableError();
+      },
+      status: 503,
+    },
+    {
+      label: 'the 500 of an unhandled error',
+      answer: () => {
+        throw new Error('failed after its commit');
+      },
+      status: 500,
+    },
+  ])('passes $label unchanged', async ({ answer, status }) => {
+    const { app, lines } = await notesService(answer);
+
+    const res = await app.inject(REQUEST);
+
+    expect(res.statusCode).toBe(status);
+    expect(abandonedLines(lines)).toStrictEqual([]);
+    expect(completedLines(lines)).toMatchObject([{ requestId: 'req-unpublished', route: '/notes', statusCode: status }]);
+  });
+
+  it('answers requests that recorded nothing in full before and after an abandoned one', async () => {
+    const { app, lines } = await notesService();
+
+    expect((await app.inject({ method: 'GET', url: '/plain', headers: AUTHENTICATED })).statusCode).toBe(200);
+    await expect(app.inject(REQUEST)).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
+    const after = await app.inject({ method: 'GET', url: '/plain', headers: AUTHENTICATED });
+
+    expect(after.statusCode).toBe(200);
+    expect(after.json()).toStrictEqual({ ok: true });
+    expect(completedLines(lines)).toMatchObject([
+      { route: '/plain', statusCode: 200 },
+      { route: '/plain', statusCode: 200 },
+    ]);
+    expect(abandonedLines(lines)).toHaveLength(1);
+  });
+
+  it('closes the socket of an abandoned request on a real listener, which keeps serving other requests', async () => {
+    const { app, lines } = await notesService();
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = app.server.address() as AddressInfo;
+
+    await expect(fetch(`http://127.0.0.1:${String(port)}/notes`, { method: 'POST', headers: REQUEST.headers })).rejects.toMatchObject({
+      cause: { code: 'UND_ERR_SOCKET' },
+    });
+    const after = await fetch(`http://127.0.0.1:${String(port)}/plain`, { headers: AUTHENTICATED });
+
+    expect(after.status).toBe(200);
+    expect(await after.json()).toStrictEqual({ ok: true });
+    expect(abandonedLines(lines)).toMatchObject([{ requestId: 'req-unpublished' }]);
   });
 });
 

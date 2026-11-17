@@ -588,6 +588,8 @@ stage_equivalence() {
     note_reason "terraform is not on PATH, so infra/terraform/plan.sh did not run"
     note_unmet "Infrastructure: terraform fmt, validate and plan" "terraform is not on PATH"
   fi
+  # The performance suite flags long windows from the windows.json that window report writes from migration.write_window.
+  run_step "window report" "$MIGRATE" window report || failures=1
   run_e2e performance/performance || failures=1
   run_step "report:isolation" harness_run report:isolation || failures=1
   run_step "report:events" harness_run report:events || failures=1
@@ -625,6 +627,7 @@ stage_rollback() {
 
 stage_reports() {
   local failures=0 file
+  run_step "window report" "$MIGRATE" window report || failures=1
   run_step "report:speed" harness_run report:speed || failures=1
   run_step "check:reviewability" harness_run check:reviewability || failures=1
   run_step "check:deck --render" harness_run check:deck -- --render || failures=1

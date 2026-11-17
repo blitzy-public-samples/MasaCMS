@@ -1,11 +1,14 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Composition root of the e-signature service. */
 import { createPublisher, registerConsumers, type EventPublisher } from '@opt2/platform/events';
+import { serializeError } from '@opt2/platform/logging';
 import { registerMigrationHandlers, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import {
+  IDENTITY_SERVICE,
   baseEnvSchema,
   createService,
   loadEnv,
+  processEnvSchema,
   publisherEmulatorHost,
   systemClock,
   type BaseEnv,
@@ -15,7 +18,7 @@ import {
 } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { consumers } from './events/consumers.js';
-import { createPeopleClient, type PeopleClient } from './legacy/people-client.js';
+import { PEOPLE_SERVICE, createPeopleClient, type PeopleClient } from './legacy/people-client.js';
 import { mappings, units } from './migration/mappings/index.js';
 import { createEsignatureRepository } from './repo/repository.js';
 import { OWNER, SCHEMA } from './repo/tables.js';
@@ -30,6 +33,13 @@ export const SERVICE_VERSION = '1.0.0';
 // Project of the harness's local Pub/Sub topology; OPT2_ENV=cloud makes GOOGLE_CLOUD_PROJECT required.
 const LOCAL_PROJECT_ID = 'opt2-local';
 
+/** Base variables with its own service name, its database and the URLs of identity (CSRF consume) and people (pool-user reads) required. */
+export const esignatureEnvSchema = processEnvSchema(baseEnvSchema, {
+  service: SERVICE_NAME,
+  callees: [IDENTITY_SERVICE, PEOPLE_SERVICE],
+  database: true,
+});
+
 /** Dependencies `buildApp` uses instead of building its own from the environment; injected ones stay open when the app closes. */
 export interface BuildAppOptions {
   env?: BaseEnv;
@@ -43,7 +53,7 @@ export interface BuildAppOptions {
 
 /** Builds the e-signature Fastify app with every route and hook registered; never listens. */
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const env = options.env ?? loadEnv(baseEnvSchema);
+  const env = options.env ?? loadEnv(esignatureEnvSchema);
   const clock = options.clock ?? systemClock;
   // Checked before createService acquires anything; an injected publisher needs no emulator.
   const emulatorHost = options.publisher === undefined ? publisherEmulatorHost(env) : undefined;
@@ -89,15 +99,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   }
 }
 
-/** Closes a failed build's app with its owned publisher, its service client and, when `ownsPool`, its pool; failures are logged. */
+/** Closes a failed build's app with its owned publisher, its service client and, when `ownsPool`, its pool; failures are logged as serialized error records. */
 async function closePartialApp(app: FastifyInstance, ownsPool: boolean): Promise<void> {
-  const { client, db } = app.opt2;
+  const { client, db, logger } = app.opt2;
   for (const step of [() => app.close(), () => client.close(), () => (ownsPool ? db?.end() : undefined)]) {
     try {
       await step();
     } catch (err) {
-      // app.log is the service's log-record.v1 logger, whose `error` serializer takes any thrown value.
-      app.log.error({ error: err }, 'start-up cleanup failed');
+      logger.error({ error: serializeError(err) }, 'start-up cleanup failed');
     }
   }
 }

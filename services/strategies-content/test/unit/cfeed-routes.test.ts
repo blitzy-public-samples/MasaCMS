@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, moduleRole } from '@opt2/platform/auth';
+import { apiUnavailableResponse } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { WRITE_POSITION_HEADER_LC, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import {
@@ -19,7 +20,7 @@ import {
 import { TENANT_B, assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, pgAvailable, testVerifier } from '@opt2/platform/testing';
 import { saveContent } from '../../src/domain/content.js';
 import { actorFromClaims } from '../../src/domain/context.js';
-import { createFeed, importRemoteFeed, readFeed, type FetchRemote } from '../../src/domain/feeds.js';
+import { REMOTE_FEED_LIMIT_BYTES, RemoteFeedTooLargeError, createFeed, importRemoteFeed, readFeed, type FetchRemote } from '../../src/domain/feeds.js';
 import { feedItemRemoteId, parseFeedXml, rssChannelItems } from '../../src/legacy/remote-feed.js';
 import { adminCsrf, circuitRouteConfig, requireCircuitAccess } from '../../src/routes/v1/access.js';
 import { cfeedRawActions, registerFeedAdminRoutes, type FeedAdminRouteContext } from '../../src/routes/v1/cfeed.js';
@@ -44,12 +45,14 @@ const PUB_DATE = 'Tue, 10 Jun 2025 04:00:00 GMT';
 describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
   let fx: ContentFixture;
   let app: FastifyInstance;
-  let remote = { status: 200, body: rss(PUB_DATE) };
+  /** What the stub fetch answers, or rejects with. */
+  let remote: Awaited<ReturnType<FetchRemote>> | Error = { status: 200, body: rss(PUB_DATE) };
   const fetched: string[] = [];
   const consumed: CsrfConsumeRequest[] = [];
 
   const fetchRemote: FetchRemote = async (url) => {
     fetched.push(url);
+    if (remote instanceof Error) throw remote;
     return remote;
   };
 
@@ -269,6 +272,15 @@ describe.skipIf(!(await pgAvailable()))('cfeed routes', () => {
       const { response } = await preview();
       expect(response.statusCode).toBe(500);
       contract(response, 'GET', `/v1/sites/${SITE_ID}/feeds/${feedId}/import`);
+    });
+
+    it('halts a remote body over the limit with the legacy 503', async () => {
+      remote = new RemoteFeedTooLargeError(FEED_URL, REMOTE_FEED_LIMIT_BYTES);
+      const { response } = await preview();
+      expect(response.statusCode).toBe(503);
+      expect(response.body).toBe(apiUnavailableResponse().body);
+      contract(response, 'GET', `/v1/sites/${SITE_ID}/feeds/${feedId}/import`);
+      expect(fetched).toEqual([FEED_URL]);
     });
   });
 

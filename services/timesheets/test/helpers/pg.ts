@@ -3,9 +3,7 @@
 import { describe } from 'vitest';
 import { pgAvailable } from '@opt2/platform/testing';
 
-// pgAvailable rejects on partial settings, so a host missing any of them skips instead of probing.
-const PG_CONFIGURED = ['PG_HOST', 'PG_USER', 'PG_PASSWORD', 'PG_DATABASE'].every((name) => Boolean(process.env[name]));
-const PG_AVAILABLE = PG_CONFIGURED && (await pgAvailable());
+const PG_AVAILABLE = await pgAvailable();
 
-/** `describe` when the `PG_*` server accepts connections, else skipped, so PostgreSQL suites report skipped without one. */
+/** `describe` when the `PG_*` server accepts connections, skipped when PG_HOST is unset. */
 export const describeWithPg = describe.skipIf(!PG_AVAILABLE);

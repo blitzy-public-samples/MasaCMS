@@ -5,7 +5,6 @@ import { secure } from '@/lib/access-gate';
 import { toString, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { ceditprofileScreens } from '@/screens/ceditprofile';
-import type { ProfileInterestCategoryLoader } from '@/screens/ceditprofile/dsp_categories_nest';
 import {
   ceditprofileGate,
   editProfileRc,
@@ -20,12 +19,12 @@ import { renderUsersJs } from '@/screens/cusers/inc/js';
 import type { PageScreen, ScreenContext } from '@/screens/registry';
 import { systemUserHomeAddress } from '../../fixtures/people/address-edit';
 import { PROFILE_USER_ID, profileData } from '../../fixtures/people/profile';
-import { siteTenantA, siteUmbrella } from '../../fixtures/programs-sites/sites';
+import { siteTenantA } from '../../fixtures/programs-sites/sites';
 import { INTEREST_CATEGORY_IDS, interestCategories } from '../../fixtures/strategies-content/categories';
 import { anonymousRequest, makeAdminRequest } from '../../helpers/admin-request';
 import { domModel, fragmentModel, type DomModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeGatewayClient } from '../../helpers/fake-gateway';
+import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply, type FakeRoute } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../helpers/screen-context';
 import { SUBJECTS } from '../../helpers/tokens';
 
@@ -36,6 +35,8 @@ type InterestNode = (typeof interestCategories)[number];
 
 const TENANT_A = siteTenantA.SiteID;
 const PROFILE_ROUTE = routeKey('GET', 'people', '/v1/profile');
+const INTEREST_GROUPS_PATH = `/v1/sites/${TENANT_A}/private-interest-groups` as const;
+const INTEREST_GROUPS_ROUTE = routeKey('GET', 'strategies-content', INTEREST_GROUPS_PATH);
 const USER_JS = '<script type="text/javascript" src="assets/js/user.js"></script>';
 const ADDRESS_ID = systemUserHomeAddress.addressID;
 
@@ -79,32 +80,26 @@ function childrenOf(nodes: readonly InterestNode[], parentId: string): readonly 
   return undefined;
 }
 
-/** `getPrivateInterestGroups` over the fixture tree, one level per call, recording each `[siteId, parentId]`. */
-function interestSource(): { loads: Array<[string, string]>; interestRows: ProfileInterestCategoryLoader } {
-  const loads: Array<[string, string]> = [];
-  const interestRows: ProfileInterestCategoryLoader = (siteId, parentId) => {
-    loads.push([siteId, parentId]);
-    const level = parentId === '' ? interestCategories : (childrenOf(interestCategories, parentId) ?? []);
-    return Promise.resolve(
-      level
-        .filter((node) => Number(node.isInterestGroup) === 1)
-        .map((node) => ({
-          categoryID: node.categoryID,
-          name: node.name,
-          site: siteUmbrella.Site,
-          isOpen: Number(node.isOpen),
-          hasKids: Number(node.hasKids),
-        })),
-    );
-  };
-  return { loads, interestRows };
-}
+/** strategies-content `listPrivateInterestGroups` over the fixture tree: the level `parentid` names, interest groups only. */
+const interestGroupsRoute: FakeRoute = ({ query }) => {
+  const parentId = typeof query['parentid'] === 'string' ? query['parentid'] : '';
+  const level = parentId === '' ? interestCategories : (childrenOf(interestCategories, parentId) ?? []);
+  const items = level
+    .filter((node) => Number(node.isInterestGroup) === 1)
+    .map((node) => ({
+      categoryID: node.categoryID,
+      name: node.name,
+      filename: node.filename,
+      urltitle: node.urltitle,
+      isOpen: Number(node.isOpen),
+      hasKids: Number(node.hasKids),
+    }));
+  return { status: 200, body: { items } };
+};
 
-/** The registered page with its interest-group read bound, as edit.ts leaves that source to a caller. */
-const withInterests = (interestRows: ProfileInterestCategoryLoader): PageScreen<EditProfileView> => ({
-  ...editProfileScreen,
-  load: (ctx: ScreenContext) => loadEditProfileView(ctx, { interestRows }),
-});
+/** The interest-group reads `ctx` sent, one per tree level. */
+const interestCalls = (ctx: ScreenContext & { gateway: FakeGatewayClient }) =>
+  ctx.gateway.calls.filter(({ service, path }) => service === 'strategies-content' && path === INTEREST_GROUPS_PATH);
 
 /** GS-PE-04's user: the tenant-a system user, its session on tenant-a, whose pools are siteTenantA's. */
 const systemUserRequest = (): AdminRequest =>
@@ -122,9 +117,16 @@ const systemUserRequest = (): AdminRequest =>
     SUBJECTS.systemUser,
   );
 
-/** A context whose people answers `getProfile` with `profile`. */
-const contextFor = (req: AdminRequest, profile: ProfileData = profileData): ScreenContext & { gateway: FakeGatewayClient } =>
-  makeScreenContext({ req, gateway: fakeGatewayClient({ [PROFILE_ROUTE]: { status: 200, body: profile } }) });
+/** A context whose people answers `getProfile` with `profile` and strategies-content the fixture interest groups. */
+const contextFor = (
+  req: AdminRequest,
+  profile: ProfileData = profileData,
+  interestGroups: FakeRoute = interestGroupsRoute,
+): ScreenContext & { gateway: FakeGatewayClient } =>
+  makeScreenContext({
+    req,
+    gateway: fakeGatewayClient({ [PROFILE_ROUTE]: { status: 200, body: profile }, [INTEREST_GROUPS_ROUTE]: interestGroups }),
+  });
 
 async function pageHtml(def: PageScreen<EditProfileView>, ctx: ScreenContext): Promise<string> {
   const page = await renderScreenPage(def, ctx);
@@ -198,18 +200,15 @@ describe('cEditProfile gate', () => {
   });
 });
 
-describe('cEditProfile.edit page of the recorded profile', () => {
+describe('cEditProfile.edit page of the recorded profile, as registered', () => {
   let ctx: ScreenContext & { gateway: FakeGatewayClient };
-  let loads: Array<[string, string]>;
   let html: string;
   let model: DomModel;
   let $: cheerio.CheerioAPI;
 
   beforeEach(async () => {
-    const source = interestSource();
-    loads = source.loads;
     ctx = contextFor(systemUserRequest());
-    html = await pageHtml(withInterests(source.interestRows), ctx);
+    html = await pageHtml(editProfileScreen, ctx);
     model = domModel(html);
     $ = cheerio.load(html);
   });
@@ -329,12 +328,17 @@ describe('cEditProfile.edit page of the recorded profile', () => {
     expect($('#tabAddressinformation li.delete')).toHaveLength(0);
   });
 
-  it('nests the interest groups under the tenant-a label, boxes only on open categories', () => {
+  it("nests strategies-content's interest groups under the tenant-a label, boxes only on open categories", () => {
     const tree = $('div#mura-list-tree');
 
-    expect(loads).toEqual([
-      [TENANT_A, ''],
-      [TENANT_A, INTEREST_CATEGORY_IDS.interests],
+    expect(interestCalls(ctx)).toEqual([
+      { service: 'strategies-content', method: 'GET', path: INTEREST_GROUPS_PATH, query: { groupsiteid: TENANT_A, parentid: '' } },
+      {
+        service: 'strategies-content',
+        method: 'GET',
+        path: INTEREST_GROUPS_PATH,
+        query: { groupsiteid: TENANT_A, parentid: INTEREST_CATEGORY_IDS.interests },
+      },
     ]);
     expect(tree.children('label').toArray().map((label) => $(label).text())).toEqual([siteTenantA.Site]);
     expect(tree.children('ul').attr('class')).toBe('checkboxTree');
@@ -363,33 +367,68 @@ describe('cEditProfile.edit page of the recorded profile', () => {
   });
 });
 
-describe('cEditProfile.edit page as registered', () => {
-  it('refuses the recorded profile, which names an interest, while no interest-group read is bound', async () => {
+describe('cEditProfile.edit interest groups as registered', () => {
+  const { newsletter, volunteering, training } = INTEREST_CATEGORY_IDS;
+  /** `#mura-list-tree` as ACF 2023 writes it: the site label, then the tree `<cf_dsp_categories_nest>` prints. */
+  const listTree = (tree: string): string =>
+    `<div id="mura-list-tree" class="mura-control-group">\n\t\t\t\t\t\t\t\t<label>${siteTenantA.Site}</label> ${tree}\n\t\t\t\t\t    \t</div>`;
+  const box = (id: string, checked: boolean): string =>
+    `<input type="checkbox" name="categoryID" class="checkbox" ${checked ? 'checked' : ''} value="${id}"> `;
+
+  it("writes the recorded profile's tree byte for byte: the closed root unboxed, its open children nested and newsletter checked", async () => {
     const ctx = contextFor(systemUserRequest());
 
-    await expect(renderScreenPage(editProfileScreen, ctx)).rejects.toMatchObject({
-      name: 'LegacyServiceUnavailableError',
-      surface: 'admin',
-      reason: 'profile-interests',
-    });
-    expect(ctx.gateway.calls).toEqual([{ service: 'people', method: 'GET', path: '/v1/profile' }]);
+    const html = await pageHtml(editProfileScreen, ctx);
+
+    expect(html).toContain(
+      listTree(
+        '\n<ul class="checkboxTree">\n\n<li>\nInterests \n<ul>\n' +
+          `\n<li>\n${box(newsletter, true)}Newsletter \n</li>\n` +
+          `\n<li>\n${box(volunteering, false)}Outreach Volunteering \n</li>\n` +
+          `\n<li>\n${box(training, false)}Skills Training \n</li>\n` +
+          '\n</ul>\n\n</li>\n\n</ul>\n',
+      ),
+    );
   });
 
-  it("shows tenant-a's empty pool for the profile without interests", async () => {
-    const ctx = contextFor(systemUserRequest(), { ...profileData, categoryIds: [] });
+  it("shows user.nointerestcategories for tenant-a's empty pool", async () => {
+    const ctx = contextFor(systemUserRequest(), { ...profileData, categoryIds: [] }, { status: 200, body: { items: [] } });
 
-    const $ = cheerio.load(await pageHtml(editProfileScreen, ctx));
+    const html = await pageHtml(editProfileScreen, ctx);
 
-    expect($('#mura-list-tree > label').text()).toBe(siteTenantA.Site);
-    expect($('#mura-list-tree > .help-block-empty').text()).toBe('There are currently no interest groups.');
-    expect($('input[name="categoryID"]')).toHaveLength(0);
+    expect(html).toContain(listTree('<div class="help-block-empty">There are currently no interest groups.</div> '));
+    expect(cheerio.load(html)('input[name="categoryID"]')).toHaveLength(0);
+    expect(interestCalls(ctx)).toEqual([
+      { service: 'strategies-content', method: 'GET', path: INTEREST_GROUPS_PATH, query: { groupsiteid: TENANT_A, parentid: '' } },
+    ]);
+  });
+
+  it('fails closed when strategies-content cannot serve, or halts, the interest groups', async () => {
+    const ctx = contextFor(systemUserRequest(), profileData, { status: 503, body: { error: 'unavailable' } });
+
+    await expect(renderScreenPage(editProfileScreen, ctx)).rejects.toMatchObject({
+      name: 'GatewayUnavailableError',
+      surface: 'admin',
+      service: 'strategies-content',
+      status: 503,
+    });
+  });
+
+  it.each<[401 | 403, string]>([
+    [401, '/admin/?muraAction=clogin.logout'],
+    [403, '/admin/?muraAction=cMessage.noaccess'],
+  ])("answers strategies-content's %i with the access gate's redirect", async (status, location) => {
+    const reply: FakeReply = { status, body: { error: 'denied' } };
+    const ctx = contextFor(systemUserRequest(), profileData, reply);
+
+    expect(await renderScreenPage(editProfileScreen, ctx)).toEqual({ kind: 'redirect', location });
   });
 });
 
 describe('cEditProfile.edit ShellView', () => {
   it("carries cusers/inc/js.cfm's script as ajax and the date key and user.js as head", async () => {
     const ctx = contextFor(systemUserRequest());
-    const view = await loadEditProfileView(ctx, { interestRows: interestSource().interestRows });
+    const view = await loadEditProfileView(ctx);
 
     const shell = await renderEditProfile(ctx, view);
 

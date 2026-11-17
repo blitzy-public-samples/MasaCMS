@@ -379,6 +379,27 @@ async function createNote(session: HttpSession, body: { title: string; body: str
   });
 }
 
+/**
+ * Creates a tenant-a note through the gateway while the stub cannot publish; resolves to the committed note's id.
+ * The stub abandons a request whose events it could not publish, so the gateway answers its fail-closed 503 and the note is found by its unique title.
+ */
+async function createUnpublishedNote(session: HttpSession, body: { title: string; body: string }): Promise<string> {
+  const created = await session.post(STUB_NOTES_PATH, { query: { siteid: TENANT_A.siteId }, json: body });
+  if (created.status !== 503) throw new Error(`note create through the gateway answered ${created.status}, not the 503 of an abandoned request: ${created.text}`);
+  let after: string | null = null;
+  do {
+    const query: Record<string, string> = { siteid: TENANT_A.siteId, limit: '1000', ...(after === null ? {} : { after }) };
+    const listed = await session.get(STUB_NOTES_PATH, { query });
+    if (listed.status !== 200) throw new Error(`note list through the gateway answered ${listed.status}: ${listed.text}`);
+    const page = asRecord(asRecord(listed.json())?.data);
+    const items: unknown[] = Array.isArray(page?.items) ? page.items : [];
+    const noteId = items.map(asRecord).find((item) => item?.title === body.title)?.noteid;
+    if (typeof noteId === 'string') return noteId;
+    after = typeof page?.next === 'string' ? page.next : null;
+  } while (after !== null);
+  throw new Error(`no committed note is titled ${body.title}`);
+}
+
 /** The note's `stub.note_projection` row read through the gateway; null until a delivery is consumed. */
 function projectionOf(session: HttpSession, noteId: string): Promise<StubProjection | null> {
   return readStubProjection({ session, siteId: TENANT_A.siteId }, noteId);
@@ -961,19 +982,19 @@ describe('event delivery guarantees', () => {
           await stopService('stub');
           await startService('stub', { extraEnv: { PUBSUB_EMULATOR_HOST: UNREACHABLE_EMULATOR } });
           await waitHealthy('stub');
-          const note = await createNote(notes(), { title: `Unpublished row ${tag()}`, body: 'Committed while publishing fails.' });
-          evidence.noteId = note.noteId;
+          const noteId = await createUnpublishedNote(notes(), { title: `Unpublished row ${tag()}`, body: 'Committed while publishing fails.' });
+          evidence.noteId = noteId;
           const position = await positionOf('stub', []);
           evidence.unpublishedBeforeKill = position.unpublished;
           expect(position.unpublished, 'unpublished stub outbox rows before the kill').toBeGreaterThanOrEqual(1);
-          const early = await projectionOf(notes(), note.noteId);
+          const early = await projectionOf(notes(), noteId);
           evidence.projectedBeforeKill = early !== null;
           expect(early, 'projection before the kill').toBeNull();
           await killService('stub');
           await startService('stub');
           await waitHealthy('stub');
           const restartedAt = Date.now();
-          const swept = await awaitProjection(note.noteId, () => true, 'the swept delivery', sweepPoll);
+          const swept = await awaitProjection(noteId, () => true, 'the swept delivery', sweepPoll);
           evidence.sweptWithinMs = Date.now() - restartedAt;
           evidence.projection = swept;
           expect(swept.applyCount, 'apply count of the swept delivery').toBe(1);

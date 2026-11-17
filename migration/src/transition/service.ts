@@ -17,7 +17,8 @@ import type { OwnersClient } from '../owners/index.js';
 import { resolveReportTarget, upsertLogEntry, type ReportTarget, type TransitionLogEntry } from '../reports/index.js';
 import type { Projector } from '../reverse/index.js';
 import type { SchedulerService } from '../scheduler/index.js';
-import type { WindowService } from '../windows/index.js';
+import { leasesOf, type WindowService } from '../windows/index.js';
+import { boundLockWaits, timeoutSignal } from '../windows/lock-waits.js';
 
 import { TransitionClaimLostError, assertClaim, claimFences, type ClaimFence } from './claim.js';
 import {
@@ -167,6 +168,12 @@ function transitionTable(tx: MetadataTx): string {
 
 /** Longest single call a drive issues: an owner gate close. */
 const MAX_CALL_MS = GATE_WAIT_MS + SERVICE_CALL_TIMEOUT_MS;
+
+/**
+ * How long a failing undo is retried, from its first failure, before the transition fails: five minutes outlast a restart
+ * of an owner, the gateway or ColdFusion, legacy start-up included, so a longer failure needs an operator.
+ */
+const UNDO_RETRY_BUDGET_MS = 5 * 60_000;
 
 /** `error`, an error it was caused by, or the fence of the drive it was raised in, shows that this instance lost the claim. */
 function claimLost(error: unknown): boolean {
@@ -431,6 +438,8 @@ export function createTransitionService(base: MigrationContext, options: Transit
 
   const now = (): string => ctx.clock.now().toISOString();
   const claimExpiry = (): Date => new Date(ctx.clock.now().getTime() + claimLifetimeMs);
+  /** Signal aborting, and bounding row-lock waits, once a claim valid until `validUntil` lapses; already aborted after it. */
+  const claimSignal = (validUntil: number): AbortSignal => timeoutSignal(validUntil - ctx.clock.now().getTime());
 
   /** Records `until` as written to the claim `fence` guards. */
   function claimedUntil(until: Date, fence = claimFences.getStore()): void {
@@ -547,16 +556,24 @@ export function createTransitionService(base: MigrationContext, options: Transit
     return row === undefined ? undefined : { record: toRecord(row), until };
   }
 
-  /** Extends this instance's claim, recording it in `fence`; a claim no longer held marks `fence` taken, refusing the drive's further effects. */
+  /**
+   * Extends this instance's claim, recording it in `fence`, aborted, and its row-lock wait ended, once the claim `fence` records
+   * lapses; a claim no longer held marks `fence` taken, refusing the drive's further effects.
+   */
   async function renewClaim(transitionId: string, fence: ClaimFence): Promise<void> {
     const until = claimExpiry();
+    const signal = claimSignal(fence.validUntil);
     try {
-      const { rowCount } = await ctx.db.withMetadata((tx) =>
-        tx.query(`UPDATE ${transitionTable(tx)} SET claim_expires_at = GREATEST(claim_expires_at, $3) WHERE transition_id = $1 AND claimed_by = $2`, [
-          transitionId,
-          instanceId,
-          until,
-        ]),
+      const { rowCount } = await ctx.db.withMetadata(
+        async (tx) => {
+          await boundLockWaits(tx, signal);
+          return tx.query(`UPDATE ${transitionTable(tx)} SET claim_expires_at = GREATEST(claim_expires_at, $3) WHERE transition_id = $1 AND claimed_by = $2`, [
+            transitionId,
+            instanceId,
+            until,
+          ]);
+        },
+        { signal },
       );
       if ((rowCount ?? 0) > 0) {
         claimedUntil(until, fence);
@@ -569,14 +586,22 @@ export function createTransitionService(base: MigrationContext, options: Transit
     }
   }
 
-  /** Drops this instance's claim; a failure leaves the claim to lapse at its expiry. */
-  async function releaseClaim(transitionId: string): Promise<void> {
+  /**
+   * Drops this instance's claim, aborted, and its row-lock wait ended, once the claim valid until `validUntil` lapses; a
+   * failure leaves the claim to lapse at its expiry.
+   */
+  async function releaseClaim(transitionId: string, validUntil: number): Promise<void> {
+    const signal = claimSignal(validUntil);
     try {
-      await ctx.db.withMetadata((tx) =>
-        tx.query(`UPDATE ${transitionTable(tx)} SET claimed_by = NULL, claim_expires_at = NULL WHERE transition_id = $1 AND claimed_by = $2`, [
-          transitionId,
-          instanceId,
-        ]),
+      await ctx.db.withMetadata(
+        async (tx) => {
+          await boundLockWaits(tx, signal);
+          return tx.query(`UPDATE ${transitionTable(tx)} SET claimed_by = NULL, claim_expires_at = NULL WHERE transition_id = $1 AND claimed_by = $2`, [
+            transitionId,
+            instanceId,
+          ]);
+        },
+        { signal },
       );
     } catch (error) {
       ctx.logger.warn({ error: serializeError(error) }, `Releasing the claim on transition ${transitionId} failed; it lapses at its expiry`);
@@ -593,9 +618,12 @@ export function createTransitionService(base: MigrationContext, options: Transit
         if (fence.taken || fence.validUntil - ctx.clock.now().getTime() < MAX_CALL_MS) throw new TransitionClaimLostError(id);
       },
     };
-    let renewing = Promise.resolve();
+    // The one renewal in flight, if any; a tick while it is pending adds none.
+    let renewing: Promise<void> | undefined;
     const timer = setInterval(() => {
-      renewing = renewing.then(() => renewClaim(id, fence));
+      renewing ??= renewClaim(id, fence).finally(() => {
+        renewing = undefined;
+      });
     }, claimRenewMs);
     timer.unref();
     try {
@@ -607,7 +635,7 @@ export function createTransitionService(base: MigrationContext, options: Transit
       releasing.add(id);
       clearInterval(timer);
       await renewing;
-      await releaseClaim(id);
+      await releaseClaim(id, fence.validUntil);
     }
   }
 
@@ -641,7 +669,29 @@ export function createTransitionService(base: MigrationContext, options: Transit
     }
   }
 
-  /** Undoes the side effects of an aborting transition; an undo that throws leaves the row aborting, its gates closed, for the next pass. */
+  /** What an aborting transition still holds or keeps paused, for the reason it fails with. */
+  async function heldByAbort(record: TransitionRecord): Promise<string> {
+    const { progress, plan } = record;
+    const held: string[] = [];
+    if (progress.startupGuardFreeze !== undefined) held.push(`start-up guard freeze of ${progress.startupGuardFreeze.routes.join(', ')}`);
+    if (progress.orphanRestart !== undefined) held.push(`legacy restart gates ${progress.orphanRestart.units.join(', ')}`);
+    if (progress.closedGates.length > 0) held.push(`gates ${progress.closedGates.map((gate) => `${gate.unit} at ${gate.owner}`).join(', ')}`);
+    if (progress.freezeRequested === true) held.push(`frozen routes ${(plan?.frozenRoutes ?? []).join(', ')}`);
+    const leases = await leasesOf(ctx, record.transitionId);
+    if (leases.length > 0) held.push(`leases ${leases.map((lease) => lease.unit).join(', ')}`);
+    if (progress.pausedQueues.length > 0) held.push(`paused queues ${progress.pausedQueues.map((paused) => `${paused.queue} at ${paused.service}`).join(', ')}`);
+    const { schedulerPause } = progress;
+    if (schedulerPause !== undefined) {
+      const tasks = [...schedulerPause.siteMonitor, ...schedulerPause.surveys];
+      held.push(`paused legacy tasks ${tasks.length === 0 ? '(none recorded)' : tasks.join(', ')}`);
+    }
+    return held.length === 0 ? 'nothing is held' : `still held: ${held.join('; ')}`;
+  }
+
+  /**
+   * Undoes the side effects of an aborting transition. An undo that throws leaves the row aborting for the next pass until
+   * UNDO_RETRY_BUDGET_MS has passed since its first failure; then the transition fails with what it still holds.
+   */
   async function finishAbort(record: TransitionRecord): Promise<void> {
     const reason = record.abortReason ?? `Transition ${record.transitionId} was aborting`;
     let progress: TransitionProgress;
@@ -653,10 +703,16 @@ export function createTransitionService(base: MigrationContext, options: Transit
         await fail(record, `${reason}; the abort was refused: ${messageOf(error)}`, error);
         return;
       }
-      ctx.logger.error(
-        { error: serializeError(error) },
-        `Transition ${record.transitionId} undo failed; it stays aborting with its gates closed until resumed`,
-      );
+      const previous = record.progress.undoFailures;
+      const failures = { count: (previous?.count ?? 0) + 1, firstAt: previous?.firstAt ?? now() };
+      record.progress = { ...record.progress, undoFailures: failures };
+      if (ctx.clock.now().getTime() - Date.parse(failures.firstAt) >= UNDO_RETRY_BUDGET_MS) {
+        const given = `the undo failed ${String(failures.count)} times since ${failures.firstAt} and was given up: ${messageOf(error)}`;
+        await fail(record, `${reason}; ${given}; ${await heldByAbort(record)}`, error);
+        return;
+      }
+      await persistRecord(record);
+      ctx.logger.error({ error: serializeError(error) }, `Transition ${record.transitionId} undo failed; it stays aborting until the undo is retried`);
       return;
     }
     record.progress = progress;
@@ -734,7 +790,7 @@ export function createTransitionService(base: MigrationContext, options: Transit
     if (loops.has(id)) return;
     const loop = (async () => {
       try {
-        if (stopping) await releaseClaim(id);
+        if (stopping) await releaseClaim(id, until.getTime());
         else await holdClaim(record, until);
       } catch (error) {
         ctx.logger.error({ error: serializeError(error) }, `Transition ${id} stopped and continues from its persisted state on resume`);

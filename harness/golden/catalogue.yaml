@@ -1,6 +1,6 @@
-# Golden scenarios: requests only; responses are whatever legacy answers at capture. Order is capture order.
+# Golden scenarios: requests only; responses are whatever legacy answers at capture. Capture and replay follow this order, except the GS-PE-RH rehearsal scenarios, which run last.
 # Scenario: id, title, service, role, sessions{name: {login, via}}, seedRefs[{as, source, path, where, index}], steps[], compare[], rows[{table, where}], normalisationOverrides, covers[]; optional purpose, tableVersion, fixtures, expected, decisionListRef, exceptionId, acrossTransition, replayFaults, browser, tasks.
-# Step: name, method, route, as, auth, csrf, csrfFrom, headers, form | body | multipart{fields, files[{field, fixture, filename, contentType}]}, extract, poll, settle, matrix, knownIssue, expected, decisionListRef, exceptionId, compare, candidates.
+# Step: name, method, route, as, auth, csrf, csrfFrom, mergeHidden, headers, form | body | multipart{fields, files[{field, fixture, filename, contentType}]}, extract, poll, settle, matrix, knownIssue, expected, decisionListRef, exceptionId, compare, candidates.
 # auth: session | anonymous | basic:<user>:<secret> | bearer:<token>; csrf: fetch-form | json-api:<context> | none; extract: {from: body | header:<Name> | dom | location-query, path | selector, attr, param}.
 # seedRefs index is 0-based and negative from the end; a reserved ref resolves to a scalar, read as ${seed.<as>}.
 # Placeholders: ${secret:admin|qa_editor|appreload|seed:<user>|oauth:<clientId>|generated:<name>}, ${user:<site>:<role>}, ${seed.<as>.<field>}, ${<step>.<binding>}, ${matrix.<var>}, ${asOf}, ${nodash:<value>} (<value> without '-'), ${urlencode:<value>} (legacy esapiEncode('url')); keys resolve like values.
@@ -640,8 +640,8 @@ scenarios:
     service: identity
     role: admin
     sessions:
-      admin: {login: none, via: admin}
-      member: {login: none, via: admin}
+      admin: {login: none, via: admin, site: tenant-a}
+      member: {login: none, via: admin, site: tenant-a}
     seedRefs:
       - {as: group, source: dataset, path: masa.groups, where: {siteID: tenant-a}, index: -1}
       - {as: memberUser, source: dataset, path: masa.users, where: {username: '${user:tenant-a:system-user}'}}
@@ -738,7 +738,7 @@ scenarios:
           csrf_token_expires: ${seam-user-edit.csrfExpires}
       - name: legacy-login-page
         method: GET
-        route: /tenant-a/?display=login
+        route: /?display=login
         as: member
         auth: session
         extract:
@@ -781,7 +781,7 @@ scenarios:
           csrf_token_expires: ${membership-tokens.csrfExpires}
       - name: member-first-legacy-request
         method: GET
-        route: /tenant-a/
+        route: /
         as: member
         auth: session
         expected: withheld
@@ -792,7 +792,7 @@ scenarios:
         as: member
       - name: carried-token-resubmitted-to-legacy
         method: POST
-        route: /tenant-a/
+        route: /
         as: member
         auth: session
         form:
@@ -898,14 +898,14 @@ scenarios:
         as: member
       - name: legacy-after-carried-logout
         method: GET
-        route: /tenant-a/
+        route: /
         as: member
         auth: session
         expected: withheld
         decisionListRef: page:render
       - name: legacy-logout
         method: POST
-        route: /tenant-a/
+        route: /
         as: admin
         auth: session
         form:
@@ -1933,6 +1933,7 @@ scenarios:
         as: admin
         csrf: fetch-form
         csrfFrom: page-form
+        mergeHidden: false
         form:
           muraAction: cArch.update
           action: add
@@ -3278,12 +3279,12 @@ scenarios:
     service: identity
     role: member
     sessions:
-      visitor: {login: none, via: public}
+      visitor: {login: none, via: public, site: tenant-a}
     seedRefs: []
     steps:
       - name: login-page
         method: GET
-        route: /tenant-a/?display=login
+        route: /?display=login
         as: visitor
         auth: session
         extract:
@@ -3293,7 +3294,7 @@ scenarios:
         decisionListRef: page:render
       - name: login-wrong-password
         method: POST
-        route: /tenant-a/?display=login
+        route: /?display=login
         as: visitor
         auth: session
         form:
@@ -3305,7 +3306,7 @@ scenarios:
           csrf_token_expires: ${login-page.csrfExpires}
       - name: login-page-again
         method: GET
-        route: /tenant-a/?display=login
+        route: /?display=login
         as: visitor
         auth: session
         extract:
@@ -3315,7 +3316,7 @@ scenarios:
         decisionListRef: page:render
       - name: login
         method: POST
-        route: /tenant-a/?display=login
+        route: /?display=login
         as: visitor
         auth: session
         form:
@@ -3327,7 +3328,7 @@ scenarios:
           csrf_token_expires: ${login-page-again.csrfExpires}
       - name: home-after-login
         method: GET
-        route: /tenant-a/
+        route: /
         as: visitor
         auth: session
         expected: withheld
@@ -3342,26 +3343,26 @@ scenarios:
     service: identity
     role: member
     sessions:
-      member: {login: 'seed:umbrella:member', via: public}
+      member: {login: 'seed:umbrella:member', via: public, site: tenant-a}
     seedRefs: []
     steps:
       - name: home
         method: GET
-        route: /tenant-a/
+        route: /
         as: member
         auth: session
         expected: withheld
         decisionListRef: page:render
       - name: logout
         method: POST
-        route: /tenant-a/
+        route: /
         as: member
         auth: session
         form:
           doaction: logout
       - name: home-after-logout
         method: GET
-        route: /tenant-a/
+        route: /
         as: member
         auth: session
         expected: withheld
@@ -3376,8 +3377,8 @@ scenarios:
     service: people
     role: member, anonymous
     sessions:
-      member: {login: 'seed:umbrella:member', via: public}
-      visitor: {login: none, via: public}
+      member: {login: 'seed:umbrella:member', via: public, site: tenant-a}
+      visitor: {login: none, via: public, site: tenant-a}
     seedRefs: []
     steps:
       - name: current-user
@@ -3398,7 +3399,7 @@ scenarios:
           csrfExpires: {from: body, path: data.csrf_token_expires}
       - name: update-profile
         method: POST
-        route: /tenant-a/?display=editprofile
+        route: /?display=editprofile
         as: member
         auth: session
         form:
@@ -3421,7 +3422,7 @@ scenarios:
           csrfExpires: {from: body, path: data.csrf_token_expires}
       - name: create-profile
         method: POST
-        route: /tenant-a/?display=editprofile
+        route: /?display=editprofile
         as: visitor
         auth: session
         form:
@@ -3451,13 +3452,13 @@ scenarios:
     service: strategies-content
     role: member
     sessions:
-      member: {login: 'seed:umbrella:member', via: public}
+      member: {login: 'seed:umbrella:member', via: public, site: tenant-a}
     seedRefs:
       - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 0}
     steps:
       - name: rate
         method: POST
-        route: /tenant-a/?linkServID=${seed.page.contentID}
+        route: /?linkServID=${seed.page.contentID}
         as: member
         auth: session
         form:
@@ -3481,7 +3482,7 @@ scenarios:
     service: strategies-content
     role: anonymous; system user over REST
     sessions:
-      visitor: {login: none, via: public}
+      visitor: {login: none, via: public, site: tenant-a}
       rest: {login: 'seed:tenant-a:system-user', via: rest-basic}
     seedRefs:
       - {as: site, source: dataset, path: masa.sites, where: {siteID: tenant-a}}
@@ -3975,7 +3976,7 @@ scenarios:
     service: strategies-content
     role: admin, new user
     sessions:
-      admin: {login: admin, via: admin}
+      admin: {login: admin, via: admin, site: tenant-a}
       newUser: {login: none, via: admin}
     seedRefs: []
     replayFaults:
@@ -4010,9 +4011,12 @@ scenarios:
           approved: '0'
           display: '1'
           isNav: '1'
+          preview: '1'
+        extract:
+          contenthistid: {from: location-query, param: contenthistid}
       - name: legacy-preview
         method: GET
-        route: /tenant-a/?previewid=${page-form.contenthistid}
+        route: /?previewid=${page.contenthistid}
         as: admin
         auth: session
         expected: withheld
@@ -7377,14 +7381,14 @@ scenarios:
     role: anonymous
     purpose: coverage
     sessions:
-      visitor: {login: none, via: public}
+      visitor: {login: none, via: public, site: tenant-a}
     seedRefs:
       - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 0}
       - {as: member, source: dataset, path: masa.users, where: {username: '${user:umbrella:member}'}}
     steps:
       - name: subscribe
         method: POST
-        route: /tenant-a/
+        route: /
         as: visitor
         auth: session
         form:
@@ -7396,7 +7400,7 @@ scenarios:
           siteid: tenant-a
       - name: unsubscribe
         method: POST
-        route: /tenant-a/
+        route: /
         as: visitor
         auth: session
         form:
@@ -7406,7 +7410,7 @@ scenarios:
           siteid: tenant-a
       - name: master-subscribe
         method: POST
-        route: /tenant-a/
+        route: /
         as: visitor
         auth: session
         form:
@@ -7416,12 +7420,12 @@ scenarios:
           siteid: tenant-a
       - name: validate-member
         method: GET
-        route: /tenant-a/?doaction=validateMember&mlid=gs-ls-02-no-list&email=gs-ls-02-visitor@seed.opt2.test
+        route: /?doaction=validateMember&mlid=gs-ls-02-no-list&email=gs-ls-02-visitor@seed.opt2.test
         as: visitor
         auth: session
       - name: set-reminder
         method: POST
-        route: /tenant-a/?linkServID=${seed.page.contentID}
+        route: /?linkServID=${seed.page.contentID}
         as: visitor
         auth: session
         form:
@@ -7433,7 +7437,7 @@ scenarios:
         decisionListRef: page:setreminder
       - name: forward-email
         method: POST
-        route: /tenant-a/
+        route: /
         as: visitor
         auth: session
         form:
@@ -7445,12 +7449,12 @@ scenarios:
           siteid: tenant-a
       - name: return-click
         method: GET
-        route: /tenant-a/?doaction=return&emailID=gs-ls-02-no-email&email=gs-ls-02-visitor@seed.opt2.test
+        route: /?doaction=return&emailID=gs-ls-02-no-email&email=gs-ls-02-visitor@seed.opt2.test
         as: visitor
         auth: session
       - name: send-login
         method: POST
-        route: /tenant-a/?display=login
+        route: /?display=login
         as: visitor
         auth: session
         form:

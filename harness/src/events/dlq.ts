@@ -552,7 +552,7 @@ export async function runDlqCheck(deps: DlqDeps = {}): Promise<DlqResult> {
   // The probe guards only the emulator client built here; an injected client is the caller's to provide.
   if (pubsub === undefined) {
     const emulatorHost = childEnv.PUBSUB_EMULATOR_HOST;
-    if (!emulatorHost || !(await pubsubEmulatorAvailable())) {
+    if (!emulatorHost || !(await pubsubEmulatorAvailable().catch(() => false))) {
       evidence.failures.push('pubsub emulator unavailable');
       return { passed: false, evidence };
     }

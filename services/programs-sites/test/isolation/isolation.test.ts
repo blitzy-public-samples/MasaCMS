@@ -53,7 +53,7 @@ SELECT c.relname::text AS table, a.attname::text AS column,
   JOIN pg_namespace n ON n.oid = c.relnamespace
  WHERE n.nspname = $1 AND c.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped AND a.attnotnull AND NOT a.atthasdef`;
 
-const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const available = await pgAvailable();
 
 let schema: ThrowawaySchema | undefined;
 let required: RequiredColumns = new Map();

@@ -390,6 +390,11 @@ function percentDecode(s: string, cfml: boolean): string | undefined {
   return out;
 }
 
+/** The configBean context as the normalised path prefix {@link withoutContext} removes ('' for none). */
+function contextPrefix(context: string): string {
+  return context && context !== '/' ? `/${listToArray(context, '/').join('/')}` : '';
+}
+
 /** `path` without the normalised context `ctx` ('' for none), matched case-insensitively. */
 function withoutContext(path: string, ctx: string): string {
   if (ctx.length > 1 && (path.toLowerCase() === ctx.toLowerCase() || startsNoCase(path, `${ctx}/`))) {
@@ -416,7 +421,7 @@ function normalisePath(rawPath: string, context: string): NormalisedPath {
   const decoded = percentDecode(rawPath, false);
   let path = decoded ?? rawPath;
   if (!path.startsWith('/')) path = `/${path}`;
-  const ctx = context && context !== '/' ? `/${listToArray(context, '/').join('/')}` : '';
+  const ctx = contextPrefix(context);
   path = withoutContext(path, ctx);
   const served = withoutContext(servedPath(decoded ?? rawPath), ctx);
   // A path the container rejects never reaches CFML, so it gets no second decode.
@@ -867,11 +872,31 @@ function fixtureHttpMethod(req: RouteKeyRequest): string {
   return (override === undefined || override === '' ? req.method : override).toUpperCase();
 }
 
+/** api.cfm's path_info items of a raw path as the legacy forwarder and container dispatch it; undefined when api.cfm does not serve it. */
+function fixtureItems(rawPath: string, context: string): string[] | undefined {
+  const kept = listToArray(rawPath, '/\\').filter((s) => percentDecode(s, false) !== '.');
+  const segments = listToArray(withoutContext(`/${kept.join('/')}`, contextPrefix(context)), '/');
+  // Directory and script names resolve case-sensitively; only a directory segment drops its `;` parameters.
+  const directory = (n: number): string | undefined => percentDecode(nth(segments, n).split(';', 1)[0] ?? '', false);
+  if (directory(1) !== 'legacy-fixtures' || directory(2) !== 'cfml' || percentDecode(nth(segments, 3), false) !== 'api.cfm') {
+    return undefined;
+  }
+  const pathInfo = percentDecode(segments.slice(3).join('/'), false);
+  if (pathInfo === undefined) return undefined;
+  const items = listToArray(pathInfo, '/');
+  // The legacy forwarder refuses a decoded `..` segment, so legacy never serves one.
+  return items.includes('..') ? undefined : items;
+}
+
+/** A path_info item as api.cfm reads it (api.cfm:39-57): the id as sent, the tail as sent when a CF UUID, else lower-cased. */
+function fixtureSegment(item: string, at: number): string {
+  return at === 2 || at > 4 || (at === 4 && isCfUuid(item)) ? item : item.toLowerCase();
+}
+
 /** Fixture front controller paths `api.cfm/<module>/<resource>[/<id>][/<action>…]`; its site is the merged simple `siteid`. */
-function fixtureRoute(c: RouteContext): BaseRoute {
+function fixtureRoute(c: RouteContext, items: readonly string[]): BaseRoute {
   const { req } = c;
   const params = append(queryThenForm(req), isPlainObject(req.jsonBody) ? jsonMap(req.jsonBody) : new Map());
-  const items = listToArray(c.path.slice(FIXTURE_PREFIX.length), '/');
   const httpMethod = fixtureHttpMethod(req);
   const method = httpMethod.toLowerCase();
   const body = items.length < 2 ? '!notfound' : items.map((s, i) => (i < 2 ? s : i === 2 || isFixtureId(s) ? '{id}' : s)).join('/');
@@ -938,7 +963,8 @@ function baseRoute(c: RouteContext, indexAt: number, rootPath: string, served: s
   if (adminLength !== undefined) return adminRoute(c, adminLength);
   const last = nth(segments, segments.length).toLowerCase();
   if (last.endsWith('.cfc')) return cfcRoute(c);
-  if (startsNoCase(path, FIXTURE_PREFIX)) return fixtureRoute(c);
+  const fixture = fixtureItems(req.path, c.opts.context);
+  if (fixture !== undefined) return fixtureRoute(c, fixture);
   if (last.endsWith('.cfm')) return { family: 'cfm', body: path, params: queryThenForm(req) };
   const page = pageRoute(c, true);
   // A page path is rewritten to the root front controller (CommandBox framework-rewrite).
@@ -1056,6 +1082,12 @@ export function routeKeyForRequest(req: RouteKeyRequest, opts: RouteKeyOptions =
     resolved,
   );
   return { ...reload, afterReload: result };
+}
+
+/** The api.cfm path legacy dispatches a fixture request on, each item as api.cfm reads it; undefined outside the fixture front controller. */
+export function fixtureDispatchPath(path: string, opts: Pick<RouteKeyOptions, 'context'> = {}): string | undefined {
+  const items = fixtureItems(path, opts.context ?? '');
+  return items === undefined ? undefined : `${FIXTURE_PREFIX}${items.map((s, i) => encodeURIComponent(fixtureSegment(s, i))).join('/')}`;
 }
 
 /** The cut-over route a key resolves to; `undefined` means legacy. A variant never falls back to its base. */

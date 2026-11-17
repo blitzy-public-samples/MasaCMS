@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { TENANT_A, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
+import { CONTENT } from '../../src/repo/tables.js';
 import { adminDenial, type AdminDenial } from '../../src/routes/v1/access.js';
 import { carchRawActions } from '../../src/routes/v1/carch.js';
 import { cchangesetsRawActions } from '../../src/routes/v1/cchangesets.js';
@@ -89,6 +90,7 @@ const TOKEN = { 'x-csrf_token': 'T0KEN', 'x-csrf_token_expires': '26063023595900
 const SEEDS = contentSeed();
 const VERSION_READ = /AS approvalgroupid FROM "content"\."content" tcontent .* WHERE tcontent\.contenthistid = ANY/;
 const ACTIVE_READ = /AS approvalgroupid FROM "content"\."content" tcontent .* WHERE tcontent\.contentid = ANY/;
+const CRUMB_READ = /tfiles\.fileext, tapprovalassignments\.chainid, tapprovalassignments\.exemptid FROM "content"\."content" tcontent/;
 
 /** A seeded request of one raw action and what legacy answers it. */
 interface RawCase {
@@ -187,6 +189,15 @@ function seed(db: RecordingDb): void {
   ]);
   db.respond(/^SELECT tchangesets\.changesetid, tcontent\.contentid, tcontent\.contenthistid/, []);
   db.respond(/^SELECT tcontent\.siteid AS siteid, tcontent\.title AS title/, []);
+  // A crumb read of several walks keeps the rows of the ids it binds, which the table-wide seed answers ignore.
+  db.respond(CRUMB_READ, (params, _sql, { tenantId }) => boundRows(seededContent(tenantId), 'contentid')(params));
+}
+
+/** The seeded content versions of `tenantId` with the crumb select's joined columns. */
+function seededContent(tenantId: string | null): Json[] {
+  return SEEDS.filter((seed) => seed.tenant.tenantId.toLowerCase() === tenantId?.toLowerCase()).flatMap((seed) =>
+    seed.rows.filter((entry) => entry.table.table === CONTENT.table).map((entry) => ({ fileext: null, chainid: null, exemptid: null, ...entry.row })),
+  );
 }
 
 /** Rows whose `column` is one of the statement's bound ids, compared ignoring case. */

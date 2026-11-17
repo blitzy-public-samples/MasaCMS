@@ -84,9 +84,9 @@ Needs the stack `up.sh` recorded. A failing stage stops the later ones, except a
 | 4 Migration | Reconcile `after-backfill`; `golden:workload` through the gateway; feed and reconcile `after-feed-1`; each reconciling fault; snapshot `Sk`; `opt2-ops drain-and-suspend`; checkpoint `Ck` |
 | 5 Capture | `golden:capture` against legacy directly, plus the browser captures; reset legacy and target to `Ck`, verify, `opt2-ops resume` |
 | 6 Cut-over | `opt2-migrate transition --to v0002`, with GS-ID-09 crossing it; reconcile `post-cutover` |
-| 7 Equivalence and cross-cutting | `golden:replay`, the browser replay, `golden:compare`, `golden:coverage`; e2e suites for tenant isolation, seams, dead-letter replay, trace, roster protocol and the gateway authorisation matrix; `security:scan`; `infra/terraform/plan.sh`; `test:e2e -- performance/performance`; `report:isolation`, `report:events` |
+| 7 Equivalence and cross-cutting | `golden:replay`, the browser replay, `golden:compare`, `golden:coverage`; e2e suites for tenant isolation, seams, dead-letter replay, trace, roster protocol and the gateway authorisation matrix; `security:scan`; `infra/terraform/plan.sh`; `opt2-migrate window report`, then `test:e2e -- performance/performance`; `report:isolation`, `report:events` |
 | 8 Rollback | People-roster rehearsal: `opt2-migrate rollback-set`, transition to `v0003`, `rollback rebaseline`, `golden:replay -- --rehearsal`, feed, reconcile `rollback-after`, `golden:compare`, `rollback report` |
-| 9 Reports | `report:speed`, `check:reviewability`, `check:deck -- --render`, the migration service's `windows.json` and `transitions.json` |
+| 9 Reports | `opt2-migrate window report`, `report:speed`, `check:reviewability`, `check:deck -- --render`, the migration service's `windows.json` and `transitions.json` |
 
 ### `down.sh` and `clean-checkout-proof.sh`
 
@@ -132,7 +132,7 @@ Shared tooling: Pub/Sub emulator 8085, OTLP/HTTP 4318, Mailpit SMTP 1025 and API
 
 ### Native processes
 
-No Docker is used locally. `up.sh` starts every process natively; each package's `Dockerfile` is only its Cloud Run artefact. ColdFusion is started and restarted only through `repro/lib/legacy-start.sh`, with `MURA_PING=false`, `OPT2_BRIDGE_HMAC_KEY` and `OPT2_GATEWAY_ORIGIN` on the start command, so Masa never registers its site-monitor task itself.
+No Docker is used locally. `up.sh` starts every process natively; each package's `Dockerfile` is only its Cloud Run artefact. ColdFusion is started and restarted only through `repro/lib/legacy-start.sh`, with `MURA_PING=false`, `MURA_BROADCASTCLUSTERCOMMANDS=false`, `OPT2_BRIDGE_HMAC_KEY` and `OPT2_GATEWAY_ORIGIN` on the start command, so Masa never registers its site-monitor task itself and queues no cluster reload commands (the start-up guard on content units).
 
 ## Package
 

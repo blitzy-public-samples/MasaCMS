@@ -1,13 +1,13 @@
 /** cfeed admin routes: collection list, edit and remote-feed import, and the loadsite, siteparents and update raw actions (cfeed.cfc). */
 import { LegacyServiceUnavailableError, adminUrl, cfEq } from '@opt2/platform/legacy-compat';
-import { legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import { legacyParamsOf, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import type { Actor } from '../../domain/context.js';
 import {
   FeedElementUndefinedError,
   FeedParamsQuery,
   defaultFetchRemote,
-  listFeeds,
   previewFeedImport,
+  readFeedBatches,
   updateFeedAction,
   type FeedBean,
   type FetchRemote,
@@ -16,6 +16,7 @@ import { ADMIN_VIEW_CONTENT_TYPE, type AdminRenderResult } from '../../legacy/ad
 import type { components } from '../../generated/openapi.js';
 import type { ContentRouteContext } from '../index.js';
 import { adminRedirect, circuitRouteConfig, csrfRejected, requireCircuitAccess } from './access.js';
+import { VIEW_MODEL_CONTENT_TYPE, streamModel } from './streamed-model.js';
 
 /** The route context these routes read; `fetchRemote` replaces the domain's single, unretried GET of a remote feed. */
 export interface FeedAdminRouteContext extends ContentRouteContext {
@@ -106,11 +107,14 @@ export const cfeedRawActions = {
   },
 } satisfies Readonly<Record<string, FeedRawAction>>;
 
-/** cfeed.list (cfeed.cfc:106-109): the site's Local and Remote collections. */
-async function listView(request: FastifyRequest<SiteRoute>, ctx: FeedAdminRouteContext): Promise<AdminView> {
+/** cfeed.list (cfeed.cfc:106-109): the site's Local and Remote collections, streamed batch by batch. */
+async function listView(request: FastifyRequest<SiteRoute>, reply: FastifyReply, ctx: FeedAdminRouteContext): Promise<FastifyReply> {
   const actor = await requireCircuitAccess(request, ctx, 'cfeed', request.params.siteid);
-  const { rsLocal, rsRemote } = await listFeeds(ctx.domain, actor, request.params.siteid);
-  return { rc: { rsLocal, rsRemote } };
+  const body = await streamModel(['rsLocal', 'rsRemote'], (out) => {
+    out.head((slot) => ({ rc: { rsLocal: slot.rsLocal, rsRemote: slot.rsRemote } }));
+    return readFeedBatches(ctx.domain, actor, request.params.siteid, (list, feeds) => out.batch(list, feeds));
+  });
+  return reply.type(VIEW_MODEL_CONTENT_TYPE).send(body);
 }
 
 /** cfeed.edit (cfeed.cfc:111-115): refused after the gate, as its model needs site values this service does not hold. */
@@ -129,7 +133,7 @@ async function importView(request: FastifyRequest<FeedRoute>, ctx: FeedAdminRout
 
 /** Registers `listFeeds`, `getFeed` and `previewFeedImport`; cfeed.import2 is withheld and stays on legacy. */
 export async function registerFeedAdminRoutes(app: FastifyInstance, ctx: FeedAdminRouteContext): Promise<void> {
-  app.get<SiteRoute>('/v1/sites/:siteid/feeds', { config: circuitRouteConfig('cfeed') }, (request) => listView(request, ctx));
+  app.get<SiteRoute>('/v1/sites/:siteid/feeds', { config: circuitRouteConfig('cfeed') }, (request, reply) => listView(request, reply, ctx));
   app.get<FeedRoute>('/v1/sites/:siteid/feeds/:feedid', { config: circuitRouteConfig('cfeed') }, (request) => editView(request, ctx));
   app.get<FeedRoute>('/v1/sites/:siteid/feeds/:feedid/import', { config: circuitRouteConfig('cfeed') }, (request) => importView(request, ctx));
 }

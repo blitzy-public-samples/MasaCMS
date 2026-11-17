@@ -180,8 +180,7 @@ function namesOf(res: Answer): unknown[] {
 
 registerLegacyApiState();
 
-// An unset PG_HOST skips the suite without probing the server.
-const available = process.env.PG_HOST === undefined ? false : await pgAvailable();
+const available = await pgAvailable();
 
 describe.skipIf(!available)('JSON API against PostgreSQL', () => {
   const people = recordingPeople();
@@ -678,17 +677,30 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
       expect(namesOf(res).sort()).toEqual([...expected].sort());
     });
 
-    it.each([
-      ['a%a%a%a%a%a%a%a%a%b', 'begins^a%a%a%a%a%a%a%a%a%b'],
-      ['a long %a%a…%b', `*${'a*'.repeat(100)}b`],
-    ])('answers the backtracking pattern %s against a 255-character run of a quickly with no match', async (_label, criteria) => {
+    /** Milliseconds {@link queryByName} takes for `criteria`, asserting that it selects no group. */
+    async function timeEmptyQuery(criteria: string): Promise<number> {
       const started = performance.now();
       const res = await queryByName(criteria);
       const elapsed = performance.now() - started;
 
       expect(res.statusCode).toBe(200);
       expect(namesOf(res)).toEqual([]);
-      expect(elapsed).toBeLessThan(500);
+      return elapsed;
+    }
+
+    it.each([
+      ['a%a%a%a%a%a%a%a%a%b', 'begins^a%a%a%a%a%a%a%a%a%b'],
+      ['a long %a%a…%b', `*${'a*'.repeat(100)}b`],
+    ])('answers the backtracking pattern %s against a 255-character run of a with no match within a constant factor of a single-wildcard pattern', async (_label, criteria) => {
+      const oneWildcard: number[] = [];
+      const backtracking: number[] = [];
+      for (let run = 0; run < 3; run++) {
+        oneWildcard.push(await timeEmptyQuery('ends^z'));
+        backtracking.push(await timeEmptyQuery(criteria));
+      }
+
+      // The fastest of interleaved runs sheds host-load stalls; exponential backtracking exceeds any constant factor.
+      expect(Math.min(...backtracking)).toBeLessThan(10 * Math.min(...oneWildcard) + 100);
     });
   });
 

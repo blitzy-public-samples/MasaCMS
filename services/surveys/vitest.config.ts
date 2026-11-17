@@ -4,6 +4,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
+    setupFiles: ['test/helpers/throwaway-sweep.ts'],
     environment: 'node',
     // Throwaway PostgreSQL schemas and 30 s unit-gate waits need the longer limits.
     testTimeout: 30_000,

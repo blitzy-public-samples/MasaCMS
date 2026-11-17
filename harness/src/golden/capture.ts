@@ -7,6 +7,7 @@ import {
   FIXTURES_UNAVAILABLE,
   SCENARIO_ID_PATTERN,
   STEP_EXPECTATIONS,
+  isRehearsalScenario,
   loadCatalogue,
   readFixtureStatus,
   scenarioById,
@@ -731,25 +732,34 @@ const HELP = [
   '',
   'Captures every catalogue scenario (or --only those) against legacy directly and writes',
   `${GOLDEN_SETS_DIR}/<id>.json, plus the raw exchanges under \${OPT2_STATE_DIR}/golden/raw/.`,
+  'Scenarios run in replay order: catalogue order, with the rollback-rehearsal (GS-PE-RH) scenarios last.',
 ].join('\n');
 
 /** Collaborators of {@link main} beyond the environment. */
 export type MainDeps = Pick<CaptureDeps, 'fetch' | 'secrets' | 'seed' | 'sideEffects' | 'clock' | 'logger'>;
 
-/** Scenarios `--only` names, in catalogue order; every id must exist. */
+/** `scenarios` in replay order: the others, then the rollback-rehearsal ones, each part in catalogue order. */
+function replayOrder(scenarios: readonly Scenario[]): Scenario[] {
+  return [
+    ...scenarios.filter((scenario) => !isRehearsalScenario(scenario.id)),
+    ...scenarios.filter((scenario) => isRehearsalScenario(scenario.id)),
+  ];
+}
+
+/** Every scenario, or those `--only` names, in replay order; every id must exist. */
 function selectedScenarios(catalogue: Catalogue, only: string | undefined): Scenario[] {
-  if (only === undefined) return [...catalogue.scenarios];
+  if (only === undefined) return replayOrder(catalogue.scenarios);
   const ids = only
     .split(',')
     .map((id) => id.trim())
     .filter((id) => id !== '');
   if (ids.length === 0) throw new UsageError('--only needs at least one scenario id', USAGE);
   const wanted = new Set(ids.map((id) => scenarioById(catalogue, id).id));
-  return catalogue.scenarios.filter((scenario) => wanted.has(scenario.id));
+  return replayOrder(catalogue.scenarios.filter((scenario) => wanted.has(scenario.id)));
 }
 
 /**
- * Captures the selected scenarios in catalogue order, continuing past a failed one; exit 1 when any failed.
+ * Captures the selected scenarios in replay order, continuing past a failed one; exit 1 when any failed.
  * Summary: `{captured, skipped, browser, gaps, failed}` (counts, gap exception ids, failed ids with their errors).
  */
 export async function main(argv: string[], env: EnvLike = process.env, deps: MainDeps = {}): Promise<CliOutcome> {

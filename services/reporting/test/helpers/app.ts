@@ -99,12 +99,18 @@ function processZone(): string {
   return process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
-/** Environment of a test app; the JWKS URL is never fetched, as the test verifier replaces the remote key set. */
+/** Environment of a test app; the JWKS URL is never fetched, as the test verifier replaces the remote key set, and the database settings are never connected to, as every test app injects its pool. */
 export function testEnv(stateDir: string): BaseEnv {
   return loadEnv(reportingEnvSchema, {
     PORT: '8116',
     OPT2_SERVICE_NAME: SERVICE,
     OPT2_ENV: 'local',
+    OPT2_DB_AUTH: 'password',
+    PG_HOST: '127.0.0.1',
+    PG_PORT: '5432',
+    PG_DATABASE: 'opt2',
+    PG_USER: 'reporting_app',
+    PG_PASSWORD: 'unused',
     OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
     OPT2_TOKEN_ISSUER: 'opt2-local-identity',
     OPT2_TOKEN_AUDIENCE: 'opt2-local',

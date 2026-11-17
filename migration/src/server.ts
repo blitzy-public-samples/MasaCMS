@@ -6,7 +6,7 @@ import type { TenantDb } from '@opt2/platform/tenancy';
 
 import { createMigrationContext, type CreateContextOptions, type MigrationContext } from './context.js';
 import { preloadCutover } from './cutover/index.js';
-import { assertSqlServerSource, loadMigrationEnv, type MigrationEnv } from './env.js';
+import { assertSqlServerSource, loadMigrationServerEnv, type MigrationEnv } from './env.js';
 import { createFaultRegistry } from './faults/index.js';
 import type { BridgeClient } from './legacy/bridge.js';
 import { createBackgroundState } from './quiesce/background.js';
@@ -212,7 +212,7 @@ async function closePartialApp(app: FastifyInstance, ctx: MigrationContext | und
 
 /** Builds and readies the migration service app with every contract route registered; never listens. */
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const env = options.env ?? loadMigrationEnv();
+  const env = options.env ?? loadMigrationServerEnv();
   // Checked before createService opens a pool, so an unsupported legacy source fails without leaking one.
   assertSqlServerSource(env);
   const clock = options.clock ?? systemClock;

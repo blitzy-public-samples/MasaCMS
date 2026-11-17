@@ -15,6 +15,7 @@ import {
   WINDOW_FLAG_THRESHOLD_MS,
   appendLogEntry,
   readLogEntries,
+  rewriteLogEntries,
   summariseWindows,
   upsertLogEntry,
   type RunLogFile,
@@ -652,6 +653,46 @@ describe('run logs', () => {
       expect(rest(doc)).toEqual(rest(placeholder));
     },
   );
+
+  it('rewrites the committed windows.json placeholder once with the rebuilt collection, redacted, keeping its other keys', async () => {
+    const target = await makeTarget(OTHER_SHA);
+    await copyFile(path.join(REPO_REPORTS_DIR, 'windows.json'), path.join(target.reportsDir, 'windows.json'));
+    const placeholder = await readDoc(target.reportsDir, 'windows.json');
+    const rebuild = vi.fn((entries: unknown[]) => [...entries, windowEntry('W1', { durationMs: 6000, outcome: 'closed' }), windowEntry(`W:${EMAIL}`)]);
+
+    await rewriteLogEntries(target, 'windows.json', rebuild, { clock: fixedClock(FIXED_AT) });
+
+    const doc = await readDoc(target.reportsDir, 'windows.json');
+    expect(rebuild).toHaveBeenCalledExactlyOnceWith([]);
+    expect(Object.keys(doc)).toEqual(Object.keys(placeholder));
+    expect(doc).toMatchObject({
+      sourceSha: OTHER_SHA,
+      generatedBy: 'migration/src/windows/',
+      generatedAt: FIXED_AT,
+      status: 'recorded',
+      unitIds: placeholder.unitIds,
+      flagThresholdMs: WINDOW_FLAG_THRESHOLD_MS,
+      summary: { count: 2, byOutcome: { closed: 1, open: 1 }, overThreshold: 1 },
+    });
+    expect(await windowIds(target.reportsDir)).toEqual(['W1', digestOf(`W:${EMAIL}`)]);
+    expect(await readFile(path.join(target.reportsDir, 'windows.json'), 'utf8')).not.toContain(EMAIL);
+  });
+
+  it('hands a rewrite the entries as written, after every call queued ahead of it and before every later one', async () => {
+    const target = await makeTarget();
+    const seen: unknown[] = [];
+    const first = appendLogEntry(target, 'windows.json', windowEntry(`W:${EMAIL}`));
+    const rewrite = rewriteLogEntries(target, 'windows.json', (entries) => {
+      seen.push(...entries.map((entry) => (entry as WindowLogEntry).windowId));
+      return [windowEntry('B'), ...entries];
+    });
+    const last = appendLogEntry(target, 'windows.json', windowEntry('C'));
+    await Promise.all([first, rewrite, last]);
+
+    expect(seen).toEqual([digestOf(`W:${EMAIL}`)]);
+    expect(await windowIds(target.reportsDir)).toEqual(['B', digestOf(`W:${EMAIL}`), 'C']);
+    expect(await tempFiles(target.reportsDir)).toEqual([]);
+  });
 
   it('creates windows.json with the flag threshold and a summary', async () => {
     const target = await makeTarget();

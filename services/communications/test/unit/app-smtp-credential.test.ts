@@ -1,9 +1,10 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** SMTP_CREDENTIAL: required in the cloud, optional locally, and handed by buildApp to the SMTP transport before createService. */
+/** SMTP_CREDENTIAL: required in the cloud, optional locally, refused when malformed, and handed by buildApp to the SMTP transport before createService. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { serializeError } from '@opt2/platform/logging';
 import { EnvValidationError, createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { createCapturingPublisher, testVerifier } from '@opt2/platform/testing';
-import { buildApp, communicationsEnvSchema } from '../../src/app.js';
+import { buildApp, communicationsEnvSchema, type CommunicationsEnv } from '../../src/app.js';
 import { SMTP_TIMEOUT_MS } from '../../src/domain/mail-transport.js';
 import {
   TEST_CLOCK,
@@ -31,10 +32,10 @@ vi.mock('@opt2/platform/service-kit', async (importOriginal) => {
 type Overrides = Readonly<Record<string, string | undefined>>;
 
 const CLOUD_REQUIRED = 'SMTP_CREDENTIAL: is required when OPT2_ENV=cloud';
+const MALFORMED = 'SMTP_CREDENTIAL: must be JSON with a non-empty user and pass';
+const MALFORMED_CREDENTIALS = ['c0-not-json-secret', '{"user":"comms-user"}', '{"user":"","pass":"comms-pass"}'];
 const AUTH = { user: 'comms-user', pass: 'comms-pass' };
 const CREDENTIAL = JSON.stringify(AUTH);
-const CREDENTIAL_FORMAT_ERROR =
-  'communications-smtp secret must be JSON {"user":"<non-empty string>","pass":"<non-empty string>"}';
 const TIMEOUTS = { connectionTimeout: SMTP_TIMEOUT_MS, greetingTimeout: SMTP_TIMEOUT_MS, socketTimeout: SMTP_TIMEOUT_MS };
 
 /** A cloud-mode communications environment meeting every cross-variable rule; an override wins, `undefined` removes. */
@@ -50,6 +51,11 @@ function cloudSource(overrides: Overrides = {}): NodeJS.ProcessEnv {
     GOOGLE_CLOUD_PROJECT: 'opt2-test',
     OPT2_TOKEN_ISSUER: 'https://securetoken.google.com/opt2-test',
     OPT2_TOKEN_AUDIENCE: 'opt2-test',
+    OPT2_SERVICE_URLS: JSON.stringify({
+      communications: 'https://communications.run.app',
+      identity: 'https://identity.run.app',
+      surveys: 'https://surveys.run.app',
+    }),
     OPT2_STATE_DIR: '/srv/opt2/state',
     OPT2_TASKS_ADAPTER: 'cloud',
     OPT2_STORAGE_ADAPTER: 'cloud',
@@ -74,12 +80,12 @@ function envIssues(source: NodeJS.ProcessEnv): string[] {
 
 const stateDirs: string[] = [];
 
-/** Builds the app over test fakes for every port but the mail transport, which buildApp creates from `overrides`. */
-async function buildWith(overrides: Overrides): Promise<FastifyInstance> {
+/** Builds the app over test fakes for every port but the mail transport, which buildApp creates from `overrides`; `unparsed` bypasses the schema. */
+async function buildWith(overrides: Overrides, unparsed: Partial<CommunicationsEnv> = {}): Promise<FastifyInstance> {
   const env = await testEnv(overrides);
   stateDirs.push(env.OPT2_STATE_DIR);
   return buildApp({
-    env,
+    env: { ...env, ...unparsed },
     clock: TEST_CLOCK,
     verifierOverride: testVerifier(),
     db: createRecordingDb(),
@@ -114,6 +120,12 @@ describe('SMTP_CREDENTIAL in communicationsEnvSchema', () => {
       contains: [expect.stringMatching(/^OPT2_ENV: /)],
       absent: [CLOUD_REQUIRED],
     },
+    {
+      label: 'a malformed SMTP_CREDENTIAL',
+      overrides: { SMTP_CREDENTIAL: 'c0-not-json-secret' },
+      contains: [MALFORMED],
+      absent: [CLOUD_REQUIRED],
+    },
   ])('reports the issues of a cloud environment with $label', ({ overrides, contains, absent }) => {
     const issues = envIssues(cloudSource(overrides));
 
@@ -133,6 +145,22 @@ describe('SMTP_CREDENTIAL in communicationsEnvSchema', () => {
 
     expect(env.OPT2_ENV).toBe(mode);
     expect(env.SMTP_CREDENTIAL).toBe(expected);
+  });
+
+  it.each(MALFORMED_CREDENTIALS)('refuses the malformed SMTP_CREDENTIAL %j, naming the variable and never the value', async (credential) => {
+    const failure = await testEnv({ SMTP_CREDENTIAL: credential }).then(
+      (env) => {
+        stateDirs.push(env.OPT2_STATE_DIR);
+        return undefined;
+      },
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(EnvValidationError);
+    expect((failure as EnvValidationError).issues).toStrictEqual([MALFORMED]);
+    const record = serializeError(failure);
+    expect(record.message).toBe(`communications: invalid environment (${MALFORMED})`);
+    expect(`${(failure as Error).message}\n${record.stack ?? ''}`).not.toContain(credential);
   });
 });
 
@@ -154,10 +182,10 @@ describe('buildApp SMTP transport', () => {
     expect(mailer.close).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['c0-not-json-secret', '{"user":"comms-user"}', '{"user":"","pass":"comms-pass"}'])(
-    'rejects the malformed SMTP_CREDENTIAL %j before createService runs, without echoing it',
+  it.each(MALFORMED_CREDENTIALS)(
+    'rejects an unparsed malformed SMTP_CREDENTIAL %j before createService runs, naming the variable without echoing it',
     async (credential) => {
-      const failure = await buildWith({ SMTP_CREDENTIAL: credential }).then(
+      const failure = await buildWith({}, { SMTP_CREDENTIAL: credential }).then(
         async (app) => {
           await app.close();
           return undefined;
@@ -165,8 +193,8 @@ describe('buildApp SMTP transport', () => {
         (error: unknown) => error,
       );
 
-      expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toBe(CREDENTIAL_FORMAT_ERROR);
+      expect(failure).toBeInstanceOf(EnvValidationError);
+      expect(serializeError(failure).message).toBe(`communications: invalid environment (${MALFORMED})`);
       expect((failure as Error).message).not.toContain(credential);
       expect(vi.mocked(createService)).not.toHaveBeenCalled();
       expect(mailer.createTransport).not.toHaveBeenCalled();

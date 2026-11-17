@@ -43,6 +43,7 @@ import {
 import {
   EnvValidationError,
   RequestAbortedError,
+  abandonOnDisconnect,
   csrfPreHandler,
   multipartFilesOf,
   sendLegacyResponse,
@@ -114,6 +115,12 @@ const PATH_METHODS: ReadonlyMap<string, string> = new Map([
 
 /** Entity-generic operations an entity handler may serve. */
 type GenericOperation = Exclude<keyof EntityHandler, 'entity' | 'config'>;
+
+/** Entity operations that write nothing, whose calls stop between reads once the client disconnects. */
+const READ_OPERATIONS: ReadonlySet<GenericOperation> = new Set(['findOne', 'findMany', 'findAll', 'findNew', 'findQuery', 'findProperties', 'findPermissions']);
+
+/** Public methods that write nothing, whose calls stop between reads once the client disconnects. */
+const READ_METHODS: ReadonlySet<string> = new Set(['findCrumbArray', 'findVersionHistory', 'findRelatedContent', 'findCalendarItems', 'getURLForImage']);
 
 /** configBean and settings values the endpoint URL, the route key, the CORS allow-list and the site URLs read. */
 export interface JsonApiLegacySettings {
@@ -709,15 +716,16 @@ function siteSettingsOf(entry: TenantRegistryEntry, urls: LegacySiteUrlConfig): 
   };
 }
 
-/** The request's spooled upload parts, read into memory for the domain's file writes. */
-async function uploadsOf(request: FastifyRequest): Promise<UploadedFile[]> {
-  const files: UploadedFile[] = [];
-  for (const part of multipartFilesOf(request)) {
-    const chunks: Buffer[] = [];
-    for await (const chunk of part.stream()) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
-    files.push({ fieldName: part.field, fileName: part.filename, contentType: part.mimetype, bytes: Buffer.concat(chunks) });
-  }
-  return files;
+/** The request's spooled upload parts, each with its size, hash and stream factory for the domain's file writes. */
+function uploadsOf(request: FastifyRequest): UploadedFile[] {
+  return multipartFilesOf(request).map((part) => ({
+    fieldName: part.field,
+    fileName: part.filename,
+    contentType: part.mimetype,
+    size: part.size,
+    sha256: part.sha256,
+    stream: () => part.stream(),
+  }));
 }
 
 /** `$.validateCSRFTokens(context)`: identity validates and consumes the request's token, once. */
@@ -798,7 +806,7 @@ async function callOf(resolved: ResolvedJsonApiCall, scope: CallScope): Promise<
   const save = resolved.target.kind === 'entity' && resolved.target.operation === 'save';
   // save's and delete's `var csrfcontext=arguments.id`, save's id defaulting to `new` (jsonApiUtility.cfc:1903-1906, 3259-3262).
   const csrfContext = resolved.id ?? (save ? 'new' : '');
-  const files = save && multipartFilesOf(request).length > 0 ? await uploadsOf(request) : undefined;
+  const files = save && multipartFilesOf(request).length > 0 ? uploadsOf(request) : undefined;
   return {
     mode: resolved.mode,
     family: resolved.family,
@@ -996,6 +1004,7 @@ export function registerJsonApiRoutes(
     // The token's tenant; a browser call without a session token is anonymous in the verified registry's tenant of its site.
     const tenantId = user?.tid ?? site.tenantId;
     const scope: CallScope = { request, reply, ctx, settings, tenantId, site, apiSite, sites };
+    if (target.kind === 'entity' ? READ_OPERATIONS.has(target.operation) : READ_METHODS.has(target.name)) abandonOnDisconnect(request);
     return sendLegacyResponse(reply, await dispatch(resolved, target.fn, scope));
   }
 

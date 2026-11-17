@@ -179,6 +179,7 @@ describe('transitionStart', () => {
     ['same-version', 'v0002 is already the active cut-over version'],
     ['previous-mismatch', 'v0003 follows v0002, but the active version is v0001'],
     ['opt2-sync-unavailable', 'The legacy database has no opt2_sync.projector_checkpoint, so people.person cannot become target-authoritative'],
+    ['cluster-unsafe', 'content.variation_targeting cannot become target-authoritative while cluster reload commands may reach legacy: the legacy database holds 2 tclustercommands rows'],
   ] as const)('answers the %s precondition with the legacy 409 and its message', async (code, message) => {
     transitions.start.mockRejectedValueOnce(new TransitionPreconditionError(code, message));
 

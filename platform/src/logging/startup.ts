@@ -10,6 +10,8 @@ export interface StartupFailureOptions {
   source?: NodeJS.ProcessEnv;
   /** Output stream; defaults to stdout. */
   destination?: DestinationStream;
+  /** The line's message; defaults to `start-up failed`. */
+  message?: string;
 }
 
 /** Logger at the default level: `cloud` when the source selects it with a usable project, otherwise `local`. */
@@ -25,10 +27,10 @@ function startupLogger(options: StartupFailureOptions): Logger {
   return createLogger({ service, version, env: 'local', destination });
 }
 
-/** Writes `err` as one safe log-record.v1 ERROR line, `start-up failed`, and resolves once the destination has flushed it. */
+/** Writes `err` as one safe log-record.v1 ERROR line, `start-up failed` unless `options.message` names another, and resolves once the destination has flushed it. */
 export async function logStartupFailure(err: unknown, options: StartupFailureOptions): Promise<void> {
   const logger = startupLogger(options);
-  logger.error({ error: serializeError(err) }, 'start-up failed');
+  logger.error({ error: serializeError(err) }, options.message ?? 'start-up failed');
   await new Promise<void>((resolve) => {
     logger.flush(() => resolve());
   });

@@ -1,5 +1,6 @@
 // Composition root of the admin entry points: authentication, request context, access gate, screen dispatch, session
 // persistence and each response mode's legacy answer (server-only).
+import { Readable } from 'node:stream';
 import { LegacyServiceUnavailableError, cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
 import { requestIdFrom, systemClock } from '@opt2/platform/service-kit';
 import {
@@ -23,7 +24,13 @@ import {
 import { deniedGate, runGate, type ScreenGate } from './access-gate';
 import { WebAuthError, authenticateRequest, type WebAuth } from './auth';
 import { createCsrfRenderer } from './csrf';
-import { GatewayDenialError, createGatewayClient } from './gateway-client';
+import {
+  GatewayDenialError,
+  createGatewayClient,
+  discardStreamed,
+  streamedCallOf,
+  type StreamedCall,
+} from './gateway-client';
 import { isSafeHtml, toString as markupOf } from './html';
 import {
   assignContext,
@@ -36,7 +43,7 @@ import {
   type RequestContext,
 } from './request-context';
 import { receiveRequestBody, type ReceivedBody } from './request-body';
-import { rbFor } from './resource-bundles/rb';
+import { adminRbFor } from './resource-bundles/rb';
 import {
   downloadResponse,
   fw1Redirect,
@@ -45,9 +52,18 @@ import {
   legacyUnavailable,
   notFound,
   withSetCookies,
+  type DownloadSource,
   type LegacyResponseContext,
 } from './responses';
-import { headersToRecord, logRequest, markPipelineRequest, withRequestSpan } from './telemetry';
+import {
+  headersToRecord,
+  logRequest,
+  logTransferEnd,
+  markPipelineRequest,
+  withRequestSpan,
+  type TransferEnd,
+  type TransferLogFields,
+} from './telemetry';
 import { fw1RedirectTarget } from './urls';
 
 /** Path params of the admin trees: the route key's circuit and action. */
@@ -79,7 +95,42 @@ interface Answers<T> {
   refused(status: 401 | 403): T;
   /** Status the request is logged with. */
   statusOf(answer: T): number;
+  /** Releases an answer that will not be sent, ending any service stream it relays. */
+  abandon(answer: T): void;
+  /** Sends `answer` on its way: a service stream it relays reports an early end through `report`. */
+  handOver(answer: T, report: TransferReport): void;
 }
+
+/** A relayed stream's early end, when it was observed and the service call the stream answers. */
+interface EndedTransfer {
+  readonly end: TransferEnd;
+  readonly at: number;
+  readonly callee: StreamedCall | undefined;
+}
+
+type TransferReport = (ended: EndedTransfer) => void;
+
+/** One relayed stream's transfer: its first early end is reported once, and only after its answer was handed over. */
+class Transfer {
+  private ended: EndedTransfer | undefined;
+  private report: TransferReport | undefined;
+
+  constructor(private readonly callee: StreamedCall | undefined) {}
+
+  end(end: TransferEnd): void {
+    if (this.ended !== undefined) return;
+    this.ended = { end, at: performance.now(), callee: this.callee };
+    this.report?.(this.ended);
+  }
+
+  handOver(report: TransferReport): void {
+    this.report = report;
+    if (this.ended !== undefined) report(this.ended);
+  }
+}
+
+/** The transfer of each response body {@link responseStreamOf} builds. */
+const transfers = new WeakMap<ReadableStream<Uint8Array>, Transfer>();
 
 const RESPONSE_ANSWERS: Answers<Response> = {
   redirect: (location, setCookies, context) => fw1Redirect(location, { setCookies, context }),
@@ -87,6 +138,12 @@ const RESPONSE_ANSWERS: Answers<Response> = {
   unavailable: (context) => legacyUnavailable(context),
   refused: (status) => new Response(null, { status }),
   statusOf: (response) => response.status,
+  // Never handed out, so its body is unlocked. A body whose upstream already failed rejects the cancellation with that
+  // failure, which its transfer recorded and an abandoned answer never reports.
+  abandon: (response) => void response.body?.cancel().catch(() => undefined),
+  handOver: (response, report) => {
+    if (response.body !== null) transfers.get(response.body)?.handOver(report);
+  },
 };
 
 /** One admin request as an entry point received it. */
@@ -96,6 +153,8 @@ interface PipelineRequest {
   readonly route: AdminRouteParams;
   readonly method: string;
   readonly path: string;
+  /** The query as received, `?` included; `''` without one. */
+  readonly search: string;
   readonly headers: Headers;
   readonly searchParams: AdminRequestInput['searchParams'];
   /** The request whose body is the form scope; absent in page mode, which never carries one. */
@@ -145,8 +204,9 @@ function answerFailure<T>(
 
 /**
  * Authenticates, builds the request context, resolves and gates the screen, runs it, persists the session writes in
- * one identity call and writes the request's one log line in its span. Unavailability, refused credentials and service
- * denials become `answers` and persist nothing; any other error is logged and rethrown. A staged body is then removed.
+ * one identity call and writes the request's one log line in its span, then hands the answer over. Unavailability,
+ * refused credentials and service denials become `answers` and persist nothing; any other error is logged and rethrown.
+ * A staged body is then removed.
  */
 async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>, resolve: Resolve<T>): Promise<T> {
   markPipelineRequest();
@@ -159,37 +219,42 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
   let failure: unknown;
   let denial: string | undefined;
   let logged = false;
+  const lineFields = (endedAt: number): TransferLogFields => ({
+    route,
+    httpMethod: input.method,
+    statusCode,
+    latencyMs: Math.round(endedAt - started),
+    requestId,
+    userId: user?.sub || undefined,
+    tenantId: user?.tid,
+  });
   // Called in the request span, so the line carries its trace fields; again outside it only if the span never ran.
   const logOnce = (): void => {
     if (logged) return;
     logged = true;
-    logRequest({
-      route,
-      httpMethod: input.method,
-      statusCode,
-      latencyMs: Math.round(performance.now() - started),
-      requestId,
-      userId: user?.sub || undefined,
-      tenantId: user?.tid,
-      denial,
-      error: failure,
-    });
+    logRequest({ ...lineFields(performance.now()), denial, error: failure });
   };
+  // The request's line reported the answer at handover; a relayed stream that ends early afterwards gets its own.
+  const reportTransfer: TransferReport = ({ end, at, callee }) => logTransferEnd(lineFields(at), callee, end);
   const answerRequest = async (): Promise<T> => {
     let received: ReceivedBody | undefined;
+    let outcome: Outcome<T> | undefined;
     try {
       const auth = await authenticateRequest(input.headers, input.path);
       user = auth.user;
       received = input.bodySource === undefined ? undefined : await receiveRequestBody(input.bodySource);
       const gateway = createGatewayClient({ userToken: auth.userToken, requestId, inbound: input.headers });
+      const now = systemClock.now();
       const req = await buildAdminRequest({
         params: input.route,
         searchParams: input.searchParams,
+        receivedTarget: `${input.path}${input.search}`,
         headers: input.headers,
         form: received?.form,
         auth,
         gateway,
         mode: input.mode,
+        now,
       });
       context = { locale: req.session.locale, acceptEncoding: context.acceptEncoding };
       const dispatch = resolve(req, received === undefined ? [] : uploadsOf(received.form));
@@ -198,13 +263,13 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
         req,
         gateway,
         csrf: createCsrfRenderer(gateway),
-        rb: rbFor(req.session.rb),
+        rb: adminRbFor(req.session.rb),
         hooks: shellHooks,
-        now: systemClock.now(),
+        now,
         body: received?.body,
       };
       const decision = await runGate(req, dispatch.gate);
-      const outcome: Outcome<T> =
+      outcome =
         decision.kind === 'redirect'
           ? { answer: answers.redirect(decision.location, req.pendingSetCookies, context) }
           : await dispatch.run(ctx, context);
@@ -212,6 +277,7 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
       await saveSessionWrites(gateway, auth, { ...ctx.req.sessionWrites, ...outcome.writes });
       return outcome.answer;
     } catch (error) {
+      if (outcome !== undefined) answers.abandon(outcome.answer);
       // An unmapped error is rethrown here and recorded as the failure by the span's handler.
       const mapped = answerFailure(error, answers, context);
       if (mapped.denial === undefined) failure = error;
@@ -223,7 +289,7 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
     }
   };
   try {
-    return await withRequestSpan(input.method, route, input.headers, async (recordStatus) => {
+    const handedOver = await withRequestSpan(input.method, route, input.headers, async (recordStatus) => {
       try {
         const answer = await answerRequest();
         statusCode = answers.statusOf(answer);
@@ -236,6 +302,8 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
         logOnce();
       }
     });
+    answers.handOver(handedOver, reportTransfer);
+    return handedOver;
   } catch (error) {
     failure = error;
     throw error;
@@ -270,7 +338,43 @@ function documentResponse(
 
 type RawMode = 'fragment' | 'json' | 'download';
 
-/** A bare body with the legacy headers: markup and JSON text as given, bytes and downloads passed through. */
+/**
+ * `stream` as a response body read as the client reads it; cancelling the body destroys `stream`, ending its call. An
+ * upstream error or a cancellation ends the body's {@link Transfer}.
+ */
+function responseStreamOf(stream: Readable): ReadableStream<Uint8Array> {
+  // Pulled through the async iterator, which reads nothing once `stream` is destroyed; `Readable.toWeb` can still
+  // enqueue a buffered chunk after cancellation, which throws outside any caller.
+  const chunks = stream[Symbol.asyncIterator]();
+  const transfer = new Transfer(streamedCallOf(stream));
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      let next: IteratorResult<unknown>;
+      try {
+        next = await chunks.next();
+      } catch (error) {
+        transfer.end({ kind: 'failed', error });
+        throw error;
+      }
+      if (next.done === true) controller.close();
+      else controller.enqueue(next.value as Uint8Array);
+    },
+    cancel: () => {
+      transfer.end({ kind: 'cancelled' });
+      discardStreamed(stream);
+    },
+  });
+  transfers.set(body, transfer);
+  return body;
+}
+
+/** A passed-through body: a stream relayed as it arrives, markup as its text, anything else as given. */
+function passthroughBody(body: RawBody['body']): DownloadSource['body'] {
+  if (body instanceof Readable) return responseStreamOf(body);
+  return isSafeHtml(body) ? markupOf(body) : body;
+}
+
+/** A bare body with the legacy headers: markup and JSON text as given, bytes, streams and downloads passed through. */
 function rawResponse(
   raw: RawBody,
   mode: RawMode,
@@ -280,8 +384,8 @@ function rawResponse(
   const status = raw.status ?? 200;
   const headers = raw.headers ?? {};
   let response: Response;
-  if (mode === 'download' || raw.body instanceof Uint8Array) {
-    const body = isSafeHtml(raw.body) ? markupOf(raw.body) : raw.body;
+  if (mode === 'download' || raw.body instanceof Uint8Array || raw.body instanceof Readable) {
+    const body = passthroughBody(raw.body);
     response = downloadResponse({ status, headers: { 'content-type': raw.contentType, ...headers }, body }, context);
   } else {
     const text = typeof raw.body === 'string' ? raw.body : markupOf(raw.body);
@@ -441,6 +545,7 @@ function requestInput(mode: AdminMode, route: AdminRouteParams, request: Request
     route,
     method: request.method,
     path: url.pathname,
+    search: url.search,
     headers: request.headers,
     searchParams: url.searchParams,
     bodySource: withBody ? request : undefined,

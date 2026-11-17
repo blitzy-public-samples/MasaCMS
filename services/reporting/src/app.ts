@@ -7,6 +7,7 @@ import {
   baseEnvSchema,
   createService,
   loadEnv,
+  processEnvSchema,
   publisherEmulatorHost,
   systemClock,
   type BaseEnv,
@@ -40,20 +41,8 @@ const EXPORT_RUN_ROUTE = QUEUES['reporting-export-run'].targetPath;
 /** Services reporting calls through `OPT2_SERVICE_URLS`: identity (CSRF), finance and timesheets (sources), and itself (the run task's target). */
 const REQUIRED_SERVICES: readonly string[] = ['identity', 'finance', 'timesheets', OWNER];
 
-/** Base variables with every callee's URL required. */
-export const reportingEnvSchema = baseEnvSchema.superRefine(
-  (env, ctx) => {
-    // Failed fields keep their raw values here; a map that failed as a whole carries its own issue.
-    const urls: unknown = env.OPT2_SERVICE_URLS;
-    const mapFailed = ctx.issues.some((issue) => issue.path?.length === 1 && issue.path[0] === 'OPT2_SERVICE_URLS');
-    if (mapFailed || typeof urls !== 'object' || urls === null) return;
-    for (const name of REQUIRED_SERVICES.filter((service) => !Object.hasOwn(urls, service))) {
-      ctx.addIssue({ code: 'custom', path: ['OPT2_SERVICE_URLS', name], message: 'is required' });
-    }
-  },
-  // Runs even when other variables failed, so loadEnv lists every missing callee at once.
-  { when: () => true },
-);
+/** Base variables with reporting's own name, every callee's URL and its database required. */
+export const reportingEnvSchema = processEnvSchema(baseEnvSchema, { service: OWNER, callees: REQUIRED_SERVICES, database: true });
 
 /** Dependencies `buildApp` uses instead of building its own from the environment; injected ones stay open when the app closes. */
 export interface BuildAppOptions {

@@ -4,9 +4,9 @@ import { legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2
 import {
   availableGroups,
   deleteChain,
-  listChains,
   pendingApprovals,
   readChain,
+  readChainBatches,
   saveChain,
   type ApprovalChainBean,
   type ApprovalChainMembership,
@@ -21,6 +21,7 @@ import type { Crumb } from '../../repo/content-queries.js';
 import type { ExtendSubtypeRow } from '../../repo/tables.js';
 import type { ContentRouteContext } from '../index.js';
 import { adminCsrf, adminRedirect, circuitRouteConfig, csrfRejected, requireCircuitAccess, type AdminRedirect, type AdminWriteResult } from './access.js';
+import { VIEW_MODEL_CONTENT_TYPE, streamModel } from './streamed-model.js';
 
 type AdminViewModel = components['schemas']['AdminViewModel'];
 type Struct = Record<string, unknown>;
@@ -157,12 +158,15 @@ export async function registerChainRoutes(app: FastifyInstance, ctx: ContentRout
   // identity consumes a token only where legacy reaches validateCSRFTokens.
   const chainCsrf = adminCsrf(chainIdOf);
 
-  /** cchain.list (list.cfm): the site's chains by name. */
-  app.get<{ Params: SiteParams; Reply: AdminViewModel }>(CHAINS_PATH, { config }, async (request) => {
+  /** cchain.list (list.cfm): the site's chains by name, streamed batch by batch. */
+  app.get<{ Params: SiteParams }>(CHAINS_PATH, { config }, async (request, reply) => {
     const { siteid } = request.params;
     const actor = await requireCircuitAccess(request, ctx, 'cchain', siteid);
-    const chains = await listChains(ctx.domain, actor, siteid);
-    return { rc: { siteid, chains: chains.map(chainValues) } };
+    const body = await streamModel(['chains'], (out) => {
+      out.head((slot) => ({ rc: { siteid, chains: slot.chains } }));
+      return readChainBatches(ctx.domain, actor, siteid, (chains) => out.batch('chains', chains.map(chainValues)));
+    });
+    return reply.type(VIEW_MODEL_CONTENT_TYPE).send(body);
   });
 
   /** cchain.update (update.cfm includes edit.cfm): the chain, the groups it can add and its members in order. */

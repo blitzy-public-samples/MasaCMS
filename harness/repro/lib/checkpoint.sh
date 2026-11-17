@@ -407,6 +407,8 @@ process.stdout.write(`${JSON.stringify(extra)}\n${ck.length}\n`);
   fi
 
   log_step ck-restore.7 "OPT-2 schemas of $PG_DATABASE"
+  # windows.json keeps the windows, the start-up one above included, that the restore drops from migration.write_window.
+  "$MIGRATE" window report >&2 || die "opt2-migrate window report failed"
   _ck_restore - "$CK_DIR/target.dump" --clean --if-exists --single-transaction --exit-on-error
   for i in "${!dump_files[@]}"; do
     _ck_restore "${dump_tenants[i]}" "$CK_DIR/${dump_files[i]}" --data-only --enable-row-security --single-transaction \

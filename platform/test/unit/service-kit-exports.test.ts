@@ -13,6 +13,7 @@ import * as env from '../../src/service-kit/env.js';
 import * as eventScope from '../../src/service-kit/event-scope.js';
 import * as signalBoundFetch from '../../src/service-kit/fetch.js';
 import * as kit from '../../src/service-kit/index.js';
+import * as jsonStream from '../../src/service-kit/json-stream.js';
 import {
   baseEnvSchema,
   createService,
@@ -34,11 +35,14 @@ const VALUE_EXPORTS = {
       'loadEnv',
       'envModeIssues',
       'EnvValidationError',
+      'EnvFileError',
       'publisherEmulatorHost',
       'optionalEnvString',
       'requiredEnvString',
       'envUrl',
       'envPort',
+      'checkProcessEnv',
+      'processEnvSchema',
     ],
   ],
   './context.js': [
@@ -51,9 +55,11 @@ const VALUE_EXPORTS = {
       'newRequestContext',
       'requestIdFrom',
       'recordWritePosition',
+      'recordUnpublishedEvents',
       'REQUEST_ID_HEADER',
       'NoRequestContextError',
       'RequestAbortedError',
+      'UnpublishedEventsError',
       'throwIfRequestAborted',
     ],
   ],
@@ -88,6 +94,7 @@ const VALUE_EXPORTS = {
     ],
   ],
   './event-scope.js': [eventScope, ['recordEventScope']],
+  './json-stream.js': [jsonStream, ['JSON_CONTENT_TYPE', 'jsonListStream']],
   './csrf-hook.js': [csrfHook, ['csrfPreHandler', 'csrfTokenFrom', 'CSRF_CONSUME_PATH', 'IDENTITY_SERVICE']],
   undici: [undici, ['Agent']],
 } as const satisfies Record<string, readonly [Record<string, unknown>, readonly string[]]>;

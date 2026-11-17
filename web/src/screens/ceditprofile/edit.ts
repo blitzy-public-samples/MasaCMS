@@ -10,14 +10,18 @@ import {
 import type { components as PeopleComponents } from '@/generated/clients/people';
 import type { GateDecision, ScreenGate } from '@/lib/access-gate';
 import { legacySettings } from '@/lib/env';
-import { okBody } from '@/lib/gateway-client';
+import { GatewayDenialError, okBody } from '@/lib/gateway-client';
 import { encodeHtmlAttr, encodeJs, encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
 import { ORIGINAL_URL_HEADER, tokenServesSite, type AdminRequest, type SiteData } from '@/lib/request-context';
 import type { ShellView } from '@/shell/document';
 import { displayErrors, editGroupHtmlHead } from '../cusers/editgroup';
 import { renderUsersJs } from '../cusers/inc/js';
 import type { PageScreen, ScreenContext } from '../registry';
-import { renderProfileCategoriesNest, type ProfileInterestCategoryLoader } from './dsp_categories_nest';
+import {
+  renderProfileCategoriesNest,
+  type ProfileInterestCategoryLoader,
+  type ProfileInterestCategoryRow,
+} from './dsp_categories_nest';
 
 // The markup is the view's bytes as ACF 2023 emits them, matched against legacy captures: CFML comments are dropped,
 // and whitespace-only text between two CFML constructs prints one space, or nothing after output ending in whitespace.
@@ -113,7 +117,7 @@ export interface ProfilePoolSite {
   readonly name: string;
 }
 
-/** Reads the view needs that no owner contract serves yet; a caller binds each once its operation exists. */
+/** Reads the view takes from owner contracts; without one, the view renders what legacy shows or fails closed. */
 export interface EditProfileSources {
   /** `categoryManager.getPrivateInterestGroups(siteId, parentId)`, one tree level. */
   readonly interestRows?: ProfileInterestCategoryLoader;
@@ -121,10 +125,38 @@ export interface EditProfileSources {
   readonly privatePoolSites?: (poolId: string) => Promise<readonly ProfilePoolSite[]>;
 }
 
-// strategies-content serves no interest-group read and programs-sites no site list with pools, so the registered
-// screen binds neither; buildEditProfileView renders what legacy shows without them and fails closed otherwise.
-/** The sources of the registered screen. */
-export const PROFILE_SOURCES: EditProfileSources = Object.freeze({});
+const INTEREST_GROUPS_OPERATION = 'listPrivateInterestGroups';
+
+/** An interest-group row with the legacy id of its category's site. */
+export type PrivateInterestGroupRow = ProfileInterestCategoryRow & { readonly siteID: string };
+
+/**
+ * strategies-content's interest groups of `siteId`'s private user pool under `parentId`, read with the request's token.
+ * @throws GatewayDenialError When strategies-content refuses the read (401 or 403), or the request has no token.
+ * @throws GatewayUnavailableError When strategies-content is unavailable or halts the level.
+ */
+export async function privateInterestGroups(
+  ctx: ScreenContext,
+  siteId: string,
+  parentId: string,
+): Promise<readonly PrivateInterestGroupRow[]> {
+  const tokenSite = ctx.req.user?.site;
+  if (tokenSite === undefined) throw new GatewayDenialError('strategies-content', INTEREST_GROUPS_OPERATION, 401);
+  const response = await ctx.gateway.strategiesContent.call('get', '/v1/sites/{siteid}/private-interest-groups', {
+    params: { siteid: tokenSite },
+    query: { groupsiteid: siteId, parentid: parentId },
+  });
+  const { items } = okBody(response, 'strategies-content', INTEREST_GROUPS_OPERATION);
+  // A SQL NULL `isOpen` reads as '', which `eq 1` refuses as it refuses 0.
+  return items.map(({ siteID, categoryID, name, isOpen, hasKids }) => ({ siteID, categoryID, name, isOpen: isOpen ?? 0, hasKids }));
+}
+
+// programs-sites serves no site list with pools, so the registered screen binds only the interest groups, and
+// buildEditProfileView fails closed where the view needs the pool sites.
+/** The sources of the registered screen for the request of `ctx`. */
+export function profileSources(ctx: ScreenContext): EditProfileSources {
+  return Object.freeze({ interestRows: (siteId: string, parentId: string) => privateInterestGroups(ctx, siteId, parentId) });
+}
 
 /** `getSite()` settings the subtype select and the extended-attribute loader print. */
 export interface ProfileSiteSettings {
@@ -253,7 +285,7 @@ async function poolSiteOf(
   sources: EditProfileSources,
 ): Promise<ProfilePoolSite | undefined> {
   if (sameId(poolId, userSiteId)) return undefined;
-  if (sources.privatePoolSites === undefined) throw unserved(`the sites of private user pool ${poolId}`, 'profile-pool-sites');
+  if (sources.privatePoolSites === undefined) throw unserved(`the sites of private user pool ${poolId} (EX-PROFILE-INTEREST-SITES)`, 'profile-pool-sites');
   return (await sources.privatePoolSites(poolId))[0];
 }
 
@@ -267,7 +299,7 @@ export async function buildEditProfileView(
   profile: ProfileData,
   opts: { readonly rcSiteId: string; readonly rc: EditProfileRc; readonly sources?: EditProfileSources },
 ): Promise<EditProfileView> {
-  const { rcSiteId, rc, sources = PROFILE_SOURCES } = opts;
+  const { rcSiteId, rc, sources = profileSources(ctx) } = opts;
   const userSiteId = profile.user.SiteID;
   const userRecord = await siteRecordOf(ctx, userSiteId);
   const userSite = userSiteFacts(ctx, userSiteId, userRecord, profile.subTypes.length > 0);
@@ -297,7 +329,7 @@ export async function buildEditProfileView(
  */
 export async function loadEditProfileView(
   ctx: ScreenContext,
-  sources: EditProfileSources = PROFILE_SOURCES,
+  sources: EditProfileSources = profileSources(ctx),
 ): Promise<EditProfileView> {
   const rc = editProfileRc(ctx.req);
   const profile = okBody(await ctx.gateway.people.call('get', '/v1/profile'), 'people', 'getProfile');

@@ -11,6 +11,7 @@ import {
   type QueryConfig,
   type QueryResult,
   type QueryResultRow,
+  type RegistrySource,
   type TenantDb,
   type TenantRegistryEntry,
   type TenantTx,
@@ -36,9 +37,9 @@ export class UnregisteredTenantError extends Error {
   }
 }
 
-/** The tenant holding `tid`'s `kind` pool. */
-async function poolTenant(db: TenantDb, tid: string, kind: PoolScope): Promise<string> {
-  const tenant = await poolTenantFor(db, tid, kind);
+/** The tenant holding `tid`'s `kind` pool, read on `source`'s connection when it is an open transaction. */
+async function poolTenant(source: RegistrySource, tid: string, kind: PoolScope): Promise<string> {
+  const tenant = await poolTenantFor(source, tid, kind);
   if (tenant === null) {
     throw new UnregisteredTenantError(tid);
   }
@@ -54,6 +55,17 @@ export async function withPoolTenant<T>(
 ): Promise<T> {
   const tenant = await poolTenant(db, tid, kind);
   return withTenant(db, tenant, (tx) => fn(tx, tenant));
+}
+
+/** withPoolTenant on `tx`'s connection: the registry read and `fn`'s statements run on `tx`, as the pool tenant; for reads while `tx` is held. */
+export async function withPoolTenantTx<T>(
+  tx: TenantTx,
+  tid: string,
+  kind: PoolScope,
+  fn: (poolTx: TenantTx, poolTenantId: string) => Promise<T>,
+): Promise<T> {
+  const tenant = await poolTenant(tx, tid, kind);
+  return fn(poolReadTx(tx, tenant), tenant);
 }
 
 /** Runs `fn` in `tid`'s `kind` pool tenant under the unit gates (`withGatedTenant`); for writes of pooled entities. */
@@ -94,6 +106,13 @@ export async function poolTenantTx(tx: TenantTx, poolTenantId: string, units: re
   const tenantId = assertTenantId(poolTenantId);
   if (tenantId === tx.tenantId) return tx;
   await acquireWriteGates(tx, units);
+  return poolReadTx(tx, tenantId);
+}
+
+/** The open transaction `tx` as pool tenant `poolTenantId` for reads, taking no write gate; `tx` itself for its own tenant. */
+function poolReadTx(tx: TenantTx, poolTenantId: string): TenantTx {
+  const tenantId = assertTenantId(poolTenantId);
+  if (tenantId === tx.tenantId) return tx;
   let views = poolViews.get(tx);
   if (views === undefined) {
     views = new Map();

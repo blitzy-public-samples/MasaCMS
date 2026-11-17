@@ -40,11 +40,10 @@ interface Call {
   headers?: Record<string, string>;
 }
 
-// An unset PG_HOST skips the suite without probing the server.
-const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const available = await pgAvailable();
 const title = available
   ? 'communications fixture routes over PostgreSQL'
-  : 'communications fixture routes over PostgreSQL (requires PostgreSQL: PG_HOST unset or unreachable)';
+  : 'communications fixture routes over PostgreSQL (requires PostgreSQL: PG_HOST unset)';
 
 describe.skipIf(!available)(title, () => {
   const logLines: Array<Record<string, unknown>> = [];

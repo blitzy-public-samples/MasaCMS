@@ -1,9 +1,10 @@
 import { realpathSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { SAFE_ERROR_TEXT } from '../logging/safe-error.js';
+import { SAFE_ERROR_TEXT, envIssueReason, systemErrorText } from '../logging/safe-error.js';
 
 const SERVICE_NAME = /^[a-z][a-z0-9-]*$/;
 const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
@@ -228,13 +229,58 @@ export class EnvValidationError extends Error {
   constructor(issues: string[], service?: string) {
     super([`${service === undefined ? '' : `${service}: `}invalid environment`, ...issues.map((i) => `  ${i}`)].join('\n'));
     this.issues = issues;
-    const names = [...new Set(issues.map(issueName).filter((name) => name !== ''))];
-    this.#safeText = `${service === undefined ? '' : `${service}: `}invalid environment${names.length > 0 ? ` (${names.join(', ')})` : ''}`;
+    // One entry per name, with the reason of its first issue.
+    const reasons = new Map<string, string>();
+    for (const issue of issues) {
+      const name = issueName(issue);
+      const at = issue.indexOf(':');
+      if (name !== '' && !reasons.has(name)) reasons.set(name, envIssueReason(at < 0 ? '' : issue.slice(at + 1).trim()));
+    }
+    const entries = [...reasons].map(([name, reason]) => `${name}: ${reason}`);
+    this.#safeText = `${service === undefined ? '' : `${service}: `}invalid environment${entries.length > 0 ? ` (${entries.join('; ')})` : ''}`;
   }
 
-  /** The service and the names of the invalid variables and missing required entries, never their values or issue texts. */
+  /** The service and, per invalid variable or missing required entry, its name and value-free reason, never its value or issue text. */
   get [SAFE_ERROR_TEXT](): string {
     return this.#safeText;
+  }
+}
+
+/** Start-up failure reading a file inside the directory a variable names; keeps the cause's message, string `code` and `syscall`. */
+export class EnvFileError extends Error {
+  override readonly name = 'EnvFileError';
+  /** The directory variable, such as OPT2_STATE_DIR. */
+  readonly variable: string;
+  /** The file's `/`-separated path inside that directory. */
+  readonly file: string;
+  readonly code?: string;
+  readonly syscall?: string;
+  readonly #safeText: string;
+
+  constructor(variable: string, file: string, cause: unknown, service?: string) {
+    const prefix = service === undefined ? '' : `${service}: `;
+    super(`${prefix}${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.variable = variable;
+    this.file = file;
+    const { code, syscall } = (typeof cause === 'object' && cause !== null ? cause : {}) as { code?: unknown; syscall?: unknown };
+    if (typeof code === 'string') this.code = code;
+    if (typeof syscall === 'string') this.syscall = syscall;
+    const system = systemErrorText(cause);
+    this.#safeText = `${prefix}cannot read ${variable} file ${file}${system === undefined ? '' : ` (${system})`}`;
+  }
+
+  /** The service, the variable, the file's path inside its directory and the cause's system call and code, never the directory or the cause's text. */
+  get [SAFE_ERROR_TEXT](): string {
+    return this.#safeText;
+  }
+}
+
+/** UTF-8 text of `file`, a path inside `dir`, the directory variable `variable` names; a failed read rejects with `EnvFileError` naming `file` relative to `dir`. */
+export async function readEnvFile(variable: string, dir: string, file: string): Promise<string> {
+  try {
+    return await readFile(file, 'utf8');
+  } catch (err) {
+    throw new EnvFileError(variable, path.relative(dir, file).split(path.sep).join('/'), err);
   }
 }
 
@@ -248,6 +294,54 @@ export function publisherEmulatorHost(
   if (parsed.success && env.OPT2_ENV === 'cloud' && parsed.data !== undefined) issues.push('must be unset when OPT2_ENV=cloud');
   if (issues.length > 0) throw new EnvValidationError(issues.map((issue) => `PUBSUB_EMULATOR_HOST: ${issue}`), env.OPT2_SERVICE_NAME);
   return parsed.data;
+}
+
+/** What one process requires of the base variables: its own service name, the callees it calls and, when it opens a pool, its database. */
+export interface ProcessEnvRequirements {
+  /** The only accepted OPT2_SERVICE_NAME. */
+  readonly service: string;
+  /** Services called through the service client; `gateway` and `migration` are also named by OPT2_GATEWAY_URL and OPT2_MIGRATION_URL. */
+  readonly callees?: readonly string[];
+  /** Whether the process opens a pool, which needs OPT2_DB_AUTH and PG_DATABASE. */
+  readonly database?: boolean;
+}
+
+/** Variable createService maps over a callee's OPT2_SERVICE_URLS entry, so either one names that callee. */
+const CALLEE_URL_VARIABLES: ReadonlyMap<string, string> = new Map([
+  ['gateway', 'OPT2_GATEWAY_URL'],
+  ['migration', 'OPT2_MIGRATION_URL'],
+]);
+
+/** Adds an issue for each of `requirements` that `env` misses; a variable or map that failed its own parse gets none. */
+export function checkProcessEnv(
+  env: Readonly<Record<string, unknown>>,
+  ctx: z.RefinementCtx,
+  requirements: ProcessEnvRequirements,
+): void {
+  // Failed fields keep their raw values here and carry their own issue.
+  const failed = new Set(ctx.issues.map((issue) => issue.path?.[0]));
+  if (!failed.has('OPT2_SERVICE_NAME') && env.OPT2_SERVICE_NAME !== requirements.service) {
+    ctx.addIssue({ code: 'custom', path: ['OPT2_SERVICE_NAME'], message: `must be ${requirements.service}` });
+  }
+  for (const key of requirements.database === true ? ['OPT2_DB_AUTH', 'PG_DATABASE'] : []) {
+    if (!failed.has(key) && env[key] === undefined) ctx.addIssue({ code: 'custom', path: [key], message: 'is required' });
+  }
+  const urls = env.OPT2_SERVICE_URLS;
+  const mapFailed = ctx.issues.some((issue) => issue.path?.length === 1 && issue.path[0] === 'OPT2_SERVICE_URLS');
+  if (mapFailed || typeof urls !== 'object' || urls === null) return;
+  for (const callee of (requirements.callees ?? []).filter((name) => !Object.hasOwn(urls, name))) {
+    const variable = CALLEE_URL_VARIABLES.get(callee);
+    if (variable === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['OPT2_SERVICE_URLS', callee], message: 'is required' });
+    } else if (!failed.has(variable) && env[variable] === undefined) {
+      ctx.addIssue({ code: 'custom', path: [variable], message: `is required (or OPT2_SERVICE_URLS.${callee})` });
+    }
+  }
+}
+
+/** `schema` refined by `checkProcessEnv`, which runs even when other variables failed, so `loadEnv` lists every issue at once. */
+export function processEnvSchema<S extends EnvSchema>(schema: S, requirements: ProcessEnvRequirements): S {
+  return schema.superRefine((env, ctx) => checkProcessEnv(env, ctx, requirements), { when: () => true });
 }
 
 const serviceNameOf = (source: NodeJS.ProcessEnv): string | undefined => {

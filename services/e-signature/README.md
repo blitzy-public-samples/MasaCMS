@@ -144,8 +144,8 @@ npm run test:contract
 npm run test:security
 ```
 
-- **Configuration.** `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)). Locally `harness/repro/up.sh` starts it with `PORT=8120` and `PG_USER=esignature_app`. `OPT2_SERVICE_URLS` must contain `identity` and `people`.
-- **Test dependencies.** The security and contract suites need nothing external. The PostgreSQL-backed suites read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`, create a throwaway schema and roles through `@opt2/platform/testing`, and are skipped when PostgreSQL is unreachable. No suite needs the Pub/Sub emulator: the test helpers (`test/helpers/app.ts`) give every app a capturing publisher, and push deliveries are injected in process.
+- **Configuration.** `esignatureEnvSchema` in `src/app.ts`: `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)) with `OPT2_SERVICE_NAME=e-signature`, `OPT2_DB_AUTH`, `PG_DATABASE` and the `OPT2_SERVICE_URLS` entries `identity` and `people` required; start-up fails naming each one missing. Locally `harness/repro/up.sh` starts it with `PORT=8120` and `PG_USER=esignature_app`.
+- **Test dependencies.** The security and contract suites need nothing external. The PostgreSQL-backed suites read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`, create a throwaway schema and roles through `@opt2/platform/testing`, are skipped when `PG_HOST` is unset and fail when PostgreSQL is unreachable. No suite needs the Pub/Sub emulator: the test helpers (`test/helpers/app.ts`) give every app a capturing publisher, and push deliveries are injected in process.
 - **Packaging.** The `Dockerfile` is the Cloud Run artefact, built (not pushed) in CI. In the cloud the service runs with internal-only ingress and Cloud SQL IAM authentication as a member of `esignature_app` (`infra/terraform/`, plan only).
 
 ## Parity evidence

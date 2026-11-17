@@ -116,7 +116,7 @@ The gateway routes them by the active version in `gateway/cutover/versions/`, by
 
 | Method | Path | Requires | Answers |
 |---|---|---|---|
-| `GET` | `/v1/reporting/exports` | `reporting.exporter` | One page (`page`, `pageSize`) of the tenant's jobs, with their total |
+| `GET` | `/v1/reporting/exports` | `reporting.exporter` | One page (`page` or `pageIndex`, `pageSize` or `itemsPerPage` up to 1000) of the tenant's jobs, with their total |
 | `POST` | `/v1/reporting/exports` | `reporting.exporter` | Queues a job; answers it `queued` |
 | `GET` | `/v1/reporting/exports/{id}` | `reporting.exporter` | One job |
 | `GET` | `/v1/reporting/exports/{id}/download-url` | `reporting.exporter` | A download URL valid for 15 minutes; 409 `not-ready` until `done` |
@@ -155,17 +155,18 @@ npm run test:contract
 npm run test:security
 ```
 
-- **Configuration.** The process reads `reportingEnvSchema` in `src/app.ts`: `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)) plus the required `OPT2_SERVICE_URLS` entries named under **Required entries**, a missing one failing start-up. Locally, `harness/repro/up.sh` starts it with these variables set inline:
+- **Configuration.** The process reads `reportingEnvSchema` in `src/app.ts`: `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)) plus the requirements named under **Required entries**, a missing or wrong one failing start-up. Locally, `harness/repro/up.sh` starts it with these variables set inline:
   - `PORT=8116` (from `harness/repro/ports.env`), `OPT2_SERVICE_NAME=reporting`, `PG_USER=reporting_app`;
   - `OPT2_TASKS_ADAPTER=local`, `OPT2_STORAGE_ADAPTER=local`, `OPT2_STATE_DIR`;
   - `OPT2_SERVICE_URLS`, `PUBSUB_EMULATOR_HOST`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `TZ`.
 - **Required entries.**
+  - `OPT2_SERVICE_NAME` must be `reporting`, and `OPT2_DB_AUTH` and `PG_DATABASE` must be set.
   - `OPT2_SERVICE_URLS` must contain `identity` (CSRF), `finance` and `timesheets` (sources), and `reporting` (the run task's target).
   - `PUBSUB_EMULATOR_HOST` is required with `OPT2_ENV=local`, because the publisher carries the consumer's dead letters.
 - **Test dependencies.**
   - The contract and security suites need nothing external.
   - The unit suites need nothing external either: their stored-row cases run over the in-memory database of `test/helpers/memory-db.ts`. The exceptions are the PostgreSQL cases of `test/unit/{domain-jobs,fixture-routes,legacy-checks,queries,repository,run-export-output,tasks,v1-create-session}.test.ts`.
-  - Those cases and the isolation and event suites read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`. They create a throwaway schema and roles through `@opt2/platform/testing`, and are skipped when PostgreSQL is unreachable.
+  - Those cases and the isolation and event suites read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`. They create a throwaway schema and roles through `@opt2/platform/testing`, are skipped when `PG_HOST` is unset and fail when PostgreSQL is unreachable.
   - Push deliveries are injected in process, so no suite needs the Pub/Sub emulator.
 - **Cloud.** The `Dockerfile` is the Cloud Run image, built in CI and never pushed. The service runs on Cloud Run with `min_instance_count = 0`, internal-only ingress and Cloud SQL IAM authentication as a member of `reporting_app` (`infra/terraform/`, plan only).
 

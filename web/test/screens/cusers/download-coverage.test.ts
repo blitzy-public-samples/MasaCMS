@@ -1,5 +1,7 @@
 // cUsers.download and cUsers.downloadGroupMembers against cusers.cfc download(), downloadGroupMembers() and
 // setDownloadData(): the owner each preserved `rc.records` names, the relayed CSV, denials, and the raw handler's answer.
+import { Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 import { ADMIN_NOACCESS_ACTION } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayDenialError, GatewayUnavailableError, setServiceClientForTests } from '@/lib/gateway-client';
@@ -14,12 +16,12 @@ import { adminS2Request, siteRecordFor } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import {
   fakeGatewayClient,
+  inMemoryGateway,
   routeKey,
-  startFakeGateway,
-  type FakeGateway,
   type FakeGatewayClient,
   type FakeReply,
   type FakeRouteTable,
+  type InMemoryGateway,
 } from '../../helpers/fake-gateway';
 import { adminRequest } from '../../helpers/requests';
 import { makeScreenContext } from '../../helpers/screen-context';
@@ -84,10 +86,10 @@ function preservedRecords(result: SubmitResult): string {
   return records;
 }
 
-/** Bytes of a relayed body. */
-function bytesOf(body: unknown): Buffer {
-  if (!(body instanceof Uint8Array)) throw new TypeError('Expected the relayed bytes');
-  return Buffer.from(body);
+/** Bytes of a relayed 2xx body, which arrives as a stream. */
+function bytesOf(body: unknown): Promise<Buffer> {
+  if (!(body instanceof Readable)) throw new TypeError('Expected the relayed stream');
+  return buffer(body);
 }
 
 describe('cUsers.download owner calls', () => {
@@ -125,11 +127,11 @@ describe('cUsers.download owner calls', () => {
     expect(raw).toEqual({
       status: 200,
       contentType: CSV_TYPE,
-      body: CSV,
+      body: expect.any(Readable),
       headers: { 'content-disposition': DISPOSITION },
       setCookies: ['CFTOKEN=0;Path=/;HttpOnly'],
     });
-    expect(Buffer.compare(bytesOf(raw.body), CSV)).toBe(0);
+    expect(Buffer.compare(await bytesOf(raw.body), CSV)).toBe(0);
   });
 
   it.each<[number, string]>([
@@ -156,7 +158,7 @@ describe('cUsers.download preserved sources', () => {
     const raw = await downloadScreen.download(ctx, await downloadScreen.load!(ctx));
 
     expect(ownerCalls(ctx.gateway)).toEqual([{ service: 'identity', method: 'GET', path: `/v1/groups/${GROUP_ID}/members.csv` }]);
-    expect(Buffer.compare(bytesOf(raw.body), CSV)).toBe(0);
+    expect(Buffer.compare(await bytesOf(raw.body), CSV)).toBe(0);
   });
 
   it("round-trips cUsers.advancedSearchToCSV's flash context to people's CSV of the stored search", async () => {
@@ -259,7 +261,7 @@ describe('cUsers.download owner failures', () => {
 
 describe('cUsers.download through the raw handler', () => {
   const admin = SUBJECTS.admin;
-  let fake: FakeGateway;
+  let fake: InMemoryGateway;
   let restoreClient: () => void;
 
   /** identity's session state of the S2 admin and programs-sites' `default` rows, then `routes`. */
@@ -290,23 +292,20 @@ describe('cUsers.download through the raw handler', () => {
     ...routes,
   });
 
-  /** Starts the loopback gateway on `routes` and points web's relay at it. */
-  async function serve(routes: FakeRouteTable): Promise<void> {
-    fake = await startFakeGateway(sessionRoutes(routes));
-    restoreEnv();
-    restoreEnv = useTestEnv({ OPT2_GATEWAY_URL: fake.url });
-    restoreClient = setServiceClientForTests(undefined);
+  /** Answers the session calls and `routes` from an in-memory gateway beneath web's relay. */
+  function serve(routes: FakeRouteTable): void {
+    fake = inMemoryGateway(sessionRoutes(routes));
+    restoreClient = setServiceClientForTests(fake.client);
   }
 
-  afterEach(async () => {
+  afterEach(() => {
     restoreClient();
-    await fake.close();
   });
 
   const peopleRequests = () => fake.requests.filter((request) => request.path.startsWith('/opt2/svc/people/'));
 
   it('streams the bytes with the content type and disposition people answered', async () => {
-    await serve({ [USERS_ROUTE]: CSV_REPLY });
+    serve({ [USERS_ROUTE]: CSV_REPLY });
     const request = await adminRequest('/admin-raw/cusers/download', { user: 'admin', query: { siteid: 'default', ispublic: '0', unassigned: '1' } });
 
     const response = await handleAdminRaw(request, { circuit: 'cusers', action: 'download' });
@@ -322,7 +321,7 @@ describe('cUsers.download through the raw handler', () => {
   });
 
   it("answers people's refusal with the access gate's no-access redirect and no CSV", async () => {
-    await serve({ [USERS_ROUTE]: { status: 403, body: { error: { code: 'forbidden', message: 'Denied' } } } });
+    serve({ [USERS_ROUTE]: { status: 403, body: { error: { code: 'forbidden', message: 'Denied' } } } });
     const request = await adminRequest('/admin-raw/cusers/download', { user: 'admin', query: { siteid: 'default' } });
 
     const response = await handleAdminRaw(request, { circuit: 'cusers', action: 'download' });

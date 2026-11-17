@@ -36,6 +36,8 @@ import {
   type TenantFixture,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
+import { listPrivateInterestGroups } from '../../src/domain/categories.js';
+import { actorFromClaims } from '../../src/domain/context.js';
 import { contentPoolSites, feedPoolSites, readAcrossContentPool, withPoolTenant, type PoolScope } from '../../src/domain/pools.js';
 import {
   GROUP_CHANGED_SUBSCRIPTION,
@@ -157,7 +159,7 @@ const BUILDERS: ReadonlyMap<string, () => Row> = new Map<string, () => Row>([
   [MEMBERSHIP_PROJECTION.table, () => membershipProjectionRow()],
 ]);
 
-const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const available = await pgAvailable();
 
 let handle: ThrowawaySchema | undefined;
 let testApp: TestApp<TenantDb> | undefined;
@@ -554,6 +556,35 @@ describe.skipIf(!available)('strategies-content tenant isolation', () => {
       const expected = tenantIdForSite(poolSiteOf(tenant, kind));
       expect(resolved).toEqual([expected, expected]);
     });
+
+    /** A signed-in system user of `fixture`'s site, as its verified token names it. */
+    const actorOf = (fixture: TenantFixture) =>
+      actorFromClaims(
+        { iss: 'opt2-local-identity', aud: 'opt2-local', sub: newId(), sid: 'isolation', tid: fixture.tenantId, site: fixture.siteId, roles: ['system-user'], s2: false, epoch: 0, iat: 0, exp: 0 },
+        '',
+      );
+
+    it.each<{ name: string; reader: TenantFixture; included: readonly string[] }>([
+      { name: "tenant-a's private interest groups read only tenant-a, never its umbrella category pool or tenant-b", reader: TENANT_A, included: [] },
+      { name: "tenant-b's private interest groups read only tenant-b, never umbrella or tenant-a", reader: TENANT_B, included: [IDS.categories.bOwn] },
+    ])('$name', async ({ reader, included }) => {
+      const { db, repository: repo } = built();
+      const rows = await listPrivateInterestGroups({ db, repository: repo }, actorOf(reader), { siteId: reader.siteId, parentId: '' });
+      const own = await withTenant(db, reader.tenantId, async (tx) => new Set(((await readAs(tx, CATEGORY.table)) as Row[]).map((row) => String(row.categoryid))));
+      const ids = (rows ?? []).map((row) => row.categoryid);
+      const foreign = TENANT_LIST.filter((fixture) => fixture !== reader).flatMap((fixture) => seededValues(fixture, CATEGORY.table, 'categoryid'));
+
+      expect(rows, 'an admitted read').toBeDefined();
+      expect(ids.filter((id) => !own.has(id)), 'rows outside the reader tenant').toEqual([]);
+      expect(foreign.filter((id) => ids.includes(id)), 'seeded rows of other tenants').toEqual([]);
+      expect(included.filter((id) => !ids.includes(id)), 'seeded top-level interest groups of the reader').toEqual([]);
+    });
+
+    it.each([TENANT_B, TENANT_UMBRELLA])("refuses tenant-a a read of $siteId's interest groups, which share none of its private pool", async (other) => {
+      const { db, repository: repo } = built();
+      expect(await listPrivateInterestGroups({ db, repository: repo }, actorOf(TENANT_A), { siteId: other.siteId, parentId: '' })).toBeUndefined();
+    });
+
   });
 
   describe('content pools', () => {

@@ -72,6 +72,8 @@ import {
 // The Google-auth bound and the legacy error base are not re-exported by the auth surface.
 import { GOOGLE_AUTH_TIMEOUT_MS } from '../../src/auth/deadline.js';
 import { LegacyApiError, LegacyServiceUnavailableError } from '../../src/legacy-compat/index.js';
+import { serializeError } from '../../src/logging/index.js';
+import { EnvFileError } from '../../src/service-kit/env.js';
 import {
   TENANT_A,
   TEST_PUSH_KEY,
@@ -680,15 +682,28 @@ describe('local signing keys', () => {
   });
 
   it.each([
-    { setup: 'absent' as const, requirePrivate: true, code: 'ENOENT' },
-    { setup: 'directory' as const, requirePrivate: false, code: 'EISDIR' },
-  ])('fails with $code when the private key is $setup and requirePrivate is $requirePrivate', async ({
+    { setup: 'absent' as const, requirePrivate: true, code: 'ENOENT', syscall: 'open' },
+    { setup: 'directory' as const, requirePrivate: false, code: 'EISDIR', syscall: 'read' },
+  ])('fails with $code when the private key is $setup and requirePrivate is $requirePrivate, naming the file', async ({
     setup,
     requirePrivate,
     code,
+    syscall,
   }) => {
     const variant = await stateDirWith(`private-${setup}`, setup);
-    await expect(loadLocalSigningKeys(variant, { requirePrivate })).rejects.toMatchObject({ code });
+    const error = await loadLocalSigningKeys(variant, { requirePrivate }).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(EnvFileError);
+    expect(error).toMatchObject({ code, syscall, variable: 'OPT2_STATE_DIR', file: 'secrets/token-signing-private.pem' });
+    expect(serializeError(error).message).toBe(`cannot read OPT2_STATE_DIR file secrets/token-signing-private.pem (${syscall} ${code})`);
+  });
+
+  it('fails naming the public key file when the state directory holds no secrets', async () => {
+    const empty = path.join(stateDir, 'variants', 'no-secrets');
+    const error = await loadLocalSigningKeys(empty).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(EnvFileError);
+    expect(error).toMatchObject({ code: 'ENOENT', file: 'secrets/token-signing-public.pem' });
+    expect((error as Error).message).toContain(localSecretPath(empty, LOCAL_SECRET_FILES.tokenSigningPublicKey));
+    expect(serializeError(error).message).toBe('cannot read OPT2_STATE_DIR file secrets/token-signing-public.pem (open ENOENT)');
   });
 });
 
@@ -1931,9 +1946,17 @@ describe('createAuthFromEnv', () => {
       );
     });
 
-    it('fails when the push key file is missing', async () => {
+    it('fails naming the push key file when it is missing', async () => {
       const variant = await stateDirWith('env-no-push-key', 'pem');
-      await expect(createAuthFromEnv(localEnv(variant))).rejects.toMatchObject({ code: 'ENOENT' });
+      const error = await createAuthFromEnv(localEnv(variant)).catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(EnvFileError);
+      expect(error).toMatchObject({ code: 'ENOENT' });
+      expect(serializeError(error).message).toBe('cannot read OPT2_STATE_DIR file secrets/pubsub-push-key (open ENOENT)');
+    });
+
+    it('fails naming the public key file when the state directory holds no secrets', async () => {
+      const error = await createAuthFromEnv(localEnv(path.join(stateDir, 'variants', 'env-no-secrets'))).catch((err: unknown) => err);
+      expect(serializeError(error).message).toBe('cannot read OPT2_STATE_DIR file secrets/token-signing-public.pem (open ENOENT)');
     });
 
     it('refuses a push key file holding only whitespace', async () => {

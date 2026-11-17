@@ -46,8 +46,15 @@ import { DatabaseUnavailableError, createPool, type TenantDb } from '../tenancy/
 import { shutdownTracing } from '../tracing/index.js';
 import { createServiceClient, type ServiceClient } from './client.js';
 import { systemClock, type Clock } from './clock.js';
-import { newRequestContext, RequestAbortedError, requestContext, requestIdFrom, type RequestContextStore } from './context.js';
-import type { BaseEnv } from './env.js';
+import {
+  newRequestContext,
+  RequestAbortedError,
+  requestContext,
+  requestIdFrom,
+  UnpublishedEventsError,
+  type RequestContextStore,
+} from './context.js';
+import { EnvValidationError, type BaseEnv } from './env.js';
 import { EVENT_SCOPE, eventScopeOf, type EventLogScope } from './event-scope.js';
 import { createMultipartHeaderScanner, type MultipartHeaderScanner } from './multipart-headers.js';
 
@@ -638,7 +645,8 @@ function serviceUrlsOf(env: BaseEnv): Record<string, string> {
 async function openPool(env: BaseEnv, schema: string, logger: Logger): Promise<TenantDb> {
   const { OPT2_DB_AUTH, PG_DATABASE } = env;
   if (OPT2_DB_AUTH === undefined || PG_DATABASE === undefined) {
-    throw new Error(`Schema ${schema} needs OPT2_DB_AUTH and PG_DATABASE`);
+    const missing = Object.entries({ OPT2_DB_AUTH, PG_DATABASE }).filter(([, value]) => value === undefined);
+    throw new EnvValidationError(missing.map(([key]) => `${key}: is required`), env.OPT2_SERVICE_NAME);
   }
   return createPool({
     env: { ...env, OPT2_DB_AUTH, PG_DATABASE },
@@ -939,8 +947,25 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     }
     done(null, payload);
   });
+  // Withholds the success answer of a request whose committed outbox events were not all published; an error answer passes unchanged.
+  app.addHook('onSend', (request, reply, payload, done) => {
+    const unpublished = stateOf(request)[CONTEXT]?.unpublishedEvents;
+    if (unpublished !== undefined && unpublished.length > 0 && reply.statusCode < 400) done(new UnpublishedEventsError(unpublished));
+    else done(null, payload);
+  });
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
+    if (error instanceof UnpublishedEventsError) {
+      const route = request.routeOptions.url ?? UNMATCHED_ROUTE;
+      request.log.warn(
+        { route, httpMethod: request.method, latencyMs: Math.round(reply.elapsedTime), ...scopeFields(request), error: serializeError(error) },
+        'request abandoned: outbox publish of its committed events incomplete',
+      );
+      // No answer, as when the process exits before its flush: the rows stay committed and the sweep publishes them.
+      reply.hijack();
+      reply.raw.destroy();
+      return;
+    }
     if (error instanceof RequestAbortedError) {
       const route = loggedRouteOf(request);
       request.log.info({ route, httpMethod: request.method, latencyMs: Math.round(reply.elapsedTime), ...scopeFields(request) }, 'request abandoned');

@@ -22,6 +22,7 @@ import { buildLoginSnapshot } from '../../src/domain/roles.js';
 import { applyLogin, ensureSession } from '../../src/domain/sessions.js';
 import { createLocalTokenSigner, createTokenService, type TokenService, type TokenServiceOptions } from '../../src/domain/tokens.js';
 import {
+  CLOUD_DB_OVERRIDES,
   TEST_CLOCK,
   buildTestApp,
   createFakeIdentityPlatform,
@@ -425,7 +426,7 @@ describe('Identity Platform issuance', () => {
     const env = testEnv(
       {
         OPT2_ENV: 'cloud',
-        OPT2_DB_AUTH: undefined,
+        ...CLOUD_DB_OVERRIDES,
         OPT2_TASKS_ADAPTER: 'cloud',
         OPT2_STORAGE_ADAPTER: 'cloud',
         GOOGLE_CLOUD_PROJECT: PROJECT,

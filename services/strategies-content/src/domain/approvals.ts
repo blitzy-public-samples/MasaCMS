@@ -4,10 +4,9 @@ import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { contentUrl } from '../legacy/content-urls.js';
 import { rowsById, type ContentVersionRow, type Crumb } from '../repo/content-queries.js';
-import type { ContentRepository } from '../repo/repository.js';
+import type { ApprovalChainListRow, ContentRepository } from '../repo/repository.js';
 import type {
   ApprovalAssignmentRow,
-  ApprovalChainRow,
   ApprovalMembershipRow,
   ApprovalRequestRow,
   ChangesetRow,
@@ -207,7 +206,7 @@ function ormErrors(rules: readonly OrmRule[]): LegacyErrors {
   return errors;
 }
 
-function chainValuesOf(row: ApprovalChainRow): ApprovalChainValues {
+function chainValuesOf(row: ApprovalChainListRow): ApprovalChainValues {
   return {
     chainid: row.chainid,
     siteid: row.siteid ?? '',
@@ -399,10 +398,13 @@ export function chainAccess(actor: Actor): boolean {
   return actor.s2 || actor.roles.includes(S2_ROLE) || actor.roles.includes(SITE_ADMIN_ROLE);
 }
 
-/** approvalChainManager.getChainFeed(siteID).setSortBy('name'): the site's chains by name. */
-export async function listChains(deps: DomainDeps, actor: Actor, siteId: string): Promise<ApprovalChainValues[]> {
-  const rows = await withTenant(deps.db, actor.tenantId, (tx) => deps.repository.approvals.listChains(tx, { siteId }));
-  return rows.map(chainValuesOf);
+/** approvalChainManager.getChainFeed(siteID).setSortBy('name'): the site's chains by name, batch by batch in one tenant transaction until `visit` answers false. */
+export function readChainBatches(deps: DomainDeps, actor: Actor, siteId: string, visit: (chains: ApprovalChainValues[]) => Promise<boolean>): Promise<void> {
+  return withTenant(deps.db, actor.tenantId, async (tx) => {
+    for await (const rows of deps.repository.approvals.listChainBatches(tx, { siteId })) {
+      if (!(await visit(rows.map(chainValuesOf)))) return;
+    }
+  });
 }
 
 /** approvalChain.loadBy(chainID): the stored chain or a new bean of that id, with its named memberships. */

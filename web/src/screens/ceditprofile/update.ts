@@ -1,4 +1,5 @@
 // `cEditProfile.update`: people saves the session user, then the home redirect or `update.cfm`'s edit view (server-only).
+import { cfListToArray, javaTrim } from '@opt2/platform/legacy-compat';
 import { okBody } from '@/lib/gateway-client';
 import { relayContext, setSessionMuraValue } from '@/lib/request-context';
 import type { PageControllerRedirect, PageRedirect, PageScreen, ScreenContext } from '../registry';
@@ -53,8 +54,8 @@ async function updateProfileStep(ctx: ScreenContext): Promise<PageControllerRedi
 }
 
 /**
- * `include edit.cfm` after a failed save: people's Edit Profile data with the save's bean and errors, for the user's own
- * site, which `update()` sets as `rc.siteid`.
+ * `include edit.cfm` after a failed save: people's Edit Profile data with the save's bean, posted interests and errors,
+ * for the user's own site, which `update()` sets as `rc.siteid`.
  * @throws Error When the controller step has not run for `ctx`.
  * @throws GatewayDenialError When people or programs-sites refuses a read (401 or 403).
  */
@@ -62,8 +63,12 @@ async function loadFailedSaveView(ctx: ScreenContext): Promise<EditProfileView> 
   const failed = FAILED_SAVES.get(ctx);
   if (failed === undefined) throw new Error('cEditProfile.update loaded before its controller step ran');
   const stored = okBody(await ctx.gateway.people.call('get', '/v1/profile'), SERVICE, 'getProfile');
-  const profile: ProfileData = { ...stored, user: failed.userBean ?? stored.user, errors: failed.errors, retained: true };
-  return buildEditProfileView(ctx, profile, { rcSiteId: profile.user.SiteID, rc: editProfileRc(ctx.req) });
+  const rc = editProfileRc(ctx.req);
+  // userManager.update sets the bean from rc, whose setCategoryID replaces the stored interests with the trimmed posted list.
+  const categoryIds = cfListToArray(javaTrim(rc.categoryID));
+  const user = failed.userBean ?? stored.user;
+  const profile: ProfileData = { ...stored, user, categoryIds, errors: failed.errors, retained: true };
+  return buildEditProfileView(ctx, profile, { rcSiteId: profile.user.SiteID, rc });
 }
 
 /** `cEditProfile.update` without a photo, owned by people, behind the cEditProfile `before()` gate. */

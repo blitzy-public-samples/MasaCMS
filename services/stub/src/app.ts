@@ -7,6 +7,7 @@ import {
   baseEnvSchema,
   createService,
   loadEnv,
+  processEnvSchema,
   publisherEmulatorHost,
   systemClock,
   type BaseEnv,
@@ -29,6 +30,9 @@ const VERSION = '1.0.0';
 // Default project of the harness's local Pub/Sub topology; the stub is local only and never deployed.
 const LOCAL_PROJECT_ID = 'opt2-local';
 
+/** Base variables with the stub's own name, its database and its own URL, the target of its outbox sweep and queue control, required. */
+export const stubEnvSchema = processEnvSchema(baseEnvSchema, { service: STUB_OWNER, callees: [STUB_OWNER], database: true });
+
 /** Dependencies `buildApp` uses instead of building its own from the environment. */
 export interface BuildAppOptions {
   env?: BaseEnv;
@@ -41,7 +45,7 @@ export interface BuildAppOptions {
 
 /** Builds the stub Fastify app with every route and hook registered; never listens. */
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const env = options.env ?? loadEnv(baseEnvSchema);
+  const env = options.env ?? loadEnv(stubEnvSchema);
   // Checked before createService acquires anything; an injected publisher needs no emulator.
   const emulatorHost = options.publisher === undefined ? publisherEmulatorHost(env) : undefined;
   const app = await createService({

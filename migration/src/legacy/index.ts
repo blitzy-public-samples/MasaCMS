@@ -49,6 +49,9 @@ export {
 export type { StartupGuardSteps, StartupGuardOutcome } from './startup-guard.js';
 
 export { initLegacy, opt2SyncReady, Opt2SyncUnavailableError } from './init-legacy.js';
+
+export { CLUSTER_COMMANDS_COUNT_SQL, checkClusterGuard, environmentRecordPath } from './cluster-guard.js';
+export type { ClusterGuardVerdict } from './cluster-guard.js';
 export type { InitLegacyLogger, InitLegacyResult } from './init-legacy.js';
 
 export { restartLegacy, superviseChild, RestartUnavailableError, LegacyRestartError } from './restart.js';

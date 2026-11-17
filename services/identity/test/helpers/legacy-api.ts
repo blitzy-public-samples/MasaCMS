@@ -252,11 +252,10 @@ export function expectOracleAnswer(res: Answer, answer: OracleAnswer, body = res
 }
 
 let stateDir: string;
-let gatewayToken: string;
 
-/** Headers of a gateway-relayed call, with a user token for `caller` when given. */
+/** Headers of a gateway-relayed call: a fresh gateway token, and a user token for `caller` when given. */
 export async function headersFor(caller?: Caller): Promise<Record<string, string>> {
-  const headers: Record<string, string> = { [INVOCATION_HEADER]: `Bearer ${gatewayToken}` };
+  const headers: Record<string, string> = { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'identity' })}` };
   if (caller !== undefined) {
     headers.authorization = `Bearer ${await mintUserToken({ sub: caller.sub, sid: caller.sid, site: caller.site ?? SITE, roles: caller.roles })}`;
   }
@@ -338,12 +337,11 @@ export async function buildApp(deps: LegacyApiRouteDeps, logger: Logger = quietL
   return app;
 }
 
-/** Registers the file hooks that write the test secrets {@link buildApp} reads and mint the gateway token {@link headersFor} sends. */
+/** Registers the file hooks that write and remove the test secrets {@link buildApp} reads. */
 export function registerLegacyApiState(): void {
   beforeAll(async () => {
     stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-identity-legacy-api-'));
     await writeTestSecrets(stateDir);
-    gatewayToken = await mintServiceToken({ caller: 'gateway', audience: 'identity' });
   });
 
   afterAll(async () => {

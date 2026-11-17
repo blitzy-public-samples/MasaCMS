@@ -1,5 +1,6 @@
 /** Transactional outbox writes inside the business transaction, the roster-protocol operation hold, and the in-request flush registration. */
-import { buildEnvelope, validateEnvelope, type EventEnvelope } from '../events/index.js';
+import { buildEnvelope, publishedSize, publishedSizeError, validateEnvelope, type EventEnvelope } from '../events/index.js';
+import { recordUnpublishedEvents } from '../service-kit/context.js';
 import type { TenantTx } from '../tenancy/index.js';
 import { localTimestamp, outboxTable, type OutboxKind } from './ddl.js';
 import { flushAfterCommit, outboxRuntimeFor, type OutboxRuntime } from './flush.js';
@@ -67,7 +68,8 @@ function registerFlush(tx: TenantTx, runtime: OutboxRuntime, ids: readonly strin
   if (entry === undefined) {
     const created = { ids: [] as string[] };
     tx.onCommit(async () => {
-      await flushAfterCommit(runtime, tx.tenantId, created.ids);
+      const { failed, skipped } = await flushAfterCommit(runtime, tx.tenantId, created.ids);
+      if (failed + skipped > 0) recordUnpublishedEvents(created.ids);
     });
     pendingFlush.set(tx, created);
     entry = created;
@@ -76,10 +78,10 @@ function registerFlush(tx: TenantTx, runtime: OutboxRuntime, ids: readonly strin
 }
 
 /**
- * Writes one outbox row in `tx` and, unless it is held, schedules its publish after COMMIT.
+ * Writes one outbox row in `tx` and, unless it is held, schedules its publish after COMMIT; an incomplete publish withholds the request's answer.
  * `runtime` defaults to the one registered for `tx.schema`, resolved after the transaction check.
  * Returns the stored envelope, or null when `origin` suppresses a `process` event.
- * Throws OutboxTransactionError without a tenant transaction and OutboxPayloadError when the payload or envelope fails its contract.
+ * Throws OutboxTransactionError without a tenant transaction and OutboxPayloadError when the payload or envelope fails its contract or the envelope exceeds the publish size limit.
  */
 export async function writeOutbox<P>(
   tx: TenantTx,
@@ -109,10 +111,14 @@ export async function writeOutbox<P>(
     ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {}),
     ...(input.causationId !== undefined ? { causationId: input.causationId } : {}),
   });
-  // The publisher rejects a non-conforming envelope, so such a row would block its ordering key in every sweep.
+  // The publisher rejects a non-conforming or oversized envelope, so such a row would block its ordering key in every sweep.
   const envelopeCheck = validateEnvelope(envelope);
   if (!envelopeCheck.ok) {
     throw new OutboxPayloadError(input.topic, envelopeCheck.errors, 'envelope');
+  }
+  const oversize = publishedSizeError(publishedSize(envelope));
+  if (oversize !== undefined) {
+    throw new OutboxPayloadError(input.topic, [oversize], 'envelope');
   }
 
   const held = input.operationId !== undefined;
@@ -137,7 +143,7 @@ export async function writeOutbox<P>(
   return envelope;
 }
 
-/** Unholds the rows of `operationId` in `tx`, schedules their publish after COMMIT and returns how many were released; `runtime` defaults as in writeOutbox. */
+/** Unholds the rows of `operationId` in `tx`, schedules their publish after COMMIT as writeOutbox does and returns how many were released; `runtime` defaults as in writeOutbox. */
 export async function releaseOperation(tx: TenantTx, operationId: string, runtime?: OutboxRuntime): Promise<number> {
   assertTenantTx(tx);
   const rt = runtime ?? outboxRuntimeFor(tx.schema);

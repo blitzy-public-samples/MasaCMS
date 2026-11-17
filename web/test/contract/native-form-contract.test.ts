@@ -57,6 +57,7 @@ const SUBMIT_SCRIPT = /userManager\.submitForm\(document\.forms\.form1,'([^']*)'
 const CSRF_ROUTE = routeKey('POST', 'identity', '/v1/csrf/tokens');
 const GROUP_ROUTE = routeKey('GET', 'identity', `/v1/groups/${GROUP_IDS.defaultEditor}`);
 const USER_EDIT_ROUTE = routeKey('GET', 'people', '/v1/users/edit');
+const INTEREST_GROUPS_ROUTE = routeKey('GET', 'strategies-content', '/v1/sites/default/private-interest-groups');
 const ADDRESS_EDIT_ROUTE = routeKey('GET', 'people', '/v1/users/address');
 const ROUTE_USER = routeKey('GET', 'people', '/v1/users/route');
 
@@ -180,9 +181,13 @@ async function editGroupForm(rc: Readonly<Record<string, string>>): Promise<stri
   return toString(renderEditGroup(ctx, await loadEditGroup(ctx, NO_GROUP_SUBTYPES)).body);
 }
 
-/** The production Edit User form for `rc`, people answering `edit`. */
+/** The production Edit User form for `rc`, people answering `edit` and strategies-content an empty interest pool. */
 async function editUserForm(rc: Readonly<Record<string, string>>, edit: UserEditData): Promise<string> {
-  const gateway = fakeGatewayClient({ [USER_EDIT_ROUTE]: { status: 200, body: edit }, [CSRF_ROUTE]: issueTokens });
+  const gateway = fakeGatewayClient({
+    [USER_EDIT_ROUTE]: { status: 200, body: edit },
+    [CSRF_ROUTE]: issueTokens,
+    [INTEREST_GROUPS_ROUTE]: { status: 200, body: { items: [] } },
+  });
   const ctx = contextFor(adminRequest('edituser', rc), gateway);
   return toString((await renderEditUser(ctx, await loadEditUser(ctx))).body);
 }

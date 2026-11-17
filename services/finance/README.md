@@ -91,7 +91,7 @@ Served under `/legacy-fixtures/cfml/api.cfm/finance` in the Masa envelope. The g
 
 ### OPT-2 screens
 
-`/v1/finance/**` serves the screens at `/opt2/admin/finance/*` that `web/` renders: record list (also readable by `reporting.exporter`), record detail with versions, transition actions (`/v1/finance/records/{id}/transitions/{action}`), attachments, download URLs signed for 15 minutes (`…/attachments/{aid}/download-url`) and rollups. `/v2/finance/**` adds paged reads of record detail, versions, attachments and rollups.
+`/v1/finance/**` serves the screens at `/opt2/admin/finance/*` that `web/` renders: record list (also readable by `reporting.exporter`; paged by `page` or `pageIndex` and `pageSize` or `itemsPerPage`, up to 1000), record detail with versions, transition actions (`/v1/finance/records/{id}/transitions/{action}`), attachments, download URLs signed for 15 minutes (`…/attachments/{aid}/download-url`) and rollups. `/v2/finance/**` adds paged reads of record detail, versions, attachments and rollups.
 
 ### Internal and managed routes
 
@@ -121,8 +121,8 @@ npm run export-transitions           # regenerate the transition table and its e
 npm run export-transitions -- --check
 ```
 
-- **Configuration.** `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)). Locally `harness/repro/up.sh` starts it on port 8119 (`harness/repro/ports.env`) with `PG_USER=finance_app`. `OPT2_SERVICE_URLS` must contain `identity` (CSRF checks) and `reporting` (export scope checks).
-- **Test dependencies.** The security and contract suites need nothing external. The PostgreSQL-backed suites under `test/unit` and `test/events` read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`, create a throwaway schema and roles through `@opt2/platform/testing`, and are skipped when PostgreSQL is unreachable. `test/events` is also skipped when `PG_HOST` is unset, and needs no Pub/Sub emulator: it injects push deliveries in process and captures publishes in memory.
+- **Configuration.** `financeEnvSchema` (`src/app.ts`): `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)) with `OPT2_SERVICE_NAME=finance`, `OPT2_DB_AUTH` and `PG_DATABASE` required. Locally `harness/repro/up.sh` starts it on port 8119 (`harness/repro/ports.env`) with `PG_USER=finance_app`. `OPT2_SERVICE_URLS` must contain `identity` (CSRF checks) and `reporting` (export scope checks); start-up refuses an environment that misses any of these, naming each.
+- **Test dependencies.** The security and contract suites need nothing external. The PostgreSQL-backed suites under `test/unit` and `test/events` read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`, create a throwaway schema and roles through `@opt2/platform/testing`, are skipped when `PG_HOST` is unset and fail when PostgreSQL is unreachable. `test/events` needs no Pub/Sub emulator: it injects push deliveries in process and captures publishes in memory.
 - **Cloud.** Cloud Run with `min_instance_count = 0`, internal-only ingress and Cloud SQL IAM authentication as a member of `finance_app` (`infra/terraform/`, plan only).
 
 ## Parity evidence

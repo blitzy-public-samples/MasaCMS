@@ -81,7 +81,7 @@ const DATASET = {
   digest: 'FIXTURE-DIGEST',
   masa: {
     sites: [
-      { siteID: 'tenant-a', site: 'Tenant A', orderNo: 1 },
+      { siteID: 'tenant-a', site: 'Tenant A', orderNo: 1, domain: 'tenant-a.localhost' },
       { siteID: 'tenant-b', site: 'Tenant B', orderNo: 2 },
     ],
     groups: [],
@@ -262,6 +262,49 @@ describe('origins', () => {
     expect(ctx.baseUrl).toBe(expected);
     for (const s of ctx.sessions.values()) await s.get('/');
     expect(fake.calls.map((c) => c.url.href)).toStrictEqual([`${expected}/`, `${expected}/`]);
+  });
+
+  it.each<[Origin, EnvLike, string, string]>([
+    ['legacy', { PORT: LEGACY_PORT }, BASE, 'http://tenant-a.localhost:8500'],
+    ['legacy', { LEGACY_ORIGIN: 'http://localhost:21680/' }, 'http://localhost:21680', 'http://tenant-a.localhost:21680'],
+    ['gateway', {}, GATEWAY, 'http://tenant-a.localhost:8100'],
+  ])(
+    'points a session with site tenant-a of a %s context (env %j) at the site domain, the others at the origin',
+    async (origin, originEnv, expected, siteUrl) => {
+      const fake = fakeFetch(on('GET', '/', () => html('<p>ok</p>')));
+      const sessions = { admin: NO_LOGIN, visitor: { login: 'none', via: 'public', site: 'tenant-a' } } as const;
+      const ctx = createScenarioContext(
+        { id: 'GS-PUB-01', sessions },
+        { origin, env: { ...env, ...originEnv }, fetch: fake.fetch },
+      );
+      expect(ctx.baseUrl).toBe(expected);
+      for (const s of ctx.sessions.values()) await s.get('/');
+      expect(fake.calls.map((c) => c.url.href)).toStrictEqual([`${expected}/`, `${siteUrl}/`]);
+    },
+  );
+
+  it.each([
+    {
+      when: 'the dataset has no such site',
+      site: 'tenant-x',
+      message:
+        'GS-PUB-01: seedRef site tenant-x: no row at index 0 among the 0 rows of masa.sites matching {"siteID":"tenant-x"}',
+    },
+    { when: 'its site row has no domain', site: 'tenant-b', message: 'GS-PUB-01: site tenant-b has no domain in masa.sites' },
+    {
+      when: 'its domain is not a host name',
+      site: 'tenant-b',
+      domain: 'tenant b.localhost',
+      message: 'GS-PUB-01: site tenant-b domain tenant b.localhost in masa.sites is not a host name',
+    },
+  ])('throws GoldenConfigError for a session site when $when', ({ site, domain, message }) => {
+    if (domain !== undefined) {
+      const sites = DATASET.masa.sites.map((row) => (row.siteID === site ? { ...row, domain } : row));
+      writeJson(join(stateDir, 'seed', 'dataset.json'), { ...DATASET, masa: { ...DATASET.masa, sites } });
+    }
+    const err = thrown(() => context({ id: 'GS-PUB-01', sessions: { visitor: { login: 'none', via: 'public', site } } }));
+    expect(err).toBeInstanceOf(GoldenConfigError);
+    expect((err as GoldenConfigError).message).toBe(message);
   });
 });
 

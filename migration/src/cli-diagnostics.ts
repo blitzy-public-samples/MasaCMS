@@ -35,9 +35,11 @@ function redact(text: string): string {
   return out.replace(URL_QUERY, '$1');
 }
 
-/** `text` after `redact` and the platform's masking of credentials, session material and email addresses. */
+/** `text` after `redact` and, unless it is a platform safe error text, the platform's masking of credentials, session material and email addresses. */
 export function scrub(logging: LoggingModule, text: string): string {
-  return logging.redactText(redact(text));
+  const redacted = redact(text);
+  // Safe error texts are value-free; masking would read `<VAR>_PASSWORD: is required` as a credential and its value.
+  return safeText(logging, redacted) === redacted ? redacted : logging.redactText(redacted);
 }
 
 /** Writes `value` as one JSON line on stdout, every string scrubbed and every bigint as its decimal string. */

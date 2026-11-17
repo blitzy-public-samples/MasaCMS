@@ -1,5 +1,6 @@
 /** Collections: feedBean, feedManager, feedDAO, feedUtility.doImport and the cfeed controller over `repo.feeds` and `legacy/remote-feed`. */
 import {
+  LegacyServiceUnavailableError,
   cfDateTimeFormat,
   cfEq,
   cfIsBoolean,
@@ -21,7 +22,7 @@ import {
 // The role names identity mints, read as permissions.ts reads them.
 import { Roles } from '@opt2/platform/auth';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
-import { SERVICE_CALL_TIMEOUT_MS, type Clock } from '@opt2/platform/service-kit';
+import { LEGACY_POST_LIMIT_BYTES, SERVICE_CALL_TIMEOUT_MS, type Clock } from '@opt2/platform/service-kit';
 import { registryEntryForTenant, siteForTenant, tenantForRegisteredSite, withTenant, type RegistrySource, type TenantTx } from '@opt2/platform/tenancy';
 import {
   feedItemRemoteId,
@@ -891,6 +892,28 @@ export function listFeeds(deps: FeedDeps, actor: Actor, siteId: string): Promise
   }));
 }
 
+/** listFeeds' Local, then Remote collections, batch by batch in one tenant transaction until `visit` answers false. */
+export function readFeedBatches(
+  deps: FeedDeps,
+  actor: Actor,
+  siteId: string,
+  visit: (list: keyof FeedLists, feeds: FeedFields[]) => Promise<boolean>,
+): Promise<void> {
+  const lists = [['rsLocal', 'Local'], ['rsRemote', 'Remote']] as const;
+  return withTenant(deps.db, actor.tenantId, async (tx) => {
+    for (const [list, type] of lists) {
+      for await (const feeds of deps.repository.feeds.listFeedBatches(tx, { siteId, type })) {
+        if (!(await visit(list, feeds))) return;
+      }
+    }
+  });
+}
+
+/** The `feedid` and `name` of the site's collections of `type`, in listFeeds' order. */
+export function listFeedNames(deps: FeedDeps, actor: Actor, siteId: string, type: 'Local' | 'Remote'): Promise<Pick<FeedFields, 'feedid' | 'name'>[]> {
+  return withTenant(deps.db, actor.tenantId, (tx) => deps.repository.feeds.listFeedNames(tx, { siteId, type }));
+}
+
 /** The JSON API `feed` scope of `args.siteId` (listFeeds' feeds, only those of `feedIds` when given), handed to `query` inside one tenant transaction. */
 export function querySiteFeeds<T>(
   deps: FeedDeps,
@@ -1459,21 +1482,60 @@ export class RemoteFeedHttpError extends Error {
   }
 }
 
-/** The response charset, as cfhttp decodes the body by it; UTF-8 when absent or unknown. */
-function decodeBody(bytes: Uint8Array, contentType: string | null): string {
-  const charset = /charset\s*=\s*"?([^";]+)"?/i.exec(contentType ?? '')?.[1]?.trim();
-  try {
-    return new TextDecoder(charset ?? 'utf-8').decode(bytes);
-  } catch {
-    return new TextDecoder('utf-8').decode(bytes);
+/** The most bytes of a remote feed body, counted after decompression, that defaultFetchRemote reads: the legacy post limit. */
+export const REMOTE_FEED_LIMIT_BYTES = LEGACY_POST_LIMIT_BYTES;
+
+/** Halts a remote feed body over `limit` bytes, which is cancelled rather than read past the limit; answered as the legacy 503. */
+export class RemoteFeedTooLargeError extends LegacyServiceUnavailableError {
+  override readonly name: string = 'RemoteFeedTooLargeError';
+
+  constructor(
+    readonly url: string,
+    readonly limit: number,
+  ) {
+    super(`Remote feed ${url} is over ${limit} bytes`, 'auto', 'feed-remote-oversize-halted');
   }
 }
 
-/** One GET of `url` with the global fetch, bounded by the service-call timeout and never retried; redirects are followed as cfhttp follows them. */
+/** The decoder of the response charset, as cfhttp decodes the body by it; UTF-8 when absent or unknown. */
+function bodyDecoder(contentType: string | null): InstanceType<typeof TextDecoder> {
+  const charset = /charset\s*=\s*"?([^";]+)"?/i.exec(contentType ?? '')?.[1]?.trim();
+  try {
+    return new TextDecoder(charset ?? 'utf-8');
+  } catch {
+    return new TextDecoder('utf-8');
+  }
+}
+
+/** The body of `response`, decoded as it streams; refused, with the stream cancelled, once past REMOTE_FEED_LIMIT_BYTES. */
+async function readBoundedBody(url: string, response: Response): Promise<string> {
+  if (response.body === null) return '';
+  const identity = ['', 'identity'].includes((response.headers.get('content-encoding') ?? '').trim().toLowerCase());
+  if (identity && Number(response.headers.get('content-length')) > REMOTE_FEED_LIMIT_BYTES) {
+    await response.body.cancel();
+    throw new RemoteFeedTooLargeError(url, REMOTE_FEED_LIMIT_BYTES);
+  }
+  const decoder = bodyDecoder(response.headers.get('content-type'));
+  // A fetch body yields Uint8Array chunks; undici types them as any.
+  const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+  let received = 0;
+  let text = '';
+  for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+    received += chunk.value.byteLength;
+    if (received > REMOTE_FEED_LIMIT_BYTES) {
+      await reader.cancel();
+      throw new RemoteFeedTooLargeError(url, REMOTE_FEED_LIMIT_BYTES);
+    }
+    text += decoder.decode(chunk.value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
+/** One GET of `url` with the global fetch, never retried, following redirects as cfhttp does; bounded by the service-call timeout and REMOTE_FEED_LIMIT_BYTES. */
 export const defaultFetchRemote: FetchRemote = async (url, opts) => {
   if ((opts.username ?? '') !== '' || (opts.password ?? '') !== '') throw new RemoteFeedAuthUnsupportedError(opts.authType);
   const response = await fetch(url, { method: 'GET', redirect: 'follow', signal: AbortSignal.timeout(SERVICE_CALL_TIMEOUT_MS) });
-  return { status: response.status, body: decodeBody(new Uint8Array(await response.arrayBuffer()), response.headers.get('content-type')) };
+  return { status: response.status, body: await readBoundedBody(url, response) };
 };
 
 /** feedUtility.doImport's `theImport` struct, which cfeed.import2 renders. */

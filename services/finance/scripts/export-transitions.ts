@@ -190,6 +190,22 @@ async function readCommitted(path: string): Promise<string | null> {
   }
 }
 
+/** True when the committed export text is a generated export equal to `exportDoc` apart from its run metadata. */
+function isCurrentExport(text: string | null, exportDoc: FinanceExport): boolean {
+  if (text === null) return false;
+  let committed: unknown;
+  try {
+    committed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  return (
+    isRecord(committed) &&
+    committed['provenance'] === 'generated' &&
+    JSON.stringify(withoutRunMetadata(committed)) === JSON.stringify(withoutRunMetadata(exportDoc))
+  );
+}
+
 /** Stderr report for one committed file compared after `normalise`; empty when it matches `expected`. */
 async function driftReport(path: string, expected: unknown, normalise: (value: unknown) => unknown): Promise<string[]> {
   const text = await readCommitted(path);
@@ -217,10 +233,14 @@ async function main(argv: readonly string[]): Promise<number> {
 
   if (mode === 'write') {
     await mkdir(dirname(TABLE_PATH), { recursive: true });
-    await mkdir(dirname(EXPORT_PATH), { recursive: true });
     await writeTableJson(rows, TABLE_PATH);
-    await writeFile(EXPORT_PATH, `${JSON.stringify(exportDoc, null, 2)}\n`, 'utf8');
     process.stdout.write(`${displayPath(TABLE_PATH)}: ${rows.length} rows\n`);
+    if (isCurrentExport(await readCommitted(EXPORT_PATH), exportDoc)) {
+      process.stdout.write(`unchanged: ${displayPath(EXPORT_PATH)}\n`);
+      return 0;
+    }
+    await mkdir(dirname(EXPORT_PATH), { recursive: true });
+    await writeFile(EXPORT_PATH, `${JSON.stringify(exportDoc, null, 2)}\n`, 'utf8');
     process.stdout.write(`${displayPath(EXPORT_PATH)}: ${exportDoc.rows.length} rows\n`);
     return 0;
   }

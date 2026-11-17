@@ -27,6 +27,7 @@ import {
   type JsonApiHandlerFn,
   type JsonApiResult,
 } from '../../src/routes/jsonapi/types.js';
+import { uploadedFile } from '../helpers/uploads.js';
 
 type Struct = Record<string, unknown>;
 
@@ -158,9 +159,19 @@ function callOf(input: CallInput): { call: JsonApiCall; csrfCalls: () => number 
   return { call, csrfCalls: () => validations };
 }
 
-/** A posted part of `fileName` under `newfile`. */
+/** File names of the parts whose streams were opened, in order; emptied before each test. */
+const opened: string[] = [];
+
+/** A posted part of `fileName` under `newfile`, recording in {@link opened} each time its stream is opened. */
 function part(fileName: string, contentType = 'application/pdf', fieldName = 'newfile'): UploadedFile {
-  return { fieldName, fileName, contentType, bytes: Buffer.from(`bytes of ${fileName}`) };
+  const file = uploadedFile({ fieldName, fileName, contentType }, Buffer.from(`bytes of ${fileName}`));
+  return {
+    ...file,
+    stream: () => {
+      opened.push(fileName);
+      return file.stream();
+    },
+  };
 }
 
 /** The handler of `method`, which every file entity handler serves. */
@@ -229,6 +240,7 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
 
   beforeEach(() => {
     puts = [];
+    opened.length = 0;
     config = { ...CONTENT_CONFIG_DEFAULTS };
   });
 
@@ -404,6 +416,7 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
       expect(data).toMatchObject({ isnew: 0, filename: 'report.pdf', fileext: 'pdf', contentid: CONTENT_ID, caption: 'Q2', saveErrors: '', errors: {} });
       expect(isCfUuid(String(data['fileid']))).toBe(true);
       expect(puts).toEqual([`${TENANT_B.tenantId}/${String(data['fileid'])}.pdf`]);
+      expect(opened).toEqual(['report.pdf']);
       expect(csrfCalls()).toBe(1);
     });
 
@@ -431,6 +444,7 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
       const { call } = save({ site, actor: actorOf(TENANT_A), files: [part(fileName, 'image/jpeg')] });
       await expect(handlerOf(fileHandler, 'save')(ctx, call)).rejects.toBeInstanceOf(ImageUploadHaltedError);
       expect(puts).toEqual([]);
+      expect(opened).toEqual([]);
       expect([await fileCount(UMBRELLA), await fileCount(TENANT_A.tenantId)]).toEqual(counts);
     });
 
@@ -438,12 +452,14 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
       const { call } = save({ actor: actorOf(TENANT_B, [Roles.member]), files: [part('a.pdf')], csrf: false });
       await expect(handlerOf(fileHandler, 'save')(ctx, call)).resolves.toEqual({ error: 'invalidTokens' });
       expect(puts).toEqual([]);
+      expect(opened).toEqual([]);
     });
 
     it('answers authorization without the module permission once the tokens pass', async () => {
       const { call, csrfCalls } = save({ actor: actorOf(TENANT_B, [Roles.member]), files: [part('a.pdf')] });
       await expect(handlerOf(fileHandler, 'save')(ctx, call)).resolves.toEqual({ error: 'authorization' });
       expect(csrfCalls()).toBe(1);
+      expect(opened).toEqual([]);
     });
 
     it.each([
@@ -454,6 +470,7 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
       const { call } = save({ params, ...(files === undefined ? {} : { files }) });
       await expect(handlerOf(fileHandler, 'save')(ctx, call)).rejects.toBeInstanceOf(LegacyServiceUnavailableError);
       expect(puts).toEqual([]);
+      expect(opened).toEqual([]);
     });
 
     it('reads the part posted under the fileField the request names', async () => {
@@ -467,6 +484,7 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
       expect(data).toMatchObject({ isnew: 1, filename: '', saveErrors: '', errors: {} });
       expect(isCfUuid(String(data['fileid']))).toBe(true);
       expect(puts).toEqual([]);
+      expect(opened).toEqual([]);
     });
 
     it('stores a posted remotePubDate', async () => {
@@ -814,6 +832,67 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
       ] as const);
       expect(found).toEqual(listed.find((row) => sameId(row.metaid, metaId)) ?? null);
       expect(found?.metaid ?? null).toBe(expected);
+    });
+
+    describe('feeds narrowed by fields', () => {
+      const IMAGES = { siteId: 'image-site', tenantId: TENANT_B.tenantId };
+      const imageIdOf = (n: number): string => cfId('I', n);
+      const bytesOf = (n: number, variant: string): Buffer => Buffer.from(`${variant}-${String(n)}-${'#'.repeat(2048)}`);
+      // Past the LIKE length SQL compiles, so only a scan of the site's rows answers it: file names holding a `2`.
+      const LONG_LIKE = `${'*'.repeat(16_400)}2*`;
+      const BYTEA = /"image(small|medium)?"/;
+
+      beforeAll(async () => {
+        for (let n = 1; n <= 40; n += 1) {
+          await insertFile(TENANT_B.tenantId, imageIdOf(n), { siteid: IMAGES.siteId, filename: `img-${String(n)}.png`, fileext: 'png', filesize: n % 6, caption: `c${String(n % 4)}` });
+        }
+        await gated(TENANT_B.tenantId, async (tx) => {
+          for (let n = 1; n <= 40; n += 1) {
+            await tx.query(`UPDATE ${handle.schema}.file SET image = $2, imagesmall = $3 WHERE tenant_id = $4 AND fileid = $1`, [
+              imageIdOf(n),
+              bytesOf(n, 'image'),
+              n % 2 === 0 ? bytesOf(n, 'small') : null,
+              tx.tenantId,
+            ]);
+          }
+        });
+      });
+
+      /** The SELECT lists of the recorded statements reading `table`. */
+      const selectLists = (statements: readonly Statement[], table: string): string[] =>
+        statements.filter((s) => s.sql.includes(`."${table}"`)).map((s) => /SELECT (.*?) FROM /s.exec(s.sql)?.[1] ?? '');
+
+      it.each<[string, EntityHandler, CallInput, boolean]>([
+        ['file findAll without fields', fileHandler, { method: 'findAll', site: IMAGES, url: { itemsPerPage: 3, pageIndex: 2 } }, true],
+        ['file findAll of fileid and filename', fileHandler, { method: 'findAll', site: IMAGES, url: { fields: 'fileid,filename' } }, false],
+        ['file findAll of a field and a sort', fileHandler, { method: 'findAll', site: IMAGES, url: { fields: 'filename', sort: '-filesize,caption' } }, false],
+        ['file findAll of fields without the key', fileHandler, { method: 'findAll', site: IMAGES, url: { fields: 'caption,nosuch' } }, false],
+        ['file findQuery of fields by a LIKE without a SQL form', fileHandler, { method: 'findQuery', site: IMAGES, url: { fields: 'fileid,filename', filename: LONG_LIKE, itemsPerPage: 1, pageIndex: 3 } }, false],
+        ['file findQuery of fields by a LIKE without a SQL form, sorted', fileHandler, { method: 'findQuery', site: IMAGES, url: { fields: 'filename', filename: LONG_LIKE, sort: '-caption' } }, false],
+        ['file findQuery by a LIKE without a SQL form, without fields', fileHandler, { method: 'findQuery', site: IMAGES, url: { filename: LONG_LIKE, itemsPerPage: 2, pageIndex: 2 } }, true],
+        ['file findMany of fields', fileHandler, { method: 'findMany', site: IMAGES, ids: [imageIdOf(9), imageIdOf(2)], url: { fields: 'filename' } }, false],
+        ['file countOnly of fields', fileHandler, { method: 'findAll', site: IMAGES, url: { fields: 'filename', countOnly: 'true' } }, false],
+        ['fileMetaData findAll of fields', fileMetaDataHandler, { method: 'findAll', entity: 'fileMetaData', site: CORPUS, url: { fields: 'caption' } }, false],
+      ])('%s answers what the in-memory feed answers, byte for byte', async (_label, entity, input, bytea) => {
+        const statements: Statement[] = [];
+        const rows = await siteListRows(entity, callOf(input).call);
+        const expected = await outcomeOf(entity, memoryCtx(rows), input);
+        const actual = await outcomeOf(entity, recordingCtx(statements), input);
+        expect(actual).toEqual(expected);
+        expect(JSON.stringify(actual)).toBe(JSON.stringify(expected));
+        const lists = selectLists(statements, entity === fileHandler ? 'file' : 'file_metadata');
+        expect(lists.length).toBeGreaterThan(0);
+        expect(lists.some((list) => BYTEA.test(list))).toBe(bytea);
+      });
+
+      it('serves the stored image bytes as base64 without fields, and only the listed columns with them', async () => {
+        const all = await handlerOf(fileHandler, 'findAll')(ctx, callOf({ method: 'findAll', site: IMAGES, url: { itemsPerPage: 2 } }).call);
+        const [first, second] = dataOf(all)['items'] as Struct[];
+        expect(first).toMatchObject({ fileid: imageIdOf(1), image: bytesOf(1, 'image').toString('base64'), imagesmall: '' });
+        expect(second).toMatchObject({ fileid: imageIdOf(2), imagesmall: bytesOf(2, 'small').toString('base64') });
+        const narrow = await handlerOf(fileHandler, 'findAll')(ctx, callOf({ method: 'findAll', site: IMAGES, url: { fields: 'fileid,filename', itemsPerPage: 1 } }).call);
+        expect((dataOf(narrow)['items'] as Struct[])[0]).toEqual({ fileid: imageIdOf(1), filename: 'img-1.png', siteid: '', isnew: 0, id: imageIdOf(1), entityname: 'file' });
+      });
     });
   });
 });

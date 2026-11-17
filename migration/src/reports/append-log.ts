@@ -1,4 +1,4 @@
-// Appends and upserts entries in the migration service's run logs, `windows.json` and `transitions.json`.
+// Appends, upserts and rewrites entries in the migration service's run logs, `windows.json` and `transitions.json`.
 import path from 'node:path';
 
 import { projectReportValue } from './redact.js';
@@ -42,7 +42,7 @@ export const TRANSITION_STEP_NAMES = [
 /** Name of one transition step. */
 export type TransitionStepName = (typeof TRANSITION_STEP_NAMES)[number];
 
-/** One cut-over transition; `setT` holds the units whose authority it changes. */
+/** One cut-over transition; `setT` holds its transition set `T`: the units whose authority it changes and, for a rollback version, every unit of `R`. */
 export interface TransitionLogEntry {
   transitionId: string;
   from: string;
@@ -130,18 +130,17 @@ function serialise<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return result;
 }
 
-/** Rewrites `file` with its collection changed by `mutate`, keeping every other non-head key. */
+/** Rewrites `file` with the collection `build` returns from a copy of its current one, keeping every other non-head key. */
 async function update(
   target: ReportTarget,
   file: string,
-  mutate: (entries: unknown[]) => void,
+  build: (entries: unknown[]) => unknown[],
   opts: { clock?: ReportClock } | undefined,
 ): Promise<void> {
   const descriptor = descriptorFor(file);
   const doc = (await readJsonReport(target.reportsDir, file)) ?? {};
   const current: unknown = doc[descriptor.collectionKey];
-  const entries: unknown[] = Array.isArray(current) ? [...(current as unknown[])] : [];
-  mutate(entries);
+  const entries = build(Array.isArray(current) ? [...(current as unknown[])] : []);
   const body: Record<string, unknown> = Object.fromEntries(Object.entries(doc).filter(([key]) => !HEAD_KEYS.has(key)));
   for (const [key, value] of Object.entries(descriptor.defaults ?? {})) {
     if (!Object.hasOwn(body, key)) body[key] = value;
@@ -173,6 +172,7 @@ export function appendLogEntry<E extends object>(
       file,
       (entries) => {
         entries.push(entry);
+        return entries;
       },
       opts,
     ),
@@ -199,10 +199,21 @@ export function upsertLogEntry<E extends object>(
         const index = entries.findIndex((existing) => idOf(existing) === id);
         if (index === -1) entries.push(entry);
         else entries[index] = entry;
+        return entries;
       },
       opts,
     ),
   );
+}
+
+/** Rewrites the run log `file` once with the collection `rebuild` returns from the entries it holds, as written. */
+export function rewriteLogEntries(
+  target: ReportTarget,
+  file: RunLogFile | string,
+  rebuild: (entries: unknown[]) => unknown[],
+  opts?: { clock?: ReportClock },
+): Promise<void> {
+  return serialise(logKey(target, file), () => update(target, file, rebuild, opts));
 }
 
 /** Entries of the run log `file` under `reportsDir`, or `[]` when the file does not exist. */

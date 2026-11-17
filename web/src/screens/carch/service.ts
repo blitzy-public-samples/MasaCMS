@@ -1,9 +1,11 @@
 // The carch screens' strategies-content calls through the gateway: page models, writes and raw relays (server-only).
+import type { Readable } from 'node:stream';
 import { isDeepStrictEqual } from 'node:util';
 import { LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
 import type { components, paths } from '@/generated/clients/strategies-content';
 import { secure, type GateDecision } from '@/lib/access-gate';
 import {
+  discardStreamed,
   multipartRelay,
   okBody,
   type FormInput,
@@ -61,6 +63,12 @@ export interface CarchCallOptions {
   readonly rc?: Rc;
   /** The inbound multipart body, posted unchanged in place of the rc fields (non-image uploads). */
   readonly multipart?: MultipartBody;
+}
+
+/** Options of {@link relayCarchRaw}. */
+export interface CarchRawOptions extends CarchCallOptions {
+  /** Relays a 2xx body as it arrives instead of reading it first, as a download does. */
+  readonly stream?: boolean;
 }
 
 /** A facade answer: the contract's success body when `ok`, otherwise the body as relayed. */
@@ -321,7 +329,7 @@ const firstValue = (value: string | string[] | undefined): string | undefined =>
  * A relayed answer as a bare body: status, content type, bytes and the relayed headers and cookies as received; a 3xx
  * with a `Location` also carries legacy's `cflocation` headers beneath the relayed ones.
  */
-function rawBodyOf(res: GatewayResponse<Buffer>): RawBody {
+function rawBodyOf(res: GatewayResponse<Buffer | Readable>): RawBody {
   const relayed: Record<string, string> = {};
   for (const name of RELAYED_HEADERS) {
     const value = firstValue(res.headers[name]);
@@ -422,8 +430,9 @@ export async function toSubmitResult(
 
 /**
  * Relays a carch fragment, JSON or download action: GET sends the rc as url fields; POST sends `siteid` in the query and
- * the rc fields (or the multipart body) as the body. The answer's bytes are returned unchanged and the session values
- * it reports set are applied to `ctx.req`; a 401 or 403 becomes the controller `secure()` redirect.
+ * the rc fields (or the multipart body) as the body. The answer's bytes are returned unchanged, a streamed 2xx body as
+ * it arrives, and the session values it reports set are applied to `ctx.req`; a 401 or 403 becomes the controller
+ * `secure()` redirect.
  * @throws GatewayUnavailableError When strategies-content is unavailable.
  * @throws TypeError When the answer reports session values the contract does not name.
  */
@@ -431,21 +440,24 @@ export async function relayCarchRaw(
   ctx: CarchCallContext,
   action: CarchRawAction,
   method: 'GET' | 'POST',
-  { rc = ctx.req.rc, multipart }: CarchCallOptions = {},
+  { rc = ctx.req.rc, multipart, stream = false }: CarchRawOptions = {},
 ): Promise<RawBody> {
   const sc = ctx.gateway.strategiesContent;
   const path = `/v1/raw/carch/${action}` as const;
   // The effective rc's relay, not the inbound query, is sent: the service renders from what legacy's controller sees.
   const fields = relayContext(ctx.req, rc);
-  const res =
-    method === 'GET'
-      ? await sc.raw('get', path, { query: { params: rcFields(fields) }, headers: csrfHeaders(ctx.req) })
-      : await sc.raw('post', path, {
-          query: declared(fields, 'siteid'),
-          ...postInput(ctx.req, rc, multipart),
-        });
+  const get = () => ({ query: { params: rcFields(fields) }, headers: csrfHeaders(ctx.req) });
+  const post = () => ({ query: declared(fields, 'siteid'), ...postInput(ctx.req, rc, multipart) });
+  let res: GatewayResponse<Buffer | Readable>;
+  if (stream) res = method === 'GET' ? await sc.stream('get', path, get()) : await sc.stream('post', path, post());
+  else res = method === 'GET' ? await sc.raw('get', path, get()) : await sc.raw('post', path, post());
   if (res.status === 401 || res.status === 403) return carchRawRedirect(secureRedirect(ctx.req).location);
-  applyRelayedSessionEffects(ctx.req, firstValue(res.headers[SESSION_EFFECTS_HEADER]));
+  try {
+    applyRelayedSessionEffects(ctx.req, firstValue(res.headers[SESSION_EFFECTS_HEADER]));
+  } catch (error) {
+    discardStreamed(res.body);
+    throw error;
+  }
   return rawBodyOf(res);
 }
 

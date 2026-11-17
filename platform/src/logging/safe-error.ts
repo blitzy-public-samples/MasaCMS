@@ -81,10 +81,100 @@ const SLOT = '(?:[a-z][a-z0-9]*-)+[0-9]+';
 /** Supplied text of a RecurringSlotsTombstonedError, naming only its queue and probed chain task names. */
 const RECURRING_TEXT = `No live chain task on queue ${QUEUE}: tombstoned slots ${SLOT}(?:, ${SLOT})*`;
 
+/** Environment variable name. */
+const ENV_KEY = '[A-Z][A-Z0-9_]*';
+
+/** Condition of a cross-variable rule, ` when <KEY>=<word>`. */
+const ENV_CONDITION = ` when ${ENV_KEY}=[a-z0-9_-]+`;
+
+/** Reason wording: letters, digits, spaces and `,()/|._-`, never `:`, `;`, `@`, quotes or `=`. */
+const REASON_TEXT = '[A-Za-z0-9 ,()/|._-]{1,160}';
+
+/** Reason a schema's own message states: a requirement or constraint in schema words. */
+const RULE_REASON = String.raw`is required(?:${ENV_CONDITION}| \(or OPT2_SERVICE_URLS\.[a-z][a-z0-9-]*\))?|must be unset${ENV_CONDITION}|must equal ${ENV_KEY}|must be ${REASON_TEXT}(?:${ENV_CONDITION})?`;
+
+/** Value-free reason of one invalid variable. */
+const ENV_REASON = `(?:${RULE_REASON}|expected ${REASON_TEXT}|is invalid)`;
+
+/** One `<VAR>: <reason>` entry; a required map entry is named `<VAR>.<service>`. */
+const ENV_ENTRY = String.raw`${ENV_KEY}(?:\.[a-z][a-z0-9-]*)?: ${ENV_REASON}`;
+
+/** Segment of a `/`-separated path inside a configured directory, never `.` or `..`. */
+const FILE_SEGMENT = String.raw`(?!\.\.?(?:/| |$))[A-Za-z0-9._-]+`;
+
+/** Supplied text of an EnvFileError: the directory variable, the file inside it and the cause's system call and code. */
+const ENV_FILE_TEXT = String.raw`(?:[a-z][a-z0-9-]*: )?cannot read ${ENV_KEY} file ${FILE_SEGMENT}(?:/${FILE_SEGMENT})*(?: \([a-z][A-Za-z0-9_]* E[A-Z0-9_]+\))?`;
+
+/** Supplied text of an UnpublishedEventsError, naming only its event count. */
+const UNPUBLISHED_TEXT = String.raw`Outbox publish of [1-9][0-9]* committed event\(s\) incomplete before the answer; left to the sweep`;
+
 /** Every text `safeErrorMessage` produces besides REDACTED, platform errors' supplied texts included, plus the sanitized message of @opentelemetry/instrumentation-pg. */
 const SAFE_TEXT = new RegExp(
-  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|Database unavailable \((?:E[A-Z0-9_]+|[0-9A-Z]{5})\)|(?:[a-z][a-z0-9-]*: )?invalid environment(?: \([A-Z][A-Z0-9_]*(?:\.[a-z][a-z0-9-]*)?(?:, [A-Z][A-Z0-9_]*(?:\.[a-z][a-z0-9-]*)?)*\))?|(?:[a-z][a-z0-9-]*: )?invalid configuration file [a-z][a-z0-9-]*\.json|${GRPC_STATUS_TEXT}|${ABORT_TEXT}|SMTP ${SMTP_COMMAND} E[A-Z0-9_]+|${GATE_TEXT}|${RECURRING_TEXT})$`,
+  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|Database unavailable \((?:E[A-Z0-9_]+|[0-9A-Z]{5})\)|(?:[a-z][a-z0-9-]*: )?invalid environment(?: \(${ENV_ENTRY}(?:; ${ENV_ENTRY})*\))?|${ENV_FILE_TEXT}|(?:[a-z][a-z0-9-]*: )?invalid configuration file [a-z][a-z0-9-]*\.json|${GRPC_STATUS_TEXT}|${ABORT_TEXT}|SMTP ${SMTP_COMMAND} E[A-Z0-9_]+|${GATE_TEXT}|${RECURRING_TEXT}|${UNPUBLISHED_TEXT})$`,
 );
+
+/** Text that is exactly one RULE_REASON. */
+const RULE_REASON_TEXT = new RegExp(`^(?:${RULE_REASON})$`);
+
+/** Text that is exactly one ENV_REASON. */
+const ENV_REASON_TEXT = new RegExp(`^${ENV_REASON}$`);
+
+/** Reasons of the platform's fixed environment messages that do not read as one. */
+const FIXED_ENV_REASONS: ReadonlyMap<string, string> = new Map([
+  ['OPT2_SERVICE_URLS must be a JSON object', 'must be a JSON object'],
+  ['port must be from 1 to 65535', 'must be a port from 1 to 65535'],
+  // Every URL variable the platform builds is http(s).
+  ['Invalid URL', 'expected an http(s) URL'],
+  ['Invalid key in record', 'expected valid record keys'],
+]);
+
+/** Enum option or literal a zod message quotes from the schema. */
+const SCHEMA_WORD = /^(?:"([a-z0-9_-]+)"|([a-z0-9_-]+))$/;
+
+/** Words of zod's size comparison operators. */
+const BOUND_WORDS: ReadonlyMap<string, string> = new Map([
+  ['<=', 'at most'],
+  ['>=', 'at least'],
+  ['<', 'below'],
+  ['>', 'above'],
+  ['exactly ', 'exactly'],
+]);
+
+/** The word of zod's quoted `"word"` or bare `word`, or undefined. */
+const schemaWord = (text: string): string | undefined => {
+  const match = SCHEMA_WORD.exec(text);
+  return match?.[1] ?? match?.[2];
+};
+
+/** Value-free `expected …` reason of a zod default message, which names only schema types, options and bounds; undefined for any other text. */
+function zodReason(text: string): string | undefined {
+  let match = /^Invalid input: expected ([a-z][a-z0-9]*), received [A-Za-z]+$/.exec(text);
+  if (match !== null) return `expected ${match[1] ?? ''}`;
+  match = /^Invalid input: expected (\S+)$/.exec(text);
+  if (match !== null) {
+    const word = schemaWord(match[1] ?? '');
+    return word === undefined ? undefined : `expected ${word}`;
+  }
+  match = /^Invalid option: expected one of (\S+)$/.exec(text);
+  if (match !== null) {
+    const words = (match[1] ?? '').split('|').map(schemaWord);
+    return words.every((word) => word !== undefined) ? `expected one of ${words.join('|')}` : undefined;
+  }
+  match = /^Too (?:big|small): expected ([a-z]+) to (be|have) (<=|>=|<|>|exactly )(-?[0-9]+(?:\.[0-9]+)?)( [a-z]+)?$/.exec(text);
+  if (match !== null) {
+    const [, type = '', verb = '', operator = '', bound = '', unit = ''] = match;
+    return `expected ${type} to ${verb} ${BOUND_WORDS.get(operator) ?? ''} ${bound}${unit}`;
+  }
+  if (text.startsWith('Invalid string: must match pattern ')) return 'expected a string matching the required pattern';
+  match = /^Invalid number: must be a multiple of (-?[0-9]+(?:\.[0-9]+)?)$/.exec(text);
+  return match === null ? undefined : `expected a multiple of ${match[1] ?? ''}`;
+}
+
+/** Value-free reason of an environment issue's text: its rule wording, a zod default message's expected form, else `is invalid`. */
+export function envIssueReason(text: string): string {
+  const reason = FIXED_ENV_REASONS.get(text) ?? zodReason(text) ?? (RULE_REASON_TEXT.test(text) ? text : undefined);
+  return reason !== undefined && ENV_REASON_TEXT.test(reason) ? reason : 'is invalid';
+}
 
 /** Most causes `safeErrorMessage` follows past an error without identifiers; also ends a cyclic chain. */
 const MAX_CAUSE_DEPTH = 4;
@@ -102,6 +192,13 @@ function stringProperty(value: unknown, key: PropertyKey): string | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
   const property: unknown = (value as Record<PropertyKey, unknown>)[key];
   return typeof property === 'string' ? property : undefined;
+}
+
+/** `<syscall> <code>` of a Node system error, or undefined without a system code and call. */
+export function systemErrorText(err: unknown): string | undefined {
+  const code = stringProperty(err, 'code');
+  const syscall = stringProperty(err, 'syscall');
+  return code !== undefined && SYSTEM_CODE.test(code) && syscall !== undefined && SYSCALL.test(syscall) ? `${syscall} ${code}` : undefined;
 }
 
 /** `header` followed by the redacted frame lines of `lines`. */
@@ -129,8 +226,8 @@ function ownSafeMessage(err: unknown): string {
   const code = stringProperty(err, 'code');
   if (code === undefined) return REDACTED;
   if (SQLSTATE.test(code) && stringProperty(err, 'severity') !== undefined) return `PostgreSQL error ${code}`;
-  const syscall = stringProperty(err, 'syscall');
-  if (SYSTEM_CODE.test(code) && syscall !== undefined && SYSCALL.test(syscall)) return `${syscall} ${code}`;
+  const system = systemErrorText(err);
+  if (system !== undefined) return system;
   // A nodemailer error's message and response may echo server replies and addresses; its code and command never do.
   const command = stringProperty(err, 'command');
   if (SYSTEM_CODE.test(code) && command !== undefined && SMTP_COMMAND_TEXT.test(command)) return `SMTP ${command} ${code}`;

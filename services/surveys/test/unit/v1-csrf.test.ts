@@ -20,7 +20,7 @@ import type { TenantDb } from '@opt2/platform/tenancy';
 import { TENANT_A, assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { applyBulkTarget } from '../../src/domain/bulk-target.js';
 import { scheduleSurvey } from '../../src/domain/schedule.js';
-import { getSurvey } from '../../src/domain/surveys.js';
+import { getSurveySummary, listSurveyTargets } from '../../src/domain/surveys.js';
 import type { SurveyDetail } from '../../src/repo/queries.js';
 import type { SurveysRepository } from '../../src/repo/repository.js';
 import { registerV1Routes } from '../../src/routes/v1.js';
@@ -37,7 +37,8 @@ vi.mock('../../src/domain/bulk-target.js', async (importOriginal) => ({
 
 vi.mock('../../src/domain/surveys.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/domain/surveys.js')>()),
-  getSurvey: vi.fn(),
+  getSurveySummary: vi.fn(),
+  listSurveyTargets: vi.fn(),
 }));
 
 // js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
@@ -170,7 +171,8 @@ describe('surveys /v1 write CSRF', () => {
     for (const name of Object.keys(DOMAIN) as Write[]) DOMAIN[name]().mockReset();
     vi.mocked(scheduleSurvey).mockResolvedValue(DETAIL);
     vi.mocked(applyBulkTarget).mockResolvedValue({ inserted: 1, total: 1 });
-    vi.mocked(getSurvey).mockReset().mockResolvedValue(DETAIL);
+    vi.mocked(getSurveySummary).mockReset().mockResolvedValue(DETAIL);
+    vi.mocked(listSurveyTargets).mockReset().mockResolvedValue({ rows: DETAIL.targets, next: null });
   });
 
   it.each(WRITES)("%s %s has identity consume the pair for the survey id as sent, in the token's session, first", async (method, tail, body, name) => {
@@ -228,11 +230,14 @@ describe('surveys /v1 write CSRF', () => {
     expect(DOMAIN[name]()).not.toHaveBeenCalled();
   });
 
-  it.each(['', '/targets'])('GET /v1/surveys/{surveyId}%s consumes no CSRF token, even one sent with it', async (tail) => {
+  it.each([
+    ['', getSurveySummary],
+    ['/targets', listSurveyTargets],
+  ] as const)('GET /v1/surveys/{surveyId}%s consumes no CSRF token, even one sent with it', async (tail, read) => {
     const res = await inject('GET', writeUrl(tail), CSRF_HEADERS);
 
     expect(res.statusCode).toBe(200);
     expect(outbound).not.toHaveBeenCalled();
-    expect(getSurvey).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(1);
   });
 });

@@ -4,9 +4,11 @@ import { createPublisher, registerConsumers, type EventPublisher } from '@opt2/p
 import { serializeError } from '@opt2/platform/logging';
 import { registerMigrationHandlers, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import {
+  IDENTITY_SERVICE,
   baseEnvSchema,
   createService,
   loadEnv,
+  processEnvSchema,
   publisherEmulatorHost,
   systemClock,
   type BaseEnv,
@@ -16,6 +18,7 @@ import {
 } from '@opt2/platform/service-kit';
 import { createStoragePort, type StoragePort } from '@opt2/platform/storage';
 import { createPool, type TenantDb } from '@opt2/platform/tenancy';
+import { REPORTING_SERVICE } from './domain/export-scope.js';
 import { consumers } from './events/consumers.js';
 import { PROGRAM_SITES, mappings, units } from './migration/mappings/index.js';
 import { createExportObjects } from './migration/objects.js';
@@ -28,6 +31,13 @@ const VERSION = '1.0.0';
 
 // Project of the harness's local Pub/Sub topology; OPT2_ENV=cloud makes GOOGLE_CLOUD_PROJECT required.
 const LOCAL_PROJECT_ID = 'opt2-local';
+
+/** Base variables with finance's own name, its database and the URLs of its callees, identity (CSRF) and reporting (export scopes), required. */
+export const financeEnvSchema = processEnvSchema(baseEnvSchema, {
+  service: OWNER,
+  callees: [IDENTITY_SERVICE, REPORTING_SERVICE],
+  database: true,
+});
 
 /** Dependencies `buildApp` uses instead of building its own from the environment; an injected `db` needs an injected `stagingDb`. */
 export interface BuildAppOptions {
@@ -47,7 +57,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   if (options.db !== undefined && options.stagingDb === undefined) {
     throw new TypeError('buildApp: an injected db needs an injected stagingDb');
   }
-  const env = options.env ?? loadEnv(baseEnvSchema);
+  const env = options.env ?? loadEnv(financeEnvSchema);
   const clock = options.clock ?? systemClock;
   // Checked before createService acquires anything; an injected publisher needs no emulator.
   const emulatorHost = options.publisher === undefined ? publisherEmulatorHost(env) : undefined;

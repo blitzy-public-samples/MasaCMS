@@ -421,6 +421,7 @@ export function makeAdminRequest(
     relayScopes: { posted: rc, scanned: rc },
     ses: false,
     currentUrl: `./?&muraAction=${muraAction}`,
+    requestTarget: `/admin/?muraAction=${muraAction}`,
     session,
     sessionWrites: {},
     site,
@@ -526,6 +527,8 @@ export async function buildTestAdminRequest(input: TestAdminRequestInput): Promi
   const request: AdminRequestInput = {
     params: { circuit: input.circuit, action: input.action },
     searchParams,
+    // The page-mode web path the gateway maps an admin action to.
+    receivedTarget: `/admin/${input.circuit}/${input.action}?${searchParams.toString()}`,
     headers: requestHeaders(input.headers),
     form,
     auth,

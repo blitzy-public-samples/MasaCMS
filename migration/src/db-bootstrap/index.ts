@@ -106,9 +106,10 @@ export class BootstrapEnvError extends Error {
     this.missing = [...missing];
   }
 
-  /** `db-bootstrap: invalid environment (<missing names>)`, the safe text logs and summaries keep. */
+  /** `db-bootstrap: invalid environment (<name>: is required; …)`, the safe text logs and summaries keep. */
   get [SAFE_ERROR_TEXT](): string {
-    return `db-bootstrap: invalid environment${this.missing.length > 0 ? ` (${this.missing.join(', ')})` : ''}`;
+    const entries = this.missing.map((name) => `${name}: is required`).join('; ');
+    return `db-bootstrap: invalid environment${entries === '' ? '' : ` (${entries})`}`;
   }
 }
 
@@ -239,21 +240,28 @@ function localDeps(env: LocalEnv): BootstrapDeps {
 }
 
 function cloudDeps(env: CloudEnv, adminUser: string): BootstrapDeps {
-  const connector = new Connector();
   const instanceConnectionName = env.CLOUD_SQL_INSTANCE;
   const setTimeZone = sessionTimeZoneSetter();
+  // One connector per session, kept once its instance load resolved: close() rejects unhandled on a failed load, which leaves no refresh to stop.
+  const loaded: Connector[] = [];
+  const driverOptions = async (opts: Parameters<Connector['getOptions']>[0]): ReturnType<Connector['getOptions']> => {
+    const connector = new Connector();
+    const options = await connector.getOptions(opts);
+    loaded.push(connector);
+    return options;
+  };
   return {
     connect: async (spec) => {
       if (spec.kind === 'role') throw new Error('password role logins need --target local');
       if (spec.kind === 'admin') {
-        const options = await connector.getOptions({ instanceConnectionName, ipType: IpAddressTypes.PRIVATE });
+        const options = await driverOptions({ instanceConnectionName, ipType: IpAddressTypes.PRIVATE });
         // Cloud SQL's built-in admin is a member of cloudsqlsuperuser, not a PostgreSQL superuser.
         return open(
           new pg.Client({ ...options, user: adminUser, password: env.OPT2_CLOUDSQL_ADMIN_PASSWORD, database: env.PG_DATABASE }),
           setTimeZone,
         );
       }
-      const options = await connector.getOptions({
+      const options = await driverOptions({
         instanceConnectionName,
         ipType: IpAddressTypes.PRIVATE,
         authType: AuthTypes.IAM,
@@ -263,7 +271,9 @@ function cloudDeps(env: CloudEnv, adminUser: string): BootstrapDeps {
     },
     readSecret: readSecretFile,
     migrationsDir: migrationsDirFor,
-    close: async () => connector.close(),
+    close: async () => {
+      for (const connector of loaded.splice(0)) connector.close();
+    },
   };
 }
 

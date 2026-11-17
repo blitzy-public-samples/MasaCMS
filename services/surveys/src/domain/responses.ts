@@ -42,11 +42,10 @@ type Respondent = { site: string; userId: string; answers: unknown };
 
 /** Whether `site` may respond to `survey`: it is the survey's site or one of its targeted sites, compared as SQL Server's collation does. */
 async function siteMayRespond(tx: TenantTx, survey: SurveyRow, site: string): Promise<boolean> {
-  const key = collated(site);
-  if (collated(survey.siteid) === key) {
+  if (collated(survey.siteid) === collated(site)) {
     return true;
   }
-  return (await queries.listTargets(tx, survey.survey_id)).some((target) => collated(target.siteid) === key);
+  return queries.targetsSite(tx, survey.survey_id, site);
 }
 
 /** Checks the respondent's site, then the answers, in the fixture's order, and stores the response under the survey's site. */

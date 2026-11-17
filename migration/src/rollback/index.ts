@@ -16,6 +16,8 @@ export {
 export type {
   RollbackResult,
   ReconciliationRef,
+  ReplayRun,
+  FeedRun,
   ScenarioOutcome,
   FixtureStatus,
   RollbackGroupDetail,

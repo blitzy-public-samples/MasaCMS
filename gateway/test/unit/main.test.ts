@@ -15,6 +15,7 @@ const MOCKED = ['@opt2/platform/tracing', '@opt2/platform/service-kit', '../../s
 
 let real: LoggingModule;
 let EnvValidationError: ServiceKitModule['EnvValidationError'];
+let EnvFileError: ServiceKitModule['EnvFileError'];
 let savedExitCode: typeof process.exitCode;
 
 /** Resolves on the next macrotask, so an awaited step yields to the event loop. */
@@ -77,7 +78,7 @@ async function runMain(stage?: Stage, thrown?: unknown) {
 
 beforeAll(async () => {
   real = await vi.importActual<LoggingModule>('@opt2/platform/logging');
-  ({ EnvValidationError } = await vi.importActual<ServiceKitModule>('@opt2/platform/service-kit'));
+  ({ EnvValidationError, EnvFileError } = await vi.importActual<ServiceKitModule>('@opt2/platform/service-kit'));
 });
 
 beforeEach(() => {
@@ -122,7 +123,7 @@ describe('gateway main', () => {
       () => new EnvValidationError(['OPT2_BRIDGE_HMAC_KEY: is required'], 'gateway'),
       ['tracing:start', 'tracing:done', 'service-kit', 'app', 'logging'],
       'EnvValidationError',
-      'gateway: invalid environment (OPT2_BRIDGE_HMAC_KEY)',
+      'gateway: invalid environment (OPT2_BRIDGE_HMAC_KEY: is required)',
     ],
     [
       'buildApp rejects with ENOENT',
@@ -131,6 +132,19 @@ describe('gateway main', () => {
       ['tracing:start', 'tracing:done', 'service-kit', 'app', 'logging'],
       'Error',
       'open ENOENT',
+    ],
+    [
+      'buildApp rejects with EnvFileError',
+      'build',
+      () =>
+        new EnvFileError(
+          'OPT2_CUTOVER_DIR',
+          'cutover-table.schema.json',
+          Object.assign(new Error("ENOENT: no such file or directory, open '/x/cutover-table.schema.json'"), { code: 'ENOENT', syscall: 'open', errno: -2 }),
+        ),
+      ['tracing:start', 'tracing:done', 'service-kit', 'app', 'logging'],
+      'EnvFileError',
+      'cannot read OPT2_CUTOVER_DIR file cutover-table.schema.json (open ENOENT)',
     ],
   ])('writes one log-record.v1 ERROR line and sets exit code 1 when %s', async (_label, stage, make, events, type, message) => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);

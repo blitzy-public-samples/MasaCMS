@@ -214,7 +214,17 @@ export interface SkippedUnitReport {
   reason: string;
 }
 
-/** Counts over a point's unit entries; `skippedUnits` counts the units with a skipped table. */
+/** A unit's legacy table compared in every tenant and found holding no row or object on either side. */
+export interface EmptyUnitReport {
+  unit: string;
+  /** Null for a file unit compared by its object manifests alone. */
+  legacyTable: string | null;
+}
+
+/**
+ * Counts over a point's unit entries; `units` counts every unit compared, empty ones included, `emptyUnits` the units with a table
+ * compared empty, and `skippedUnits` the units with a skipped table.
+ */
 export interface ReconcileSummary {
   units: number;
   tenants: number;
@@ -223,6 +233,7 @@ export interface ReconcileSummary {
   orphans: number;
   haltedUnits: number;
   skippedUnits: number;
+  emptyUnits: number;
 }
 
 /** Verdict of a point; `gateway/src/cutover/validate.ts` accepts rollback evidence only when it is `zero-difference`. */
@@ -231,6 +242,8 @@ export type ReconcileResult = 'zero-difference' | 'difference';
 /** Body of `reconciliation/<point>.json`; `writeJsonReport` prepends `sourceSha`, `generatedBy`, `generatedAt` and `status`. */
 export interface ReconcileReport {
   point: string;
+  /** When the comparison began, ISO-8601; the written `generatedAt` is when it ended. */
+  startedAt: string;
   expectedTableVersion: string;
   tableVersion: string | null;
   tableVersionMatches: boolean;
@@ -241,6 +254,8 @@ export interface ReconcileReport {
   measures: Measure[];
   units: UnitReport[];
   skippedUnits: SkippedUnitReport[];
+  /** Unit tables compared with nothing on either side, which have no entry in `units`. */
+  emptyUnits: EmptyUnitReport[];
   summary: ReconcileSummary;
   fileStore: FileStoreReport;
   result: ReconcileResult;
@@ -249,12 +264,16 @@ export interface ReconcileReport {
 /** Inputs of {@link buildReport}; `legacySource` overrides the point's own, `skippedUnits` defaults to none. */
 export interface BuildReportInput {
   point: ResolvedPoint;
+  /** When the comparison began, ISO-8601. */
+  startedAt: string;
   legacySource?: LegacySource;
   tableVersion: string | null;
   snapshotSeq: number | null;
   legacyDatabase: string;
   units: readonly UnitReport[];
   skippedUnits?: readonly SkippedUnitReport[];
+  /** Unit tables compared empty on both sides; none when absent. */
+  emptyUnits?: readonly EmptyUnitReport[];
   fileStore: FileStoreReport;
 }
 
@@ -272,17 +291,21 @@ function isZeroEntry(entry: UnitReport): boolean {
 }
 
 /**
- * Assembles a point report: entries sorted by unit, legacy table and tenant, skipped tables by unit and legacy table;
- * halted file units and skipped tables leave `result` unaffected.
+ * Assembles a point report: entries sorted by unit, legacy table and tenant, skipped and empty tables by unit and legacy table;
+ * halted file units, skipped tables and empty tables leave `result` unaffected.
  */
 export function buildReport(input: BuildReportInput): ReconcileReport {
   const units = [...input.units].sort(compareUnitReports);
   const skippedUnits = (input.skippedUnits ?? [])
     .map((skipped) => ({ ...skipped }))
     .sort((a, b) => compareText(a.unit, b.unit) || compareText(a.legacyTable, b.legacyTable));
+  const emptyUnits = (input.emptyUnits ?? [])
+    .map((empty) => ({ ...empty }))
+    .sort((a, b) => compareText(a.unit, b.unit) || compareText(a.legacyTable ?? '', b.legacyTable ?? ''));
   const differing = units.filter((entry) => !isZeroEntry(entry));
   return {
     point: input.point.name,
+    startedAt: input.startedAt,
     expectedTableVersion: input.point.expectedTableVersion,
     tableVersion: input.tableVersion,
     tableVersionMatches: input.tableVersion === input.point.expectedTableVersion,
@@ -293,14 +316,16 @@ export function buildReport(input: BuildReportInput): ReconcileReport {
     measures: [...MEASURES],
     units,
     skippedUnits,
+    emptyUnits,
     summary: {
-      units: new Set(units.map((entry) => entry.unit)).size,
+      units: new Set([...units, ...emptyUnits].map((entry) => entry.unit)).size,
       tenants: new Set(units.map((entry) => entry.tenantId)).size,
       unitsWithDifferences: new Set(differing.map((entry) => entry.unit)).size,
       differences: units.reduce((sum, entry) => sum + entry.differenceCount, 0),
       orphans: units.reduce((sum, entry) => sum + entry.orphanCount, 0),
       haltedUnits: input.fileStore.haltedUnits.length,
       skippedUnits: new Set(skippedUnits.map((skipped) => skipped.unit)).size,
+      emptyUnits: new Set(emptyUnits.map((empty) => empty.unit)).size,
     },
     fileStore: input.fileStore,
     result: differing.length === 0 ? 'zero-difference' : 'difference',

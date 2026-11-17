@@ -29,7 +29,6 @@ import {
   registryPayloads,
   seedRegistry,
   testEnvelope,
-  testPgConfig,
   withoutTenant,
   type PlatformTableGroup,
   type TenantFixture,
@@ -63,7 +62,7 @@ type Row = Record<string, unknown>;
 type Placement = Pick<SurveyResponseRow, 'response_id' | 'tenant_id' | 'siteid' | 'respondentsiteid'>;
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
-const PG_CONFIGURED = Boolean(process.env.PG_HOST);
+const PG_AVAILABLE = await pgAvailable();
 const GATE_HOLDER = 'surveys-isolation-setup';
 const ANSWERS = '{"q1":"yes"}';
 const ALL_PLATFORM_GROUPS = Object.keys(PLATFORM_TABLE_GROUPS) as PlatformTableGroup[];
@@ -288,16 +287,12 @@ async function registrySnapshot(): Promise<Row[]> {
 }
 
 describe('surveys: tenant isolation', () => {
-  if (!PG_CONFIGURED) {
+  if (!PG_AVAILABLE) {
     it.skip('PG_HOST unset - PostgreSQL isolation suite skipped');
     return;
   }
 
   beforeAll(async () => {
-    if (!(await pgAvailable())) {
-      const { host, port } = testPgConfig();
-      throw new Error(`PG_HOST is set but PostgreSQL at ${host}:${String(port)} is unreachable; the isolation suite cannot run`);
-    }
     schema = await createThrowawaySchema({ service: 'surveys', migrationsDir: MIGRATIONS_DIR });
     await seedRegistry(schema.app, schema.schema);
     ctx = await startApp(schema.app);

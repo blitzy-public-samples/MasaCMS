@@ -275,7 +275,15 @@ async function imageSizeEntry(tenantId: string, legacy: readonly CanonicalRow[],
 }
 
 function reportOf(point: string, units: readonly UnitReport[], fileStore: FileStoreReport = NO_FILE_STORE): ReconcileReport {
-  return buildReport({ point: resolvePoint(config, point), tableVersion: 'v0001', snapshotSeq: 0, legacyDatabase: 'masa_test_opt2_snap_0', units, fileStore });
+  return buildReport({
+    point: resolvePoint(config, point),
+    startedAt: '2026-06-30T11:59:00.000Z',
+    tableVersion: 'v0001',
+    snapshotSeq: 0,
+    legacyDatabase: 'masa_test_opt2_snap_0',
+    units,
+    fileStore,
+  });
 }
 
 describe('buildReport', () => {

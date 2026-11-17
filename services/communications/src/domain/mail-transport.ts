@@ -1,5 +1,7 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 import nodemailer from 'nodemailer';
+import { EnvValidationError } from '@opt2/platform/service-kit';
+import { OWNER } from '../repo/repository.js';
 
 /** A message with a text and/or an HTML part, ready for the SMTP relay. */
 export interface OutgoingMail {
@@ -70,20 +72,26 @@ function javaMailTextEncoding(body: string): 'base64' | 'quoted-printable' {
   return nonAscii > 0 && nonAscii >= ascii ? 'base64' : 'quoted-printable';
 }
 
-const CREDENTIAL_FORMAT_ERROR =
-  'communications-smtp secret must be JSON {"user":"<non-empty string>","pass":"<non-empty string>"}';
+/** Value-free reason a malformed `communications-smtp` secret in SMTP_CREDENTIAL is refused with. */
+export const SMTP_CREDENTIAL_REASON = 'must be JSON with a non-empty user and pass';
 
-/** SMTP AUTH user and password from the `communications-smtp` secret; throws a message without the value. */
-function parseCredential(credential: string): { user: string; pass: string } {
+/** SMTP AUTH user and password of a `communications-smtp` secret value; undefined when it is malformed. */
+export function smtpCredentialOf(credential: string): { user: string; pass: string } | undefined {
   let value: unknown;
   try {
     value = JSON.parse(credential);
   } catch {
-    throw new Error(CREDENTIAL_FORMAT_ERROR);
+    return undefined;
   }
   const { user, pass } = (value ?? {}) as { user?: unknown; pass?: unknown };
-  if (typeof user !== 'string' || !user || typeof pass !== 'string' || !pass) throw new Error(CREDENTIAL_FORMAT_ERROR);
-  return { user, pass };
+  return typeof user === 'string' && user && typeof pass === 'string' && pass ? { user, pass } : undefined;
+}
+
+/** SMTP AUTH user and password from the `communications-smtp` secret; throws an EnvValidationError naming SMTP_CREDENTIAL, never the value. */
+function parseCredential(credential: string): { user: string; pass: string } {
+  const auth = smtpCredentialOf(credential);
+  if (auth === undefined) throw new EnvValidationError([`SMTP_CREDENTIAL: ${SMTP_CREDENTIAL_REASON}`], OWNER);
+  return auth;
 }
 
 /** SMTP transport sending parts verbatim; with a credential it authenticates over TLS (465) or required STARTTLS. */

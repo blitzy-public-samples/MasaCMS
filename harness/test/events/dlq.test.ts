@@ -964,9 +964,16 @@ describe('runDlqCheck', () => {
   });
 
   it.each([
-    { label: 'no emulator host', host: '', probes: 0 },
-    { label: 'an emulator that does not answer', host: 'pubsub.invalid:8085', probes: 1 },
-  ])('fails without a Pub/Sub client when it finds $label', async ({ host, probes }) => {
+    { label: 'no emulator host', host: '', probes: 0, rejection: undefined },
+    { label: 'a probe that resolves false', host: 'pubsub.invalid:8085', probes: 1, rejection: undefined },
+    {
+      label: 'an emulator that does not answer',
+      host: 'pubsub.invalid:8085',
+      probes: 1,
+      rejection: new Error('The Pub/Sub emulator at PUBSUB_EMULATOR_HOST=pubsub.invalid:8085 is unreachable'),
+    },
+  ])('fails without a Pub/Sub client when it finds $label', async ({ host, probes, rejection }) => {
+    if (rejection !== undefined) vi.mocked(pubsubEmulatorAvailable).mockRejectedValueOnce(rejection);
     const { runner, deps } = dlqStack();
     const result = await runDlqCheck({ ...deps, pubsub: undefined, env: { ...deps.env, PUBSUB_EMULATOR_HOST: host } });
     expect(result).toMatchObject({ passed: false, evidence: { failures: ['pubsub emulator unavailable'] } });

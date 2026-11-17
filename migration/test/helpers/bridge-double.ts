@@ -273,6 +273,26 @@ function timeParam(req: PageRequest, name: string): { text: string; at: Date } {
 
 /** Fields `restore` copies from a wire task. */
 const TASK_FIELDS = ['task', 'operation', 'url', 'port', 'interval', 'startDate', 'startTime', 'requestTimeOut'] as const;
+/** Lead of a past-due ONCE task moved to run now, as scheduler.cfm's `rescheduleLeadS`. */
+const RESCHEDULE_LEAD_MS = 10_000;
+const TASK_DATE = /^(\d{2})\/(\d{2})\/(\d{4})$/;
+const TASK_TIME = /^(\d{2}):(\d{2}):(\d{2})$/;
+
+/** Start instant of a ONCE task in the process zone; undefined for any other interval or an unreadable start. */
+function onceStart(task: Pick<ScheduledTaskDefinition, 'interval' | 'startDate' | 'startTime'>): number | undefined {
+  const date = TASK_DATE.exec(task.startDate);
+  const time = TASK_TIME.exec(task.startTime);
+  if (task.interval.toLowerCase() !== 'once' || date === null || time === null) return undefined;
+  const [month, day, year] = date.slice(1, 4).map(Number) as [number, number, number];
+  const [hour, minute, second] = time.slice(1, 4).map(Number) as [number, number, number];
+  return strictLocalInstant({ year, month, day, hour, minute, second, ms: 0 });
+}
+
+/** scheduler.cfm `startPassed`: a ONCE task whose start is not after `now`. */
+function startPassed(task: Pick<ScheduledTaskDefinition, 'interval' | 'startDate' | 'startTime'>, now: Date): boolean {
+  const start = onceStart(task);
+  return start !== undefined && start <= now.getTime();
+}
 
 /** Task attributes a save passes; `''` leaves the field as the existing task has it, as ACF's update does with an omitted attribute. */
 type TaskAttributes = Record<(typeof TASK_FIELDS)[number], string> & { group: string };
@@ -368,6 +388,40 @@ export async function startBridgeDouble(opts: BridgeDoubleOptions = {}): Promise
   /** ACF's default group is passed as no group, where Masa's own call places its task. */
   const groupAttr = (group: string): string => (group.toLowerCase() === 'default' ? '' : group);
 
+  /** STATUS Expired: seeded so, or a ONCE task running past its start, which ACF has run or never runs. */
+  const isExpired = (task: ScheduledTaskDefinition, now: Date): boolean => task.expired === true || (!task.paused && startPassed(task, now));
+
+  /** `attrs` with its start rescheduleLeadS from `now`, as scheduler.cfm `saveDueNow` saves it. */
+  const dueNow = (attrs: TaskAttributes, now: Date): TaskAttributes => {
+    const runAt = new Date(now.getTime() + RESCHEDULE_LEAD_MS);
+    return { ...attrs, startDate: cfDateTimeFormat(runAt, 'mm/dd/yyyy'), startTime: cfDateTimeFormat(runAt, 'HH:nn:ss') };
+  };
+
+  /** scheduler.cfm `pauseTask`: true once paused, false for an expired task, which ACF refuses to pause. */
+  const pauseTask = (task: ScheduledTaskDefinition, now: Date): boolean => {
+    if (task.paused) return true;
+    if (isExpired(task, now)) return false;
+    task.paused = true;
+    return true;
+  };
+
+  /** scheduler.cfm `resumeTask`: ACF refuses a task past its start; with `reschedule` a paused one is moved to now first. */
+  const resumeTask = (task: ScheduledTaskDefinition, now: Date, reschedule: boolean): boolean => {
+    if (isExpired(task, now)) return false;
+    if (startPassed(task, now)) {
+      if (!reschedule) return false;
+      saveTask(dueNow({ ...task, group: groupAttr(task.group) }, now));
+    }
+    taskAction('resume', task.task);
+    return true;
+  };
+
+  /** scheduler.cfm `sameDefinition`: a listed task carries the definition's group, URL, port, interval, start and timeout. */
+  const sameDefinition = (task: ScheduledTaskDefinition, attrs: TaskAttributes): boolean =>
+    groupAttr(task.group).toLowerCase() === attrs.group.toLowerCase() &&
+    task.interval.toLowerCase() === attrs.interval.toLowerCase() &&
+    (['url', 'port', 'startDate', 'startTime', 'requestTimeOut'] as const).every((field) => task[field] === attrs[field]);
+
   const scheduler = (op: string, req: PageRequest): Record<string, unknown> => {
     if (!['describe', 'repoint', 'pause', 'resume', 'delete', 'restore'].includes(op)) throw new BridgeFail(404, 'notFound', 'unknown op');
     requireMethod(req, op === 'describe' ? 'GET' : 'POST');
@@ -377,7 +431,7 @@ export async function startBridgeDouble(opts: BridgeDoubleOptions = {}): Promise
         return {
           ping,
           siteMonitorTask: SITE_MONITOR_TASK,
-          tasks: listTasks().map((task) => ({ ...task })),
+          tasks: listTasks().map((task) => ({ ...task, expired: isExpired(task, req.now) })),
         } satisfies Omit<SchedulerDescription, 'serverTime'>;
       // onApplicationStart_include.cfm:562-575: Masa's attributes, the URL without its port, which goes in `port`.
       case 'repoint': {
@@ -407,21 +461,25 @@ export async function startBridgeDouble(opts: BridgeDoubleOptions = {}): Promise
         if (!wanted.every(isSimple)) throw badRequest('tasks must be names');
         const names = wanted.map(String);
         const affected: string[] = [];
+        const expired: string[] = [];
         for (const task of listTasks()) {
           if ((prefix !== '' && task.task.startsWith(prefix)) || names.includes(task.task)) {
-            taskAction(op, task.task);
-            affected.push(task.task);
+            if (op === 'delete') taskAction(op, task.task);
+            const done = op === 'delete' || (op === 'pause' ? pauseTask(task, req.now) : resumeTask(task, req.now, task.paused));
+            (done ? affected : expired).push(task.task);
           }
         }
-        return { op, tasks: affected } satisfies Omit<SchedulerOpResult, 'serverTime'>;
+        const result: Omit<SchedulerOpResult, 'serverTime'> = op === 'delete' ? { op, tasks: affected } : { op, tasks: affected, expired };
+        return result;
       }
       default: {
-        // restore: every definition is checked before any is saved; ACF's update keeps a paused state, so each is paused or resumed.
+        // restore: every definition is checked before any is saved; ACF's update keeps a paused state, so each is paused or
+        // resumed, and a past ONCE start is never saved over a task, whose update would run it at once.
         if (!Array.isArray(body.tasks)) throw badRequest('tasks required');
         const repoint = bodyFlag(body, 'repoint');
         const pauseAfter = bodyFlag(body, 'paused');
         const origin = repoint ? gatewayOrigin() : undefined;
-        const definitions = (body.tasks as unknown[]).map((given): TaskAttributes => {
+        const definitions = (body.tasks as unknown[]).map((given): { attrs: TaskAttributes; expired: boolean } => {
           if (!isRecord(given) || bodyText(given, 'task') === '') throw badRequest('every task needs a name');
           const definition = { group: groupAttr(bodyText(given, 'group')) } as TaskAttributes;
           for (const field of TASK_FIELDS) definition[field] = bodyText(given, field);
@@ -432,13 +490,32 @@ export async function startBridgeDouble(opts: BridgeDoubleOptions = {}): Promise
             }
             definition.port = origin.port;
           }
-          return definition;
+          return { attrs: definition, expired: bodyFlag(given, 'expired') };
         });
-        for (const definition of definitions) {
-          saveTask(definition);
-          taskAction(pauseAfter ? 'pause' : 'resume', definition.task);
+        const existing = new Map(listTasks().map((task) => [task.task, { ...task, expired: isExpired(task, req.now) }]));
+        const expired: string[] = [];
+        for (const { attrs, expired: capturedExpired } of definitions) {
+          const current = existing.get(attrs.task);
+          let held: boolean;
+          if (!startPassed(attrs, req.now)) {
+            saveTask(attrs);
+            const saved = tasks.get(attrs.task) as ScheduledTaskDefinition;
+            held = pauseAfter ? pauseTask(saved, req.now) : resumeTask(saved, req.now, !capturedExpired);
+          } else if (!pauseAfter && !capturedExpired) {
+            saveTask(dueNow(attrs, req.now));
+            taskAction('resume', attrs.task);
+            held = true;
+          } else if (current !== undefined && sameDefinition(current, attrs) && (current.expired === true || (current.paused && pauseAfter && !capturedExpired))) {
+            held = current.expired !== true;
+          } else {
+            // Created with a past start, the task is expired at once.
+            tasks.delete(attrs.task);
+            saveTask(attrs);
+            held = false;
+          }
+          if (!held) expired.push(attrs.task);
         }
-        return { op, tasks: definitions.map((definition) => definition.task) } satisfies Omit<SchedulerOpResult, 'serverTime'>;
+        return { op, tasks: definitions.map(({ attrs }) => attrs.task), expired } satisfies Omit<SchedulerOpResult, 'serverTime'>;
       }
     }
   };

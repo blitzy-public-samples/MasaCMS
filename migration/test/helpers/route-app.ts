@@ -90,6 +90,12 @@ const ENV_SOURCE: NodeJS.ProcessEnv = {
   MURA_DBPASSWORD: UNUSED_DB_PASSWORD,
   LEGACY_ORIGIN,
   OPT2_BRIDGE_HMAC_KEY: BRIDGE_KEY,
+  OPT2_DB_AUTH: 'password',
+  PG_HOST: '127.0.0.1',
+  PG_PORT: '9',
+  PG_DATABASE: 'masa_services_route_suites',
+  PG_USER: 'migration_app',
+  PG_PASSWORD: UNUSED_DB_PASSWORD,
 };
 
 /** An OpenAPI document as the suites read it. */

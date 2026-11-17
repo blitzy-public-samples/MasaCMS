@@ -70,6 +70,13 @@ export function gatewayEnv(urls: UpstreamUrls, stateDir: string, bridgeKey: stri
     PORT: '8100',
     OPT2_SERVICE_NAME: SERVICE,
     OPT2_ENV: 'local',
+    // The harness injects the gateway schema double, so these are never connected to.
+    OPT2_DB_AUTH: 'password',
+    PG_HOST: '127.0.0.1',
+    PG_PORT: '5432',
+    PG_DATABASE: 'masa_services',
+    PG_USER: 'gateway_app',
+    PG_PASSWORD: 'unused',
     OPT2_JWKS_URL: `${urls.identity}/.well-known/jwks.json`,
     OPT2_TOKEN_ISSUER: 'opt2-local-identity',
     OPT2_TOKEN_AUDIENCE: 'opt2-local',

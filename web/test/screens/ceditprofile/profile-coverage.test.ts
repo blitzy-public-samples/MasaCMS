@@ -12,7 +12,6 @@ import type { RbLookup } from '@/lib/resource-bundles/rb';
 import { ceditprofileScreens } from '@/screens/ceditprofile';
 import type { ProfileInterestCategoryRow } from '@/screens/ceditprofile/dsp_categories_nest';
 import {
-  PROFILE_SOURCES,
   buildEditProfileView,
   ceditprofileGate,
   editProfileRc,
@@ -52,6 +51,7 @@ const USER_ID = SUBJECTS.admin.sub;
 const PROFILE_ROUTE = routeKey('GET', 'people', '/v1/profile');
 const UPDATE_ROUTE = routeKey('POST', 'people', '/v1/profile:update');
 const shellSiteRoute = (siteId: string): string => routeKey('GET', 'programs-sites', `/v1/sites/${siteId}/shell`);
+const interestGroupsPath = (siteId: string) => `/v1/sites/${siteId}/private-interest-groups` as const;
 const CSRF_FIELDS: Fields = { csrf_token: FIXED_CSRF.token, csrf_token_expires: FIXED_CSRF.expires };
 /** controller `secure()`'s login redirect, with the return URL and the defaulted `compactDisplay`. */
 const loginLocation = (action: string): string =>
@@ -101,13 +101,17 @@ const ok = (body: unknown): FakeReply => ({ status: 200, body });
 const editRequest = (rc: Fields = {}, partial: AdminRequestPartial = {}): AdminRequest =>
   adminS2Request({ ...partial, circuit: 'ceditprofile', item: 'edit', rc });
 
-/** A context whose people answers `getProfile` with `profile`; `routes` add or replace answers. */
+/** A context whose people answers `getProfile` with `profile` and strategies-content an empty pool; `routes` add or replace answers. */
 function contextFor(
   req: AdminRequest,
   profile: ProfileData = profileOf(),
   routes: Readonly<Record<string, FakeReply>> = {},
 ): ScreenContext & { gateway: FakeGatewayClient } {
-  return makeScreenContext({ req, gateway: fakeGatewayClient({ [PROFILE_ROUTE]: ok(profile), ...routes }) });
+  const noInterestGroups = routeKey('GET', 'strategies-content', interestGroupsPath(req.user?.site ?? 'default'));
+  return makeScreenContext({
+    req,
+    gateway: fakeGatewayClient({ [PROFILE_ROUTE]: ok(profile), [noInterestGroups]: ok({ items: [] }), ...routes }),
+  });
 }
 
 /** Clears every `MURA_` variable, then sets `vars`, so settings come from `vars` alone. */
@@ -217,7 +221,6 @@ describe('cEditProfile before()', () => {
     expect(editProfileScreen.gate).toBe(ceditprofileGate);
     expect(updateProfileAction.gate).toBe(ceditprofileGate);
     expect(updateProfileAction.render).toBe(renderEditProfile);
-    expect(PROFILE_SOURCES).toEqual({});
   });
 });
 
@@ -242,6 +245,12 @@ describe('cEditProfile.edit load', () => {
     });
     expect(view.poolSite).toBeUndefined();
     await expect(view.interestRows('default', '')).resolves.toEqual([]);
+    expect(ctx.gateway.calls.at(-1)).toEqual({
+      service: 'strategies-content',
+      method: 'GET',
+      path: interestGroupsPath('default'),
+      query: { groupsiteid: 'default', parentid: '' },
+    });
   });
 
   it.each<[string, string | undefined, string]>([
@@ -369,7 +378,7 @@ describe('cEditProfile.edit load', () => {
         "the settings of the user's site default",
         'profile-site',
       ],
-      ['no source lists the pool sites', profileOf(), {}, 'the sites of private user pool tenant-a', 'profile-pool-sites'],
+      ['no source lists the pool sites', profileOf(), {}, 'the sites of private user pool tenant-a (EX-PROFILE-INTEREST-SITES)', 'profile-pool-sites'],
     ])('fails closed when %s', async (_case, profile, sources, what, reason) => {
       const failure = await unavailable(() => loadEditProfileView(contextFor(poolRequest(), profile), sources));
 
@@ -390,7 +399,7 @@ describe('cEditProfile.edit load', () => {
     ['the profile holds interests', profileOf({ categoryIds: ['CA000000-0000-0000-0000000000000001'] }), {}],
     ['the request names interests', profileOf(), { categoryID: 'CA000000-0000-0000-0000000000000001' }],
   ])('fails closed without an interest-group source when %s', async (_case, profile, rc) => {
-    const failure = await unavailable(() => loadEditProfileView(contextFor(editRequest(rc), profile)));
+    const failure = await unavailable(() => loadEditProfileView(contextFor(editRequest(rc), profile), {}));
 
     expect(failure).toEqual({
       message: 'cEditProfile.edit needs the interest groups, which no owner contract serves',
@@ -439,7 +448,11 @@ describe('cEditProfile.edit view', () => {
     const body = toString(shell.body);
     const $ = $of(body);
 
-    expect(ctx.gateway.calls.at(-1)).toEqual({ service: 'identity', method: 'POST', path: '/v1/csrf/tokens', json: { contexts: [''] } });
+    expect(ctx.gateway.calls.slice(-2)).toEqual([
+      { service: 'identity', method: 'POST', path: '/v1/csrf/tokens', json: { contexts: [''] } },
+      { service: 'strategies-content', method: 'GET', path: interestGroupsPath('default'), query: { groupsiteid: 'default', parentid: '' } },
+    ]);
+    expect($('#mura-list-tree .help-block-empty').text()).toBe('There are currently no interest groups.');
     expect($('h1').text()).toBe('Edit Profile');
     expect($('.alert')).toHaveLength(0);
     expect($('form').attr()).toMatchObject({
@@ -659,7 +672,6 @@ describe('cEditProfile.edit view', () => {
     const interest = (categoryID: string, name: string): ProfileInterestCategoryRow => ({
       categoryID,
       name,
-      site: 'Default',
       isOpen: 1,
       hasKids: 0,
     });

@@ -1,13 +1,19 @@
 /** feedUtility.doImport and feedManager.doAutoImport through `domain/feeds` over a throwaway `content` schema, with recorded feed bodies and a stub fetch. */
 import { readFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import type { Writable } from 'node:stream';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { createGzip } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { pgAvailable } from '@opt2/platform/testing';
 import { saveContent } from '../../src/domain/content.js';
 import {
+  REMOTE_FEED_LIMIT_BYTES,
   RemoteFeedAuthUnsupportedError,
   RemoteFeedHttpError,
+  RemoteFeedTooLargeError,
   createFeed,
   defaultFetchRemote,
   doAutoImport,
@@ -54,12 +60,88 @@ describe('remote fetch', () => {
   });
 
   describe('defaultFetchRemote', () => {
+    const LIMIT = REMOTE_FEED_LIMIT_BYTES;
+    const MIB = 1024 * 1024;
+    const CHUNK = Buffer.alloc(64 * 1024, 'a');
+    /** Each split body as label, content type, bytes, and the text a whole-buffer decode gives. */
+    const SPLIT_BODIES: ReadonlyArray<readonly [string, string, Buffer, string]> = [
+      ['UTF-8 multi-byte characters', 'text/xml; charset=utf-8', Buffer.from('<t>café ✓ 😀</t>', 'utf8'), '<t>café ✓ 😀</t>'],
+      ['UTF-8 behind its BOM', 'text/xml', Buffer.concat([Buffer.of(0xef, 0xbb, 0xbf), Buffer.from('<t>✓</t>', 'utf8')]), '<t>✓</t>'],
+      ['UTF-16LE behind its BOM', 'text/xml; charset=UTF-16LE', Buffer.concat([Buffer.of(0xff, 0xfe), Buffer.from('<t>é😀</t>', 'utf16le')]), '<t>é😀</t>'],
+      ['Shift_JIS double-byte characters', 'text/xml; charset="Shift_JIS"', Buffer.of(0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea), '日本語'],
+      ['a UTF-8 sequence cut off at the end', 'text/xml', Buffer.of(0x3c, 0xe2, 0x9c), '<\ufffd'],
+    ];
+    /** What each `/sized/` and `/declared-over` answer sent, by request URL, once its response closed: body bytes, and compressed bytes for gzip. */
+    const served = new Map<string, Promise<{ written: number; wire: number }>>();
     let server: Server;
     let base = '';
 
+    /** Writes `total` bytes of CHUNK to `sink` with backpressure, stopping when `res` closes. */
+    const pump = (res: ServerResponse, sink: Writable, total: number, wire?: () => number): Promise<{ written: number; wire: number }> =>
+      new Promise((resolve) => {
+        let written = 0;
+        let open = true;
+        res.once('close', () => {
+          open = false;
+          resolve({ written, wire: wire?.() ?? written });
+        });
+        const write = (): void => {
+          while (open && written < total) {
+            const chunk = CHUNK.subarray(0, Math.min(CHUNK.length, total - written));
+            written += chunk.length;
+            if (!sink.write(chunk)) {
+              sink.once('drain', write);
+              return;
+            }
+          }
+          if (open) sink.end();
+        };
+        write();
+      });
+
+    /** Serves `/sized/{length|chunked|gzip}/<bytes>` and the unbounded chunked `/sized/endless`. */
+    const serveSized = (url: string, res: ServerResponse): void => {
+      const [, , mode = '', size = ''] = url.split('/');
+      const total = mode === 'endless' ? Infinity : Number(size);
+      if (mode === 'gzip') {
+        res.writeHead(200, { 'content-type': 'text/xml', 'content-encoding': 'gzip' });
+        const gzip = createGzip();
+        let wire = 0;
+        gzip.on('data', (bytes: Buffer) => {
+          wire += bytes.length;
+        });
+        gzip.pipe(res);
+        served.set(url, pump(res, gzip, total, () => wire));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/xml', ...(mode === 'length' ? { 'content-length': String(total) } : {}) });
+      served.set(url, pump(res, res, total));
+    };
+
     beforeAll(async () => {
       server = createServer((req, res) => {
-        if (req.url === '/latin') {
+        const url = req.url ?? '';
+        if (url.startsWith('/sized/')) {
+          serveSized(url, res);
+        } else if (url === '/declared-over') {
+          // Headers only: a client that read the body would wait for it until its timeout.
+          res.writeHead(200, { 'content-type': 'text/xml', 'content-length': String(LIMIT + 1) });
+          res.flushHeaders();
+          served.set(url, new Promise((resolve) => res.once('close', () => resolve({ written: 0, wire: 0 }))));
+        } else if (url.startsWith('/split/')) {
+          const [, contentType, bytes] = SPLIT_BODIES[Number(url.slice('/split/'.length))] ?? [];
+          res.writeHead(200, { 'content-type': contentType ?? '' });
+          void (async () => {
+            for (const byte of bytes ?? []) {
+              res.write(Buffer.of(byte));
+              await sleep(5);
+            }
+            res.end();
+          })();
+        } else if (url === '/no-content') {
+          res.writeHead(204);
+          res.end();
+        } else if (req.url === '/latin') {
           res.writeHead(200, { 'content-type': 'application/rss+xml; charset=ISO-8859-1' });
           res.end(Buffer.from([0x63, 0x61, 0x66, 0xe9]));
         } else if (req.url === '/moved') {
@@ -78,8 +160,19 @@ describe('remote fetch', () => {
     });
 
     afterAll(async () => {
+      server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     });
+
+    /** What defaultFetchRemote of `path` rejects with. */
+    const refusalOf = (path: string): Promise<unknown> => defaultFetchRemote(`${base}${path}`, { authType: 'BASIC' }).then(() => undefined, (err: unknown) => err);
+
+    /** Asserts `error` is the oversize halt of `path`, which the service answers as the legacy 503. */
+    const expectHalt = (error: unknown, path: string): void => {
+      expect(error).toBeInstanceOf(RemoteFeedTooLargeError);
+      expect(error).toBeInstanceOf(LegacyServiceUnavailableError);
+      expect(error).toMatchObject({ name: 'RemoteFeedTooLargeError', url: `${base}${path}`, limit: LIMIT, surface: 'auto', reason: 'feed-remote-oversize-halted' });
+    };
 
     it('follows redirects and decodes the body by the response charset, falling back to UTF-8', async () => {
       expect(await defaultFetchRemote(`${base}/moved`, { authType: 'BASIC' })).toEqual({ status: 200, body: 'café' });
@@ -94,6 +187,50 @@ describe('remote fetch', () => {
       await expect(defaultFetchRemote(`${base}/latin`, { authType: 'NTLM', username: 'u', password: 'p' })).rejects.toBeInstanceOf(
         RemoteFeedAuthUnsupportedError,
       );
+    });
+
+    it('answers an empty body for a status that carries none', async () => {
+      expect(await defaultFetchRemote(`${base}/no-content`, { authType: 'BASIC' })).toEqual({ status: 204, body: '' });
+    });
+
+    it.each(SPLIT_BODIES.map(([label, , , text], index) => [label, index, text] as const))(
+      'decodes %s sent a byte per chunk as the whole body decodes',
+      async (_label, index, text) => {
+        expect(await defaultFetchRemote(`${base}/split/${String(index)}`, { authType: 'BASIC' })).toEqual({ status: 200, body: text });
+      },
+    );
+
+    it.each([
+      ['with its length', 'length'],
+      ['chunked', 'chunked'],
+      ['gzip-encoded', 'gzip'],
+    ])('accepts a body of exactly the limit sent %s', async (_label, mode) => {
+      const { status, body } = await defaultFetchRemote(`${base}/sized/${mode}/${String(LIMIT)}`, { authType: 'BASIC' });
+      expect([status, body.length, /[^a]/.test(body)]).toEqual([200, LIMIT, false]);
+    });
+
+    it.each([
+      ['chunked', 'chunked', LIMIT + 1],
+      ['gzip-encoded, under 1 MiB on the wire,', 'gzip', MIB],
+    ])('refuses a %s body one byte over the limit, counted decompressed', async (_label, mode, wireAtMost) => {
+      const path = `/sized/${mode}/${String(LIMIT + 1)}`;
+      expectHalt(await refusalOf(path), path);
+      const sent = await served.get(path);
+      expect(sent?.written).toBe(LIMIT + 1);
+      expect(sent?.wire).toBeLessThanOrEqual(wireAtMost);
+    });
+
+    it('cancels an endless chunked body once past the limit, closing the connection', async () => {
+      expectHalt(await refusalOf('/sized/endless'), '/sized/endless');
+      const sent = await served.get('/sized/endless');
+      // Past the limit by no more than the loopback socket buffers hold.
+      expect(sent?.written).toBeGreaterThan(LIMIT);
+      expect(sent?.written).toBeLessThan(LIMIT + 16 * MIB);
+    });
+
+    it('refuses a declared length over the limit before reading the body, closing the connection', async () => {
+      expectHalt(await refusalOf('/declared-over'), '/declared-over');
+      expect(await served.get('/declared-over')).toEqual({ written: 0, wire: 0 });
     });
   });
 });

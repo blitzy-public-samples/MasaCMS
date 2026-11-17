@@ -5,14 +5,14 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
 import path from 'node:path';
 
-import { fixedClock, type FastifyInstance } from '@opt2/platform/service-kit';
+import { EnvValidationError, fixedClock, type FastifyInstance } from '@opt2/platform/service-kit';
 import { reconcileRecurringQueues, type ReconcileResult } from '@opt2/platform/tasks';
 import { testVerifier } from '@opt2/platform/testing';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMigrationContext } from '../../src/context.js';
 import { CutoverDataError, loadGroups, loadVersion, type CutoverVersion, type GroupsFile } from '../../src/cutover/index.js';
-import { UnsupportedLegacyDatabaseError, loadMigrationEnv, type MigrationEnv } from '../../src/env.js';
+import { UnsupportedLegacyDatabaseError, loadMigrationServerEnv, type MigrationEnv } from '../../src/env.js';
 import type { BridgeClient, LegacyDb, SchedulerDescription } from '../../src/legacy/index.js';
 import type { OwnersClient } from '../../src/owners/index.js';
 import { createProjector } from '../../src/reverse/index.js';
@@ -52,7 +52,7 @@ vi.mock('@opt2/platform/tasks', async (importOriginal) => {
 
 vi.mock('../../src/env.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/env.js')>();
-  return { ...actual, loadMigrationEnv: vi.fn(actual.loadMigrationEnv) };
+  return { ...actual, loadMigrationServerEnv: vi.fn(actual.loadMigrationServerEnv) };
 });
 
 vi.mock('../../src/context.js', async (importOriginal) => {
@@ -297,6 +297,19 @@ describe('buildApp composition', () => {
     expect(createMigrationContext).not.toHaveBeenCalled();
   });
 
+  it('loads its default environment with the service schema and refuses it before creating the app or the context', async () => {
+    const sigtermListeners = process.listenerCount('SIGTERM');
+    const refused = new EnvValidationError(['OPT2_SERVICE_NAME: must be migration'], 'web');
+    vi.mocked(loadMigrationServerEnv).mockImplementationOnce(() => {
+      throw refused;
+    });
+
+    await expect(buildApp(options({ env: undefined }))).rejects.toBe(refused);
+    expect(loadMigrationServerEnv).toHaveBeenCalledWith();
+    expect(createMigrationContext).not.toHaveBeenCalled();
+    expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
+  });
+
   it('closes the created app when the context cannot be built, and rethrows', async () => {
     const sigtermListeners = process.listenerCount('SIGTERM');
     vi.mocked(createMigrationContext).mockRejectedValueOnce(new Error('context refused'));
@@ -440,7 +453,7 @@ async function freePort(): Promise<number> {
 describe('startServer', () => {
   it('listens on PORT with background work started, serving the health check', async () => {
     const port = await freePort();
-    vi.mocked(loadMigrationEnv).mockReturnValueOnce(testEnv({ dirs, LOG_LEVEL: 'fatal', PORT: String(port) }));
+    vi.mocked(loadMigrationServerEnv).mockReturnValueOnce(testEnv({ dirs, LOG_LEVEL: 'fatal', PORT: String(port) }));
 
     const server = await startServer();
     try {
@@ -460,7 +473,7 @@ describe('startServer', () => {
     const address = blocker.address();
     if (address === null || typeof address === 'string') throw new Error('no TCP address');
     const sigtermListeners = process.listenerCount('SIGTERM');
-    vi.mocked(loadMigrationEnv).mockReturnValueOnce(testEnv({ dirs, LOG_LEVEL: 'fatal', PORT: String(address.port) }));
+    vi.mocked(loadMigrationServerEnv).mockReturnValueOnce(testEnv({ dirs, LOG_LEVEL: 'fatal', PORT: String(address.port) }));
 
     try {
       await expect(startServer()).rejects.toMatchObject({ code: 'EADDRINUSE' });

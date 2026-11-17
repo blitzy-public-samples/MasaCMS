@@ -3,13 +3,16 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
+import { REDACTED, SEVERITY_BY_LEVEL, validateLogRecord } from '@opt2/platform/logging';
 import type { ScreenGate } from '@/lib/access-gate';
-import { GatewayUnavailableError, setServiceClientForTests } from '@/lib/gateway-client';
+import { GatewayUnavailableError, setServiceClientForTests, type StreamedResponse } from '@/lib/gateway-client';
 import { html } from '@/lib/html';
-import { logRequest, type RequestLogFields } from '@/lib/telemetry';
+import { adminRbFor, rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
+import { createWebLogger, logRequest, setWebLoggerForTests, type RequestLogFields } from '@/lib/telemetry';
 import type {
   PageControllerRedirect,
   ScreenContext,
@@ -98,6 +101,23 @@ vi.mock('@/screens/registry', async () => {
         body: 'a,b\n',
         headers: { 'Content-Disposition': 'attachment;filename=users.csv' },
         setCookies: ['download=1'],
+      }),
+    },
+    {
+      ...base,
+      circuit: 'cusers',
+      action: 'streamed',
+      mode: 'download',
+      load: (ctx: ScreenContext) => {
+        // A session value, so the request persists one after the screen answered.
+        ctx.req = { ...ctx.req, sessionWrites: { ...ctx.req.sessionWrites, moduleid: '00000000000000000000000000000000008' } };
+        return ctx.gateway.stream('people', { method: 'GET', path: '/v1/users/download' });
+      },
+      download: (_ctx: ScreenContext, { status, body }: StreamedResponse) => ({
+        status,
+        contentType: 'text/csv;charset=UTF-8',
+        body,
+        headers: { 'content-disposition': 'attachment;filename=users.csv' },
       }),
     },
     {
@@ -605,6 +625,20 @@ describe('redirect mode', () => {
     expect(probe.uploads).toEqual([]);
   });
 
+  it("gives the screen session.rb's admin chain under the resource_bundles/ overrides", async () => {
+    let rb: RbLookup | undefined;
+    probe.inspect = async (ctx) => {
+      rb = ctx.rb;
+    };
+    probe.submit = { kind: 'location', location: './' };
+
+    await handleAdminAction(await getRequest('/admin-actions/cusers/update?muraAction=cusers.update'), UPDATE);
+
+    expect(rb).toBeDefined();
+    expect(rb).toBe(adminRbFor(rb?.locale ?? ''));
+    expect(rb).not.toBe(rbFor(rb?.locale ?? ''));
+  });
+
   it('answers 404 for a screen of another mode', async () => {
     expect((await handleAdminAction(await getRequest('/admin-actions/cusers/list'), LIST)).status).toBe(404);
   });
@@ -649,6 +683,195 @@ describe('raw mode', () => {
   });
 });
 
+describe('streamed download', () => {
+  let producer: PassThrough;
+
+  beforeEach(() => {
+    producer = new PassThrough();
+    producer.write('"USERID"\n');
+    fake.setRoute(routeKey('GET', 'people', '/v1/users/download'), () => ({ status: 200, body: producer }));
+  });
+
+  const streamed = async (): Promise<Response> =>
+    handleAdminRaw(await getRequest('/admin-raw/cusers/streamed'), { circuit: 'cusers', action: 'streamed' });
+
+  it('answers with the legacy headers and the first bytes while the producer is still writing', async () => {
+    const response = await streamed();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/csv;charset=UTF-8');
+    expect(response.headers.get('content-disposition')).toBe('attachment;filename=users.csv');
+    expect(response.headers.getSetCookie().length).toBeGreaterThan(0);
+    expect(savedStates()).toHaveLength(1);
+    const reader = response.body!.getReader();
+    expect(Buffer.from((await reader.read()).value ?? []).toString()).toBe('"USERID"\n');
+    expect(producer.writableEnded).toBe(false);
+    producer.end('"U1"\n');
+    expect(Buffer.from((await reader.read()).value ?? []).toString()).toBe('"U1"\n');
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it.each<[string, () => void, (response: Response) => Promise<void>, number]>([
+    ['the client cancels the body', () => undefined, async (response) => response.body!.cancel(), 200],
+    [
+      'saving the session fails after the screen answered',
+      () => fake.setRoute(SAVE_ADMIN_STATE, { status: 503 }),
+      async (response) => expect(await response.text()).toBe(LEGACY_ERROR_PAGE_HTML),
+      503,
+    ],
+  ])('destroys the producer when %s', async (_label, arrange, settle, status) => {
+    arrange();
+
+    const response = await streamed();
+    await settle(response);
+
+    expect(response.status).toBe(status);
+    expect(producer.destroyed).toBe(true);
+  });
+
+  describe('transfer line', () => {
+    const UPSTREAM_TEXT = 'upstream reset for jane@example.com';
+    const OPERATION = 'people GET /v1/users/download';
+    const resetError = (): Error => new Error(UPSTREAM_TEXT);
+    const deadlineError = (): Error => new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    /** The WARNING line of a failed upstream, its error serialized as `error` (stack frames aside). */
+    const failedLine = (error: { type: string; message: string }): Record<string, unknown> => ({
+      severity: SEVERITY_BY_LEVEL.warn,
+      message: `download failed: ${OPERATION}`,
+      error: expect.objectContaining(error),
+    });
+    let lines: Record<string, unknown>[];
+    /** Transfer lines written before the request line. */
+    let linesBeforeRequestLine: number | undefined;
+    let restoreLogger: () => void;
+    const unhandledRejection = vi.fn();
+
+    beforeEach(() => {
+      lines = [];
+      linesBeforeRequestLine = undefined;
+      const write = (chunk: string): void => {
+        for (const text of chunk.split('\n')) if (text !== '') lines.push(JSON.parse(text) as Record<string, unknown>);
+      };
+      restoreLogger = setWebLoggerForTests(createWebLogger({ write }));
+      vi.mocked(logRequest).mockImplementation(() => {
+        linesBeforeRequestLine = lines.length;
+      });
+      unhandledRejection.mockClear();
+      process.on('unhandledRejection', unhandledRejection);
+    });
+
+    afterEach(() => {
+      process.off('unhandledRejection', unhandledRejection);
+      vi.mocked(logRequest).mockReset();
+      restoreLogger();
+    });
+
+    /** Reads the first chunk, then ends the transfer with `step`. */
+    const afterFirstChunk =
+      (step: (reader: ReadableStreamDefaultReader<Uint8Array>) => Promise<void>) =>
+      async (response: Response): Promise<void> => {
+        const reader = response.body!.getReader();
+        expect(Buffer.from((await reader.read()).value ?? []).toString()).toBe('"USERID"\n');
+        await step(reader);
+      };
+
+    const failsWith = (error: () => Error) =>
+      afterFirstChunk(async (reader) => {
+        producer.destroy(error());
+        await expect(reader.read()).rejects.toThrow();
+      });
+
+    /** The upstream resets while the session is saved, which then answers `status`. */
+    const failsWhileSaving = (status: number) => (): void => {
+      producer = new PassThrough();
+      fake.setRoute(SAVE_ADMIN_STATE, async (request) => {
+        producer.destroy(resetError());
+        // The body's pending first read observes the failure before the pipeline answers.
+        await new Promise((resolve) => setImmediate(resolve));
+        return { status, body: request.json ?? {} };
+      });
+    };
+
+    it.each<[string, () => void, (response: Response) => Promise<void>, Record<string, unknown>[]]>([
+      [
+        'the client reads the body to its end',
+        () => undefined,
+        async (response) => {
+          producer.end('"U1"\n');
+          expect(await response.text()).toBe('"USERID"\n"U1"\n');
+        },
+        [],
+      ],
+      [
+        'its upstream resets mid-stream',
+        () => undefined,
+        failsWith(resetError),
+        [failedLine({ type: 'Error', message: REDACTED })],
+      ],
+      [
+        "its call's deadline fires mid-stream",
+        () => undefined,
+        failsWith(deadlineError),
+        [failedLine({ type: 'TimeoutError', message: 'The operation was aborted due to timeout' })],
+      ],
+      [
+        'its upstream fails before the answer is handed over',
+        failsWhileSaving(200),
+        async (response) => {
+          expect(lines).toHaveLength(1);
+          await expect(response.text()).rejects.toThrow();
+        },
+        [failedLine({ type: 'Error', message: REDACTED })],
+      ],
+      [
+        'its upstream fails before saving the session fails',
+        failsWhileSaving(503),
+        async (response) => expect(await response.text()).toBe(LEGACY_ERROR_PAGE_HTML),
+        [],
+      ],
+      [
+        'its client disconnects mid-stream',
+        () => undefined,
+        afterFirstChunk((reader) => reader.cancel()),
+        [{ severity: SEVERITY_BY_LEVEL.info, message: `download abandoned: ${OPERATION}` }],
+      ],
+      [
+        'the pipeline abandons the answer before handing it over',
+        () => fake.setRoute(SAVE_ADMIN_STATE, { status: 503 }),
+        async (response) => expect(await response.text()).toBe(LEGACY_ERROR_PAGE_HTML),
+        [],
+      ],
+    ])('writes at most one transfer line, after the request line, when %s', async (_label, arrange, settle, expected) => {
+      arrange();
+
+      const response = await streamed();
+      await settle(response);
+      // Node reports an unhandled rejection once the microtasks of its tick have run.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(unhandledRejection).not.toHaveBeenCalled();
+      expect(loggedLines()).toHaveLength(1);
+      expect(linesBeforeRequestLine).toBe(0);
+      expect(lines).toEqual(expected.map((line) => expect.objectContaining(line)));
+      for (const line of lines) {
+        expect(validateLogRecord(line).errors).toEqual([]);
+        expect(line).toMatchObject({
+          service: 'web',
+          route: 'raw:cusers.streamed',
+          httpMethod: 'GET',
+          statusCode: 200,
+          latencyMs: expect.any(Number),
+          requestId: 'req-pipeline',
+          userId: admin.sub,
+          tenantId: admin.tid,
+        });
+        if (line.severity === SEVERITY_BY_LEVEL.info) expect(line).not.toHaveProperty('error');
+      }
+      expect(JSON.stringify(lines)).not.toMatch(/upstream reset|jane@example\.com/);
+    });
+  });
+});
+
 describe('synthetic modules', () => {
   const SHEETS = { module: 'timesheets', screen: 'sheets' } as const;
 
@@ -673,6 +896,28 @@ describe('synthetic modules', () => {
     const response = await handleOpt2Page(await getRequest(`/opt2/admin/${params.module}/${params.screen}`), params);
 
     expect(response.status).toBe(404);
+  });
+
+  it.each<[string, () => Promise<Response>, number, string | null]>([
+    [
+      'serves a synthetic screen',
+      async () => handleOpt2Page(await getRequest('/opt2/admin/timesheets/sheets'), SHEETS),
+      200,
+      null,
+    ],
+    [
+      'keeps the legacy no-access redirect of an admin page',
+      async () => handleAdminPage(await getRequest('/admin/cusers/list?muraAction=cusers.list'), LIST),
+      302,
+      '/admin/?muraAction=cMessage.noaccess',
+    ],
+  ])('%s for a private user who administers no site', async (_case, send, status, location) => {
+    fake.setRoute(routeKey('GET', 'identity', '/v1/sessions/current/sites'), { status: 200, body: { sites: [] } });
+
+    const response = await send();
+
+    expect(response.status).toBe(status);
+    expect(response.headers.get('location')).toBe(location);
   });
 
   it('answers a post action like an FW/1 post action', async () => {

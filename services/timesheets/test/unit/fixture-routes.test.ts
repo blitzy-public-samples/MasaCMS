@@ -337,15 +337,17 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
     expect((await get('/sheets?useDataNamespace=false')).json()).toMatchObject({ method: 'timesheets.sheets', items: [june1, june8], totalitems: 2 });
   });
 
-  it.each<[string, string, number, [number, number]]>([
-    ['a page of two sheets', '/sheets', 2, [1, 1]],
-    ['a page of one sheet', '/sheets?pageIndex=2&itemsPerPage=1', 1, [1, 1]],
-    ['a page past the end', '/sheets?pageIndex=3&itemsPerPage=1', 0, [0, 0]],
-  ])('reads the days and then the blackouts of %s in at most one query each', async (_case, url, items, [dayReads, blackoutReads]) => {
+  it.each<[string, string, number, number]>([
+    ['a page of two sheets', '/sheets', 2, 1],
+    ['a page of one sheet', '/sheets?pageIndex=2&itemsPerPage=1', 1, 1],
+    ['a page past the end', '/sheets?pageIndex=3&itemsPerPage=1', 0, 0],
+  ])('reads the days of %s with their blackout flags in at most one query, after one gate fence', async (_case, url, items, dayReads) => {
     statements.length = 0;
     const res = await get(url);
     expect([res.statusCode, res.json().data.items.length]).toEqual([200, items]);
-    expect([statementsOn(statements, 'timesheet_day'), statementsOn(statements, 'blackout')]).toEqual([dayReads, blackoutReads]);
+    const dayStatements = statements.filter((text) => text.includes('."timesheet_day"'));
+    expect([dayStatements.length, statementsOn(statements, 'blackout'), statementsOn(statements, 'unit_gate')]).toEqual([dayReads, dayReads, 1]);
+    expect(dayStatements.every((text) => text.includes('."blackout"'))).toBe(true);
   });
 
   it('reads a sheet with its status fields and days, matching the id ignoring case, and its status row', async () => {

@@ -122,9 +122,11 @@ describe('timesheets repository identity', () => {
     ['itemsPerPage 0', { pageIndex: 1, itemsPerPage: 0 }],
     ['a fractional itemsPerPage', { pageIndex: 1, itemsPerPage: 2.5 }],
     [`itemsPerPage ${MAX_SHEETS_PER_PAGE + 1}`, { pageIndex: 1, itemsPerPage: MAX_SHEETS_PER_PAGE + 1 }],
-  ])('rejects a sheet page with %s with RangeError before any query', async (_name, paging) => {
+  ])('rejects a sheet page with %s with RangeError before any query, with or without day states', async (_name, paging) => {
     const tx = { query: () => Promise.reject(new Error('queried')) } as unknown as TenantTx;
-    await expect(createTimesheetsRepository().listSheets(tx, paging)).rejects.toBeInstanceOf(RangeError);
+    const repository = createTimesheetsRepository();
+    await expect(repository.listSheets(tx, paging)).rejects.toBeInstanceOf(RangeError);
+    await expect(repository.listSheetsWithDayStates(tx, paging)).rejects.toBeInstanceOf(RangeError);
   });
 });
 
@@ -269,6 +271,14 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
     });
   });
 
+  it.each(['timesheets.timesheet_day', 'timesheets.blackout'])('waits on a window executing on %s, then refuses a sheet page with day states with UnitReadBlockedError', async (unit) => {
+    const s = sheet();
+    await seed(s, [day(s.timesheet_id)]);
+    await closeGates(handle.app, { units: [unit], holderId: 'repository-test', phase: 'executing' });
+    const read = withGatedTenant(handle.app, tenantId, (tx) => repository.listSheetsWithDayStates(tx, FIRST_PAGE), SHORT_BUDGET);
+    await expect(read).rejects.toBeInstanceOf(UnitReadBlockedError);
+  });
+
   describe('reads over a mixed dataset', () => {
     const s1 = sheet({ timesheet_id: 'BBBBBBBB-0000-0000-0000000000000001', person_id: P1, period_start: new Date(2026, 5, 8) });
     const s2 = sheet({ timesheet_id: 'CCCCCCCC-0000-0000-0000000000000001', person_id: P1 });
@@ -345,6 +355,54 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
       });
     });
 
+    /** The state and blackout flag of each of `days`, sorted, as `listSheetsWithDayStates` reports them in any order. */
+    const states = (days: readonly { state: string; blackout: boolean }[]): string[] => days.map(({ state, blackout }) => `${state}:${blackout}`).sort();
+
+    it.each<[string, SheetFilter, New<TimesheetRow>[], number]>([
+      ['the first page of site tenant-a', { siteid: 'tenant-a', ...FIRST_PAGE }, [s3, s4, s2, s1], 4],
+      ['the second page of every site', { pageIndex: 2, itemsPerPage: 2 }, [s4, s2], 5],
+      ['person P1 of site tenant-a', { siteid: 'tenant-a', personId: P1, ...FIRST_PAGE }, [s4, s2, s1], 3],
+    ])('lists %s in listSheets order with each day state and blackout flag, fencing once and reading the days in one statement', async (_name, filter, ids, total) => {
+      const dayStates = new Map([
+        [s1.timesheet_id, ['DRAFT:false', 'RETURNED:false', 'SUBMITTED:true']],
+        [s2.timesheet_id, ['APPROVED:false', 'DRAFT:false', 'DRAFT:false', 'DRAFT:true']],
+        [s3.timesheet_id, ['DRAFT:false']],
+        [s4.timesheet_id, []],
+      ]);
+      await inTenant(async (tx) => {
+        const seen: Statement[] = [];
+        const page = await repository.listSheetsWithDayStates(recording(tx, seen), filter);
+        expect({ sheets: page.sheets.map(({ sheet: row, days }) => [row.timesheet_id, states(days)]), total: page.total }).toEqual({
+          sheets: ids.map((row) => [row.timesheet_id, dayStates.get(row.timesheet_id)]),
+          total,
+        });
+        expect(page.sheets.map(({ sheet: row }) => row)).toEqual((await repository.listSheets(tx, filter)).rows);
+        const dayReads = seen.filter((statement) => statement.text.includes('."timesheet_day"'));
+        expect([dayReads.length, dayReads.every((statement) => statement.text.includes('."blackout"'))]).toEqual([1, true]);
+        expect(seen.filter((statement) => statement.text.includes('."unit_gate"'))).toHaveLength(1);
+      });
+    });
+
+    it('reports the same day states as reading the days and then their blackouts', async () => {
+      await inTenant(async (tx) => {
+        const { sheets } = await repository.listSheetsWithDayStates(tx, FIRST_PAGE);
+        const ids = sheets.map(({ sheet: row }) => row.timesheet_id);
+        const days = await repository.daysOfSheets(tx, ids);
+        const blackedOutIds = new Set((await repository.blackoutsOfDays(tx, days.map((row) => row.day_id))).map((row) => row.day_id));
+        const separate = ids.map((id) => states(days.filter((row) => row.timesheet_id === id).map((row) => ({ state: row.state, blackout: blackedOutIds.has(row.day_id) }))));
+        expect(sheets.map(({ days: read }) => states(read))).toEqual(separate);
+      });
+    });
+
+    it('answers a sheet page with day states past the last with no sheets and the true count, without a page or day query', async () => {
+      const seen: Statement[] = [];
+      await expect(inTenant((tx) => repository.listSheetsWithDayStates(recording(tx, seen), { pageIndex: 4, itemsPerPage: 2 }))).resolves.toEqual({
+        sheets: [],
+        total: 5,
+      });
+      expect(seen.filter((statement) => isSheetPage(statement) || statement.text.includes('."timesheet_day"'))).toEqual([]);
+    });
+
     it('reads days by work date, then day id, and blackouts by day id', async () => {
       await inTenant(async (tx) => {
         const days = await repository.daysOfSheet(tx, s2.timesheet_id);
@@ -389,6 +447,7 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
     it('shows another tenant none of these rows through any read', async () => {
       await inTenant(async (tx) => {
         expect(await repository.listSheets(tx, FIRST_PAGE)).toEqual({ rows: [], total: 0 });
+        expect(await repository.listSheetsWithDayStates(tx, FIRST_PAGE)).toEqual({ sheets: [], total: 0 });
         expect(await repository.getSheet(tx, s1.timesheet_id)).toBeNull();
         expect(await repository.daysOfSheet(tx, s2.timesheet_id)).toEqual([]);
         expect(await repository.daysOfSheets(tx, [s1.timesheet_id, s2.timesheet_id])).toEqual([]);

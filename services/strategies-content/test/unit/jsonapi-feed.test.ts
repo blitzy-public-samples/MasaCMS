@@ -13,6 +13,7 @@ import type { ContentRouteContext } from '../../src/routes/index.js';
 import { feedHandler } from '../../src/routes/jsonapi/feed.js';
 import { createJsonApiParams, rowsSource, type JsonApiCall, type JsonApiResult } from '../../src/routes/jsonapi/types.js';
 import { ADMIN, END, HOME, NOBODY, SITE, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
+import { scopeRows } from '../helpers/feed.js';
 
 type Struct = Record<string, unknown>;
 type Op = 'findOne' | 'findMany' | 'findAll' | 'findQuery' | 'findNew' | 'findProperties' | 'findPermissions' | 'save' | 'delete';
@@ -383,7 +384,7 @@ describe.skipIf(!(await pgAvailable()))('JSON API feed handler', () => {
 
     it('selects Local and Remote feeds of the site only, in upper-cased feedid code-unit order with listFeeds\' order on ties', async () => {
       const scope = await querySiteFeeds(fx.deps, ADMIN_B, { siteId: B }, async (source) => ({
-        all: await source.all(),
+        all: await scopeRows(source),
         page: await source.rows({ order: [] }, 0, 100),
       }));
       const ids = (rows: readonly { feedid: string; name: string | null }[]): string[] =>

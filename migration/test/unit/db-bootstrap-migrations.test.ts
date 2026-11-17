@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createLogger, type Logger } from '@opt2/platform/logging';
 import { pg } from '@opt2/platform/tenancy';
+import { pgAvailable } from '@opt2/platform/testing';
 import {
   MIGRATION_FILE_PATTERN,
   MigrationDirectoryError,
@@ -282,20 +283,7 @@ const PG_CONFIG: pg.ClientConfig = {
   connectionTimeoutMillis: 2000,
 };
 
-/** True when every required `PG_*` variable is set and the server accepts a connection. */
-async function pgReachable(): Promise<boolean> {
-  if (!process.env.PG_HOST || !process.env.PG_USER || !process.env.PG_DATABASE) return false;
-  const client = new pg.Client(PG_CONFIG);
-  try {
-    await client.connect();
-  } catch {
-    return false;
-  }
-  await client.end();
-  return true;
-}
-
-const available = await pgReachable();
+const available = await pgAvailable();
 const RUN = `t_dbm_${randomBytes(4).toString('hex')}`;
 const CHAINS = [rolesFor(`${RUN}_a`), rolesFor(`${RUN}_b`)];
 const MODE: RoleMode = {

@@ -1,8 +1,10 @@
 // cCategory.list against ccategory/list.cfm and dsp_nest.cfm: the site's category tree from strategies-content.
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { generatedBundles } from '@/generated/resource-bundles/index';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { encodeJs, toString } from '@/lib/html';
+import { createResourceBundles, type BundleDir, type RbLookup } from '@/lib/resource-bundles/rb';
 import {
   collectCategoryIds,
   renderCategoryNest,
@@ -34,6 +36,14 @@ import {
   contextFor,
   legacyBody,
 } from './support';
+
+const labels = vi.hoisted(() => ({ adminRbFor: undefined as ((locale: string) => RbLookup) | undefined }));
+
+// A case may install a chain over its own `resource_bundles/` layer; the rest read the generated bundles.
+vi.mock('@/lib/resource-bundles/rb', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/resource-bundles/rb')>();
+  return { ...actual, adminRbFor: (locale: string) => (labels.adminRbFor ?? actual.adminRbFor)(locale) };
+});
 
 const DELTA_ID = 'CA000000-0000-0000-0000000000000004';
 
@@ -502,6 +512,41 @@ describe('cCategory.list on the pooled tenant-a tree', () => {
     expect(content.children('div.help-block-empty').text()).toBe('This site currently has no categories.');
     expect($('table')).toHaveLength(0);
     expect(ctx.gateway.calls.map(({ service }) => service)).toEqual(['strategies-content']);
+  });
+});
+
+describe('cCategory.list under resource_bundles/ overrides', () => {
+  afterEach(() => {
+    labels.adminRbFor = undefined;
+  });
+
+  it.each<{ label: string; entries: Array<[string, string]>; heading: string; links: string[] }>([
+    {
+      label: 'the heading and the Add label',
+      entries: [
+        ['categorymanager', 'Topics'],
+        ['categorymanager.addnewcategory', 'Add Topic'],
+      ],
+      heading: 'Topics',
+      links: ['Add Topic', 'Permissions'],
+    },
+    {
+      label: 'the Permissions label',
+      entries: [['categorymanager.permissions', 'Access']],
+      heading: 'Categories',
+      links: ['Add Category', 'Access'],
+    },
+  ])('shows an override of $label and the default of every other key', async ({ entries, heading, links }) => {
+    const global: BundleDir = { dir: 'resource_bundles', files: { en: { entries } } };
+    labels.adminRbFor = createResourceBundles({ ...generatedBundles, global }).adminRbFor;
+    const { body } = await renderFixture();
+    const $ = cheerio.load(body, null, false);
+    const header = $('div.mura-header');
+    const buttons = header.find('div.nav-module-specific.btn-group > a.btn');
+
+    expect(header.children('h1').text()).toBe(heading);
+    expect(buttons.toArray().map((el) => $(el).text().trim())).toEqual(links);
+    expect(buttons.first().attr('title')).toBe(links[0]);
   });
 });
 

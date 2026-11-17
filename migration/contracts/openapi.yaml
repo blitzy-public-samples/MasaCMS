@@ -294,7 +294,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
-          description: A transition is already running.
+          description: A transition is already running, or the version cannot start yet. It does not follow the active version, the legacy database lacks opt2_sync, or a content unit would move to target while cluster reload commands may reach legacy.
   /internal/v1/transitions/{transitionId}:
     parameters:
       - $ref: '#/components/parameters/TransitionId'

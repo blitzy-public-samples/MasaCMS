@@ -11,7 +11,6 @@ import { UNIT_GATE_TABLE, type GatePhase, type GateState } from '@opt2/platform/
 import {
   CSRF_CONSUME_PATH,
   IDENTITY_SERVICE,
-  baseEnvSchema,
   loadEnv,
   type BaseEnv,
   type Clock,
@@ -43,7 +42,8 @@ import {
   type CapturingPublisher,
   type RoleSubject,
 } from '@opt2/platform/testing';
-import { buildApp, type BuildAppOptions } from '../../src/app.js';
+import { buildApp, financeEnvSchema, type BuildAppOptions } from '../../src/app.js';
+import { REPORTING_SERVICE } from '../../src/domain/export-scope.js';
 import {
   NON_UNIT_TABLES,
   OWNED_TABLES,
@@ -123,14 +123,15 @@ export async function testEnv(overrides: Readonly<Record<string, string | undefi
     OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
     OPT2_GATEWAY_URL: 'http://127.0.0.1:8100',
     OPT2_MIGRATION_URL: 'http://127.0.0.1:8102',
-    OPT2_SERVICE_URLS: '{}',
+    // Ports of harness/repro/ports.env; the service doubles answer every call, so neither is reached.
+    OPT2_SERVICE_URLS: JSON.stringify({ [IDENTITY_SERVICE]: 'http://127.0.0.1:8111', [REPORTING_SERVICE]: 'http://127.0.0.1:8116' }),
     OPT2_STATE_DIR: ownStateDir,
     OPT2_TASKS_ADAPTER: 'local',
     OPT2_STORAGE_ADAPTER: 'local',
     TZ: process.env.TZ ?? 'UTC',
     ...overrides,
   };
-  const env = loadEnv(baseEnvSchema, Object.fromEntries(Object.entries(raw).filter((entry): entry is [string, string] => entry[1] !== undefined)));
+  const env = loadEnv(financeEnvSchema, Object.fromEntries(Object.entries(raw).filter((entry): entry is [string, string] => entry[1] !== undefined)));
   await prepareStateDir(env.OPT2_STATE_DIR);
   return env;
 }

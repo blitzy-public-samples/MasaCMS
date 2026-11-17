@@ -1,7 +1,8 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Reporting's environment schema: the base variables with every `OPT2_SERVICE_URLS` callee required at start-up. */
+/** Reporting's environment schema: the base variables with its own name, every `OPT2_SERVICE_URLS` callee and its database required at start-up. */
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
+import { serializeError } from '@opt2/platform/logging';
 import { EnvValidationError, baseEnvSchema, loadEnv } from '@opt2/platform/service-kit';
 import { reportingEnvSchema } from '../../src/app.js';
 
@@ -19,12 +20,18 @@ const EVERY_CALLEE = [
   'OPT2_SERVICE_URLS.reporting: is required',
 ];
 
-/** The issues `loadEnv(reportingEnvSchema)` reports for a valid local environment with `overrides`; none when it parses. */
-function envIssues(overrides: Readonly<Record<string, string | undefined>>): string[] {
+/** The refusal `loadEnv(reportingEnvSchema)` throws for a valid local environment with `overrides`; undefined when it parses. */
+function envError(overrides: Readonly<Record<string, string | undefined>>): EnvValidationError | undefined {
   const source: Record<string, string | undefined> = {
     PORT: '8116',
     OPT2_SERVICE_NAME: 'reporting',
     OPT2_ENV: 'local',
+    OPT2_DB_AUTH: 'password',
+    PG_HOST: '127.0.0.1',
+    PG_PORT: '5432',
+    PG_DATABASE: 'opt2',
+    PG_USER: 'reporting_app',
+    PG_PASSWORD: 'unused',
     OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
     OPT2_TOKEN_ISSUER: 'opt2-local-identity',
     OPT2_TOKEN_AUDIENCE: 'opt2-local',
@@ -38,11 +45,16 @@ function envIssues(overrides: Readonly<Record<string, string | undefined>>): str
       reportingEnvSchema,
       Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined)),
     );
-    return [];
+    return undefined;
   } catch (err) {
-    if (err instanceof EnvValidationError) return err.issues;
+    if (err instanceof EnvValidationError) return err;
     throw err;
   }
+}
+
+/** The issues of {@link envError}; none when the environment parses. */
+function envIssues(overrides: Readonly<Record<string, string | undefined>>): string[] {
+  return envError(overrides)?.issues ?? [];
 }
 
 describe('reportingEnvSchema', () => {
@@ -70,7 +82,25 @@ describe('reportingEnvSchema', () => {
       ['OPT2_SERVICE_URLS: OPT2_SERVICE_URLS must be a JSON object'],
     ],
     ['reports only its own issue for a JSON array', { OPT2_SERVICE_URLS: '[]' }, [expect.stringMatching(/^OPT2_SERVICE_URLS: /)]],
+    ["refuses another service's name", { OPT2_SERVICE_NAME: 'finance' }, ['OPT2_SERVICE_NAME: must be reporting']],
+    ['reports only its own issue for a malformed service name', { OPT2_SERVICE_NAME: 'Reporting' }, [expect.stringMatching(/^OPT2_SERVICE_NAME: (?!must be reporting)/)]],
+    ['requires OPT2_DB_AUTH', { OPT2_DB_AUTH: undefined }, ['OPT2_DB_AUTH: is required']],
+    ['requires PG_DATABASE', { PG_DATABASE: undefined }, ['PG_DATABASE: is required']],
   ])('%s', (_case, overrides, issues) => {
     expect(envIssues(overrides)).toStrictEqual(issues);
+  });
+
+  it.each(Object.keys(CALLEE_URLS))('names OPT2_SERVICE_URLS.%s when only it is missing', (callee) => {
+    const urls = Object.fromEntries(Object.entries(CALLEE_URLS).filter(([name]) => name !== callee));
+    expect(envIssues({ OPT2_SERVICE_URLS: JSON.stringify(urls) })).toStrictEqual([`OPT2_SERVICE_URLS.${callee}: is required`]);
+  });
+
+  it('logs every refusal by name and value-free reason in one line', () => {
+    const err = envError({ OPT2_SERVICE_NAME: 'finance', OPT2_DB_AUTH: undefined, OPT2_SERVICE_URLS: undefined });
+    expect(serializeError(err).message).toBe(
+      'finance: invalid environment (OPT2_SERVICE_NAME: must be reporting; OPT2_DB_AUTH: is required; ' +
+        'OPT2_SERVICE_URLS.identity: is required; OPT2_SERVICE_URLS.finance: is required; ' +
+        'OPT2_SERVICE_URLS.timesheets: is required; OPT2_SERVICE_URLS.reporting: is required)',
+    );
   });
 });

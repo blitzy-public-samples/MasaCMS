@@ -5,14 +5,18 @@ export {
   loadEnv,
   envModeIssues,
   EnvValidationError,
+  EnvFileError,
   publisherEmulatorHost,
   optionalEnvString,
   requiredEnvString,
   envUrl,
   envPort,
+  checkProcessEnv,
+  processEnvSchema,
   type BaseEnv,
   type EnvSchema,
   type LoadedEnv,
+  type ProcessEnvRequirements,
 } from './env.js';
 export {
   requestContext,
@@ -22,9 +26,11 @@ export {
   newRequestContext,
   requestIdFrom,
   recordWritePosition,
+  recordUnpublishedEvents,
   REQUEST_ID_HEADER,
   NoRequestContextError,
   RequestAbortedError,
+  UnpublishedEventsError,
   throwIfRequestAborted,
   type RequestContextStore,
 } from './context.js';
@@ -64,6 +70,7 @@ export {
   type LegacySurface,
 } from './create-service.js';
 export { recordEventScope } from './event-scope.js';
+export { JSON_CONTENT_TYPE, jsonListStream } from './json-stream.js';
 export {
   csrfPreHandler,
   csrfTokenFrom,

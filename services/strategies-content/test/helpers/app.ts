@@ -90,6 +90,7 @@ import { registerContentLinksRoutes } from '../../src/routes/internal-content-li
 import { registerFileLookupRoutes } from '../../src/routes/internal-file-lookup.js';
 import { registerMigrationObjectRoutes } from '../../src/routes/migration-objects.js';
 import { registerHeaderPromptRoutes } from '../../src/routes/v1/header-prompts.js';
+import { registerInterestGroupRoutes } from '../../src/routes/v1/interest-groups.js';
 import { registerContentQueueControl } from '../../src/tasks/port.js';
 
 /** Name of the service under test, the audience of every invocation credential sent to it. */
@@ -167,6 +168,10 @@ const CURRENT_XACT_ID = /^SELECT pg_current_xact_id\(\)(?:::\w+)?(?: AS "?(\w+)"
 const WRITE_STATEMENT = /^(?:INSERT|UPDATE|DELETE)\b/i;
 const CTE_WRITE = /^WITH\b.*\b(?:INSERT INTO|DELETE FROM|UPDATE \S+ SET)\b/i;
 const OPEN_GATE: FakeGate = Object.freeze({ state: 'open', phase: 'quiet', holder_id: null });
+const DECLARE_CURSOR = /^DECLARE (\w+) NO SCROLL CURSOR FOR (.+)$/i;
+const FETCH_CURSOR = /^FETCH FORWARD (\d+) FROM (\w+)$/i;
+const CLOSE_CURSOR = /^CLOSE (\w+)$/i;
+const TRANSACTION_END = /^(COMMIT|ROLLBACK)\b/i;
 
 function collapse(sql: string): string {
   return sql.replace(/\s+/g, ' ').trim();
@@ -423,14 +428,35 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
     end: async (): Promise<void> => undefined,
     async connect() {
       const session = { tenantId: null as string | null };
+      // A cursor holds the rows its query's responder answers, matched on the DECLARE or on its query; a FETCH takes the next ones.
+      const cursors = new Map<string, Row[]>();
       return {
         async query(text: string | { text: string; values?: unknown[] }, values?: unknown[]) {
           const sql = collapse(typeof text === 'string' ? text : text.text);
           const params = (typeof text === 'string' ? values : (text.values ?? values)) ?? [];
           statements.push({ sql, params, tenantId: session.tenantId });
-          const responder = responders.findLast((candidate) => patternMatches(candidate.pattern, sql));
+          const responderFor = (text: string) => responders.findLast((candidate) => patternMatches(candidate.pattern, text));
+          const rowsOf = (found: { rows: ResponderRows }, text: string): readonly Row[] =>
+            typeof found.rows === 'function' ? found.rows(params, text, { tenantId: session.tenantId }) : found.rows;
+          const declared = DECLARE_CURSOR.exec(sql);
+          if (declared !== null) {
+            const [, cursor = '', query = ''] = declared;
+            const text = responderFor(sql) === undefined ? query : sql;
+            const found = responderFor(text);
+            cursors.set(cursor, found === undefined ? [] : [...rowsOf(found, text)]);
+            return answer([], null, 'DECLARE');
+          }
+          if (TRANSACTION_END.test(sql)) cursors.clear();
+          const closed = CLOSE_CURSOR.exec(sql);
+          if (closed !== null) cursors.delete(closed[1] ?? '');
+          const responder = responderFor(sql);
+          const fetched = responder === undefined ? FETCH_CURSOR.exec(sql) : null;
+          if (fetched !== null) {
+            const rows = (cursors.get(fetched[2] ?? '') ?? []).splice(0, Number(fetched[1]));
+            return answer(rows, rows.length, 'FETCH');
+          }
           if (responder !== undefined) {
-            const rows = typeof responder.rows === 'function' ? responder.rows(params, sql, { tenantId: session.tenantId }) : responder.rows;
+            const rows = rowsOf(responder, sql);
             return answer(rows, rows.length, verbOf(sql));
           }
           return builtIn(sql, params, session);
@@ -873,9 +899,9 @@ export function testEnv(stateDir: string, overrides: Readonly<Record<string, str
 }
 
 /**
- * Builds strategies-content with every route its source registers: the header prompts, the people file and content-link lookups, the migration
- * object transfer, the signed file downloads, the comments proxy, the platform migration handlers over the content mappings,
- * the four push consumers, the site-monitor job routes and queue control.
+ * Builds strategies-content with every route its source registers: the header prompts, the Edit Profile interest groups, the
+ * people file and content-link lookups, the migration object transfer, the signed file downloads, the comments proxy, the
+ * platform migration handlers over the content mappings, the four push consumers, the site-monitor job routes and queue control.
  */
 export async function buildContentApp(options: ContentTestAppOptions = {}): Promise<ContentTestApp> {
   const stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-strategies-content-gates-'));
@@ -899,6 +925,7 @@ export async function buildContentApp(options: ContentTestAppOptions = {}): Prom
     const repository = createContentRepository({ clock: TEST_CLOCK, schema: db.schema });
     registerWritePositionHeader(app);
     await registerHeaderPromptRoutes(app, { domain: { db, repository, clock: TEST_CLOCK } });
+    await registerInterestGroupRoutes(app, { domain: { db, repository } });
     await registerFileLookupRoutes(app, { db });
     registerContentLinksRoutes(app, { db, env: testEnv(stateDir) });
     registerMigrationObjectRoutes(app, { domain: { db, repository }, storage, clock: TEST_CLOCK });
@@ -946,6 +973,8 @@ export interface TestAppOptions<D extends TenantDb = RecordingDb> {
   /** Handlers of the client recorder created when `client` is absent. */
   clientHandlers?: ClientHandlers;
   publisher?: CapturingPublisher;
+  /** Adds hooks or routes after the service's own and before `ready`. */
+  declare?: (app: FastifyInstance) => unknown;
 }
 
 /** The service's own composition root over fakes, and the fakes behind it. */
@@ -986,6 +1015,7 @@ export async function buildTestApp(opts: TestAppOptions<TenantDb> = {}): Promise
     const publisher = opts.publisher ?? createCapturingPublisher();
     app = await buildApp({ env, clock, verifierOverride: testVerifier(SERVICE), db, storage, taskPort, publisher });
     client.install(app);
+    opts.declare?.(app);
     await app.ready();
     recording?.clear();
     const built = app;

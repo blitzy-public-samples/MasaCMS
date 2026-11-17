@@ -155,9 +155,15 @@ interface BuiltSelect {
   readonly select: string;
   readonly order: string;
   readonly values: readonly unknown[];
+  /** A transaction-local setting statement run before the read's first statement. */
+  readonly prelude?: string;
 }
 
 let batchCursorCount = 0;
+
+// A recursive walk's row estimates multiply level by level, so a JIT compile would cost more than the walk it plans.
+/** Turns JIT compilation off for the rest of the transaction. */
+const JIT_OFF_SQL = "SELECT set_config('jit', 'off', true)";
 
 /** The forms a stored single-case CF id may take for a caller-supplied id. */
 function idForms(ids: readonly string[]): string[] {
@@ -651,6 +657,21 @@ export type CategoryListRow = Pick<
   'siteid' | 'categoryid' | 'name' | 'filename' | 'urltitle' | 'parentid' | 'isactive' | 'isinterestgroup' | 'isopen' | 'restrictgroups' | 'isfeatureable'
 > & { haskids: number };
 
+/** The categoryGateway.getCategories columns the admin category trees print. */
+export type CategoryTreeRow = Pick<CategoryListRow, 'categoryid' | 'name' | 'parentid' | 'isactive' | 'isinterestgroup' | 'isopen' | 'restrictgroups' | 'haskids'>;
+
+/** A tree walk's descent: into every row, ending at an ancestor's upper-cased id (dsp_nest.cfm), or rows with children, ending at a repeated row (dsp_categories_nest.cfm). */
+export type CategoryDescent = 'every' | 'withKids';
+
+/** A {@link CategoryTreeRow} in walk order: its depth below the top level, and the walk's first row ending it as its own ancestor, or null. */
+export type CategoryWalkRow = CategoryTreeRow & { depth: number; cycle: string | null };
+
+/** Arguments of a category tree walk; `siteId` is the category pool site. */
+export interface CategoryWalkArgs {
+  siteId: string;
+  descend: CategoryDescent;
+}
+
 /** Arguments of categoryGateway.getCategories; `siteId` is the category pool site. */
 export interface ListCategoriesArgs {
   siteId: string;
@@ -822,6 +843,22 @@ export type ChangesetAssignmentRow = Pick<
   | 'inheritobjects' | 'filename' | 'targetparams' | 'releasedate' | 'changesetid' | 'title' | 'remoteid' | 'remoteurl' | 'urltitle'
 > & { approvalstatus: string | null; requestid: string | null };
 
+/** Arguments of changesetManager.getAssignmentsQuery. */
+export interface ChangesetAssignmentsArgs {
+  changesetId: string;
+  keywords?: string;
+  moduleId?: string;
+}
+
+/** An approval chain as the chain list reads it: every column but the tenant's. */
+export type ApprovalChainListRow = Omit<ApprovalChainRow, 'tenant_id'>;
+
+/** The columns of an approval chain list read, in catalog order. */
+const CHAIN_LIST_COLUMNS = ['siteid', 'chainid', 'name', 'created', 'lastupdate', 'description', 'lastupdateby', 'lastupdatebyid'] as const satisfies readonly (keyof ApprovalChainListRow)[];
+
+/** Arguments of contentGateway.getDraftList's page and batch reads, which read every row. */
+export type DraftListArgs = Omit<contentQueries.DraftListPaging, 'limit'> & { siteId: string; userId: string };
+
 /** An approval chain to insert; `lastupdate` is stamped as the bean save stamps it. */
 export type ApprovalChainInput = Omit<Fields<ApprovalChainRow>, 'chainid' | 'lastupdate'> & { chainid?: string; siteid: string };
 
@@ -978,6 +1015,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
   /** One page of a built SELECT over `defs` in its order, with the count of all its rows, read behind their units' window phase. */
   function selectPage<R extends QueryResultRow>(tx: TenantTx, defs: readonly TableDef[], built: BuiltSelect, page: RowPage): Promise<PagedRows<R>> {
     return platform.read(tx, unitsOf(...defs), async () => {
+      if (built.prelude !== undefined) await tx.query(built.prelude);
       const count = `SELECT count(*)::integer AS total FROM (${built.select}) q`;
       const [{ total }] = (await tx.query<{ total: number }>(count, [...built.values])).rows as [{ total: number }];
       const offset = page.offset ?? 0;
@@ -1002,7 +1040,10 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     }
     batchCursorCount += 1;
     const cursor = `content_rows_${batchCursorCount}`;
-    await platform.read(tx, unitsOf(...defs), () => tx.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${built.select} ${built.order}`, [...built.values]));
+    await platform.read(tx, unitsOf(...defs), async () => {
+      if (built.prelude !== undefined) await tx.query(built.prelude);
+      return tx.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${built.select} ${built.order}`, [...built.values]);
+    });
     // A failed FETCH aborts the transaction, so a CLOSE after it would only mask the error.
     let fetched = true;
     try {
@@ -1327,6 +1368,9 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`${schema}.${CONTENT.table}:${tx.tenantId}:${kind}:${key}`]);
     });
   }
+
+  /** The tables getDraftList reads, whose units its page and batch reads wait out. */
+  const draftListDefs: readonly TableDef[] = contentQueries.DRAFT_LIST_TABLES.map((table) => platform.definition(table));
 
   const content = {
     ...contentQueries,
@@ -1692,6 +1736,16 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     },
 
     deleteVersionedObjects,
+
+    /** contentGateway.getDraftList, one page in its order with the count of all its rows. */
+    draftListPage(tx: TenantTx, args: DraftListArgs, page: RowPage): Promise<PagedRows<contentQueries.DraftListRow>> {
+      return selectPage<contentQueries.DraftListRow>(tx, draftListDefs, contentQueries.draftListSelect(tx, args), page);
+    },
+
+    /** contentGateway.getDraftList, every row in its order, `batchSize` rows per batch. */
+    async *draftListBatches(tx: TenantTx, args: DraftListArgs, batchSize?: number): AsyncGenerator<contentQueries.DraftListRow[], void, undefined> {
+      yield* selectBatches<contentQueries.DraftListRow>(tx, draftListDefs, contentQueries.draftListSelect(tx, args), batchSize);
+    },
   };
 
 
@@ -2103,6 +2157,16 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
 
   const feeds = {
     ...feedQueries,
+
+    /** feedGateway.getFeeds, one page in its order with the count of all its rows. */
+    listFeedsPage(tx: TenantTx, args: feedQueries.FeedListArgs, page: RowPage): Promise<PagedRows<feedQueries.FeedFields>> {
+      return selectPage<feedQueries.FeedFields>(tx, [FEED], feedQueries.listFeedsSelect(tx, args), page);
+    },
+
+    /** feedGateway.getFeeds, every row in its order, `batchSize` rows per batch. */
+    async *listFeedBatches(tx: TenantTx, args: feedQueries.FeedListArgs, batchSize?: number): AsyncGenerator<feedQueries.FeedFields[], void, undefined> {
+      yield* selectBatches<feedQueries.FeedFields>(tx, [FEED], feedQueries.listFeedsSelect(tx, args), batchSize);
+    },
 
     /** feedDAO.create: the feed row, then its items and advanced params. */
     async insertFeed(tx: TenantTx, row: FeedInput, children: FeedChildrenInput = {}, ctx?: WriteContext): Promise<FeedRow> {
@@ -2549,6 +2613,38 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     );
   }
 
+  /** `categoryTreeRows` walked in pre-order: each level in its order, children matched to a parent's id as `idEq` matches, a row under two parents under both. */
+  function categoryWalkSelect(tx: TenantTx, args: CategoryWalkArgs): BuiltSelect {
+    const grouped = 'c.categoryid, c.name, c.parentid, c.isactive, c.isinterestgroup, c.isopen, c.restrictgroups';
+    const carried = ['categoryid', 'name', 'parentid', 'isactive', 'isinterestgroup', 'isopen', 'restrictgroups', 'haskids', 'place', 'keyrank'];
+    const of = (alias: string): string => carried.map((column) => `${alias}.${column}`).join(', ');
+    // idForms' case forms: ICU's root case mapping is the Unicode default one toUpperCase and toLowerCase apply.
+    const cased = (fn: 'upper' | 'lower', text: string): string => `(${fn}(${text} COLLATE ${qualified(schema, 'bean_feed_ci')}) COLLATE "default")`;
+    // An ancestor's upper-cased id ends an 'every' walk; a repeated ancestor row ends a 'withKids' walk.
+    const key = args.descend === 'every' ? 'keyrank' : 'place';
+    return {
+      prelude: JIT_OFF_SQL,
+      select:
+        `WITH RECURSIVE tree AS (SELECT ${grouped}, count(k.parentid)::integer AS haskids,` +
+        ` row_number() OVER (ORDER BY ${orderKey('lower(c.name)', 'asc')}, c.categoryid)::integer AS place,` +
+        // The ancestor key upper-cases the id as it reads, padded to char(35); the forms match it trimmed, as bpchar compares.
+        ` dense_rank() OVER (ORDER BY ${cased('upper', 'concat(c.categoryid)')})::integer AS keyrank,` +
+        ` ${cased('upper', 'c.categoryid::text')} AS upperid, ${cased('lower', 'c.categoryid::text')} AS lowerid` +
+        ` FROM ${name(CATEGORY)} c LEFT JOIN ${name(CATEGORY)} k ON (k.tenant_id = c.tenant_id AND c.categoryid = k.parentid)` +
+        ` WHERE c.tenant_id = $1 AND c.siteid = $2 GROUP BY ${grouped}),` +
+        ` edge AS MATERIALIZED (SELECT p.place AS above, ${of('ch')} FROM tree p` +
+        ' CROSS JOIN LATERAL (VALUES (p.categoryid::text), (NULLIF(p.upperid, p.categoryid::text)), (NULLIF(NULLIF(p.lowerid, p.categoryid::text), p.upperid))) AS f(form)' +
+        ' JOIN tree ch ON ch.parentid::text = f.form),' +
+        ` walk AS (SELECT ${of('t')}, 0 AS depth, ARRAY[t.place] AS trail, ARRAY[t.${key}] AS keys, false AS repeated FROM tree t WHERE t.parentid IS NULL` +
+        ` UNION ALL SELECT ${of('e')}, w.depth + 1, w.trail || e.place, w.keys || e.${key}, e.${key} = ANY(w.keys)` +
+        ` FROM walk w JOIN edge e ON e.above = w.place WHERE NOT w.repeated${args.descend === 'every' ? '' : ' AND w.haskids > 0'})` +
+        ' SELECT w.categoryid, w.name, w.parentid, w.isactive, w.isinterestgroup, w.isopen, w.restrictgroups, w.haskids, w.depth,' +
+        ' (SELECT r.categoryid FROM walk r WHERE r.repeated ORDER BY r.trail LIMIT 1) AS cycle FROM walk w',
+      order: 'ORDER BY w.trail',
+      values: [tx.tenantId, args.siteId],
+    };
+  }
+
   /** categoryGateway.getPrivateInterestGroups and getPublicInterestGroups over the sites sharing the user pool. */
   function interestGroups(tx: TenantTx, args: { sites: readonly InterestGroupSite[]; parentId?: string }): Promise<InterestGroupRow[]> {
     const p = new SqlParams(1);
@@ -2786,6 +2882,30 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
 
     listCategories: categoryList,
 
+    /** Every level `listCategories` reads under the pool site, with one query: each level's rows in its order. */
+    categoryTreeRows(tx: TenantTx, args: { siteId: string }): Promise<CategoryTreeRow[]> {
+      const p = new SqlParams(1);
+      const grouped = 'c.categoryid, c.name, c.parentid, c.isactive, c.isinterestgroup, c.isopen, c.restrictgroups';
+      return select<CategoryTreeRow>(
+        tx,
+        [CATEGORY],
+        `SELECT ${grouped}, count(k.parentid)::integer AS haskids FROM ${name(CATEGORY)} c` +
+          ` LEFT JOIN ${name(CATEGORY)} k ON (k.tenant_id = c.tenant_id AND c.categoryid = k.parentid)` +
+          ` WHERE c.tenant_id = $1 AND c.siteid = ${p.add(args.siteId)} GROUP BY ${grouped} ORDER BY ${orderKey('lower(c.name)', 'asc')}, c.categoryid`,
+        [tx.tenantId, ...p.values],
+      );
+    },
+
+    /** The `categoryTreeRows` walk `args.descend` selects, one page in walk order with the count of all its rows. */
+    categoryWalkPage(tx: TenantTx, args: CategoryWalkArgs, page: RowPage): Promise<PagedRows<CategoryWalkRow>> {
+      return selectPage<CategoryWalkRow>(tx, [CATEGORY], categoryWalkSelect(tx, args), page);
+    },
+
+    /** The `categoryTreeRows` walk `args.descend` selects, in walk order, `batchSize` rows per batch. */
+    async *categoryWalkBatches(tx: TenantTx, args: CategoryWalkArgs, batchSize?: number): AsyncGenerator<CategoryWalkRow[], void, undefined> {
+      yield* selectBatches<CategoryWalkRow>(tx, [CATEGORY], categoryWalkSelect(tx, args), batchSize);
+    },
+
     /** categoryGateway.getCategoryCount. */
     categoryCount(tx: TenantTx, args: { siteId: string; activeOnly?: boolean }): Promise<number> {
       return countCategories(tx, args, false);
@@ -2984,6 +3104,28 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     };
   }
 
+  /** changesetManager.getAssignmentsQuery's SELECT: a change set's versions matching `keywords` in one module, by menu title. */
+  function assignmentListSelect(tx: TenantTx, args: ChangesetAssignmentsArgs): BuiltSelect {
+    const p = new SqlParams(1);
+    const filters = [`c.tenant_id = $1`, idEq(p, 'c.changesetid', args.changesetId)];
+    if (args.keywords !== undefined && args.keywords !== '') {
+      const like = `%${args.keywords}%`;
+      filters.push(`(${ciLike(p, 'c.title', like)} OR ${ciLike(p, 'c.menutitle', like)} OR ${ciLike(p, 'c.summary', like)} OR ${ciLike(p, 'c.body', like)})`);
+    }
+    if (args.moduleId !== undefined && args.moduleId !== '') filters.push(idEq(p, 'c.moduleid', args.moduleId));
+    return {
+      select:
+        'SELECT c.menutitle, c.siteid, c.parentid, c.path, c.contentid, c.contenthistid, c.fileid, c.type, c.subtype, c.lastupdateby, c.active,' +
+        ' c.approved, c.lastupdate, c.lastupdatebyid, c.display, c.displaystart, c.displaystop, c.moduleid, c.isnav, c.notes, c.isfeature,' +
+        ' c.inheritobjects, c.filename, c.targetparams, c.releasedate, c.changesetid, c.title, r.status AS approvalstatus, r.requestid,' +
+        ` c.remoteid, c.remoteurl, c.urltitle FROM ${name(CONTENT)} c` +
+        ` LEFT JOIN ${name(APPROVAL_REQUEST)} r ON (r.tenant_id = c.tenant_id AND c.contenthistid = r.contenthistid)` +
+        ` WHERE ${filters.join(' AND ')}`,
+      order: `ORDER BY ${orderKey('lower(c.menutitle)', 'asc')}, c.contenthistid`,
+      values: [tx.tenantId, ...p.values],
+    };
+  }
+
   const changesets = {
     /** changesetManager.save of a new change set: stamps `created` and `lastupdate`, then writes the assignments. */
     async insertChangeset(tx: TenantTx, row: ChangesetInput, assignments: ChangesetAssignmentsInput = {}, ctx?: WriteContext): Promise<ChangesetRow> {
@@ -3125,25 +3267,19 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     },
 
     /** changesetManager.getAssignmentsQuery: the versions assigned to a change set, by menu title. */
-    assignmentsQuery(tx: TenantTx, args: { changesetId: string; keywords?: string; moduleId?: string }): Promise<ChangesetAssignmentRow[]> {
-      const p = new SqlParams(1);
-      const filters = [`c.tenant_id = $1`, idEq(p, 'c.changesetid', args.changesetId)];
-      if (args.keywords !== undefined && args.keywords !== '') {
-        const like = `%${args.keywords}%`;
-        filters.push(`(${ciLike(p, 'c.title', like)} OR ${ciLike(p, 'c.menutitle', like)} OR ${ciLike(p, 'c.summary', like)} OR ${ciLike(p, 'c.body', like)})`);
-      }
-      if (args.moduleId !== undefined && args.moduleId !== '') filters.push(idEq(p, 'c.moduleid', args.moduleId));
-      return select<ChangesetAssignmentRow>(
-        tx,
-        [CONTENT, APPROVAL_REQUEST],
-        'SELECT c.menutitle, c.siteid, c.parentid, c.path, c.contentid, c.contenthistid, c.fileid, c.type, c.subtype, c.lastupdateby, c.active,' +
-          ' c.approved, c.lastupdate, c.lastupdatebyid, c.display, c.displaystart, c.displaystop, c.moduleid, c.isnav, c.notes, c.isfeature,' +
-          ' c.inheritobjects, c.filename, c.targetparams, c.releasedate, c.changesetid, c.title, r.status AS approvalstatus, r.requestid,' +
-          ` c.remoteid, c.remoteurl, c.urltitle FROM ${name(CONTENT)} c` +
-          ` LEFT JOIN ${name(APPROVAL_REQUEST)} r ON (r.tenant_id = c.tenant_id AND c.contenthistid = r.contenthistid)` +
-          ` WHERE ${filters.join(' AND ')} ORDER BY ${orderKey('lower(c.menutitle)', 'asc')}, c.contenthistid`,
-        [tx.tenantId, ...p.values],
-      );
+    assignmentsQuery(tx: TenantTx, args: ChangesetAssignmentsArgs): Promise<ChangesetAssignmentRow[]> {
+      const built = assignmentListSelect(tx, args);
+      return select<ChangesetAssignmentRow>(tx, [CONTENT, APPROVAL_REQUEST], `${built.select} ${built.order}`, built.values);
+    },
+
+    /** changesetManager.getAssignmentsQuery, one page in its order with the count of all its rows. */
+    assignmentsPage(tx: TenantTx, args: ChangesetAssignmentsArgs, page: RowPage): Promise<PagedRows<ChangesetAssignmentRow>> {
+      return selectPage<ChangesetAssignmentRow>(tx, [CONTENT, APPROVAL_REQUEST], assignmentListSelect(tx, args), page);
+    },
+
+    /** changesetManager.getAssignmentsQuery, every row in its order, `batchSize` rows per batch. */
+    async *assignmentBatches(tx: TenantTx, args: ChangesetAssignmentsArgs, batchSize?: number): AsyncGenerator<ChangesetAssignmentRow[], void, undefined> {
+      yield* selectBatches<ChangesetAssignmentRow>(tx, [CONTENT, APPROVAL_REQUEST], assignmentListSelect(tx, args), batchSize);
     },
 
     /** changesetManager.hasPendingApprovals: the change set's versions whose approval request is not Approved. */
@@ -3156,6 +3292,22 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
           ` INNER JOIN ${name(APPROVAL_REQUEST)} r ON (r.tenant_id = c.tenant_id AND c.contenthistid = r.contenthistid)` +
           ` WHERE c.tenant_id = $1 AND ${idEq(p, 'c.changesetid', args.changesetId)} AND lower(rtrim(r.status)) <> 'approved'`,
         [tx.tenantId, ...p.values],
+      );
+      return rows[0]?.pending ?? 0;
+    },
+
+    /** hasPendingApprovals summed over the site's unpublished change sets in one statement; a version counts once per change set its id forms match. */
+    async unpublishedPendingApprovals(tx: TenantTx, args: { siteId: string }): Promise<number> {
+      const built = changesetListSelect(tx, { siteId: args.siteId, published: 0 });
+      const rows = await select<{ pending: number }>(
+        tx,
+        [CHANGESET, CONTENT, APPROVAL_REQUEST],
+        `SELECT count(*)::integer AS pending FROM (${built.select}) s` +
+          ` INNER JOIN ${name(CONTENT)} c ON (c.tenant_id = $1` +
+          ' AND c.changesetid = ANY(ARRAY[s.changesetid, upper(s.changesetid), lower(s.changesetid)]::bpchar[]))' +
+          ` INNER JOIN ${name(APPROVAL_REQUEST)} r ON (r.tenant_id = c.tenant_id AND c.contenthistid = r.contenthistid)` +
+          " WHERE lower(rtrim(r.status)) <> 'approved'",
+        built.values,
       );
       return rows[0]?.pending ?? 0;
     },
@@ -3344,6 +3496,15 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     return deleteEach(tx, APPROVAL_REQUEST, requests, ctx);
   }
 
+  /** The chain list's SELECT of a site's chains, by name. */
+  function chainListSelect(tx: TenantTx, args: { siteId: string }): BuiltSelect {
+    return {
+      select: `SELECT ${CHAIN_LIST_COLUMNS.join(', ')} FROM ${name(APPROVAL_CHAIN)} WHERE tenant_id = $1 AND siteid = $2`,
+      order: `ORDER BY ${orderKey('lower(name)', 'asc')}, chainid`,
+      values: [tx.tenantId, args.siteId],
+    };
+  }
+
   const approvals = {
     /** approvalChainBean.save of a new chain: `created` defaults to now and `lastupdate` is stamped. */
     insertChain(tx: TenantTx, row: ApprovalChainInput, ctx?: WriteContext): Promise<ApprovalChainRow> {
@@ -3468,13 +3629,19 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     },
 
     /** The approval chains of a site, by name. */
-    listChains(tx: TenantTx, args: { siteId: string }): Promise<ApprovalChainRow[]> {
-      return select<ApprovalChainRow>(
-        tx,
-        [APPROVAL_CHAIN],
-        `SELECT * FROM ${name(APPROVAL_CHAIN)} WHERE tenant_id = $1 AND siteid = $2 ORDER BY ${orderKey('lower(name)', 'asc')}, chainid`,
-        [tx.tenantId, args.siteId],
-      );
+    listChains(tx: TenantTx, args: { siteId: string }): Promise<ApprovalChainListRow[]> {
+      const built = chainListSelect(tx, args);
+      return select<ApprovalChainListRow>(tx, [APPROVAL_CHAIN], `${built.select} ${built.order}`, built.values);
+    },
+
+    /** The approval chains of a site, one page by name with the count of all of them. */
+    listChainsPage(tx: TenantTx, args: { siteId: string }, page: RowPage): Promise<PagedRows<ApprovalChainListRow>> {
+      return selectPage<ApprovalChainListRow>(tx, [APPROVAL_CHAIN], chainListSelect(tx, args), page);
+    },
+
+    /** The approval chains of a site by name, `batchSize` rows per batch. */
+    async *listChainBatches(tx: TenantTx, args: { siteId: string }, batchSize?: number): AsyncGenerator<ApprovalChainListRow[], void, undefined> {
+      yield* selectBatches<ApprovalChainListRow>(tx, [APPROVAL_CHAIN], chainListSelect(tx, args), batchSize);
     },
 
     /** One approval chain, or null. */
@@ -4252,9 +4419,9 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
   };
 
   const beanFeed = {
-    /** A JSON API feed source over `spec`, whose statements `run` opens the tenant transaction for. */
-    source<R extends QueryResultRow>(run: FeedRunner, spec: FeedTableSpec): BeanFeedSource<R> {
-      return sqlFeedSource<R>({ spec, run, select, collation: qualified(schema, 'bean_feed_ci') });
+    /** A JSON API feed source over `spec`, whose statements `run` opens the tenant transaction for; `projection` narrows the rows it returns. */
+    source<R extends QueryResultRow>(run: FeedRunner, spec: FeedTableSpec, projection?: () => ReadonlySet<string> | undefined): BeanFeedSource<R> {
+      return sqlFeedSource<R>({ spec, run, select, collation: qualified(schema, 'bean_feed_ci'), batchSize: DEFAULT_ROW_BATCH_SIZE, projection });
     },
   };
 

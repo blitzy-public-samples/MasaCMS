@@ -128,6 +128,14 @@ const archivePost = () =>
 const permUpdatePost = () =>
   ({ method: 'POST', url: PERM_UPDATE_URL, headers: { 'content-type': URLENCODED }, payload: 'groupid=G1&siteid=default' }) as const;
 
+// A target write in v0002 that the reload key sends to legacy, held by its own entry's freeze and by the reload entry's.
+const TARGETING_SAVE = 'api:variationtargeting.save';
+const RELOAD_HOLDS = ['reload:application', TARGETING_SAVE];
+const RELOAD_TARGETING_URL = '/_api/json/v1/default/variationtargeting/?appreload';
+
+const reloadTargetingPost = () =>
+  ({ method: 'POST', url: RELOAD_TARGETING_URL, headers: { 'content-type': URLENCODED }, payload: 'contentid=C1&targetingjs=probe' }) as const;
+
 describe('epoch read before write routing', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: [...FAKED_TIMERS] });
@@ -335,6 +343,42 @@ describe('frozen entries at the edge', () => {
     const people = test.targets.people?.requests.map((req) => req.path) ?? [];
     expect(side === 'legacy' ? legacyPaths : people).toEqual([path]);
     expect(side === 'legacy' ? targetRequests(test) : legacyPaths.length).toBe(0);
+  });
+
+  it.each(RELOAD_HOLDS)('holds a reload in front of a target write while %s is frozen, then answers the API 503 reaching neither side', async (route) => {
+    const test = gateway as TestGateway;
+    await fake.freeze([route], 'op');
+    const wait = vi.spyOn(fake, 'waitUnfrozen').mockResolvedValue(false);
+
+    const res = await test.app.inject(reloadTargetingPost());
+
+    expect(wait).toHaveBeenCalledExactlyOnceWith(route, FREEZE_WAIT_MS);
+    const expected = apiUnavailableResponse();
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['content-type']).toBe(expected.headers['Content-Type']);
+    expect(JSON.parse(res.body)).toMatchObject({ error: (JSON.parse(expected.body) as { error: unknown }).error });
+    expect(pageRequests(test.legacy)).toHaveLength(0);
+    expect(targetRequests(test)).toBe(0);
+    expect(test.migration.windows).toEqual([]);
+  });
+
+  it.each(RELOAD_HOLDS)('sends a reload in front of a target write that an unfreeze of %s releases to legacy inside its window', async (route) => {
+    const test = gateway as TestGateway;
+    await fake.freeze([route], 'op');
+    const wait = vi.spyOn(fake, 'waitUnfrozen').mockImplementationOnce(async (frozen) => {
+      await fake.unfreeze([frozen], 'op');
+      return true;
+    });
+
+    const res = await test.app.inject(reloadTargetingPost());
+
+    expect(wait).toHaveBeenCalledExactlyOnceWith(route, FREEZE_WAIT_MS);
+    expect(res.statusCode).toBe(200);
+    expect(pageRequests(test.legacy).map((req) => req.url)).toEqual([RELOAD_TARGETING_URL]);
+    expect(targetRequests(test)).toBe(0);
+    expect(test.migration.windows).toEqual([
+      expect.objectContaining({ routeKey: TARGETING_SAVE, units: ['content.variation_targeting'], scope: { table: true } }),
+    ]);
   });
 });
 

@@ -1,5 +1,5 @@
 // Tracing must start before Fastify, pg and undici load, so the service-kit and the app are imported dynamically.
-import { startTracing } from '@opt2/platform/tracing';
+import { shutdownTracing, startTracing } from '@opt2/platform/tracing';
 
 const SERVICE = 'identity';
 const VERSION = '1.0.0';
@@ -14,13 +14,20 @@ try {
   await app.listen({ port: env.PORT, host: '0.0.0.0' });
 } catch (err) {
   process.exitCode = 1;
+  // The logging barrel loads Fastify, so it is imported only once tracing has started or failed.
+  const { logStartupFailure, serializeError } = await import('@opt2/platform/logging');
+  const options = { service: SERVICE, version: VERSION };
   if (app === undefined) {
-    // The logging barrel loads Fastify, so it is imported only once tracing has started or failed.
-    const { logStartupFailure } = await import('@opt2/platform/logging');
-    await logStartupFailure(err, { service: SERVICE, version: VERSION });
+    try {
+      await logStartupFailure(err, options);
+    } finally {
+      // No kit shutdown exists before the app is built, so tracing stops here and exports the spans start-up buffered.
+      await shutdownTracing().catch((error: unknown) => logStartupFailure(error, { ...options, message: 'shutdown failed' }));
+    }
   } else {
-    app.log.error(err, 'start-up failed');
+    const built = app;
+    built.log.error({ error: serializeError(err) }, 'start-up failed');
     // A built app holds its pool and task port open, so the process would never exit without the kit's shutdown.
-    await app.opt2.shutdown();
+    await built.opt2.shutdown().catch((error: unknown) => built.log.error({ error: serializeError(error) }, 'shutdown failed'));
   }
 }

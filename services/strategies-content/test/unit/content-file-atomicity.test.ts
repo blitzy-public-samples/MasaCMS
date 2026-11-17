@@ -21,6 +21,7 @@ import { StartupPredicateViolationError } from '../../src/domain/startup-guard.j
 import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
 import type { ContentRepository } from '../../src/repo/repository.js';
 import { ADMIN, END, HOME, SITE, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
+import { uploadedFile } from '../helpers/uploads.js';
 
 const UMBRELLA = TENANT_UMBRELLA.tenantId;
 const TENANTS = [TENANT_A.tenantId, TENANT_B.tenantId, UMBRELLA];
@@ -72,7 +73,8 @@ function extendSetId(t: Tenancy): string {
   return cfId('S', t.attributeId);
 }
 
-const part = (fileName: string, fieldName: string): UploadedFile => ({ fieldName, fileName, contentType: 'application/pdf', bytes: Buffer.from(`bytes of ${fileName}`) });
+const part = (fileName: string, fieldName: string): UploadedFile =>
+  uploadedFile({ fieldName, fileName, contentType: 'application/pdf' }, Buffer.from(`bytes of ${fileName}`));
 
 describe.skipIf(!(await pgAvailable()))('content file atomicity', () => {
   let fx: ContentFixture;

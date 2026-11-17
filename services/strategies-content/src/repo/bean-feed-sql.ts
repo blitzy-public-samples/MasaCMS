@@ -67,6 +67,19 @@ export type FeedCount<R = unknown> =
     }
   | { readonly kind: 'rows' };
 
+/** What a scan reads of each scope row. */
+export interface FeedScanRequest {
+  /** Lower-cased columns the in-memory evaluator reads; a row holds only these unless `rows` is set. */
+  readonly columns: readonly string[];
+  /** The rows are returned as `rows` returns them, so they also hold its columns. */
+  readonly rows: boolean;
+  /** Terms ordering the scan ahead of the scope's own order; only terms the source `orders`. */
+  readonly order?: readonly FeedOrderTerm[];
+}
+
+/** Receives the next rows of a scan; false stops it. */
+export type FeedScanVisit<R> = (rows: readonly R[]) => boolean | Promise<boolean>;
+
 /** The rows of a JSON API feed, filtered, counted and paged where they are held. */
 export interface BeanFeedSource<R> {
   /** The rows' columns, which a feed without declared columns checks requests against. */
@@ -74,15 +87,22 @@ export interface BeanFeedSource<R> {
   /** True when the scope holds no row. */
   isEmpty(): Promise<boolean>;
   /**
-   * Rows on which filtering by `where` in memory raises what filtering the scope raises: its first raising row, every
-   * row when only memory can tell, none when filtering raises nothing.
+   * Rows on which filtering by `where` in memory raises what filtering the scope raises: its first raising row, none
+   * when filtering raises nothing; undefined when only a scan can tell.
    */
-  filterThrows(where: FeedCondition | undefined): Promise<readonly R[]>;
+  filterThrows(where: FeedCondition | undefined): Promise<readonly R[] | undefined>;
   count(query: FeedQuery): Promise<FeedCount<R>>;
   /** `limit` rows of `query` after the first `offset`, ordered by its terms, then by the scope's order. */
   rows(query: FeedQuery, offset: number, limit: number): Promise<R[]>;
-  /** Every row of the scope in its own order. */
-  all(): Promise<R[]>;
+  /** Whether a scan orders rows by `terms` as the evaluator does when none holds an unorderable or paired value. */
+  orders(terms: readonly FeedOrderTerm[]): boolean;
+  /**
+   * Reads the scope in scan order a batch at a time from one snapshot, handing each batch to `visit` (none skips the
+   * read); with `revisit`, then answers the rows at the ascending 1-based scan positions it names.
+   */
+  scan(request: FeedScanRequest, visit: FeedScanVisit<R> | undefined, revisit?: () => Promise<readonly number[]>): Promise<R[]>;
+  /** True when a revisit may read its positions in another snapshot than the visit's, so the caller checks the rows it answers. */
+  readonly rereads?: boolean;
 }
 
 /** A table a spec reads; its unit's window phase gates the reads. */
@@ -125,6 +145,10 @@ export interface SqlFeedSourceOptions {
   readonly select: FeedSelect;
   /** Qualified collation comparing and ordering text as Intl.Collator('en', { sensitivity: 'accent' }) does. */
   readonly collation: string;
+  /** Rows per scan FETCH. */
+  readonly batchSize: number;
+  /** The only columns `rows` returns, read as it runs (undefined for every column); a merge cannot order such rows by others. */
+  readonly projection?: (() => ReadonlySet<string> | undefined) | undefined;
 }
 
 type Comparison = '=' | '!=' | '>' | '>=' | '<' | '<=';
@@ -326,6 +350,11 @@ function paramsOf(where: FeedCondition | undefined): FeedParamCondition[] {
   return where.kind === 'param' ? [where] : [...paramsOf(where.left), ...paramsOf(where.right)];
 }
 
+/** The lower-cased columns evaluating `query` in memory reads: its params' and its terms'. */
+export function queryColumns(query: FeedQuery): string[] {
+  return [...new Set([...paramsOf(query.where).map((param) => param.column), ...query.order.map((term) => term.column)])];
+}
+
 function orderBy(keys: readonly string[]): string {
   return keys.length === 0 ? '' : ` ORDER BY ${keys.join(', ')}`;
 }
@@ -523,28 +552,52 @@ class FeedSql {
 /** The statement flags {@link sqlFeedSource}'s count reads. */
 type CountRow = { n: number } & Record<string, unknown>;
 
+let scanCursors = 0;
+
+/** Ascending positions as runs of consecutive ones, each at most `max` long. */
+function positionRuns(positions: readonly number[], max: number): { first: number; length: number }[] {
+  const runs: { first: number; length: number }[] = [];
+  for (const position of positions) {
+    const last = runs.at(-1);
+    if (last !== undefined && position === last.first + last.length && last.length < max) last.length += 1;
+    else runs.push({ first: position, length: 1 });
+  }
+  return runs;
+}
+
 /** A feed source over one SQL scope: each method runs its statements in `run`, through `select`'s gated reads. */
-export function sqlFeedSource<R extends QueryResultRow>({ spec, run, select, collation }: SqlFeedSourceOptions): BeanFeedSource<R> {
-  const selected = Object.entries(spec.columns)
-    .map(([name, column]) => `${column.sql} AS ${quoteIdent(name)}`)
-    .join(', ');
+export function sqlFeedSource<R extends QueryResultRow>({
+  spec,
+  run,
+  select,
+  collation,
+  batchSize,
+  projection,
+}: SqlFeedSourceOptions): BeanFeedSource<R> {
+  /** The SELECT list of the spec columns `wanted` names, in spec order; every column without `wanted`. */
+  const selectList = (wanted: ReadonlySet<string> | undefined): string =>
+    Object.entries(spec.columns)
+      .filter(([name]) => wanted === undefined || wanted.has(name))
+      .map(([name, column]) => `${column.sql} AS ${quoteIdent(name)}`)
+      .join(', ');
+  /** The columns returned rows hold: the projection and `extra`, undefined for every column. */
+  const returned = (extra: readonly string[]): ReadonlySet<string> | undefined => {
+    const projected = projection?.();
+    return projected === undefined ? undefined : new Set([...projected, ...extra]);
+  };
   const compiler = (): FeedSql => new FeedSql(spec, collation);
   const exists = async (sql: FeedSql, predicates: readonly string[]): Promise<boolean> => {
     const statement = `SELECT EXISTS (SELECT 1 FROM ${spec.from} WHERE ${sql.scope()} AND (${predicates.join(' OR ')})) AS found`;
     const [row] = await run((tx) => select<{ found: boolean }>(tx, spec.defs, statement, sql.values(tx.tenantId)));
     return row?.found === true;
   };
-  const all = (): Promise<R[]> => {
-    const sql = compiler();
-    const statement = `SELECT ${selected} FROM ${spec.from} WHERE ${sql.scope()}${orderBy(spec.tieBreak)}`;
-    return run((tx) => select<R>(tx, spec.defs, statement, sql.values(tx.tenantId)));
-  };
-  const raisingRows = async (where: FeedCondition | undefined): Promise<R[]> => {
+  const raisingRows = async (where: FeedCondition | undefined): Promise<R[] | undefined> => {
     const sql = compiler();
     const raising = sql.raising(where);
-    if (raising === undefined) return all();
+    if (raising === undefined) return undefined;
     if (raising.length === 0) return [];
-    const statement = `SELECT ${selected} FROM ${spec.from} WHERE ${sql.scope()} AND (${raising.join(' OR ')})${orderBy(spec.tieBreak)} LIMIT 1`;
+    const columns = selectList(new Set(queryColumns({ where, order: [] })));
+    const statement = `SELECT ${columns} FROM ${spec.from} WHERE ${sql.scope()} AND (${raising.join(' OR ')})${orderBy(spec.tieBreak)} LIMIT 1`;
     return run((tx) => select<R>(tx, spec.defs, statement, sql.values(tx.tenantId)));
   };
 
@@ -582,7 +635,7 @@ export function sqlFeedSource<R extends QueryResultRow>({ spec, run, select, col
       if (row['raises'] === true) {
         const rows = await raisingRows(query.where);
         // The raising rows a concurrent write removed in between leave only memory exact.
-        return rows.length > 0 ? { kind: 'throws', rows } : { kind: 'rows' };
+        return rows !== undefined && rows.length > 0 ? { kind: 'throws', rows } : { kind: 'rows' };
       }
       if (row['unstable'] === true) return { kind: 'rows' };
       if (flagged('paired')) return { kind: 'throws', rows: [] };
@@ -594,12 +647,60 @@ export function sqlFeedSource<R extends QueryResultRow>({ spec, run, select, col
       const where = sql.condition(query.where);
       const keys = sql.order(query.order);
       if (where === undefined || keys === undefined) return Promise.reject(new Error('The feed query has no SQL form; count() answers rows for it'));
+      const columns = selectList(returned([]));
       const statement =
-        `SELECT ${selected} FROM ${spec.from} WHERE ${sql.scope()} AND ${where}${orderBy([...keys, ...spec.tieBreak])}` +
+        `SELECT ${columns} FROM ${spec.from} WHERE ${sql.scope()} AND ${where}${orderBy([...keys, ...spec.tieBreak])}` +
         ` LIMIT ${sql.p.add(limit)}::bigint OFFSET ${sql.p.add(offset)}::bigint`;
       return run((tx) => select<R>(tx, spec.defs, statement, sql.values(tx.tenantId)));
     },
 
-    all,
+    orders(terms) {
+      return compiler().order(terms) !== undefined;
+    },
+
+    scan(request, visit, revisit) {
+      const sql = compiler();
+      const keys = sql.order(request.order ?? []);
+      if (keys === undefined) return Promise.reject(new Error('The scan order has no SQL form; orders() refuses it'));
+      const columns = selectList(request.rows ? returned(request.columns) : new Set(request.columns));
+      const statement = `SELECT ${columns} FROM ${spec.from} WHERE ${sql.scope()}${orderBy([...keys, ...spec.tieBreak])}`;
+      return run(async (tx) => {
+        scanCursors += 1;
+        const cursor = `bean_feed_scan_${String(scanCursors)}`;
+        // Only a revisit moves backwards, so only it needs a scrollable cursor.
+        const declare = `DECLARE ${cursor} ${revisit === undefined ? 'NO SCROLL' : 'SCROLL'} CURSOR FOR ${statement}`;
+        await select(tx, spec.defs, declare, sql.values(tx.tenantId));
+        // A failed FETCH or MOVE aborts the transaction, so a CLOSE after it would only mask the error.
+        let open = true;
+        const move = async (command: string): Promise<R[]> => {
+          open = false;
+          const { rows } = await tx.query<R>(`${command} FROM ${cursor}`);
+          open = true;
+          return rows;
+        };
+        try {
+          if (visit !== undefined) {
+            for (;;) {
+              const rows = await move(`FETCH FORWARD ${String(batchSize)}`);
+              const last = rows.length < batchSize;
+              if ((rows.length > 0 && !(await visit(rows))) || last) break;
+            }
+          }
+          const positions = revisit === undefined ? [] : await revisit();
+          if (positions.length === 0) return [];
+          const found: R[] = [];
+          await move('MOVE ABSOLUTE 0');
+          let at = 0;
+          for (const { first, length } of positionRuns(positions, batchSize)) {
+            if (first > at + 1) await move(`MOVE FORWARD ${String(first - at - 1)}`);
+            for (const row of await move(`FETCH FORWARD ${String(length)}`)) found.push(row);
+            at = first + length - 1;
+          }
+          return found;
+        } finally {
+          if (open) await tx.query(`CLOSE ${cursor}`);
+        }
+      });
+    },
   };
 }

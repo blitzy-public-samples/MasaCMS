@@ -7,6 +7,7 @@ import {
   createThrowawaySchema,
   deliverDuplicate,
   deliverOutOfOrder,
+  pgAvailable,
   seedRegistry,
   testEnvelope,
   versionedSequence,
@@ -39,9 +40,10 @@ type InboxRow = { event_id: string; subscription: string; status: string };
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
 const UMBRELLA_TENANT = tenantIdForSite(TENANT_UMBRELLA.siteId);
-const pgReason = process.env.PG_HOST ? undefined : 'PG_HOST unset: PostgreSQL-backed event suite skipped';
+const pgReady = await pgAvailable();
+const pgReason = pgReady ? undefined : 'PG_HOST unset: PostgreSQL-backed event suite skipped';
 
-describe.skipIf(!process.env.PG_HOST)(`surveys consumer of ${SITE_CHANGED_TOPIC}${pgReason === undefined ? '' : ` (${pgReason})`}`, () => {
+describe.skipIf(!pgReady)(`surveys consumer of ${SITE_CHANGED_TOPIC}${pgReason === undefined ? '' : ` (${pgReason})`}`, () => {
   let schema!: ThrowawaySchema;
   let app!: TestApp['app'];
   let publisher!: TestApp['publisher'];

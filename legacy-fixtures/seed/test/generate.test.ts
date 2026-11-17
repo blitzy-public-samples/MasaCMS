@@ -1,7 +1,7 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -152,10 +152,11 @@ async function modeOf(path: string): Promise<number> {
   return (await stat(path)).mode & 0o777;
 }
 
-/** Deterministic `randomBytes`: every call returns a distinct counter value. */
-function counterBytes(): (n: number) => Buffer {
+/** Deterministic `randomBytes` that records each requested size; every call returns a distinct counter value. */
+function counterBytes(sizes: number[] = []): (n: number) => Buffer {
   let calls = 0;
   return (n) => {
+    sizes.push(n);
     calls += 1;
     const out = Buffer.alloc(n);
     out.writeUInt32BE(calls, 0);
@@ -336,11 +337,11 @@ describe('credentials', () => {
     for (const value of Object.values(creds.generated)) expect(value).toMatch(PASSWORD);
   });
 
-  it('draws secrets from deps.randomBytes', async () => {
+  it('draws secrets from deps.randomBytes when the state holds none, and writes nothing under it for a --out run', async () => {
     const injected = await readJson<SeedCredentials>(join(second.out, 'credentials.json'));
     expect(injected).toEqual(generateCredentials(dataset, config, { randomBytes: counterBytes() }));
     expect(injected.roles).toEqual(creds.roles);
-    expect(await readFile(join(second.state, 'secrets', 'seed-credentials.json'), 'utf8')).toBe(`${JSON.stringify(injected, null, 2)}\n`);
+    expect(existsSync(second.state)).toBe(false);
   });
 
   it('draws fresh secrets on every run', async () => {
@@ -364,6 +365,80 @@ describe('credentials', () => {
       expect(SECRET_KEY.test(text), name).toBe(false);
       expect([...text.matchAll(TOKEN_RUN)].filter(([token]) => secrets.has(token)), name).toEqual([]);
     }
+  });
+});
+
+describe('credentials across runs', () => {
+  const SENTINEL = 'zelda.sentinel';
+
+  /** A fresh state directory whose secrets file holds `text`, under modes looser than a write sets. */
+  async function stateHolding(text: string): Promise<{ state: string; file: string }> {
+    const state = await mkdtemp(join(root, 'kept-'));
+    const file = join(state, 'secrets', 'seed-credentials.json');
+    await mkdir(join(state, 'secrets'));
+    await writeFile(file, text);
+    await chmod(join(state, 'secrets'), 0o750);
+    await chmod(file, 0o640);
+    return { state, file };
+  }
+
+  /** Output directory and argv of a default or a --out run against `state`. */
+  function target(state: string, defaultOut: boolean): { out: string; argv: string[] } {
+    const out = defaultOut ? join(state, 'seed') : `${state}-out`;
+    return { out, argv: defaultOut ? [] : ['--out', out] };
+  }
+
+  it.each([
+    ['a --out run leaves it untouched', false],
+    ['a repeated default run rewrites it byte-identical', true],
+  ])('keeps the state secrets of an earlier default run: %s, and writes them to its output', async (_label, defaultOut) => {
+    const text = await readFile(join(first.state, 'secrets', 'seed-credentials.json'));
+    const { state, file } = await stateHolding(text.toString('utf8'));
+    const before = await stat(file);
+    const { out, argv } = target(state, defaultOut);
+    const sizes: number[] = [];
+    expect((await generated(argv, { OPT2_STATE_DIR: state }, { out, state }, { randomBytes: counterBytes(sizes) })).code).toBe(0);
+    expect(sizes).toEqual([]);
+    const after = await readFile(file);
+    expect(sha256(after)).toBe(sha256(text));
+    expect(sha256(await readFile(join(out, 'credentials.json')))).toBe(sha256(text));
+    expect(await listing(state)).toEqual(defaultOut ? ['secrets', 'seed'] : ['secrets']);
+    expect([await modeOf(join(state, 'secrets')), await modeOf(file)]).toEqual(defaultOut ? [0o700, 0o600] : [0o750, 0o640]);
+    expect((await stat(file)).mtimeMs === before.mtimeMs).toBe(!defaultOut);
+  });
+
+  it('gives fresh passwords on a default run only to the usernames the state secrets lack', async () => {
+    const held = structuredClone(creds);
+    const dropped = Object.keys(held.users['tenant-a'] ?? {}).slice(0, 2);
+    for (const username of dropped) delete held.users['tenant-a']?.[username];
+    const { state, file } = await stateHolding(`${JSON.stringify(held, null, 2)}\n`);
+    const { out, argv } = target(state, true);
+    const sizes: number[] = [];
+    expect((await generated(argv, { OPT2_STATE_DIR: state }, { out, state }, { randomBytes: counterBytes(sizes) })).code).toBe(0);
+    expect(sizes).toEqual([18, 18]);
+    const kept = await readJson<SeedCredentials>(file);
+    const expected = structuredClone(creds);
+    for (const username of dropped) {
+      const fresh = kept.users['tenant-a']?.[username];
+      expect(fresh, username).toMatch(PASSWORD);
+      expect(fresh, username).not.toBe(creds.users['tenant-a']?.[username]);
+      (expected.users['tenant-a'] ?? {})[username] = fresh ?? '';
+    }
+    expect(kept).toEqual(expected);
+    expect(await readFile(join(out, 'credentials.json'), 'utf8')).toBe(await readFile(file, 'utf8'));
+  });
+
+  it.each([
+    ['text that is not JSON', `{"users": ${SENTINEL}`, true, 'is not valid JSON'],
+    ['JSON that is not seed credentials', JSON.stringify({ users: { 'tenant-a': { [SENTINEL]: 7 } } }), false, 'does not hold seed credentials'],
+  ])('exits 1 on state secrets holding %s, naming the file only and writing nothing', async (_label, text, defaultOut, message) => {
+    const io = captureOutput();
+    const { state, file } = await stateHolding(text);
+    const { out, argv } = target(state, defaultOut);
+    expect(await run(argv, { OPT2_STATE_DIR: state })).toBe(1);
+    expect([io.stdout(), io.stderr()]).toEqual(['', `seed: ${file} ${message}\n`]);
+    expect(await readFile(file, 'utf8')).toBe(text);
+    expect([existsSync(out), await listing(state)]).toEqual([false, ['secrets']]);
   });
 });
 
@@ -896,7 +971,7 @@ describe('CLI', () => {
     expect(other.digest).not.toBe(manifest.digest);
     const counts = Object.entries(other.counts).map(([array, count]) => `${array}=${count}`);
     expect(io.stdout()).toBe(`seed digest=${other.digest} out=${out} parts=${other.parts.length}\nseed counts ${counts.join(' ')}\n`);
-    expect(existsSync(join(dir, 'state', 'secrets', 'seed-credentials.json'))).toBe(true);
+    expect(existsSync(join(dir, 'state'))).toBe(false);
   });
 
   it.each([

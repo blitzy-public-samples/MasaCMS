@@ -3573,9 +3573,30 @@ paths:
         - name: publishedTopics
           in: query
           required: false
-          description: Comma-separated topics whose published outbox events are listed in `published`.
+          description: Comma-separated topics whose published outbox events are listed in `published`; every one when the read names none of `publishedAfter`, `publishedLimit` and `publishedThrough`, otherwise one page per read.
           schema:
             type: string
+        - name: publishedAfter
+          in: query
+          required: false
+          description: Pages the listing from outbox `seq` after this value, the previous answer's `publishedNext`; 0 when absent on a paged read.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]{0,17})$'
+        - name: publishedLimit
+          in: query
+          required: false
+          description: Pages the listing with at most this many published events, 1 to 1000; 1000 when absent on a paged read.
+          schema:
+            type: string
+            pattern: '^([1-9][0-9]{0,2}|1000)$'
+        - name: publishedThrough
+          in: query
+          required: false
+          description: Pages the listing through outbox `seq` this value, an earlier answer's `publishedFrontier`; rows of the asked topics above it are neither listed nor blocking.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]{0,17})$'
       responses:
         '200':
           description: The owner's position.
@@ -5975,16 +5996,33 @@ components:
             - type: 'null'
         published:
           type: array
-          description: Published outbox events of the asked `publishedTopics`; present only when asked, empty without an outbox.
+          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every registered tenant by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
           items:
             $ref: '#/components/schemas/PublishedEvent'
+        publishedNext:
+          type: string
+          pattern: '^[0-9]+$'
+          description: The `publishedAfter` of the next page; it never passes an unpublished or held row of the asked topics at or below `publishedFrontier`. Present only on a paged read.
+        publishedComplete:
+          type: boolean
+          description: True when every row of the asked topics after `publishedAfter` and at or below `publishedFrontier` is published and listed. Present only on a paged read.
+        publishedFrontier:
+          type: string
+          pattern: '^[0-9]+$'
+          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every registered tenant when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
+        publishedUpTo:
+          type: integer
+          minimum: 0
+          description: Published events of the asked topics at or below `publishedAfter`, so a caller detects rows that appeared behind its cursor. Present only on a paged read whose `publishedComplete` is true.
     PublishedEvent:
       type: object
-      description: A published outbox event and the tenant of its envelope.
+      description: A published outbox event, the tenant of its envelope, its kind and its outbox `seq`.
       required:
         - eventId
         - topic
         - tenantId
+        - kind
+        - seq
       additionalProperties: false
       properties:
         eventId:
@@ -5995,6 +6033,14 @@ components:
         tenantId:
           type: string
           format: uuid
+        kind:
+          type: string
+          enum: [state, process]
+          description: The topic's `x-opt2-kind`, as the outbox row records it.
+        seq:
+          type: string
+          pattern: '^[0-9]+$'
+          description: The outbox row's `seq`; a page lists its events in ascending `seq`.
     WatermarkRecord:
       type: object
       required:

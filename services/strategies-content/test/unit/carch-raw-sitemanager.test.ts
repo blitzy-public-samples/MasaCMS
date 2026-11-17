@@ -151,6 +151,8 @@ function seedWorld(): void {
   );
   t.db.respond(NEST_COUNT, (params) => [{ total: activeBy('parentid')(params).length }]);
   t.db.respond(/^SELECT count\(tcontent\.parentid\)::integer AS kids /, (params) => [{ kids: activeBy('parentid')(params).length }]);
+  // A tree level's batched counts bind its site and parent id lists, one result row per parent.
+  t.db.respond(/^SELECT \(SELECT count\(tcontent\.parentid\)::integer FROM /, (params) => (params[1] as string[]).map((id) => ({ kids: activeBy('parentid')([id]).length })));
   t.db.respond(/FROM "content"\."content_stats" s WHERE /, (params) => stats.filter((row) => bound(params, row.contentid)));
   t.db.respond(/tcontent\.approved = 0 AND tcontent\.changesetid IS NULL ORDER BY /, (params) =>
     versions.filter((row) => row.approved === 0 && row.active === 0 && bound(params, row.contentid)),
@@ -584,7 +586,7 @@ describe('loadsitemanager', () => {
     expect(ran(NEST_COUNT)).toBe(true);
     const lookedUp = (pattern: RegExp): boolean[] =>
       [PAGE, second, third, fourth, fifth].map((id) => t.db.statements.some((s) => pattern.test(s.sql) && bound(s.params, id)));
-    expect(lookedUp(/^SELECT count\(tcontent\.parentid\)::integer AS kids /)).toEqual([false, false, true, true, false]);
+    expect(lookedUp(/^SELECT (\(SELECT )?count\(tcontent\.parentid\)::integer /)).toEqual([false, false, true, true, false]);
     expect(lookedUp(/FROM "content"\."permission_projection"/)).toEqual([false, false, true, true, false]);
   });
 
@@ -760,9 +762,10 @@ describe('loadsiteflat', () => {
         { categoryid: CAT_B, name: 'Beta', filename: 'beta' },
       ].filter((row) => bound(params, row.categoryid)),
     );
-    t.db.respond(/AS haskids FROM "content"\."category" c/, (params) =>
-      bound(params, CAT_A) ? [{ categoryid: CAT_B, name: 'Beta', isopen: 0, haskids: 0, parentid: CAT_A }] : [{ categoryid: CAT_A, name: 'Alpha', isopen: 1, haskids: 1, parentid: null }],
-    );
+    t.db.respond(/AS haskids FROM "content"\."category" c/, [
+      { categoryid: CAT_A, name: 'Alpha', isopen: 1, haskids: 1, parentid: null },
+      { categoryid: CAT_B, name: 'Beta', isopen: 0, haskids: 0, parentid: CAT_A },
+    ]);
     t.db.respond(/count\(\*\)::integer AS thecount FROM "content"\."category"/, [{ thecount: 2 }]);
     const { res, out } = await raw('loadsiteflat', { page: '1', sortby: 'lastupdate', sortdirection: 'desc' });
     expect([res.statusCode, res.headers['content-type']], res.body).toEqual([200, HTML]);
@@ -809,7 +812,7 @@ describe('loadsiteflat', () => {
   ] as const)('filters the feed by report %s', async (report, sort, check) => {
     const draft = { contentid: PAGE, contenthistid: DRAFT_HIST, lastupdate: DRAFTED_AT, publishdate: null, displaystart: PUBLISHED_AT, approvalstatus: 'Pending' };
     t.db.respond(/^SELECT contentid FROM "content"\."content" WHERE lower\(rtrim\(lastupdatebyid\)\)/, [{ contentid: PAGE }]);
-    t.db.respond(/^SELECT \* FROM \(SELECT (DISTINCT )?draft\.contenthistid/, [draft]);
+    t.db.respond(/^SELECT (?:\*|d\.\w+(?:, d\.\w+)*) FROM \(SELECT (DISTINCT )?draft\.contenthistid/, [draft]);
     t.db.respond(FEED, (params) => (check([...params]) ? [feedRow(PAGE, PAGE_HIST)] : []));
     const { res } = await raw('loadsiteflat', { report, ...sort });
     expect(res.statusCode, res.body).toBe(200);
@@ -829,7 +832,7 @@ describe('loadsiteflat', () => {
     const pageDraft = { contentid: PAGE, contenthistid: DRAFT_HIST, lastupdate: DRAFTED_AT, publishdate: DRAFTED_AT, displaystart: PUBLISHED_AT, approvalstatus: 'Pending' };
     const pageOlder = { ...pageDraft, contenthistid: PAGE_HIST, lastupdate: PUBLISHED_AT, publishdate: null };
     const kidDraft = { contentid: KID, contenthistid: KID_HIST, lastupdate: kidUpdated, publishdate: kidPublished, displaystart: PUBLISHED_AT, approvalstatus: 'Pending' };
-    t.db.respond(/^SELECT \* FROM \(SELECT (DISTINCT )?draft\.contenthistid/, [pageDraft, pageOlder, kidDraft]);
+    t.db.respond(/^SELECT (?:\*|d\.\w+(?:, d\.\w+)*) FROM \(SELECT (DISTINCT )?draft\.contenthistid/, [pageDraft, pageOlder, kidDraft]);
     t.db.respond(FEED, [feedRow(PAGE, PAGE_HIST, { menutitle: 'About Us' }), feedRow(KID, KID_HIST, { menutitle: 'Team' })]);
     const { res } = await raw('loadsiteflat', { report, sortby, sortdirection });
     expect(res.statusCode, res.body).toBe(200);

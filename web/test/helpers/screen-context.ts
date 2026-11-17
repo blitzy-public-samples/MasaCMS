@@ -5,7 +5,7 @@ import { deniedGate, runGate } from '@/lib/access-gate';
 import { createCsrfRenderer, type CsrfRenderer } from '@/lib/csrf';
 import { GatewayDenialError } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
-import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
+import { adminRbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import {
   shellHooks,
   type Opt2ScreenDefinition,
@@ -104,7 +104,7 @@ export function makeScreenContext(input: ScreenContextInput): ScreenContext & { 
     gateway,
     csrf: input.csrf ?? createCsrfRenderer(gateway),
     // As the handlers build it: `session.rb` is always a string, which the bundle chain resolves.
-    rb: input.rb ?? rbFor(req.session.rb),
+    rb: input.rb ?? adminRbFor(req.session.rb),
     hooks: input.hooks ?? shellHooks,
     now: input.now ?? businessClock().now(),
     body: input.body,

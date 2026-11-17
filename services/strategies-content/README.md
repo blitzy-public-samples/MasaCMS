@@ -26,6 +26,7 @@ Contracts: [`contracts/openapi.yaml`](contracts/openapi.yaml), the authority for
 | JSON API content entities and methods | `registerEntity` [core/mura/client/api/json/v1/jsonApiUtility.cfc:69-105]; `publicMethods` [core/mura/client/api/json/v1/jsonApiUtility.cfc:34] | `/_api/{json,ajax,rest}/v1`, with `/{siteid}` and `/{siteid}/{path}` |
 | Content-node permission verdicts | `permission.getPerm` [core/mura/permission.cfc:220-266] | `content.permission_projection` and `content.membership_projection`, fed by identity |
 | Admin header prompt counts | Drafts, submissions, approvals, expiring content and change-set approvals [admin/common/layouts/includes/header.cfm:176-246] | `GET /v1/sites/{siteid}/header-prompts` |
+| Edit Profile and Edit User interest groups | `categoryManager.getPrivateInterestGroups` [core/mura/category/categoryGateway.cfc:266-283], read per level by `admin/core/views/ceditprofile/dsp_categories_nest.cfm` and `admin/core/views/cusers/dsp_categories_nest.cfm` | `GET /v1/sites/{siteid}/private-interest-groups` |
 
 ## Owned data
 
@@ -101,7 +102,7 @@ Route keys are those of `platform/src/legacy-compat/route-key.ts`; the state is 
 Why the content routes stay on legacy in this run:
 
 - **Start-up writers.** `gateway/cutover/groups.json` puts 30 of the 39 content units into one group, `grp:content.approval_action`, because carried writes such as `carch.update` reach them together. Its units have application-start writers that `gateway/src/cutover/prevented-writers.ts` does not close: Masa's start-up bundle deploy (`getToWork*` in `core/mura/publisher.cfc`), the `core/mura/dbUpdates` scripts and the materialized-path rebuilds of `contentUtility.cfc` and `categoryUtility.cfc`. `gateway/src/cutover/build-versions.ts` therefore keeps the group `legacy`-authoritative, and every read entry, whose units include it, follows. Only `grp:content.variation_targeting` moves.
-- **Halted cases** ([`opt2/exceptions-list.md`](../../opt2/exceptions-list.md)). `EX-CARCH-SEARCH-SITE`, `EX-CARCH-UPLOAD-PAGELIMIT` and `EX-CARCH-IMAGE-SIZES` keep `admin:carch.search`, `admin:carch.multifileupload` and `admin:carch.imagedetails` on legacy in every version: each needs site settings no programs-sites contract gives this service, so it answers the legacy-shaped 503 naming the halt reason. Open `preserve` entries: `EX-SHELL-THEMEPATH`, `EX-CCHAIN-PENDING-PREVIEW`, `EX-CARCH-VERSION-PREVIEW`, `EX-UNSTORABLE-TEXT-VARIATIONTARGETING`, `EX-VARIATIONTARGETING-REGISTRATION`, `EX-JSONAPI-IMAGE-SIZES-CACHE`.
+- **Halted cases** ([`opt2/exceptions-list.md`](../../opt2/exceptions-list.md)). `EX-CARCH-SEARCH-SITE`, `EX-CARCH-UPLOAD-PAGELIMIT` and `EX-CARCH-IMAGE-SIZES` keep `admin:carch.search`, `admin:carch.multifileupload` and `admin:carch.imagedetails` on legacy in every version: each needs site settings no programs-sites contract gives this service, so it answers the legacy-shaped 503 naming the halt reason. `EX-FEED-REMOTE-OVERSIZE` keeps `admin:cfeed.import1` on legacy in every version: the service reads at most 100 MiB of a remote feed, counted after decompression, and answers a larger one with the legacy-shaped 503 naming `feed-remote-oversize-halted`. Open `preserve` entries: `EX-SHELL-THEMEPATH`, `EX-CCHAIN-PENDING-PREVIEW`, `EX-CARCH-VERSION-PREVIEW`, `EX-UNSTORABLE-TEXT-VARIATIONTARGETING`, `EX-VARIATIONTARGETING-REGISTRATION`, `EX-JSONAPI-IMAGE-SIZES-CACHE`, `EX-PROFILE-INTEREST-SITES`.
 
 Every operation of the contract is registered. These carried operations answer the legacy-shaped 503 instead of running, because they need data or CFML runtime this service does not hold:
 
@@ -117,7 +118,7 @@ Other carried operations answer the legacy-shaped 503 only on branches that need
 
 ### `/v1` APIs
 
-`web/` calls these through the gateway with the session's user token (`web/src/screens/{carch,cchangesets,ccomments,ccategory,cfeed,cform,cchain,cnav}/`). `carch.edittext` is a static view `web/` renders without service data.
+`web/` calls these through the gateway with the session's user token (`web/src/screens/{carch,cchangesets,ccomments,ccategory,cfeed,cform,cchain,cnav,ceditprofile}/`). `carch.edittext` is a static view `web/` renders without service data.
 
 | Paths | Requires | Does |
 |---|---|---|
@@ -125,6 +126,7 @@ Other carried operations answer the legacy-shaped 503 only on branches that need
 | `POST /v1/sites/{siteid}/content/versions/{contenthistid}/object-params` | `s2`, `site-admin`, `m:000` | `carch.updateobjectparams` |
 | `GET /v1/sites/{siteid}/content/{contentid}/crumbs` | `s2`, `site-admin` | Node crumbs for identity's permission screens |
 | `GET /v1/sites/{siteid}/header-prompts` | `s2`, `site-admin`, `system-user` | Admin header badge counts |
+| `GET /v1/sites/{siteid}/private-interest-groups` | `s2`, `site-admin`, `system-user`, `member` | One level of a private user pool's interest groups, each with its site id, for Edit Profile and Edit User; 503 for a level that rows of several sites hold (`EX-PROFILE-INTEREST-SITES`) |
 | `GET /v1/sites/{siteid}/forms/{contentid}/responses`, `POST …/responses/delete` | `s2`, `site-admin`, `m:000` | Data manager list and delete |
 | `POST /v1/sites/{siteid}/forms/import` | `s2`, `site-admin`, `m:004` | `cform.importform` |
 | `GET /v1/sites/{siteid}/files/image-details`, `GET /v1/sites/{siteid}/files/{fileid}/download-url` | `s2`, `site-admin`, `m:000` | Image details model; 900 s signed download URL |
@@ -200,7 +202,7 @@ npm run test:security
 PORT=8114 npm start     # normally started by harness/repro/up.sh
 ```
 
-`test/contract` and `test/security` need nothing external. Suites over the database read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`, create a throwaway copy of schema `content` through `@opt2/platform/testing`, and skip when PostgreSQL is unreachable.
+`test/contract` and `test/security` need nothing external. Suites over the database read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`, create a throwaway copy of schema `content` through `@opt2/platform/testing`, skip when `PG_HOST` is unset and fail when PostgreSQL is unreachable.
 
 - **Environment.** `contentEnvSchema` in `src/app.ts`: `baseEnvSchema` of `@opt2/platform/service-kit` ([`platform/README.md`](../../platform/README.md#configuration)): `PORT`, `OPT2_SERVICE_NAME=strategies-content`, `OPT2_ENV`, `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`, `OPT2_DB_AUTH`, `CLOUD_SQL_INSTANCE`, `PUBSUB_EMULATOR_HOST`, `GOOGLE_CLOUD_PROJECT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OPT2_JWKS_URL`, `OPT2_TOKEN_ISSUER`, `OPT2_TOKEN_AUDIENCE`, `OPT2_GATEWAY_URL`, `OPT2_MIGRATION_URL`, `OPT2_SERVICE_URLS`, `OPT2_STATE_DIR`, `OPT2_TASKS_ADAPTER`, `OPT2_STORAGE_ADAPTER`, `LOG_LEVEL`, `TZ`; plus `MURA_VARIATIONS`, a ColdFusion boolean (`true`, `yes`, `1`, `false`, `no`, `0`; false when unset) that registers the `variationTargeting` entity at start-up (its finders and `read` permission; save, delete and properties answer either way) and turns on `/_api/resource/variation`, as configBean `variations` does. While it is off, a `findProperties` of `variationTargeting` registers the entity for its site until the service instance stops, as legacy's does on the site's API instance until the site beans are rebuilt (`EX-VARIATIONTARGETING-REGISTRATION`). `OPT2_SERVICE_URLS` must name `identity` (CSRF consume, session and admin state), `programs-sites` (the site custom image sizes of JSON API content `images`, `GET /internal/v1/sites/{siteId}/image-sizes`) and `strategies-content` (the target of its own tasks; in the cloud also its push and Cloud Tasks audience).
 

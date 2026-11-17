@@ -1,8 +1,8 @@
 // Per-transport authentication schemes of @opt2/platform/auth and their assembly from the environment.
 import { createHash, timingSafeEqual, type KeyObject } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { OAuth2Client, type TokenPayload } from 'google-auth-library';
 import type { CryptoKey } from 'jose';
+import { readEnvFile } from '../service-kit/env.js';
 import { AuthDenial, TRANSPORTS, type ServiceIdentity, type Transport, type UserClaims } from './claims.js';
 import { createGoogleIdTokenClient, verifyGoogleIdToken } from './deadline.js';
 import { PUBSUB_INVOKER_ROLE, TASKS_INVOKER_ROLE } from './roles.js';
@@ -349,8 +349,9 @@ function localDefaults(env: AuthEnv, minterRoles: string[] | undefined): AuthDef
       },
     }),
     pubsubPush: async () => {
-      const keyFile = localSecretPath(requiredSetting(env, 'OPT2_STATE_DIR'), LOCAL_SECRET_FILES.pubsubPushKey);
-      return createLocalPubSubPushTransport({ pushKey: (await readFile(keyFile, 'utf8')).trim() });
+      const stateDir = requiredSetting(env, 'OPT2_STATE_DIR');
+      const keyFile = localSecretPath(stateDir, LOCAL_SECRET_FILES.pubsubPushKey);
+      return createLocalPubSubPushTransport({ pushKey: (await readEnvFile('OPT2_STATE_DIR', stateDir, keyFile)).trim() });
     },
     cloudTasks: async () =>
       createLocalCloudTasksTransport({ publicKey: (await signingKeys()).publicKey, callee: service }),

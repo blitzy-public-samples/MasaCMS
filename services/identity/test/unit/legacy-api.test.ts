@@ -1,7 +1,7 @@
 /** The JSON API routes against Masa 7.6.1 oracle answers over an in-memory registry: headers, CORS, route ownership, path forms, the MURA settings, identity's named methods without stored data, ad hoc validate rules, the error log and the LIKE matcher. */
 import { inspect } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { collectRouteMatrix } from '@opt2/platform/auth';
+import { LOCAL_SERVICE_TOKEN_TTL_SECONDS, collectRouteMatrix } from '@opt2/platform/auth';
 import { etag, scannedRouteKey } from '@opt2/platform/legacy-compat';
 import { validateLogRecord } from '@opt2/platform/logging';
 import { EnvValidationError, SERVICE_CALL_TIMEOUT_MS, type FastifyInstance, type ServiceClient, type ServiceResponse } from '@opt2/platform/service-kit';
@@ -164,6 +164,19 @@ describe('JSON API over an in-memory registry', () => {
     expect(res.headers.etag).toMatch(/^[0-9A-F]{64}$/);
     expect(res.headers.generator).toBe('Masa CMS 7.6.1');
     expect(res.headers['strict-transport-security']).toBe('max-age=1200');
+  });
+
+  it('authenticates a call whose headers are built after the local service token lifetime has passed since the file started', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + (LOCAL_SERVICE_TOKEN_TTL_SECONDS + 1) * 1000);
+
+      const res = await send(app, 'GET', `${API}/group/properties`, await headersFor(S2));
+
+      expect(res.statusCode).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([

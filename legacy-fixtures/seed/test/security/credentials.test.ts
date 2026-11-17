@@ -1,13 +1,14 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SYNTHETIC_ROLES } from '@opt2/platform/auth';
 import { beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { loadConfig, SITE_ORDER, type SeedConfig } from '../../src/config.js';
-import { generateCredentials, writeCredentials, type SeedCredentials } from '../../src/credentials.js';
+import { generateCredentials, readCredentials, writeCredentials, type SeedCredentials } from '../../src/credentials.js';
 import { buildDataset, type Dataset } from '../../src/dataset.js';
+import { printableMessage } from '../../src/errors.js';
 import { indexMasa, type MasaIndex, type UserRow } from '../../src/masa.js';
 
 const CONFIG_PATH = fileURLToPath(new URL('../../seed.config.json', import.meta.url));
@@ -15,6 +16,8 @@ const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const PASSWORD = /^[A-Za-z0-9_-]{24}a1A$/;
 const CLIENT_SECRET = /^[A-Za-z0-9_-]{43}$/;
 const ROLE_SUBJECTS = [...SYNTHETIC_ROLES, 'site-admin', 'system-user'];
+const PROTOTYPE_KEYS = ['__proto__', 'constructor', 'toString'];
+const SENTINEL = 'zelda.sentinel';
 
 let config: SeedConfig;
 let dataset: Dataset;
@@ -34,6 +37,22 @@ function counterBytes(sizes: number[] = []): (n: number) => Buffer {
 
 function passwordOf(creds: SeedCredentials, user: UserRow): string | undefined {
   return creds.users[user.siteID]?.[user.username];
+}
+
+/** Every secret in `creds` by its place, `users/<site>/<username>`, `oauthClients/<clientID>` or `generated/<name>`, in generation order. */
+function secretsOf(creds: SeedCredentials): Map<string, string> {
+  const places = (prefix: string, record: Record<string, string>): [string, string][] =>
+    Object.entries(record).map(([key, value]) => [`${prefix}/${key}`, value]);
+  return new Map([
+    ...Object.entries(creds.users).flatMap(([siteID, users]) => places(`users/${siteID}`, users)),
+    ...places('oauthClients', creds.oauthClients),
+    ...places('generated', creds.generated),
+  ]);
+}
+
+/** The first `n` keys of `record`. */
+function firstKeys(record: Record<string, unknown> | undefined, n: number): string[] {
+  return Object.keys(record ?? {}).slice(0, n);
 }
 
 async function tempDir(): Promise<string> {
@@ -154,6 +173,71 @@ describe('generateCredentials', () => {
     }
   });
 
+  it('keeps every secret previous holds without drawing any', () => {
+    const previous = generateCredentials(dataset, config);
+    const sizes: number[] = [];
+    expect(generateCredentials(dataset, config, { randomBytes: counterBytes(sizes), previous })).toEqual(previous);
+    expect(sizes).toEqual([]);
+  });
+
+  it.each<[string, (previous: SeedCredentials) => void]>([
+    [
+      'some usernames of two sites',
+      (previous) => {
+        for (const siteID of ['tenant-a', 'umbrella']) {
+          for (const username of firstKeys(previous.users[siteID], 2)) delete previous.users[siteID]?.[username];
+        }
+      },
+    ],
+    ['every user of a site', (previous) => void delete previous.users['tenant-b']],
+    [
+      'a username held under another site',
+      (previous) => {
+        const [username = ''] = firstKeys(previous.users['tenant-a'], 1);
+        previous.users['tenant-b'] = { ...previous.users['tenant-b'], [username]: previous.users['tenant-a']?.[username] ?? '' };
+        delete previous.users['tenant-a']?.[username];
+      },
+    ],
+    ['an OAuth client', (previous) => void delete previous.oauthClients[firstKeys(previous.oauthClients, 1)[0] ?? '']],
+    ['a scenario password', (previous) => void delete previous.generated[firstKeys(previous.generated, 1)[0] ?? '']],
+  ])('draws fresh secrets only for what previous lacks: %s', (_label, drop) => {
+    const full = generateCredentials(dataset, config);
+    const expected = secretsOf(full);
+    const previous = structuredClone(full);
+    drop(previous);
+    const held = secretsOf(previous);
+    const missing = [...expected.keys()].filter((place) => !held.has(place));
+    expect(missing.length).toBeGreaterThan(0);
+    const sizes: number[] = [];
+    const creds = generateCredentials(dataset, config, { randomBytes: counterBytes(sizes), previous });
+    expect(creds.roles).toEqual(full.roles);
+    const issued = secretsOf(creds);
+    expect([...issued.keys()]).toEqual([...expected.keys()]);
+    for (const [place, value] of issued) {
+      if (missing.includes(place)) {
+        expect(value, place).toMatch(place.startsWith('oauthClients/') ? CLIENT_SECRET : PASSWORD);
+        expect(value, place).not.toBe(expected.get(place));
+      } else {
+        expect(value, place).toBe(expected.get(place));
+      }
+    }
+    expect(sizes).toEqual(missing.map((place) => (place.startsWith('oauthClients/') ? 32 : 18)));
+  });
+
+  it.each([
+    ['holds none of them', [] as string[]],
+    ['holds them all', PROTOTYPE_KEYS],
+  ])('keys scenario passwords named like Object.prototype members by own name only when previous %s', (_label, held) => {
+    const withNames = { ...config, scenarioPasswords: PROTOTYPE_KEYS };
+    const previous = generateCredentials(dataset, { ...config, scenarioPasswords: held });
+    const creds = generateCredentials(dataset, withNames, { randomBytes: counterBytes(), previous });
+    expect(Object.keys(creds.generated)).toEqual(PROTOTYPE_KEYS);
+    for (const name of PROTOTYPE_KEYS) {
+      expect(creds.generated[name], name).toMatch(PASSWORD);
+      expect(creds.generated[name] === previous.generated[name], name).toBe(held.includes(name));
+    }
+  });
+
   it('rejects a username listed twice in one site', () => {
     const [user] = dataset.masa.users;
     if (user === undefined) throw new Error('dataset has no users');
@@ -198,5 +282,67 @@ describe('writeCredentials', () => {
       expect(await modeOf(path)).toBe(0o600);
     }
     expect(await modeOf(secrets)).toBe(0o700);
+  });
+
+  it('writes only the output copy without a state directory', async () => {
+    const root = await tempDir();
+    const outDir = join(root, 'out');
+    const creds = generateCredentials(dataset, config, { randomBytes: counterBytes() });
+    await writeCredentials(outDir, undefined, creds);
+    expect([await readdir(root), await readdir(outDir)]).toEqual([['out'], ['credentials.json']]);
+    expect(await readFile(join(outDir, 'credentials.json'), 'utf8')).toBe(`${JSON.stringify(creds, null, 2)}\n`);
+    expect(await modeOf(join(outDir, 'credentials.json'))).toBe(0o600);
+  });
+});
+
+describe('readCredentials', () => {
+  it.each([
+    ['a missing state directory', 'absent'],
+    ['a state directory without secrets/', ''],
+  ])('gives undefined for %s', async (_label, sub) => {
+    const root = await tempDir();
+    expect(await readCredentials(join(root, sub))).toBeUndefined();
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it('rethrows a read failure other than a missing file', async () => {
+    const root = await tempDir();
+    await mkdir(join(root, 'secrets', 'seed-credentials.json'), { recursive: true });
+    await expect(readCredentials(root)).rejects.toMatchObject({ code: 'EISDIR' });
+  });
+
+  it('reads back what writeCredentials wrote, scenario names like Object.prototype members included', async () => {
+    const root = await tempDir();
+    const withNames = { ...config, scenarioPasswords: PROTOTYPE_KEYS };
+    const creds = generateCredentials(dataset, withNames);
+    await writeCredentials(join(root, 'out'), root, creds);
+    const read = await readCredentials(root);
+    expect(read).toEqual(creds);
+    expect(Object.keys(read?.generated ?? {})).toEqual(PROTOTYPE_KEYS);
+    const sizes: number[] = [];
+    expect(generateCredentials(dataset, withNames, { randomBytes: counterBytes(sizes), previous: read })).toEqual(creds);
+    expect(sizes).toEqual([]);
+  });
+
+  const valid = (): SeedCredentials => generateCredentials(dataset, config, { randomBytes: counterBytes() });
+  it.each<[string, () => string, string]>([
+    ['text that is not JSON', () => `{"users": ${SENTINEL}`, 'is not valid JSON'],
+    ['JSON broken after a value', () => `{"users": {"tenant-a": {"${SENTINEL}": "x"} x`, 'is not valid JSON at line 1 column 48'],
+    ['JSON that is not an object', () => JSON.stringify([SENTINEL]), 'does not hold seed credentials'],
+    ['credentials without users', () => JSON.stringify({ ...valid(), users: undefined, sourceSha: SENTINEL }), 'does not hold seed credentials'],
+    ['users given as an array', () => JSON.stringify({ ...valid(), users: [{ [SENTINEL]: 'x' }] }), 'does not hold seed credentials'],
+    ['a password that is not text', () => JSON.stringify({ ...valid(), users: { 'tenant-a': { [SENTINEL]: 7 } } }), 'does not hold seed credentials'],
+    ['an empty client secret', () => JSON.stringify({ ...valid(), oauthClients: { [SENTINEL]: '' } }), 'does not hold seed credentials'],
+    ['a scenario password named __proto__ that is not text', () => `{"sourceSha":"","digest":"","users":{},"roles":{},"oauthClients":{},"generated":{"__proto__":{"${SENTINEL}":1}}}`, 'does not hold seed credentials'],
+  ])('rejects %s, naming the file and never its content', async (_label, text, message) => {
+    const root = await tempDir();
+    await mkdir(join(root, 'secrets'));
+    const file = join(root, 'secrets', 'seed-credentials.json');
+    await writeFile(file, text());
+    const err = await readCredentials(root).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(printableMessage(err)).toBe(`${file} ${message}`);
   });
 });

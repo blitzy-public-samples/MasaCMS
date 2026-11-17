@@ -3336,6 +3336,51 @@ paths:
           $ref: '#/components/responses/AdminNotFound'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/sites/{siteid}/private-interest-groups:
+    parameters:
+      - $ref: '#/components/parameters/SiteIdPath'
+    get:
+      operationId: listPrivateInterestGroups
+      summary: Lists one level of the interest groups of a site's private user pool, as `categoryManager.getPrivateInterestGroups(groupsiteid, parentid)` does for Edit Profile and Edit User.
+      description: 'The interest-group categories (`isInterestGroup` 1) under `parentid` of every registered site whose private user pool is that of `groupsiteid`, each site read in its own tenant, with `hasKids` counting all their children, ordered by site name then category name. `groupsiteid` must be the private user pool site of the token''s site or share its private user pool (403 otherwise). Site names are programs-sites settings the registry does not hold, so a level whose rows come from more than one site answers 503.'
+      tags: [categories]
+      x-opt2-transport: service
+      x-opt2-requires: [s2, site-admin, system-user, member]
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - name: groupsiteid
+          in: query
+          required: true
+          description: Legacy site id, in any case, whose private user pool selects the listed sites.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 25
+        - name: parentid
+          in: query
+          required: false
+          description: The parent category id; absent or empty lists the top level.
+          schema:
+            type: string
+            maxLength: 35
+      responses:
+        '200':
+          description: The level's interest groups.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivateInterestGroupList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: The token's site has no registry entry yet.
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/feeds:
     parameters:
       - $ref: '#/components/parameters/SiteIdPath'
@@ -3474,6 +3519,7 @@ paths:
           description: Legacy 500 `server_error` for a remote feed that answers non-2xx or with a body that is not XML, as cfhttp `throwOnError` and `parseXML` fail.
         '503':
           $ref: '#/components/responses/Unavailable'
+          description: Legacy-shaped 503 after a fail-closed or wait-timeout condition, including a remote feed body over 100 MiB after decompression, which is halted as `feed-remote-oversize-halted` rather than buffered.
   /v1/sites/{siteid}/approval-chains:
     parameters:
       - $ref: '#/components/parameters/SiteIdPath'
@@ -7168,9 +7214,30 @@ paths:
         - name: publishedTopics
           in: query
           required: false
-          description: Comma-separated topics whose published outbox events are listed in `published`.
+          description: Comma-separated topics whose published outbox events are listed in `published`; every one when the read names none of `publishedAfter`, `publishedLimit` and `publishedThrough`, otherwise one page per read.
           schema:
             type: string
+        - name: publishedAfter
+          in: query
+          required: false
+          description: Pages the listing from outbox `seq` after this value, the previous answer's `publishedNext`; 0 when absent on a paged read.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]{0,17})$'
+        - name: publishedLimit
+          in: query
+          required: false
+          description: Pages the listing with at most this many published events, 1 to 1000; 1000 when absent on a paged read.
+          schema:
+            type: string
+            pattern: '^([1-9][0-9]{0,2}|1000)$'
+        - name: publishedThrough
+          in: query
+          required: false
+          description: Pages the listing through outbox `seq` this value, an earlier answer's `publishedFrontier`; rows of the asked topics above it are neither listed nor blocking.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]{0,17})$'
       responses:
         '200':
           description: The owner's position.
@@ -7657,7 +7724,7 @@ paths:
           description: The step failed, so Cloud Tasks retries this task.
         '503':
           $ref: '#/components/responses/Unavailable'
-          description: A unit gate is closed or the units are not target-authoritative, so Cloud Tasks retries this task.
+          description: A unit gate is closed, the units are not target-authoritative, or a remote feed body is over 100 MiB after decompression (halt `feed-remote-oversize-halted`), so Cloud Tasks retries this task.
   /internal/v1/task-queues/{queue}/pause:
     parameters:
       - $ref: '#/components/parameters/Queue'
@@ -9461,6 +9528,39 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/FileExtension'
+    PrivateInterestGroup:
+      type: object
+      description: 'One `getPrivateInterestGroups` row, with its site''s id in place of `Site`; a SQL NULL text reads as `''''`.'
+      required: [siteID, categoryID, name, filename, urltitle, isOpen, hasKids]
+      additionalProperties: false
+      properties:
+        siteID:
+          type: string
+          description: The legacy id of the category's site, `tcontentcategories.SiteID`.
+        categoryID:
+          $ref: '#/components/schemas/LegacyId'
+        name:
+          type: string
+        filename:
+          type: string
+        urltitle:
+          type: string
+        isOpen:
+          type:
+            - integer
+            - 'null'
+        hasKids:
+          type: integer
+          minimum: 0
+    PrivateInterestGroupList:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrivateInterestGroup'
     ContentLinkRequest:
       type: object
       required: [siteId, contentIds]
@@ -10020,13 +10120,28 @@ components:
             - type: 'null'
         published:
           type: array
-          description: Published outbox events of the asked `publishedTopics`; present only when asked, empty without an outbox.
+          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every registered tenant by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
           items:
             $ref: '#/components/schemas/PublishedEvent'
+        publishedNext:
+          type: string
+          pattern: '^[0-9]+$'
+          description: The `publishedAfter` of the next page; it never passes an unpublished or held row of the asked topics at or below `publishedFrontier`. Present only on a paged read.
+        publishedComplete:
+          type: boolean
+          description: True when every row of the asked topics after `publishedAfter` and at or below `publishedFrontier` is published and listed. Present only on a paged read.
+        publishedFrontier:
+          type: string
+          pattern: '^[0-9]+$'
+          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every registered tenant when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
+        publishedUpTo:
+          type: integer
+          minimum: 0
+          description: Published events of the asked topics at or below `publishedAfter`, so a caller detects rows that appeared behind its cursor. Present only on a paged read whose `publishedComplete` is true.
     PublishedEvent:
       type: object
-      description: A published outbox event and the tenant of its envelope.
-      required: [eventId, topic, tenantId]
+      description: A published outbox event, the tenant of its envelope, its kind and its outbox `seq`.
+      required: [eventId, topic, tenantId, kind, seq]
       additionalProperties: false
       properties:
         eventId:
@@ -10037,6 +10152,14 @@ components:
         tenantId:
           type: string
           format: uuid
+        kind:
+          type: string
+          enum: [state, process]
+          description: The topic's `x-opt2-kind`, as the outbox row records it.
+        seq:
+          type: string
+          pattern: '^[0-9]+$'
+          description: The outbox row's `seq`; a page lists its events in ascending `seq`.
     WatermarkRecord:
       type: object
       required: [legacyTable, direction, snapshotSeq, backupLsn, finishedAt]

@@ -10,7 +10,7 @@ import { launchSurvey } from '../domain/launch.js';
 import { listResponsePage, submitResponse } from '../domain/responses.js';
 import { scheduleSurvey } from '../domain/schedule.js';
 import { createSurvey, getSurvey, listSurveys, type DomainDeps } from '../domain/surveys.js';
-import { listSurveyTasks } from '../domain/tasks-list.js';
+import { listSurveyTaskPage } from '../domain/tasks-list.js';
 import type { components } from '../generated/openapi.js';
 import {
   checkTaskToken,
@@ -273,9 +273,8 @@ export async function registerFixtureRoutes(app: FastifyInstance, deps: FixtureR
 
   const tasks: MethodHandler = async (call) => {
     const user = await requireManager(call);
-    // envelope.list pages the task items only after they are read.
-    const items = await listSurveyTasks(app, { tenantId: user.tid, surveyId: storedId(call) });
-    return fixtureList(call.reply, { ...call.ctx, items });
+    const listResult = await listSurveyTaskPage(app, { tenantId: user.tid, surveyId: storedId(call), params: call.ctx.params });
+    return fixtureList(call.reply, { ...call.ctx, listResult });
   };
 
   const launch: MethodHandler = async (call) => {

@@ -47,7 +47,7 @@ const FEED_COUNT = /^SELECT count\(\*\)::integer AS total FROM \(SELECT \* FROM 
 const FEED_PAGE = /^SELECT \* FROM "content"\."changeset" WHERE .* ORDER BY changesetid LIMIT \$\d+ OFFSET/;
 const FIND_CHANGESET = /^SELECT \* FROM "content"\."changeset" WHERE .* LIMIT 1$/;
 const CATEGORY_COUNT = /AS thecount FROM "content"\."category"/;
-const CATEGORY_LEVEL = /AS haskids FROM "content"\."category" c/;
+const CATEGORY_WALK = /WITH RECURSIVE tree AS .* FROM "content"\."category" c /;
 const PENDING = /AS pending FROM "content"\."content" c/;
 const ASSIGNMENTS = /^SELECT c\.menutitle, c\.siteid, c\.parentid, c\.path/;
 const CRUMBS = /FROM "content"\."content" tcontent LEFT JOIN/;
@@ -215,26 +215,27 @@ describe('circuit gate', () => {
 });
 
 describe('screen models', () => {
-  /** A category level row as categoryGateway.getCategories selects it. */
-  const category = (categoryid: string, name: string, extra: Json = {}): Json => ({
-    siteid: 'umbrella',
+  /** A category row as the pool's tree walk selects it, at `depth` and in a walk without a cycle. */
+  const category = (categoryid: string, name: string, depth: number, extra: Json = {}): Json => ({
     categoryid,
     name,
     parentid: null,
     isopen: 1,
     restrictgroups: '',
     haskids: 0,
+    depth,
+    cycle: null,
     ...extra,
   });
 
-  /** Two top-level categories, the first with one child; the second restricted to a group. */
+  /** Two top-level categories, the first with one child; the second restricted to a group; in walk order. */
   function seedCategories(): void {
     t.db.respond(CATEGORY_COUNT, [{ thecount: 3 }]);
-    t.db.respond(CATEGORY_LEVEL, (params) =>
-      flat(params).includes(CAT_A)
-        ? [category(CAT_C, 'Child', { parentid: CAT_A, isopen: 0 })]
-        : [category(CAT_A, 'Alpha', { haskids: 1 }), category(CAT_B, 'Beta', { restrictgroups: 'Insiders' })],
-    );
+    t.db.respond(CATEGORY_WALK, [
+      category(CAT_A, 'Alpha', 0, { haskids: 1 }),
+      category(CAT_C, 'Child', 1, { parentid: CAT_A, isopen: 0 }),
+      category(CAT_B, 'Beta', 0, { restrictgroups: 'Insiders' }),
+    ]);
   }
 
   it('lists a page of published change sets with the iterator paging and the category tree', async () => {
@@ -288,7 +289,7 @@ describe('screen models', () => {
         categories: [],
       },
     });
-    expect(ran(CATEGORY_LEVEL)).toBe(false);
+    expect(ran(CATEGORY_WALK)).toBe(false);
   });
 
   it.each([

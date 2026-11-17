@@ -52,6 +52,15 @@ export type PeriodScope = { programId: number; period: string; excludeRecordId?:
 /** Exact sums of a period's positive and of its negative amounts; 0n where there are none. */
 export type PeriodTotals = { positive: Money; negative: Money };
 
+/** Keyset position of a version row in its record's version order. */
+export type VersionCursor = Pick<FinanceRecordVersionRow, 'version'>;
+
+/** Keyset position of an attachment row in its record's `created`, then id, order. */
+export type AttachmentCursor = Pick<FinanceAttachmentRow, 'created' | 'attachment_id'>;
+
+/** Keyset position of a rollup row in the binary period, then state, then program order. */
+export type RollupCursor = Pick<FinanceRollupRow, 'period' | 'state' | 'legacy_program_id'>;
+
 interface Statements {
   readonly record: string;
   readonly recordForUpdate: string;
@@ -65,6 +74,12 @@ interface Statements {
   readonly attachmentObjectKey: string;
   readonly countRollups: string;
   readonly rollupPage: string;
+  readonly versionsFirst: string;
+  readonly versionsAfter: string;
+  readonly attachmentsFirst: string;
+  readonly attachmentsAfter: string;
+  readonly rollupsFirst: string;
+  readonly rollupsAfter: string;
   readonly binding: string;
   readonly manifestFirst: string;
   readonly manifestAfter: string;
@@ -83,6 +98,9 @@ function statementsFor(schema: string): Statements {
   const attachment = `SELECT ${columnList(FINANCE_ATTACHMENT)} FROM ${qualified(schema, FINANCE_ATTACHMENT.table)}`;
   const count = (def: TableDefinition): string => `SELECT count(*)::integer AS "total" FROM ${qualified(schema, def.table)}`;
   const manifest = `SELECT ${MANIFEST_COLUMNS.map((column) => `"${column}"`).join(', ')} FROM ${qualified(schema, FINANCE_ATTACHMENT.table)}`;
+  const rollup = `SELECT ${columnList(FINANCE_ROLLUP)} FROM ${qualified(schema, FINANCE_ROLLUP.table)}`;
+  const attachmentOrder = ' ORDER BY "created", "attachment_id" COLLATE "C"';
+  const rollupOrder = ' ORDER BY "period" COLLATE "C", "state" COLLATE "C", "legacy_program_id"';
   // The fixture's siteID filter is the tenant's own site, so RLS alone scopes rows; ids match exactly, as stored CF UUIDs.
   // CF UUIDs are fixed-format uppercase hex, so byte order matches SQL Server's case-insensitive order on ids;
   // COLLATE "C" on period and state matches the fixture's Latin1_General_BIN2.
@@ -102,6 +120,13 @@ function statementsFor(schema: string): Statements {
     rollupPage:
       `SELECT ${columnList(FINANCE_ROLLUP)} FROM ${qualified(schema, FINANCE_ROLLUP.table)}` +
       ' ORDER BY "period" COLLATE "C", "state" COLLATE "C", "legacy_program_id" LIMIT $1 OFFSET $2',
+    // Each keyset continues its page statement's order after the last row read, so every row is read once, in that order.
+    versionsFirst: `${version} WHERE "record_id" = $1 ORDER BY "version" LIMIT $2`,
+    versionsAfter: `${version} WHERE "record_id" = $1 AND "version" > $2 ORDER BY "version" LIMIT $3`,
+    attachmentsFirst: `${attachment} WHERE "record_id" = $1${attachmentOrder} LIMIT $2`,
+    attachmentsAfter: `${attachment} WHERE "record_id" = $1 AND ("created", "attachment_id" COLLATE "C") > ($2, $3)${attachmentOrder} LIMIT $4`,
+    rollupsFirst: `${rollup}${rollupOrder} LIMIT $1`,
+    rollupsAfter: `${rollup} WHERE ("period" COLLATE "C", "state" COLLATE "C", "legacy_program_id") > ($1, $2, $3)${rollupOrder} LIMIT $4`,
     binding: `SELECT ${columnList(PROGRAM_BINDING)} FROM ${qualified(schema, PROGRAM_BINDING.table)} ORDER BY "legacy_program_id" LIMIT 1`,
     manifestFirst: `${manifest} ORDER BY "attachment_id" LIMIT $1`,
     manifestAfter: `${manifest} WHERE "attachment_id" > $1 ORDER BY "attachment_id" LIMIT $2`,
@@ -198,6 +223,49 @@ export async function listRollups(tx: TenantTx, paging: RecordPaging): Promise<P
   const statements = statementsFor(tx.schema);
   await awaitReadable(tx, [FINANCE_ROLLUP.unit]);
   return queryPage<FinanceRollupRow>(tx, { count: statements.countRollups, page: statements.rollupPage }, [], paging);
+}
+
+/** Up to `limit` of record `recordId`'s version rows by version: those after `after`, or from the first when it is undefined. */
+export async function versionsAfter(
+  tx: TenantTx,
+  recordId: string,
+  after: VersionCursor | undefined,
+  limit: number,
+): Promise<FinanceRecordVersionRow[]> {
+  const statements = statementsFor(tx.schema);
+  await awaitReadable(tx, [FINANCE_RECORD_VERSION.unit]);
+  const { rows } =
+    after === undefined
+      ? await tx.query<FinanceRecordVersionRow>(statements.versionsFirst, [recordId, limit])
+      : await tx.query<FinanceRecordVersionRow>(statements.versionsAfter, [recordId, after.version, limit]);
+  return rows;
+}
+
+/** Up to `limit` of record `recordId`'s attachment rows by `created`, then id: those after `after`, or from the first when it is undefined. */
+export async function attachmentsAfter(
+  tx: TenantTx,
+  recordId: string,
+  after: AttachmentCursor | undefined,
+  limit: number,
+): Promise<FinanceAttachmentRow[]> {
+  const statements = statementsFor(tx.schema);
+  await awaitReadable(tx, [FINANCE_ATTACHMENT.unit]);
+  const { rows } =
+    after === undefined
+      ? await tx.query<FinanceAttachmentRow>(statements.attachmentsFirst, [recordId, limit])
+      : await tx.query<FinanceAttachmentRow>(statements.attachmentsAfter, [recordId, after.created, after.attachment_id, limit]);
+  return rows;
+}
+
+/** Up to `limit` of the tenant's rollup rows by period, then state, in binary order, then program: those after `after`, or from the first. */
+export async function rollupsAfter(tx: TenantTx, after: RollupCursor | undefined, limit: number): Promise<FinanceRollupRow[]> {
+  const statements = statementsFor(tx.schema);
+  await awaitReadable(tx, [FINANCE_ROLLUP.unit]);
+  const { rows } =
+    after === undefined
+      ? await tx.query<FinanceRollupRow>(statements.rollupsFirst, [limit])
+      : await tx.query<FinanceRollupRow>(statements.rollupsAfter, [after.period, after.state, after.legacy_program_id, limit]);
+  return rows;
 }
 
 /** The exact positive and negative amount sums of the tenant's records in `scope`. */

@@ -1,12 +1,13 @@
-/** Composition root of programs-sites: the default publisher's emulator check and cleanup of a start-up that fails part way. */
+/** Composition root of programs-sites: its process environment, the default publisher's emulator check and cleanup of a start-up that fails part way. */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPublisher } from '@opt2/platform/events';
-import { baseEnvSchema, createService, loadEnv, type BaseEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { SAFE_ERROR_TEXT } from '@opt2/platform/logging';
+import { EnvValidationError, createService, loadEnv, type BaseEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { createCapturingPublisher, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
-import { buildApp, type BuildAppOptions } from '../../src/app.js';
+import { buildApp, programsSitesEnvSchema, type BuildAppOptions } from '../../src/app.js';
 import { registerSiteMonitorRoutes } from '../../src/routes/index.js';
 import { createProgramsSitesTaskPort } from '../../src/tasks/port.js';
 import { TEST_CLOCK, createFakeTaskPort, createRecordingDb, testEnv } from '../helpers/app.js';
@@ -51,7 +52,24 @@ beforeEach(() => {
 });
 
 function envWith(overrides: Readonly<Record<string, string | undefined>> = {}): BaseEnv {
-  return loadEnv(baseEnvSchema, testEnv({ OPT2_STATE_DIR: stateDir, PUBSUB_EMULATOR_HOST: EMULATOR_HOST, ...overrides }));
+  return loadEnv(programsSitesEnvSchema, testEnv({ OPT2_STATE_DIR: stateDir, PUBSUB_EMULATOR_HOST: EMULATOR_HOST, ...overrides }));
+}
+
+/** testEnv's OPT2_SERVICE_URLS without the `dropped` callees. */
+function serviceUrlsWithout(...dropped: string[]): string {
+  const urls = JSON.parse(testEnv({ OPT2_STATE_DIR: undefined }).OPT2_SERVICE_URLS ?? '{}') as Record<string, string>;
+  return JSON.stringify(Object.fromEntries(Object.entries(urls).filter(([service]) => !dropped.includes(service))));
+}
+
+/** The safe text of the EnvValidationError the process schema throws for testEnv with `overrides`. */
+function refusalOf(overrides: Readonly<Record<string, string | undefined>>): string {
+  try {
+    loadEnv(programsSitesEnvSchema, testEnv({ OPT2_STATE_DIR: stateDir, ...overrides }));
+  } catch (err) {
+    expect(err).toBeInstanceOf(EnvValidationError);
+    return (err as EnvValidationError)[SAFE_ERROR_TEXT];
+  }
+  throw new Error('programsSitesEnvSchema accepted the environment');
 }
 
 function build(options: BuildAppOptions): Promise<FastifyInstance> {
@@ -72,6 +90,49 @@ const FAILURES = [
   ['its task port', false, (failure: Error) => void vi.mocked(createProgramsSitesTaskPort).mockRejectedValueOnce(failure)],
   ['a route plugin Fastify rejects', true, failRoutePlugin],
 ] as const;
+
+describe('programsSitesEnvSchema', () => {
+  it.each<readonly [string, Readonly<Record<string, string | undefined>>, string]>([
+    ['a foreign OPT2_SERVICE_NAME', { OPT2_SERVICE_NAME: 'people' }, 'people: invalid environment (OPT2_SERVICE_NAME: must be programs-sites)'],
+    ...['programs-sites', 'identity', 'strategies-content'].map((callee) => [
+      `no OPT2_SERVICE_URLS.${callee}`,
+      { OPT2_SERVICE_URLS: serviceUrlsWithout(callee) },
+      `programs-sites: invalid environment (OPT2_SERVICE_URLS.${callee}: is required)`,
+    ] as const),
+    [
+      'no OPT2_SERVICE_URLS',
+      { OPT2_SERVICE_URLS: undefined },
+      'programs-sites: invalid environment (OPT2_SERVICE_URLS.programs-sites: is required; OPT2_SERVICE_URLS.identity: is required; ' +
+        'OPT2_SERVICE_URLS.strategies-content: is required)',
+    ],
+    [
+      'migration in neither OPT2_MIGRATION_URL nor the map',
+      { OPT2_SERVICE_URLS: serviceUrlsWithout('migration'), OPT2_MIGRATION_URL: undefined },
+      'programs-sites: invalid environment (OPT2_MIGRATION_URL: is required (or OPT2_SERVICE_URLS.migration))',
+    ],
+    ['no OPT2_DB_AUTH', { OPT2_DB_AUTH: undefined }, 'programs-sites: invalid environment (OPT2_DB_AUTH: is required)'],
+    ['no PG_DATABASE', { PG_DATABASE: undefined }, 'programs-sites: invalid environment (PG_DATABASE: is required)'],
+  ])('refuses %s, naming each missing requirement', (_case, overrides, safeText) => {
+    expect(refusalOf(overrides)).toBe(safeText);
+  });
+
+  it.each([
+    ['OPT2_MIGRATION_URL alone', { OPT2_SERVICE_URLS: serviceUrlsWithout('migration') }],
+    ['its map entry alone', { OPT2_MIGRATION_URL: undefined }],
+  ])('accepts migration named by %s', (_case, overrides) => {
+    expect(loadEnv(programsSitesEnvSchema, testEnv({ OPT2_STATE_DIR: stateDir, ...overrides })).OPT2_SERVICE_NAME).toBe('programs-sites');
+  });
+
+  it('is what buildApp parses process.env with when it is given no env', async () => {
+    for (const [key, value] of Object.entries(testEnv({ OPT2_STATE_DIR: stateDir, OPT2_SERVICE_NAME: 'people' }))) vi.stubEnv(key, value);
+    try {
+      await expect(buildApp()).rejects.toThrow('people: invalid environment\n  OPT2_SERVICE_NAME: must be programs-sites');
+      expect(createService).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
 
 describe('programs-sites buildApp publisher environment', () => {
   it('rejects a local start-up without PUBSUB_EMULATOR_HOST before createService acquires anything', async () => {

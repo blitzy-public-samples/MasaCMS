@@ -5,8 +5,10 @@ import { copy, multiFileUpload, publish, saveContent, saveDraft, type ContentInp
 import type { UploadedFile } from '../../src/domain/files.js';
 import { StartupPredicateViolationError } from '../../src/domain/startup-guard.js';
 import { ADMIN, END, HOME, SITE, SITE_ID, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
+import { uploadedFile } from '../helpers/uploads.js';
 
-const part = (fileName: string, fieldName = 'newfile', contentType = 'application/pdf'): UploadedFile => ({ fieldName, fileName, contentType, bytes: Buffer.from(`bytes of ${fileName}`) });
+const part = (fileName: string, fieldName = 'newfile', contentType = 'application/pdf'): UploadedFile =>
+  uploadedFile({ fieldName, fileName, contentType }, Buffer.from(`bytes of ${fileName}`));
 
 describe.skipIf(!(await pgAvailable()))('domain/content files', () => {
   let fx: ContentFixture;

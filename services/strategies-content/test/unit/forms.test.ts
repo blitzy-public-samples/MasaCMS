@@ -33,6 +33,7 @@ import { formBeanJson, renderCformResponse } from '../../src/legacy/admin-render
 import { wddx2cfml, wddxStructGet, type WddxStruct } from '../../src/domain/wddx.js';
 import { DEFAULT_ROW_BATCH_SIZE, type VersionInput } from '../../src/repo/repository.js';
 import { ADMIN, NOW, SITE_ID, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
+import { uploadedFile } from '../helpers/uploads.js';
 
 const FORM = cfId('F', 1);
 const OTHER_FORM = cfId('F', 2);
@@ -53,12 +54,8 @@ const FORM_UPDATE =
   "<var name='comments'><string>c2</string></var><var name='Email'><string>b2@x.com</string></var>" +
   "<var name='name'><string>Bobby</string></var></struct></data></wddxPacket>";
 
-const part = (fieldName: string, fileName: string, contentType = 'application/pdf'): UploadedFile => ({
-  fieldName,
-  fileName,
-  contentType,
-  bytes: Buffer.from(`bytes of ${fileName}`),
-});
+const part = (fieldName: string, fileName: string, contentType = 'application/pdf'): UploadedFile =>
+  uploadedFile({ fieldName, fileName, contentType }, Buffer.from(`bytes of ${fileName}`));
 const link = { scheme: 'http', domain: 'tenant-a.local', serverPort: ':8080', context: '' };
 
 /** A packet of string `fields` as cfwddx writes it, CR and LF as char codes. */

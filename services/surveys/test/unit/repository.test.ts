@@ -272,6 +272,39 @@ describe.skipIf(!available)('surveys repository writes against PostgreSQL', () =
     expect(stored.every((row) => CF_UUID.test(row.target_id) && row.created.getTime() === NOW.getTime())).toBe(true);
   });
 
+  it('reads only the stored targets of the input sites to skip repeats, and counts the targets of every site', async () => {
+    const survey = await newSurvey();
+    await inTenant((tx) =>
+      repository.insertTargets(tx, survey.survey_id, [
+        { siteId: 'tenant-c', groupName: null },
+        { siteId: 'tenant-c', groupName: 'Panel' },
+        { siteId: 'Tenant-A', groupName: 'Panel' },
+      ]),
+    );
+    const seen: unknown[][] = [];
+
+    const result = await inTenant((tx) =>
+      repository.insertTargets(
+        {
+          ...tx,
+          query: ((text: string, values?: unknown[]) => {
+            if (/\bsurvey_target\b/.test(text) && /^SELECT\b/.test(text)) seen.push(values ?? []);
+            return tx.query(text, values);
+          }) as TenantTx['query'],
+        },
+        survey.survey_id,
+        [
+          { siteId: 'TENANT-A ', groupName: 'panel' },
+          { siteId: 'tenant-a', groupName: null },
+          { siteId: 'tenant-a', groupName: null },
+        ],
+      ),
+    );
+
+    expect(result).toEqual({ inserted: 1, total: 4 });
+    expect(seen).toContainEqual([survey.survey_id, ['tenant-a']]);
+  });
+
   it.each([
     ['unicode and padding', '  {"q1": "Grüße – 你好"}  \n'],
     ['JSON-looking text kept unparsed', '{"b":1,  "a":[1.0, 2e3]}'],

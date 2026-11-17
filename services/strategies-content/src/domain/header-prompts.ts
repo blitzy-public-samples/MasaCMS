@@ -19,11 +19,6 @@ export interface HeaderPromptDeps {
 const SITE_MANAGER_MODULE_ID = '00000000000000000000000000000000000';
 const CHANGESETS_MODULE_ID = '00000000000000000000000000000000014';
 
-/** The query-of-queries `select distinct contentid` row count: case-sensitive, NULL counted once. */
-function distinctContentIds(rows: ReadonlyArray<{ readonly contentid: string | null }>): number {
-  return new Set(rows.map((row) => row.contentid)).size;
-}
-
 /** sessionUserFacade `isAdminUser() or isSuperUser()`: S2, or the site's private-pool Admin group. */
 function isAdminOrSuperUser(claims: UserClaims): boolean {
   return claims.s2 || hasAnyRole(claims.roles, [Roles.s2, Roles.siteAdmin]);
@@ -54,23 +49,11 @@ export async function loadHeaderPrompts(deps: HeaderPromptDeps, claims: UserClai
   const siteId = claims.site;
   const userId = claims.sub;
   const groupIds = isAdminOrSuperUser(claims) ? null : await membershipIds(deps, claims);
-  return withTenant(deps.db, claims.tid, async (tx) => {
-    const drafts = await content.draftList(tx, { siteId, userId, startDate: cfDateAdd('m', -3, now) });
-    const submissions = await content.submissionsQuery(tx, { siteId, userId });
-    const approvals = await content.approvalsQuery(tx, { siteId, groupIds });
-    const expiring = await content.expiringContent(tx, { siteId, userId, today: now });
-    let pendingChangesets = 0;
-    if (hasChangesetModules(claims)) {
-      for (const { changesetid } of await changesets.changesetQuery(tx, { siteId, published: 0, sortBy: 'PublishDate' })) {
-        pendingChangesets += await changesets.hasPendingApprovals(tx, { changesetId: changesetid });
-      }
-    }
-    return {
-      drafts: distinctContentIds(drafts),
-      submissions: distinctContentIds(submissions),
-      approvals: distinctContentIds(approvals),
-      expires: distinctContentIds(expiring),
-      pendingChangesets,
-    };
-  });
+  return withTenant(deps.db, claims.tid, async (tx) => ({
+    drafts: await content.draftCount(tx, { siteId, userId, startDate: cfDateAdd('m', -3, now) }),
+    submissions: await content.submissionsCount(tx, { siteId, userId }),
+    approvals: await content.approvalsCount(tx, { siteId, groupIds }),
+    expires: await content.expiringCount(tx, { siteId, userId, today: now }),
+    pendingChangesets: hasChangesetModules(claims) ? await changesets.unpublishedPendingApprovals(tx, { siteId }) : 0,
+  }));
 }

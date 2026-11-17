@@ -322,10 +322,10 @@ describe.skipIf(!PG_AVAILABLE)('people outbox', () => {
     await withPeople(publisher, async (ctx) => {
       const userId = person.userid;
       // An unflushed row keeps the xmin of the transaction that wrote it, which the changelog's xid names.
+      // Its unpublished row withholds the answer: the request is abandoned while the archive stays committed.
       publisher.failing = true;
-      const res = await archivePerson(ctx, actor, userId);
+      await expect(archivePerson(ctx, actor, userId)).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
       publisher.failing = false;
-      expect(res.statusCode).toBe(200);
 
       const written = await outboxRows(ctx.schema, tenantId, PERSON_ARCHIVED_TOPIC, userId);
       expect(written).toHaveLength(1);
@@ -391,10 +391,17 @@ describe.skipIf(!PG_AVAILABLE)('people outbox', () => {
     await withPeople(publisher, async (ctx) => {
       const { userid } = SYSTEM_USER_A_PERSON;
       publisher.failing = true;
-      const res = await updateUser(ctx, SITE_ADMIN_A, { action: 'Update', ...namesOf(SYSTEM_USER_A_PERSON), company: 'Swept Company' });
+      await expect(
+        updateUser(ctx, SITE_ADMIN_A, { action: 'Update', ...namesOf(SYSTEM_USER_A_PERSON), company: 'Swept Company' }),
+      ).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
       publisher.failing = false;
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ written: true, errors: {} });
+      const [stored] = await adminRows<{ company: string | null }>(
+        ctx.schema,
+        TENANT_A.tenantId,
+        `SELECT company FROM ${ctx.schema.schema}.${PERSON.table} WHERE userid = $1`,
+        [userid],
+      );
+      expect(stored?.company).toBe('Swept Company');
 
       const unflushed = await outboxRows(ctx.schema, TENANT_A.tenantId, PERSON_CHANGED_TOPIC, userid);
       expect(unflushed).toHaveLength(1);

@@ -8,7 +8,7 @@ import {
   type LocalSigningKeys,
 } from '@opt2/platform/auth';
 import { createLogger, serializeError, type Logger } from '@opt2/platform/logging';
-import { createServiceClient, systemClock, type Clock, type ServiceClient } from '@opt2/platform/service-kit';
+import { EnvValidationError, createServiceClient, systemClock, type Clock, type ServiceClient } from '@opt2/platform/service-kit';
 import { createPool, type TenantDb } from '@opt2/platform/tenancy';
 
 import { loadConfig } from './config.js';
@@ -93,11 +93,12 @@ function invocationMinters(env: MigrationEnv): (caller: ServiceCaller) => Invoca
   });
 }
 
-/** Opens the `migration` schema pool with the environment's database settings. */
+/** Opens the `migration` schema pool with the environment's database settings. @throws EnvValidationError naming each unset database setting */
 async function openMigrationPool(env: MigrationEnv, logger: Logger): Promise<TenantDb> {
   const { OPT2_DB_AUTH, PG_DATABASE } = env;
   if (OPT2_DB_AUTH === undefined || PG_DATABASE === undefined) {
-    throw new Error(`Schema ${MIGRATION_SCHEMA} needs OPT2_DB_AUTH and PG_DATABASE`);
+    const missing = Object.entries({ OPT2_DB_AUTH, PG_DATABASE }).filter(([, value]) => value === undefined);
+    throw new EnvValidationError(missing.map(([key]) => `${key}: is required`), env.OPT2_SERVICE_NAME);
   }
   return createPool({
     env: { ...env, OPT2_DB_AUTH, PG_DATABASE },

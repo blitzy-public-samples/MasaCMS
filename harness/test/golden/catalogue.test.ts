@@ -177,11 +177,25 @@ describe('loadCatalogue', () => {
       /tableVersion: must be v0003 for GS-PE-RH-01/,
       'scenarios/3/tableVersion',
     ],
+    [
+      'a session site that is not a kebab-case site id',
+      () => validVariant('        via: public', '        via: public\n        site: Tenant_A'),
+      /scenarios\.1\.sessions\.anon\.site: must be a lower-case kebab-case id/,
+      'scenarios/1/sessions/anon/site',
+    ],
   ])('rejects %s with GoldenConfigError', async (_label, makeFile, message, pointer) => {
     const file = makeFile();
     const err = await loadError(file);
     expect(err.message).toMatch(message);
     expect(err.path).toBe(pointer === null ? file : `${file}#/${pointer}`);
+  });
+
+  it('reads a session site and keeps sessions without one as declared', async () => {
+    const catalogue = await loadCatalogue(validVariant('        via: public', '        via: public\n        site: tenant-a'));
+    expect(scenarioById(catalogue, 'GS-CO-05').sessions).toStrictEqual({
+      anon: { login: 'none', via: 'public', site: 'tenant-a' },
+    });
+    expect(scenarioById(catalogue, 'GS-ID-01').sessions).toStrictEqual(scenarioById(valid, 'GS-ID-01').sessions);
   });
 
   it('loads reserved-identity misuse, which coverage reports rather than the schema', async () => {
@@ -215,6 +229,32 @@ describe('scenario ids', () => {
     ['GS-PE-RH-04', false],
   ])('isRehearsalScenario(%s) is %s', (id, expected) => {
     expect(isRehearsalScenario(id)).toBe(expected);
+  });
+});
+
+describe('stepSchema mergeHidden', () => {
+  const save = { name: 'save', method: 'POST', route: '/admin/?muraAction=cArch.update', form: { title: 'FIXTURE' } };
+
+  it.each<[Record<string, unknown>, boolean | undefined]>([
+    [{ csrf: 'fetch-form', mergeHidden: false }, false],
+    [{ csrf: 'fetch-form', mergeHidden: true }, true],
+    [{ csrf: 'fetch-form' }, undefined],
+  ])('accepts %j, parsing mergeHidden as %s without a default', (fields, expected) => {
+    const step = stepSchema.parse({ ...save, ...fields });
+    expect(step.mergeHidden).toBe(expected);
+    expect(Object.hasOwn(step, 'mergeHidden')).toBe(expected !== undefined);
+  });
+
+  it.each<Record<string, unknown>>([
+    { mergeHidden: false },
+    { csrf: 'none', mergeHidden: true },
+    { csrf: 'json-api:editContent', mergeHidden: false },
+  ])('rejects %j: mergeHidden needs csrf fetch-form', (fields) => {
+    const result = stepSchema.safeParse({ ...save, ...fields });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues).toStrictEqual([
+      expect.objectContaining({ path: ['mergeHidden'], message: 'mergeHidden is allowed only with csrf: fetch-form' }),
+    ]);
   });
 });
 
@@ -313,6 +353,22 @@ describe('committed catalogue', () => {
     expect(ids).toEqual(expect.arrayContaining(STARTING_SET));
   });
 
+  it.each([
+    { id: 'GS-ID-09', sessions: ['admin', 'member'] },
+    { id: 'GS-PUB-01', sessions: ['visitor'] },
+    { id: 'GS-PUB-02', sessions: ['member'] },
+    { id: 'GS-PUB-03', sessions: ['member', 'visitor'] },
+    { id: 'GS-PUB-04', sessions: ['member'] },
+    { id: 'GS-PUB-05', sessions: ['visitor'] },
+    { id: 'GS-LS-02', sessions: ['visitor'] },
+    { id: 'GS-BR-01', sessions: ['admin'] },
+  ])('addresses the tenant-a public pages of $id on its own domain through sessions $sessions', ({ id, sessions }) => {
+    const scenario = scenarioById(catalogue, id);
+    const onSite = Object.keys(scenario.sessions).filter((name) => scenario.sessions[name]?.site === 'tenant-a');
+    expect(onSite).toStrictEqual(sessions);
+    for (const step of scenario.steps) expect(step.route, `${id} ${step.name}`).not.toMatch(/^\/tenant-a\//);
+  });
+
   it.each(SYNTHETIC_PREFIXES)('holds %s scenarios that all require the legacy fixtures', (prefix) => {
     const scenarios = catalogue.scenarios.filter((s) => s.id.startsWith(`${prefix}-`));
     expect(scenarios.length).toBeGreaterThan(0);
@@ -332,6 +388,10 @@ describe('committed catalogue', () => {
     const flows = range('GS-UI', 5).map((id) => scenarioById(catalogue, id).browser);
     for (const flow of flows) expect(flow).toEqual({ flow: expect.any(String), console: 'no-new-errors' });
     expect(new Set(flows.map((f) => f?.flow)).size).toBe(flows.length);
+  });
+
+  it("posts GS-CO-02's edit save without the form's other hidden fields", () => {
+    expect(scenarioById(catalogue, 'GS-CO-02').steps.find((s) => s.name === 'page')?.mergeHidden).toBe(false);
   });
 
   it('holds credentials only as placeholders', () => {

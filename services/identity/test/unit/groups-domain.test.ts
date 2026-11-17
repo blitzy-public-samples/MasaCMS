@@ -72,6 +72,9 @@ const NO_PHOTOS: ContentClient = createContentClient({
 /** The first window of the largest size, which holds every listing these tests seed. */
 const WHOLE = { offset: 0, limit: 1000 };
 
+/** Timeout of a case whose read polls a closed user until its sleeps total USER_CLOSED_WAIT_MS: a transaction per 100 ms poll, 3 s each under load. */
+const CLOSED_POLL_TIMEOUT_MS = (USER_CLOSED_WAIT_MS / 100) * 3_000;
+
 const available = await pgAvailable();
 
 describe.skipIf(!available)('groups domain', () => {
@@ -312,7 +315,7 @@ describe.skipIf(!available)('groups domain', () => {
     expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(ends ? sleeps[0] : USER_CLOSED_WAIT_MS);
     expect(await gated(SITE_A, (tx) => repo.membershipGroupIds(tx, userId))).toEqual(ends ? [groupId] : []);
     expect((await outbox(SITE_A)).length).toBe(ends ? before + 1 : before);
-  });
+  }, CLOSED_POLL_TIMEOUT_MS);
 
   it('adds idempotently, removes, emits full sets, lists members and groups with counters', async () => {
     const groupId = next('B');
@@ -482,7 +485,7 @@ describe.skipIf(!available)('groups domain', () => {
       } finally {
         await settleOperation(CLOSED_SITE, operationId, 'committed', 'finished');
       }
-    });
+    }, CLOSED_POLL_TIMEOUT_MS);
 
     it.each(READ_NAMES)('%s waits while a prepared create holds a membership of its pending account, then neither lists nor counts it', async (read) => {
       const { groupId } = await closedGroup();
@@ -798,7 +801,7 @@ describe.skipIf(!available)('groups domain', () => {
         const outcome: Membership = state === 'prepared' ? { member, s2: 0 } : { member: joins, s2 };
         expect(await runRead({ ...deps(), sleep: waiting.sleep }, groupId)).toEqual(shows(outcome, userId));
         expect(waiting.slept).toEqual([100]);
-      });
+      }, CLOSED_POLL_TIMEOUT_MS);
     });
 
     it.each([

@@ -272,6 +272,8 @@ export const stepSchema = z
     auth: authMode.optional(),
     csrf: csrfMode.default('none'),
     csrfFrom: name.optional(),
+    /** `false` posts only the step's fields and the form's CSRF pair, not the form's other hidden fields. */
+    mergeHidden: z.boolean().optional(),
     headers: headerMap.optional(),
     form: formFields.optional(),
     body: z.json().optional(),
@@ -293,6 +295,13 @@ export const stepSchema = z
     if (step.csrfFrom !== undefined && step.csrf !== 'fetch-form') {
       ctx.addIssue({ code: 'custom', message: 'csrfFrom is allowed only with csrf: fetch-form', path: ['csrfFrom'] });
     }
+    if (step.mergeHidden !== undefined && step.csrf !== 'fetch-form') {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'mergeHidden is allowed only with csrf: fetch-form',
+        path: ['mergeHidden'],
+      });
+    }
     for (const [, variable] of JSON.stringify(step).matchAll(MATRIX_REF)) {
       if (step.matrix === undefined || !Object.hasOwn(step.matrix, variable as string)) {
         ctx.addIssue({ code: 'custom', message: `\${matrix.${variable}} has no matrix entry`, path: ['matrix'] });
@@ -302,8 +311,8 @@ export const stepSchema = z
 /** A validated scenario step. */
 export type Step = z.infer<typeof stepSchema>;
 
-const sessionSpec = z.strictObject({ login: sessionLogin, via: z.enum(SESSION_VIAS) });
-/** A named session: its own cookie jar, logged in as `login` through `via`. */
+const sessionSpec = z.strictObject({ login: sessionLogin, via: z.enum(SESSION_VIAS), site: kebab.optional() });
+/** A named session: its own cookie jar, logged in as `login` through `via`, on seeded site `site`'s domain when set. */
 export type SessionSpec = z.infer<typeof sessionSpec>;
 
 const seedRefSchema = z
@@ -484,7 +493,7 @@ function withDefaults(doc: unknown): unknown {
   return { ...doc, scenarios: doc.scenarios.map((s: unknown) => (isRecord(s) ? { ...inherited, ...s } : s)) };
 }
 
-/** The catalogue document: pinned source SHA and scenarios in capture order. */
+/** The catalogue document: pinned source SHA and scenarios in declaration order. */
 export const catalogueSchema = z.preprocess(
   withDefaults,
   z
@@ -519,7 +528,7 @@ function describeIssues(error: z.ZodError): string {
 }
 
 /**
- * Reads and validates the catalogue at `path`, keeping scenario order (capture order).
+ * Reads and validates the catalogue at `path`, keeping scenario order.
  * Throws `GoldenConfigError` when it cannot be read or parsed, fails the schema, or carries another source SHA.
  */
 export async function loadCatalogue(path: string = CATALOGUE_PATH): Promise<Catalogue> {

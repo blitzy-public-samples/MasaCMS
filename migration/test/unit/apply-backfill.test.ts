@@ -469,6 +469,7 @@ function installFakes(): void {
     Promise.resolve({
       ...buildReport({
         point: resolvePoint(ctx.config, options.point),
+        startedAt: ctx.clock.now().toISOString(),
         tableVersion: 'v0001',
         snapshotSeq: options.snapshotSeq ?? null,
         legacyDatabase: options.database,

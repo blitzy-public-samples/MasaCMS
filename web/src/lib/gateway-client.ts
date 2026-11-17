@@ -129,6 +129,32 @@ export interface GatewayResponse<T = unknown> {
   readonly location?: string;
 }
 
+/** A streamed call's answer: a 2xx body unread as the received byte stream, any other status's body as the bytes. */
+export type StreamedResponse =
+  | (GatewayResponse<Readable> & { readonly ok: true })
+  | (GatewayResponse<Buffer> & { readonly ok: false });
+
+/** The service call a streamed 2xx body answers. */
+export interface StreamedCall {
+  readonly service: WebServiceName;
+  /** `<METHOD> <path>` without the query; a facade call names its contract path template. */
+  readonly operation: string;
+}
+
+const streamedCalls = new WeakMap<Readable, StreamedCall>();
+
+/** The call `body` answers when it is a streamed 2xx body; undefined for any other stream. */
+export function streamedCallOf(body: Readable): StreamedCall | undefined {
+  return streamedCalls.get(body);
+}
+
+/** Destroys `body` when it is a streamed answer's unread body, ending its upstream call; any other body needs nothing. */
+export function discardStreamed(body: unknown): void {
+  if (!(body instanceof Readable)) return;
+  // An unread body reports its destruction as an error event, which nothing else listens for.
+  body.once('error', () => undefined).destroy();
+}
+
 /** The owning service is unreachable or the gateway answered 502, 503 or 504; renders as the legacy admin 503. */
 export class GatewayUnavailableError extends LegacyServiceUnavailableError {
   override readonly name: string = 'GatewayUnavailableError';
@@ -303,12 +329,15 @@ function toGatewayResponse<T>({ status, headers, body }: ServiceResponse<T>): Ga
   };
 }
 
+/** How a call returns its body: decoded by media type, as the received bytes, or a 2xx body unread as a stream. */
+type BodyMode = 'decoded' | 'bytes' | 'streamed';
+
 /** Sends one call through the gateway, failing closed on unavailability; every other status is returned. */
 async function send<T>(
   ctx: GatewayCallContext,
   service: WebServiceName,
   req: GatewayRequest,
-  rawBody: boolean,
+  mode: BodyMode,
   serviceClient: ServiceClient | undefined,
 ): Promise<GatewayResponse<T>> {
   const headers = lowerCased(req.headers);
@@ -329,20 +358,24 @@ async function send<T>(
     userToken: ctx.userToken ?? null,
     // Bytes always, so an unavailable status fails closed whatever its body; decoded below otherwise.
     rawBody: true,
+    // Only a 2xx body is left unread; an unavailable status, never 2xx, still arrives as bytes.
+    ...(mode === 'streamed' ? { stream: true } : {}),
   };
-  let response: ServiceResponse<Buffer>;
+  let response: ServiceResponse<Buffer | Readable>;
   try {
     response = await withInboundTrace(ctx.inbound, headers, () =>
-      (serviceClient ?? processServiceClient()).request<Buffer>(request),
+      (serviceClient ?? processServiceClient()).request<Buffer | Readable>(request),
     );
   } catch (error) {
     if (error instanceof ServiceUnavailableError) throw new GatewayUnavailableError(service, undefined, error);
     throw error;
   }
   if (UNAVAILABLE_STATUSES.has(response.status)) throw new GatewayUnavailableError(service, response.status);
-  const decoded = rawBody
-    ? response.body
-    : decodeServiceBody(response.body, response.headers['content-type'], GATEWAY_LABEL);
+  // A body is a Readable only for a streamed call's 2xx.
+  const decoded =
+    mode === 'decoded'
+      ? decodeServiceBody(response.body as Buffer, response.headers['content-type'], GATEWAY_LABEL)
+      : response.body;
   return toGatewayResponse({ ...response, body: decoded as T });
 }
 
@@ -440,6 +473,12 @@ export interface ServiceFacade<Paths> {
     path: P,
     ...input: InputArgs<OperationOf<Paths[P], M>>
   ): Promise<GatewayResponse<Buffer>>;
+  /** As `raw`, with a 2xx body returned unread as a stream. */
+  stream<P extends PathOf<Paths>, M extends MethodOf<Paths[P]>>(
+    method: M,
+    path: P,
+    ...input: InputArgs<OperationOf<Paths[P], M>>
+  ): Promise<StreamedResponse>;
 }
 
 type IdentityOperation<P extends PathOf<IdentityPaths>, M extends MethodOf<IdentityPaths[P]>> = OperationOf<
@@ -503,8 +542,10 @@ export interface ProgramsSitesFacade extends ServiceFacade<ProgramsSitesPaths> {
 export interface GatewayClient {
   /** Sends one call: JSON bodies parsed, `text/*` decoded as UTF-8, anything else a Buffer. */
   call<T = unknown>(service: WebServiceName, request: GatewayRequest): Promise<GatewayResponse<T>>;
-  /** Sends one call and returns the body as the received bytes, for fragment, JSON and download passthrough. */
+  /** Sends one call and returns the body as the received bytes, for fragment and JSON passthrough. */
   raw(service: WebServiceName, request: GatewayRequest): Promise<GatewayResponse<Buffer>>;
+  /** As `raw`, with a 2xx body returned unread as a stream, for download passthrough. */
+  stream(service: WebServiceName, request: GatewayRequest): Promise<StreamedResponse>;
   get<T = unknown>(service: WebServiceName, path: ServicePath, options?: GatewayRequestOptions): Promise<GatewayResponse<T>>;
   /** POSTs `json` as `application/json`. */
   post<T = unknown>(
@@ -539,7 +580,7 @@ export interface GatewayClient {
   readonly eSignature: ServiceFacade<ESignaturePaths>;
 }
 
-type CoreCalls = Pick<GatewayClient, 'call' | 'raw'>;
+type CoreCalls = Pick<GatewayClient, 'call' | 'raw' | 'stream'>;
 
 interface UntypedInput {
   readonly params?: Readonly<Record<string, unknown>>;
@@ -572,6 +613,12 @@ function serviceFacade<Paths>(core: CoreCalls, service: WebServiceName): Service
       core.call(service, facadeRequest(method, path, input)),
     raw: async (method: LowerMethod, path: ServicePath, input?: UntypedInput) =>
       core.raw(service, facadeRequest(method, path, input)),
+    stream: async (method: LowerMethod, path: ServicePath, input?: UntypedInput) => {
+      const response = await core.stream(service, facadeRequest(method, path, input));
+      // The template, not the filled path, so no path parameter reaches a log line.
+      if (response.ok) streamedCalls.set(response.body, { service, operation: `${HTTP_METHODS[method]} ${path}` });
+      return response;
+    },
   };
   // The contract types constrain callers; at runtime every operation is the same request shape.
   return untyped as unknown as ServiceFacade<Paths>;
@@ -620,8 +667,16 @@ export function multipartRelay(multipart: MultipartBody): MultipartRelay {
 /** The service calls of one web request (user token, request id, trace context), over `serviceClient` when given. */
 export function createGatewayClient(ctx: GatewayCallContext, serviceClient?: ServiceClient): GatewayClient {
   const core: CoreCalls = {
-    call: <T>(service: WebServiceName, request: GatewayRequest) => send<T>(ctx, service, request, false, serviceClient),
-    raw: (service, request) => send<Buffer>(ctx, service, request, true, serviceClient),
+    call: <T>(service: WebServiceName, request: GatewayRequest) =>
+      send<T>(ctx, service, request, 'decoded', serviceClient),
+    raw: (service, request) => send<Buffer>(ctx, service, request, 'bytes', serviceClient),
+    // The platform client returns a Readable exactly for a streamed 2xx, so `ok` tells the body apart.
+    stream: async (service, request) => {
+      const response = (await send<Buffer | Readable>(ctx, service, request, 'streamed', serviceClient)) as StreamedResponse;
+      const [path = request.path] = request.path.split('?', 1);
+      if (response.ok) streamedCalls.set(response.body, { service, operation: `${request.method} ${path}` });
+      return response;
+    },
   };
   return {
     ...core,

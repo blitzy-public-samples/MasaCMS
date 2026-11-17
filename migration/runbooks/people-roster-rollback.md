@@ -16,7 +16,7 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 
 - Compute `R`; never choose it. `opt2-migrate rollback-set` reads `gateway/cutover/groups.json` and returns every group whose `writeEntries` hold `admin:cusers.update{type=2,action=add}`, `admin:cusers.update{type=2,action=update}` or `fixture:people/persons/{id}/archive@post`, or whose `units` hold `people.person_archive` or `timesheets.blackout` (`rollbackSet` in `migration/config/migration.config.json`).
 - Expect two groups: create/edit, with the person, account, credential and membership units, and archive, with `people.person_archive` and `timesheets.blackout`. The command exits 1 with `RollbackSetMismatchError` unless `R` equals `gateway/cutover/versions/v0003.json` `rollbackRefs[].groups`, every group of `R` is `legacy` in `v0003`, and `v0003` returns to `legacy` exactly the groups of `R` that `v0002` holds `target`.
-- `T` is the units whose authority the transition changes: the units of the groups of `R` that `v0002` holds `target`. A group of `R` that `v0002` already keeps `legacy` adds none. `transitions.json` records `T` as `setT`.
+- `T` is the units of `R`: every unit of the groups `v0003` `rollbackRefs` names, with any other unit whose authority the transition changes. The units of a group of `R` that `v0002` already keeps `legacy` are in `T` as well: they are quiesced, drained, brought to the final state and reconciled with the rest, and their gates stay `legacy` throughout. `transitions.json` records `T` as `setT`; the plan in `migration.transition` lists those held-legacy units as `heldLegacy`.
 - Read the session modes from `sessionModeBefore` and `sessionModeAfter`. They differ only when `R` holds the login group, whose `writeEntries` include `admin:clogin.login` (`containsLoginGroup: true`), and `v0002` holds that group `target`; sessions then move from target-primary to legacy-primary at activation, and the GS-ID-09 session step runs across the switch. Groups outside `R` keep their authority.
 
 | Command | Evidence |
@@ -41,7 +41,7 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 
 - Run `opt2-migrate transition --to v0003` once. This one command performs sections 3–7 and returns when the transition is `completed` or `aborted`. Follow its steps in `opt2/reports/transitions.json` (`transitions[].steps[]`) or through migration `GET /internal/v1/transitions/{transitionId}`, which reads `migration.transition`.
 - `transition-set` derives `T` and leases it in `migration.unit_lease` as holder kind `transition`, so one holder owns each unit; a write window on `T` is waited out.
-- `stop-new-work` pauses the native and fixture tasks whose steps write `T` and the task queues of `T`'s owners except their outbox sweeps, then freezes the affected entries and waits for every gateway instance to acknowledge the epoch.
+- `stop-new-work` pauses the native and fixture tasks whose steps write `T` and the task queues of `T`'s owners except their outbox sweeps, then freezes the affected entries (the changed entries, the write entries of every group of `R` and the `legacy-write` entries whose units meet `T`) and waits for every gateway instance to acknowledge the epoch.
 - `confirm-inflight-finished` waits for zero `gateway.inflight` rows on the frozen entries, and for fixture `cfthread` export jobs writing `T` to leave `queued` and `running`.
 
 | Transition step | Evidence |
@@ -52,7 +52,8 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 
 ## 4. Drain
 
-- `drain-effects` waits, with `T`'s gates still open, until the people outbox is fully published and every `people.person.archived.v1` has a timesheets inbox receipt or a dead-letter record. Blackouts of pending archives therefore exist before projection.
+- `drain-effects` waits, before any gate of `T` closes, until the people outbox is fully published and every `people.person.archived.v1` has a timesheets inbox receipt. Blackouts of pending archives therefore exist before projection.
+- A dead-lettered `people.person.archived.v1` is a process effect without a receipt: step 4 aborts naming its event id, topic and subscription. Run `opt2-events replay --subscription <subscription>` with that subscription, then run the transition again. A consumer that does not answer counts as not yet drained until `transition.drainTimeoutMs`; the timeout names it.
 
 | Transition step | Evidence |
 |---|---|
@@ -60,8 +61,8 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 
 ## 5. Close gates and project
 
-- `close-gates` closes `T`'s gates at their owners with the transition as holder, by compare-and-set. Closing waits for in-flight target transactions and refuses later ones.
-- `final-state-and-reconcile` first waits until the reverse projector has applied every owner's current write position for `T` to the live legacy tables, for example `timesheets.blackout` → `Program_N.blackout`, `people.person_archive` → `synthetic.person_archive`, `identity.credential` → `tusers.Password` and `PasswordCreated`, and person columns → `tusers`.
+- `close-gates` closes the gates of the units of `T` returning to legacy at their owners with the transition as holder, by compare-and-set. Closing waits for in-flight target transactions and refuses later ones. The gates of the held-legacy units stay `legacy`, which already refuses every target write.
+- `final-state-and-reconcile` takes a final snapshot of the quiesced legacy database and brings the held-legacy units to it through the forward feed. It then waits until the reverse projector has applied every owner's current write position for the units returning to legacy to the live legacy tables, for example `timesheets.blackout` → `Program_N.blackout`, `people.person_archive` → `synthetic.person_archive`, and, while `v0002` holds their group `target`, `identity.credential` → `tusers.Password` and `PasswordCreated` and person columns → `tusers`.
 
 | Transition step | Evidence |
 |---|---|
@@ -70,7 +71,7 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 
 ## 6. Reconcile before
 
-- The rest of `final-state-and-reconcile` reconciles `T` against the live legacy database at point `rollback-before`, with zero tolerance.
+- The rest of `final-state-and-reconcile` reconciles `T`, every unit of `R`, against the live legacy database at point `rollback-before`, with zero tolerance.
 - Any difference aborts the transition with `v0002` still active (section 12).
 
 | Transition step | Evidence |
@@ -80,7 +81,7 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 ## 7. Activate `v0003`
 
 - `activate` activates `v0003` once and waits for every gateway instance to acknowledge the epoch. Every group of `R` is now `legacy`-authoritative, and `rollbackRefs` names `opt2/reports/reconciliation/rollback-before.json`, the zero-difference report that permits the return.
-- `hand-off-and-reopen` hands off the schedulers whose units moved, sets `T`'s gates to `legacy` by compare-and-set, releases the leases, unfreezes, resumes the paused queues and tasks, and reconciles the recurring task chains as `opt2-tasks reconcile` does.
+- `hand-off-and-reopen` hands off the schedulers whose units moved, sets the gates it closed to `legacy` by compare-and-set (the held-legacy gates are already `legacy`), releases the leases, unfreezes, resumes the paused queues and tasks, and reconciles the recurring task chains as `opt2-tasks reconcile` does.
 - The command exits 0 only when the transition is `completed`.
 
 | Transition step | Evidence |
@@ -122,7 +123,7 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 
 ## 11. Evidence
 
-- Run `opt2-migrate rollback report`. It writes `opt2/reports/rollback-rehearsal.md` with the step timestamps from `transitions.json` and `rebaseline.json`, the members of `R`, the session mode before and after, both reconciliation results, and the GS-PE-RH and GS-ID-09 outcomes.
+- Run `opt2-migrate rollback report`. It writes `opt2/reports/rollback-rehearsal.md` with the members of `R`, the session mode before and after, both reconciliation results, the GS-PE-RH and GS-ID-09 outcomes, and each step's start, finish and result in run order. The step times come from `transitions.json`, the `startedAt` and `generatedAt` of both reconciliation reports, `rebaseline.json`, the GS-PE-RH replay outputs, and the `feed.startedAt` and `generatedAt` of the last `after-feed-<seq>.json` between the rehearsal and `rollback-after`.
 - Its result is `pass`, `fail` or `incomplete`; the command exits 1 only on `fail`.
 
 | Command | Evidence |
@@ -135,7 +136,7 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 |---|---|---|
 | Abort before activation: any failure in steps 1–6, a `rollback-before` difference included | Read `error.step` from the summary line, whose `error.message` is `[REDACTED]` unless it is a fixed safe text, and the full reason as `abortReason` in `transitions.json`; fix the cause; rerun from section 2 | The transition reopens the gates it closed, unfreezes, resumes queues and tasks and releases its leases; `v0002` stays active |
 | Orphaned legacy-bound in-flight write at step 3 | None; the transition runs `OPT2_LEGACY_RESTART_CMD`, a controlled ColdFusion restart, and clears the orphan | Without `OPT2_LEGACY_RESTART_CMD`, as in the cloud, the transition aborts and names the orphan |
-| Step 1 aborts naming a write window in phase `import-pending` on a unit of `T` | Confirm its legacy request can no longer commit, run `opt2-migrate resolve-window <windowId>` (ids in `opt2/reports/windows.json`), then rerun from section 2 | The window imports, closes and releases its leases |
+| Step 1 aborts naming a write window in phase `import-pending` on a unit of `T` | Confirm its legacy request can no longer commit, run `opt2-migrate resolve-window <windowId>` (ids in `opt2/reports/windows.json` once `opt2-migrate window report` has refreshed it), then rerun from section 2 | The window imports, closes and releases its leases |
 | Halted roster operation | `opt2-people resolve-operation <operationId> --to rolled-back` or `--to done`, then rerun from section 2 | The operation ends and its user's units reopen |
 | `opt2-migrate rollback-set` exits 1 with `RollbackSetMismatchError` | `groups.json` and `v0003.json` disagree: regenerate them with `npm --prefix gateway run cutover:groups` and `npm --prefix gateway run cutover:versions`, check with `npm --prefix gateway run cutover:validate`, then rerun | `R` is recomputed; never edit `R` by hand |
 | `opt2-migrate rollback rebaseline` exits 1 with `RollbackNotActiveError` | Complete section 7 first | No snapshot is taken |

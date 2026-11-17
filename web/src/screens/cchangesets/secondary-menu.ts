@@ -1,7 +1,7 @@
 // Change-set secondary menu of `cchangesets/dsp_secondary_menu.cfm`, also the shell's `cchangesets` hook (server-only).
 import { encodeHtml, encodeJs, html, join, raw, type SafeHtml } from '@/lib/html';
 import { administersRequestedSite, type AdminRequest } from '@/lib/request-context';
-import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
+import { adminRbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellHooks } from '@/shell/types';
 
@@ -104,4 +104,4 @@ export function renderChangesetsMenu(
 
 /** The shell's `cchangesets` hook: the menu for the current action, labels looked up in `session.rb`. */
 export const cchangesetsSecondaryMenu: NonNullable<ShellHooks['secondaryMenus']['cchangesets']> = (req) =>
-  renderChangesetsMenu(req, rbFor(req.session.rb)).html;
+  renderChangesetsMenu(req, adminRbFor(req.session.rb)).html;

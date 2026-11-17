@@ -1,18 +1,22 @@
-// Fakes of web's only outbound path, the gateway relay: a loopback HTTP server, an in-memory platform client, and the
-// production GatewayClient over it.
+// Fakes of web's only outbound path, the gateway relay: a loopback HTTP server, the production platform client over an
+// in-memory transport, an in-memory platform client, and the production GatewayClient over it.
 import { readFileSync } from 'node:fs';
-import { createServer, type IncomingHttpHeaders, type IncomingMessage } from 'node:http';
+import { STATUS_CODES, createServer, type IncomingHttpHeaders, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Readable } from 'node:stream';
+import { Readable, pipeline } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import {
+  Agent,
   REQUEST_ID_HEADER,
   ServiceUnavailableError,
+  createServiceClient,
+  type Dispatcher,
   type ServiceClient,
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
+import { webAuthRuntime } from '@/lib/auth';
 import { GATEWAY_SERVICE_PREFIX } from '@/lib/env';
 import {
   WEB_SERVICE_NAMES,
@@ -28,7 +32,10 @@ const FORM_CONTENT_TYPE = 'application/x-www-form-urlencoded';
 // Request targets are origin-form; the base only lets URL parse them.
 const TARGET_BASE = 'http://fake-gateway.invalid';
 
-/** A canned gateway answer; a body that is neither a string nor a Buffer is sent as JSON. */
+/**
+ * A canned gateway answer; a body that is neither a string, a Buffer nor a `Readable` is sent as JSON. A `Readable` is
+ * sent as it produces, so a route can model a slow producer; it is read once, so a route function creates one per call.
+ */
 export type FakeReply = {
   readonly status: number;
   readonly headers?: Readonly<Record<string, string>>;
@@ -83,7 +90,7 @@ const NOT_FOUND: FakeReply = { status: 404, headers: { 'content-type': JSON_CONT
 interface EncodedReply {
   readonly status: number;
   readonly headers: Record<string, string | string[]>;
-  readonly bytes: Buffer;
+  readonly body: Buffer | Readable;
 }
 
 function lowerCased(headers: Readonly<Record<string, string>> = {}): Record<string, string> {
@@ -124,20 +131,20 @@ function recordRequest(method: string, target: string, headers: RecordedHeaders,
   };
 }
 
-/** Status, lower-cased headers and bytes of `reply`, as the HTTP fake sends them. */
+/** Status, lower-cased headers and bytes (or the stream) of `reply`, as the HTTP fake sends them. */
 function encodeReply({ status, headers, body, setCookies = [] }: FakeReply): EncodedReply {
   const encoded: Record<string, string | string[]> = lowerCased(headers);
-  let bytes: Buffer;
-  if (body === undefined) bytes = Buffer.alloc(0);
-  else if (Buffer.isBuffer(body)) bytes = body;
-  else if (typeof body === 'string') bytes = Buffer.from(body, 'utf8');
+  let encodedBody: Buffer | Readable;
+  if (body === undefined) encodedBody = Buffer.alloc(0);
+  else if (Buffer.isBuffer(body) || body instanceof Readable) encodedBody = body;
+  else if (typeof body === 'string') encodedBody = Buffer.from(body, 'utf8');
   else {
-    bytes = Buffer.from(JSON.stringify(body), 'utf8');
+    encodedBody = Buffer.from(JSON.stringify(body), 'utf8');
     encoded['content-type'] ??= JSON_CONTENT_TYPE;
   }
   const cookies = [...[encoded['set-cookie'] ?? []].flat(), ...setCookies];
   if (cookies.length > 0) encoded['set-cookie'] = cookies;
-  return { status, headers: encoded, bytes };
+  return { status, headers: encoded, body: encodedBody };
 }
 
 /** The encoded reply of the route matching `request`, else the empty 404. */
@@ -182,8 +189,11 @@ export async function startFakeGateway(routes: FakeRouteTable = {}): Promise<Fak
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
       handle(req, Buffer.concat(chunks)).then(
-        ({ status, headers, bytes }) => {
-          res.writeHead(status, headers).end(bytes);
+        ({ status, headers, body }) => {
+          res.writeHead(status, headers);
+          // A client that hangs up early destroys a streamed body, as it would a real producer's.
+          if (body instanceof Readable) pipeline(body, res, () => undefined);
+          else res.end(body);
         },
         // A failing route handler answers at once rather than leaving the client waiting for its timeout.
         (error: unknown) => {
@@ -311,6 +321,13 @@ function callerHeaders(req: ServiceRequest): Record<string, string> {
   return headers;
 }
 
+/** The body the platform client returns for `reply`: a streamed 2xx unread as a byte stream, anything else read whole. */
+async function bodyOf(req: ServiceRequest, { status, body }: EncodedReply): Promise<Buffer | Readable> {
+  if (req.stream !== true || status < 200 || status > 299) return body instanceof Readable ? buffer(body) : body;
+  if (body instanceof Readable) return body;
+  return Readable.from(body.length === 0 ? [] : [body], { objectMode: false });
+}
+
 /** An in-memory platform `ServiceClient` in the gateway's place, recording each request as the HTTP fake does. */
 export type FakeServiceClient = ServiceClient & {
   readonly requests: RecordedRequest[];
@@ -323,7 +340,8 @@ export type FakeServiceClient = ServiceClient & {
 };
 
 /**
- * A platform client answering `routes` with the bytes web's raw-body requests ask for; nothing is sent.
+ * A platform client answering `routes` with the bytes web's raw-body requests ask for, or a streamed 2xx body as a
+ * stream; nothing is sent.
  * @param onRequest Called with each request and its record, before any `failWith` error is thrown.
  */
 export function fakeServiceClient(
@@ -345,7 +363,7 @@ export function fakeServiceClient(
         throw failure.error ?? new ServiceUnavailableError('gateway', refused);
       }
       const reply = await answer(table, request);
-      return { status: reply.status, headers: receivedHeaders(reply.headers), body: reply.bytes as unknown as T };
+      return { status: reply.status, headers: receivedHeaders(reply.headers), body: (await bodyOf(req, reply)) as T };
     },
     // Nothing to release: the client holds no connection.
     close: () => Promise.resolve(),
@@ -403,3 +421,151 @@ export function fakeGatewayClient(
     },
   };
 }
+
+/** A gateway answering in memory beneath the production platform client; every request it receives is recorded. */
+export interface InMemoryGateway {
+  /** The production platform client over this gateway, for `setServiceClientForTests`. */
+  readonly client: ServiceClient;
+  readonly requests: RecordedRequest[];
+  setRoute(key: string, route: FakeRoute): void;
+  /** Fails this and every later request as a refused connection (ECONNREFUSED), unrecorded as the HTTP fake's are. */
+  refuse(): void;
+}
+
+/** Headers the platform client dispatches, names lower-cased and a repeated value joined, as the gateway receives them. */
+function dispatchedHeaders(headers: Dispatcher.DispatchOptions['headers']): RecordedHeaders {
+  if (headers === undefined || headers === null) return {};
+  if (Array.isArray(headers) || Symbol.iterator in headers) {
+    throw new TypeError('The platform client dispatches its headers as a record');
+  }
+  return Object.fromEntries(
+    Object.entries(headers).flatMap(([name, value]) =>
+      value === undefined ? [] : [[name.toLowerCase(), [value].flat().join(', ')]],
+    ),
+  );
+}
+
+/** The bytes of a dispatched request body. */
+async function dispatchedBytes(body: Dispatcher.DispatchOptions['body']): Promise<Buffer> {
+  if (body === undefined || body === null) return Buffer.alloc(0);
+  if (typeof body === 'string') return Buffer.from(body, 'utf8');
+  if (body instanceof Readable) return buffer(body);
+  if (body instanceof Uint8Array) return Buffer.from(body);
+  throw new TypeError('The platform client dispatches a string, bytes or a Readable as the body');
+}
+
+/**
+ * An undici interceptor answering each dispatch from `respond` without calling the dispatcher it wraps. A streamed reply
+ * is delivered as it is produced, paused while the reader is full, and destroyed when the reader aborts.
+ */
+function inMemoryTransport(
+  respond: (opts: Dispatcher.DispatchOptions) => Promise<EncodedReply>,
+): Dispatcher.DispatcherComposeInterceptor {
+  return () => (opts, handler) => {
+    let source: Readable | undefined;
+    let aborted = false;
+    let paused = false;
+    let reason: Error | null = null;
+    let settled = false;
+    const controller: Dispatcher.DispatchController = {
+      get aborted() {
+        return aborted;
+      },
+      get paused() {
+        return paused;
+      },
+      get reason() {
+        return reason;
+      },
+      // undici's body stream aborts without a reason when its reader destroys it.
+      abort(error: Error | undefined) {
+        if (aborted || settled) return;
+        aborted = true;
+        reason = error ?? new Error('Request aborted');
+        source?.destroy();
+        handler.onResponseError?.(controller, reason);
+      },
+      pause() {
+        paused = true;
+      },
+      resume() {
+        paused = false;
+        source?.resume();
+      },
+    };
+    const fail = (error: Error): void => {
+      if (aborted || settled) return;
+      settled = true;
+      handler.onResponseError?.(controller, error);
+    };
+    const end = (): void => {
+      settled = true;
+      handler.onResponseEnd?.(controller, {});
+    };
+
+    handler.onRequestStart?.(controller, {});
+    void respond(opts).then(({ status, headers, body }) => {
+      if (aborted) {
+        if (body instanceof Readable) body.destroy();
+        return;
+      }
+      handler.onResponseStart?.(controller, status, receivedHeaders(headers), STATUS_CODES[status]);
+      if (!(body instanceof Readable)) {
+        if (body.length > 0) handler.onResponseData?.(controller, body);
+        end();
+        return;
+      }
+      source = body;
+      body.on('data', (chunk: Buffer | string) => {
+        // A socket delivers bytes whatever the producer wrote.
+        handler.onResponseData?.(controller, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        if (paused) body.pause();
+      });
+      body.once('end', end);
+      body.once('error', fail);
+    }, fail);
+    return true;
+  };
+}
+
+/**
+ * A gateway answering `routes` in memory beneath the production platform client, which sends the user token and web's
+ * minted invocation credential as it does over HTTP; unrouted requests get an empty 404, and nothing leaves the process.
+ */
+export function inMemoryGateway(routes: FakeRouteTable = {}): InMemoryGateway {
+  const table = new Map<string, FakeRoute>(Object.entries(routes));
+  const requests: RecordedRequest[] = [];
+  let refused = false;
+
+  async function respond({ method, path, headers, body }: Dispatcher.DispatchOptions): Promise<EncodedReply> {
+    if (refused) throw Object.assign(new Error('connect ECONNREFUSED (in-memory gateway)'), { code: 'ECONNREFUSED' });
+    const request = recordRequest(method, path, dispatchedHeaders(headers), await dispatchedBytes(body));
+    requests.push(request);
+    // A failing route handler answers at once, as the HTTP fake answers it.
+    return answer(table, request).catch((error: unknown) =>
+      encodeReply({ status: 500, headers: { 'content-type': 'text/plain;charset=utf-8' }, body: String(error) }),
+    );
+  }
+
+  const client = createServiceClient({
+    serviceUrls: { gateway: TARGET_BASE },
+    self: 'web',
+    // Web's own minter, as the process-wide client uses it: the installed auth runtime signs for the gateway.
+    credentials: {
+      headersFor: async (target, opts) => (await webAuthRuntime()).invocationMinter.headersFor(target, opts),
+    },
+    dispatcher: new Agent().compose(inMemoryTransport(respond)),
+  });
+
+  return {
+    client,
+    requests,
+    setRoute: (key, route) => {
+      table.set(key, route);
+    },
+    refuse: () => {
+      refused = true;
+    },
+  };
+}
+

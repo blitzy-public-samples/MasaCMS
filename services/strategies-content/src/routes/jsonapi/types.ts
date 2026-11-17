@@ -3,6 +3,8 @@
  * share: access verdicts, result shaping, findProperties and the generic beanFeed query semantics
  * (core/mura/client/api/json/v1/jsonApiUtility.cfc, core/mura/bean/bean.cfc, core/mura/bean/beanFeed.cfc).
  */
+import { hash } from 'node:crypto';
+import { serialize } from 'node:v8';
 import { Roles } from '@opt2/platform/auth';
 import {
   cfEq,
@@ -22,15 +24,16 @@ import {
 import type { Actor, SiteContentSettings } from '../../domain/context.js';
 import type { UploadedFile } from '../../domain/files.js';
 import { getModulePerm } from '../../domain/permissions.js';
-import type {
-  BeanFeedSource,
-  FeedCondition,
-  FeedCount,
-  FeedOperator,
-  FeedOrderTerm,
-  FeedParamCondition,
-  FeedParamType,
-  FeedQuery,
+import {
+  queryColumns,
+  type BeanFeedSource,
+  type FeedCondition,
+  type FeedCount,
+  type FeedOperator,
+  type FeedOrderTerm,
+  type FeedParamCondition,
+  type FeedParamType,
+  type FeedQuery,
 } from '../../repo/bean-feed-sql.js';
 import { likeRuns, likeVerdict, type LikeRuns, type LikeToken } from '../../repo/feed-like.js';
 import type {
@@ -48,6 +51,7 @@ import {
 } from '../../legacy/jsonapi-serializers.js';
 // Type-only: ../index.ts imports ../jsonapi.ts, which imports this folder.
 import type { ContentRouteContext } from '../index.js';
+import { SpillSort } from './spill-sort.js';
 
 export type {
   BeanFeedSource,
@@ -58,6 +62,8 @@ export type {
   FeedParamCondition,
   FeedParamType,
   FeedQuery,
+  FeedScanRequest,
+  FeedScanVisit,
 } from '../../repo/bean-feed-sql.js';
 
 type Struct = Record<string, unknown>;
@@ -808,10 +814,12 @@ class BeanFeed<R extends Readonly<Struct>> {
   nextN = DEFAULT_NEXT_N;
   private readonly columns: ReadonlySet<string> | undefined;
   private readonly properties: ReadonlySet<string>;
+  /** The query whose count a scan answered, and whether its selected rows hold a value the comparator cannot order. */
+  private scanned: { query: FeedQuery; unstable: boolean } | undefined;
 
   /** `columns` are the table's, or undefined for a scope without rows whose columns were not declared. */
   constructor(
-    private source: BeanFeedSource<R>,
+    private readonly source: BeanFeedSource<R>,
     columns: readonly string[] | undefined,
     private readonly options: BeanFeedOptions,
   ) {
@@ -977,10 +985,12 @@ class BeanFeed<R extends Readonly<Struct>> {
 
   /** Raises the error that filtering the rows by `where` raises. */
   private async checkFilter(where: Expr | undefined): Promise<void> {
-    raiseFilter(where, await this.source.filterThrows(where));
+    const rows = await this.source.filterThrows(where);
+    if (rows === undefined) await scanFilter(this.source, where);
+    else raiseFilter(where, rows);
   }
 
-  /** The count of the rows `query` selects; a source that cannot evaluate it exactly is replaced by its rows in memory. */
+  /** The count of the rows `query` selects; what the source cannot evaluate exactly, a scan of its rows evaluates. */
   private async counted(query: FeedQuery): Promise<number> {
     const counted = await this.source.count(query);
     if (counted.kind === 'count') return counted.count;
@@ -988,9 +998,9 @@ class BeanFeed<R extends Readonly<Struct>> {
       raiseFilter(query.where, counted.rows);
       throw complexValueError();
     }
-    const memory = rowsSource(await this.source.all());
-    this.source = memory;
-    return (await memory.count(query)).count;
+    const scanned = await scanCount(this.source, query);
+    this.scanned = { query, unstable: scanned.unstable };
+    return scanned.count;
   }
 
   /** getAvailableCount: `count(*)` over the filtered rows, before TOP. */
@@ -1074,6 +1084,8 @@ class BeanFeed<R extends Readonly<Struct>> {
 
   /** `limit` rows of `query` after the first `offset`. */
   rows(query: FeedQuery, offset: number, limit: number): Promise<R[]> {
+    const scanned = this.scanned;
+    if (scanned?.query === query) return scanRows(this.source, query, offset, limit, scanned.unstable);
     return this.source.rows(query, offset, limit);
   }
 }
@@ -1114,6 +1126,222 @@ function isUnorderable(value: unknown, type: ParamType): boolean {
   return !Number.isFinite(type === 'numeric' ? Number(value) : (timeOf(value) ?? 0));
 }
 
+/** A complex value's order key: cfText refuses it, so comparing it with any non-null key raises. */
+const COMPLEX_KEY: unique symbol = Symbol('complex value');
+/** A row's order key of one term: the operand compareNonNull compares, NULL as null. */
+type SortKey = string | number | null | typeof COMPLEX_KEY;
+/** A selected row in a scan's sort: its keys of the order terms, its 1-based scan position and, when checked, its digest. */
+interface SortEntry {
+  readonly keys: readonly SortKey[];
+  readonly position: number;
+  readonly digest?: string | undefined;
+}
+// The estimated bytes of order keys a scan's sort holds before it spills them to temporary files.
+const SORT_BUDGET = 4 * 1024 * 1024;
+// How many times a page over a rereading source is ranked before a source still changing under it fails the page.
+const RANK_ATTEMPTS = 3;
+
+/** A digest of `row`'s columns and values, which differs when any of them does. */
+function rowDigest(row: Readonly<Struct>): string {
+  return hash('sha256', serialize(row), 'base64');
+}
+
+/** `value`'s order key under a term of `type`. */
+function sortKeyOf(value: unknown, type: ParamType): SortKey {
+  if (value === null || value === undefined) return null;
+  if (type === 'numeric') return Number(value);
+  if (type === 'timestamp') return timeOf(value) ?? 0;
+  return isComplexValue(value) ? COMPLEX_KEY : cfText(value).trimEnd();
+}
+
+/** compareRows over order keys. */
+function compareKeys(a: readonly SortKey[], b: readonly SortKey[], order: readonly FeedOrderTerm[]): number {
+  for (const [index, term] of order.entries()) {
+    const x = a[index] ?? null;
+    const y = b[index] ?? null;
+    let diff: number;
+    if (x === null || y === null) diff = Number(x !== null) - Number(y !== null);
+    else if (typeof x === 'number' && typeof y === 'number') diff = x - y;
+    else if (typeof x === 'string' && typeof y === 'string') diff = COLLATOR.compare(x, y);
+    else throw complexValueError();
+    if (diff !== 0) return term.desc ? -diff : diff;
+  }
+  return 0;
+}
+
+/** The sort entry of a selected `row` at scan `position`, with the row's digest when `digest` is set. */
+function sortEntryOf(row: Readonly<Struct>, order: readonly FeedOrderTerm[], position: number, digest = false): SortEntry {
+  const keys = order.map((term) => sortKeyOf(getNoCase(row, term.field), term.type));
+  return digest ? { keys, position, digest: rowDigest(row) } : { keys, position };
+}
+
+/** An entry holding a numeric or timestamp key the comparator orders inconsistently (NaN, infinite). */
+function isUnorderableEntry(entry: SortEntry): boolean {
+  return entry.keys.some((key) => typeof key === 'number' && !Number.isFinite(key));
+}
+
+/** A key as a spilled line holds it: JSON has no symbol or non-finite number. */
+function encodedKey(key: SortKey): string | number | null {
+  if (key === COMPLEX_KEY) return 0;
+  return typeof key === 'number' && !Number.isFinite(key) ? String(key) : key;
+}
+
+/** A spilled key of a term of `type`. */
+function decodedKey(key: string | number | null, type: ParamType | undefined): SortKey {
+  if (key === null) return null;
+  if (type === 'varchar') return typeof key === 'number' ? COMPLEX_KEY : key;
+  return typeof key === 'string' ? Number(key) : key;
+}
+
+/** The sort sortRows applies to the selected rows of `order`, over their entries in scan order. */
+function entrySort(order: readonly FeedOrderTerm[]): SpillSort<SortEntry> {
+  return new SpillSort<SortEntry>({
+    compare: (a, b) => {
+      const diff = compareKeys(a.keys, b.keys, order);
+      return diff !== 0 ? diff : a.position - b.position;
+    },
+    encode: (entry) => JSON.stringify([entry.position, entry.digest ?? null, ...entry.keys.map(encodedKey)]),
+    decode: (line) => {
+      const [position, digest, ...keys] = JSON.parse(line) as [number, string | null, ...(string | number | null)[]];
+      const decoded = keys.map((key, index) => decodedKey(key, order[index]?.type));
+      return digest === null ? { position, keys: decoded } : { position, keys: decoded, digest };
+    },
+    size: (entry) =>
+      entry.keys.reduce<number>(
+        (total, key) => total + (typeof key === 'string' ? 24 + 2 * key.length : 8),
+        48 + (entry.digest === undefined ? 0 : 24 + 2 * entry.digest.length),
+      ),
+    budget: SORT_BUDGET,
+  });
+}
+
+/** Whether `where` selects `row`; raises what filtering it raises. */
+function selects(where: Expr | undefined, row: Readonly<Struct>): boolean {
+  return where === undefined || exprTruth(where, row) === true;
+}
+
+/** Raises what filtering a source's rows by `where` raises, reading them a batch at a time. */
+async function scanFilter<R extends Readonly<Struct>>(source: BeanFeedSource<R>, where: Expr | undefined): Promise<void> {
+  if (where === undefined) return;
+  await source.scan({ columns: queryColumns({ where, order: [] }), rows: false }, (rows) => {
+    raiseFilter(where, rows);
+    return true;
+  });
+}
+
+/** The count of `query` over a scan of the source, raising what filtering and then sorting its rows in memory raise. */
+async function scanCount<R extends Readonly<Struct>>(source: BeanFeedSource<R>, query: FeedQuery): Promise<{ count: number; unstable: boolean }> {
+  const { where, order } = query;
+  // Only a varchar term's comparison can raise, so only then does the count hold the keys a sort needs.
+  const sort = order.some((term) => term.type === 'varchar') ? entrySort(order) : undefined;
+  let count = 0;
+  let position = 0;
+  let unstable = false;
+  let complex = false;
+  try {
+    await source.scan({ columns: queryColumns(query), rows: false }, async (rows) => {
+      for (const row of rows) {
+        position += 1;
+        if (!selects(where, row)) continue;
+        count += 1;
+        if (order.length === 0) continue;
+        const entry = sortEntryOf(row, order, position);
+        unstable ||= isUnorderableEntry(entry);
+        complex ||= entry.keys.includes(COMPLEX_KEY);
+        sort?.push(entry);
+      }
+      await sort?.settle();
+      return true;
+    });
+    if (complex) await sort?.window(0, 0, !unstable);
+    return { count, unstable };
+  } finally {
+    await sort?.dispose();
+  }
+}
+
+/** `limit` rows of `query` after the first `offset` over a scan of the source, as the in-memory evaluator selects them. */
+async function scanRows<R extends Readonly<Struct>>(
+  source: BeanFeedSource<R>,
+  query: FeedQuery,
+  offset: number,
+  limit: number,
+  unstable: boolean,
+): Promise<R[]> {
+  const { where, order } = query;
+  const columns = queryColumns(query);
+  // Without terms, or with terms the source orders as the evaluator does, the scan reads the rows in the page's order.
+  if (order.length === 0 || (!unstable && source.orders(order))) {
+    const found: R[] = [];
+    let skipped = 0;
+    await source.scan({ columns, rows: true, order }, (rows) => {
+      for (const row of rows) {
+        if (!selects(where, row)) continue;
+        if (skipped < offset) skipped += 1;
+        else if (found.push(row) >= limit) return false;
+      }
+      return true;
+    });
+    return found;
+  }
+  // A source rereading elsewhere may change between its reads, so a page it no longer answers is ranked afresh.
+  const attempts = source.rereads === true ? RANK_ATTEMPTS : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const page = await rankedPage(source, query, offset, limit);
+    if (page !== undefined) return page;
+  }
+  throw serverError();
+}
+
+/** `limit` ranked rows of `query` after the first `offset` over one scan; undefined when the revisit answers other rows. */
+async function rankedPage<R extends Readonly<Struct>>(
+  source: BeanFeedSource<R>,
+  query: FeedQuery,
+  offset: number,
+  limit: number,
+): Promise<R[] | undefined> {
+  const { where, order } = query;
+  const digest = source.rereads === true;
+  const sort = entrySort(order);
+  try {
+    let position = 0;
+    let consistent = true;
+    let window: SortEntry[] = [];
+    let positions: number[] = [];
+    const rows = await source.scan(
+      { columns: queryColumns(query), rows: true },
+      async (batch) => {
+        for (const row of batch) {
+          position += 1;
+          if (!selects(where, row)) continue;
+          const entry = sortEntryOf(row, order, position, digest);
+          consistent &&= !isUnorderableEntry(entry);
+          sort.push(entry);
+        }
+        await sort.settle();
+        return true;
+      },
+      async () => {
+        window = await sort.window(offset, offset + limit, consistent);
+        positions = window.map((entry) => entry.position).sort((a, b) => a - b);
+        return positions;
+      },
+    );
+    // Rows pair with positions by index, so any other count leaves the pairing unknown.
+    if (rows.length !== positions.length) return undefined;
+    const byPosition = new Map(positions.map((at, index) => [at, rows[index]]));
+    const page: R[] = [];
+    for (const entry of window) {
+      const row = byPosition.get(entry.position);
+      if (row === undefined || (digest && rowDigest(row) !== entry.digest)) return undefined;
+      page.push(row);
+    }
+    return page;
+  } finally {
+    await sort.dispose();
+  }
+}
+
 /** A feed source over rows in memory, which answers every query itself. */
 interface MemorySource<R> extends BeanFeedSource<R> {
   count(query: FeedQuery): Promise<Extract<FeedCount<R>, { kind: 'count' }>>;
@@ -1148,7 +1376,16 @@ export function rowsSource<R extends Readonly<Struct>>(rows: readonly R[]): Memo
       });
     },
     rows: (query, offset, limit) => Promise.resolve(select(query).slice(offset, offset + limit)),
-    all: () => Promise.resolve([...rows]),
+    orders: () => false,
+    // The rows are held already, so one batch hands them all.
+    scan: async (_request, visit, revisit) => {
+      if (visit !== undefined && rows.length > 0) await visit(rows);
+      if (revisit === undefined) return [];
+      return (await revisit()).flatMap((position): R[] => {
+        const row = rows[position - 1];
+        return row === undefined ? [] : [row];
+      });
+    },
   };
 }
 
@@ -1163,7 +1400,11 @@ export function mergedSource<R extends Readonly<Struct>>(sources: readonly BeanF
     async filterThrows(where) {
       // Each source's rows hold its first raising row, so in source order the first raising row is the merged feed's.
       const lists: (readonly R[])[] = [];
-      for (const source of sources) lists.push(await source.filterThrows(where));
+      for (const source of sources) {
+        const list = await source.filterThrows(where);
+        if (list === undefined) return undefined;
+        lists.push(list);
+      }
       return lists.flat();
     },
     async count(query) {
@@ -1196,11 +1437,37 @@ export function mergedSource<R extends Readonly<Struct>>(sources: readonly BeanF
         .slice(offset, offset + limit)
         .map(({ row }) => row);
     },
-    async all() {
-      const lists: R[][] = [];
-      for (const source of sources) lists.push(await source.all());
-      return lists.flat();
+    orders: () => false,
+    async scan(request, visit, revisit) {
+      if ((request.order?.length ?? 0) > 0) throw new Error('A merged feed scans in source order only; orders() refuses terms');
+      // Scan positions run on through the sources in order.
+      const sizes: number[] = [];
+      let reading = visit !== undefined;
+      for (const source of sources) {
+        let size = 0;
+        if (visit !== undefined && reading) {
+          await source.scan(request, async (rows) => {
+            size += rows.length;
+            reading = await visit(rows);
+            return reading;
+          });
+        }
+        sizes.push(size);
+      }
+      if (revisit === undefined) return [];
+      // Each source's statements run in a transaction of their own, so each re-reads its positions in a snapshot of its own (`rereads`).
+      const positions = await revisit();
+      const found: R[] = [];
+      let start = 0;
+      for (const [index, source] of sources.entries()) {
+        const end = start + (sizes[index] ?? 0);
+        const local = positions.filter((position) => position > start && position <= end).map((position) => position - start);
+        if (local.length > 0) for (const row of await source.scan(request, undefined, () => Promise.resolve(local))) found.push(row);
+        start = end;
+      }
+      return found;
     },
+    rereads: true,
   };
 }
 

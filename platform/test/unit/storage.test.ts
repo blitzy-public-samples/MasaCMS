@@ -11,6 +11,8 @@ import { fastify, type FastifyInstance } from 'fastify';
 import { GoogleAuth, OAuth2Client, type CredentialBody } from 'google-auth-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LegacyServiceUnavailableError } from '../../src/legacy-compat/index.js';
+import { serializeError } from '../../src/logging/index.js';
+import { EnvFileError } from '../../src/service-kit/env.js';
 import { createCloudStorageAdapter } from '../../src/storage/cloud-adapter.js';
 import * as storageBarrel from '../../src/storage/index.js';
 import { legacyFileHeaders, legacyHeaderValue, sendLegacyFile } from '../../src/storage/legacy-stream.js';
@@ -648,10 +650,13 @@ describe('local storage HMAC key', () => {
     await expect(createLocalStorageAdapter({ stateDir })).rejects.toThrow('Storage HMAC key file is empty');
   });
 
-  it('fails when the key file is missing and no key is given', async () => {
+  it('fails naming the key file when it is missing and no key is given', async () => {
     const stateDir = await newStateDir();
+    const error = await createLocalStorageAdapter({ stateDir }).catch((err: unknown) => err);
 
-    await expect(createLocalStorageAdapter({ stateDir })).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(error).toBeInstanceOf(EnvFileError);
+    expect(error).toMatchObject({ code: 'ENOENT', syscall: 'open', variable: 'OPT2_STATE_DIR', file: 'secrets/storage-hmac-key' });
+    expect(serializeError(error).message).toBe('cannot read OPT2_STATE_DIR file secrets/storage-hmac-key (open ENOENT)');
   });
 
   it.each<[string, Buffer | string]>([

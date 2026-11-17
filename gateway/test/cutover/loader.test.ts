@@ -3,6 +3,8 @@ import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { matchRouteKey, routeKeyForRequest } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
+import { EnvFileError } from '@opt2/platform/service-kit';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   CutoverSchemaError,
@@ -290,15 +292,36 @@ describe('version files', () => {
     expect(await loadVersion(paths, id)).toEqual(VERSIONS[id]);
   });
 
-  it('lets ENOENT propagate for a missing version', async () => {
-    await expect(loadVersion(paths, 'v0099')).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
   it('recompiles a schema file that failed to load once it exists', async () => {
-    const late = { versionsDir: paths.versionsDir, schemaFile: join(dir, 'late.schema.json') };
+    const late = { cutoverDir: paths.cutoverDir, versionsDir: paths.versionsDir, schemaFile: join(dir, 'late.schema.json') };
     await expect(loadVersion(late, 'v0001')).rejects.toMatchObject({ code: 'ENOENT' });
     await copyFile(committed.schemaFile, late.schemaFile);
     expect((await loadVersion(late, 'v0001')).tableVersion).toBe('v0001');
+  });
+});
+
+describe('unreadable cut-over files', () => {
+  /** The fixture paths with the cut-over directory moved to one that does not exist. */
+  const absent = (): GatewayPaths => {
+    const { cutoverDir, versionsDir, schemaFile, variantsFile, groupsFile } = resolveGatewayPaths({ OPT2_CUTOVER_DIR: join(dir, 'absent') });
+    return { ...paths, cutoverDir, versionsDir, schemaFile, variantsFile, groupsFile };
+  };
+
+  it.each<[string, () => Promise<unknown>, string, string]>([
+    ['directory, whose schema file start-up reads first', () => loadVariants(absent()), 'cutover-table.schema.json', 'open'],
+    ['versions directory', () => listVersions(absent()), 'versions', 'scandir'],
+    ['version file', () => loadVersion(paths, 'v0099'), 'versions/v0099.json', 'open'],
+    ['variants file', () => loadVariants({ ...paths, variantsFile: join(paths.cutoverDir, 'absent.json') }), 'absent.json', 'open'],
+    ['groups file', () => loadGroups({ ...paths, groupsFile: join(paths.cutoverDir, 'absent.json') }), 'absent.json', 'open'],
+  ])('rejects a missing %s with EnvFileError naming OPT2_CUTOVER_DIR and the file, keeping ENOENT', async (_label, load, file, syscall) => {
+    const error = await load().then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+
+    expect(error).toBeInstanceOf(EnvFileError);
+    expect(error).toMatchObject({ variable: 'OPT2_CUTOVER_DIR', file, code: 'ENOENT', syscall });
+    expect(serializeError(error).message).toBe(`cannot read OPT2_CUTOVER_DIR file ${file} (${syscall} ENOENT)`);
   });
 });
 

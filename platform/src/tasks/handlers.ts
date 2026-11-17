@@ -237,12 +237,15 @@ export function registerQueueControl(
   );
 }
 
-/** Calls one creator's queue-control route; throws an `Error` naming the service, queue, op and status on a non-2xx answer. */
+/**
+ * Calls one creator's queue-control route, bounded by `timeoutMs` when given, else by the client's timeout.
+ * @throws Error naming the service, queue, op and status on a non-2xx answer.
+ */
 export async function callQueueControl(
   client: ServiceClient,
-  req: { service: string; queue: string; op: QueueControlOp },
+  req: { service: string; queue: string; op: QueueControlOp; timeoutMs?: number },
 ): Promise<QueueControlResult> {
-  const { service, queue, op } = req;
+  const { service, queue, op, timeoutMs } = req;
   const response = await client.request<QueueControlResult>({
     service,
     method: 'POST',
@@ -250,6 +253,7 @@ export async function callQueueControl(
     json: {},
     // Queue control is the calling workload's own action, never one taken for a user.
     userToken: null,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
   if (response.status < 200 || response.status > 299) {
     throw new Error(`Queue control ${op} of ${queue} on ${service} answered HTTP ${String(response.status)}`);

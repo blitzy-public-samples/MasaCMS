@@ -59,7 +59,7 @@ const MISSING_ID = '00000000-0000-0000-0000000000000000';
 const UMBRELLA_PROGRAM_ID = 3;
 const ATTACHMENT = { fileName: 'isolation.pdf', contentType: 'application/pdf', bytes: '%PDF-1.4 isolation' } as const;
 
-const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const available = await pgAvailable();
 const publisher = createCapturingPublisher();
 
 let schema: ThrowawaySchema | undefined;

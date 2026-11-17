@@ -71,8 +71,7 @@ const PERSON_DLQ_TOPIC = `${PERSON_CONTACT_SUBSCRIPTION}.dlq`;
 const UNREGISTERED_TENANT = tenantIdForSite('no-such-site');
 const PROBED_TENANTS = [...TENANT_LIST.map((fixture) => fixture.tenantId), UNREGISTERED_TENANT];
 
-// An unset PG_HOST skips the suite without probing the server.
-const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const available = await pgAvailable();
 
 /** A full-state person payload of `userId` in tenant-a, as people publishes it. */
 function personPayload(userId: string, overrides: Partial<PersonChangedPayload> = {}): PersonChangedPayload {

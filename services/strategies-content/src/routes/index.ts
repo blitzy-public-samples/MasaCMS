@@ -32,6 +32,7 @@ import { registerCommentAdminRoutes } from './v1/ccomments.js';
 import { registerFeedAdminRoutes } from './v1/cfeed.js';
 import { registerFormRoutes } from './v1/cform.js';
 import { registerHeaderPromptRoutes } from './v1/header-prompts.js';
+import { registerInterestGroupRoutes } from './v1/interest-groups.js';
 import { registerNavRoutes } from './v1/cnav.js';
 import { registerRawRoutes } from './v1/raw.js';
 
@@ -135,8 +136,10 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await registerFormRoutes(app, ctx);
   await registerNavRoutes(app, ctx);
   await registerRawRoutes(app, ctx);
-  // Contract operations of modules that take narrower deps: the admin header prompts and the people lookups.
+  // Contract operations of modules that take narrower deps: the admin header prompts, Edit Profile's interest groups
+  // and the people lookups.
   await registerHeaderPromptRoutes(app, { domain });
+  await registerInterestGroupRoutes(app, { domain });
   await registerFileLookupRoutes(app, { db });
   // The configBean URL settings come from Masa's MURA_<KEY> variables, which the parsed service env does not carry.
   registerContentLinksRoutes(app, { db, env: process.env });

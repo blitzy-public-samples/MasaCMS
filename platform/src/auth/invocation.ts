@@ -1,6 +1,5 @@
 // Invocation credentials of @opt2/platform/auth: the calling workload's identity in X-Serverless-Authorization.
 import type { KeyObject } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { GoogleAuth, IdTokenClient, Impersonated, OAuth2Client } from 'google-auth-library';
 import {
@@ -14,6 +13,7 @@ import {
   jwtVerify,
   type CryptoKey,
 } from 'jose';
+import { readEnvFile, type EnvFileError } from '../service-kit/env.js';
 import { AuthDenial, type ServiceIdentity } from './claims.js';
 import { createGoogleIdTokenClient, untilAborted, verifyGoogleIdToken } from './deadline.js';
 import { rolesForService, serviceRole } from './roles.js';
@@ -75,9 +75,10 @@ export async function loadLocalSigningKeys(
   stateDir: string,
   opts: { requirePrivate?: boolean } = {},
 ): Promise<LocalSigningKeys> {
-  const publicPem = await readFile(localSecretPath(stateDir, LOCAL_SECRET_FILES.tokenSigningPublicKey), 'utf8');
-  const privatePem = await readFile(localSecretPath(stateDir, LOCAL_SECRET_FILES.tokenSigningPrivateKey), 'utf8').catch(
-    (err: NodeJS.ErrnoException) => {
+  const readSecret = (file: string): Promise<string> => readEnvFile('OPT2_STATE_DIR', stateDir, localSecretPath(stateDir, file));
+  const publicPem = await readSecret(LOCAL_SECRET_FILES.tokenSigningPublicKey);
+  const privatePem = await readSecret(LOCAL_SECRET_FILES.tokenSigningPrivateKey).catch(
+    (err: EnvFileError) => {
       if (err.code === 'ENOENT' && opts.requirePrivate !== true) {
         return undefined;
       }

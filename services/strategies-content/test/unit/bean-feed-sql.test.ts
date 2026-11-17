@@ -18,6 +18,7 @@ import {
   type BeanFeedSource,
   type JsonApiCall,
 } from '../../src/routes/jsonapi/types.js';
+import { scopeRows } from '../helpers/feed.js';
 
 type Row = Record<string, unknown>;
 
@@ -146,6 +147,16 @@ function recording(tx: TenantTx): TenantTx {
 
 const runner = (tenantId: string): FeedRunner => (fn) => withTenant(handle.app, tenantId, (tx) => fn(recording(tx)));
 
+/** Every statement recorded since `statements` was emptied reads at most one batch: a LIMIT, an aggregate or a cursor FETCH. */
+function expectBounded(from: string): void {
+  for (const { sql, rows } of statements) {
+    const fetched = /^FETCH FORWARD (\d+) FROM bean_feed_scan_\d+$/.exec(sql);
+    if (fetched !== null) expect(Number(fetched[1])).toBeLessThanOrEqual(500);
+    if (sql.startsWith('SELECT ') && sql.includes(from)) expect(sql).toMatch(/ LIMIT |^SELECT \(SELECT count\(\*\)|^SELECT EXISTS \(/);
+    expect(rows).toBeLessThanOrEqual(500);
+  }
+}
+
 /** The scope spec of `comment` rows of `siteId`, in comment id order. */
 function commentSpec(siteId: string): FeedTableSpec {
   return {
@@ -158,6 +169,30 @@ function commentSpec(siteId: string): FeedTableSpec {
     ),
     tieBreak: ['commentid'],
   };
+}
+
+const BULK_SITE = 'bulk-site';
+const BULK_ROWS = 3000;
+// The bulk row whose name, `Йx`, a range class raises on.
+const BULK_RAISING_ROW = 1500;
+
+/**
+ * `count` comment rows of `siteId` numbered after `first`: every fifth name holds an `x`, one Cyrillic name a range class
+ * raises on; dates, counts and numeric-text urls repeat and hold NULLs, and some urls are text no number reads.
+ */
+async function insertBulk(tenantId: string, siteId: string, first: number, count: number): Promise<void> {
+  await withTenant(handle.app, tenantId, (tx) =>
+    tx.query(
+      `INSERT INTO ${handle.schema}.comment (tenant_id, commentid, siteid, name, entered, flagcount, isapproved, url)` +
+        ` SELECT $1, lpad(g::text, 8, '0') || '-AAAA-BBBB-CCCCDDDDEEEEFFFF', $2,` +
+        ` CASE WHEN g = $3::integer + ${String(BULK_RAISING_ROW)} THEN 'Йx' WHEN g % 5 = 0 THEN 'ax' || (g % 13) ELSE 'b' || (g % 13) END,` +
+        ` CASE WHEN g % 11 = 0 THEN NULL ELSE timestamp '2026-01-01' + (g % 17) * interval '1 day' END,` +
+        ` CASE WHEN g % 7 = 0 THEN NULL ELSE g % 9 END, 1,` +
+        ` CASE WHEN g % 10 = 0 THEN NULL WHEN g % 97 = 0 AND g % 5 <> 0 THEN 'n/a' ELSE (g % 89)::text END` +
+        ` FROM generate_series($3::integer + 1, $3::integer + $4::integer) AS g`,
+      [tx.tenantId, siteId, first, count],
+    ),
+  );
 }
 
 async function insert(tenantId: string, table: string, rows: readonly Row[]): Promise<void> {
@@ -413,7 +448,11 @@ describe.skipIf(!(await pgAvailable()))('SQL beanFeed source against the in-memo
     await insert(TENANT_A.tenantId, 'comment', COMMENT_ROWS.filter((row) => Number(String(row['commentid']).slice(0, 8)) < 200));
     await insert(TENANT_B.tenantId, 'comment', COMMENT_ROWS.filter((row) => Number(String(row['commentid']).slice(0, 8)) >= 200));
     await insert(TENANT_A.tenantId, 'comment', COMMENT_SCOPES.flatMap(([, , rows]) => rows));
+    await insertBulk(TENANT_A.tenantId, BULK_SITE, 10_000, BULK_ROWS);
+    await insertBulk(TENANT_B.tenantId, BULK_SITE, 20_000, 1000);
     const scopes: [string, FeedTableSpec, string][] = [
+      ['bulk', commentSpec(BULK_SITE), TENANT_A.tenantId],
+      ['bulk of tenant B', commentSpec(BULK_SITE), TENANT_B.tenantId],
       ...COMMENT_SCOPES.map(([name, siteId]): [string, FeedTableSpec, string] => [name, commentSpec(siteId), TENANT_A.tenantId]),
       ['stats', repo.stats.siteStatsFeed({ siteId: SITE }), TENANT_A.tenantId],
       ['stats of ids', repo.stats.siteStatsFeed({ siteId: SITE, contentIds: [cfId(3), cfId(1).toLowerCase(), cfId(9), cfId(99)] }), TENANT_A.tenantId],
@@ -426,7 +465,7 @@ describe.skipIf(!(await pgAvailable()))('SQL beanFeed source against the in-memo
     ];
     for (const [name, spec, tenantId] of scopes) {
       const sql = repo.beanFeed.source<Row>(runner(tenantId), spec);
-      sources[name] = { sql, rows: await sql.all() };
+      sources[name] = { sql, rows: await scopeRows(sql) };
     }
   });
 
@@ -613,7 +652,7 @@ describe.skipIf(!(await pgAvailable()))('SQL beanFeed source against the in-memo
   const CLASSES = 'comment class rows';
   const RAISES = 'comment raise rows';
   const LONG = 'comment long rows';
-  // `scope` is an unbounded read of the whole scope, which only the documented fallbacks issue.
+  // `scan` is a cursor read of the scope a batch at a time, which only the documented fallbacks issue.
   it.each<[string, string[], string, string, BeanFeedOptions]>([
     ['a plain like', ['count', 'page'], 'stats', 'locktype=like%5Enode&itemsPerPage=2', STATS_OPTIONS],
     ['an `_` like over astral text', ['count', 'page'], 'stats', 'locktype=like%5Ea__b&itemsPerPage=1', STATS_OPTIONS],
@@ -625,21 +664,21 @@ describe.skipIf(!(await pgAvailable()))('SQL beanFeed source against the in-memo
     ['a NUL in an in list', ['count', 'page'], ASTRAL, 'locktype=in%5Ea%00b%2C%00&itemsPerPage=2', STATS_OPTIONS],
     ['a lone-surrogate equality', ['count', 'page'], ASTRAL, 'locktype=neq%5E%uD83D&itemsPerPage=2', STATS_OPTIONS],
     ['a lone surrogate in a not in list', ['count', 'page'], ASTRAL, 'locktype=notin%5E%uD83D%2Cab&itemsPerPage=2', STATS_OPTIONS],
-    ['a lone surrogate ordered against text', ['scope'], ASTRAL, 'locktype=gt%5E%uD83D&itemsPerPage=2', STATS_OPTIONS],
-    ['a sort over NaN ratings', ['count', 'scope'], 'stats with NaN', 'sort=rating&itemsPerPage=1', STATS_OPTIONS],
-    ['a numeric hint on a text column', ['scope'], 'stats', 'locktype=1&itemsPerPage=2', NUMERIC_LOCKTYPE],
+    ['a lone surrogate ordered against text', ['scan', 'scan'], ASTRAL, 'locktype=gt%5E%uD83D&itemsPerPage=2', STATS_OPTIONS],
+    ['a sort over NaN ratings', ['count', 'scan', 'scan'], 'stats with NaN', 'sort=rating&itemsPerPage=1', STATS_OPTIONS],
+    ['a numeric hint on a text column', ['scan'], 'stats', 'locktype=1&itemsPerPage=2', NUMERIC_LOCKTYPE],
     ['a class that can raise on no row', ['count', 'page'], CLASSES, 'name=contains%5E%5Ba-c%5D&itemsPerPage=2', COMMENT_OPTIONS],
     ['a class that can raise, reached on no row', ['count', 'page'], CLASSES, 'name=begins%5Ezz%5B!-%2F%5D&or&commentid=*&itemsPerPage=2', COMMENT_OPTIONS],
     ['a class raising on a row', ['count', 'first'], RAISES, 'name=begins%5Eb%5Ba-c%5D&itemsPerPage=2', COMMENT_OPTIONS],
     ['a class raising on a row, countOnly', ['count', 'first'], RAISES, 'countOnly=true&name=contains%5E%5B!-%2F%5D', COMMENT_OPTIONS],
     ['a class raising on a row before a sort error', ['first'], RAISES, 'name=contains%5E%5B!-%2F%5D&sort=nope', COMMENT_OPTIONS],
     ['a class raising on no row before a sort error', ['first'], CLASSES, 'name=begins%5Ezz%5B!-%2F%5D&sort=nope', COMMENT_OPTIONS],
-    ['a class raising on a float column without the text SQL holds', ['scope'], 'stats', 'rating=like%5E%5B!-%2F%5D&sort=nope', UNRATED],
+    ['a class raising on a float column without the text SQL holds', ['scan'], 'stats', 'rating=like%5E%5B!-%2F%5D&sort=nope', UNRATED],
     ['a backtracking-hostile pattern', ['count', 'page'], LONG, `${REDOS}&or&commentid=*`, COMMENT_OPTIONS],
     ['a class-heavy pattern as long as SQL compiles', ['count', 'first'], LONG, CLASS_HEAVY(409), COMMENT_OPTIONS],
-    ['a class-heavy pattern longer than SQL compiles', ['scope'], LONG, CLASS_HEAVY(410), COMMENT_OPTIONS],
+    ['a class-heavy pattern longer than SQL compiles', ['scan'], LONG, CLASS_HEAVY(410), COMMENT_OPTIONS],
     ['a literal pattern as long as SQL compiles', ['count'], LONG, `name=begins%5E${'b'.repeat(16383)}`, COMMENT_OPTIONS],
-    ['a literal pattern longer than SQL compiles', ['scope'], LONG, `name=begins%5E${'b'.repeat(16384)}`, COMMENT_OPTIONS],
+    ['a literal pattern longer than SQL compiles', ['scan'], LONG, `name=begins%5E${'b'.repeat(16384)}`, COMMENT_OPTIONS],
   ])('%s reads %j', async (_label, kinds, scope, raw, options) => {
     const comment = scope.startsWith('comment');
     statements.length = 0;
@@ -647,8 +686,124 @@ describe.skipIf(!(await pgAvailable()))('SQL beanFeed source against the in-memo
     const from = comment ? ` FROM ${handle.schema}.comment ` : '."content_stats" ';
     const read = statements
       .filter((s) => s.sql.includes(from))
-      .map((s) => (s.sql.includes(' OFFSET ') ? 'page' : s.sql.endsWith(' LIMIT 1') ? 'first' : s.sql.includes('count(*)') ? 'count' : 'scope'));
+      .map((s) => (s.sql.startsWith('DECLARE ') ? 'scan' : s.sql.includes(' OFFSET ') ? 'page' : s.sql.endsWith(' LIMIT 1') ? 'first' : s.sql.includes('count(*)') ? 'count' : 'scope'));
     expect(read).toEqual(kinds);
+    expectBounded(from);
+  });
+
+  describe('filters without a SQL form over thousands of rows', () => {
+    const bulkFrom = (): string => ` FROM ${handle.schema}.comment `;
+    /** A LIKE pattern past the lengths SQL compiles: `%` repeated, then `tail`. */
+    const longLike = (tail: string): string => `name=like%5E${'%25'.repeat(16_400)}${tail}`;
+    const LONG_X = longLike('x%25');
+    const LONG_B = longLike('b%25');
+    // Past the length SQL compiles for a class that can raise; it raises on the bulk row named `Йx`.
+    const LONG_RAISING = `name=like%5E${'%25'.repeat(2050)}%5Ba-c%5Dx%25`;
+    const URL_NUMERIC: BeanFeedOptions = { ...COMMENT_OPTIONS, hints: { ...COMMENTS.hints, url: 'integer' } };
+    const UNDATED = OPTION_SETS['comment with a varchar entered'] ?? COMMENT_OPTIONS;
+
+    it.each<[string, BeanFeedOptions, string]>([
+      ['the first page of one', COMMENT_OPTIONS, `${LONG_X}&itemsPerPage=1`],
+      ['a middle page of one', COMMENT_OPTIONS, `${LONG_X}&itemsPerPage=1&pageIndex=300`],
+      ['the last page of one', COMMENT_OPTIONS, `${LONG_X}&itemsPerPage=1&pageIndex=600`],
+      ['a page past the end', COMMENT_OPTIONS, `${LONG_X}&itemsPerPage=1&pageIndex=900`],
+      ['countOnly', COMMENT_OPTIONS, `countOnly=true&${LONG_X}`],
+      ['a sort SQL orders, descending over ties and NULLs', COMMENT_OPTIONS, `${LONG_X}&sort=-flagcount%2Cname&itemsPerPage=7&pageIndex=40`],
+      ['a sort SQL cannot order, the first page', URL_NUMERIC, `${LONG_X}&sort=url&itemsPerPage=5`],
+      ['a sort SQL cannot order, a middle page over ties and NULLs', URL_NUMERIC, `${LONG_X}&sort=url&itemsPerPage=5&pageIndex=60`],
+      ['a sort SQL cannot order, descending, the last page', URL_NUMERIC, `${LONG_X}&sort=-url%2Cflagcount&itemsPerPage=50&pageIndex=13`],
+      ['a sort over values the comparator cannot order', URL_NUMERIC, `${LONG_B}&sort=url&itemsPerPage=25&pageIndex=7`],
+      ['a sort pairing complex values', UNDATED, `${LONG_X}&sort=entered&itemsPerPage=1`],
+      ['a class raising on a row deep in the scope', COMMENT_OPTIONS, `${LONG_RAISING}&itemsPerPage=1`],
+      ['a class raising on a row deep in the scope, countOnly', COMMENT_OPTIONS, `countOnly=true&${LONG_RAISING}`],
+      ['a complex value on the first row before the raising class', UNDATED, `entered=x&${LONG_RAISING}`],
+      ['a raising class before a sort pairing complex values', UNDATED, `${LONG_RAISING}&sort=entered`],
+      ['a raising class before a sort error', COMMENT_OPTIONS, `${LONG_RAISING}&sort=nope`],
+    ])('answers %s as the in-memory evaluator does, from batch-bounded reads', async (_label, options, raw) => {
+      statements.length = 0;
+      await compare('bulk', 'findQuery', raw, options, 'comment');
+      expectBounded(bulkFrom());
+    });
+
+    it('answers the bulk rows, so the comparison exercises the data', async () => {
+      const ids = (outcome: Outcome): unknown =>
+        'value' in outcome ? ((outcome.value as { items?: Row[] }).items ?? []).map((row) => row['name']) : outcome.error;
+      expect(sources['bulk']?.rows).toHaveLength(BULK_ROWS);
+      expect(await compare('bulk', 'findQuery', `countOnly=true&${LONG_X}`, COMMENT_OPTIONS, 'comment')).toMatchObject({ value: { count: 600 } });
+      expect(ids(await compare('bulk', 'findQuery', `${LONG_X}&sort=-name&itemsPerPage=1`, COMMENT_OPTIONS, 'comment'))).toEqual(['Йx']);
+      const raised = await compare('bulk', 'findQuery', `${LONG_RAISING}&itemsPerPage=1`, COMMENT_OPTIONS, 'comment');
+      expect(raised).toMatchObject({ error: { name: 'UnsupportedFeedQueryError', message: 'LIKE class [a-c]' } });
+      const paired = await compare('bulk', 'findQuery', `${LONG_X}&sort=entered&itemsPerPage=1`, UNDATED, 'comment');
+      expect(paired).toMatchObject({ error: { name: 'TypeError' } });
+    });
+
+    it('pages one row from a count scan and a page scan that stops at its first batch', async () => {
+      statements.length = 0;
+      await compare('bulk', 'findQuery', `${LONG_X}&itemsPerPage=1`, COMMENT_OPTIONS, 'comment');
+      expect(statements.filter((s) => s.sql.includes(bulkFrom())).map((s) => s.sql.split(' ')[0])).toEqual(['DECLARE', 'DECLARE']);
+      const fetches = new Map<string, number>();
+      for (const { sql } of statements.filter((s) => s.sql.startsWith('FETCH '))) {
+        expect(sql).toMatch(/^FETCH FORWARD 500 FROM /);
+        const cursor = sql.split(' ').at(-1) ?? '';
+        fetches.set(cursor, (fetches.get(cursor) ?? 0) + 1);
+      }
+      // Six full batches and the empty one that ends the count scan, then the page scan's first batch.
+      expect([...fetches.values()]).toEqual([7, 1]);
+      expect(statements.filter((s) => s.sql.startsWith('CLOSE '))).toHaveLength(2);
+    });
+
+    it('re-reads only the page rows of a sort SQL cannot order, from the scan snapshot', async () => {
+      statements.length = 0;
+      await compare('bulk', 'findQuery', `${LONG_X}&sort=url&itemsPerPage=5&pageIndex=60`, URL_NUMERIC, 'comment');
+      expect(statements.filter((s) => s.sql.startsWith('DECLARE ')).map((s) => / SCROLL CURSOR /.test(s.sql) && !/NO SCROLL/.test(s.sql))).toEqual([false, true]);
+      const revisited = statements.filter((s) => /^(MOVE|FETCH) /.test(s.sql) && !s.sql.startsWith('FETCH FORWARD 500 '));
+      expect(revisited[0]?.sql).toMatch(/^MOVE ABSOLUTE 0 FROM /);
+      expect(revisited.filter((s) => s.sql.startsWith('FETCH ')).reduce((total, s) => total + s.rows, 0)).toBe(5);
+    });
+
+    it.each<[string, readonly string[], BeanFeedOptions, string]>([
+      ['the first page', ['bulk', 'bulk of tenant B'], COMMENT_OPTIONS, `${LONG_X}&itemsPerPage=1`],
+      ['a sort SQL cannot order, a page across the sources', ['bulk', 'bulk of tenant B'], URL_NUMERIC, `${LONG_X}&sort=-url&itemsPerPage=40&pageIndex=10`],
+      ['a sort over values the comparator cannot order', ['bulk', 'bulk of tenant B'], URL_NUMERIC, `${LONG_B}&sort=url&itemsPerPage=9&pageIndex=11`],
+      ['countOnly', ['bulk', 'bulk of tenant B'], COMMENT_OPTIONS, `countOnly=true&${LONG_X}`],
+      ['a class raising in the second source only', ['bulk of tenant B', 'bulk'], COMMENT_OPTIONS, `${LONG_RAISING}&itemsPerPage=1`],
+    ])('merges %s as the concatenated rows do', async (_label, scopes, options, raw) => {
+      const parts = scopes.flatMap((scope) => sources[scope] ?? []);
+      const expected = await outcomeOf(parts.flatMap((part) => part.rows), 'findQuery', raw, 'comment', options);
+      statements.length = 0;
+      expect(await outcomeOf(mergedSource(parts.map((part) => part.sql)), 'findQuery', raw, 'comment', options)).toEqual(expected);
+      expectBounded(bulkFrom());
+    });
+
+    it('ranks a merged page afresh when a write between its ranking and its revisit shifts a source', async () => {
+      const [bulk, other] = [sources['bulk'], sources['bulk of tenant B']];
+      if (bulk === undefined || other === undefined) throw new Error('no bulk scopes');
+      // Ahead of every bulk row in scope order, and onto the page by its name and url.
+      const extra: Row = { commentid: cfId(9999), siteid: BULK_SITE, name: 'ax0', flagcount: 1, isapproved: 1, url: '88' };
+      let writes = 0;
+      const written: BeanFeedSource<Row> = {
+        ...other.sql,
+        scan: async (request, visit, revisit) => {
+          if (visit === undefined && writes === 0) {
+            writes += 1;
+            await insert(TENANT_B.tenantId, 'comment', [extra]);
+          }
+          return other.sql.scan(request, visit, revisit);
+        },
+      };
+      const raw = `${LONG_X}&sort=-url&itemsPerPage=40&pageIndex=10`;
+      const items = (outcome: Outcome): unknown => ('value' in outcome ? (outcome.value as { items?: Row[] }).items : outcome.error);
+      try {
+        const answered = items(await outcomeOf(mergedSource([bulk.sql, written]), 'findQuery', raw, 'comment', URL_NUMERIC));
+        expect(writes).toBe(1);
+        expect(answered).toEqual(items(await outcomeOf([...bulk.rows, ...(await scopeRows(other.sql))], 'findQuery', raw, 'comment', URL_NUMERIC)));
+        expect(answered).not.toEqual(items(await outcomeOf([...bulk.rows, ...other.rows], 'findQuery', raw, 'comment', URL_NUMERIC)));
+      } finally {
+        await withTenant(handle.app, TENANT_B.tenantId, (tx) =>
+          tx.query(`DELETE FROM ${handle.schema}.comment WHERE tenant_id = $1 AND commentid = $2`, [tx.tenantId, extra['commentid']]),
+        );
+      }
+    });
   });
 
   describe('merged sources', () => {

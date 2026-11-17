@@ -231,6 +231,31 @@ export async function readContent(deps: DomainDeps, actor: Actor, ref: ContentRe
   return withPooledFile(deps, actor, bean);
 }
 
+/** A version read of `readContentVersions`: `readContent` of `{ siteId, contentHistId }`. */
+export interface ContentVersionRef {
+  siteId: string;
+  contentHistId: string;
+}
+
+/** `readContent` of each ref in the actor's tenant with one version read and one pooled-file read; the beans in ref order. */
+export async function readContentVersions(deps: DomainDeps, actor: Actor, refs: readonly ContentVersionRef[]): Promise<ContentBean[]> {
+  if (refs.some((ref) => ref.siteId === '')) {
+    throw new Error("A 'SITEID' is required in order to read content. ");
+  }
+  if (refs.length === 0) {
+    return [];
+  }
+  const contentHistIds = refs.map((ref) => ref.contentHistId);
+  const versions = await withTenant(deps.db, actor.tenantId, (tx) => deps.repository.content.readVersionsIn(tx, { contentHistIds }));
+  const stored = [...new Set(versions.values())];
+  const filled = await withPooledFiles(deps, actor, stored);
+  const filledOf = new Map(stored.map((version, at) => [version, filled[at] ?? version]));
+  return refs.map((ref) => {
+    const version = versions.get(ref.contentHistId);
+    return beanOf(version === undefined ? undefined : (filledOf.get(version) ?? version), ref.siteId, false, VERSION_NOT_FOUND);
+  });
+}
+
 /** contentManager.getActiveContent [contentManager.cfc:738-804]: the active version of an item. */
 export async function getActiveContent(
   deps: DomainDeps,
@@ -239,6 +264,24 @@ export async function getActiveContent(
 ): Promise<ContentBean> {
   const bean = await withTenant(deps.db, actor.tenantId, (tx) => activeBean(tx, deps.repository, args));
   return withPooledFile(deps, actor, bean);
+}
+
+/** `getActiveContent` of several ids in one site with one version read and one pooled-file read: each found version, keyed by the id as given. */
+export async function getActiveContents(
+  deps: DomainDeps,
+  actor: Actor,
+  args: { siteId: string; contentIds: readonly string[] },
+): Promise<Map<string, ContentVersionRow>> {
+  if (args.contentIds.length === 0) {
+    return new Map();
+  }
+  const versions = await withTenant(deps.db, actor.tenantId, (tx) =>
+    deps.repository.content.readActiveIn(tx, { siteId: args.siteId, contentIds: args.contentIds, preview: null }),
+  );
+  const stored = [...new Set(versions.values())];
+  const filled = await withPooledFiles(deps, actor, stored);
+  const filledOf = new Map(stored.map((version, at) => [version, filled[at] ?? version]));
+  return new Map([...versions].map(([contentId, version]) => [contentId, filledOf.get(version) ?? version]));
 }
 
 /** contentManager.getContentVersion [contentManager.cfc:392-437]: one version by contenthistid. */
@@ -264,6 +307,28 @@ export async function getCrumbList(deps: DomainDeps, actor: Actor, args: CrumbLi
     deps.repository.content.crumbPath(tx, { contentId: args.contentId, siteId: args.siteId, path: args.path }),
   );
   return cfEq(args.sort ?? 'asc', 'desc') ? crumbs.reverse() : crumbs;
+}
+
+/** Arguments of `getCrumbLists`: items of one site, each with its stored path where it has one. */
+export interface CrumbListsArgs {
+  siteId: string;
+  items: readonly Omit<CrumbListArgs, 'siteId' | 'sort'>[];
+  /** `desc` returns each item's crumbs root first. */
+  sort?: string;
+}
+
+/** `getCrumbList` of each item in one tenant transaction, one read per stored-path set and walk level; the crumbs in item order. */
+export async function getCrumbLists(deps: DomainDeps, actor: Actor, args: CrumbListsArgs): Promise<Crumb[][]> {
+  if (args.items.length === 0) {
+    return [];
+  }
+  return withTenant(deps.db, actor.tenantId, (tx) => getCrumbListsInTx(tx, deps.repository, args));
+}
+
+/** getCrumbLists in `tx`, the token tenant's open transaction. */
+export async function getCrumbListsInTx(tx: TenantTx, repo: ContentRepository, args: CrumbListsArgs): Promise<Crumb[][]> {
+  const lists = await repo.content.crumbPaths(tx, { siteId: args.siteId, items: args.items });
+  return cfEq(args.sort ?? 'asc', 'desc') ? lists.map((crumbs) => crumbs.reverse()) : lists;
 }
 
 /** getCrumbList's `setInheritance` effect: `request.inheritedObjects`, the version of the first crumb cascading its objects, else ''. */
@@ -532,6 +597,23 @@ export function getKidsCount(
   );
 }
 
+/** getKidsCount of each `(parentId, siteId)` of `parents`, in order, read in one statement of one tenant transaction. */
+export async function getKidsCounts(
+  deps: DomainDeps,
+  actor: Actor,
+  args: { parents: readonly { parentId: string; siteId: string }[]; liveOnly?: boolean; menuType?: string },
+): Promise<number[]> {
+  if (args.parents.length === 0) return [];
+  return withTenant(deps.db, actor.tenantId, (tx) =>
+    deps.repository.content.kidsCounts(tx, {
+      parents: args.parents,
+      today: deps.clock.now(),
+      liveOnly: args.liveOnly ?? true,
+      type: args.menuType ?? 'default',
+    }),
+  );
+}
+
 // ---- drafts, approvals and the dashboard counts ----
 
 /** Arguments of the draft and submission lists; `userId` defaults to the acting user (`session.mura.userID`). */
@@ -568,12 +650,55 @@ export function getDraftList(deps: DomainDeps, actor: Actor, args: UserListArgs)
   return withTenant(deps.db, actor.tenantId, (tx) => deps.repository.content.draftList(tx, { ...paging, userId }));
 }
 
+/** getDraftList batch by batch in one tenant transaction, handed to `visit` with that transaction until it answers false. */
+export function readDraftBatches(
+  deps: DomainDeps,
+  actor: Actor,
+  args: Omit<UserListArgs, 'limit'>,
+  visit: (drafts: DraftListRow[], tx: TenantTx) => Promise<boolean>,
+): Promise<void> {
+  const { userId = actor.userId, ...paging } = args;
+  return withTenant(deps.db, actor.tenantId, async (tx) => {
+    for await (const drafts of deps.repository.content.draftListBatches(tx, { ...paging, userId })) {
+      if (!(await visit(drafts, tx))) return;
+    }
+  });
+}
+
+/** getDraftList narrowed to `columns`: the same rows in the same order. */
+export function getDraftListColumns<K extends keyof DraftListRow>(
+  deps: DomainDeps,
+  actor: Actor,
+  args: UserListArgs,
+  columns: readonly [K, ...K[]],
+): Promise<Pick<DraftListRow, K>[]> {
+  const { userId = actor.userId, ...paging } = args;
+  return withTenant(deps.db, actor.tenantId, (tx) => deps.repository.content.draftListColumns(tx, { ...paging, userId }, columns));
+}
+
+/** getApprovalsQuery's group limit: none (null) for admin and super users, else `membershipIds` or the user's groups. */
+async function approverGroupIds(deps: DomainDeps, actor: Actor, membershipIds: readonly string[] | undefined): Promise<readonly string[] | null> {
+  const memberships = await loadMemberships(deps, actor);
+  return (await isAdminOrSuperUser(deps, actor, memberships)) ? null : (membershipIds ?? memberships.groupIds);
+}
+
 /** contentManager.getApprovalsQuery [contentManager.cfc:327-334]: pending requests, limited to the user's groups unless admin or super user. */
 export async function getApprovalsQuery(deps: DomainDeps, actor: Actor, args: ApprovalsArgs): Promise<ApprovalListRow[]> {
   const { membershipIds, ...paging } = args;
-  const memberships = await loadMemberships(deps, actor);
-  const groupIds = (await isAdminOrSuperUser(deps, actor, memberships)) ? null : (membershipIds ?? memberships.groupIds);
+  const groupIds = await approverGroupIds(deps, actor, membershipIds);
   return withTenant(deps.db, actor.tenantId, (tx) => deps.repository.content.approvalsQuery(tx, { ...paging, groupIds }));
+}
+
+/** getApprovalsQuery narrowed to `columns`: the same rows in the same order. */
+export async function getApprovalsQueryColumns<K extends keyof ApprovalListRow>(
+  deps: DomainDeps,
+  actor: Actor,
+  args: ApprovalsArgs,
+  columns: readonly [K, ...K[]],
+): Promise<Pick<ApprovalListRow, K>[]> {
+  const { membershipIds, ...paging } = args;
+  const groupIds = await approverGroupIds(deps, actor, membershipIds);
+  return withTenant(deps.db, actor.tenantId, (tx) => deps.repository.content.approvalsQueryColumns(tx, { ...paging, groupIds }, columns));
 }
 
 /** contentManager.getSubmissionsQuery [contentManager.cfc:343-350]: the user's pending approval requests. */
@@ -582,19 +707,33 @@ export function getSubmissionsQuery(deps: DomainDeps, actor: Actor, args: UserLi
   return withTenant(deps.db, actor.tenantId, (tx) => deps.repository.content.submissionsQuery(tx, { ...paging, userId }));
 }
 
+/** getSubmissionsQuery narrowed to `columns`: the same rows in the same order. */
+export function getSubmissionsQueryColumns<K extends keyof ApprovalListRow>(
+  deps: DomainDeps,
+  actor: Actor,
+  args: UserListArgs,
+  columns: readonly [K, ...K[]],
+): Promise<Pick<ApprovalListRow, K>[]> {
+  const { userId = actor.userId, ...paging } = args;
+  return withTenant(deps.db, actor.tenantId, (tx) => deps.repository.content.submissionsQueryColumns(tx, { ...paging, userId }, columns));
+}
+
 /** contentManager.getMyApprovalsCount [contentManager.cfc:3046-3053]: distinct items awaiting the user's approval. */
 export async function getMyApprovalsCount(deps: DomainDeps, actor: Actor, args: { siteId: string }): Promise<number> {
-  return distinctContentIds(await getApprovalsQuery(deps, actor, { siteId: args.siteId }));
+  const groupIds = await approverGroupIds(deps, actor, undefined);
+  return withTenant(deps.db, actor.tenantId, (tx) => deps.repository.content.approvalsCount(tx, { siteId: args.siteId, groupIds }));
 }
 
 /** contentManager.getMySubmissionsCount [contentManager.cfc:3055-3062]: distinct items the user submitted for approval. */
-export async function getMySubmissionsCount(deps: DomainDeps, actor: Actor, args: { siteId: string }): Promise<number> {
-  return distinctContentIds(await getSubmissionsQuery(deps, actor, { siteId: args.siteId }));
+export function getMySubmissionsCount(deps: DomainDeps, actor: Actor, args: { siteId: string }): Promise<number> {
+  return withTenant(deps.db, actor.tenantId, (tx) => deps.repository.content.submissionsCount(tx, { siteId: args.siteId, userId: actor.userId }));
 }
 
 /** contentManager.getMyDraftsCount [contentManager.cfc:3064-3073]: the items of the user's drafts since `startDate`. */
-export async function getMyDraftsCount(deps: DomainDeps, actor: Actor, args: { siteId: string; startDate?: Date | null }): Promise<number> {
-  return distinctContentIds(await getDraftList(deps, actor, { siteId: args.siteId, startDate: args.startDate ?? null }));
+export function getMyDraftsCount(deps: DomainDeps, actor: Actor, args: { siteId: string; startDate?: Date | null }): Promise<number> {
+  return withTenant(deps.db, actor.tenantId, (tx) =>
+    deps.repository.content.draftCount(tx, { siteId: args.siteId, userId: actor.userId, startDate: args.startDate ?? null }),
+  );
 }
 
 /** contentManager.getMyExpiresCount [contentManager.cfc:3075-3083]: distinct items of the user expiring within a month or expired within a year. */

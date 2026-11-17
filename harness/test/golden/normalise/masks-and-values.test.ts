@@ -524,6 +524,17 @@ describe('normaliseUrl', () => {
       'http://localhost:8100/x?fuseaction=A.B',
       '<origin>/x?fuseaction=a.b',
     ],
+    [
+      'replaces a site domain under the localhost alias on the capture port, keeping its label',
+      'http://tenant-a.localhost:8500/?display=login',
+      'tenant-a.<origin>/?display=login',
+    ],
+    [
+      'replaces a site domain under the localhost alias on the replay port, keeping its label',
+      'http://tenant-a.localhost:8100/?display=login',
+      'tenant-a.<origin>/?display=login',
+    ],
+    ['keeps a site domain on a port no origin uses', 'http://tenant-a.localhost:9999/', 'http://tenant-a.localhost:9999/'],
     ['masks a file-store path', '/opt2/files/a.png', '<url>'],
     ['masks a URL with a signed query parameter', 'https://storage.googleapis.com/b/o?X-Goog-Signature=abc', '<url>'],
     [
@@ -586,6 +597,11 @@ describe('normaliseText', () => {
       'replaces percent-encoded and bare host:port origins only at host boundaries',
       'r=http%3A%2F%2F127.0.0.1%3A8500%2Fadmin host 127.0.0.1:85001 10.127.0.0.1:8500 localhost:8500.',
       'r=http%3A%2F%2F<origin>%2Fadmin host 127.0.0.1:85001 10.127.0.0.1:8500 <origin>.',
+    ],
+    [
+      'replaces bare and percent-encoded localhost subdomains with their labels, but no IP-alias subdomain',
+      'r=http%3A%2F%2Ftenant-a.localhost%3A8100%2F a.b.localhost:8500 umbrella.localhost:85001 x.127.0.0.1:8500',
+      'r=http%3A%2F%2Ftenant-a.<origin>%2F a.b.<origin> umbrella.localhost:85001 x.127.0.0.1:8500',
     ],
     ['keeps an unparseable URL in prose', 'go http://[bad now', 'go http://[bad now'],
     ['keeps the empty string', '', ''],

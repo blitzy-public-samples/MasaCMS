@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { LOCAL_USER_TOKEN, collectRouteMatrix } from '@opt2/platform/auth';
-import { baseEnvSchema, loadEnv, type BaseEnv } from '@opt2/platform/service-kit';
+import { loadEnv, type BaseEnv } from '@opt2/platform/service-kit';
 import type { CreateTaskInput, TaskInfo, TaskPort } from '@opt2/platform/tasks';
 import { SYSTEM_TENANT_ID } from '@opt2/platform/tenancy';
 import {
@@ -20,7 +20,7 @@ import {
   writeTestSecrets,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
-import { buildApp, type BuildAppOptions } from '../../src/app.js';
+import { buildApp, surveysEnvSchema, type BuildAppOptions } from '../../src/app.js';
 import { UNITS } from '../../src/repo/tables.js';
 
 const requireHere = createRequire(import.meta.url);
@@ -113,18 +113,27 @@ function fakeTaskPort(): TaskPort & { created: CreateTaskInput[] } {
   };
 }
 
-/** Local env over `stateDir`; service URLs name port 9 (discard), so a chain task the local adapter dispatches reaches nothing. */
+/**
+ * Local env over `stateDir`; service URLs name port 9 (discard), so a chain task the local adapter dispatches reaches nothing.
+ * The database settings are never connected to: every build injects its pool.
+ */
 function testEnv(stateDir: string, overrides: Record<string, string> = {}): BaseEnv {
-  return loadEnv(baseEnvSchema, {
+  return loadEnv(surveysEnvSchema, {
     PORT: '8117',
     OPT2_SERVICE_NAME: 'surveys',
     OPT2_ENV: 'local',
+    OPT2_DB_AUTH: 'password',
+    PG_HOST: '127.0.0.1',
+    PG_PORT: '5432',
+    PG_DATABASE: 'opt2_test',
+    PG_USER: 'surveys_app',
+    PG_PASSWORD: 'unused',
     PUBSUB_EMULATOR_HOST: 'localhost:8085',
     GOOGLE_CLOUD_PROJECT: 'opt2-local',
     OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
     OPT2_TOKEN_ISSUER: LOCAL_USER_TOKEN.issuer,
     OPT2_TOKEN_AUDIENCE: LOCAL_USER_TOKEN.audience,
-    OPT2_SERVICE_URLS: JSON.stringify({ surveys: 'http://127.0.0.1:9', communications: 'http://127.0.0.1:9' }),
+    OPT2_SERVICE_URLS: JSON.stringify({ surveys: 'http://127.0.0.1:9', identity: 'http://127.0.0.1:9', communications: 'http://127.0.0.1:9' }),
     OPT2_STATE_DIR: stateDir,
     TZ: 'UTC',
     ...overrides,
@@ -145,12 +154,18 @@ describe('surveys buildApp without a database', () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  it.each([
-    ['no emulator host for its own publisher', undefined, 'surveys: invalid environment\n  PUBSUB_EMULATOR_HOST: is required when OPT2_ENV=local'],
-    ['an injected publisher and no emulator host', createCapturingPublisher(), 'Schema surveys needs OPT2_DB_AUTH and PG_DATABASE'],
-  ])('fails start-up with %s before acquiring anything', async (_case, publisher, message) => {
+  it.each<[string, BuildAppOptions['publisher'], Partial<BaseEnv>, string]>([
+    ['no emulator host for its own publisher', undefined, {}, 'surveys: invalid environment\n  PUBSUB_EMULATOR_HOST: is required when OPT2_ENV=local'],
+    [
+      'an injected publisher, no emulator host and no database settings',
+      createCapturingPublisher(),
+      // Removed after parsing, which refuses them, so createService's pool is the first step to fail.
+      { OPT2_DB_AUTH: undefined, PG_DATABASE: undefined },
+      'surveys: invalid environment\n  OPT2_DB_AUTH: is required\n  PG_DATABASE: is required',
+    ],
+  ])('fails start-up with %s before acquiring anything', async (_case, publisher, unset, message) => {
     const sigterm = process.listenerCount('SIGTERM');
-    const env = testEnv(stateDir, { PUBSUB_EMULATOR_HOST: '' });
+    const env = { ...testEnv(stateDir, { PUBSUB_EMULATOR_HOST: '' }), ...unset };
 
     await expect(buildApp({ env, publisher, clock: fixedClock(NOW), verifierOverride: testVerifier('surveys') })).rejects.toThrow(message);
     expect(process.listenerCount('SIGTERM')).toBe(sigterm);

@@ -70,6 +70,7 @@ export interface ValidationContext {
 /** Paths `loadValidationContext` reads. */
 export type ValidationPaths = Pick<
   GatewayPaths,
+  | 'cutoverDir'
   | 'schemaFile'
   | 'variantsFile'
   | 'groupsFile'
@@ -650,7 +651,7 @@ function parseArgs(argv: readonly string[]): CliOptions | string {
   return version === undefined ? { mode } : { mode, version };
 }
 
-async function versionIds(paths: Pick<GatewayPaths, 'versionsDir'>): Promise<string[]> {
+async function versionIds(paths: Pick<GatewayPaths, 'cutoverDir' | 'versionsDir'>): Promise<string[]> {
   try {
     return await listVersions(paths);
   } catch (error) {

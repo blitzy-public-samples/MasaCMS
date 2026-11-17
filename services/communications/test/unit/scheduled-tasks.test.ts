@@ -48,6 +48,7 @@ interface ListedTasks {
   sourceId: string;
   scheduleVersion: number | null;
   items: ListedTask[];
+  next: string | null;
 }
 
 /** Surveys' call: a `surveys.manager` user token of `site` beside an invocation credential of `caller`. */
@@ -106,7 +107,7 @@ describe('listScheduledTasks after schedule versions 1 and 2', () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json() as ListedTasks;
-    expect(body).toMatchObject({ sourceType: 'survey', sourceId: SURVEY_ID, scheduleVersion: 2 });
+    expect(body).toMatchObject({ sourceType: 'survey', sourceId: SURVEY_ID, scheduleVersion: 2, next: null });
     const stored = storedTasks(2);
     expect(body.items).toStrictEqual(
       V2_TASKS.map((task) => {
@@ -133,7 +134,7 @@ describe('listScheduledTasks after schedule versions 1 and 2', () => {
     const { res } = await list(await surveysCall({ site }), `sourceType=survey&sourceId=${sourceId}`);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toStrictEqual({ sourceType: 'survey', sourceId, scheduleVersion: null, items: [] });
+    expect(res.json()).toStrictEqual({ sourceType: 'survey', sourceId, scheduleVersion: null, items: [], next: null });
   });
 
   it('reads in the token tenant without writing', async () => {

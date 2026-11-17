@@ -2,7 +2,7 @@
 /** Fixture row projections against `envelope.rows()` output recorded from the legacy oracle. */
 import { describe, expect, it } from 'vitest';
 import type { RollupRow } from '../../src/domain/rollup.js';
-import { attachmentRow, recordDetail, recordDetailPage, recordRow, rollupRow, versionRow } from '../../src/legacy/serialize.js';
+import { attachmentRow, recordDetailFrame, recordDetailPage, recordRow, rollupRow, versionRow } from '../../src/legacy/serialize.js';
 import type { FinanceAttachmentRow, FinanceRecordRow, FinanceRecordVersionRow, FinanceRollupRow } from '../../src/repo/tables.js';
 
 const RECORD_ID = '0A1B2C3D-4E5F-6A7B-8C9D0E1F2A3B4C5D';
@@ -162,12 +162,18 @@ describe('rollupRow', () => {
   });
 });
 
-describe('recordDetail', () => {
-  it('embeds versions and attachments in the given order', () => {
-    const first = { ...version, version_id: ATTACHMENT_ID, version: 1, action: 'create' };
-    const detail = recordDetail(record, [version, first], [attachment]);
-    expect(detail).toEqual({ ...recordRow(record), versions: [versionRow(version), versionRow(first)], attachments: [attachmentRow(attachment)] });
-    expect(recordDetail(record, [], [])).toEqual({ ...recordRow(record), versions: [], attachments: [] });
+describe('recordDetailFrame', () => {
+  const first = { ...version, version_id: ATTACHMENT_ID, version: 1, action: 'create' };
+
+  it.each<[string, FinanceRecordRow, FinanceRecordVersionRow[], FinanceAttachmentRow[]]>([
+    ['both lists', record, [version, first], [attachment]],
+    ['no rows', record, [], []],
+    ['text JSON escapes', { ...record, title: 'Quote " slash \\ line\nend', lastupdate: new Date(2026, 6, 1), lastupdatebyid: USER_ID }, [first], []],
+  ])('frames %s as JSON.stringify writes the record fields, then versions, then attachments', (_case, row, versions, attachments) => {
+    const [beforeVersions, betweenLists, afterAttachments] = recordDetailFrame(row);
+    const items = (rows: unknown[]): string => rows.map((item) => JSON.stringify(item)).join(',');
+    const text = `${beforeVersions}${items(versions.map(versionRow))}${betweenLists}${items(attachments.map(attachmentRow))}${afterAttachments}`;
+    expect(text).toBe(JSON.stringify({ ...recordRow(row), versions: versions.map(versionRow), attachments: attachments.map(attachmentRow) }));
   });
 });
 

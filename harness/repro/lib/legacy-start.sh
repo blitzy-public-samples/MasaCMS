@@ -303,7 +303,9 @@ start_server() {
   local key
   key="$(secret bridge-hmac-key)" || exit 1
   # setsid keeps the JVM out of the caller's process group, which the migration service may signal on a timeout.
-  PORT="$LEGACY_PORT" MURA_PING=false OPT2_BRIDGE_HMAC_KEY="$key" OPT2_GATEWAY_ORIGIN="$OPT2_GATEWAY_ORIGIN_LOCAL" \
+  # MURA_BROADCASTCLUSTERCOMMANDS=false: no cluster reload commands, as the start-up guard on content units requires.
+  PORT="$LEGACY_PORT" MURA_PING=false MURA_BROADCASTCLUSTERCOMMANDS=false OPT2_BRIDGE_HMAC_KEY="$key" \
+    OPT2_GATEWAY_ORIGIN="$OPT2_GATEWAY_ORIGIN_LOCAL" \
     setsid --wait box server start serverConfigFile="$SERVER_JSON" --noSaveSettings </dev/null >&2 ||
     die "box server start serverConfigFile=$SERVER_JSON failed"
 }
@@ -374,7 +376,7 @@ run_original() {
     print_summary original "" "$name" "$port" "" "[]" "[]" "$SECONDS"
     return 0
   fi
-  unset MURA_PING OPT2_BRIDGE_HMAC_KEY OPT2_GATEWAY_ORIGIN
+  unset MURA_PING MURA_BROADCASTCLUSTERCOMMANDS OPT2_BRIDGE_HMAC_KEY OPT2_GATEWAY_ORIGIN
   log_step b "start the original server $name"
   PORT="$LEGACY_PORT" setsid --wait box server start name="$name" --noSaveSettings </dev/null >&2 ||
     die "box server start name=$name failed"
@@ -409,6 +411,8 @@ trap 'exit 143' TERM
 open_window
 
 log_step c "stop ColdFusion and release a foreign $LEGACY_SERVER_NAME registration"
+# A ONCE task due before the stop has had its run or never runs, though its exported status stays Running.
+stopped_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 stop_legacy
 # Once ColdFusion is stopped, so a running opt2-legacy is stopped through its registration before it is released.
 release_foreign_registration
@@ -423,7 +427,7 @@ else
   cfconfig_export "$TASKS_BEFORE" >&2 || die "cannot export the scheduled tasks"
   desired=$TASKS_BEFORE
   if [[ $MODE == restart ]]; then
-    resume_json="$(node "$LIB_DIR/cfconfig-tasks.mjs" unpaused --in "$TASKS_BEFORE" --json)" ||
+    resume_json="$(node "$LIB_DIR/cfconfig-tasks.mjs" unpaused --in "$TASKS_BEFORE" --json --at "$stopped_at")" ||
       die "cannot list the running tasks of $TASKS_BEFORE"
   fi
 fi

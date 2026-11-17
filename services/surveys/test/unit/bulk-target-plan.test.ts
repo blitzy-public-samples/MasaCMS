@@ -15,14 +15,14 @@ import { fixedClock } from '@opt2/platform/testing';
 import { SURVEY_RESPONSE_GRANT, applyBulkTarget, bulkTarget, parseBulkTargets, type BulkTargetPair } from '../../src/domain/bulk-target.js';
 import type { DomainDeps } from '../../src/domain/surveys.js';
 import { FixtureApiError } from '../../src/legacy/fixture-envelope.js';
-import { findSurvey, listTargets } from '../../src/repo/queries.js';
+import { findSurvey } from '../../src/repo/queries.js';
 import type { SurveysRepository, TargetInsertResult } from '../../src/repo/repository.js';
 import type { SurveyRow, SurveyTargetRow } from '../../src/repo/tables.js';
 
-// The gated reads are replaced so the domain runs without PostgreSQL.
+// The gated read is replaced so the domain runs without PostgreSQL.
 vi.mock(import('../../src/repo/queries.js'), async (importOriginal) => {
   const queries = await importOriginal();
-  return { ...queries, findSurvey: vi.fn(queries.findSurvey), listTargets: vi.fn(queries.listTargets) };
+  return { ...queries, findSurvey: vi.fn(queries.findSurvey) };
 });
 
 const T0 = new Date(2026, 5, 30, 9, 0, 0);
@@ -89,14 +89,13 @@ function recordingTx(registry: ReadonlyMap<string, string>, log: Step[]): Tenant
 
 interface Setup {
   survey?: SurveyRow | null;
-  existing?: SurveyTargetRow[];
   registry?: Record<string, string>;
   counts?: TargetInsertResult;
   insertError?: Error;
 }
 
 /** Domain deps over a recording transaction and repository; every read, insert and statement lands in `log` in call order. */
-function setup({ survey = SURVEY, existing = [], registry = {}, counts, insertError }: Setup = {}) {
+function setup({ survey = SURVEY, registry = {}, counts, insertError }: Setup = {}) {
   const log: Step[] = [];
   const tenants: string[] = [];
   const tx = recordingTx(new Map(Object.entries(registry)), log);
@@ -113,16 +112,12 @@ function setup({ survey = SURVEY, existing = [], registry = {}, counts, insertEr
     log.push(['findSurvey', surveyId]);
     return Promise.resolve(survey);
   });
-  vi.mocked(listTargets).mockImplementation((_tx, surveyId) => {
-    log.push(['listTargets', surveyId]);
-    return Promise.resolve(existing);
-  });
   const insertTargets = vi.fn<SurveysRepository['insertTargets']>((_tx, surveyId, pairs) => {
     log.push(['insertTargets', [surveyId, pairs]]);
     if (insertError !== undefined) {
       return Promise.reject(insertError);
     }
-    return Promise.resolve(counts ?? { inserted: pairs.length, total: existing.length + pairs.length });
+    return Promise.resolve(counts ?? { inserted: pairs.length, total: pairs.length });
   });
   const deps: DomainDeps = { db, repository: { insertTargets } as unknown as SurveysRepository, clock: fixedClock(T0) };
   return { deps, tx, log, tenants, insertTargets };
@@ -130,7 +125,6 @@ function setup({ survey = SURVEY, existing = [], registry = {}, counts, insertEr
 
 beforeEach(() => {
   vi.mocked(findSurvey).mockReset();
-  vi.mocked(listTargets).mockReset();
 });
 
 describe('parseBulkTargets', () => {
@@ -376,9 +370,8 @@ describe('bulkTarget', () => {
 });
 
 describe('applyBulkTarget', () => {
-  it('inserts the planned targets under their registered site ids, then grants survey-response once to each other targeted tenant', async () => {
+  it('hands every target to insertTargets under its registered site id in input order, then grants survey-response once to each other targeted tenant', async () => {
     const { deps, tx, log, tenants, insertTargets } = setup({
-      existing: [targetRow('tenant-b', 'Staff')],
       registry: { 'tenant-a': TENANT_A, 'tenant-b': TENANT_B, 'Tenant-C': TENANT_C },
       counts: { inserted: 4, total: 5 },
     });
@@ -408,16 +401,17 @@ describe('applyBulkTarget', () => {
       ['tenant_registry', [TENANT_C]],
       ['tenant_registry', ['TENANT-C']],
       ['tenant_registry', [TENANT_C]],
-      ['listTargets', SURVEY_ID],
       [
         'insertTargets',
         [
           SURVEY_ID,
           [
+            { siteId: 'tenant-b', groupName: 'Staff' },
             { siteId: 'tenant-b', groupName: null },
             { siteId: 'tenant-a', groupName: null },
             { siteId: 'Tenant-C', groupName: 'Board' },
             { siteId: 'Tenant-C', groupName: null },
+            { siteId: 'tenant-b', groupName: null },
           ],
         ],
       ],
@@ -430,11 +424,10 @@ describe('applyBulkTarget', () => {
     expect(insertTargets.mock.calls[0]?.[0]).toBe(tx);
     expect(insertTargets.mock.calls[0]).toHaveLength(3);
     expect(vi.mocked(findSurvey).mock.calls[0]?.[0]).toBe(tx);
-    expect(vi.mocked(listTargets).mock.calls[0]?.[0]).toBe(tx);
   });
 
   it('still grants the targeted sites when every pair exists and nothing is inserted', async () => {
-    const { deps, log } = setup({ existing: [targetRow('tenant-b', null)], registry: { 'tenant-b': TENANT_B } });
+    const { deps, log } = setup({ registry: { 'tenant-b': TENANT_B }, counts: { inserted: 0, total: 1 } });
 
     const result = await applyBulkTarget(deps, { tenantId: TENANT_A, surveyId: SURVEY_ID, input: [{ siteID: 'Tenant-B' }] });
 
@@ -442,8 +435,7 @@ describe('applyBulkTarget', () => {
     expect(log.slice(1)).toEqual([
       ['tenant_registry', ['Tenant-B']],
       ['tenant_registry', [TENANT_B]],
-      ['listTargets', SURVEY_ID],
-      ['insertTargets', [SURVEY_ID, []]],
+      ['insertTargets', [SURVEY_ID, [{ siteId: 'tenant-b', groupName: null }]]],
       ['tenant_registry', ['tenant-b']],
       ['tenant_grant', [TENANT_A, TENANT_B, 'survey-response', SURVEY_ID]],
     ]);
@@ -482,6 +474,6 @@ describe('applyBulkTarget', () => {
     const { deps, log } = setup({ registry: { 'tenant-b': TENANT_B }, insertError: failure });
 
     await expect(applyBulkTarget(deps, { tenantId: TENANT_A, surveyId: SURVEY_ID, input: [{ siteID: 'tenant-b' }] })).rejects.toBe(failure);
-    expect(log.map(([step]) => step)).toEqual(['findSurvey', 'tenant_registry', 'tenant_registry', 'listTargets', 'insertTargets']);
+    expect(log.map(([step]) => step)).toEqual(['findSurvey', 'tenant_registry', 'tenant_registry', 'insertTargets']);
   });
 });

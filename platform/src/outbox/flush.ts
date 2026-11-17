@@ -2,6 +2,7 @@
 import { untilAborted } from '../auth/deadline.js';
 import type { EventEnvelope, EventPublisher, TopicValidator } from '../events/index.js';
 import { serializeError, type Logger } from '../logging/index.js';
+import { currentRequestContext } from '../service-kit/context.js';
 import { systemClock, type Clock } from '../service-kit/index.js';
 import type { TenantDb, TenantTx } from '../tenancy/index.js';
 import { localTimestamp, outboxTable, rowFromDb, type OutboxRow } from './ddl.js';
@@ -27,8 +28,8 @@ export interface CreateOutboxOptions {
   payloadValidators?: Record<string, TopicValidator> | Map<string, TopicValidator>;
 }
 
-/** Longest an in-request flush waits on row locks and publishes before it leaves its rows to the sweep. */
-export const FLUSH_DEADLINE_MS = 2_000;
+/** Longest an in-request flush waits on row locks and publishes before it leaves its rows to the sweep; equal to PUBLISH_STALL_MS and inside the callers' SERVICE_CALL_TIMEOUT_MS. */
+export const FLUSH_DEADLINE_MS = 5_000;
 
 /** Longest a sweep or replay waits for one publish; the first publish still unconfirmed then ends the whole pass. */
 export const PUBLISH_STALL_MS = 5_000;
@@ -149,8 +150,12 @@ function bySeq(a: OutboxRow, b: OutboxRow): number {
   return x < y ? -1 : x > y ? 1 : 0;
 }
 
+/** Most ordering keys one publishing pass publishes at once, within the usual 100-stream limit of one HTTP/2 connection. */
+export const PUBLISH_CONCURRENCY = 100;
+
 /**
- * Publishes `rows` one at a time in `seq` order with their stored envelopes, then stamps the published ones in `tx`.
+ * Publishes `rows` with their stored envelopes, then stamps the published ones in `tx`.
+ * Each ordering key's rows go one at a time in `seq` order, and up to PUBLISH_CONCURRENCY keys publish at once, taken in order of their first row.
  * After a failed publish, later rows with the same ordering key are skipped, so a key's events never leave out of order.
  * `stamp: 'unpublished-only'` (default) sets `published_at` only where it is null; `'none'` stamps nothing.
  * Once `signal` aborts, a publish still pending counts as failed and every row not yet attempted as skipped.
@@ -162,36 +167,55 @@ export async function publishLockedRows(
   rows: readonly OutboxRow[],
   opts: { stamp?: 'unpublished-only' | 'none'; signal?: AbortSignal; abortWarning?: string } = {},
 ): Promise<PublishSummary> {
-  const failedKeys = new Set<string>();
-  const published: string[] = [];
+  const sorted = [...rows].sort(bySeq);
+  const byKey = new Map<string, OutboxRow[]>();
+  for (const row of sorted) {
+    const keyRows = byKey.get(row.orderingKey);
+    if (keyRows === undefined) byKey.set(row.orderingKey, [row]);
+    else keyRows.push(row);
+  }
+  const published = new Set<string>();
   let failed = 0;
   let skipped = 0;
-  for (const row of [...rows].sort(bySeq)) {
-    if (failedKeys.has(row.orderingKey) || opts.signal?.aborted) {
-      skipped += 1;
-      continue;
-    }
-    try {
-      await untilAborted(runtime.publisher.publish(row.topic, row.envelope as unknown as EventEnvelope), opts.signal);
-      published.push(row.eventId);
-    } catch (err) {
-      failed += 1;
-      failedKeys.add(row.orderingKey);
-      const fields = { eventId: row.eventId, tenantId: row.tenantId, error: serializeError(err) };
-      if (opts.abortWarning !== undefined && opts.signal?.aborted === true && err === opts.signal.reason) {
-        runtime.logger.warn(fields, opts.abortWarning);
-      } else {
-        runtime.logger.error(fields, 'outbox publish failed');
+
+  // Stops the key at its first failed publish or at the abort, counting its rows not attempted as skipped.
+  async function publishKey(keyRows: readonly OutboxRow[]): Promise<void> {
+    for (const [index, row] of keyRows.entries()) {
+      if (opts.signal?.aborted) {
+        skipped += keyRows.length - index;
+        return;
+      }
+      try {
+        await untilAborted(runtime.publisher.publish(row.topic, row.envelope as unknown as EventEnvelope), opts.signal);
+        published.add(row.eventId);
+      } catch (err) {
+        failed += 1;
+        skipped += keyRows.length - index - 1;
+        const fields = { eventId: row.eventId, tenantId: row.tenantId, error: serializeError(err) };
+        if (opts.abortWarning !== undefined && opts.signal?.aborted === true && err === opts.signal.reason) {
+          runtime.logger.warn(fields, opts.abortWarning);
+        } else {
+          runtime.logger.error(fields, 'outbox publish failed');
+        }
+        return;
       }
     }
   }
-  if (published.length > 0 && (opts.stamp ?? 'unpublished-only') === 'unpublished-only') {
+
+  // Every worker draws its next key from the one shared iterator, so each key is published by exactly one worker.
+  const keys = byKey.values();
+  const worker = async (): Promise<void> => {
+    for (const keyRows of keys) await publishKey(keyRows);
+  };
+  await Promise.all(Array.from({ length: Math.min(PUBLISH_CONCURRENCY, byKey.size) }, worker));
+  const stamped = sorted.filter((row) => published.has(row.eventId)).map((row) => row.eventId);
+  if (stamped.length > 0 && (opts.stamp ?? 'unpublished-only') === 'unpublished-only') {
     await tx.query(
       `UPDATE ${outboxTable(tx.schema)} SET published_at = $1 WHERE event_id = ANY($2::uuid[]) AND published_at IS NULL`,
-      [localTimestamp(runtime.clock.now()), published],
+      [localTimestamp(runtime.clock.now()), stamped],
     );
   }
-  return { published: published.length, failed, skipped };
+  return { published: stamped.length, failed, skipped };
 }
 
 /** A publishing pass over several transactions, ended by its first stalled publish or by its deadline. */
@@ -230,6 +254,7 @@ export function publishPass(runtime: OutboxRuntime, stallMs: number, deadline?: 
 /**
  * Commit callback publishing and stamping the rows `eventIds` names after their keys' earlier unpublished rows, in a fresh tenant transaction.
  * Bounded by FLUSH_DEADLINE_MS: rows whose locks or publishes are not confirmed in time are left to the sweep and logged at WARNING; other failures log ERROR.
+ * Inside a request, every line it writes carries the request's `requestId`.
  * Never throws: on error nothing is stamped, every id counts as failed and the rows are left to the sweep, as are rows behind a held row.
  */
 export async function flushAfterCommit(
@@ -240,14 +265,16 @@ export async function flushAfterCommit(
   if (eventIds.length === 0) {
     return { published: 0, failed: 0, skipped: 0 };
   }
-  const { schema } = runtime.db;
+  const requestId = currentRequestContext()?.requestId;
+  const rt = requestId === undefined ? runtime : { ...runtime, logger: runtime.logger.child({ requestId }) };
+  const { schema } = rt.db;
   const signal = AbortSignal.timeout(FLUSH_DEADLINE_MS);
   const bound = `FLUSH_DEADLINE_MS (${FLUSH_DEADLINE_MS} ms)`;
   try {
-    return await runtime.db.withTenant(tenantId, async (tx) => {
+    return await rt.db.withTenant(tenantId, async (tx) => {
       await tx.query(SET_LOCK_TIMEOUT_SQL, [`${FLUSH_DEADLINE_MS}ms`]);
       const { rows, blocked } = await dropBlockedRows(tx, schema, await selectPublishable(tx, schema, { eventIds }));
-      const summary = await publishLockedRows(tx, runtime, rows, {
+      const summary = await publishLockedRows(tx, rt, rows, {
         signal,
         abortWarning: `outbox publish not confirmed within ${bound}; left to the sweep`,
       });
@@ -256,9 +283,9 @@ export async function flushAfterCommit(
   } catch (err) {
     const fields = { tenantId, error: serializeError(err) };
     if ((err as { code?: unknown } | null | undefined)?.code === LOCK_NOT_AVAILABLE) {
-      runtime.logger.warn(fields, `outbox flush row locks not granted within ${bound}; events ${eventIds.join(',')} left to the sweep`);
+      rt.logger.warn(fields, `outbox flush row locks not granted within ${bound}; events ${eventIds.join(',')} left to the sweep`);
     } else {
-      runtime.logger.error(fields, `outbox flush failed for events ${eventIds.join(',')}`);
+      rt.logger.error(fields, `outbox flush failed for events ${eventIds.join(',')}`);
     }
     return { published: 0, failed: eventIds.length, skipped: 0 };
   }

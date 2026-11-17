@@ -4,6 +4,6 @@ import { describe } from 'vitest';
 import { pgAvailable } from '@opt2/platform/testing';
 import { defineV1RouteCases } from '../helpers/v1-routes-cases.js';
 
-const PG_READY = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const PG_READY = await pgAvailable();
 
 defineV1RouteCases('pg', describe.skipIf(!PG_READY));

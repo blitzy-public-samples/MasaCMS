@@ -34,7 +34,7 @@ import { importSchedulerState, schedulerStatus } from '../../src/scheduler/index
 import { startServer } from '../../src/server.js';
 import { SNAPSHOT_KINDS, dropSnapshot, restoreLiveFromSnapshot, takeSnapshot } from '../../src/snapshot/index.js';
 import { requestTransition } from '../../src/transition/index.js';
-import { completeWindowViaService, openWindowViaService, resolveWindowViaService } from '../../src/windows/index.js';
+import { completeWindowViaService, openWindowViaService, resolveWindowViaService, writeWindowsReport } from '../../src/windows/index.js';
 
 vi.mock('@opt2/platform/tracing', () => ({
   startTracing: vi.fn(async () => undefined),
@@ -83,6 +83,7 @@ vi.mock('../../src/windows/index.js', async (importOriginal) => ({
   openWindowViaService: vi.fn(),
   completeWindowViaService: vi.fn(),
   resolveWindowViaService: vi.fn(),
+  writeWindowsReport: vi.fn(),
 }));
 vi.mock('../../src/scheduler/index.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/scheduler/index.js')>()),
@@ -209,6 +210,7 @@ describe('parseCommand', () => {
     ],
     [['window', 'complete', WINDOW_ID, '--forwarded'], { kind: 'window complete', windowId: WINDOW_ID, forwarded: true }],
     [['window', 'complete', WINDOW_ID], { kind: 'window complete', windowId: WINDOW_ID, forwarded: false }],
+    [['window', 'report'], { kind: 'window report' }],
     [['scheduler', 'import', '--file', '/state/native-tasks.json'], { kind: 'scheduler import', file: '/state/native-tasks.json' }],
     [['scheduler', 'status'], { kind: 'scheduler status' }],
     [['files', 'manifest', '--snapshot', '2'], { kind: 'files manifest', snapshotSeq: 2 }],
@@ -265,6 +267,7 @@ describe('parseCommand', () => {
     [['window', 'open', '--units', 'a.b', '--scope', 'null'], /--scope must be table/],
     [['window', 'complete'], /window complete needs <windowId>/],
     [['window', 'complete', WINDOW_ID, '--forwarded=yes'], /--forwarded/],
+    [['window', 'report', 'extra'], /unexpected argument "extra"/],
     [['scheduler', 'import'], /--file <value> is required/],
     [['files', 'manifest'], /--snapshot <value> is required/],
   ])('rejects %j', (argv, message) => {
@@ -290,14 +293,21 @@ describe('parseCommand', () => {
 describe('usageFor', () => {
   it('lists every command once in the top-level usage', () => {
     const commands = USAGE.split('\n').filter((line) => line.startsWith('opt2-migrate '));
-    // Twenty commands plus the help line.
-    expect(commands).toHaveLength(21);
+    // Twenty-one commands plus the help line.
+    expect(commands).toHaveLength(22);
     expect(new Set(commands).size).toBe(commands.length);
     expect(USAGE).toContain('opt2-migrate snapshot --kind <seed|workload|transition|rebaseline|checkpoint|feed>');
   });
 
   it.each([
-    { topic: 'window', lines: ['opt2-migrate window open --units <unit,...> [--route <key>] [--scope <table|json>]', 'opt2-migrate window complete <windowId> [--forwarded]'] },
+    {
+      topic: 'window',
+      lines: [
+        'opt2-migrate window open --units <unit,...> [--route <key>] [--scope <table|json>]',
+        'opt2-migrate window complete <windowId> [--forwarded]',
+        'opt2-migrate window report',
+      ],
+    },
     { topic: 'rollback', lines: ['opt2-migrate rollback report', 'opt2-migrate rollback rebaseline'] },
     { topic: 'rollback-set', lines: ['opt2-migrate rollback-set'] },
     { topic: 'snapshot', lines: [expect.stringMatching(/^opt2-migrate snapshot --kind/), 'opt2-migrate snapshot restore --seq <n>', 'opt2-migrate snapshot drop --seq <n>'] },
@@ -441,6 +451,12 @@ describe('main', () => {
     { argv: ['window', 'complete', WINDOW_ID, '--forwarded'], fn: completeWindowViaService, args: [ctx, WINDOW_ID, { forwarded: true }], result: { state: 'closed' } },
     { argv: ['window', 'complete', WINDOW_ID], fn: completeWindowViaService, args: [ctx, WINDOW_ID, { forwarded: false }], result: { state: 'closed' } },
     { argv: ['window', 'complete', WINDOW_ID, '--forwarded'], fn: completeWindowViaService, args: [ctx, WINDOW_ID, { forwarded: true }], result: { state: 'import-pending' } },
+    {
+      argv: ['window', 'report'],
+      fn: writeWindowsReport,
+      args: [ctx],
+      result: { reportPath: '/r/windows.json', windows: 3, fromTable: 2, keptFromFile: 1 },
+    },
     {
       argv: ['scheduler', 'import', '--file', '/state/native-tasks.json'],
       fn: importSchedulerState,

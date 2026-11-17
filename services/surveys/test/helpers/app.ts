@@ -6,13 +6,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LOCAL_USER_TOKEN } from '@opt2/platform/auth';
-import { apiUnavailableResponse } from '@opt2/platform/legacy-compat';
+import { apiUnavailableResponse, legacyErrorResponse } from '@opt2/platform/legacy-compat';
 import type { GatePhase, GateState } from '@opt2/platform/migration-kit';
 import {
   CSRF_CONSUME_PATH,
   IDENTITY_SERVICE,
   ServiceUnavailableError,
-  baseEnvSchema,
   loadEnv,
   systemClock,
   type BaseEnv,
@@ -58,7 +57,7 @@ import {
   type CapturingPublisher,
   type RoleSubject,
 } from '@opt2/platform/testing';
-import { buildApp, type BuildAppOptions } from '../../src/app.js';
+import { buildApp, surveysEnvSchema, type BuildAppOptions } from '../../src/app.js';
 import type { components } from '../../src/generated/clients/communications.js';
 import type { ScheduledTaskRecord } from '../../src/legacy/tasks-view.js';
 import { OWNER, SCHEMA } from '../../src/repo/repository.js';
@@ -74,7 +73,7 @@ const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
 
 /**
- * Local-mode environment of surveys, parsed by `loadEnv(baseEnvSchema)`; an override of `undefined` removes the variable.
+ * Local-mode environment of surveys, parsed by `loadEnv(surveysEnvSchema)`; an override of `undefined` removes the variable.
  * `OPT2_STATE_DIR` comes only from `overrides` (unset, `loadEnv` defaults it); the caller writes the test secrets into it and removes it.
  */
 export async function testEnv(overrides: Readonly<Record<string, string | undefined>> = {}): Promise<BaseEnv> {
@@ -98,6 +97,7 @@ export async function testEnv(overrides: Readonly<Record<string, string | undefi
     OPT2_GATEWAY_URL: 'http://127.0.0.1:8100',
     OPT2_MIGRATION_URL: 'http://127.0.0.1:8102',
     OPT2_SERVICE_URLS: JSON.stringify({
+      identity: 'http://127.0.0.1:8111',
       communications: 'http://127.0.0.1:8115',
       surveys: 'http://127.0.0.1:8117',
       migration: 'http://127.0.0.1:8102',
@@ -107,7 +107,7 @@ export async function testEnv(overrides: Readonly<Record<string, string | undefi
     TZ: 'UTC',
     ...overrides,
   };
-  return loadEnv(baseEnvSchema, source);
+  return loadEnv(surveysEnvSchema, source);
 }
 
 /** Clock every suite shares: local `2026-06-30T12:00:00`, the seed's business date; other instants come from `fixedClock`. */
@@ -215,7 +215,7 @@ export type ClientReply = ServiceResponse | ((req: ServiceRequest) => ServiceRes
 export interface ClientRecorderHandlers {
   /** Replies keyed `'<service> <METHOD> <path>'`; a `{name}` path segment matches any one segment. */
   routes?: Readonly<Record<string, ClientReply>>;
-  /** Records of the default communications scheduled-tasks answer; defaults to {@link defaultScheduledTasks}. */
+  /** Records of the default communications scheduled-tasks answer, filtered by `taskName` and paged by `limit` and `after`; defaults to {@link defaultScheduledTasks}. */
   scheduledTasks?: (surveyId: string) => ScheduledTaskRecord[];
 }
 
@@ -274,6 +274,12 @@ function queryParam(req: ServiceRequest, name: string): string | undefined {
   return query === -1 ? undefined : (new URLSearchParams(req.path.slice(query + 1)).get(name) ?? undefined);
 }
 
+/** Every value of query parameter `name` the call sends; undefined when it sends none. */
+function queryValues(req: ServiceRequest, name: string): string[] | undefined {
+  const value = req.query?.[name];
+  return value === undefined ? undefined : [value].flat();
+}
+
 const pad = (value: number, width = 2): string => String(value).padStart(width, '0');
 
 /** `YYYY-MM-DDTHH:mm:ss.SSS` of `date` in the process zone, the contracts' `LocalTimestamp`. */
@@ -316,6 +322,36 @@ export function defaultScheduledTasks(surveyId: string, opts: { reminders?: numb
   return [launch, ...reminders];
 }
 
+/** Communications' page size when only `after` is sent. */
+const SCHEDULED_TASK_PAGE_SIZE = 100;
+
+/** Most `taskName` values communications accepts in one call. */
+const MAX_TASK_NAMES = 100;
+
+/** The fake's opaque scheduled-task cursor of the record at `offset`. */
+function taskCursorAt(offset: number): string {
+  return Buffer.from(JSON.stringify({ offset })).toString('base64url');
+}
+
+/** The slice of `count` records `limit` and `after` select as communications pages them; undefined for a value it refuses. */
+function tasksPageOf(count: number, limit: string | undefined, after: string | undefined): { start: number; end: number } | undefined {
+  if (limit === undefined && after === undefined) return { start: 0, end: count };
+  if (limit !== undefined && !/^([1-9][0-9]{0,2}|1000)$/.test(limit)) return undefined;
+  let start = 0;
+  if (after !== undefined) {
+    let cursor: unknown;
+    try {
+      cursor = JSON.parse(Buffer.from(after, 'base64url').toString('utf8'));
+    } catch {
+      return undefined;
+    }
+    const offset = (cursor as { offset?: unknown } | null)?.offset;
+    if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0) return undefined;
+    start = offset;
+  }
+  return { start, end: start + (limit === undefined ? SCHEDULED_TASK_PAGE_SIZE : Number(limit)) };
+}
+
 /** Creates a {@link ClientRecorder}; throws TypeError for a `routes` key not shaped `'<service> <METHOD> <path>'`. */
 export function createClientRecorder(handlers: ClientRecorderHandlers = {}): ClientRecorder {
   const requests: ServiceRequest[] = [];
@@ -355,13 +391,19 @@ export function createClientRecorder(handlers: ClientRecorderHandlers = {}): Cli
     ) {
       return undefined;
     }
-    const items = scheduledTasks(sourceId);
+    const names = queryValues(req, 'taskName');
+    const items = scheduledTasks(sourceId).filter((item) => names === undefined || names.includes(item.taskName));
     const versions = items.map((item) => item.scheduleVersion);
+    const page = tasksPageOf(items.length, queryParam(req, 'limit'), queryParam(req, 'after'));
+    if (page === undefined || (names?.length ?? 0) > MAX_TASK_NAMES) {
+      return { status: 400, headers: {}, body: JSON.parse(legacyErrorResponse('invalidParameters').body) as unknown };
+    }
     const body: ScheduledTaskList = {
       sourceType: 'survey',
       sourceId,
       scheduleVersion: versions.length === 0 ? null : Math.max(...versions),
-      items,
+      items: items.slice(page.start, page.end),
+      next: page.end < items.length ? taskCursorAt(page.end) : null,
     };
     return { status: 200, headers: {}, body };
   }
@@ -554,7 +596,8 @@ type Expr =
   | { k: 'quantified'; op: string; l: Expr; r: Expr; all: boolean }
   | { k: 'row'; items: Expr[] }
   | { k: 'array'; items: Expr[] }
-  | { k: 'sub'; q: SelectStmt };
+  | { k: 'sub'; q: SelectStmt }
+  | { k: 'exists'; q: SelectStmt };
 
 type FnExpr = Extract<Expr, { k: 'fn' }>;
 
@@ -1128,6 +1171,7 @@ class SqlParser {
         break;
     }
     if (word === 'row' && this.isOp('(')) return { k: 'row', items: this.parenthesized(() => this.list(() => this.expr())) };
+    if (word === 'exists' && this.isOp('(') && this.isWord('select', 1)) return { k: 'exists', q: this.parenthesized(() => this.select()) };
     if (RESERVED.has(word) || ['case', 'exists', 'interval', 'cast'].includes(word)) unsupported(`keyword ${word} in an expression`);
     return this.isOp('(') ? this.call(word) : this.columnRef(word);
   }
@@ -2321,6 +2365,8 @@ class RecordingEngine {
         if (rows.length > 1) throw pgError('21000', 'more than one row returned by a subquery used as an expression');
         return rows[0]?.[0] ?? null;
       }
+      case 'exists':
+        return this.select(e.q, scope).rows.length > 0;
     }
   }
 

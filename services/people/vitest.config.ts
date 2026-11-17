@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     exclude: ['dist/**', 'node_modules/**'],
+    setupFiles: ['test/helpers/throwaway-sweep.ts'],
     environment: 'node',
     testTimeout: 60_000,
     hookTimeout: 120_000,

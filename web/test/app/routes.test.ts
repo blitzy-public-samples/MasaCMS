@@ -1,5 +1,5 @@
-// The admin route modules over the real handlers and screen registry, with the loopback fake gateway as the only data
-// source: each response mode's legacy answer, refusals and the fail-closed 503.
+// The admin route modules over the real handlers and screen registry, with the in-memory gateway beneath the production
+// platform client as the only data source: each response mode's legacy answer, refusals and the fail-closed 503.
 // Segment config and handler delegation are covered with a mocked handler in ./route-adapters.test.ts.
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,11 +31,11 @@ import { loaddiffRelay, loadsitemanagerRelay } from '../fixtures/strategies-cont
 import { writeResultReRender } from '../fixtures/strategies-content/write-results';
 import { useTestEnv } from '../helpers/env';
 import {
+  inMemoryGateway,
   routeKey,
-  startFakeGateway,
-  type FakeGateway,
   type FakeRoute,
   type FakeRouteTable,
+  type InMemoryGateway,
   type RecordedRequest,
 } from '../helpers/fake-gateway';
 import { adminRequest, formWithCsrf, routeParams, type AdminRequestOptions } from '../helpers/requests';
@@ -177,21 +177,19 @@ function sessionRoutes(subject: WebTestSubject, preset: SessionPreset): FakeRout
   };
 }
 
-let gateway: FakeGateway;
+let gateway: InMemoryGateway;
 let restoreEnv: () => void;
 let restoreClient: () => void;
 
-beforeEach(async () => {
-  gateway = await startFakeGateway(baseRoutes());
-  restoreEnv = useTestEnv({ OPT2_GATEWAY_URL: gateway.url });
-  // The process-wide client keeps the gateway URL it was built with; each test's fake listens on a new port.
-  restoreClient = setServiceClientForTests(undefined);
+beforeEach(() => {
+  gateway = inMemoryGateway(baseRoutes());
+  restoreEnv = useTestEnv();
+  restoreClient = setServiceClientForTests(gateway.client);
 });
 
-afterEach(async () => {
+afterEach(() => {
   restoreClient();
   restoreEnv();
-  await gateway.close();
 });
 
 function install(routes: FakeRouteTable): void {

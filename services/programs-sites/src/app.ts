@@ -7,6 +7,7 @@ import {
   baseEnvSchema,
   createService,
   loadEnv,
+  processEnvSchema,
   publisherEmulatorHost,
   systemClock,
   type BaseEnv,
@@ -29,6 +30,12 @@ const VERSION = '1.0.0';
 // Default project of the harness's local Pub/Sub topology; OPT2_ENV=cloud makes GOOGLE_CLOUD_PROJECT required.
 const LOCAL_PROJECT_ID = 'opt2-local';
 
+/** Callees: itself (outbox sweep, site-monitor chain), identity (session sites, CSRF), strategies-content (step tasks) and migration (unit authority, legacy steps). */
+const CALLEES: readonly string[] = [OWNER, 'identity', 'strategies-content', 'migration'];
+
+/** Environment of the programs-sites process: the base variables, its own name, its callees' URLs and its database. */
+export const programsSitesEnvSchema = processEnvSchema(baseEnvSchema, { service: OWNER, callees: CALLEES, database: true });
+
 /** Dependencies `buildApp` uses instead of building its own from the environment. */
 export interface BuildAppOptions {
   env?: BaseEnv;
@@ -41,7 +48,7 @@ export interface BuildAppOptions {
 
 /** Builds the programs-sites Fastify app with every route and hook registered; never listens. */
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const env = options.env ?? loadEnv(baseEnvSchema);
+  const env = options.env ?? loadEnv(programsSitesEnvSchema);
   // Checked before createService acquires anything; an injected publisher needs no emulator.
   const emulatorHost = options.publisher === undefined ? publisherEmulatorHost(env) : undefined;
   const app = await createService({

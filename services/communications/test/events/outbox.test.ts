@@ -38,7 +38,7 @@ const CSRF_HEADERS = { 'x-csrf_token': 'OUTBOX-SUITE-TOKEN', 'x-csrf_token_expir
 const GATE_UNITS = [MESSAGE.unit, DELIVERY_STATUS.unit];
 const GATE_HOLDER = 'communications-outbox-events-suite';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
-const PG_SKIP = !process.env.PG_HOST ? 'PG_HOST not set' : (await pgAvailable()) ? undefined : `${process.env.PG_HOST} unreachable`;
+const PG_SKIP = (await pgAvailable()) ? undefined : 'PG_HOST not set';
 
 describe.skipIf(PG_SKIP !== undefined)(`delivery-status outbox${PG_SKIP === undefined ? '' : ` (requires PostgreSQL: ${PG_SKIP})`}`, () => {
   const capturing = createCapturingPublisher();
@@ -77,15 +77,20 @@ describe.skipIf(PG_SKIP !== undefined)(`delivery-status outbox${PG_SKIP === unde
     return res.json<{ units: { state: string }[] }>().units.map((unit) => unit.state);
   }
 
-  /** Sends a message through the fixture route as a tenant-a sender; returns its detail. */
-  async function send(subject: string): Promise<MessageDetailView> {
+  /** POSTs a message with `subject` through the fixture route as a tenant-a sender. */
+  async function postMessage(subject: string) {
     const input: MessageInput = { to: 'recipient@tenant-a.example', subject, bodyText: 'Outbox suite body' };
-    const res = await ctx.app.inject({
+    return ctx.app.inject({
       method: 'POST',
       url: MESSAGES_URL,
       headers: { ...(await headersFor(SENDER, { site: TENANT_A.siteId })), ...CSRF_HEADERS },
       payload: input,
     });
+  }
+
+  /** Sends a message through the fixture route as a tenant-a sender; returns its detail. */
+  async function send(subject: string): Promise<MessageDetailView> {
+    const res = await postMessage(subject);
     expect(res.statusCode).toBe(200);
     const body = res.json<{ method: string; data: MessageDetailView }>();
     expect(body).toMatchObject({ method: 'communications.messages', data: { subject, state: 'delivered' } });
@@ -112,11 +117,21 @@ describe.skipIf(PG_SKIP !== undefined)(`delivery-status outbox${PG_SKIP === unde
     return rows[0]?.n ?? 0;
   }
 
-  /** Sends a message while the publisher is down; returns its committed, unpublished outbox rows. */
+  /** Id of the stored message with `subject`, read under tenant-a's RLS. */
+  async function messageIdOf(subject: string): Promise<string> {
+    const { rows } = await withTenant(schema.app, TENANT_A.tenantId, (tx) =>
+      tx.query<{ message_id: string }>(`SELECT message_id FROM "${schema.schema}".${MESSAGE.table} WHERE subject = $1`, [subject]),
+    );
+    expect(rows).toHaveLength(1);
+    return rows[0]?.message_id ?? '';
+  }
+
+  /** Sends a message while the publisher is down, which abandons the request unanswered; returns its committed, unpublished outbox rows. */
   async function unflushedRows(subject: string): Promise<OutboxRow[]> {
     failing = true;
-    const { message_id: messageId } = await send(subject);
+    await expect(postMessage(subject)).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
     failing = false;
+    const messageId = await messageIdOf(subject);
     const rows = await outboxRows(messageId);
     expect(rows).toHaveLength(await historyCount(messageId));
     expect(rows.map((row) => row.publishedAt)).toEqual(rows.map(() => null));

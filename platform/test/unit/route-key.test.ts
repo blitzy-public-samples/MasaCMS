@@ -12,6 +12,7 @@ import {
   type VariantCondition,
   type VariantDeclaration,
   entityRemoteFunctionsFromKeys,
+  fixtureDispatchPath,
   matchRouteKey,
   normaliseRouteKey,
   routeKeyForEntryPoint,
@@ -821,6 +822,58 @@ describe('remote CFC proxies, fixtures and path families', () => {
     expect(result.key).toBe(key ?? 'fixture:people/persons/{id}/archive@post');
     expect(result.siteId).toBe(siteId);
     expect(Object.hasOwn(result, 'siteId')).toBe(siteId !== undefined);
+  });
+
+  const RECORDS = '/legacy-fixtures/cfml/api.cfm/finance/records';
+  const RECORDS_KEY = 'fixture:finance/records@get';
+  it.each<[string, string, string, string | undefined, RouteKeyOptions?]>([
+    ['the canonical spelling', RECORDS, RECORDS_KEY, RECORDS],
+    ['a doubled slash before the directory', '//legacy-fixtures/cfml/api.cfm/finance/records', RECORDS_KEY, RECORDS],
+    ['a doubled slash between directories', '/legacy-fixtures//cfml/api.cfm/finance/records', RECORDS_KEY, RECORDS],
+    ['doubled slashes in path_info', '/legacy-fixtures/cfml/api.cfm//finance//records', RECORDS_KEY, RECORDS],
+    ['an upper-case module and resource, which api.cfm lower-cases', '/legacy-fixtures/cfml/api.cfm/FINANCE/RECORDS', RECORDS_KEY, RECORDS],
+    ['an encoded slash in path_info, which splits it', '/legacy-fixtures/cfml/api.cfm/finance%2Frecords', RECORDS_KEY, RECORDS],
+    ['an encoded script name', '/legacy-fixtures/cfml/%61pi.cfm/finance/records', RECORDS_KEY, RECORDS],
+    ['a directory path parameter', '/legacy-fixtures;x=1/cfml/api.cfm/finance/records', RECORDS_KEY, RECORDS],
+    ['a dot segment, which the forwarder resolves', '/legacy-fixtures/cfml/./api.cfm/finance/records', RECORDS_KEY, RECORDS],
+    ['an encoded dot segment', '/legacy-fixtures/%2E/cfml/api.cfm/finance/records', RECORDS_KEY, RECORDS],
+    ['backslash separators, which the forwarder sends as slashes', '/legacy-fixtures\\cfml\\api.cfm/finance/records', RECORDS_KEY, RECORDS],
+    ['a doubled slash after the context', '/masa//legacy-fixtures/cfml/api.cfm/FINANCE/records', RECORDS_KEY, RECORDS, { context: '/masa' }],
+    ['a path_info path parameter, which api.cfm reads as part of the module', '/legacy-fixtures/cfml/api.cfm/finance;x=1/records', 'fixture:finance;x=1/records@get', '/legacy-fixtures/cfml/api.cfm/finance%3Bx%3D1/records'],
+    ['index.cfm as path_info, which api.cfm reads as the resource', '/legacy-fixtures/cfml/api.cfm/finance/index.cfm/records', 'fixture:finance/index.cfm/{id}@get', '/legacy-fixtures/cfml/api.cfm/finance/index.cfm/records'],
+    ['the bare script, which api.cfm serves with no path_info', '/legacy-fixtures/cfml/api.cfm', 'fixture:!notfound@get', '/legacy-fixtures/cfml/api.cfm/'],
+    ['a script path parameter, which names no script', '/legacy-fixtures/cfml/api.cfm;x=1/finance/records', 'page:render', undefined],
+    ['an encoded slash between directories, which separates nothing', '/legacy-fixtures%2Fcfml/api.cfm/finance/records', 'page:render', undefined],
+    ['a dot-dot segment, which the forwarder refuses', '/legacy-fixtures/cfml/api.cfm/finance/../finance/records', 'page:render', undefined],
+    ['an encoded dot-dot segment', '/legacy-fixtures/cfml/api.cfm/finance/%2e%2E/finance/records', 'page:render', undefined],
+    ['a dot-dot directory segment', '/legacy-fixtures/../legacy-fixtures/cfml/api.cfm/finance/records', 'page:render', undefined],
+    ['an encoded slash before a dot-dot item', '/legacy-fixtures/cfml/api.cfm/finance/records%2F..', 'page:render', undefined],
+    ['a malformed escape in path_info, which the container rejects', '/legacy-fixtures/cfml/api.cfm/finance/r%zz', 'page:render', undefined],
+    ['an upper-case directory', '/LEGACY-FIXTURES/cfml/api.cfm/finance/records', 'page:render', undefined],
+    ['an upper-case script', '/legacy-fixtures/cfml/API.CFM/finance/records', 'page:render', undefined],
+    ['an upper-case bare script', '/legacy-fixtures/cfml/API.CFM', 'cfm:/legacy-fixtures/cfml/api.cfm', undefined],
+    ['index.cfm before api.cfm, which no fixture script serves', '/legacy-fixtures/cfml/index.cfm/api.cfm/finance/records', 'page:render', undefined],
+  ])('keys and dispatches a fixture path with %s as legacy serves it', (_label, url, key, dispatched, opts) => {
+    expect(keyOf('GET', url, {}, opts)).toBe(key);
+    expect(fixtureDispatchPath(url, opts)).toBe(dispatched);
+  });
+});
+
+describe('fixtureDispatchPath', () => {
+  const FIXTURE = '/legacy-fixtures/cfml/api.cfm';
+  it.each<[string, string, string | undefined, RouteKeyOptions?]>([
+    ['drops doubled and trailing slashes', '/legacy-fixtures//cfml/api.cfm//finance//records/', `${FIXTURE}/finance/records`],
+    ['lower-cases module, resource and action, keeping the id', `${FIXTURE}/FINANCE/Records/Ab-1/SUBMIT`, `${FIXTURE}/finance/records/Ab-1/submit`],
+    ['keeps a CF UUID tail', `${FIXTURE}/finance/records/R1/attachments/${UUID}`, `${FIXTURE}/finance/records/R1/attachments/${UUID}`],
+    ['lower-cases any other tail', `${FIXTURE}/Surveys/Surveys/S1/Targets/BULK`, `${FIXTURE}/surveys/surveys/S1/targets/bulk`],
+    ['re-encodes each decoded item', `${FIXTURE}/finance/records/a%20b%3F%23+`, `${FIXTURE}/finance/records/a%20b%3F%23%2B`],
+    ['removes the context', `/masa${FIXTURE}/FINANCE/records`, `${FIXTURE}/finance/records`, { context: '/masa' }],
+    ['removes the context case-insensitively', `/MASA${FIXTURE}/finance/records`, `${FIXTURE}/finance/records`, { context: 'masa/' }],
+    ['answers no path for a context the path lacks', `/other${FIXTURE}/finance/records`, undefined, { context: '/masa' }],
+    ['answers no path behind the root front controller', `/index.cfm${FIXTURE}/finance/records`, undefined],
+  ])('%s', (_label, path, expected, opts) => {
+    expect(fixtureDispatchPath(path, opts)).toBe(expected);
+    expect(resultOf('GET', path, {}, opts).family === 'fixture').toBe(expected !== undefined);
   });
 });
 

@@ -13,7 +13,10 @@ export type { BackgroundRecord, BackgroundStateApi } from './background.js';
 export {
   DEFAULT_DRAIN_POLL_MS,
   RECEIPT_QUERY_MAX_IDS,
+  PUBLISHED_PAGE_LIMIT,
+  MAX_PENDING_DELIVERIES,
   DrainTimeoutError,
+  DeadLetteredProcessEventError,
   MissingSubscriptionError,
   UnlistedProducerError,
   ownerDrainCounts,
@@ -21,7 +24,7 @@ export {
   drainParticipants,
   awaitDrained,
 } from './drain.js';
-export type { OwnerDrainCounts, DrainRole, AwaitDrainedOptions, DrainResult, CheckedOwner, DrainContext } from './drain.js';
+export type { OwnerDrainCounts, DrainRole, AwaitDrainedOptions, DrainResult, CheckedOwner, DrainContext, DeadLetteredDelivery } from './drain.js';
 
 export { InvocationsRunningError, OrphanedWritesError, queueControlTargets, drainAndSuspend } from './suspend.js';
 export type { QueueTarget, RunningQueue, DrainAndSuspendContext, DrainAndSuspendOptions, DrainAndSuspendResult } from './suspend.js';
@@ -41,6 +44,7 @@ export {
   setPushConfig,
   peekBacklog,
   peekDeadLetterEventIds,
+  PEEK_MAX_MESSAGES,
   openMessageLease,
   witnessPrefix,
   witnessName,
@@ -50,4 +54,4 @@ export {
   removeSubscription,
   redactEndpoint,
 } from './subscriptions.js';
-export type { SavedPushConfig, SubscriptionLike, PubSubLike, Opt2Subscription, LeasedMessage, MessageLease } from './subscriptions.js';
+export type { SavedPushConfig, SubscriptionLike, PubSubLike, PeekOptions, Opt2Subscription, LeasedMessage, MessageLease } from './subscriptions.js';

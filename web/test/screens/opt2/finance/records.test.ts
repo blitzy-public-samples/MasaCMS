@@ -270,10 +270,13 @@ describe('finance records screen', () => {
 
   it('sends an anonymous user to the login form without asking finance', async () => {
     const gateway = financeGateway();
-    const page = await renderScreenPage(financeScreen('records'), makeScreenContext({ req: anonymousRequest(), gateway }));
+    const req = anonymousRequest({ mode: 'opt2', requestTarget: '/opt2/admin/finance/records?siteid=tenant-a' });
+    const page = await renderScreenPage(financeScreen('records'), makeScreenContext({ req, gateway }));
 
     expect(page.kind).toBe('redirect');
-    expect(page.kind === 'redirect' ? page.location : '').toMatch(/^\.\/\?muraAction=cLogin\.main&returnURL=/);
+    expect(page.kind === 'redirect' ? page.location : '').toMatch(
+      /^\/admin\/\?muraAction=cLogin\.main&returnURL=http%3A%2F%2Flocalhost[^&]*%2Fopt2%2Fadmin%2Ffinance%2Frecords%3Fsiteid%3Dtenant-a&/,
+    );
     expect(gateway.calls.filter(({ service }) => service === 'finance')).toEqual([]);
   });
 

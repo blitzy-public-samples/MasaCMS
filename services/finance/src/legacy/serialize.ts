@@ -60,9 +60,6 @@ export type FixtureRollup = {
   computed_at: string;
 };
 
-/** A record with its versions and attachment metadata, the contract's `FinanceRecordDetail`. */
-export type FixtureRecordDetail = FixtureRecord & { versions: FixtureVersion[]; attachments: FixtureAttachment[] };
-
 /** A record with one page of its versions and of its attachments and the count of each, the contract's `FinanceRecordDetailPage`. */
 export type FixtureRecordDetailPage = FixtureRecord & {
   versions: FixtureVersion[];
@@ -149,13 +146,12 @@ export function rollupRow(row: FinanceRollupRow | RollupRow): FixtureRollup {
 }
 
 // The fixture's `GET records/{id}` answers the plain record row; this composite serves the `/v1` detail read, whose contract embeds both lists.
-/** Projects a record with its version and attachment rows onto `FinanceRecordDetail`, each list in the order given. */
-export function recordDetail(
-  row: FinanceRecordRow,
-  versions: readonly FinanceRecordVersionRow[],
-  attachments: readonly FinanceAttachmentRow[],
-): FixtureRecordDetail {
-  return { ...recordRow(row), versions: versions.map(versionRow), attachments: attachments.map(attachmentRow) };
+/**
+ * The `FinanceRecordDetail` JSON text of `row` around its two lists, as `JSON.stringify` writes the record fields, then `versions`, then
+ * `attachments`: the text before the version items, the text between them and the attachment items, and the text after those.
+ */
+export function recordDetailFrame(row: FinanceRecordRow): readonly [string, string, string] {
+  return [`${JSON.stringify(recordRow(row)).slice(0, -1)},"versions":[`, '],"attachments":[', ']}'];
 }
 
 /** Projects a record with a page of its versions and of its attachments onto `FinanceRecordDetailPage`, each page's rows in order. */

@@ -23,12 +23,12 @@ import { adminS2Request, anonymousRequest, siteAdminRequest, siteRecordFor } fro
 import { useTestEnv } from '../../helpers/env';
 import {
   fakeGatewayClient,
+  inMemoryGateway,
   routeKey,
-  startFakeGateway,
-  type FakeGateway,
   type FakeGatewayClient,
   type FakeReply,
   type FakeRouteTable,
+  type InMemoryGateway,
 } from '../../helpers/fake-gateway';
 import { adminRequest } from '../../helpers/requests';
 import { makeScreenContext } from '../../helpers/screen-context';
@@ -764,11 +764,11 @@ describe('carch.update through the raw handler', () => {
   const ADMIN_STATE = routeKey('GET', 'identity', '/v1/sessions/current/admin-state');
   const SAVE_ADMIN_STATE = routeKey('POST', 'identity', '/v1/sessions/current/admin-state');
   const admin = SUBJECTS.admin;
-  let fake: FakeGateway;
+  let fake: InMemoryGateway;
   let restoreClient: () => void;
 
-  beforeEach(async () => {
-    fake = await startFakeGateway({
+  beforeEach(() => {
+    fake = inMemoryGateway({
       [routeKey('GET', 'identity', '/v1/sessions/current')]: {
         status: 200,
         body: {
@@ -813,14 +813,11 @@ describe('carch.update through the raw handler', () => {
         },
       },
     });
-    restoreEnv();
-    restoreEnv = useTestEnv({ OPT2_GATEWAY_URL: fake.url });
-    restoreClient = setServiceClientForTests(undefined);
+    restoreClient = setServiceClientForTests(fake.client);
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     restoreClient();
-    await fake.close();
   });
 
   const savedStates = () =>

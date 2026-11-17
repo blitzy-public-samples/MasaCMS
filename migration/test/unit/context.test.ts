@@ -12,8 +12,8 @@ import {
   rolesForService,
   verifyLocalServiceToken,
 } from '@opt2/platform/auth';
-import type { Logger } from '@opt2/platform/logging';
-import { fixedClock, systemClock, type ServiceClient } from '@opt2/platform/service-kit';
+import { serializeError, type Logger } from '@opt2/platform/logging';
+import { EnvValidationError, fixedClock, systemClock, type ServiceClient } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { testSigningKeys, writeTestSecrets } from '@opt2/platform/testing';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -282,11 +282,6 @@ describe('createMigrationContext', () => {
   it.each([
     { name: 'the legacy database is MySQL', options: () => ({ env: envWith({ MURA_DBTYPE: 'mysql' }) }), error: UnsupportedLegacyDatabaseError },
     {
-      name: 'the database settings are missing',
-      options: () => ({ env: envWith({ OPT2_DB_AUTH: '' }) }),
-      error: new Error('Schema migration needs OPT2_DB_AUTH and PG_DATABASE'),
-    },
-    {
       name: 'the injected pool is not the migration schema',
       options: () => ({ env: envWith(), db: fakeDb('people') }),
       error: new TypeError('The migration context needs the migration schema pool, got people'),
@@ -298,6 +293,21 @@ describe('createMigrationContext', () => {
     },
   ])('rejects without opening anything when $name', async ({ options, error }) => {
     await expect(createMigrationContext({ logger: silentLogger(), ...options() })).rejects.toThrow(error);
+    expect(closes.order).toEqual([]);
+  });
+
+  it.each<[string, (keyof MigrationEnv)[], string]>([
+    ['OPT2_DB_AUTH', ['OPT2_DB_AUTH'], 'opt2-cli: invalid environment (OPT2_DB_AUTH: is required)'],
+    ['PG_DATABASE', ['PG_DATABASE'], 'opt2-cli: invalid environment (PG_DATABASE: is required)'],
+    ['both settings', ['OPT2_DB_AUTH', 'PG_DATABASE'], 'opt2-cli: invalid environment (OPT2_DB_AUTH: is required; PG_DATABASE: is required)'],
+  ])('refuses an environment without %s before opening the pool, naming each unset setting', async (_case, unset, text) => {
+    const env = { ...envWith({ OPT2_SERVICE_NAME: 'opt2-cli' }), ...Object.fromEntries(unset.map((key) => [key, undefined])) } as MigrationEnv;
+
+    const refused: unknown = await createMigrationContext({ env, logger: silentLogger() }).catch((error: unknown) => error);
+
+    expect(refused).toBeInstanceOf(EnvValidationError);
+    expect((refused as EnvValidationError).issues).toEqual(unset.map((key) => `${key}: is required`));
+    expect(serializeError(refused).message).toBe(text);
     expect(closes.order).toEqual([]);
   });
 

@@ -1,5 +1,6 @@
 // Tests of web's gateway client against the loopback fake gateway, signing with the platform test keys.
 import { readFile } from 'node:fs/promises';
+import { PassThrough, Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import { LEGACY_ERROR_PAGE_HTML, LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
@@ -18,6 +19,7 @@ import {
   WEB_SERVICE_NAMES,
   assertNotDenied,
   createGatewayClient,
+  discardStreamed,
   isUnavailable,
   setServiceClientForTests,
   type FormInput,
@@ -94,7 +96,7 @@ function claimsOf(bearer: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Record<string, unknown>;
 }
 
-type FacadeKey = Exclude<keyof GatewayClient, 'call' | 'raw' | 'get' | 'post' | 'postForm' | 'postMultipart'>;
+type FacadeKey = Exclude<keyof GatewayClient, 'call' | 'raw' | 'stream' | 'get' | 'post' | 'postForm' | 'postMultipart'>;
 
 /** A facade with its contract types erased, so one table drives every service. */
 interface UntypedFacade {
@@ -806,6 +808,42 @@ describe('answers', () => {
     expect(error).not.toBeInstanceOf(LegacyServiceUnavailableError);
     expect((error as Error).message).toBe('Service gateway (called by web) answered with invalid JSON');
     expect(isUnavailable(error)).toBe(false);
+  });
+});
+
+describe('streamed answers', () => {
+  const CSV_HEADERS = { 'content-type': 'text/csv;charset=UTF-8', 'content-disposition': 'attachment;filename=users.csv' };
+  let producer: PassThrough;
+
+  beforeEach(() => {
+    producer = new PassThrough();
+    producer.write('"USERID"\n');
+    route('GET', 'people', '/v1/users/download', { status: 200, headers: CSV_HEADERS, body: producer });
+  });
+
+  it('answers a 2xx with the stream the gateway is still sending', async () => {
+    const response = await createGatewayClient(ANONYMOUS).stream('people', { method: 'GET', path: '/v1/users/download' });
+
+    expect(response).toMatchObject({ status: 200, ok: true, headers: CSV_HEADERS });
+    expect(response.body).toBeInstanceOf(Readable);
+    const chunks = (response.body as Readable)[Symbol.asyncIterator]();
+    expect(String((await chunks.next()).value)).toBe('"USERID"\n');
+    expect(producer.writableEnded).toBe(false);
+    producer.end('"U1"\n');
+    expect(String((await chunks.next()).value)).toBe('"U1"\n');
+    expect((await chunks.next()).done).toBe(true);
+    expect(requestLine(onlyRequest())).toBe('GET /opt2/svc/people/v1/users/download');
+  });
+
+  it('ends the producer when the caller discards the unread stream', async () => {
+    const response = await createGatewayClient(ANONYMOUS).stream('people', { method: 'GET', path: '/v1/users/download' });
+    const closed = new Promise((resolve) => producer.once('close', resolve));
+
+    discardStreamed(response.body);
+    await closed;
+
+    expect(producer.destroyed).toBe(true);
+    expect(producer.writableEnded).toBe(false);
   });
 });
 

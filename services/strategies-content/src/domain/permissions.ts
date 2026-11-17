@@ -1,10 +1,10 @@
 /** Node, module, restriction and category verdicts of permission.cfc, and the JSON API content AllowAction, over identity-fed projections. */
 import { Roles, isCoreModuleId, moduleRole } from '@opt2/platform/auth';
-import { registryEntryForTenant, withTenant, type TenantRegistryEntry, type TenantTx } from '@opt2/platform/tenancy';
+import { registryEntryForTenant, withTenant, type RegistrySource, type TenantRegistryEntry, type TenantTx } from '@opt2/platform/tenancy';
 import { SITE_TREE_MODULE_ID, type Crumb } from '../repo/content-queries.js';
 import type { GroupProjectionRow, PermissionProjectionRow } from '../repo/tables.js';
 import type { Actor, DomainDeps } from './context.js';
-import { UnregisteredTenantError, withPoolTenant, type PoolScope } from './pools.js';
+import { UnregisteredTenantError, withPoolTenant, withPoolTenantTx, type PoolScope } from './pools.js';
 
 /** A permission.cfc node verdict: a grant type, or `none`. */
 export type NodeVerdict = 'editor' | 'author' | 'read' | 'deny' | 'none';
@@ -140,12 +140,45 @@ function nodeOf(crumb: CrumbNode): NodeRef {
   return { contentId: crumb.contentid ?? '', siteId: crumb.siteid ?? '' };
 }
 
+/** Where the verdict reads run: the token tenant, the tenants of its site's pools, and the registry holding its user pools. */
+interface VerdictReads {
+  /** Runs `fn` in the token tenant. */
+  inTenant<T>(fn: (tx: TenantTx) => Promise<T>): Promise<T>;
+  /** Runs `fn` in the tenant of the token site's `kind` pool. */
+  inPool<T>(kind: PoolScope, fn: (tx: TenantTx, poolTenantId: string) => Promise<T>): Promise<T>;
+  /** The token site's user pool site ids. */
+  pools(): Promise<SitePools>;
+}
+
+/** Each read of `tenantId`'s pools in a transaction of its own. */
+function poolTransactions(deps: PermissionDeps, tenantId: string): Pick<VerdictReads, 'inPool'> {
+  return { inPool: (kind, fn) => withPoolTenant(deps.db, tenantId, kind, fn) };
+}
+
+/** Each verdict read in a transaction of its own. */
+function ownTransactions(deps: PermissionDeps, actor: Actor): VerdictReads {
+  return {
+    ...poolTransactions(deps, actor.tenantId),
+    inTenant: (fn) => withTenant(deps.db, actor.tenantId, fn),
+    pools: () => sitePools(deps, actor),
+  };
+}
+
+/** Each verdict read on `tx`, the token tenant's open transaction, so none takes another pool connection. */
+function onTransaction(tx: TenantTx, actor: Actor): VerdictReads {
+  return {
+    inTenant: (fn) => fn(tx),
+    inPool: (kind, fn) => withPoolTenantTx(tx, actor.tenantId, kind, fn),
+    pools: () => registryPools(tx, actor.tenantId),
+  };
+}
+
 /** Runs `fn` once in each distinct tenant of the token's public and private user pools, public first. */
-async function inUserPools<T>(deps: PermissionDeps, tenantId: string, fn: (tx: TenantTx) => Promise<T>): Promise<T[]> {
+async function inUserPools<T>(reads: Pick<VerdictReads, 'inPool'>, fn: (tx: TenantTx) => Promise<T>): Promise<T[]> {
   const seen = new Set<string>();
   const results: T[] = [];
   for (const kind of USER_POOLS) {
-    const result = await withPoolTenant(deps.db, tenantId, kind, async (tx, poolTenantId) => {
+    const result = await reads.inPool(kind, async (tx, poolTenantId) => {
       if (seen.has(poolTenantId)) {
         return null;
       }
@@ -160,9 +193,9 @@ async function inUserPools<T>(deps: PermissionDeps, tenantId: string, fn: (tx: T
 }
 
 /** The projected groups among `groupIds` in the user pool tenants, keyed by `ciKey` of the group id, a live row winning over a tombstone. */
-async function projectedGroups(deps: PermissionDeps, tenantId: string, groupIds: readonly string[]): Promise<Map<string, GroupProjectionRow>> {
+async function projectedGroups(deps: PermissionDeps, reads: Pick<VerdictReads, 'inPool'>, groupIds: readonly string[]): Promise<Map<string, GroupProjectionRow>> {
   const groups = new Map<string, GroupProjectionRow>();
-  for (const rows of await inUserPools(deps, tenantId, (tx) => deps.repository.projections.groupNames(tx, groupIds))) {
+  for (const rows of await inUserPools(reads, (tx) => deps.repository.projections.groupNames(tx, groupIds))) {
     for (const row of rows) {
       const key = ciKey(row.group_id);
       const held = groups.get(key);
@@ -184,22 +217,29 @@ function poolsOf(entry: TenantRegistryEntry): SitePools {
 }
 
 /** The user pool site ids of the token's site, from its `content.tenant_registry` entry. */
-export async function sitePools(deps: PermissionDeps, actor: Actor): Promise<SitePools> {
-  const entry = await registryEntryForTenant(deps.db, actor.tenantId);
+export function sitePools(deps: PermissionDeps, actor: Actor): Promise<SitePools> {
+  return registryPools(deps.db, actor.tenantId);
+}
+
+/** The user pool site ids of `tenantId`'s site, its `content.tenant_registry` entry read on `source`. */
+async function registryPools(source: RegistrySource, tenantId: string): Promise<SitePools> {
+  const entry = await registryEntryForTenant(source, tenantId);
   if (entry === null) {
-    throw new UnregisteredTenantError(actor.tenantId);
+    throw new UnregisteredTenantError(tenantId);
   }
   return poolsOf(entry);
 }
 
-/** The ids of the groups the actor is a projected member of, read in the token's user pool tenants; empty for an anonymous actor. */
-async function membershipGroupIds(deps: PermissionDeps, actor: Actor): Promise<string[]> {
+/** The ids of the groups the actor is a projected member of, read through `reads` in the token's user pool tenants; empty for an anonymous actor. */
+async function membershipGroupIds(
+  deps: PermissionDeps,
+  actor: Actor,
+  reads: Pick<VerdictReads, 'inPool'> = ownTransactions(deps, actor),
+): Promise<string[]> {
   if (!actor.isLoggedIn || actor.userId === '') {
     return [];
   }
-  return distinct(
-    (await inUserPools(deps, actor.tenantId, (tx) => deps.repository.projections.groupsOfUser(tx, actor.userId))).flat(),
-  );
+  return distinct((await inUserPools(reads, (tx) => deps.repository.projections.groupsOfUser(tx, actor.userId))).flat());
 }
 
 /**
@@ -207,11 +247,12 @@ async function membershipGroupIds(deps: PermissionDeps, actor: Actor): Promise<s
  * in the token's public and private user pool tenants; empty for an anonymous actor.
  */
 export async function loadMemberships(deps: PermissionDeps, actor: Actor): Promise<UserMemberships> {
-  const memberOf = await membershipGroupIds(deps, actor);
+  const reads = ownTransactions(deps, actor);
+  const memberOf = await membershipGroupIds(deps, actor, reads);
   if (memberOf.length === 0) {
     return NO_MEMBERSHIPS;
   }
-  return membershipsOf(memberOf, await projectedGroups(deps, actor.tenantId, memberOf));
+  return membershipsOf(memberOf, await projectedGroups(deps, reads, memberOf));
 }
 
 /** The loginByQuery membership list of the groups `memberOf` over their projected `groups`. */
@@ -234,25 +275,25 @@ function membershipsOf(memberOf: readonly string[], groups: ReadonlyMap<string, 
   return { names: cfListItems(entries.join(',')), groupIds };
 }
 
-/** Reads the permission rows of `nodes` in the token tenant and the groups they name, unless no membership string can match. */
+/** Reads, through `reads`, the permission rows of `nodes` in the token tenant and the groups they name, unless no membership string can match. */
 async function loadVerdictSource(
   deps: PermissionDeps,
   actor: Actor,
   nodes: readonly NodeRef[],
   memberships: UserMemberships | undefined,
-  readPools: () => Promise<SitePools> = () => sitePools(deps, actor),
+  reads: VerdictReads = ownTransactions(deps, actor),
 ): Promise<VerdictSource> {
   const held = memberships ?? (await loadMemberships(deps, actor));
   if (held.names.length === 0) {
     return { memberships: held, pools: null, rows: [], groups: new Map() };
   }
   // Crumbs are read in the token tenant, whose content belongs to the token's site, so that site's pools apply.
-  const pools = await readPools();
+  const pools = await reads.pools();
   const bySite = new Map<string, string[]>();
   for (const node of nodes) {
     bySite.set(node.siteId, [...(bySite.get(node.siteId) ?? []), node.contentId]);
   }
-  const rows = await withTenant(deps.db, actor.tenantId, async (tx) => {
+  const rows = await reads.inTenant(async (tx) => {
     const found: PermissionProjectionRow[] = [];
     for (const [siteId, contentIds] of bySite) {
       found.push(...(await deps.repository.projections.permissionsForNodes(tx, { siteId, contentIds })));
@@ -260,7 +301,7 @@ async function loadVerdictSource(
     return found;
   });
   const groupIds = distinct(rows.map((row) => row.group_id));
-  const groups = groupIds.length === 0 ? new Map<string, GroupProjectionRow>() : await projectedGroups(deps, actor.tenantId, groupIds);
+  const groups = groupIds.length === 0 ? new Map<string, GroupProjectionRow>() : await projectedGroups(deps, reads, groupIds);
   return { memberships: held, pools, rows, groups };
 }
 
@@ -353,6 +394,18 @@ export function getPerm(
   return permOf(deps, actor, { contentId, siteId }, memberships);
 }
 
+/** getPerm of each of `nodes`, in order, reading one verdict source for every node the S2 or Admin shortcut does not decide. */
+export async function getPerms(
+  deps: PermissionDeps,
+  actor: Actor,
+  nodes: readonly { contentId: string; siteId: string }[],
+  memberships?: UserMemberships,
+): Promise<NodeVerdict[]> {
+  const read = nodes.filter((node) => !privileged(actor, node.siteId));
+  const source = read.length === 0 ? undefined : await loadVerdictSource(deps, actor, read, memberships);
+  return nodes.map((node) => (source === undefined || privileged(actor, node.siteId) ? 'editor' : verdictOf(actor, source, node)));
+}
+
 /** getPermPublic [permission.cfc:243-264]: the same verdict as getPerm. */
 export function getPermPublic(
   deps: PermissionDeps,
@@ -384,6 +437,48 @@ export async function getNodePermPublic(
 ): Promise<Exclude<NodeVerdict, 'deny'> | ''> {
   const verdict = await walkCrumbs(deps, actor, crumbs, memberships);
   return verdict === 'deny' ? 'none' : verdict;
+}
+
+/** getNodePerm of each crumb list, in order, reading the node verdicts of every list's crumbs once for all. */
+export function getNodePerms(
+  deps: PermissionDeps,
+  actor: Actor,
+  crumbLists: readonly (readonly CrumbNode[])[],
+  memberships?: UserMemberships,
+): Promise<Exclude<NodeVerdict, 'deny'>[]> {
+  return nodePerms(deps, actor, crumbLists, memberships, ownTransactions(deps, actor));
+}
+
+/** getNodePerms with every read on `tx`, the token tenant's open transaction, given the memberships read before it opened. */
+export function getNodePermsInTx(
+  tx: TenantTx,
+  deps: PermissionDeps,
+  actor: Actor,
+  crumbLists: readonly (readonly CrumbNode[])[],
+  memberships: UserMemberships,
+): Promise<Exclude<NodeVerdict, 'deny'>[]> {
+  return nodePerms(deps, actor, crumbLists, memberships, onTransaction(tx, actor));
+}
+
+/** getNodePerms over the verdict source `reads` loads once for every list's crumbs. */
+async function nodePerms(
+  deps: PermissionDeps,
+  actor: Actor,
+  crumbLists: readonly (readonly CrumbNode[])[],
+  memberships: UserMemberships | undefined,
+  reads: VerdictReads,
+): Promise<Exclude<NodeVerdict, 'deny'>[]> {
+  const nodes = new Map<string, NodeRef>();
+  for (const node of crumbLists.flat().map(nodeOf)) {
+    nodes.set(`${node.siteId}\u0000${node.contentId}`, node);
+  }
+  const source = once(() => loadVerdictSource(deps, actor, [...nodes.values()], memberships, reads));
+  const verdicts: Exclude<NodeVerdict, 'deny'>[] = [];
+  for (const crumbs of crumbLists) {
+    const verdict = await walkWith(actor, crumbs, source);
+    verdicts.push(verdict === 'deny' || verdict === '' ? 'none' : verdict);
+  }
+  return verdicts;
 }
 
 /** getModulePerm [permission.cfc:302-349]: S2, site Admin or the token's `m:<nnn>` module role; plugin modules map to no role. */
@@ -432,7 +527,7 @@ export async function getSiteModulePerm(
     return false;
   }
   // Only groups stored in the pool site's user pools carry its pool ids, so their membership entries are read there.
-  const groups = await projectedGroups(deps, poolSite.tenantId, distinct([...memberOf, ...poolSite.rows.map((row) => row.group_id)]));
+  const groups = await projectedGroups(deps, poolTransactions(deps, poolSite.tenantId), distinct([...memberOf, ...poolSite.rows.map((row) => row.group_id)]));
   const memberships = membershipsOf(memberOf, groups);
   return (
     adminMember(memberships, poolSite.pools) ||
@@ -483,7 +578,7 @@ export async function setRestrictions(
   for (const node of crumbLists.flat().map(nodeOf)) {
     nodes.set(`${node.siteId}\u0000${node.contentId}`, node);
   }
-  const source = once(async () => loadVerdictSource(deps, actor, [...nodes.values()], await memberships(), pools));
+  const source = once(async () => loadVerdictSource(deps, actor, [...nodes.values()], await memberships(), { ...ownTransactions(deps, actor), pools }));
   const reads: RestrictionReads = { memberships, pools, walk: (walked) => walkWith(actor, walked, source) };
   const restrictions: Restriction[] = [];
   for (const crumbs of crumbLists) {

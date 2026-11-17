@@ -1,10 +1,11 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, open, readFile, rename, rm, type FileHandle } from 'node:fs/promises';
+import { mkdir, open, rename, rm, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { pipeline } from 'node:stream/promises';
+import { readEnvFile } from '../service-kit/env.js';
 import {
   LOCAL_SIGNED_URL_PREFIX,
   SIGNED_URL_TTL_S,
@@ -50,10 +51,10 @@ export interface LocalStorageAdapter extends StoragePort {
   verifySignedUrl(url: string, now?: number): LocalUrlVerification;
 }
 
-/** Reads `<stateDir>/secrets/storage-hmac-key`, trimmed, as UTF-8 bytes; throws when it is empty. */
+/** Reads `<stateDir>/secrets/storage-hmac-key`, trimmed, as UTF-8 bytes; rejects with `EnvFileError` when unreadable and throws when it is empty. */
 export async function loadStorageHmacKey(stateDir: string): Promise<Buffer> {
   const file = path.join(stateDir, SECRETS_DIR, HMAC_KEY_FILE);
-  const text = (await readFile(file, 'utf8')).trim();
+  const text = (await readEnvFile('OPT2_STATE_DIR', stateDir, file)).trim();
   if (text === '') throw new Error(`Storage HMAC key file is empty: ${file}`);
   return Buffer.from(text, 'utf8');
 }

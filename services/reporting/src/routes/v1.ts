@@ -36,10 +36,12 @@ type ExportJobBody = OkBody<operations['getExport']>;
 type DownloadUrlBody = OkBody<operations['getExportDownloadUrl']>;
 type ExportPathParams = operations['getExport']['parameters']['path'];
 
-/** `listExports` query; the schema defaults fill both. */
+/** `listExports` query; `pageIndex` and `itemsPerPage`, the other `/v1` lists' paging names, alias `page` and `pageSize`. */
 interface ExportListQuery {
-  page: number;
-  pageSize: number;
+  page?: number;
+  pageIndex?: number;
+  pageSize?: number;
+  itemsPerPage?: number;
 }
 
 /** Verified user claims of a request. */
@@ -69,12 +71,14 @@ const DEFAULT_PAGE_SIZE = 50;
 // The fixture's page-size maximum, envelope.cfc page().
 const MAX_PAGE_SIZE = 1000;
 
+const PAGE_SCHEMA = { type: 'integer', minimum: 1 } as const;
+const PAGE_SIZE_SCHEMA = { type: 'integer', minimum: 1, maximum: MAX_PAGE_SIZE } as const;
+
+// A query names each paging parameter under one of its two names; `listPaging` fills the defaults once they resolve.
 const LIST_QUERY_SCHEMA = {
   type: 'object',
-  properties: {
-    page: { type: 'integer', minimum: 1, default: DEFAULT_PAGE },
-    pageSize: { type: 'integer', minimum: 1, maximum: MAX_PAGE_SIZE, default: DEFAULT_PAGE_SIZE },
-  },
+  properties: { page: PAGE_SCHEMA, pageIndex: PAGE_SCHEMA, pageSize: PAGE_SIZE_SCHEMA, itemsPerPage: PAGE_SIZE_SCHEMA },
+  allOf: [{ not: { required: ['page', 'pageIndex'] } }, { not: { required: ['pageSize', 'itemsPerPage'] } }],
 } as const;
 
 const EXPORT_PARAMS_SCHEMA = { type: 'object', required: ['id'], properties: { id: { type: 'string', minLength: 1 } } } as const;
@@ -91,6 +95,11 @@ const EXPORT_OPTIONS = { schema: { params: EXPORT_PARAMS_SCHEMA } };
 /** The contract's `ExportJob` of a stored job: the fixture row projection, so `/v1` and the fixture routes answer one shape. */
 export function toV1ExportJob(row: ExportJobRow): ExportJob {
   return jobRow(row);
+}
+
+/** The job paging a list query names under either paging name, the fixture defaults filling an absent one. */
+function listPaging({ page, pageIndex, pageSize, itemsPerPage }: ExportListQuery): JobPaging {
+  return { pageIndex: page ?? pageIndex ?? DEFAULT_PAGE, itemsPerPage: pageSize ?? itemsPerPage ?? DEFAULT_PAGE_SIZE };
 }
 
 /** The verified user; every route requires a user role, so a request without one is unauthenticated. */
@@ -135,8 +144,7 @@ export const reportingV1Plugin: FastifyPluginAsync<ReportingDeps> = async (insta
   const config = { opt2: exporterAuth(deps) };
 
   instance.get<{ Querystring: ExportListQuery }>(EXPORTS_PATH, { ...LIST_OPTIONS, config }, async (request): Promise<ExportListBody> => {
-    const paging: JobPaging = { pageIndex: request.query.page, itemsPerPage: request.query.pageSize };
-    const page = await listExportJobs(deps, { tenantId: callerOf(request).user.tid, paging });
+    const page = await listExportJobs(deps, { tenantId: callerOf(request).user.tid, paging: listPaging(request.query) });
     return { data: page.rows.map(toV1ExportJob), total: page.total };
   });
 

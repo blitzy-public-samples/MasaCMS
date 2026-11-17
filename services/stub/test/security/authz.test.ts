@@ -20,7 +20,7 @@ import {
   type Transport,
 } from '@opt2/platform/auth';
 import { buildPushBody, encodeEnvelope, type EventEnvelope } from '@opt2/platform/events';
-import { baseEnvSchema, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { outboxSweepQueue } from '@opt2/platform/tasks';
 import {
   ROLE_SET,
@@ -40,7 +40,7 @@ import {
   type InjectResponse,
   type RoleSubject,
 } from '@opt2/platform/testing';
-import { buildApp } from '../../src/app.js';
+import { buildApp, stubEnvSchema } from '../../src/app.js';
 import {
   NOTE_CREATED_SUBSCRIPTION,
   NOTE_CREATED_TOPIC,
@@ -761,7 +761,7 @@ describe('deny by default at start-up', () => {
     try {
       await writeTestSecrets(stateDir);
       app = await buildApp({
-        env: loadEnv(baseEnvSchema, testEnv({ OPT2_STATE_DIR: stateDir })),
+        env: loadEnv(stubEnvSchema, testEnv({ OPT2_STATE_DIR: stateDir })),
         clock: TEST_CLOCK,
         verifierOverride: testVerifier(),
         db: createRecordingDb(),

@@ -1,6 +1,7 @@
-// Tests gatewayEnvSchema through loadEnv, the matcher's route-key wiring of the reload key and the legacy site registry, and the barrier's projected owners.
+// Tests gatewayEnvSchema through loadEnv (own name, database keys, callees), the matcher's route-key wiring of the reload key and the legacy site registry, and the barrier's projected owners.
 import { randomBytes, randomUUID } from 'node:crypto';
 import { fixedClock } from '@opt2/platform/testing';
+import { serializeError } from '@opt2/platform/logging';
 import { EnvValidationError, loadEnv } from '@opt2/platform/service-kit';
 import { describe, expect, it } from 'vitest';
 import { createResponseModes } from '../../src/admin/response-modes.js';
@@ -42,6 +43,12 @@ function sourceOf(overrides: Record<string, string | undefined> = {}): NodeJS.Pr
     PORT: '8100',
     OPT2_SERVICE_NAME: 'gateway',
     OPT2_ENV: 'local',
+    OPT2_DB_AUTH: 'password',
+    PG_HOST: '127.0.0.1',
+    PG_PORT: '5432',
+    PG_DATABASE: 'masa_services',
+    PG_USER: 'gateway_app',
+    PG_PASSWORD: 'unused',
     OPT2_JWKS_URL: `${urlOf('identity')}/.well-known/jwks.json`,
     OPT2_TOKEN_ISSUER: 'opt2-local-identity',
     OPT2_TOKEN_AUDIENCE: 'opt2-local',
@@ -94,7 +101,54 @@ function urlsWithout(...names: string[]): string {
   return JSON.stringify(Object.fromEntries(Object.entries(SERVICE_URLS).filter(([name]) => !names.includes(name))));
 }
 
-const CLOUD = { OPT2_ENV: 'cloud', OPT2_JWKS_URL: undefined, GOOGLE_CLOUD_PROJECT: 'opt2-plan' } as const;
+const CLOUD = {
+  OPT2_ENV: 'cloud',
+  OPT2_JWKS_URL: undefined,
+  GOOGLE_CLOUD_PROJECT: 'opt2-plan',
+  OPT2_DB_AUTH: 'iam',
+  CLOUD_SQL_INSTANCE: 'opt2-plan:us-central1:opt2-services',
+  PG_PASSWORD: undefined,
+} as const;
+
+describe('gatewayEnvSchema process identity and database', () => {
+  it.each(['web', 'people', 'identity'])('fails start-up naming OPT2_SERVICE_NAME when it is %s', (name) => {
+    expect(issuesOf(sourceOf({ OPT2_SERVICE_NAME: name }))).toEqual(['OPT2_SERVICE_NAME: must be gateway']);
+  });
+
+  it.each([
+    ['local', 'OPT2_DB_AUTH', {}],
+    ['local', 'PG_DATABASE', {}],
+    ['cloud', 'OPT2_DB_AUTH', CLOUD],
+    ['cloud', 'PG_DATABASE', CLOUD],
+  ])('fails start-up in %s naming %s when it is missing', (_mode, key, mode) => {
+    expect(issuesOf(sourceOf({ ...mode, [key]: undefined }))).toEqual([`${key}: is required`]);
+  });
+
+  it('lists the name, the database keys and the callees in one logged line, naming keys only', () => {
+    const source = sourceOf({
+      OPT2_SERVICE_NAME: 'web',
+      OPT2_DB_AUTH: undefined,
+      PG_DATABASE: undefined,
+      OPT2_SERVICE_URLS: urlsWithout('identity'),
+    });
+
+    expect(issuesOf(source)).toEqual([
+      'OPT2_SERVICE_NAME: must be gateway',
+      'OPT2_DB_AUTH: is required',
+      'PG_DATABASE: is required',
+      'OPT2_SERVICE_URLS.identity: is required',
+    ]);
+    let thrown: unknown;
+    try {
+      loadEnv(gatewayEnvSchema, source);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(serializeError(thrown).message).toBe(
+      'web: invalid environment (OPT2_SERVICE_NAME: must be gateway; OPT2_DB_AUTH: is required; PG_DATABASE: is required; OPT2_SERVICE_URLS.identity: is required)',
+    );
+  });
+});
 
 describe('gatewayEnvSchema service destinations', () => {
   it('loads a complete local environment with every package URL', () => {

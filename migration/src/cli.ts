@@ -38,6 +38,7 @@ export type MigrateCommand =
   | { kind: 'resolve-window'; windowId: string }
   | { kind: 'window open'; units: string[]; routeKey?: string; scope?: WindowScope }
   | { kind: 'window complete'; windowId: string; forwarded: boolean }
+  | { kind: 'window report' }
   | { kind: 'scheduler import'; file: string }
   | { kind: 'scheduler status' }
   | { kind: 'files manifest'; snapshotSeq: number }
@@ -279,6 +280,7 @@ const SPECS = {
     positionals: ['windowId'],
     build: (values, [windowId = '']) => ({ kind: 'window complete', windowId, forwarded: values.forwarded === true }),
   },
+  'window report': { args: '', options: {}, positionals: [], build: () => ({ kind: 'window report' }) },
   'scheduler import': {
     args: '--file <path>',
     options: { file: STRING },
@@ -534,6 +536,8 @@ async function dispatch(command: ContextCommand, ctx: MigrationContext): Promise
       // `unknown` answers an id that names no window.
       return { result: completion, code: completion.state === 'unknown' ? 1 : 0 };
     }
+    case 'window report':
+      return completed(await (await import('./windows/index.js')).writeWindowsReport(ctx));
     case 'scheduler import':
       return completed(await (await import('./scheduler/index.js')).importSchedulerState(ctx, command.file));
     case 'scheduler status':

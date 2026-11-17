@@ -25,15 +25,16 @@ export interface UnitRowSorterOptions {
   spillDir?: string | undefined;
 }
 
-/** Rebuilds a row from its canonical encoding and program id, as the side that added it built it. */
-export type UnitRowBuilder = (encoding: string, legacyProgramId: number | undefined) => CanonicalRow;
+/** Rebuilds a row from its canonical encoding, program id and the payload it was added with, as the side that added it built it. */
+export type UnitRowBuilder<T = CanonicalRow> = (encoding: string, legacyProgramId: number | undefined, payload: string | undefined) => T;
 
-/** What the sorter keeps of a row: its tenant, what orders it, and its encoding. */
+/** What the sorter keeps of a row: its tenant, what orders it, its encoding and an opaque payload that never orders it. */
 interface Entry {
   tenantId: string;
   legacyProgramId?: number;
   keyValues: readonly KeyValue[];
   encoding: string;
+  payload?: string;
 }
 
 /** The head record of one spill run during a merge; `run` breaks ties, so merging keeps the input order of equal rows. */
@@ -58,7 +59,8 @@ function compareHeads(a: Head, b: Head): number {
 }
 
 function headerOf(entry: Entry): string {
-  return `${JSON.stringify([entry.tenantId, entry.legacyProgramId ?? null])}${HEADER_END}`;
+  const fields = [entry.tenantId, entry.legacyProgramId ?? null, ...(entry.payload === undefined ? [] : [entry.payload])];
+  return `${JSON.stringify(fields)}${HEADER_END}`;
 }
 
 function recordOf(entry: Entry): string {
@@ -151,8 +153,8 @@ async function* mergedRecords(merge: RunMerge): AsyncGenerator<string, void, und
   for (let head = await merge.next(); head !== undefined; head = await merge.next()) yield head.record;
 }
 
-/** Sorts unit rows by tenant and canonical key through byte-bounded runs and a 2–16-way merge. */
-export class UnitRowSorter {
+/** Sorts unit rows by tenant and canonical key through byte-bounded runs and a 2–16-way merge; rows read back as `build` makes them. */
+export class UnitRowSorter<T = CanonicalRow> {
   private readonly runLimit: number;
   private readonly keyNames: readonly string[];
   private readonly columns: readonly CanonicalColumn[];
@@ -174,7 +176,7 @@ export class UnitRowSorter {
   /** @throws Error when a key column of `shape` is not among its columns. */
   constructor(
     shape: Pick<UnitTableShape, 'keyed' | 'keyColumns' | 'columns'>,
-    private readonly build: UnitRowBuilder,
+    private readonly build: UnitRowBuilder<T>,
     private readonly options: UnitRowSorterOptions = {},
   ) {
     this.runLimit = options.sortRunBytes ?? DEFAULT_SORT_RUN_BYTES;
@@ -185,11 +187,12 @@ export class UnitRowSorter {
     }
   }
 
-  /** Adds `row` under `tenantId`; awaited before the next call, as a full run is spilled first. */
-  async add(tenantId: string, row: CanonicalRow): Promise<void> {
+  /** Adds `row` under `tenantId` with an optional `payload` handed back to `build`; awaited before the next call, as a full run is spilled first. */
+  async add(tenantId: string, row: CanonicalRow, payload?: string): Promise<void> {
     if (this.state !== 'adding') throw new Error(`rows cannot be added to a ${this.state} sorter`);
     const entry: Entry = { tenantId, keyValues: row.keyValues, encoding: row.encoding };
     if (row.legacyProgramId !== undefined) entry.legacyProgramId = row.legacyProgramId;
+    if (payload !== undefined) entry.payload = payload;
     this.run.push(entry);
     this.counts.set(tenantId, (this.counts.get(tenantId) ?? 0) + 1);
     const bytes = Buffer.byteLength(headerOf(entry), 'utf8') + Buffer.byteLength(row.encoding, 'utf8');
@@ -222,7 +225,7 @@ export class UnitRowSorter {
   }
 
   /** Reads one tenant in canonical order; ascending tenant requests retain later rows, but errors or early returns dispose them. */
-  async *rows(tenantId: string): AsyncGenerator<CanonicalRow, void, undefined> {
+  async *rows(tenantId: string): AsyncGenerator<T, void, undefined> {
     if (this.state !== 'sorted') throw new Error(`rows cannot be read from ${this.state === 'adding' ? 'an unsorted' : 'a disposed'} sorter`);
     let completed = false;
     try {
@@ -232,7 +235,7 @@ export class UnitRowSorter {
       this.lastTenant = tenantId;
       for (let entry = await this.peek(); entry !== undefined && compareTenants(entry.tenantId, tenantId) <= 0; entry = await this.peek()) {
         this.head = undefined;
-        if (entry.tenantId === tenantId) yield this.build(entry.encoding, entry.legacyProgramId);
+        if (entry.tenantId === tenantId) yield this.build(entry.encoding, entry.legacyProgramId, entry.payload);
       }
       completed = true;
     } finally {
@@ -286,10 +289,11 @@ export class UnitRowSorter {
 
   private parse(record: string): Entry {
     const end = record.indexOf(HEADER_END);
-    const [tenantId, legacyProgramId] = JSON.parse(record.slice(0, end)) as [string, number | null];
+    const [tenantId, legacyProgramId, payload] = JSON.parse(record.slice(0, end)) as [string, number | null, string?];
     const encoding = record.slice(end + HEADER_END.length);
     const entry: Entry = { tenantId, keyValues: this.keyNames.length === 0 ? [] : this.keyValuesOf(encoding), encoding };
     if (legacyProgramId !== null) entry.legacyProgramId = legacyProgramId;
+    if (payload !== undefined) entry.payload = payload;
     return entry;
   }
 

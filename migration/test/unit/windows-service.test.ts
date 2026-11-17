@@ -1,5 +1,6 @@
-// Unit tests for the window service over a throwaway `migration` schema: uncertain closes, the open deadline, cross-instance claims and log safety.
-import { mkdtempSync, rmSync } from 'node:fs';
+// Unit tests for the window service over a throwaway `migration` schema: uncertain closes, the open deadline, cross-instance claims,
+// log safety and `windows.json` written from the window rows.
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,10 +18,18 @@ import { loadConfig } from '../../src/config.js';
 import type { MigrationContext } from '../../src/context.js';
 import { GateConflict, OwnerCallError, type DataOwner, type OwnersClient } from '../../src/owners/index.js';
 import { loadUnitCatalog } from '../../src/owners/units.js';
+import { readSourceSha } from '../../src/reports/index.js';
 import { ProjectionTimeoutError, type Projector } from '../../src/reverse/index.js';
 import { WindowImportError, type ImportResult } from '../../src/windows/import.js';
 import { acquireLeases, leasesOf } from '../../src/windows/leases.js';
-import { WindowRefusedError, WindowStateError, createWindowService, type WindowService, type WindowServiceOptions } from '../../src/windows/service.js';
+import {
+  WindowRefusedError,
+  WindowStateError,
+  createWindowService,
+  writeWindowsReport,
+  type WindowService,
+  type WindowServiceOptions,
+} from '../../src/windows/service.js';
 import { createGatewayDouble, type GatewayDouble } from '../helpers/gateway-double.js';
 
 const imports = vi.hoisted(() => ({ importWindow: vi.fn() }));
@@ -860,5 +869,177 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       expect(Object.keys(record as object).every((key) => ['type', 'message', 'stack'].includes(key))).toBe(true);
     }
     for (const error of errors) expect(logged).toContainEqual(serializeError(error));
+  });
+
+  describe('windows.json written from the window rows', () => {
+    const REPORT_AT = '2026-03-04T05:06:07.890Z';
+    const OPENED_AT = new Date('2026-03-04T05:00:00.000Z');
+    const ENTRY_KEYS = ['windowId', 'holderId', 'kind', 'routeKey', 'units', 'scope', 'phases', 'events', 'durationMs', 'rowsImported', 'objectsTransferred', 'objectsRemoved', 'outcome'];
+
+    /** A materialiser context over the suite's schema writing to a fresh reports directory. */
+    function reportContext(): { ctx: MigrationContext; dir: string } {
+      const dir = mkdtempSync(path.join(reportsDir, 'materialised-'));
+      const ctx = { db, config: CONFIG, env: { OPT2_REPORTS_DIR: dir }, clock: { now: () => new Date(REPORT_AT) } } as unknown as MigrationContext;
+      return { ctx, dir };
+    }
+
+    const readReport = (dir: string): Record<string, unknown> => JSON.parse(readFileSync(path.join(dir, 'windows.json'), 'utf8')) as Record<string, unknown>;
+
+    interface SeededWindow {
+      windowId: string;
+      kind?: string;
+      state: string;
+      scope?: object;
+      phases?: object[];
+      openedAt?: Date;
+      closedAt?: Date | null;
+    }
+
+    async function seedWindow(window: SeededWindow): Promise<void> {
+      const openedAt = window.openedAt ?? OPENED_AT;
+      await db.withMetadata((tx) =>
+        tx.query(
+          `INSERT INTO ${tx.schema}.write_window (window_id, route_key, units, scope, kind, state, phases, opened_at, updated_at, closed_at)
+           VALUES ($1, $2, $3::text[], $4::jsonb, $5, $6, $7::jsonb, $8, $8, $9)`,
+          [
+            window.windowId,
+            ROUTE_KEY,
+            [FINANCE, SURVEYS],
+            JSON.stringify(window.scope ?? { table: true }),
+            window.kind ?? 'request',
+            window.state,
+            JSON.stringify(window.phases ?? []),
+            openedAt,
+            window.closedAt ?? null,
+          ],
+        ),
+      );
+    }
+
+    const at = (ms: number): string => new Date(OPENED_AT.getTime() + ms).toISOString();
+
+    it('writes every row once, in opened_at and window_id order across pages, with the head, flag threshold and summary', async () => {
+      await db.withMetadata((tx) =>
+        tx.query(
+          `INSERT INTO ${tx.schema}.write_window (window_id, route_key, units, scope, kind, state, phases, opened_at, updated_at)
+           SELECT 'W' || lpad(i::text, 5, '0'), $1::text, ARRAY[$2::text], '{"table":true}'::jsonb, 'request', 'failed', '[]'::jsonb,
+                  $3::timestamp + ((1201 - i) / 3) * interval '1 millisecond', $3::timestamp
+             FROM generate_series(1, 1201) AS i`,
+          [ROUTE_KEY, FINANCE, OPENED_AT],
+        ),
+      );
+      const { rows } = await db.withMetadata((tx) =>
+        tx.query<{ window_id: string }>(`SELECT window_id FROM ${tx.schema}.write_window ORDER BY opened_at, window_id`),
+      );
+      const { ctx, dir } = reportContext();
+
+      const result = await writeWindowsReport(ctx);
+
+      const doc = readReport(dir);
+      expect(result).toEqual({ reportPath: path.join(dir, 'windows.json'), windows: 1201, fromTable: 1201, keptFromFile: 0 });
+      expect(Object.keys(doc)).toEqual(['sourceSha', 'generatedBy', 'generatedAt', 'status', 'flagThresholdMs', 'windows', 'summary']);
+      expect(doc).toMatchObject({
+        sourceSha: readSourceSha(CONFIG.paths.sourcePin),
+        generatedBy: 'migration/src/windows/',
+        generatedAt: REPORT_AT,
+        status: 'recorded',
+        flagThresholdMs: 5000,
+        summary: { count: 1201, byOutcome: { 'aborted-503': 1201 }, overThreshold: 0 },
+      });
+      expect((doc.windows as { windowId: string }[]).map((entry) => entry.windowId)).toEqual(rows.map((row) => row.window_id));
+    });
+
+    it('maps a row to its entry: run-log phases, every event, duration, summed imports and outcome', async () => {
+      const windowId = cfUuid();
+      const events = [
+        { phase: 'opened', at: at(0) },
+        { phase: 'quiet', at: at(10) },
+        { phase: 'executing', at: at(20) },
+        { phase: 'completed', at: at(900), detail: { forwarded: true, legacyStatus: 200 } },
+        { phase: 'importing', at: at(1000) },
+        { phase: 'imported', at: at(1200), detail: { rowsImported: { finance: 2 }, objectsTransferred: 1, objectsRemoved: 1 } },
+        { phase: 'imported', at: at(1300), detail: { rowsImported: { finance: 1, surveys: 3 }, objectsTransferred: 2 } },
+        { phase: 'closed', at: at(1500) },
+      ];
+      await seedWindow({ windowId, kind: 'legacy-step', state: 'closed', scope: { keys: { siteid: 'tenant-a' } }, phases: events, closedAt: new Date(OPENED_AT.getTime() + 1500) });
+      const { ctx, dir } = reportContext();
+
+      await writeWindowsReport(ctx);
+
+      const [entry] = readReport(dir).windows as Record<string, unknown>[];
+      expect(Object.keys(entry ?? {})).toEqual(ENTRY_KEYS);
+      expect(entry).toEqual({
+        windowId,
+        holderId: windowId,
+        kind: 'sitemonitor-step',
+        routeKey: ROUTE_KEY,
+        units: [FINANCE, SURVEYS],
+        scope: { siteid: 'tenant-a' },
+        phases: ['quiet', 'executing', 'importing', 'closed'].map((phase) => ({ phase, at: events.find((event) => event.phase === phase)?.at })),
+        events,
+        durationMs: 1500,
+        rowsImported: { finance: 3, surveys: 3 },
+        objectsTransferred: 3,
+        objectsRemoved: 1,
+        outcome: 'closed',
+      });
+    });
+
+    it('keeps file-only entries in place, replaces stale ones by their row, appends new rows in row order and keeps the other keys', async () => {
+      const replaced = cfUuid();
+      const added = cfUuid();
+      await seedWindow({ windowId: replaced, state: 'closed', phases: [{ phase: 'closed', at: at(500) }], closedAt: new Date(OPENED_AT.getTime() + 500) });
+      await seedWindow({ windowId: added, state: 'opening', openedAt: new Date(OPENED_AT.getTime() + 1) });
+      const { ctx, dir } = reportContext();
+      const fileOnly = (windowId: string, outcome: string, durationMs: number): Record<string, unknown> => ({
+        windowId,
+        holderId: windowId,
+        kind: 'request',
+        routeKey: ROUTE_KEY,
+        units: [FINANCE],
+        scope: { table: true },
+        phases: [],
+        durationMs,
+        outcome,
+      });
+      writeFileSync(
+        path.join(dir, 'windows.json'),
+        JSON.stringify({
+          sourceSha: 'stale',
+          generatedBy: 'stale',
+          generatedAt: null,
+          status: 'pending-run',
+          unitIds: 'opt2/table-ownership.json units[].unit',
+          flagThresholdMs: 1000,
+          windows: [fileOnly('gone-1', 'closed', 2000), { windowId: replaced, phases: [] }, fileOnly('gone-2', 'aborted-503', 10)],
+          summary: { count: null },
+        }),
+      );
+
+      const result = await writeWindowsReport(ctx);
+
+      const doc = readReport(dir);
+      const windows = doc.windows as Record<string, unknown>[];
+      expect(result).toMatchObject({ windows: 4, fromTable: 2, keptFromFile: 2 });
+      expect(Object.keys(doc)).toEqual(['sourceSha', 'generatedBy', 'generatedAt', 'status', 'unitIds', 'flagThresholdMs', 'windows', 'summary']);
+      expect(doc).toMatchObject({ generatedBy: 'migration/src/windows/', status: 'recorded', unitIds: 'opt2/table-ownership.json units[].unit', flagThresholdMs: 1000 });
+      expect(windows.map((entry) => entry.windowId)).toEqual(['gone-1', replaced, 'gone-2', added]);
+      expect(windows[0]).toEqual(fileOnly('gone-1', 'closed', 2000));
+      expect(windows[1]).toMatchObject({ outcome: 'closed', durationMs: 500, phases: [{ phase: 'closed', at: at(500) }] });
+      expect(windows[3]).not.toHaveProperty('outcome');
+      expect(doc.summary).toEqual({ count: 4, byOutcome: { closed: 2, 'aborted-503': 1, open: 1 }, overThreshold: 1 });
+    });
+
+    it('logs a failed write when the service stops and still resolves', async () => {
+      const failing = hookedDb((sql, run) => (sql.includes('ORDER BY opened_at, window_id LIMIT') ? Promise.reject(new Error('report read failed')) : run()));
+      const { service, logger } = instance(ownersDouble(), gatewayDouble(), { db: failing });
+
+      await expect(service.stop()).resolves.toBeUndefined();
+
+      expect(logger.calls).toContainEqual({
+        level: 'error',
+        args: [{ error: expect.objectContaining({ type: 'Error', stack: expect.stringContaining('writeWindowsReport') }) }, 'Writing windows.json from the window rows failed'],
+      });
+    });
   });
 });

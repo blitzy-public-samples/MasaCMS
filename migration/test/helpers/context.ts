@@ -195,7 +195,7 @@ function migrationNamedDb(throwaway: ThrowawaySchema): TenantDb {
   } satisfies TenantDb);
 }
 
-/** A throwaway schema migrated with `migration/db/migrations`, or null when the `PG_*` server is unreachable. */
+/** A throwaway schema migrated with `migration/db/migrations`, or null when PG_HOST is unset. */
 export async function withMigrationSchema(): Promise<MigrationSchemaHandle | null> {
   if (!(await pgAvailable())) return null;
   const throwaway = await createThrowawaySchema({ service: MIGRATION_SCHEMA, migrationsDir: migrationsDirFor('migration') });
@@ -304,7 +304,7 @@ function withPaths(config: LoadedMigrationConfig, paths: Partial<ResolvedPaths>)
 /**
  * Builds a context through `createMigrationContext` with every external dependency an in-process double, cut-over,
  * ownership, inventory and reports paths under fresh temp directories, and no database unless `migrationDb` asks for one.
- * @throws Error with message {@link MIGRATION_SCHEMA_SKIP_REASON} when `migrationDb: true` and PostgreSQL is unreachable.
+ * @throws Error with message {@link MIGRATION_SCHEMA_SKIP_REASON} when `migrationDb: true` and PG_HOST is unset.
  */
 export async function buildTestContext(opts: TestContextOptions = {}): Promise<TestContext> {
   const opened: Opened = { dirs: await createTestDirs() };

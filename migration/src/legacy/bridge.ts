@@ -137,7 +137,7 @@ export interface BridgeJobParams {
   value?: string;
 }
 
-/** ACF scheduled task in the bridge wire shape: every field a string (`""` when ACF reports none) except `paused`. */
+/** ACF scheduled task in the bridge wire shape: every field a string (`""` when ACF reports none) except `paused` and `expired`. */
 export interface ScheduledTaskDefinition {
   task: string;
   group: string;
@@ -151,6 +151,8 @@ export interface ScheduledTaskDefinition {
   requestTimeOut: string;
   operation: string;
   paused: boolean;
+  /** ACF lists the task `Expired`: it has had its run or never runs. Absent in captures that do not report it, meaning false. */
+  expired?: boolean;
 }
 
 /** `scheduler.describe` answer: the effective Masa `ping`, Masa's site-monitor task name and every ACF task. */
@@ -178,6 +180,8 @@ export interface SchedulerRestoreRequest {
 export interface SchedulerOpResult {
   op: string;
   tasks: string[];
+  /** `pause`, `resume` and `restore`: the selected or restored tasks ACF holds expired, neither paused nor resumed. */
+  expired?: string[];
   serverTime: string;
 }
 
@@ -252,13 +256,13 @@ export interface BridgeClient {
    * @param task captured native definition; its `task`, `group` and `startDate` are used, absent ones take Masa's defaults.
    */
   schedulerRepoint(task?: Partial<ScheduledTaskDefinition>, opts?: BridgeRequestOptions): Promise<SchedulerOpResult>;
-  /** Pauses the selected tasks (`scheduler.pause`). */
+  /** Pauses the selected tasks (`scheduler.pause`); expired ones are left as they are. */
   schedulerPause(sel: SchedulerSelection, opts?: BridgeRequestOptions): Promise<SchedulerOpResult>;
-  /** Resumes the selected tasks (`scheduler.resume`). */
+  /** Resumes the selected tasks (`scheduler.resume`); a paused ONCE task whose start passed runs at once, expired ones are left. */
   schedulerResume(sel: SchedulerSelection, opts?: BridgeRequestOptions): Promise<SchedulerOpResult>;
   /** Deletes the selected tasks (`scheduler.delete`). */
   schedulerDelete(sel: SchedulerSelection, opts?: BridgeRequestOptions): Promise<SchedulerOpResult>;
-  /** Recreates the given task definitions (`scheduler.restore`). */
+  /** Recreates the given task definitions (`scheduler.restore`); one captured `expired` stays expired. */
   schedulerRestore(body: SchedulerRestoreRequest, opts?: BridgeRequestOptions): Promise<SchedulerOpResult>;
   /** Rebuilds Masa's in-memory site registry from `tsettings` (`site.refresh`). */
   siteRefresh(siteId: string, opts?: BridgeRequestOptions): Promise<SiteRefreshResult>;

@@ -13,6 +13,7 @@ import {
   LEGACY_PROGRAM_ID_COLUMN,
   MappingError,
   assertBatchTenant,
+  defineMapping,
   parseProgramTable,
   programTableName,
   type BatchProgram,
@@ -61,7 +62,7 @@ import {
   type TenantDb,
   type TenantTx,
 } from '../tenancy/index.js';
-import { OUTBOX_TABLE, outboxDrainCounts, registryTenants, type OutboxDrainCounts } from '../outbox/index.js';
+import { OUTBOX_TABLE, outboxDrainCounts, registryTenants, type OutboxDrainCounts, type OutboxKind } from '../outbox/index.js';
 import { INBOX_TABLE, isTopicName } from '../events/index.js';
 import { Roles, type Opt2RouteConfig } from '../auth/index.js';
 import { z, type FastifyInstance, type FastifyRequest, type Opt2RouteLogConfig } from '../service-kit/index.js';
@@ -82,6 +83,9 @@ export const MAX_EXPORT_KEYS = 100;
 
 /** Longest `match` text an export accepts. */
 export const MAX_EXPORT_MATCH_LENGTH = 4096;
+
+/** Largest page of published events a paged position read lists, and its page size when it names no `publishedLimit`. */
+export const MAX_PUBLISHED_LIMIT = 1000;
 
 /** Origins of a migration apply; the reverse projector skips their changelog rows. */
 export const APPLY_ORIGINS = ['backfill', 'migration-feed', 'legacy-window'] as const;
@@ -125,6 +129,8 @@ export interface MigrationHandlerOptions {
   repository: Repository;
   mappings: readonly Mapping[];
   units: readonly string[];
+  /** Repository tables of units with no legacy table, exported over their own columns. */
+  targetOnlyTables?: readonly string[];
   db?: TenantDb;
   /** Object manifest of a unit: an array is the whole manifest, returned with the first export page; a page is one manifest page, and the following pages ride on the following export pages. Keyed export pages carry none. */
   exportObjects?(
@@ -209,21 +215,56 @@ export interface InboxCounts {
   receipts?: Record<string, string[]>;
 }
 
-/** A published outbox event: its id, topic and envelope tenant. */
+/** A published outbox event: its id, topic, envelope tenant, `x-opt2-kind` and outbox `seq` (decimal text). */
 export interface PublishedEvent {
   eventId: string;
   topic: string;
   tenantId: string;
+  kind: OutboxKind;
+  seq: string;
 }
 
-/** Answer of `GET /position`; `outbox` and `inbox` are null when the service has no such table. */
+/**
+ * Answer of `GET /position`; `outbox` and `inbox` are null when the service has no such table. `published` is present only
+ * when `publishedTopics` is asked; the other `published*` members only when the read is paged by `publishedAfter`, `publishedLimit`
+ * or `publishedThrough`, and `publishedUpTo` only on a paged answer whose `publishedComplete` is true.
+ */
 export interface PositionResponse {
   owner: string;
   position: string;
   outbox: OutboxDrainCounts | null;
   inbox: InboxCounts | null;
-  /** Published events of the asked `publishedTopics` in every registered tenant, by tenant, topic and id; empty without an outbox. */
+  /**
+   * The asked topics' published events in every registered tenant: unpaged, every one by tenant, topic and id; paged, one
+   * page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
+   */
   published?: PublishedEvent[];
+  /** `publishedAfter` of the next page; it never passes an unpublished or held row of the asked topics at or below `publishedFrontier`. */
+  publishedNext?: string;
+  /** True when every row of the asked topics after `publishedAfter` and at or below `publishedFrontier` is published and listed. */
+  publishedComplete?: boolean;
+  /**
+   * Last `seq` the page covers: the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not,
+   * in every registered tenant when read, or `publishedAfter` when there is none. Later rows are neither listed nor blocking, so a
+   * caller pages one pass through it.
+   */
+  publishedFrontier?: string;
+  /** Published events of the asked topics at or below `publishedAfter`, so a caller detects rows that appeared behind its cursor. */
+  publishedUpTo?: number;
+}
+
+/** The `published*` members of a paged position answer. */
+type PublishedListing = Required<Pick<PositionResponse, 'published' | 'publishedNext' | 'publishedComplete' | 'publishedFrontier'>> &
+  Pick<PositionResponse, 'publishedUpTo'>;
+
+/** One row of a tenant's published page: its blocking and highest `seq` on every row, and an event, or nulls when the page is empty. */
+interface PublishedPageRow {
+  blocked: string | null;
+  highest: string | null;
+  seq: string | null;
+  event_id: string | null;
+  topic: string | null;
+  kind: OutboxKind | null;
 }
 
 /** One `migration_watermark` row; `finishedAt` is `YYYY-MM-DDTHH:MM:SS.mmm` wall-clock time. */
@@ -330,6 +371,10 @@ const positionQuerySchema = z.strictObject({
     .transform((topics) => topics.split(',').map((topic) => topic.trim()).filter((topic) => topic !== ''))
     .pipe(z.array(z.string().refine(isTopicName, 'expected a <service>.<entity>.<event>.v<major> topic')))
     .optional(),
+  // At most 18 digits, so the value always fits the outbox's bigint `seq`.
+  publishedAfter: z.string().regex(/^(0|[1-9]\d{0,17})$/).optional(),
+  publishedLimit: pageLimit(MAX_PUBLISHED_LIMIT),
+  publishedThrough: z.string().regex(/^(0|[1-9]\d{0,17})$/).optional(),
 });
 
 const watermarkQuerySchema = z.strictObject({ legacyTable: nonEmpty.optional(), direction: z.enum(WATERMARK_DIRECTIONS).optional() });
@@ -478,6 +523,22 @@ function prepareMapping(repository: Repository, units: ReadonlySet<string>, mapp
   });
   if (mismatch !== undefined) throw fail(`target column ${mismatch.name} is missing or has another canonical type`);
   return { mapping, table, definition, legacyNames: new Map(mapping.columns.map((column) => [column.target, column.legacy])) };
+}
+
+/** Identity mapping of a keyed target-only table of an unmapped handler unit, over its columns other than `tenant_id`; it feeds exports only. */
+function prepareTargetOnly(repository: Repository, units: ReadonlySet<string>, mapped: readonly PreparedMapping[], table: string): PreparedMapping {
+  const fail = (problem: string): Error => new Error(`Target-only table ${table}: ${problem}`);
+  const definition = repository.definition(table);
+  const { unit, key } = definition;
+  if (unit === undefined || !units.has(unit)) throw fail(`unit ${String(unit)} is not among the handler units`);
+  if (mapped.some((entry) => entry.mapping.unit === unit)) throw fail(`unit ${unit} is also mapped from a legacy table`);
+  if (key === null) throw fail('has no key');
+  const columns = definition.columns
+    .filter((column) => column.name !== 'tenant_id')
+    .map((column) => ({ legacy: column.name, target: column.name, type: column.type, ...(column.type === 'd' ? { scale: column.scale } : {}) }));
+  const targetTable = `${unit.slice(0, unit.indexOf('.'))}.${table}`;
+  const mapping = defineMapping({ legacyTable: '', targetTable, unit, columns, key });
+  return { mapping, table, definition, legacyNames: new Map(columns.map((column) => [column.target, column.legacy])) };
 }
 
 /** Groups prepared mappings into each unit's target tables, in declaration order. */
@@ -713,7 +774,7 @@ async function upsertWatermark(
 
 /**
  * Registers the migration endpoints of one owner under {@link MIGRATION_PATH_PREFIX}, each requiring `platform.migration`.
- * Throws when `registerWritePositionHeader(app)` has not run, no database is available, a mapping or unit does not fit the repository,
+ * Throws when `registerWritePositionHeader(app)` has not run, no database is available, a mapping, target-only table or unit does not fit the repository,
  * or a mapping takes its tenant from `Program_<id>` without `options.programSiteId`.
  */
 export function registerMigrationHandlers(app: FastifyInstance, options: MigrationHandlerOptions): void {
@@ -738,7 +799,9 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     byLegacyTable.set(legacyKey, [...(byLegacyTable.get(legacyKey) ?? []), entry]);
     byTargetTable.set(entry.table, [...(byTargetTable.get(entry.table) ?? []), entry]);
   }
-  const sourcesByUnit = exportSources(prepared);
+  // Applies and the change feed see only declared mappings, so a target-only table is never written or projected to legacy.
+  const targetOnly = [...new Set(options.targetOnlyTables)].map((table) => prepareTargetOnly(repository, unitSet, prepared, table));
+  const sourcesByUnit = exportSources([...prepared, ...targetOnly]);
 
   app.addHook('onReady', async () => {
     await ensureUnitGates(db, units);
@@ -973,7 +1036,7 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     return counts;
   }
 
-  /** Published outbox events of `topics` in every registered tenant, each tenant read in its own transaction. */
+  /** Every published event of `topics` in every registered tenant, by tenant, topic and id, each tenant read in its own transaction. */
   async function publishedEvents(topics: readonly string[]): Promise<PublishedEvent[]> {
     const table = qualified(db.schema, OUTBOX_TABLE);
     const tenantIds = [...new Set((await registryTenants(db)).map((id) => id.toLowerCase()))].sort();
@@ -981,15 +1044,92 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     // Sequential, so the listing holds at most one pooled connection at a time.
     for (const tenantId of tenantIds) {
       await withTenant(db, tenantId, async (tx) => {
-        const { rows } = await tx.query<{ event_id: string; topic: string }>(
-          `SELECT event_id::text AS event_id, topic FROM ${table}` +
+        const { rows } = await tx.query<{ event_id: string; topic: string; kind: OutboxKind; seq: string }>(
+          `SELECT event_id::text AS event_id, topic, kind, seq::text AS seq FROM ${table}` +
             ' WHERE published_at IS NOT NULL AND topic = ANY($1::text[]) ORDER BY topic, event_id',
           [topics],
         );
-        for (const row of rows) published.push({ eventId: row.event_id, topic: row.topic, tenantId: tx.tenantId });
+        for (const row of rows) published.push({ eventId: row.event_id, topic: row.topic, tenantId: tx.tenantId, kind: row.kind, seq: row.seq });
       });
     }
     return published;
+  }
+
+  /** Published events of `topics` at or below `after` in each of `tenantIds`, each tenant read in its own transaction. */
+  async function publishedUpTo(tenantIds: readonly string[], topics: readonly string[], after: string): Promise<number> {
+    const table = qualified(db.schema, OUTBOX_TABLE);
+    let upTo = 0;
+    for (const tenantId of tenantIds) {
+      await withTenant(db, tenantId, async (tx) => {
+        const { rows } = await tx.query<{ up_to: string }>(
+          `SELECT count(*)::text AS up_to FROM ${table} WHERE topic = ANY($1::text[]) AND published_at IS NOT NULL AND seq <= $2::bigint`,
+          [topics, after],
+        );
+        upTo += Number(rows[0]?.up_to ?? 0);
+      });
+    }
+    return upTo;
+  }
+
+  /**
+   * One page of the published events of `topics` after `after` and at or below `through` when given, merged over every registered
+   * tenant by `seq`. Each tenant is read in one statement, so its page, lowest unpublished `seq` and highest `seq` agree; the page
+   * stops below the lowest unpublished or held row and below the last row of a tenant whose own page is full. Only a complete page
+   * counts the published rows at or below `after`.
+   */
+  async function publishedPage(topics: readonly string[], after: string, limit: number, through: string | undefined): Promise<PublishedListing> {
+    const table = qualified(db.schema, OUTBOX_TABLE);
+    const tenantIds = [...new Set((await registryTenants(db)).map((id) => id.toLowerCase()))].sort();
+    const listed: PublishedEvent[] = [];
+    let highest: bigint | undefined;
+    let bound: bigint | undefined;
+    const lower = (value: bigint): void => {
+      if (bound === undefined || value < bound) bound = value;
+    };
+    // Sequential, so the listing holds at most one pooled connection at a time.
+    for (const tenantId of tenantIds) {
+      await withTenant(db, tenantId, async (tx) => {
+        const { rows } = await tx.query<PublishedPageRow>(
+          `WITH asked AS (
+             SELECT seq, event_id, topic, kind, published_at IS NOT NULL AS published FROM ${table}
+              WHERE topic = ANY($1::text[]) AND ($4::bigint IS NULL OR seq <= $4::bigint)
+           ), stats AS (
+             SELECT min(seq) FILTER (WHERE NOT published AND seq > $2::bigint) AS blocked, max(seq) AS highest FROM asked
+           )
+           SELECT stats.blocked::text AS blocked, stats.highest::text AS highest,
+                  page.seq::text AS seq, page.event_id::text AS event_id, page.topic, page.kind
+             FROM stats LEFT JOIN LATERAL (
+               SELECT seq, event_id, topic, kind FROM asked WHERE published AND seq > $2::bigint ORDER BY seq LIMIT $3
+             ) page ON true
+            ORDER BY page.seq`,
+          [topics, after, limit, through ?? null],
+        );
+        const tenantHighest = rows[0]?.highest;
+        if (tenantHighest != null && (highest === undefined || BigInt(tenantHighest) > highest)) highest = BigInt(tenantHighest);
+        const blocked = rows[0]?.blocked;
+        if (blocked != null) lower(BigInt(blocked) - 1n);
+        const page = rows.flatMap((row) =>
+          row.seq === null || row.event_id === null || row.topic === null || row.kind === null
+            ? []
+            : [{ eventId: row.event_id, topic: row.topic, tenantId: tx.tenantId, kind: row.kind, seq: row.seq }],
+        );
+        const last = page.at(-1);
+        if (page.length === limit && last !== undefined) lower(BigInt(last.seq));
+        listed.push(...page);
+      });
+    }
+    const eligible = listed
+      .filter((event) => bound === undefined || BigInt(event.seq) <= bound)
+      .sort((a, b) => (BigInt(a.seq) < BigInt(b.seq) ? -1 : BigInt(a.seq) > BigInt(b.seq) ? 1 : 0));
+    const published = eligible.slice(0, limit);
+    const last = published.at(-1);
+    const publishedFrontier = through ?? highest?.toString() ?? after;
+    if (eligible.length > limit && last !== undefined) {
+      return { published, publishedNext: last.seq, publishedComplete: false, publishedFrontier };
+    }
+    if (bound !== undefined) return { published, publishedNext: bound.toString(), publishedComplete: false, publishedFrontier };
+    const upTo = await publishedUpTo(tenantIds, topics, after);
+    return { published, publishedNext: last?.seq ?? after, publishedComplete: true, publishedFrontier, publishedUpTo: upTo };
   }
 
   async function position(query: z.output<typeof positionQuerySchema>): Promise<PositionResponse> {
@@ -1007,8 +1147,18 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
       outbox: present.outbox ? await outboxDrainCounts(db) : null,
       inbox: present.inbox ? await inboxCounts(query.eventIds) : null,
     };
-    if (query.publishedTopics !== undefined) {
+    const paged = query.publishedAfter !== undefined || query.publishedLimit !== undefined || query.publishedThrough !== undefined;
+    if (query.publishedTopics !== undefined && !paged) {
       answer.published = present.outbox ? await publishedEvents(query.publishedTopics) : [];
+    } else if (query.publishedTopics !== undefined) {
+      const after = query.publishedAfter ?? '0';
+      const through = query.publishedThrough;
+      Object.assign(
+        answer,
+        present.outbox && query.publishedTopics.length > 0
+          ? await publishedPage(query.publishedTopics, after, query.publishedLimit ?? MAX_PUBLISHED_LIMIT, through)
+          : { published: [], publishedNext: after, publishedComplete: true, publishedFrontier: through ?? after, publishedUpTo: 0 },
+      );
     }
     return answer;
   }

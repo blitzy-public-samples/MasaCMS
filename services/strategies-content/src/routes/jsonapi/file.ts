@@ -16,7 +16,7 @@ import {
   isLegacyFindOneId,
   javaTrim,
 } from '@opt2/platform/legacy-compat';
-import { withTenant } from '@opt2/platform/tenancy';
+import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { writeContextFor } from '../../domain/context.js';
 import {
   ImageUploadHaltedError,
@@ -28,6 +28,7 @@ import {
   type FileMetaDataValues,
 } from '../../domain/files.js';
 import { withPoolTenant } from '../../domain/pools.js';
+import type { FeedTableSpec } from '../../repo/bean-feed-sql.js';
 import type { ReadFileMetaRow } from '../../repo/files.js';
 import type { ContentRepository } from '../../repo/repository.js';
 import { CONTENT_ENTITIES, type ContentEntityConfig } from '../../legacy/jsonapi-entities.js';
@@ -350,7 +351,7 @@ const FILE: FileEntity = {
   feed: (ctx, call, ids, use) => {
     const { db, repository } = ctx.domain;
     return withPoolTenant(db, call.tenantId, 'file', (tx) =>
-      use(repository.beanFeed.source<Struct>((fn) => fn(tx), repository.files.siteFilesFeed(tx, { siteId: call.siteId, ids }))),
+      use(projectedSource(ctx, call, tx, repository.files.siteFilesFeed(tx, { siteId: call.siteId, ids }))),
     );
   },
   item: (ctx, _call, row, selected) => ({ ...fileBeanDefaults(cfUuid(), '', ctx.domain.clock.now()), ...beanColumns(row, selected), isnew: 0 }),
@@ -372,7 +373,7 @@ const META: FileEntity = {
   feed: (ctx, call, ids, use) => {
     const { db, repository } = ctx.domain;
     return withTenant(db, call.tenantId, (tx) =>
-      use(repository.beanFeed.source<Struct>((fn) => fn(tx), repository.files.siteFileMetadataFeed(tx, { siteId: call.siteId, ids }))),
+      use(projectedSource(ctx, call, tx, repository.files.siteFileMetadataFeed(tx, { siteId: call.siteId, ids }))),
     );
   },
   // A feed selects the table alone, so iterator beans carry no joined file columns.
@@ -457,6 +458,12 @@ function selectedColumns(call: JsonApiCall, feedColumns: readonly string[]): Rea
     .map((field) => field.trim().toLowerCase())
     .filter((field) => columns.has(field));
   return fields.length === 0 ? undefined : new Set(fields);
+}
+
+/** The entity feed source over `spec` in `tx`, whose returned rows hold only the columns {@link feedResult} keeps of them. */
+function projectedSource(ctx: RouteContext, call: JsonApiCall, tx: TenantTx, spec: FeedTableSpec): BeanFeedSource<Struct> {
+  // Read when rows are read, after the feed props appended the primary key to `fields`, as feedResult reads it.
+  return ctx.domain.repository.beanFeed.source<Struct>((fn) => fn(tx), spec, () => selectedColumns(call, Object.keys(spec.columns)));
 }
 
 /** findMany's order (jsonApiUtility.cfc:2692-2705): for each requested id, the first item whose `id` matches it. */

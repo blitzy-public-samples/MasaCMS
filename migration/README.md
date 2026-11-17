@@ -37,12 +37,13 @@ Run as `node migration/dist/cli.js <command>` or through the `opt2-migrate` bin.
 | `resolve-window <windowId>` | Imports and closes an `import-pending` window after operator review |
 | `window open --units <unit,...> [--route <key>] [--scope <table\|json>]` | Opens a write window as `platform.operator` |
 | `window complete <windowId> [--forwarded]` | Reports the legacy outcome of an operator window and closes it; exit 1 for an id that names no window (`state` `unknown`) |
+| `window report` | Writes `windows.json` from `migration.write_window`, keeping the entries of windows the table no longer holds |
 | `scheduler import --file <path>` | Loads the captured native tasks and `ping` (`${OPT2_PRISTINE_DIR}/native-tasks.json`) into `migration.scheduler_state` |
 | `scheduler status` | Prints the stored scheduler state beside the live ColdFusion tasks |
 | `files manifest --snapshot <n>` | Lists the legacy file store through the bridge into `migration.file_manifest` |
 | `files transfer --snapshot <n>` | Moves the manifest's objects to strategies-content |
 
-`transition`, `resolve-window` and `window …` are clients of the running service, as is `fault` for the service's in-process hooks.
+`transition`, `resolve-window`, `window open` and `window complete` are clients of the running service, as is `fault` for the service's in-process hooks.
 
 ### `opt2-db` (`src/db-bootstrap/cli.ts`) and `opt2-ops` (`src/quiesce/cli.ts`)
 
@@ -130,13 +131,13 @@ DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql); r
 | 1 | `transition-set` | Derives the units `T` whose authority changes and the affected entries; leases `T` as holder kind `transition` |
 | 2 | `stop-new-work` | Pauses the native and survey tasks and the owners' queues that write `T` (outbox sweeps excepted); freezes the entries and waits for every gateway instance's epoch |
 | 3 | `confirm-inflight-finished` | Waits for `gateway.inflight` to hold none of them; orphaned legacy-bound rows are cleared only by a controlled restart (`OPT2_LEGACY_RESTART_CMD`), otherwise the transition aborts naming the orphan; waits for fixture `cfthread` exports (10 min bound) |
-| 4 | `drain-effects` | Runs the outbox sweeps and waits until every published event for `T` has an inbox receipt or dead letter, with the gates still open |
+| 4 | `drain-effects` | Runs the outbox sweeps and waits until every published event for `T` has an inbox receipt, or a dead letter for a `state` event, with the gates still open; a dead-lettered `process` event aborts the step, and an owner that does not answer is asked again until `transition.drainTimeoutMs` |
 | 5 | `close-gates` | Closes `T`'s gates at their owners with the transition as holder |
 | 6 | `final-state-and-reconcile` | Final snapshot and diff for units moving to `target`; projector to every owner's write position for units moving to `legacy`; reconciles `T` to zero or aborts |
 | 7 | `activate` | Activates the version once and waits for every gateway instance's epoch |
 | 8 | `hand-off-and-reopen` | Hands off schedulers, sets gates `open` or `legacy`, releases leases, unfreezes, resumes queues and tasks, reconciles recurring tasks |
 
-An abort before step 7 reopens what it closed and leaves the active version unchanged. A transition that would make units `target`-authoritative is refused while the legacy database lacks `opt2_sync.projector_checkpoint` (run `init-legacy` first).
+An abort before step 7 reopens what it closed and leaves the active version unchanged. A transition that would make units `target`-authoritative is refused while the legacy database lacks `opt2_sync.projector_checkpoint` (run `init-legacy` first). One that would make a content unit `target`-authoritative is also refused (`cluster-unsafe`) unless `${OPT2_STATE_DIR}/baseline/environment.json` records `settings.cluster.clusterSafe: true` and the live `tclustercommands` is empty; a missing record refuses too (run `harness/src/baseline/environment.ts --phase services`).
 
 ### Reverse projection and the read-after-write barrier (`src/reverse/`)
 
@@ -161,7 +162,7 @@ An abort before step 7 reopens what it closed and leaves the active version unch
 | Close | Gates reopened by compare-and-set on the holder, leases released |
 | `import-pending` | A failed import keeps the gates closed (reads and writes wait or answer 503) and retries every 5 s |
 
-A window whose gateway lease (120 s) expires is imported only after the evidence of a controlled legacy restart run through `OPT2_LEGACY_RESTART_CMD`; without one, as in the cloud, it stays `import-pending` until `opt2-migrate resolve-window <id>`. Windows on disjoint units run concurrently; overlapping windows and transitions serialise at lease acquisition. Every window is logged to `windows.json`. Site-monitor steps on legacy run through the same windows (`legacyStepRun`).
+Elapsed time alone never imports or reopens a window whose gateway lease (120 s) expires: while a live gateway instance still holds the request, the lease is extended. A later completion of the window, a controlled legacy restart run through `OPT2_LEGACY_RESTART_CMD` under the window's holder, or `opt2-migrate resolve-window <id>` is the evidence that the request can no longer commit; the window then imports and closes. Without a restart command, as in the cloud, or when the restart fails, it stays `import-pending` until a completion or `resolve-window`. Windows on disjoint units run concurrently; overlapping windows and transitions serialise at lease acquisition. Every window is logged to `windows.json`. Site-monitor steps on legacy run through the same windows (`legacyStepRun`).
 
 ### Start-up guard (`src/legacy/startup-guard.ts`, `src/windows/reload.ts`)
 
@@ -228,7 +229,7 @@ Written under `OPT2_REPORTS_DIR` (default `opt2/reports/`); each carries `source
 |---|---|
 | `reconciliation/{after-backfill,after-feed-<n>,after-fault-<fault>,checkpoint,post-cutover,rollback-before,rollback-after}.json` | `reconcile`, `backfill`, `feed`, `fault`, transitions |
 | `reconciliation/summary.md` | Regenerated with every reconciliation report |
-| `windows.json` | Every write window: route, units, scope, phases with timestamps, rows imported, outcome |
+| `windows.json` | Every write window: route, units, scope, phases with timestamps, rows imported, outcome. Written from `migration.write_window` by `window report` and when the service stops |
 | `transitions.json` | Every transition: versions, `setT`, steps, outcome |
 | `migration-order.json` | The dependency order, from `backfill` and `feed` |
 | `rollback-rehearsal.md` | `rollback report` |
@@ -274,7 +275,7 @@ Read by the service, `opt2-migrate` and `opt2-ops`, whose `--help` lists every v
 
 - `OPT2_CLOUDSQL_ADMIN_PASSWORD` is cloud-only and has no default. The `db-bootstrap` job in `infra/terraform/envs/plan/main.tf` takes it from the Secret Manager secret `cloudsql-admin-password` (version `latest`), a container with no version in this run; no file in the repository holds its value.
 - The job also sets `OPT2_DB_AUTH=iam` and `PG_USER`; `opt2-db` uses neither for `--target cloud`.
-- A variable that is set is format-checked whatever the target. A missing required one fails before any connection, with exit 1 and an error naming it: `error.message` is `db-bootstrap: invalid environment (<names>)` for a missing or a badly formatted variable, and never holds a value.
+- A variable that is set is format-checked whatever the target. A missing required one fails before any connection, with exit 1 and an error naming it: `error.message` is `db-bootstrap: invalid environment (<VAR>: <reason>; …)` for a missing (`is required`) or a badly formatted variable, and never holds a value.
 
 ## Build and test
 
@@ -287,7 +288,7 @@ npm run test:security   # test/security: route and role matrix through app.injec
 npm start               # node dist/cli.js serve
 ```
 
-- Suites that need PostgreSQL create a throwaway schema from the `PG_*` variables and skip when they are unset. SQL Server, ColdFusion, the bridge, the gateway, the owners and Pub/Sub are in-process doubles (`test/helpers/`), so no suite needs a legacy server.
+- Suites that need PostgreSQL create a throwaway schema from the `PG_*` variables, skip when `PG_HOST` is unset and fail when the server is unreachable. SQL Server, ColdFusion, the bridge, the gateway, the owners and Pub/Sub are in-process doubles (`test/helpers/`), so no suite needs a legacy server.
 - Headline suites: `test/windows.test.ts` (overlapping windows, a transition racing a window, gateway loss mid-write), `test/transition.test.ts` (pending seam event drained before the gates close), `test/projection-await.test.ts` (older open transaction holds the barrier), `test/reverse-crash.test.ts` (crash between the SQL Server commit and the mirror), `test/reverse-nokey.test.ts` (duplicate keyless rows).
 
 ## Links

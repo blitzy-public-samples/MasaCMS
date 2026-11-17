@@ -7,7 +7,7 @@ import type { MigrationContext } from '../context.js';
 import { GatewayWaitTimeoutError, type InflightRow } from '../cutover/gateway-client.js';
 import { createSchedulerService, type SchedulerContext, type SchedulerService } from '../scheduler/index.js';
 import { remoteBackgroundState, type BackgroundRecord, type BackgroundStateApi } from './background.js';
-import { DEFAULT_DRAIN_POLL_MS, SWEEP_PRODUCERS, awaitDrained, type DrainContext, type DrainResult } from './drain.js';
+import { DEFAULT_DRAIN_POLL_MS, DrainTimeoutError, SWEEP_PRODUCERS, awaitDrained, type DrainContext, type DrainResult } from './drain.js';
 import {
   createPubSub,
   isPushConfig,
@@ -253,10 +253,18 @@ async function awaitQuiescent(
       const { orphans } = await ctx.gateway.awaitInflightDrained(routes, budget);
       if (orphans.length > 0) throw new OrphanedWritesError(orphans);
     }
-    const drained = await awaitDrained(ctx, { timeoutMs: remainingMs(ctx, barrier), pubsub, sleep: barrier.sleep });
+    // A drain the waits above left no budget makes no call and times out; the confirming poll names what held the barrier instead.
+    const drainMs = remainingMs(ctx, barrier);
+    const drained = await awaitDrained(ctx, { timeoutMs: drainMs, pubsub, sleep: barrier.sleep }).catch((error: unknown) => {
+      if (drainMs === 0 && error instanceof DrainTimeoutError) return error;
+      throw error;
+    });
     left = await pauseEach(ctx, producers);
     const pending = await liveInflight(ctx);
-    if (left.length === 0 && pending.length === 0) return drained;
+    if (left.length === 0 && pending.length === 0) {
+      if (drained instanceof DrainTimeoutError) throw drained;
+      return drained;
+    }
     if (ctx.clock.now().getTime() >= barrier.deadline) {
       throw left.length > 0 ? new InvocationsRunningError(barrier.timeoutMs, left) : new GatewayWaitTimeoutError({ kind: 'inflight', pending });
     }

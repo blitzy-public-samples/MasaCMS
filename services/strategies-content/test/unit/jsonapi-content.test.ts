@@ -421,5 +421,67 @@ describe.skipIf(!(await pgAvailable()))('JSON API content handler', () => {
       expect(view?.values).toMatchObject({ title: 'Row title', contentid: ALPHA });
       expect(view?.allValues).toMatchObject({ Summary: 'second' });
     });
+
+    it('contentNavViews reads rows of several tenants together as it reads each row alone, a missing version giving its site\'s new bean', async () => {
+      const umbrella: ContentSaveSite = { ...SITE, siteId: TENANT_UMBRELLA.siteId, urls: { ...SITE.urls, siteId: TENANT_UMBRELLA.siteId } };
+      const pooled = await saveContent(fx.deps, { ...ADMIN, siteId: umbrella.siteId, tenantId: TENANT_UMBRELLA.tenantId }, umbrella, {
+        siteid: umbrella.siteId,
+        type: 'Page',
+        approved: 1,
+        contentid: HOME,
+        parentid: END,
+        title: 'Umbrella Home',
+      });
+      const activeOf = async (contentId: string): Promise<string> => String((await fx.rows('content', 'contentid = $1 AND active = 1', [contentId]))[0]?.['contenthistid']);
+      const rows = [
+        { siteid: SITE_ID, contenthistid: await activeOf(ALPHA) },
+        { siteid: umbrella.siteId, contenthistid: pooled.bean.contentHistId() },
+        { siteid: SITE_ID, contenthistid: cfId('H', 1) },
+        { siteid: SITE_ID, contenthistid: '' },
+        { siteid: SITE_ID, contenthistid: await activeOf(BETA) },
+        { siteid: umbrella.siteId, contenthistid: cfId('H', 2) },
+      ];
+      // A bean's instance id, and a new bean's ids, are fresh on every read.
+      const masked = (view: { allValues: Readonly<Struct> } | undefined): string => {
+        const ids = Object.entries(view?.allValues ?? {}).flatMap(([key, value]) => (/^(content(hist)?id|instanceid)$/i.test(key) && value !== '' ? [String(value)] : []));
+        return ids.reduce((text, id) => text.replaceAll(id, '<id>'), JSON.stringify(view));
+      };
+      await fx.handle.app.withMetadata((tx) =>
+        tx.query(`UPDATE ${fx.handle.schema}.tenant_registry SET content_pool_ids = $1, content_pool_tenants = $2 WHERE tenant_id = $3`, [
+          [SITE_ID, TENANT_UMBRELLA.siteId],
+          [TENANT_A.tenantId, TENANT_UMBRELLA.tenantId],
+          TENANT_A.tenantId,
+        ]),
+      );
+      try {
+        const call = callFor('findQuery', { url: { fields: 'title,summary' } });
+        const opts = { expand: '', expanded: 0 };
+        const together = await contentNavViews(routeCtx(), call, rows, opts);
+        const alone = [];
+        for (const row of rows) alone.push(...(await contentNavViews(routeCtx(), call, [row], opts)));
+        const value = (view: { allValues: Readonly<Struct> }, name: string): unknown => Object.entries(view.allValues).find(([key]) => key.toLowerCase() === name)?.[1];
+        expect(together.map((view) => [value(view, 'isnew'), value(view, 'title') ?? '', value(view, 'siteid')])).toEqual([
+          [0, 'Alpha', SITE_ID],
+          [0, 'Umbrella Home', umbrella.siteId],
+          [1, '', SITE_ID],
+          [1, '', SITE_ID],
+          [0, 'Beta', SITE_ID],
+          [1, '', umbrella.siteId],
+        ]);
+        expect(together.map(masked)).toEqual(alone.map(masked));
+      } finally {
+        await seedRegistry(fx.handle.app);
+      }
+    });
+
+    it.each([
+      ['a row that fails closed before a row of an unregistered site', 'first', unavailable('content-extended-attribute')],
+      ['a row of an unregistered site before a row that fails closed', 'last', expect.objectContaining({ message: expect.stringContaining('Site nowhere is not a registered site') })],
+    ])('contentNavViews throws the error of the first failing row for %s', async (_label, alphaAt, expected) => {
+      const alpha = { siteid: SITE_ID, contenthistid: String((await fx.rows('content', 'contentid = $1 AND active = 1', [ALPHA]))[0]?.['contenthistid']) };
+      const nowhere = { siteid: 'nowhere', contenthistid: cfId('H', 3) };
+      const rows = alphaAt === 'first' ? [alpha, nowhere] : [nowhere, alpha];
+      await expect(contentNavViews(routeCtx(), callFor('findQuery', { url: { fields: 'title,colour' } }), rows, { expand: '', expanded: 0 })).rejects.toEqual(expected);
+    });
   });
 });

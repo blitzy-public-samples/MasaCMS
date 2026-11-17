@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import type { ServiceIdentity, UserClaims } from '../auth/index.js';
+import { SAFE_ERROR_TEXT } from '../logging/safe-error.js';
 import { systemClock, type Clock } from './clock.js';
 
 /** Per-request state read by the outbox, events, tasks, migration-kit changelog and the service client. */
@@ -14,6 +15,7 @@ export interface RequestContextStore {
   site?: string; // claims.site (legacy site id)
   readonly writePositions: Map<string, string>; // owner -> commit xid8 as a decimal string
   signal?: AbortSignal; // aborts once the client disconnects; set only for a request that opted in to abandonment
+  unpublishedEvents?: string[]; // committed outbox event ids whose in-request flush was incomplete
 }
 
 /** The process-wide request context store. */
@@ -40,6 +42,26 @@ export class RequestAbortedError extends Error {
   constructor() {
     super('The client disconnected before the answer');
   }
+}
+
+/** The request committed outbox events whose publish was incomplete, so it is abandoned without an answer and the sweep publishes them. */
+export class UnpublishedEventsError extends Error {
+  override readonly name: string = 'UnpublishedEventsError';
+
+  constructor(readonly eventIds: readonly string[]) {
+    super(`Outbox publish of ${String(eventIds.length)} committed event(s) incomplete before the answer; left to the sweep`);
+  }
+
+  /** The message, which names only the event count, for logs and spans. */
+  get [SAFE_ERROR_TEXT](): string {
+    return this.message;
+  }
+}
+
+/** Records committed outbox events whose in-request publish was incomplete, withholding the active request's answer; a no-op outside a request. */
+export function recordUnpublishedEvents(eventIds: readonly string[]): void {
+  const store = requestContext.getStore();
+  if (store !== undefined && eventIds.length > 0) (store.unpublishedEvents ??= []).push(...eventIds);
 }
 
 /** Throws the active request's abort reason once its signal has aborted; a no-op outside a request or without a signal. */

@@ -305,6 +305,16 @@ describe('fixture user token site', () => {
     expect(h.people.requests.map((r) => r.headers.authorization)).toEqual([`Bearer tok:${site}`]);
   });
 
+  it.each([
+    ['//legacy-fixtures/cfml/api.cfm/PEOPLE/Persons/00532E14-B51F-226C-36938FA3E4A6396C/ARCHIVE?siteid=tenant-a'],
+    ['/legacy-fixtures//cfml/api.cfm/people%2Fpersons/00532E14-B51F-226C-36938FA3E4A6396C/archive/?siteid=tenant-a'],
+  ])('forwards %s to the service on the api.cfm path legacy dispatches, the query as sent', async (url) => {
+    const h = await harness();
+    const res = await h.app.inject({ method: 'POST', url, headers: { 'content-type': URLENCODED }, payload: FROM });
+    expect(res.statusCode).toBe(200);
+    expect(h.people.requests.map((r) => r.url)).toEqual([`${ARCHIVE}?siteid=tenant-a`]);
+  });
+
   it('fails closed with the fixture 503, calling no service, when identity cannot report the session user', async () => {
     const h = await harness();
     vi.mocked(h.deps.identity.snapshot).mockRejectedValueOnce(new ServiceUnavailableError(IDENTITY_SERVICE, new Error('down')));

@@ -8,7 +8,7 @@ import { parseArgs } from 'node:util';
 import { createLocalInvocationMinter, loadLocalSigningKeys } from '@opt2/platform/auth';
 import { baseEnvSchema, createServiceClient, z, type ServiceClient } from '@opt2/platform/service-kit';
 import { loadConfig } from './config.js';
-import { generateCredentials, writeCredentials } from './credentials.js';
+import { generateCredentials, readCredentials, writeCredentials } from './credentials.js';
 import { buildDataset } from './dataset.js';
 import { directServices, runDirect, type DirectClient } from './direct.js';
 import { errorCategory, nameText, oneLine, parseJson, printable, printableMessage } from './errors.js';
@@ -45,8 +45,9 @@ const OPTIONS = {
 
 const USAGE = `Usage: node dist/generate.js [--direct] [--config <file>] [--out <dir>] [--pin <file>]
 
-Generates the fixed-seed dataset and fresh credentials into <out>; with --direct, sends the
-dataset already in <out> to the synthetic services' migration apply endpoints instead.
+Generates the fixed-seed dataset and its credentials into <out>, keeping every secret already in
+\${OPT2_STATE_DIR}/secrets/seed-credentials.json, which only the default <out> rewrites; with --direct,
+sends the dataset already in <out> to the synthetic services' migration apply endpoints instead.
 
   --direct         apply <out>/dataset.json through OPT2_SERVICE_URLS as the migration workload
   --config <file>  seed configuration (default <package>/seed.config.json)
@@ -116,14 +117,17 @@ function parseServiceUrls(raw: string | undefined): { urls: Record<string, strin
   return { error: `OPT2_SERVICE_URLS is not a JSON object of service name to http(s) URL (${issues.join('; ')})` };
 }
 
-/** Builds the dataset, writes it with its manifest, then writes fresh credentials for it. */
+/** Builds the dataset, writes it with its manifest, then writes its credentials, keeping the secrets the state directory holds. */
 async function generate(paths: RunPaths, deps: GenerateDeps, log: (line: string) => void): Promise<void> {
   const config = await loadConfig(paths.config);
   const sha = await readPinnedSha(paths.pin);
+  const previous = await readCredentials(paths.stateDir);
   const dataset = buildDataset(config, sha);
   const manifest = await writeDataset(paths.out, dataset, config.chunkRows);
-  const creds = generateCredentials(dataset, config, { randomBytes: deps.randomBytes });
-  await writeCredentials(paths.out, paths.stateDir, creds);
+  const creds = generateCredentials(dataset, config, { randomBytes: deps.randomBytes, previous });
+  // Any other <out> leaves the state's secrets untouched.
+  const defaultOut = canonicalPath(paths.out) === canonicalPath(join(paths.stateDir, 'seed'));
+  await writeCredentials(paths.out, defaultOut ? paths.stateDir : undefined, creds);
   log(`seed digest=${manifest.digest} out=${paths.out} parts=${manifest.parts.length}`);
   log(`seed counts ${Object.entries(manifest.counts).map(([array, count]) => `${array}=${count}`).join(' ')}`);
 }

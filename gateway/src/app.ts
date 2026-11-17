@@ -5,6 +5,7 @@ import { LEGACY_REQUEST_HEAD_LIMIT_BYTES } from '@opt2/platform/legacy-compat';
 import {
   LEGACY_POST_LIMIT_BYTES,
   baseEnvSchema,
+  checkProcessEnv,
   createService,
   envUrl,
   loadEnv,
@@ -70,23 +71,14 @@ const gatewayVariables = baseEnvSchema.extend({
   MURA_APPRELOADKEY: requiredEnvString(z.string().default('appreload')),
 });
 
-/** Gateway variables with every callee's URL required: the required services, the stub locally, and migration. */
+/** Gateway variables requiring its own name, its database and each callee's URL: the required services, the stub locally, and migration. */
 export const gatewayEnvSchema = gatewayVariables.superRefine(
   (env, ctx) => {
-    // Failed fields keep their raw values here; a map that failed as a whole carries its own issue.
-    const urls: unknown = env.OPT2_SERVICE_URLS;
-    const mapFailed = ctx.issues.some((issue) => issue.path?.length === 1 && issue.path[0] === 'OPT2_SERVICE_URLS');
-    if (mapFailed || typeof urls !== 'object' || urls === null) return;
-    const required = env.OPT2_ENV === 'local' ? [...REQUIRED_SERVICES, 'stub'] : REQUIRED_SERVICES;
-    for (const name of required.filter((service) => !Object.hasOwn(urls, service))) {
-      ctx.addIssue({ code: 'custom', path: ['OPT2_SERVICE_URLS', name], message: 'is required' });
-    }
     // createService maps OPT2_MIGRATION_URL over the map's entry, so either one names migration.
-    if (env.OPT2_MIGRATION_URL === undefined && !Object.hasOwn(urls, 'migration')) {
-      ctx.addIssue({ code: 'custom', path: ['OPT2_MIGRATION_URL'], message: 'is required (or OPT2_SERVICE_URLS.migration)' });
-    }
+    const callees = [...REQUIRED_SERVICES, ...(env.OPT2_ENV === 'local' ? ['stub'] : []), 'migration'];
+    checkProcessEnv(env, ctx, { service: SERVICE_NAME, callees, database: true });
   },
-  // Runs even when other variables failed, so loadEnv lists every missing callee at once.
+  // Runs even when other variables failed, so loadEnv lists every issue at once.
   { when: () => true },
 );
 

@@ -1,7 +1,7 @@
 // Collections (cFeed) secondary menu of `cfeed/dsp_secondary_menu.cfm`, also the shell's `cfeed` hook (server-only).
 import { html, raw, type SafeHtml } from '@/lib/html';
 import { administersRequestedSite, type AdminRequest } from '@/lib/request-context';
-import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
+import { adminRbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellHooks } from '@/shell/document';
 import { MODULE_IDS } from '@/shell/nav';
@@ -79,8 +79,8 @@ export function renderCfeedSecondaryMenu(
   return html`<div class="nav-module-specific btn-group">\n\t${links}\n\t</div>`;
 }
 
-// The hook receives only the request, so it looks labels up in `session.rb` through the admin chain, as legacy's
-// `application.rbFactory.getKeyValue(session.rb, …)` does; no collection is loaded outside the cFeed views.
+// The hook receives only the request, so it looks labels up in `session.rb` through the admin chain under the
+// `resource_bundles/` overrides, as the views do; no collection is loaded outside the cFeed views.
 /** The shell's `cfeed` secondary-menu hook for the current action. */
 export const cfeedSecondaryMenu: NonNullable<ShellHooks['secondaryMenus']['cfeed']> = (req) =>
-  renderCfeedSecondaryMenu(req, rbFor(req.session.rb), { fuseaction: req.item });
+  renderCfeedSecondaryMenu(req, adminRbFor(req.session.rb), { fuseaction: req.item });

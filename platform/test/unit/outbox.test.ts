@@ -1,6 +1,12 @@
 import type { Pool, QueryConfig, QueryResult, QueryResultRow } from 'pg';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { validateEnvelope, type TopicValidator } from '../../src/events/index.js';
+import {
+  MAX_PUBLISHED_ENVELOPE_BYTES,
+  publishedSize,
+  validateEnvelope,
+  type EventEnvelope,
+  type TopicValidator,
+} from '../../src/events/index.js';
 import { createLogger } from '../../src/logging/index.js';
 import { OUTBOX_KINDS, OUTBOX_TABLE, localTimestamp, outboxSql, outboxTable, rowFromDb } from '../../src/outbox/ddl.js';
 import {
@@ -503,6 +509,27 @@ describe('writeOutbox', () => {
       new OutboxPayloadError(TOPIC, failure.errors, failure.subject),
     );
     expect(sqlByConnection(statements)).toEqual([['BEGIN', SET_TENANT_SQL, 'ROLLBACK']]);
+  });
+
+  it.each([
+    { size: 'at', over: 0, outcome: 'writes' },
+    { size: 'one byte over', over: 1, outcome: 'rejects' },
+  ] as const)('$outcome an envelope $size the publish size limit', async ({ over, outcome }) => {
+    const probe = (await withTenant(stubOutbox().db, tenant, (tx) => writeOutbox(tx, NOTE))) as EventEnvelope;
+    const bytes = MAX_PUBLISHED_ENVELOPE_BYTES + over;
+    const body = NOTE.payload.body + 'x'.repeat(bytes - publishedSize(probe));
+    const { db, statements } = stubOutbox();
+    const written = withTenant(db, tenant, (tx) => writeOutbox(tx, { ...NOTE, payload: { ...NOTE.payload, body } }));
+
+    if (outcome === 'writes') {
+      expect(publishedSize((await written) as EventEnvelope)).toBe(bytes);
+      expect(sqlByConnection(statements)[0]).toEqual(['BEGIN', SET_TENANT_SQL, INSERT_SQL, 'COMMIT']);
+    } else {
+      await expect(written).rejects.toThrow(
+        new OutboxPayloadError(TOPIC, ['/ is 9995905 bytes as published, over the 9995904-byte Pub/Sub publish limit'], 'envelope'),
+      );
+      expect(sqlByConnection(statements)).toEqual([['BEGIN', SET_TENANT_SQL, 'ROLLBACK']]);
+    }
   });
 });
 

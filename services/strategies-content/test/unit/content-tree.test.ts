@@ -878,19 +878,25 @@ describe('drafts, approvals and dashboard counts', () => {
     expect(bound(sql, params, /tapprovalrequests\.userid = ANY\(\$(\d+)/)).toEqual(idForms([submitter]));
   });
 
+  /** The distinct-id count statement over the list `list` matches. */
+  const countOf = (list: RegExp): RegExp =>
+    new RegExp(`^SELECT \\(count\\(DISTINCT q\\.contentid\\) \\+ \\(count\\(\\*\\) > count\\(q\\.contentid\\)\\)::integer\\)::integer AS total FROM \\(${list.source.slice(1)}`);
+  /** The count statement's total over `rows`: their distinct non-NULL ids, plus one where any id is NULL. */
+  const totalOf = (rows: readonly Row[]): number =>
+    new Set(rows.flatMap((row) => (row.contentid === null ? [] : [row.contentid]))).size + (rows.some((row) => row.contentid === null) ? 1 : 0);
   const countCases: Array<[string, RegExp, (actor: Actor) => Promise<number>]> = [
-    ['getMyApprovalsCount', PENDING_REQUESTS, (actor) => getMyApprovalsCount(deps, actor, { siteId: SITE })],
-    ['getMySubmissionsCount', PENDING_REQUESTS, (actor) => getMySubmissionsCount(deps, actor, { siteId: SITE })],
-    ['getMyDraftsCount', DRAFT_LIST, (actor) => getMyDraftsCount(deps, actor, { siteId: SITE })],
+    ['getMyApprovalsCount', countOf(PENDING_REQUESTS), (actor) => getMyApprovalsCount(deps, actor, { siteId: SITE })],
+    ['getMySubmissionsCount', countOf(PENDING_REQUESTS), (actor) => getMySubmissionsCount(deps, actor, { siteId: SITE })],
+    ['getMyDraftsCount', countOf(DRAFT_LIST), (actor) => getMyDraftsCount(deps, actor, { siteId: SITE })],
   ];
   it.each(countCases)('%s counts distinct contentids case-sensitively, NULL once', async (_count, pattern, count) => {
-    db.respond(pattern, LIST_ROWS);
+    db.respond(pattern, [{ total: totalOf(LIST_ROWS) }]);
     expect(await count(EDITOR)).toBe(3);
   });
 
   it('getMyDraftsCount reads the drafts since the start date', async () => {
     await getMyDraftsCount(deps, EDITOR, { siteId: SITE, startDate: new Date(2026, 5, 20, 8, 0) });
-    expect(statementOf(DRAFT_LIST).params).toContainEqual(new Date(2026, 5, 20, 0, 0, 0));
+    expect(statementOf(countOf(DRAFT_LIST)).params).toContainEqual(new Date(2026, 5, 20, 0, 0, 0));
   });
 
   it('getMyExpiresCount counts the distinct items of the user expiring within a month of the clock or expired within a year', async () => {

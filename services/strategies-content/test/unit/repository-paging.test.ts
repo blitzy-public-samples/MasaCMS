@@ -1,15 +1,21 @@
-/** Paged and batched comment, change-set and form-response reads against their unpaged legacy reads over a throwaway `content` schema. */
+/** Paged and batched comment, change-set, form-response, chain, collection, draft, assignment and category-walk reads against their unpaged legacy reads over a throwaway `content` schema. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { UnitReadBlockedError, closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
-import { ContentQueryError } from '../../src/repo/content-queries.js';
+import { ContentQueryError, rowsById } from '../../src/repo/content-queries.js';
+import type { FeedListArgs } from '../../src/repo/feed-queries.js';
 import {
   DEFAULT_ROW_BATCH_SIZE,
   createContentRepository,
+  type CategoryDescent,
+  type CategoryTreeRow,
+  type CategoryWalkRow,
+  type ChangesetAssignmentsArgs,
   type ChangesetQueryArgs,
   type ContentRepository,
+  type DraftListArgs,
   type FormResponsesArgs,
   type ListCommentsArgs,
   type PagedRows,
@@ -64,7 +70,81 @@ const responseCase = (label: string, args: FormResponsesArgs): ReadCase => ({
   batches: (tx, batchSize) => repo.forms.responseBatches(tx, args, batchSize),
 });
 
+const chainCase = (label: string, args: { siteId: string }): ReadCase => ({
+  label: `approvals.listChains ${label}`,
+  unit: 'content.approval_chain',
+  all: (tx) => repo.approvals.listChains(tx, args),
+  page: (tx, page) => repo.approvals.listChainsPage(tx, args, page),
+  batches: (tx, batchSize) => repo.approvals.listChainBatches(tx, args, batchSize),
+});
+
+const feedCase = (label: string, args: FeedListArgs): ReadCase => ({
+  label: `feeds.listFeeds ${label}`,
+  unit: 'content.feed',
+  all: (tx) => repo.feeds.listFeeds(tx, args),
+  page: (tx, page) => repo.feeds.listFeedsPage(tx, args, page),
+  batches: (tx, batchSize) => repo.feeds.listFeedBatches(tx, args, batchSize),
+});
+
+const draftCase = (label: string, args: DraftListArgs, unit: string): ReadCase => ({
+  label: `content.draftList ${label}`,
+  unit,
+  all: (tx) => repo.content.draftList(tx, args),
+  page: (tx, page) => repo.content.draftListPage(tx, args, page),
+  batches: (tx, batchSize) => repo.content.draftListBatches(tx, args, batchSize),
+});
+
+const assignmentCase = (label: string, args: ChangesetAssignmentsArgs): ReadCase => ({
+  label: `changesets.assignmentsQuery ${label}`,
+  unit: 'content.approval_request',
+  all: (tx) => repo.changesets.assignmentsQuery(tx, args),
+  page: (tx, page) => repo.changesets.assignmentsPage(tx, args, page),
+  batches: (tx, batchSize) => repo.changesets.assignmentBatches(tx, args, batchSize),
+});
+
+/** The in-memory walk of the pool's tree rows the admin routes printed before the cursor walk, as its oracle. */
+function walkOf(rows: readonly CategoryTreeRow[], descend: CategoryDescent): CategoryWalkRow[] {
+  const childrenOf = rowsById(rows, (row) => row.parentid);
+  const out: CategoryWalkRow[] = [];
+  const visit = (level: readonly CategoryTreeRow[], depth: number): void => {
+    for (const row of level) {
+      out.push({ ...row, depth, cycle: null });
+      if (descend === 'every' || row.haskids > 0) visit(childrenOf([row.categoryid]), depth + 1);
+    }
+  };
+  visit(rows.filter((row) => row.parentid === null), 0);
+  return out;
+}
+
+const walkCase = (label: string, descend: CategoryDescent): ReadCase => ({
+  label: `categories.categoryWalk ${label}`,
+  unit: 'content.category',
+  all: async (tx) => walkOf(await repo.categories.categoryTreeRows(tx, { siteId: SITE }), descend),
+  page: (tx, page) => repo.categories.categoryWalkPage(tx, { siteId: SITE, descend }, page),
+  batches: (tx, batchSize) => repo.categories.categoryWalkBatches(tx, { siteId: SITE, descend }, batchSize),
+});
+
 const FIELDS = ['name', 'color'];
+const USER = cfId('U', 1);
+const CHANGESET = cfId('S', 9);
+const SITE_TREE = '00000000000000000000000000000000000';
+const COMPONENTS = '00000000000000000000000000000000003';
+
+/** The whole-list reads of the admin chain, collection, draft, change-set assignment and category tree screens. */
+const LIST_CASES: readonly ReadCase[] = [
+  chainCase('of a site by name', { siteId: SITE }),
+  feedCase('Local by name', { siteId: SITE, type: 'local' }),
+  feedCase('Local and public', { siteId: SITE, type: 'LOCAL', publicOnly: true }),
+  feedCase('Remote and active', { siteId: SITE, type: 'Remote', activeOnly: true }),
+  draftCase('by last update', { siteId: SITE, userId: USER }, 'content.content'),
+  draftCase('by menu title ascending', { siteId: SITE, userId: USER.toLowerCase(), sortBy: 'menutitle', sortDirection: 'asc' }, 'content.content_assignment'),
+  draftCase('from a start date', { siteId: SITE, userId: USER, startDate: new Date(2026, 5, 3) }, 'content.approval_request'),
+  assignmentCase('of the components', { changesetId: CHANGESET, moduleId: COMPONENTS }),
+  assignmentCase('matching a keyword', { changesetId: CHANGESET.toLowerCase(), keywords: 'WIDGET' }),
+  assignmentCase('of every module', { changesetId: CHANGESET }),
+  walkCase('into every row', 'every'),
+  walkCase('into rows with stored children', 'withKids'),
+];
 
 const CASES: readonly ReadCase[] = [
   commentCase('editor roots with reply counts', { contentId: CONTENT_ID, siteId: SITE, isEditor: true, includeKids: true }),
@@ -77,6 +157,8 @@ const CASES: readonly ReadCase[] = [
   responseCase('by field descending', { formId: FORM_ID, siteId: SITE, fieldNames: FIELDS, sortBy: 'name', sortDirection: 'desc' }),
   responseCase('keyword in one field', { formId: FORM_ID, siteId: SITE, fieldNames: FIELDS, keywords: 'RED', filterBy: 'color' }),
 ];
+
+const ALL_CASES: readonly ReadCase[] = [...CASES, ...LIST_CASES];
 
 async function collect(batches: AsyncGenerator<Row[], void, undefined>): Promise<Row[][]> {
   const out: Row[][] = [];
@@ -136,6 +218,55 @@ async function seed(): Promise<void> {
         fieldlist: 'name,color', questions: [{ formfield: 'name', formvalue: label }, { formfield: 'color', formvalue: color }],
       });
     }
+    for (const [n, name] of ['beta', 'Alpha', null, 'alpha', 'Gamma'].entries()) {
+      await repo.approvals.insertChain(tx, { chainid: cfId('C', n + 1), siteid: SITE, name, description: `chain ${n}` });
+    }
+    await repo.approvals.insertChain(tx, { chainid: cfId('C', 9), siteid: 'other-site', name: 'Elsewhere' });
+    const feeds: [string, string | null, string, number, number][] = [
+      ['L1', 'News', 'Local', 1, 1], ['L2', 'archive', 'local', 0, 0], ['L3', null, 'LOCAL', 1, 1], ['L4', 'news', 'Local', 0, 1],
+      ['R1', 'Wire', 'Remote', 1, 1], ['R2', 'agency', 'remote', 1, 0], ['R3', 'Paused', 'Remote', 0, 1], ['O1', 'Other', 'Other', 1, 1],
+    ];
+    for (const [id, name, type, isactive, ispublic] of feeds) {
+      await tx.query(
+        `INSERT INTO ${handle.schema}.feed (tenant_id, feedid, siteid, name, type, isactive, ispublic, lastupdate) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [TENANT_A.tenantId, cfId(id.charAt(0), Number(id.slice(1))), SITE, name, type, isactive, ispublic, NOW],
+      );
+    }
+    const content = (row: Record<string, unknown>) =>
+      tx.query(
+        `INSERT INTO ${handle.schema}.content (tenant_id, siteid, moduleid, parentid, contentid, contenthistid, type, active, approved, title, menutitle, summary,` +
+          ' lastupdate, lastupdatebyid, changesetid) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)',
+        [TENANT_A.tenantId, SITE, row.moduleid ?? SITE_TREE, row.parentid ?? SITE_TREE, row.contentid, row.contenthistid, row.type ?? 'Page', row.active ?? 1,
+          row.approved ?? 0, row.title, row.title, row.summary ?? null, row.lastupdate ?? NOW, row.lastupdatebyid ?? USER, row.changesetid ?? null],
+      );
+    await content({ contentid: SITE_TREE, contenthistid: cfId('H', 0), type: 'Module', approved: 1, title: 'Site Manager', lastupdatebyid: null });
+    const drafts: [string, number][] = [['delta', 1], ['Alpha', 4], ['charlie', 2], ['Bravo', 5], ['echo', 3]];
+    for (const [n, [title, day]] of drafts.entries()) {
+      await content({ contentid: cfId('D', n + 1), contenthistid: cfId('E', n + 1), title, lastupdate: new Date(2026, 5, day, 9, n) });
+    }
+    await content({ contentid: cfId('D', 8), contenthistid: cfId('E', 8), title: 'Someone else', lastupdatebyid: cfId('U', 2) });
+    await content({ contentid: cfId('D', 9), contenthistid: cfId('E', 9), title: 'Requested' });
+    await repo.approvals.insertRequest(tx, { requestid: cfId('Q', 1), contenthistid: cfId('E', 9), siteid: SITE, userid: USER, status: 'Pending' });
+    const assigned: [string, string, string, string | null][] = [
+      ['K', 'gadget', COMPONENTS, null], ['K', 'Widget two', COMPONENTS, null], ['K', 'Anchor', COMPONENTS, 'a widget inside'], ['K', 'widget one', COMPONENTS, null],
+      ['P', 'Landing', SITE_TREE, null], ['P', 'Basics', SITE_TREE, null],
+    ];
+    for (const [n, [prefix, title, moduleid, summary]] of assigned.entries()) {
+      await content({ contentid: cfId(prefix, n + 1), contenthistid: cfId('V', n + 1), title, moduleid, summary, active: 0, changesetid: CHANGESET });
+    }
+    await repo.approvals.insertRequest(tx, { requestid: cfId('Q', 2), contenthistid: cfId('V', 2), siteid: SITE, userid: USER, status: 'Approved' });
+    // Children named by their parent's lower-case id are walked but not counted; another site's child is counted, never walked.
+    // 'SS' under 'ß' is no repeat: their padded ids upper-case to texts of different lengths.
+    const categories: [string, string | null, string | null, string][] = [
+      [cfId('T', 1), 'beta', null, SITE], [cfId('T', 2), 'Alpha', null, SITE], [cfId('T', 3), null, null, SITE], [cfId('T', 4), 'Delta', cfId('T', 2), SITE],
+      [cfId('T', 5), 'echo', cfId('T', 2).toLowerCase(), SITE], [cfId('T', 6), 'Foxtrot', cfId('T', 4), SITE], [cfId('T', 7), 'Away', cfId('T', 3), 'other-site'],
+      [cfId('T', 8), 'golf', cfId('T', 5).toLowerCase(), SITE], ['ß', 'Eszett', null, SITE], ['SS', 'Double s', 'ß', SITE],
+    ];
+    for (const [categoryid, name, parentid, siteid] of categories) {
+      await tx.query(`INSERT INTO ${handle.schema}.category (tenant_id, categoryid, siteid, parentid, name, isopen, isactive, isinterestgroup) VALUES ($1, $2, $3, $4, $5, 1, 1, 1)`, [
+        TENANT_A.tenantId, categoryid, siteid, parentid, name,
+      ]);
+    }
   });
 }
 
@@ -168,7 +299,18 @@ describe.skipIf(!(await pgAvailable()))('repo/repository paged and batched list 
     expect(counts).toEqual([3, 7, 2, 6, 4, 4, 5, 5, 3]);
   });
 
-  it.each(CASES)('$label: each page is the slice of the unpaged rows, with their count as total', async (read) => {
+  it('seeds every whole-list case with more rows than one small page', async () => {
+    const counts = await inA(async (tx) => {
+      const lengths: number[] = [];
+      for (const read of LIST_CASES) {
+        lengths.push((await read.all(tx)).length);
+      }
+      return lengths;
+    });
+    expect(counts).toEqual([5, 4, 3, 2, 5, 5, 3, 4, 3, 6, 9, 8]);
+  });
+
+  it.each(ALL_CASES)('$label: each page is the slice of the unpaged rows, with their count as total', async (read) => {
     await inA(async (tx) => {
       const all = await read.all(tx);
       expect(await read.page(tx, { limit: 2 })).toEqual({ rows: all.slice(0, 2), total: all.length });
@@ -180,7 +322,7 @@ describe.skipIf(!(await pgAvailable()))('repo/repository paged and batched list 
     });
   });
 
-  it.each(CASES)('$label: an offset at or past the end returns no rows and the total', async (read) => {
+  it.each(ALL_CASES)('$label: an offset at or past the end returns no rows and the total', async (read) => {
     await inA(async (tx) => {
       const total = (await read.all(tx)).length;
       expect(await read.page(tx, { limit: 2, offset: total })).toEqual({ rows: [], total });
@@ -188,7 +330,7 @@ describe.skipIf(!(await pgAvailable()))('repo/repository paged and batched list 
     });
   });
 
-  it.each(CASES)('$label: batches concatenate to the unpaged rows in order and close their cursor', async (read) => {
+  it.each(ALL_CASES)('$label: batches concatenate to the unpaged rows in order and close their cursor', async (read) => {
     await inA(async (tx) => {
       const all = await read.all(tx);
       for (const size of [2, 3, DEFAULT_ROW_BATCH_SIZE]) {
@@ -202,7 +344,7 @@ describe.skipIf(!(await pgAvailable()))('repo/repository paged and batched list 
     });
   });
 
-  it.each(CASES)('$label: leaving a batch loop early closes the cursor and keeps the transaction usable', async (read) => {
+  it.each(ALL_CASES)('$label: leaving a batch loop early closes the cursor and keeps the transaction usable', async (read) => {
     await inA(async (tx) => {
       const all = await read.all(tx);
       const seen: Row[] = [];
@@ -217,7 +359,7 @@ describe.skipIf(!(await pgAvailable()))('repo/repository paged and batched list 
     });
   });
 
-  it.each(CASES)('$label: an invalid batch size rejects before any SQL', async (read) => {
+  it.each(ALL_CASES)('$label: an invalid batch size rejects before any SQL', async (read) => {
     const { tx, query } = recordingTx();
     for (const size of [0, -1, 1.5, Number.NaN]) {
       await expect(read.batches(tx, size).next()).rejects.toThrow(new ContentQueryError(`Invalid batch size ${size}`));
@@ -247,7 +389,7 @@ describe.skipIf(!(await pgAvailable()))('repo/repository paged and batched list 
     await expect(run).rejects.toMatchObject({ code: '22012' });
   });
 
-  it.each(CASES)('$label: page and batch reads wait out an importing window, then fail as unit reads do', async (read) => {
+  it.each(ALL_CASES)('$label: page and batch reads wait out an importing window, then fail as unit reads do', async (read) => {
     await closeGates(handle.app, { units: [read.unit], holderId: 'paging-window', phase: 'importing' });
     try {
       await expect(withGatedTenant(handle.app, TENANT_A.tenantId, (tx) => read.page(tx, { limit: 2 }), { budgetMs: 200 })).rejects.toBeInstanceOf(

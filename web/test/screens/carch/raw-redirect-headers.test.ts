@@ -4,7 +4,7 @@ import { setServiceClientForTests } from '@/lib/gateway-client';
 import * as adminRaw from '../../../app/admin-raw/[circuit]/[action]/route';
 import { siteRecordFor } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
-import { routeKey, startFakeGateway, type FakeGateway } from '../../helpers/fake-gateway';
+import { inMemoryGateway, routeKey, type InMemoryGateway } from '../../helpers/fake-gateway';
 import { adminRequest, routeParams } from '../../helpers/requests';
 import { SUBJECTS } from '../../helpers/tokens';
 
@@ -30,17 +30,17 @@ const OBJECT_PARAMS_PATH = `/v1/sites/${SITE}/content/versions/${HIST_ID}/object
 const SETUP_COOKIES = ['rb', 'ADMINCONTROLWIDTH', 'ADMINSIDEBAR'];
 
 const admin = SUBJECTS.admin;
-let fake: FakeGateway;
+let fake: InMemoryGateway;
 let restoreEnv: () => void;
 let restoreClient: () => void;
 
-beforeEach(async () => {
+beforeEach(() => {
   const lock = {
     status: 302,
     headers: { Location: ATTACHMENT, 'X-Opt2-Write-Position': '7' },
     setCookies: [SERVICE_COOKIE],
   };
-  fake = await startFakeGateway({
+  fake = inMemoryGateway({
     [routeKey('GET', 'identity', '/v1/sessions/current')]: {
       status: 200,
       body: {
@@ -81,14 +81,13 @@ beforeEach(async () => {
     [routeKey('GET', 'strategies-content', STATUSMODAL_PATH)]: { status: 403, body: DENIED },
     [routeKey('POST', 'strategies-content', OBJECT_PARAMS_PATH)]: { status: 403, body: DENIED },
   });
-  restoreEnv = useTestEnv({ OPT2_GATEWAY_URL: fake.url });
-  restoreClient = setServiceClientForTests(undefined);
+  restoreEnv = useTestEnv();
+  restoreClient = setServiceClientForTests(fake.client);
 });
 
-afterEach(async () => {
+afterEach(() => {
   restoreClient();
   restoreEnv();
-  await fake.close();
 });
 
 /** The requests the fake received for the strategies-content `path` with `method`. */

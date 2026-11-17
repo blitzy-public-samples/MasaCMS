@@ -9,6 +9,7 @@ import { tenantIdForSite, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   attachmentObjects,
+  attachmentsAfter,
   findAttachment,
   findProgramBinding,
   findRecord,
@@ -17,9 +18,14 @@ import {
   listRollups,
   listVersions,
   periodTotals,
+  rollupsAfter,
+  versionsAfter,
+  type AttachmentCursor,
   type Page,
   type RecordFilter,
   type RecordPaging,
+  type RollupCursor,
+  type VersionCursor,
 } from '../../src/repo/queries.js';
 import { FINANCE_ATTACHMENT, FINANCE_RECORD, FINANCE_RECORD_VERSION, FINANCE_ROLLUP, UNITS } from '../../src/repo/tables.js';
 
@@ -227,6 +233,103 @@ describe.skipIf(!(await pgAvailable()))('finance read queries', () => {
     });
   });
 
+  describe('keyset reads', () => {
+    const tenantId = tenantIdForSite('finance-query-keyset');
+    const RECORD = cfId('K', 1);
+    // Three attachments share one created instant, so their ids order them; versions and rollups are inserted out of order.
+    const ATTACHMENTS = [
+      { id: cfId('K', 30), created: '2026-06-02 10:00:00.000' },
+      { id: cfId('K', 12), created: '2026-06-01 10:00:00.250' },
+      { id: cfId('K', 11), created: '2026-06-01 10:00:00.250' },
+      { id: cfId('K', 13), created: '2026-06-01 10:00:00.250' },
+      { id: cfId('K', 20), created: '2026-05-31 23:59:59.999' },
+    ];
+    const VERSIONS = [3, 1, 5, 2, 4];
+    const ROLLUPS: [string, string, number][] = [
+      ['2026-06', 'REJECTED', 1],
+      ['2026-06', 'RE-SUBMITTED', 2],
+      ['2026-06', 'RE-SUBMITTED', 1],
+      ['2026-05', 'SUBMITTED', 2],
+      ['2026-06', 'APPROVED', 1],
+    ];
+    type KeysetRead = (tx: TenantTx, after: Record<string, unknown> | undefined, limit: number) => Promise<Record<string, unknown>[]>;
+    const ALL: RecordPaging = { pageIndex: 1, itemsPerPage: 1000 };
+
+    beforeAll(async () => {
+      await handle.app.withTenant(tenantId, async (tx) => {
+        await insertRecord(tx, RECORD, '2026-05-01 09:00:00', 1, 'finance-query-keyset');
+        for (const version of VERSIONS) {
+          await tx.query(
+            `INSERT INTO ${handle.schema}.record_version (tenant_id, version_id, record_id, version, state, title, amount, period, action, actor_user_id, created, legacy_program_id)
+             VALUES ($1, $2, $3, $4, 'IN-PROGRESS', 'Title', 1, '2026-06', 'edit', $5, localtimestamp(3), 1)`,
+            [tx.tenantId, cfId('V', version), RECORD, version, ACTOR],
+          );
+        }
+        for (const [n, { id, created }] of ATTACHMENTS.entries()) {
+          await insertAttachment(tx, { id, recordId: RECORD, fileName: `${n}.pdf`, size: n, sha: 'd'.repeat(64), key: `k-${n}`, created, program: 1 });
+        }
+        for (const [period, state, program] of ROLLUPS) {
+          await tx.query(
+            `INSERT INTO ${handle.schema}.rollup (tenant_id, period, state, record_count, total_amount, computed_at, legacy_program_id)
+             VALUES ($1, $2, $3, 1, 1, localtimestamp(3), $4)`,
+            [tx.tenantId, period, state, program],
+          );
+        }
+      });
+    });
+
+    it.each<[string, KeysetRead, (tx: TenantTx) => Promise<Page<Record<string, unknown>>>, (row: Record<string, unknown>) => unknown, unknown[]]>([
+      [
+        'versions by version',
+        (tx, after, limit) => versionsAfter(tx, RECORD, after as VersionCursor | undefined, limit),
+        (tx) => listVersions(tx, RECORD, ALL),
+        (row) => row.version,
+        [1, 2, 3, 4, 5],
+      ],
+      [
+        'attachments by created, then id among equal instants',
+        (tx, after, limit) => attachmentsAfter(tx, RECORD, after as AttachmentCursor | undefined, limit),
+        (tx) => listAttachments(tx, RECORD, ALL),
+        (row) => row.attachment_id,
+        [cfId('K', 20), cfId('K', 11), cfId('K', 12), cfId('K', 13), cfId('K', 30)],
+      ],
+      [
+        'rollups by period, then state in binary order, then program',
+        (tx, after, limit) => rollupsAfter(tx, after as RollupCursor | undefined, limit),
+        (tx) => listRollups(tx, ALL),
+        (row) => `${String(row.period)}/${String(row.state)}/${String(row.legacy_program_id)}`,
+        ['2026-05/SUBMITTED/2', '2026-06/APPROVED/1', '2026-06/RE-SUBMITTED/1', '2026-06/RE-SUBMITTED/2', '2026-06/REJECTED/1'],
+      ],
+    ])('reads the %s after each last row, every row once and as the page statement orders them', async (_case, after, list, key, keys) => {
+      await handle.app.withTenant(tenantId, async (tx) => {
+        const listed = (await list(tx)).rows;
+        expect(listed.map(key)).toEqual(keys);
+        for (const limit of [1, 2, keys.length, keys.length + 1]) {
+          const seen: string[] = [];
+          const read: Record<string, unknown>[] = [];
+          let page = await after(recording(tx, seen), undefined, limit);
+          for (;;) {
+            read.push(...page);
+            const last = page.at(-1);
+            if (page.length < limit || last === undefined) break;
+            page = await after(recording(tx, seen), last, limit);
+          }
+          expect(read).toEqual(listed);
+          expect(seen.filter((text) => /OFFSET|count\(/.test(text))).toEqual([]);
+        }
+        expect(await after(tx, listed.at(-1), 10)).toEqual([]);
+      });
+    });
+
+    it("reads no row of another tenant's record or rollups", async () => {
+      await handle.app.withTenant(TENANT_B.tenantId, async (tx) => {
+        expect(await versionsAfter(tx, RECORD, undefined, 10)).toEqual([]);
+        expect(await attachmentsAfter(tx, RECORD, undefined, 10)).toEqual([]);
+        expect(await rollupsAfter(tx, undefined, 10)).toEqual([]);
+      });
+    });
+  });
+
   it('keeps rollup money as four-decimal text and answers an empty page for a record without attachments', async () => {
     await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
       expect((await listRollups(tx, FIRST_PAGE)).rows[0]?.total_amount).toBe('3.0000');
@@ -315,6 +418,9 @@ describe.skipIf(!(await pgAvailable()))('finance read queries', () => {
           (tx) => listAttachments(tx, RECORD_WITH_CHILDREN, FIRST_PAGE),
           (tx) => findAttachment(tx, RECORD_WITH_CHILDREN, A_ATTACHMENT_LATER),
           (tx) => listRollups(tx, FIRST_PAGE),
+          (tx) => versionsAfter(tx, RECORD_WITH_CHILDREN, { version: 1 }, 50),
+          (tx) => attachmentsAfter(tx, RECORD_WITH_CHILDREN, undefined, 50),
+          (tx) => rollupsAfter(tx, undefined, 50),
         ];
         for (const read of reads) {
           const started = Date.now();

@@ -5,7 +5,6 @@ import { siteForTenant, tenantForRegisteredSite, type TenantTx } from '@opt2/pla
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import { requireSurvey, type DomainDeps } from './surveys.js';
 import { cfNumberValueText, parseCfJsonText } from '../legacy/cf-json.js';
-import { listTargets } from '../repo/queries.js';
 import { collated, grantSurveyResponses } from '../repo/grants.js';
 import type { TargetInsertResult, TargetPair } from '../repo/repository.js';
 
@@ -159,9 +158,8 @@ export function applyBulkTarget(deps: DomainDeps, { tenantId, surveyId, input }:
     // The fixture finds the survey before it reads `targets`, so notFound wins over invalidParameters.
     const survey = await requireSurvey(tx, surveyId);
     const targets = await registeredTargets(tx, parseBulkTargets(input));
-    const plan = planTargets(await listTargets(tx, survey.survey_id), targets);
-    const rows: TargetPair[] = plan.toInsert.map(({ siteid, groupName }) => ({ siteId: siteid, groupName }));
-    // insertTargets re-checks under the survey row lock and fills target_id and created, so its counts are the ones returned.
+    const rows: TargetPair[] = targets.map(({ siteid, groupName }) => ({ siteId: siteid, groupName }));
+    // insertTargets skips repeated and stored pairs under the survey row lock and fills target_id and created, so its counts are the ones returned.
     const { inserted, total } = await deps.repository.insertTargets(tx, survey.survey_id, rows);
     await grantSurveyResponses(tx, survey.survey_id, targets.map(({ siteid }) => siteid));
     return { inserted, total };

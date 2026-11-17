@@ -135,7 +135,7 @@ function groupInput(userid: string, groupname: string): GroupInput {
   };
 }
 
-const PG_READY = ['PG_HOST', 'PG_USER', 'PG_PASSWORD', 'PG_DATABASE'].every((name) => Boolean(process.env[name])) && (await pgAvailable());
+const PG_READY = await pgAvailable();
 const EMULATOR_READY = PG_READY && (await pubsubEmulatorAvailable());
 
 describe.skipIf(!PG_READY)('identity event producers against PostgreSQL', () => {

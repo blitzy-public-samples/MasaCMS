@@ -173,9 +173,11 @@ const VARIANT_CASES: KeyCase[] = [
   },
 ];
 
-// One request carries one body, so the table's form-plus-JSON-body cases have no catalogue step.
+// One request carries one body, so the table's form-plus-JSON-body cases have no catalogue step; a step route is
+// resolved against its origin, so a path starting `//` names a host and has none either.
 const CONFLICT_CASES: KeyCase[] = routeKeyConflictCases
   .filter(({ request }) => request.form === undefined || request.jsonBody === undefined)
+  .filter(({ request }) => !request.path.startsWith('//'))
   .map(({ name, request, expectedKey }) => ({
     label: name,
     step: sendable(fromRouteKeyRequest(request)),

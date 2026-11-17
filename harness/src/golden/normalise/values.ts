@@ -1,4 +1,5 @@
 // Value rules of the golden normaliser: timestamps, tokens, URLs and origins, and the deep walker over JSON values.
+import { isIP } from 'node:net';
 import {
   CSRF_FIELD_EXPIRES,
   CSRF_FIELD_TOKEN,
@@ -83,24 +84,34 @@ function classKeys(rule: TimestampClassRule): readonly RegExp[] | undefined {
   return undefined;
 }
 
-// Each configured origin under each host alias, as scheme origin, host:port and percent-encoded host:port.
+// The `<label>.` of a subdomain of a host-name alias (a seeded site's `<siteID>.localhost`), captured to be kept.
+const SUBDOMAIN_LABELS = '((?:[0-9A-Za-z-]+\\.)+)';
+
+// Each configured origin under each host alias, as scheme origin, host:port and percent-encoded host:port, as
+// regular-expression sources; under a host-name alias also with its subdomain labels before the host.
 function originForms(origins: OriginRules): string[] {
-  const forms = new Set<string>();
+  const forms = new Map<string, number>();
   for (const value of origins.values) {
     const url = new URL(value);
-    const hosts = origins.hostAliases.includes(url.hostname) ? origins.hostAliases : [url.hostname];
-    for (const host of hosts) {
+    const aliased = origins.hostAliases.includes(url.hostname);
+    for (const host of aliased ? origins.hostAliases : [url.hostname]) {
       const hostPort = url.port === '' ? host : `${host}:${url.port}`;
-      if (origins.match.includes('scheme-origin')) forms.add(`${url.protocol}//${hostPort}`);
-      if (origins.match.includes('host-port')) forms.add(hostPort);
-      if (origins.match.includes('percent-encoded-host-port')) forms.add(encodeURIComponent(hostPort));
+      const subdomains = aliased && isIP(host) === 0;
+      const add = (prefix: string, hostText: string): void => {
+        const length = prefix.length + hostText.length;
+        forms.set(`${escapeRegExp(prefix)}${escapeRegExp(hostText)}`, length);
+        if (subdomains) forms.set(`${escapeRegExp(prefix)}${SUBDOMAIN_LABELS}${escapeRegExp(hostText)}`, length + 1);
+      };
+      if (origins.match.includes('scheme-origin')) add(`${url.protocol}//`, hostPort);
+      if (origins.match.includes('host-port')) add('', hostPort);
+      if (origins.match.includes('percent-encoded-host-port')) add('', encodeURIComponent(hostPort));
     }
   }
-  return [...forms].sort(longestFirst);
+  return [...forms].sort(([, a], [, b]) => b - a).map(([source]) => source);
 }
 
 function originsRegExp(origins: OriginRules): RegExp {
-  const forms = originForms(origins).map(escapeRegExp).join('|');
+  const forms = originForms(origins).join('|');
   // Not inside a longer host, port or encoded value; `%2F` may precede an encoded host (`http%3A%2F%2F…`).
   return new RegExp(`(?<=^|[^0-9A-Za-z.-]|%2F)(?:${forms})(?![0-9A-Za-z_-]|\\.[0-9A-Za-z]|:[0-9]|%3A[0-9])`, 'gi');
 }
@@ -245,8 +256,12 @@ export function normaliseTokens(obj: unknown, rules: NormaliseRules): unknown {
   return visit(obj);
 }
 
+// A subdomain form keeps its captured labels before the placeholder; replace's last two arguments are offset and input.
 function replaceOrigins(s: string, rules: NormaliseRules, compiled: Compiled): string {
-  return s.replace(compiled.origins, () => rules.origins.placeholder);
+  return s.replace(compiled.origins, (...args: unknown[]) => {
+    const labels = args.slice(1, -2).find((group): group is string => typeof group === 'string') ?? '';
+    return `${labels}${rules.origins.placeholder}`;
+  });
 }
 
 /** One `name[=value]` pair of a query as written; `value` is undefined for a valueless parameter. */

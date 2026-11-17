@@ -1,4 +1,6 @@
 // cform.export and cform.importform for the tenant-a site admin: the relayed zip, the Import Form view and its upload.
+import { Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { toString } from '@/lib/html';
 import { exportForm } from '@/screens/cform/export';
@@ -116,11 +118,11 @@ describe('exportForm', () => {
     expect(result).toEqual({
       status: 200,
       contentType: 'application/zip',
-      body: expect.any(Uint8Array),
+      body: expect.any(Readable),
       headers: { 'content-disposition': DISPOSITION },
     });
     expect(new Headers(result.headers).get('Content-disposition')).toBe(DISPOSITION);
-    expect(Buffer.compare(result.body as Uint8Array, ZIP)).toBe(0);
+    expect(Buffer.compare(await buffer(result.body as Readable), ZIP)).toBe(0);
   });
 
   it('relays an answer without a content type, with its cookies', async () => {

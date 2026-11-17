@@ -32,6 +32,7 @@ import { createContentRepository } from '../../src/repo/repository.js';
 import { TEST_CLOCK, createMemoryStorage, createRecordingDb, withPgSchema } from '../helpers/app.js';
 import { IDS, seedAll, seedMemoryStorage, seedRecordingDb } from '../helpers/seed.js';
 import { SUBJECT_CLAIMS, SUBJECT_USER_IDS, subjectSessionId, type TokenSubject } from '../helpers/tokens.js';
+import { uploadedFile } from '../helpers/uploads.js';
 
 type Row = Record<string, unknown>;
 type Claims = NonNullable<Parameters<typeof actorFromClaims>[0]>;
@@ -90,7 +91,8 @@ const SITE_ADMIN = actorOf('site-admin', 'Sita Admin');
 const APPROVER = actorOf('approver', 'Appro Ver');
 const SYSTEM_USER = actorOf('system-user', 'Sys User');
 
-const textPart = (fileName: string, contentType = 'text/plain'): UploadedFile => ({ fieldName: 'files', fileName, contentType, bytes: Buffer.from(`opt2 ${fileName}\n`) });
+const textPart = (fileName: string, contentType = 'text/plain'): UploadedFile =>
+  uploadedFile({ fieldName: 'files', fileName, contentType }, Buffer.from(`opt2 ${fileName}\n`));
 
 describe('JSON API content writes without the Site Manager module (recording database)', () => {
   it('refuses the save of a new item before any write', async () => {

@@ -11,6 +11,7 @@ import {
   deliverOutOfOrder,
   isAck,
   mintTasksInvokerToken,
+  pgAvailable,
   pushTo,
   registryPayloads,
   seedRegistry,
@@ -30,6 +31,8 @@ import {
   type ApplyRequest,
   type GateRequest,
 } from '@opt2/platform/migration-kit';
+import { outboxDrainCounts, outboxRuntimeFor, sweepOutbox } from '@opt2/platform/outbox';
+import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { buildTestApp, headersFor, type FakeTaskPort, type TestApp } from '../helpers/app.js';
 import { TOPIC, writeSiteChanged } from '../../src/events/site-changed.js';
 import { SITE_CHANGED_SUBSCRIPTION, siteRegistryConsumerRegistration } from '../../src/events/consumers.js';
@@ -86,7 +89,7 @@ const BEAN_DEFAULTS: ReadonlyMap<string, unknown> = new Map(
   Object.entries(SITE_DEFAULTS).map(([name, value]) => [name.toLowerCase(), value]),
 );
 
-describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
+describe.skipIf(!(await pgAvailable()))('programs-sites.site.changed.v1', () => {
   let schema!: ThrowawaySchema;
   let app!: TestApp['app'];
   let publisher!: CapturingPublisher;
@@ -97,7 +100,7 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
   const table = (name: string): string => `${schema.schema}.${name}`;
 
   /** Rows of `sql` in a tenant transaction of `fixture`, under the RLS the app runs under. */
-  async function tenantQuery<R extends Record<string, unknown>>(fixture: TenantFixture, sql: string, params: unknown[] = []): Promise<R[]> {
+  async function tenantQuery<R extends Record<string, unknown>>(fixture: Pick<TenantFixture, 'tenantId'>, sql: string, params: unknown[] = []): Promise<R[]> {
     return (await schema.app.withTenant(fixture.tenantId, (tx) => tx.query<R>(sql, params))).rows;
   }
 
@@ -124,7 +127,7 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
   }
 
   /** The site topic's outbox rows of `fixture`, in `seq` order. */
-  function outboxRows(fixture: TenantFixture): Promise<OutboxRow[]> {
+  function outboxRows(fixture: Pick<TenantFixture, 'tenantId' | 'siteId'>): Promise<OutboxRow[]> {
     return tenantQuery<OutboxRow>(
       fixture,
       `SELECT seq::text AS seq, event_id::text AS event_id, kind, envelope, published_at, xmin::text AS xmin
@@ -179,6 +182,12 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
   /** A contract-valid site envelope of `fixture` at `aggregateVersion`. */
   function siteEnvelope(fixture: TenantFixture, aggregateVersion: number, payload: SitePayload) {
     return testEnvelope({ topic: TOPIC, tenantId: fixture.tenantId, aggregateId: fixture.siteId, aggregateVersion, payload });
+  }
+
+  /** A site the registry seed never holds, with a contract-valid payload pooled like tenant-a's. */
+  function unregisteredSite(siteId: string): { siteId: string; tenantId: string; payload: SitePayload } {
+    const payload = { ...fixturePayload(TENANT_A.siteId), siteId, privateUserPoolId: siteId, contentPoolIds: [siteId], domains: [`${siteId}.events.test`] };
+    return { siteId, tenantId: tenantIdForSite(siteId), payload };
   }
 
   /** A `tsettings` row holding the site bean's init defaults (empty text as NULL), its id, its name and `values`. */
@@ -335,6 +344,8 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
     ]);
     const logs = (await siteChangelog(TENANT_A)).filter((log) => log.origin === 'target');
     expect(logs).toHaveLength(targetLogs.length + 1);
+    const position = parseWritePosition(res.headers[WRITE_POSITION_HEADER_LC] as string | undefined);
+    expect(position.get(SERVICE)).toBe(logs.at(-1)?.xid);
   });
 
   it('commits the outbox row with the site row and its changelog row in one transaction and survives a failed in-request flush', async () => {
@@ -342,10 +353,9 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
     const logsBefore = await siteChangelog(TENANT_A);
     publisher.failNext();
 
-    const res = await orderTenantA(3);
+    // The unpublished row withholds the answer: the request is abandoned while its write stays committed.
+    await expect(orderTenantA(3)).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ written: true });
     const added = (await outboxRows(TENANT_A)).slice(before.length);
     expect(added).toHaveLength(1);
     const [row] = added as [OutboxRow];
@@ -358,8 +368,6 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
     expect(row.envelope.aggregateVersion).toBe(Number(site.row_version));
     expect(row.xmin).toBe(site.xmin);
     expect(log.xid_low).toBe(site.xmin);
-    const position = parseWritePosition(res.headers[WRITE_POSITION_HEADER_LC] as string | undefined);
-    expect(position.get(SERVICE)).toBe(log.xid);
   });
 
   it('applies a pushed site event to the tenant registry with resolved pool tenants and one applied inbox receipt', async () => {
@@ -517,9 +525,7 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
   it('publishes unflushed outbox rows from the sweep task and secures the next slot of the sweep chain', async () => {
     const before = await outboxRows(TENANT_A);
     publisher.failNext();
-    const order = await orderTenantA(4);
-    expect(order.statusCode).toBe(200);
-    expect(order.json()).toMatchObject({ written: true });
+    await expect(orderTenantA(4)).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
     const site = await storedSite(TENANT_A);
     publisher.failNext();
     const envelope = await schema.app.withTenant(TENANT_A.tenantId, (tx) =>
@@ -546,5 +552,65 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
       op: 'create',
       args: [expect.objectContaining({ queue: SWEEP_QUEUE, name: sweepTaskName(1) })],
     });
+  });
+
+  it('registers an unregistered site in its write transaction, so drain counts and the sweep reach its unflushed row; a rollback registers nothing', async () => {
+    const site = unregisteredSite('events-unregistered');
+    const args = { siteId: site.siteId, rowVersion: 1, payload: site.payload };
+
+    await expect(
+      schema.app.withTenant(site.tenantId, async (tx) => {
+        await writeSiteChanged(tx, args);
+        throw new Error('rolled back');
+      }),
+    ).rejects.toThrow('rolled back');
+
+    expect(await registryRow(site.siteId)).toBeUndefined();
+    expect(await outboxRows(site)).toEqual([]);
+    expect((await outboxDrainCounts(schema.app)).tenants.map((count) => count.tenantId)).not.toContain(site.tenantId);
+
+    publisher.failNext();
+    const envelope = await schema.app.withTenant(site.tenantId, (tx) => writeSiteChanged(tx, args));
+
+    expect(envelope).not.toBeNull();
+    expect(await registryRow(site.siteId)).toMatchObject({
+      tenant_id: site.tenantId,
+      public_user_pool_tenant: TENANT_UMBRELLA.tenantId,
+      private_user_pool_tenant: site.tenantId,
+      category_pool_tenant: TENANT_UMBRELLA.tenantId,
+      file_pool_tenant: TENANT_UMBRELLA.tenantId,
+      display_pool_tenant: TENANT_UMBRELLA.tenantId,
+      content_pool_tenants: [site.tenantId],
+      domains: site.payload.domains,
+      aggregate_version: '1',
+    });
+    expect((await outboxRows(site)).map((row) => [row.event_id, row.published_at])).toEqual([[envelope?.eventId, null]]);
+    expect((await outboxDrainCounts(schema.app)).tenants).toContainEqual({ tenantId: site.tenantId, unpublished: 1, held: 0 });
+
+    const swept = await sweepOutbox(outboxRuntimeFor(schema.schema), { service: SERVICE, clock });
+
+    expect(swept.failed).toBe(0);
+    expect((await outboxRows(site)).map((row) => row.published_at)).toEqual([expect.any(Date)]);
+    expect(publisher.published.map((event) => event.envelope.eventId)).toContain(envelope?.eventId);
+    expect((await outboxDrainCounts(schema.app)).tenants).toContainEqual({ tenantId: site.tenantId, unpublished: 0, held: 0 });
+  });
+
+  it('records the later push of a self-registered site event as one applied receipt and leaves its registry row unchanged', async () => {
+    const site = unregisteredSite('events-self-registered');
+    const envelope = await schema.app.withTenant(site.tenantId, (tx) =>
+      writeSiteChanged(tx, { siteId: site.siteId, rowVersion: 1, payload: site.payload }),
+    );
+    if (envelope === null) throw new Error('writeSiteChanged stored no envelope');
+    const registered = await registryRow(site.siteId);
+    expect(registered).toMatchObject({ tenant_id: site.tenantId, aggregate_version: '1' });
+
+    const res = await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelope);
+
+    expect(res.statusCode).toBe(204);
+    expect(await registryRow(site.siteId)).toEqual(registered);
+    const receipts = await tenantQuery<InboxRow>(site, `SELECT tenant_id::text AS tenant_id, status FROM ${table('inbox')} WHERE event_id = $1`, [
+      envelope.eventId,
+    ]);
+    expect(receipts).toEqual([{ tenant_id: site.tenantId, status: 'applied' }]);
   });
 });

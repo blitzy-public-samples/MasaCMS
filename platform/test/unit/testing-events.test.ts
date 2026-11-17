@@ -29,7 +29,7 @@ import {
 } from '../../src/events/index.js';
 import { REDACTED, createLogger, type Logger } from '../../src/logging/index.js';
 import { rowFromDb } from '../../src/outbox/ddl.js';
-import { createOutbox, flushAfterCommit, publishLockedRows, resetOutboxRuntimes } from '../../src/outbox/flush.js';
+import { FLUSH_DEADLINE_MS, createOutbox, flushAfterCommit, publishLockedRows, resetOutboxRuntimes } from '../../src/outbox/flush.js';
 import { createService } from '../../src/service-kit/create-service.js';
 import { loadEnv } from '../../src/service-kit/env.js';
 import { fixedClock } from '../../src/service-kit/index.js';
@@ -674,7 +674,7 @@ describe('capturing publisher behind the outbox flush', () => {
     await expect(flushAfterCommit(runtime, TENANT_A.tenantId, [envelope.eventId])).resolves.toStrictEqual({ published: 1, failed: 0, skipped: 0 });
     expect(publisher.published).toStrictEqual([{ topic: TOPIC, envelope }]);
     expect(statements.slice(3)).toEqual([
-      { sql: "SELECT set_config('lock_timeout', $1, true)", values: ['2000ms'] },
+      { sql: "SELECT set_config('lock_timeout', $1, true)", values: [`${FLUSH_DEADLINE_MS}ms`] },
       { sql: expect.stringMatching(/^SELECT o\.\* /), values: [[envelope.eventId]] },
       { sql: expect.stringMatching(/^SELECT ordering_key, /), values: [[envelope.aggregateId], '1', ['1']] },
       stamped([envelope.eventId]),
@@ -701,21 +701,39 @@ async function answering(statusCode: number): Promise<Server> {
 const emulatorUp = await pubsubEmulatorAvailable();
 
 describe('pubsubEmulatorAvailable', () => {
-  it.each([undefined, ''])('is false when PUBSUB_EMULATOR_HOST is %j', async (host) => {
+  it.each([
+    [undefined, undefined],
+    ['', undefined],
+    [undefined, '0'],
+  ])('is false when PUBSUB_EMULATOR_HOST is %j and OPT2_TEST_REQUIRE_PUBSUB is %j', async (host, required) => {
     vi.stubEnv('PUBSUB_EMULATOR_HOST', host);
+    vi.stubEnv('OPT2_TEST_REQUIRE_PUBSUB', required);
     await expect(pubsubEmulatorAvailable()).resolves.toBe(false);
   });
 
-  it('is false when nothing listens at PUBSUB_EMULATOR_HOST', async () => {
+  it.each([undefined, ''])('rejects when OPT2_TEST_REQUIRE_PUBSUB=1 and PUBSUB_EMULATOR_HOST is %j', async (host) => {
+    vi.stubEnv('PUBSUB_EMULATOR_HOST', host);
+    vi.stubEnv('OPT2_TEST_REQUIRE_PUBSUB', '1');
+    await expect(pubsubEmulatorAvailable()).rejects.toThrow(
+      'The event suites require the Pub/Sub emulator (OPT2_TEST_REQUIRE_PUBSUB=1), but PUBSUB_EMULATOR_HOST is unset',
+    );
+  });
+
+  it('rejects naming the host, with the fetch error as cause, when nothing listens at PUBSUB_EMULATOR_HOST', async () => {
     vi.stubEnv('PUBSUB_EMULATOR_HOST', '127.0.0.1:9');
-    await expect(pubsubEmulatorAvailable()).resolves.toBe(false);
+    const probe = pubsubEmulatorAvailable();
+    await expect(probe).rejects.toThrow('The Pub/Sub emulator at PUBSUB_EMULATOR_HOST=127.0.0.1:9 is unreachable');
+    await expect(probe).rejects.toMatchObject({ cause: expect.any(TypeError) });
   });
 
-  it.each([[200, true], [503, false]])('reflects a host answering GET / with %i as %s', async (statusCode, available) => {
+  it.each([
+    [200, 'true', true],
+    [503, 'a rejection naming the host and status', expect.stringMatching(/^The Pub\/Sub emulator at PUBSUB_EMULATOR_HOST=127\.0\.0\.1:\d+ answered GET \/ with 503$/)],
+  ])('settles a host answering GET / with %i as %s', async (statusCode, _label, outcome) => {
     const server = await answering(statusCode);
     try {
       vi.stubEnv('PUBSUB_EMULATOR_HOST', `127.0.0.1:${(server.address() as AddressInfo).port}`);
-      await expect(pubsubEmulatorAvailable()).resolves.toBe(available);
+      await expect(pubsubEmulatorAvailable().catch((error: Error) => error.message)).resolves.toEqual(outcome);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));

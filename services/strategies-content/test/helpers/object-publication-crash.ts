@@ -9,6 +9,7 @@ import { CONTENT_CONFIG_DEFAULTS } from '../../src/domain/context.js';
 import { storeUploadedFile } from '../../src/domain/files.js';
 import { storeMigrationObject } from '../../src/migration/objects.js';
 import { createContentRepository } from '../../src/repo/repository.js';
+import { uploadedFile } from './uploads.js';
 
 const [mode, schema, role, stateDir, fileId, encoded] = process.argv.slice(2);
 if (!schema || !role || !stateDir || !encoded || !/^[a-z0-9_]+$/.test(role)) throw new Error('Invalid crash fixture arguments');
@@ -43,6 +44,6 @@ if (mode === 'migration' && fileId) {
   await storeUploadedFile({ db, repository, storage, clock, config: CONTENT_CONFIG_DEFAULTS }, {
     userId: 'AABBCCDD-0001-4A5B-8C7D9E0F1A2B3C4D', fullName: 'Crash Test', isLoggedIn: true, s2: true,
     roles: [], siteId: TENANT_A.siteId, tenantId: tenantIdForSite(TENANT_A.siteId),
-  }, { file: { fieldName: 'newfile', fileName: 'crash.pdf', contentType: 'application/pdf', bytes } });
+  }, { file: uploadedFile({ fieldName: 'newfile', fileName: 'crash.pdf', contentType: 'application/pdf' }, bytes) });
 }
 throw new Error('Crash fixture did not reach storage.put');

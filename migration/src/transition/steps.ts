@@ -7,12 +7,15 @@ import { callQueueControl, outboxSweepQueue, queuesCreatedBy, reconcileRecurring
 import { restartFeedFor } from '../apply/index.js';
 import type { MigrationContext } from '../context.js';
 import {
+  CutoverDataError,
   GatewayCallError,
   GatewayWaitTimeoutError,
   currentAuthority,
   diffVersions,
+  entriesTouching,
   loadGroups,
   loadVersion,
+  rollbackRefGroups,
   type Authority,
   type ChangedEntry,
   type CutoverVersion,
@@ -25,13 +28,14 @@ import {
   LegacyRestartError,
   RestartUnavailableError,
   StartupGuardFrozenError,
+  checkClusterGuard,
   countStartupRows,
   opt2SyncReady,
   recoverStartupGuard,
   restartLegacy,
 } from '../legacy/index.js';
 import { GateConflict, UnknownLegacyTableError, type DataOwner, type UnitCatalog } from '../owners/index.js';
-import { DrainTimeoutError, awaitDrained } from '../quiesce/index.js';
+import { DeadLetteredProcessEventError, DrainTimeoutError, awaitDrained } from '../quiesce/index.js';
 import {
   DIFFERENCE_LIMIT,
   fileUnitIds,
@@ -120,14 +124,16 @@ export interface TransitionPlan {
   /** Active version when the plan was made. */
   from: string;
   to: string;
-  /** Units whose authority changes, sorted. */
+  /** `T`: units whose authority changes and, for a rollback version, every unit of the groups its rollbackRefs name; sorted. */
   setT: string[];
   toTarget: string[];
   toLegacy: string[];
+  /** Units of `T` legacy-authoritative in both versions; their gates stay `legacy`. Sorted. */
+  heldLegacy: string[];
   entriesChanged: ChangedEntry[];
   /** Routes of `legacy-write` entries whose units meet `T`. */
   legacyWriteEntries: string[];
-  /** Changed and `legacy-write` routes the active version holds, which the gateway freezes. */
+  /** Changed, rollback-group write and `legacy-write` routes the active version holds, which the gateway freezes. */
   frozenRoutes: string[];
   /** Owners of `T`. */
   owners: DataOwner[];
@@ -222,6 +228,8 @@ export interface TransitionProgress {
   handoffs?: { siteMonitor?: SiteMonitorHandoffResult; surveys?: SurveysHandoffResult; restore?: RestoreResult };
   /** Units returned to legacy whose forward feed restarts from a fresh snapshot (`opt2-migrate rollback rebaseline`). */
   rebaselineRequired: string[];
+  /** Failed undo attempts of an aborting transition: how many, and when the first failed. */
+  undoFailures?: { count: number; firstAt: string };
 }
 
 /** One step's entry in the transition's step log. */
@@ -266,7 +274,7 @@ export class TransitionAbortedError extends Error {
 }
 
 /** Why step 1 refuses a transition before taking any lease. */
-export type TransitionPreconditionCode = 'previous-mismatch' | 'same-version' | 'opt2-sync-unavailable';
+export type TransitionPreconditionCode = 'previous-mismatch' | 'same-version' | 'opt2-sync-unavailable' | 'cluster-unsafe';
 
 /** The proposed version cannot follow the active one, or no unit may become `target`-authoritative yet. */
 export class TransitionPreconditionError extends Error {
@@ -347,6 +355,7 @@ function tableUnits(catalog: Pick<UnitCatalog, 'unitsForLegacyTable'>, table: st
 /**
  * Transition set, changed entries, frozen routes and step facts of moving from `active` to `proposed`; arrays are sorted
  * so the persisted plan is deterministic.
+ * @throws CutoverDataError when `proposed`'s rollbackRefs name a group it lacks or does not hold `legacy`.
  */
 export function deriveTransitionPlan(
   active: CutoverVersion,
@@ -355,14 +364,28 @@ export function deriveTransitionPlan(
   catalog: Pick<UnitCatalog, 'ownerOf' | 'unitsForLegacyTable'>,
 ): TransitionPlan {
   const diff = diffVersions(active, proposed, groups);
-  const setT = sortedUnique(diff.changedUnits);
+  const rollbackGroups = rollbackRefGroups(proposed, groups);
+  const notLegacy = rollbackGroups.filter((group) => proposed.groupAuthority[group.id] !== 'legacy').map((group) => group.id);
+  if (notLegacy.length > 0) {
+    throw new CutoverDataError(`${proposed.tableVersion} rollbackRefs name groups it does not hold legacy-authoritative: ${notLegacy.join(', ')}`);
+  }
+  const heldLegacy = sortedUnique(rollbackGroups.flatMap((group) => group.units).filter((unit) => !diff.changedUnits.has(unit)));
+  const setT = sortedUnique([...diff.changedUnits, ...heldLegacy]);
   const toTarget = sortedUnique(diff.toTarget);
   const toLegacy = sortedUnique(diff.toLegacy);
-  const legacyWriteEntries = sortedUnique(diff.legacyWritesMeetingT.map((entry) => entry.route));
+  const legacyWriteEntries = sortedUnique(
+    entriesTouching(proposed, setT)
+      .filter((entry) => entry.kind === 'legacy-write')
+      .map((entry) => entry.route),
+  );
+  const rollbackGroupIds = new Set(rollbackGroups.map((group) => group.id));
+  const rollbackWrites = active.entries
+    .filter((entry) => entry.kind === 'write' && typeof entry.group === 'string' && rollbackGroupIds.has(entry.group))
+    .map((entry) => entry.route);
   // The gateway freezes only entries of the active version; a route the proposed version adds routes to legacy until then.
   const activeRoutes = new Set(active.entries.map((entry) => entry.route));
-  const frozenRoutes = sortedUnique([...diff.changedEntries.map((entry) => entry.route), ...legacyWriteEntries]).filter((route) =>
-    activeRoutes.has(route),
+  const frozenRoutes = sortedUnique([...diff.changedEntries.map((entry) => entry.route), ...rollbackWrites, ...legacyWriteEntries]).filter(
+    (route) => activeRoutes.has(route),
   );
   const meets = (table: string, units: readonly string[]): boolean => tableUnits(catalog, table).some((unit) => units.includes(unit));
   return {
@@ -371,6 +394,7 @@ export function deriveTransitionPlan(
     setT,
     toTarget,
     toLegacy,
+    heldLegacy,
     entriesChanged: diff.changedEntries,
     legacyWriteEntries,
     frozenRoutes,
@@ -406,11 +430,12 @@ function compare(a: string, b: string): number {
 
 /**
  * Checks that `to` may follow the gateway's active version and derives the plan; it takes no lease.
- * @throws TransitionPreconditionError for the active version itself, a version that does not follow it, or a move to
- *   `target` while the legacy database has no `opt2_sync` schema.
+ * @throws TransitionPreconditionError for the active version itself, a version that does not follow it, a move to
+ *   `target` while the legacy database has no `opt2_sync` schema, or a content unit's move to `target` while cluster
+ *   reload commands may reach legacy.
  */
 export async function planTransition(
-  ctx: Pick<MigrationContext, 'gateway' | 'config' | 'catalog' | 'legacy'>,
+  ctx: Pick<MigrationContext, 'gateway' | 'config' | 'catalog' | 'legacy' | 'env'>,
   to: string,
 ): Promise<TransitionPlan> {
   const { tableVersion } = await ctx.gateway.status();
@@ -432,6 +457,17 @@ export async function planTransition(
       'opt2-sync-unavailable',
       `The legacy database has no opt2_sync.projector_checkpoint, so ${plan.toTarget.join(', ')} cannot become target-authoritative`,
     );
+  }
+  const content = new Set([...contentUnits(ctx.catalog), ...tableUnits(ctx.catalog, CONTENT_TABLE)]);
+  const contentToTarget = plan.toTarget.filter((unit) => content.has(unit));
+  if (contentToTarget.length > 0) {
+    const verdict = await checkClusterGuard({ legacy: ctx.legacy, stateDir: ctx.env.OPT2_STATE_DIR });
+    if (!verdict.safe) {
+      throw new TransitionPreconditionError(
+        'cluster-unsafe',
+        `${contentToTarget.join(', ')} cannot become target-authoritative while cluster reload commands may reach legacy: ${verdict.reason}`,
+      );
+    }
   }
   return plan;
 }
@@ -827,16 +863,28 @@ async function drainEffects(run: StepRun): Promise<void> {
       sleep: run.deps.sleep,
     });
   } catch (error) {
-    if (!(error instanceof DrainTimeoutError)) throw error;
-    throw new TransitionAbortedError(4, `Effects did not drain: ${error.message}`, { owners: error.owners }, { cause: error });
+    if (error instanceof DrainTimeoutError) {
+      const details = { owners: error.owners, unavailable: error.unavailable };
+      throw new TransitionAbortedError(4, `Effects did not drain: ${error.message}`, details, { cause: error });
+    }
+    if (error instanceof DeadLetteredProcessEventError) {
+      throw new TransitionAbortedError(4, `Effects did not drain: ${error.message}`, { deadLettered: error.deliveries }, { cause: error });
+    }
+    throw error;
   }
 }
 
-/** Step 5: closes `T`'s gates for this holder, which drains the owners' writers, then clears target orphans on that evidence. */
+/** Units of `T` whose authority changes: the gates the transition closes and reopens; a held `legacy` gate already refuses target writes. */
+function gatedUnits(plan: Pick<TransitionPlan, 'toTarget' | 'toLegacy'>): string[] {
+  return sortedUnique([...plan.toTarget, ...plan.toLegacy]);
+}
+
+/** Step 5: closes the gates of `T`'s moving units for this holder, which drains the owners' writers, then clears target orphans on that evidence. */
 async function closeGates(run: StepRun): Promise<void> {
   const { ctx, plan, progress, holderId } = run;
   const toTarget = new Set(plan.toTarget);
-  const groups = byOwnerAndState(ctx.catalog, plan.setT, (unit): ClosedGate['prior'] => (toTarget.has(unit) ? 'legacy' : 'open'));
+  const closing = gatedUnits(plan);
+  const groups = byOwnerAndState(ctx.catalog, closing, (unit): ClosedGate['prior'] => (toTarget.has(unit) ? 'legacy' : 'open'));
   for (const { owner, state: prior, units } of groups) {
     // Recorded before the call, so an abort resets a gate whose close succeeded with its answer lost.
     const fresh = units.filter((unit) => !progress.closedGates.some((gate) => gate.unit === unit));
@@ -858,7 +906,7 @@ async function closeGates(run: StepRun): Promise<void> {
   if (orphans.length === 0) return;
   const { cleared } = await ctx.gateway.clearOrphans({
     side: 'target',
-    evidence: { kind: 'gates-closed', holderId, at: ctx.clock.now().toISOString(), units: plan.setT },
+    evidence: { kind: 'gates-closed', holderId, at: ctx.clock.now().toISOString(), units: closing },
     instanceIds: sortedUnique(orphans.map((row) => row.instanceId)),
   });
   progress.targetOrphansCleared = cleared;
@@ -903,15 +951,21 @@ async function transferMovedFiles(run: StepRun, snapshot: SnapshotRecord, fileFe
   );
 }
 
-/** Brings the units moving to `target` to the final snapshot of the quiesced legacy database. */
+/** Units the forward feed brings to the final snapshot: those moving to `target` and those `T` holds `legacy`. */
+function fedUnits(plan: Pick<TransitionPlan, 'toTarget' | 'heldLegacy'>): string[] {
+  return sortedUnique([...plan.toTarget, ...plan.heldLegacy]);
+}
+
+/** Brings {@link fedUnits} to the final snapshot of the quiesced legacy database. */
 async function bringToFinalState(run: StepRun): Promise<void> {
   const { ctx, plan } = run;
+  const units = fedUnits(plan);
   const snapshot = await transitionSnapshot(run);
-  const fileFeedUnits = tableUnits(ctx.catalog, FILES_TABLE).filter((unit) => plan.toTarget.includes(unit));
+  const fileFeedUnits = tableUnits(ctx.catalog, FILES_TABLE).filter((unit) => units.includes(unit));
   if (fileFeedUnits.length > 0) await transferMovedFiles(run, snapshot, fileFeedUnits);
   // The units are still legacy-authoritative here, so the feed may write them. restartFeedFor brings exactly these units, in
   // dependency order, to the snapshot by comparing each owner's export; a per-table diff would need the extract layer's table model.
-  const restarted = await restartFeedFor(ctx, { units: plan.toTarget, snapshotSeq: snapshot.seq });
+  const restarted = await restartFeedFor(ctx, { units, snapshotSeq: snapshot.seq });
   ctx.logger.info(`Transition ${run.holderId}: ${String(restarted.tables.length)} table shares brought to snapshot ${String(snapshot.seq)}`);
 }
 
@@ -1006,7 +1060,7 @@ async function finalStateAndReconcile(run: StepRun): Promise<void> {
     progress.startupGuard = await abortWhileFrozen(6, guardStartup(run));
     await run.persist();
   }
-  if (plan.toTarget.length > 0) await bringToFinalState(run);
+  if (fedUnits(plan).length > 0) await bringToFinalState(run);
   if (plan.toLegacy.length > 0) await projectToLegacy(run);
   if (plan.setT.length > 0) await reconcileSet(run);
 }
@@ -1056,7 +1110,7 @@ async function unfreezeRoutes(run: Pick<StepRun, 'ctx' | 'progress' | 'persist'>
   await run.persist();
 }
 
-/** Step 8: reconciles post-cut-over, hands off the schedulers, reopens `T`'s gates under the new authority, releases the leases and resumes work. */
+/** Step 8: reconciles post-cut-over, hands off the schedulers, reopens the closed gates under the new authority, releases the leases and resumes work. */
 async function handOffAndReopen(run: StepRun): Promise<void> {
   const { ctx, plan, progress, holderId, deps } = run;
   await reconcilePostCutover(run);
@@ -1077,7 +1131,7 @@ async function handOffAndReopen(run: StepRun): Promise<void> {
   }
 
   const toTarget = new Set(plan.toTarget);
-  for (const { owner, state, units } of byOwnerAndState(ctx.catalog, plan.setT, (unit): Authority => (toTarget.has(unit) ? 'target' : 'legacy'))) {
+  for (const { owner, state, units } of byOwnerAndState(ctx.catalog, gatedUnits(plan), (unit): Authority => (toTarget.has(unit) ? 'target' : 'legacy'))) {
     await ctx.owners.gate(owner, { op: 'open', units, holderId, state: state === 'target' ? 'open' : 'legacy' });
   }
   progress.closedGates = [];
@@ -1158,9 +1212,9 @@ async function resetGates(run: Pick<StepRun, 'ctx' | 'progress' | 'persist' | 'h
 }
 
 /**
- * Undoes the side effects of an unactivated transition in reverse order (a kept start-up guard freeze, the completion and
- * import of a started legacy restart, gates, freeze, queues, legacy tasks, then leases) and returns the cleaned progress;
- * each undo is idempotent and persisted, so a failed abort can be resumed.
+ * Undoes the side effects of an unactivated transition (a kept start-up guard freeze, the completion and import of a
+ * started legacy restart, gates, freeze, leases, queues, then legacy tasks) and returns the cleaned progress; each undo
+ * is idempotent and persisted, so a failed abort can be resumed.
  * @throws Error once step 7 has completed or the proposed version is already active; StartupGuardFrozenError or the
  *   import failure, reopening nothing, while a kept guard freeze or a restart's import cannot finish; TransitionAbortedError,
  *   a refusal that keeps every gate, lease and freeze, when a restart without completion fails again.
@@ -1195,6 +1249,10 @@ export async function abortTransition(deps: StepDeps, record: TransitionRecord):
     await run.persist();
   }
   if (plan !== undefined) await unfreezeRoutes(run, plan);
+  // Every gate is reset and nothing is frozen, so the units go back to other holders before a queue or task resume can fail.
+  await releaseLeases(ctx, holderId);
+  progress.extraLeasedUnits = [];
+  await run.persist();
   await resumeQueues(run);
   // Only tasks a transition paused are resumed, so this is safe even when the pause's answer was lost.
   if (plan !== undefined) {
@@ -1202,9 +1260,6 @@ export async function abortTransition(deps: StepDeps, record: TransitionRecord):
     delete progress.schedulerPause;
     await run.persist();
   }
-  await releaseLeases(ctx, holderId);
-  progress.extraLeasedUnits = [];
-  await run.persist();
   return progress;
 }
 

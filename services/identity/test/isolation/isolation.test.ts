@@ -131,7 +131,7 @@ const TENANT_A_MARKERS = [A_ADMIN_GROUP.userid, A_PRIVATE_GROUP.userid, 'A Priva
 /** Ids and names of the seeded tenant-b rows that no tenant-a answer may carry. */
 const TENANT_B_MARKERS = [B_GROUP.userid, 'B Only Group', MEMBER_B.account.userid, 'member_b', MEMBER_B.contact.email ?? '', B_PERMISSION.contentid];
 
-const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const available = await pgAvailable();
 
 let schema: ThrowawaySchema | undefined;
 let repository: IdentityRepository | undefined;

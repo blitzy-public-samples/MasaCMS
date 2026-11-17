@@ -2,9 +2,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { parse } from 'yaml';
-import { serializeError, type Logger } from '@opt2/platform/logging';
+import { SAFE_ERROR_TEXT, serializeError, type Logger } from '@opt2/platform/logging';
 import { WRITE_POSITION_HEADER, hasWritePositionHeader } from '@opt2/platform/migration-kit';
-import { createService } from '@opt2/platform/service-kit';
+import { createService, loadEnv } from '@opt2/platform/service-kit';
 import { TENANT_A, createCapturingPublisher, testVerifier } from '@opt2/platform/testing';
 import { buildApp, contentEnvSchema, type BuildAppOptions, type ContentEnv } from '../../src/app.js';
 import * as consumers from '../../src/events/consumers.js';
@@ -283,6 +283,52 @@ describe('contentEnvSchema MURA_VARIATIONS', () => {
     }
     expect(t.env.MURA_VARIATIONS).toBe(false);
     await expect(buildTestApp({ env: { MURA_VARIATIONS: 'maybe' } })).rejects.toThrow(/MURA_VARIATIONS: must be true, yes, 1, false, no or 0/);
+  });
+});
+
+describe('contentEnvSchema process requirements', () => {
+  const OWN_URL = JSON.stringify({ [SERVICE]: 'http://127.0.0.1:8114' });
+  const IDENTITY_URL = JSON.stringify({ identity: 'http://127.0.0.1:8111' });
+  const CALLEES = 'OPT2_SERVICE_URLS.strategies-content: is required; OPT2_SERVICE_URLS.identity: is required';
+
+  it.each<[string, Record<string, string | undefined>, string[], string]>([
+    ['another service name', { OPT2_SERVICE_NAME: 'people' }, ['OPT2_SERVICE_NAME: must be strategies-content'], 'people: invalid environment (OPT2_SERVICE_NAME: must be strategies-content)'],
+    ['no identity URL', { OPT2_SERVICE_URLS: OWN_URL }, ['OPT2_SERVICE_URLS.identity: is required'], 'strategies-content: invalid environment (OPT2_SERVICE_URLS.identity: is required)'],
+    [
+      'no URL of its own',
+      { OPT2_SERVICE_URLS: IDENTITY_URL },
+      ['OPT2_SERVICE_URLS.strategies-content: is required'],
+      'strategies-content: invalid environment (OPT2_SERVICE_URLS.strategies-content: is required)',
+    ],
+    [
+      'no callee map',
+      { OPT2_SERVICE_URLS: undefined },
+      ['OPT2_SERVICE_URLS.strategies-content: is required', 'OPT2_SERVICE_URLS.identity: is required'],
+      `strategies-content: invalid environment (${CALLEES})`,
+    ],
+    ['no OPT2_DB_AUTH', { OPT2_DB_AUTH: undefined }, ['OPT2_DB_AUTH: is required'], 'strategies-content: invalid environment (OPT2_DB_AUTH: is required)'],
+    ['no PG_DATABASE', { PG_DATABASE: undefined }, ['PG_DATABASE: is required'], 'strategies-content: invalid environment (PG_DATABASE: is required)'],
+  ])('refuses %s, naming each variable with its value-free reason', (_case, overrides, issues, safeText) => {
+    let thrown: unknown;
+    try {
+      loadEnv(contentEnvSchema, testEnv(t.stateDir, overrides));
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toMatchObject({ name: 'EnvValidationError', issues });
+    expect((thrown as { [SAFE_ERROR_TEXT]?: unknown })[SAFE_ERROR_TEXT]).toBe(safeText);
+  });
+
+  it('is the environment buildApp reads by default', async () => {
+    for (const [key, value] of Object.entries(testEnv(t.stateDir, { OPT2_SERVICE_NAME: 'people' }))) vi.stubEnv(key, value);
+    try {
+      await expect(buildApp()).rejects.toMatchObject({
+        name: 'EnvValidationError',
+        issues: expect.arrayContaining(['OPT2_SERVICE_NAME: must be strategies-content']),
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

@@ -183,19 +183,22 @@ Caller: the migration service, `migration/src/scheduler/`, and `opt2-ops` (AAP 0
 
 - ColdFusion always runs with `MURA_PING=false`, so Masa never registers `siteMonitor` itself (`core/appcfc/onApplicationStart_include.cfm:561`). The bridge alone maintains the native task, from the definition captured on first run.
 - Tasks are created through Masa's `utility.scheduleTask` (`<cfschedule attributeCollection>`, `core/mura/utility.cfc:1697-1699`), in the same default mode and group as Masa's own call.
-- A task in the wire shape is `{task, group, url, port, interval, startDate, startTime, requestTimeOut, operation, paused}`. Every field is a string (`""` when ACF reports none), except `paused`, a boolean.
+- A task in the wire shape is `{task, group, url, port, interval, startDate, startTime, requestTimeOut, operation, paused, expired}`. Every field is a string (`""` when ACF reports none), except `paused` and `expired`, booleans.
   - `startDate` is `mm/dd/yyyy`, the form Masa passes (`:570`), and `startTime` is 24-hour `HH:mm:ss`. `cfschedule` accepts both back.
-  - On ACF 2023, `cfschedule action="list"` returns a query whose `GROUP` is `DEFAULT` for Masa's tasks and which has no operation column, so `operation` is `""`; `restore` then omits it, which ACF accepts. `paused` is `STATUS` equal to `Paused`.
+  - On ACF 2023, `cfschedule action="list"` returns a query whose `GROUP` is `DEFAULT` for Masa's tasks and which has no operation column, so `operation` is `""`; `restore` then omits it, which ACF accepts. `paused` is `STATUS` equal to `Paused`, and `expired` is `STATUS` equal to `Expired`.
   - `cfschedule` needs the ACF `scheduler` package (`cfpm install scheduler`). Without it every op answers 500 `serverError`.
+- **Past-due tasks.** ACF never runs a task it lists `Expired`: a `ONCE` task created with a past start, or one that has had its run. A `ONCE` task paused while it waited keeps `STATUS` `Paused` when its start passes. ACF refuses to pause or resume either kind (`coldfusion.tagext.lang.ScheduleTag$PauseExpiredTaskException`, type `Expression`); the bridge never lets that refusal answer 500.
+  - An update (`utility.scheduleTask`) with a future start keeps an existing task's paused state, and the task runs at that start once resumed. An update with a past start of a paused task runs it at once and then fails to pause it again. A task created with a past start is `Expired` at once and never runs, unless the start lies within the scheduler's misfire threshold (about a minute), in which case it runs at once.
+  - "Moved to now" below means an update with `startDate`/`startTime` 10 s ahead of ColdFusion's clock, then a resume, so the task runs within seconds.
 
 | Op | Method | Body | Response |
 |---|---|---|---|
 | `describe` | GET | — | `{ping, siteMonitorTask, tasks:[<task>], serverTime}` |
 | `repoint` | POST | `<task>`: the captured definition of the native task | `{op, tasks:[<name>], serverTime}` |
-| `pause` | POST | `{tasks?:[<name>], prefix?}` | `{op, tasks:[<names affected>], serverTime}` |
-| `resume` | POST | `{tasks?:[<name>], prefix?}` | `{op, tasks:[<names affected>], serverTime}` |
+| `pause` | POST | `{tasks?:[<name>], prefix?}` | `{op, tasks:[<names paused>], expired:[<names>], serverTime}` |
+| `resume` | POST | `{tasks?:[<name>], prefix?}` | `{op, tasks:[<names resumed>], expired:[<names>], serverTime}` |
 | `delete` | POST | `{tasks?:[<name>], prefix?}` | `{op, tasks:[<names affected>], serverTime}` |
-| `restore` | POST | `{tasks:[<task>], repoint:boolean, paused:boolean}` | `{op, tasks:[<names>], serverTime}` |
+| `restore` | POST | `{tasks:[<task>], repoint:boolean, paused:boolean}` | `{op, tasks:[<names>], expired:[<names>], serverTime}` |
 
 - **`describe`.**
   - `ping` is the effective `configBean` value, as a boolean. `up.sh` stops unless it is `false`, and after boot confirms that every task is `paused`.
@@ -205,7 +208,15 @@ Caller: the migration service, `migration/src/scheduler/`, and `opt2-ops` (AAP 0
   - `startDate` from the captured definition, else today;
   - the URL `OPT2_GATEWAY_ORIGIN` + `/index.cfm/_api/sitemonitor/`, with host and port split as Masa splits them (`:549-553`, `:563`): the URL carries no port, `port` carries it, and a missing port is 443 for `https` and 80 for `http`.
 - **`pause`, `resume`, `delete`** select tasks whose name equals an entry of `tasks`, or starts with `prefix` (case-sensitive; for example `opt2-survey-`). At least one of the two is required. An empty selection answers `tasks: []`.
+  - `pause` lists in `tasks` every selected task it paused or found paused, which it leaves untouched. An `Expired` task is not acted on and is listed in `expired`.
+  - `resume` lists in `tasks` every selected task it resumed. A `Paused` `ONCE` task whose start has passed is moved to now. A task ACF lists `Expired`, or reports expired although it was not paused, has had its run or never runs: it is not acted on and is listed in `expired`.
 - **`restore`** recreates each task exactly as given. With `repoint: true` only the scheme, host and port move to `OPT2_GATEWAY_ORIGIN`, a missing port defaulting as in `repoint`; path and query are kept. With `paused: true` each task is paused after creation. The input shape is the `describe` task shape, so migration can round-trip `${OPT2_PRISTINE_DIR}/native-tasks.json` after converting it.
+  - A task's `expired` field (default `false`) is honoured only as the captured expiry; its `paused` field is ignored.
+  - A past `ONCE` start (`startDate` and `startTime` not after ColdFusion's clock) is never saved over an existing task. For such a definition:
+    - without `expired` and with `paused: false`, it is moved to now, so a run that fell due while the task was held paused happens at once;
+    - otherwise an existing task with the same group, URL, port, interval, start and timeout is left as it is when ACF lists it `Expired`, or, with `paused: true` and without `expired`, `Paused`;
+    - otherwise any existing task of that name is deleted and the definition created, so it is `Expired`, which ACF cannot pause, subject to the misfire threshold above.
+  - `tasks` names every restored task; `expired` names those of them ACF holds expired, neither paused nor resumed.
 
 ### `site.cfm?op=refresh&siteid=…`
 
@@ -261,6 +272,7 @@ Set on the ColdFusion start command only, by `harness/repro/lib/legacy-start.sh`
 | `OPT2_BRIDGE_HMAC_KEY` | Assertion key, generated by `up.sh` into `${OPT2_STATE_DIR}/secrets/`. In the cloud, the Secret Manager container `legacy-bridge-hmac` |
 | `OPT2_GATEWAY_ORIGIN` | Gateway origin used by `scheduler.cfm` `repoint` and `restore` |
 | `MURA_PING` | `false`, so Masa never registers the site-monitor task itself (`core/appcfc/onApplicationStart_include.cfm:136-141`, `:561`) |
+| `MURA_BROADCASTCLUSTERCOMMANDS` | `false`, so Masa queues no cluster reload commands (`core/appcfc/onApplicationStart_include.cfm:167-181`, `core/mura/cluster/clusterManager.cfc:81, 203-211`), as the start-up guard requires before a content unit becomes `target`-authoritative |
 
 The rendered server definition, `harness/repro/server.json.template`, also sets `MURA_PORT` and `MURA_PROXYPORT` to the gateway port, so the absolute URLs Masa builds address the gateway.
 

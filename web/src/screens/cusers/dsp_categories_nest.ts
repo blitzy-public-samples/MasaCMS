@@ -16,7 +16,7 @@ export interface InterestCategoryRow {
   readonly hasKids: number | boolean;
 }
 
-// The strategies-content contract defines no interest-group read, so callers supply the forest query.
+// strategies-content serves this query one level per call (`listPrivateInterestGroups`), so callers supply the forest.
 /** `getPrivateInterestGroups` for every level of `siteId`'s pool at once, each parent's rows ordered by site then name. */
 export type InterestCategoryLoader = (siteId: string) => Promise<readonly InterestCategoryRow[]>;
 

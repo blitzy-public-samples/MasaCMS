@@ -30,7 +30,8 @@ const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({
 });
 
 // The contract's ScheduledTaskName, SiteId and LocalTimestamp.
-const taskNameSchema = z
+/** The contract's `ScheduledTaskName`. */
+export const taskNameSchema = z
   .string()
   .max(100)
   .regex(/^opt2-survey-[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}-(launch|reminder-[1-9][0-9]*)$/);

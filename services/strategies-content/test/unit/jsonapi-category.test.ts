@@ -631,7 +631,8 @@ function readRows(load: () => Promise<Struct[]>): BeanFeedSource<Struct> {
     filterThrows: async (where) => (await held()).filterThrows(where),
     count: async (query) => (await held()).count(query),
     rows: async (query, offset, limit) => (await held()).rows(query, offset, limit),
-    all: async () => (await held()).all(),
+    orders: () => false,
+    scan: async (request, visit, revisit) => (await held()).scan(request, visit, revisit),
   };
 }
 

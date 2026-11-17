@@ -3,14 +3,17 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { REDACTED, validateLogRecord, type Logger } from '@opt2/platform/logging';
 import {
   collectBundleSources,
+  createGenerateLogger,
   generateResourceBundles,
   MissingAdminBundlesError,
   moduleFileName,
   renderBundleModule,
   renderIndexModule,
+  runGenerateCommand,
   type BundleSources,
 } from '@/lib/resource-bundles/generate';
 import { createResourceBundles, type BundleData, type GeneratedBundles } from '@/lib/resource-bundles/rb';
@@ -245,8 +248,8 @@ describe('generateResourceBundles', () => {
     expect(bundles.rbKey('de_DE', 'layout.help')).toBe('Hilfe');
   });
 
-  it('records a malformed \\uXXXX file as an error module and warns without failing', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  it('records a malformed \\uXXXX file as an error module and in errors, printing nothing', async () => {
+    const consoles = (['log', 'warn', 'error'] as const).map((method) => vi.spyOn(console, method).mockImplementation(() => undefined));
     const root = await makeRepo({ [`${ADMIN}/en.properties`]: 'a=b\n', [`${ADMIN}/fr.properties`]: MALFORMED });
     const outDir = path.join(root, 'out');
     const result = await generateResourceBundles({ repoRoot: root, outDir });
@@ -255,7 +258,7 @@ describe('generateResourceBundles', () => {
     expect(result.errors).toEqual([{ dir: ADMIN, file: 'fr.properties', message }]);
     expect(result.files.admin).toBe(2);
     expect(result.entries.admin).toBe(1);
-    expect(warn).toHaveBeenCalledWith(`warning: ${ADMIN}/fr.properties: ${message}`);
+    for (const spy of consoles) expect(spy).not.toHaveBeenCalled();
     expect((await importGenerated(outDir)).admin.files['fr']).toEqual({ error: message });
   });
 
@@ -293,5 +296,64 @@ describe('generateResourceBundles', () => {
       MissingAdminBundlesError,
     );
     expect(await readFile(path.join(root, 'out/keep.ts'), 'utf8')).toBe('kept');
+  });
+});
+
+describe('runGenerateCommand', () => {
+  type LogLine = Record<string, unknown>;
+
+  /** The command's logger over `env` on its default destination, with the parsed lines it writes to stdout and a stderr spy. */
+  function captureLogger(env: Record<string, string>): { logger: Logger; lines: LogLine[]; stderr: MockInstance } {
+    const lines: LogLine[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      const text = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
+      for (const line of text.split('\n')) if (line !== '') lines.push(JSON.parse(line) as LogLine);
+      return true;
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    return { logger: createGenerateLogger(env), lines, stderr };
+  }
+
+  it.each<[string, Record<string, string>]>([
+    ['local', {}],
+    ['cloud', { OPT2_ENV: 'cloud', GOOGLE_CLOUD_PROJECT: 'opt2-web-test' }],
+  ])('logs each unparsable file and each layer as log-record.v1 lines (%s)', async (env, vars) => {
+    const root = await makeRepo({
+      [`${ADMIN}/en.properties`]: 'a=b\n',
+      [`${ADMIN}/fr.properties`]: MALFORMED,
+      'resource_bundles/en.properties': 'g=x\nh=y\n',
+    });
+    const { logger, lines, stderr } = captureLogger(vars);
+    const { version } = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string };
+
+    expect(await runGenerateCommand({ repoRoot: root, outDir: path.join(root, 'out') }, logger)).toBe(0);
+    expect(stderr).not.toHaveBeenCalled();
+    expect(lines.map((line) => validateLogRecord(line).errors)).toEqual(lines.map(() => []));
+    expect(lines.map(({ severity, message }) => [severity, message])).toEqual([
+      ['WARNING', `${ADMIN}/fr.properties: Malformed \\uxxxx encoding.`],
+      ['INFO', `admin: ${ADMIN} (2 files, 1 entry)`],
+      ['INFO', 'core-assets: absent (0 files, 0 entries)'],
+      ['INFO', 'global: resource_bundles (1 file, 2 entries)'],
+    ]);
+    for (const line of lines) expect(line).toMatchObject({ service: 'web-generate-rb', version, env });
+  });
+
+  it.each<[string, Record<string, string>, string, LogLine]>([
+    ['the admin directory is missing', {}, 'out', { message: `Admin resource bundle directory not found: ${ADMIN}` }],
+    [
+      'generation throws',
+      { [`${ADMIN}/en.properties`]: 'a=b\n' },
+      ADMIN,
+      { message: 'resource bundle generation failed', error: expect.objectContaining({ type: 'Error', message: REDACTED }) },
+    ],
+  ])('logs one safe ERROR line and answers 1 when %s', async (_label, files, out, expected) => {
+    const root = await makeRepo(files);
+    const { logger, lines, stderr } = captureLogger({});
+
+    expect(await runGenerateCommand({ repoRoot: root, outDir: path.join(root, out) }, logger)).toBe(1);
+    expect(stderr).not.toHaveBeenCalled();
+    expect(lines).toEqual([expect.objectContaining({ severity: 'ERROR', ...expected })]);
+    expect(validateLogRecord(lines[0]).errors).toEqual([]);
+    expect(JSON.stringify(lines)).not.toContain(root);
   });
 });

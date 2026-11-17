@@ -1,9 +1,10 @@
 /** ccategory admin routes: category list, edit and update. */
+import type { Readable } from 'node:stream';
 import { cfEq, cfNumberString } from '@opt2/platform/legacy-compat';
-import { legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import { legacyParamsOf, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import {
-  listCategories,
   readCategory,
+  readCategoryWalkBatches,
   restrictGroups,
   updateCategoryAction,
   type CategoryBean,
@@ -12,12 +13,13 @@ import {
 } from '../../domain/categories.js';
 import type { Actor } from '../../domain/context.js';
 import type { components } from '../../generated/openapi.js';
+import type { CategoryWalkRow } from '../../repo/repository.js';
 // Type-only: ../index.ts imports this module.
 import type { ContentRouteContext } from '../index.js';
 import { adminCsrf, adminRedirect, circuitRouteConfig, csrfRejected, requireCircuitAccess, type AdminWriteResult } from './access.js';
+import { VIEW_MODEL_CONTENT_TYPE, nestedJson, streamModel } from './streamed-model.js';
 
 type AdminViewModel = components['schemas']['AdminViewModel'];
-type CategoryListRow = Awaited<ReturnType<typeof listCategories>>[number];
 
 interface SiteParams {
   siteid: string;
@@ -40,9 +42,9 @@ interface CategoryNode {
   parentID: string;
   name: string;
   hasKids: number;
-  isOpen: CategoryListRow['isopen'];
-  isInterestGroup: CategoryListRow['isinterestgroup'];
-  isActive: CategoryListRow['isactive'];
+  isOpen: CategoryWalkRow['isopen'];
+  isInterestGroup: CategoryWalkRow['isinterestgroup'];
+  isActive: CategoryWalkRow['isactive'];
   restrictGroups: string;
   children: CategoryNode[];
 }
@@ -77,8 +79,8 @@ function categoryIdOf(request: FastifyRequest): string {
   return categoryId;
 }
 
-/** A `getCategories` row as the contract names its columns; a SQL NULL text reads as `''`, as in a CFML query. */
-function categoryNodeOf(row: CategoryListRow, children: CategoryNode[]): CategoryNode {
+/** A `getCategories` row as the contract names its columns, without its children; a SQL NULL text reads as `''`, as in a CFML query. */
+function categoryNodeOf(row: CategoryWalkRow): Omit<CategoryNode, 'children'> {
   return {
     categoryID: row.categoryid,
     parentID: row.parentid ?? '',
@@ -88,55 +90,47 @@ function categoryNodeOf(row: CategoryListRow, children: CategoryNode[]): Categor
     isInterestGroup: row.isinterestgroup,
     isActive: row.isactive,
     restrictGroups: row.restrictgroups ?? '',
-    children,
   };
 }
 
 /**
- * The `dsp_nest.cfm` walk: the category pool's level under `parentId` in name order, each row with the level below it.
- * @throws Error When a category is its own ancestor, where legacy recursion would not end.
+ * The model `build` sets, its `categories` slot printing the `dsp_nest.cfm` walk batch by batch, each row with the level below it.
+ * @throws Error Before any byte, when a category is its own ancestor, where legacy recursion would not end.
  */
-async function categoryTree(
-  ctx: ContentRouteContext,
-  actor: Actor,
-  parentId = '',
-  ancestors: ReadonlySet<string> = new Set(),
-): Promise<CategoryNode[]> {
-  const nodes: CategoryNode[] = [];
-  for (const row of await listCategories(ctx.domain, actor, { parentId })) {
-    const id = row.categoryid.toUpperCase();
-    if (ancestors.has(id)) throw new Error(`Category ${row.categoryid} is its own ancestor`);
-    nodes.push(categoryNodeOf(row, await categoryTree(ctx, actor, row.categoryid, new Set([...ancestors, id]))));
-  }
-  return nodes;
+function categoryTreeBody(ctx: ContentRouteContext, actor: Actor, build: (categories: string) => AdminViewModel | AdminWriteResult): Promise<Readable> {
+  return streamModel(['categories'], async (out) => {
+    out.head((slot) => build(slot.categories));
+    const nest = nestedJson('children');
+    await readCategoryWalkBatches(ctx.domain, actor, 'every', (rows) =>
+      out.text('categories', rows.map((row) => nest.node(row.depth, categoryNodeOf(row))).join('')),
+    );
+    await out.text('categories', nest.end());
+  });
 }
 
-/** The `edit.cfm` model: the bean's values with its errors, the restrict groups and the category tree. */
-async function editModel(
-  ctx: ContentRouteContext,
-  actor: Actor,
-  bean: CategoryBean,
-  groups: readonly RestrictGroupRow[],
-): Promise<AdminViewModel['rc']> {
+/** The `edit.cfm` model: the bean's values with its errors, the restrict groups and the category tree's slot. */
+function editRc(bean: CategoryBean, groups: readonly RestrictGroupRow[], categories: string): AdminViewModel['rc'] {
   return {
     categoryBean: { ...bean },
     rsRestrictGroups: groups.map((group) => ({ userID: group.userid, groupName: group.groupname, isPublic: group.ispublic })),
-    categories: await categoryTree(ctx, actor),
+    categories,
   };
 }
 
 /** Registers `listCategories`, `getCategory` and `saveCategory`. */
 export async function registerCategoryRoutes(app: FastifyInstance, ctx: ContentRouteContext): Promise<void> {
-  app.get<{ Params: SiteParams; Reply: AdminViewModel }>(CATEGORIES_PATH, { config: circuitRouteConfig('ccategory') }, async (request) => {
+  app.get<{ Params: SiteParams }>(CATEGORIES_PATH, { config: circuitRouteConfig('ccategory') }, async (request, reply) => {
     const actor = await requireCircuitAccess(request, ctx, 'ccategory', request.params.siteid);
-    return { rc: { categories: await categoryTree(ctx, actor) } };
+    const body = await categoryTreeBody(ctx, actor, (categories) => ({ rc: { categories } }));
+    return reply.type(VIEW_MODEL_CONTENT_TYPE).send(body);
   });
 
-  app.get<{ Params: CategoryParams; Reply: AdminViewModel }>(CATEGORY_PATH, { config: circuitRouteConfig('ccategory') }, async (request) => {
+  app.get<{ Params: CategoryParams }>(CATEGORY_PATH, { config: circuitRouteConfig('ccategory') }, async (request, reply) => {
     const actor = await requireCircuitAccess(request, ctx, 'ccategory', request.params.siteid);
     const groups = await restrictGroups(ctx.domain, actor);
     const bean = await readCategory(ctx.domain, actor, request.params.categoryid);
-    return { rc: await editModel(ctx, actor, bean, groups) };
+    const body = await categoryTreeBody(ctx, actor, (categories) => ({ rc: editRc(bean, groups, categories) }));
+    return reply.type(VIEW_MODEL_CONTENT_TYPE).send(body);
   });
 
   // before() runs, and update() dereferences rc.categoryid, before validateCSRFTokens can consume the token.
@@ -145,10 +139,10 @@ export async function registerCategoryRoutes(app: FastifyInstance, ctx: ContentR
     categoryIdOf(request);
   };
 
-  app.post<{ Params: SiteParams; Reply: AdminWriteResult }>(
+  app.post<{ Params: SiteParams }>(
     CATEGORIES_PATH,
     { config: circuitRouteConfig('ccategory'), preHandler: [admitUpdate, adminCsrf(categoryIdOf)] },
-    async (request) => {
+    async (request, reply): Promise<AdminWriteResult | FastifyReply> => {
       const actor = await requireCircuitAccess(request, ctx, 'ccategory', request.params.siteid);
       const rc = controllerRc(request, request.params.siteid);
       const csrfValid = !csrfRejected(request);
@@ -162,12 +156,13 @@ export async function registerCategoryRoutes(app: FastifyInstance, ctx: ContentR
       if (outcome.kind === 'redirect') {
         return { saved: csrfValid, errors: {}, redirect: adminRedirect(outcome.action, rc, outcome.append) };
       }
-      return {
+      const body = await categoryTreeBody(ctx, actor, (categories) => ({
         saved: false,
         errors: outcome.bean.errors,
         redirect: null,
-        data: { rc: await editModel(ctx, actor, outcome.bean, outcome.rsRestrictGroups) },
-      };
+        data: { rc: editRc(outcome.bean, outcome.rsRestrictGroups, categories) },
+      }));
+      return reply.type(VIEW_MODEL_CONTENT_TYPE).send(body);
     },
   );
 }

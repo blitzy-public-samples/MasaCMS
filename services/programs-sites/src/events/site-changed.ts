@@ -1,7 +1,7 @@
 /** Producer of `programs-sites.site.changed.v1`, the full-state site event that feeds every service's tenant registry. */
 import type { EventEnvelope } from '@opt2/platform/events';
 import { writeOutbox, type OutboxOrigin } from '@opt2/platform/outbox';
-import { SITE_CHANGED_TOPIC, type SiteChangedPayload, type TenantTx } from '@opt2/platform/tenancy';
+import { SITE_CHANGED_TOPIC, tenantRegistryConsumer, type SiteChangedPayload, type TenantTx } from '@opt2/platform/tenancy';
 
 /** Topic of the site state event. */
 export const TOPIC = SITE_CHANGED_TOPIC;
@@ -16,9 +16,9 @@ export interface SiteChangedArgs {
   origin?: OutboxOrigin;
 }
 
-/** Writes the site's `state` outbox row in `tx`; the envelope tenant is the transaction tenant. */
-export function writeSiteChanged(tx: TenantTx, args: SiteChangedArgs): Promise<EventEnvelope<SiteChangedPayload> | null> {
-  return writeOutbox(tx, {
+/** Writes the site's `state` outbox row in `tx` and applies it to this service's own tenant registry there; the envelope tenant is the transaction tenant. */
+export async function writeSiteChanged(tx: TenantTx, args: SiteChangedArgs): Promise<EventEnvelope<SiteChangedPayload> | null> {
+  const envelope = await writeOutbox(tx, {
     topic: TOPIC,
     kind: 'state',
     aggregateType: 'site',
@@ -27,4 +27,6 @@ export function writeSiteChanged(tx: TenantTx, args: SiteChangedArgs): Promise<E
     payload: args.payload,
     origin: args.origin,
   });
+  if (envelope !== null) await tenantRegistryConsumer.apply(tx, envelope);
+  return envelope;
 }

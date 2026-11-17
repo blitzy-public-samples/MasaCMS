@@ -149,7 +149,7 @@ npm run export-transitions           # regenerate the transition table and its e
 npm run export-transitions -- --check
 ```
 
-- **Configuration.** `timesheetsEnvSchema` in `src/app.ts`: `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)) plus the required `OPT2_SERVICE_URLS` entries named at the end of this item, a missing one failing start-up. Locally `harness/repro/up.sh` starts it on port 8118 (`harness/repro/ports.env`) with `PORT=8118` and `PG_USER=timesheets_app` set inline. Standalone, after `npm run repro:secrets` in `harness/` (key files and the `db-timesheets-app` password under `${OPT2_STATE_DIR}/secrets/`, default state directory `$HOME/.opt2/state`) and with `PG_DATABASE` exported as the database `opt2-db bootstrap` set up:
+- **Configuration.** `timesheetsEnvSchema` in `src/app.ts`: `baseEnvSchema` of `@opt2/platform/service-kit` ([details](../../platform/README.md#configuration)) plus the requirements named at the end of this item, a missing or wrong one failing start-up. Locally `harness/repro/up.sh` starts it on port 8118 (`harness/repro/ports.env`) with `PORT=8118` and `PG_USER=timesheets_app` set inline. Standalone, after `npm run repro:secrets` in `harness/` (key files and the `db-timesheets-app` password under `${OPT2_STATE_DIR}/secrets/`, default state directory `$HOME/.opt2/state`) and with `PG_DATABASE` exported as the database `opt2-db bootstrap` set up:
 
   ```sh
   PORT=8118 OPT2_SERVICE_NAME=timesheets OPT2_ENV=local TZ=UTC \
@@ -162,8 +162,8 @@ npm run export-transitions -- --check
     npm start
   ```
 
-  `OPT2_SERVICE_URLS` must contain `identity` (CSRF checks) and `reporting` (export scope checks).
-- **Test dependencies.** The PostgreSQL-backed suites (isolation, events and the PostgreSQL cases of the unit suites) need the `PG_HOST`, `PG_PORT` (default 5432), `PG_USER`, `PG_PASSWORD` and `PG_DATABASE` settings, create a throwaway schema and roles through `@opt2/platform/testing`, and are skipped when the server is unreachable. No suite needs a running Pub/Sub emulator: every app a suite builds gets a capturing publisher, and push messages arrive through `app.inject`. `PUBSUB_EMULATOR_HOST` is required only by a running local process's default publisher (`npm start` above).
+  `OPT2_SERVICE_NAME` must be `timesheets`, `OPT2_DB_AUTH` and `PG_DATABASE` must be set, and `OPT2_SERVICE_URLS` must contain `identity` (CSRF checks) and `reporting` (export scope checks).
+- **Test dependencies.** The PostgreSQL-backed suites (isolation, events and the PostgreSQL cases of the unit suites) need the `PG_HOST`, `PG_PORT` (default 5432), `PG_USER`, `PG_PASSWORD` and `PG_DATABASE` settings, create a throwaway schema and roles through `@opt2/platform/testing`, are skipped when `PG_HOST` is unset and fail when the server is unreachable. No suite needs a running Pub/Sub emulator: every app a suite builds gets a capturing publisher, and push messages arrive through `app.inject`. `PUBSUB_EMULATOR_HOST` is required only by a running local process's default publisher (`npm start` above).
 - **Cloud.** Cloud Run image from `Dockerfile`, with `min_instance_count = 0`, internal-only ingress and Cloud SQL IAM authentication as a member of `timesheets_app` (`infra/terraform/`, plan only).
 
 ## Parity evidence

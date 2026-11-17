@@ -1,7 +1,8 @@
 /** Non-image uploads, file version deletes, file metadata and `/_api/render/*` object resolution (Masa fileBean, fileManager and fileDAO, `fileDir` store). */
+import type { Readable } from 'node:stream';
 import { cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
-import { sha256Hex, withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
-import { contentFileKey, type ContentFileVariant, type StoragePort } from '@opt2/platform/storage';
+import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
+import { contentFileKey, type ContentFileVariant, type PutResult, type StoragePort } from '@opt2/platform/storage';
 import { poolTenantFor, registryEntryForTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { CONTENT_FILES_BUCKET, type StoreObjectDeps } from '../migration/objects.js';
 import { StagedObjectMissingError, recoverStagedObjects, settleStagedObject, stageObject } from '../migration/staged-objects.js';
@@ -44,7 +45,12 @@ export interface UploadedFile {
   fileName: string;
   /** MIME type of the part, `<contentType>/<contentSubType>`. */
   contentType: string;
-  bytes: Buffer;
+  /** Byte count of the part. */
+  size: number;
+  /** Lowercase hex SHA-256 of the part's bytes. */
+  sha256: string;
+  /** A new read stream of the part's bytes; each call opens one. */
+  stream(): Readable;
 }
 
 /** CFML `listLast(value, '.')`: empty elements are skipped. */
@@ -121,6 +127,17 @@ export interface UploadInTx {
   staged?: StagedObjectEntry[];
 }
 
+/** Writes `file` to `key` in `content-files`, opening its stream only now; a put that fails before reading it still closes it. */
+async function putUploadedFile(storage: StoragePort, key: string, file: UploadedFile): Promise<PutResult> {
+  const body = file.stream();
+  try {
+    return await storage.put(CONTENT_FILES_BUCKET, key, body, { contentType: file.contentType });
+  } catch (err) {
+    body.destroy();
+    throw err;
+  }
+}
+
 /**
  * fileBean.save → fileManager.create → fileDAO.create for a non-image upload: in the site's file pool tenant, the
  * `content.file` row (siteid = the site's filePoolID), the bytes in `content-files`, then their object row; in one gated
@@ -158,8 +175,8 @@ export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: St
       file_id: fileId,
       variant: '',
       ext,
-      size: args.file.bytes.length,
-      sha256: sha256Hex(args.file.bytes),
+      size: args.file.size,
+      sha256: args.file.sha256,
       content_type: mime,
     },
     write,
@@ -180,7 +197,7 @@ export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: St
         filename: args.file.fileName,
         contenttype: contentType,
         contentsubtype: contentSubType,
-        filesize: args.file.bytes.length,
+        filesize: args.file.size,
         fileext: ext,
         created: now,
         deleted: 0,
@@ -197,7 +214,7 @@ export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: St
       },
       write,
     );
-    const put = await deps.storage.put(CONTENT_FILES_BUCKET, objectKey, args.file.bytes, { contentType: mime });
+    const put = await putUploadedFile(deps.storage, objectKey, args.file);
     const object = await deps.repository.files.upsertFileObject(
       tx,
       {

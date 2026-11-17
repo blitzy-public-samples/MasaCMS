@@ -189,6 +189,10 @@ export function defineV1RouteCases(mode: TestDbMode, suite: DescribeBlock = desc
       { query: '?page=1&pageSize=2', indexes: [0, 1] },
       { query: '?page=2&pageSize=2', indexes: [2] },
       { query: '?page=3&pageSize=2', indexes: [] },
+      { query: '?pageIndex=2&itemsPerPage=2', indexes: [2] },
+      { query: '?page=2&itemsPerPage=2', indexes: [2] },
+      { query: '?pageIndex=2&pageSize=2', indexes: [2] },
+      { query: '?itemsPerPage=1', indexes: [0] },
     ])('pages the list for $query with the total of every job', async ({ query, indexes }) => {
       const jobsA = await seedListedJobs();
 
@@ -199,7 +203,16 @@ export function defineV1RouteCases(mode: TestDbMode, suite: DescribeBlock = desc
       expect(res.json()).toStrictEqual({ data: indexes.map((index) => toV1ExportJob(jobsA[index] as ExportJobRow)), total: 3 });
     });
 
-    it.each(['?page=0', '?pageSize=0', '?page=first'])('answers the legacy 400 to the list query %s', async (query) => {
+    it.each([
+      '?page=0',
+      '?pageSize=0',
+      '?page=first',
+      '?pageIndex=0',
+      '?itemsPerPage=0',
+      '?page=1&pageIndex=1',
+      '?pageSize=2&itemsPerPage=2',
+      '?page=2&pageIndex=1&pageSize=2&itemsPerPage=2',
+    ])('answers the legacy 400 to the list query %s', async (query) => {
       const res = await getAs(t, `${EXPORTS}${query}`);
 
       expect(res.statusCode).toBe(400);
@@ -208,13 +221,15 @@ export function defineV1RouteCases(mode: TestDbMode, suite: DescribeBlock = desc
     });
 
     it.each([
-      { pageSize: 1000, status: 200 },
-      { pageSize: 1001, status: 400 },
-      { pageSize: 100000, status: 400 },
-    ])('answers pageSize=$pageSize, against the fixture maximum of 1000, with $status', async ({ pageSize, status }) => {
+      { name: 'pageSize', pageSize: 1000, status: 200 },
+      { name: 'pageSize', pageSize: 1001, status: 400 },
+      { name: 'pageSize', pageSize: 100000, status: 400 },
+      { name: 'itemsPerPage', pageSize: 1000, status: 200 },
+      { name: 'itemsPerPage', pageSize: 1001, status: 400 },
+    ])('answers $name=$pageSize, against the fixture maximum of 1000, with $status', async ({ name, pageSize, status }) => {
       const jobsA = await seedListedJobs();
 
-      const res = await getAs(t, `${EXPORTS}?pageSize=${pageSize}`);
+      const res = await getAs(t, `${EXPORTS}?${name}=${pageSize}`);
 
       expect(res.statusCode).toBe(status);
       assertContract('GET', EXPORTS, res);

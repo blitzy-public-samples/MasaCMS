@@ -9,6 +9,7 @@ import {
   createService,
   loadEnv,
   optionalEnvString,
+  processEnvSchema,
   publisherEmulatorHost,
   systemClock,
   type Clock,
@@ -36,29 +37,25 @@ export const SERVICE_NAME = 'identity';
 /** Equals `info.version` of `contracts/openapi.yaml`. */
 export const SERVICE_VERSION = '1.0.0';
 
-/** Services identity calls through `OPT2_SERVICE_URLS`: itself (its outbox sweep's task target), people, programs-sites and strategies-content. */
-const REQUIRED_SERVICES: readonly string[] = [SERVICE_NAME, 'people', 'programs-sites', 'strategies-content'];
+/** Services identity calls: itself (its outbox sweep's task target), people, programs-sites, strategies-content and the gateway. */
+const CALLEES: readonly string[] = [SERVICE_NAME, 'people', 'programs-sites', 'strategies-content', GATEWAY_SERVICE];
 
-/** Base variables with every callee's URL required, the gateway's by either entry; `OPT2_ENV=cloud` selects Identity Platform issuance in the tenants of `GOOGLE_CLOUD_PROJECT` and requires the project's Web API key. */
-export const identityEnvSchema = baseEnvSchema.extend({ OPT2_IDENTITY_PLATFORM_API_KEY: optionalEnvString() }).superRefine(
-  (env, ctx) => {
-    if (env.OPT2_ENV === 'cloud' && env.OPT2_IDENTITY_PLATFORM_API_KEY === undefined) {
-      ctx.addIssue({ code: 'custom', path: ['OPT2_IDENTITY_PLATFORM_API_KEY'], message: 'is required when OPT2_ENV=cloud' });
-    }
-    // Failed fields keep their raw values here; a map that failed as a whole carries its own issue.
-    const urls: unknown = env.OPT2_SERVICE_URLS;
-    const mapFailed = ctx.issues.some((issue) => issue.path?.length === 1 && issue.path[0] === 'OPT2_SERVICE_URLS');
-    if (mapFailed || typeof urls !== 'object' || urls === null) return;
-    for (const name of REQUIRED_SERVICES.filter((service) => !Object.hasOwn(urls, service))) {
-      ctx.addIssue({ code: 'custom', path: ['OPT2_SERVICE_URLS', name], message: 'is required' });
-    }
-    // createService maps OPT2_GATEWAY_URL over the map's entry, so either one names the gateway.
-    if (env.OPT2_GATEWAY_URL === undefined && !Object.hasOwn(urls, GATEWAY_SERVICE)) {
-      ctx.addIssue({ code: 'custom', path: ['OPT2_GATEWAY_URL'], message: `is required (or OPT2_SERVICE_URLS.${GATEWAY_SERVICE})` });
-    }
-  },
-  // Runs even when other variables failed, so loadEnv lists every missing callee at once.
-  { when: () => true },
+/**
+ * Base variables plus `OPT2_IDENTITY_PLATFORM_API_KEY`, with its own name, its database and every callee's URL required, the
+ * gateway's by OPT2_GATEWAY_URL or the map; `OPT2_ENV=cloud` selects Identity Platform issuance in the tenants of
+ * `GOOGLE_CLOUD_PROJECT` and requires the project's Web API key.
+ */
+export const identityEnvSchema = processEnvSchema(
+  baseEnvSchema.extend({ OPT2_IDENTITY_PLATFORM_API_KEY: optionalEnvString() }).superRefine(
+    (env, ctx) => {
+      if (env.OPT2_ENV === 'cloud' && env.OPT2_IDENTITY_PLATFORM_API_KEY === undefined) {
+        ctx.addIssue({ code: 'custom', path: ['OPT2_IDENTITY_PLATFORM_API_KEY'], message: 'is required when OPT2_ENV=cloud' });
+      }
+    },
+    // Runs even when other variables failed, so loadEnv lists every issue at once.
+    { when: () => true },
+  ),
+  { service: SERVICE_NAME, callees: CALLEES, database: true },
 );
 
 /** Parsed environment of the identity process. */

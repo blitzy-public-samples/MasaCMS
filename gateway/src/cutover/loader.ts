@@ -1,8 +1,9 @@
 // Loads and schema-validates the committed cut-over files, reads the inventory facts routing needs, and builds the routing index.
 import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { Ajv2020, type AnySchemaObject, type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js';
 import { ROUTE_FAMILIES, entityRemoteFunctionsFromKeys, normaliseRouteKey } from '@opt2/platform/legacy-compat';
+import { EnvFileError } from '@opt2/platform/service-kit';
 import type { GatewayPaths } from './paths.js';
 import type {
   Authority,
@@ -327,9 +328,26 @@ interface Validators {
 
 const validatorsBySchemaFile = new Map<string, Promise<Validators>>();
 
+/** Variable that names the cut-over directory. */
+const CUTOVER_DIR_VARIABLE = 'OPT2_CUTOVER_DIR';
+
+/** `EnvFileError` for a failed read of `file`, named by its `/`-separated path inside the cut-over directory. */
+function cutoverFileError(paths: Pick<GatewayPaths, 'cutoverDir'>, file: string, cause: unknown): EnvFileError {
+  return new EnvFileError(CUTOVER_DIR_VARIABLE, relative(paths.cutoverDir, file).split(sep).join('/'), cause);
+}
+
+/** UTF-8 text of a cut-over file; a failed read rejects with `EnvFileError`, which keeps the cause's `code`. */
+async function readCutoverFile(paths: Pick<GatewayPaths, 'cutoverDir'>, file: string): Promise<string> {
+  try {
+    return await readFile(file, 'utf8');
+  } catch (error) {
+    throw cutoverFileError(paths, file, error);
+  }
+}
+
 /** Compiles one schema file; its `$defs` and `sourceSha` rule also constrain the ids in variants.json and groups.json. */
-async function compileValidators(schemaFile: string): Promise<Validators> {
-  const version = JSON.parse(await readFile(schemaFile, 'utf8')) as AnySchemaObject;
+async function compileValidators(paths: Pick<GatewayPaths, 'cutoverDir' | 'schemaFile'>): Promise<Validators> {
+  const version = JSON.parse(await readCutoverFile(paths, paths.schemaFile)) as AnySchemaObject;
   // Copies of the schema (OPT2_CUTOVER_DIR) share one `$id`; without it every copy compiles beside the others in the one Ajv instance.
   delete version.$id;
   const $defs = { ...version.$defs, sourceSha: version.properties.sourceSha, variantCondition: VARIANT_CONDITION };
@@ -341,10 +359,11 @@ async function compileValidators(schemaFile: string): Promise<Validators> {
 }
 
 /** The validators of a schema file, compiled on first use. */
-function validatorsFor(schemaFile: string): Promise<Validators> {
+function validatorsFor(paths: Pick<GatewayPaths, 'cutoverDir' | 'schemaFile'>): Promise<Validators> {
+  const { schemaFile } = paths;
   let validators = validatorsBySchemaFile.get(schemaFile);
   if (validators === undefined) {
-    validators = compileValidators(schemaFile);
+    validators = compileValidators(paths);
     validatorsBySchemaFile.set(schemaFile, validators);
     validators.catch(() => validatorsBySchemaFile.delete(schemaFile));
   }
@@ -517,18 +536,24 @@ export async function loadExceptionsList(paths: Pick<GatewayPaths, 'exceptionsLi
   return readValidated(paths.exceptionsListFile, opt2Validators.exceptions, (doc) => pinViolations(doc, pin));
 }
 
-/** Reads and schema-validates `versions/<tableVersion>.json`; a missing file rejects with ENOENT. */
+/** Reads and schema-validates `versions/<tableVersion>.json`; a missing file rejects with an `EnvFileError` of code ENOENT. */
 export async function loadVersion(
-  paths: Pick<GatewayPaths, 'versionsDir' | 'schemaFile'>,
+  paths: Pick<GatewayPaths, 'cutoverDir' | 'versionsDir' | 'schemaFile'>,
   tableVersion: string,
 ): Promise<CutoverTable> {
-  const { version } = await validatorsFor(paths.schemaFile);
-  return readValidated(join(paths.versionsDir, `${tableVersion}.json`), version);
+  const { version } = await validatorsFor(paths);
+  const file = join(paths.versionsDir, `${tableVersion}.json`);
+  return parseValidated(file, await readCutoverFile(paths, file), version, () => []);
 }
 
-/** Ids of the committed version files (`vNNNN`), sorted. */
-export async function listVersions(paths: Pick<GatewayPaths, 'versionsDir'>): Promise<string[]> {
-  const names = await readdir(paths.versionsDir);
+/** Ids of the committed version files (`vNNNN`), sorted; an unreadable versions directory rejects with `EnvFileError`. */
+export async function listVersions(paths: Pick<GatewayPaths, 'cutoverDir' | 'versionsDir'>): Promise<string[]> {
+  let names: string[];
+  try {
+    names = await readdir(paths.versionsDir);
+  } catch (error) {
+    throw cutoverFileError(paths, paths.versionsDir, error);
+  }
   return names
     .filter((name) => VERSION_FILE.test(name))
     .map((name) => name.slice(0, -'.json'.length))
@@ -536,21 +561,25 @@ export async function listVersions(paths: Pick<GatewayPaths, 'versionsDir'>): Pr
 }
 
 /** Reads and schema-validates `variants.json`, bound to the pin. */
-export async function loadVariants(paths: Pick<GatewayPaths, 'variantsFile' | 'schemaFile' | 'sourcePinFile'>): Promise<VariantsFile> {
-  const [{ variants }, pin] = await Promise.all([validatorsFor(paths.schemaFile), loadSourcePin(paths)]);
-  return readValidated(paths.variantsFile, variants, (doc) => pinViolations(doc, pin));
+export async function loadVariants(
+  paths: Pick<GatewayPaths, 'cutoverDir' | 'variantsFile' | 'schemaFile' | 'sourcePinFile'>,
+): Promise<VariantsFile> {
+  const [{ variants }, pin] = await Promise.all([validatorsFor(paths), loadSourcePin(paths)]);
+  const text = await readCutoverFile(paths, paths.variantsFile);
+  return parseValidated(paths.variantsFile, text, variants, (doc) => pinViolations(doc, pin));
 }
 
 /** Reads and schema-validates `groups.json`, bound to the pin; its groups must partition the ownership units. */
 export async function loadGroups(
-  paths: Pick<GatewayPaths, 'groupsFile' | 'schemaFile' | 'tableOwnershipFile' | 'sourcePinFile'>,
+  paths: Pick<GatewayPaths, 'cutoverDir' | 'groupsFile' | 'schemaFile' | 'tableOwnershipFile' | 'sourcePinFile'>,
 ): Promise<GroupsFile> {
   const [{ groups }, pin, ownership] = await Promise.all([
-    validatorsFor(paths.schemaFile),
+    validatorsFor(paths),
     loadSourcePin(paths),
     loadTableOwnership(paths),
   ]);
-  return readValidated(paths.groupsFile, groups, (doc) => [...pinViolations(doc, pin), ...partitionViolations(doc, ownership)]);
+  const text = await readCutoverFile(paths, paths.groupsFile);
+  return parseValidated(paths.groupsFile, text, groups, (doc) => [...pinViolations(doc, pin), ...partitionViolations(doc, ownership)]);
 }
 
 /** CSRF fact of a key no inventory item records one for, as csrf.ts treats an unlisted key. */

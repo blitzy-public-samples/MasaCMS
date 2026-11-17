@@ -38,8 +38,8 @@ describe('logStartupFailure', () => {
       'an EnvValidationError',
       () => new EnvValidationError([`PG_HOST: ${LEAKY_TEXT}`], 'startup-test'),
       'EnvValidationError',
-      'startup-test: invalid environment (PG_HOST)',
-      'EnvValidationError: startup-test: invalid environment (PG_HOST)\n    at ',
+      'startup-test: invalid environment (PG_HOST: is invalid)',
+      'EnvValidationError: startup-test: invalid environment (PG_HOST: is invalid)\n    at ',
     ],
     ['an Error', () => new Error(LEAKY_TEXT), 'Error', REDACTED, 'Error: [REDACTED]\n    at '],
     ['a thrown string', () => LEAKY_TEXT, 'string', REDACTED, undefined],
@@ -71,6 +71,18 @@ describe('logStartupFailure', () => {
     expect(lines).toHaveLength(1);
     expect(validateLogRecord(lines[0])).toStrictEqual({ valid: true, errors: [] });
     expect(lines[0]).toMatchObject({ ...BASE, env, severity: 'ERROR', message: 'start-up failed' });
+  });
+
+  it.each<[string, string | undefined, string]>([
+    ['the default message', undefined, 'start-up failed'],
+    ['a given message', 'shutdown failed', 'shutdown failed'],
+  ])('writes %s as the line message', async (_label, message, expected) => {
+    const { destination, lines } = memoryDestination();
+    await logStartupFailure(new Error(LEAKY_TEXT), { ...BASE, source: {}, destination, ...(message === undefined ? {} : { message }) });
+
+    expect(lines).toHaveLength(1);
+    expect(validateLogRecord(lines[0])).toStrictEqual({ valid: true, errors: [] });
+    expect(lines[0]).toMatchObject({ ...BASE, severity: 'ERROR', message: expected, error: { type: 'Error', message: REDACTED } });
   });
 
   it.each(['fatal', 'verbose'])('ignores LOG_LEVEL=%s', async (level) => {

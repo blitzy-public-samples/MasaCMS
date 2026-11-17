@@ -13,6 +13,7 @@ import {
   createCapturingPublisher,
   createThrowawaySchema,
   mintTasksInvokerToken,
+  pgAvailable,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { buildTestApp, createFakeTaskPort, headersFor, type TestApp } from '../helpers/app.js';
@@ -30,7 +31,7 @@ const CSRF_HEADERS = { 'x-csrf_token': 'OUTBOX-SUITE-TOKEN', 'x-csrf_token_expir
 const SCHEDULE_BODY = { launchAt: '2026-07-01T09:00:00', reminders: [{ offsetMinutes: 60 }] };
 const GATE_HOLDER = 'surveys-outbox-events-suite';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
-const PG_MISSING = !process.env.PG_HOST;
+const PG_MISSING = !(await pgAvailable());
 const SKIP_REASON = 'PG_HOST unset: PostgreSQL-backed event suite skipped';
 
 /** A sweep chain task and the successor its delivery must secure first. */
@@ -87,24 +88,32 @@ describe.skipIf(PG_MISSING)(`surveys outbox, in-request flush and sweep chain${P
     return app.inject({ method: 'POST', url: '/internal/v1/migration/gate', headers: await headersFor('service:migration'), payload: body });
   }
 
-  /** Creates a tenant-a survey through the fixture route, schedules it through `/v1`, and returns its id. */
-  async function scheduleNewSurvey(title: string): Promise<string> {
-    const manager = await headersFor('surveys.manager', { site: TENANT_A.siteId });
+  /** Creates a tenant-a survey through the fixture route and returns its id. */
+  async function createSurvey(title: string): Promise<string> {
     const created = await app.inject({
       method: 'POST',
       url: `${FIXTURE_SURVEYS}${SITE_QUERY}`,
-      headers: { ...manager, ...CSRF_HEADERS },
+      headers: { ...(await headersFor('surveys.manager', { site: TENANT_A.siteId })), ...CSRF_HEADERS },
       payload: { title },
     });
     expect(created.statusCode).toBe(200);
-    const surveyId = created.json<{ data: { survey_id: string } }>().data.survey_id;
+    return created.json<{ data: { survey_id: string } }>().data.survey_id;
+  }
 
-    const scheduled = await app.inject({
+  /** POSTs the `/v1` schedule of `surveyId` as a tenant-a manager. */
+  async function postSchedule(surveyId: string) {
+    return app.inject({
       method: 'POST',
       url: `/v1/surveys/${surveyId}/schedule${SITE_QUERY}`,
-      headers: { ...manager, ...CSRF_HEADERS },
+      headers: { ...(await headersFor('surveys.manager', { site: TENANT_A.siteId })), ...CSRF_HEADERS },
       payload: SCHEDULE_BODY,
     });
+  }
+
+  /** Creates a tenant-a survey through the fixture route, schedules it through `/v1`, and returns its id. */
+  async function scheduleNewSurvey(title: string): Promise<string> {
+    const surveyId = await createSurvey(title);
+    const scheduled = await postSchedule(surveyId);
     expect(scheduled.statusCode).toBe(200);
     expect(scheduled.json()).toMatchObject({ data: { surveyId } });
     return surveyId;
@@ -125,10 +134,11 @@ describe.skipIf(PG_MISSING)(`surveys outbox, in-request flush and sweep chain${P
     return rows[0] as OutboxRow;
   }
 
-  /** Schedules a survey while the publisher is down, so its row stays committed and unpublished; returns that row. */
+  /** Schedules a survey while the publisher is down, which abandons the request unanswered while its row stays committed and unpublished; returns that row. */
   async function unflushedRow(title: string): Promise<OutboxRow> {
+    const surveyId = await createSurvey(title);
     failPublish = true;
-    const surveyId = await scheduleNewSurvey(title);
+    await expect(postSchedule(surveyId)).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
     failPublish = false;
     const row = await onlyRow(surveyId);
     expect(row.publishedAt).toBeNull();

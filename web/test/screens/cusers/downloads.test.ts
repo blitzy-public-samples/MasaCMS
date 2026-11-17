@@ -1,5 +1,7 @@
 // The users CSV export of cusers.cfc download(), downloadGroupMembers() and advancedSearchToCSV() with
 // cusers/inc/dsp_download.cfm: the owner each source names, its CSV relayed byte for byte, and the preserved source.
+import { Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GatewayUnavailableError, isUnavailable, type GatewayResponse } from '@/lib/gateway-client';
 import { advancedSearchToCsvAction } from '@/screens/cusers/advancedsearchtocsv';
@@ -52,10 +54,10 @@ const s2Admin = (item: string, rc: Readonly<Record<string, string>>): AdminReque
 const ownerCalls = (calls: readonly FakeCall[]): OwnerCall[] =>
   calls.map(({ service, method, path, query }) => ({ service, method, path, query }));
 
-/** The relayed body as bytes; throws when web decoded it. */
-function bytesOf(raw: RawBody): Buffer {
-  if (!(raw.body instanceof Uint8Array)) throw new TypeError('Expected the relayed bytes');
-  return Buffer.from(raw.body);
+/** The bytes of a relayed 2xx body, which arrives as a stream; throws when web read or decoded it. */
+function bytesOf(raw: RawBody): Promise<Buffer> {
+  if (!(raw.body instanceof Readable)) throw new TypeError('Expected the relayed stream');
+  return buffer(raw.body);
 }
 
 /** The users CSV source a redirect preserves as `rc.records` for `cUsers.download`. */
@@ -170,11 +172,11 @@ describe('downloadScreen', () => {
       status: reply.status,
       contentType: headers['content-type'],
       headers: { 'content-disposition': headers['content-disposition'] },
-      body: expect.any(Uint8Array),
+      body: expect.any(Readable),
     });
     expect(raw.contentType.split(';')[0]).toBe('text/csv');
     expect(raw.headers?.['content-disposition']).toBe('attachment;filename=users.csv');
-    expect(bytesOf(raw).equals(Buffer.from(body, 'utf8'))).toBe(true);
+    expect((await bytesOf(raw)).equals(Buffer.from(body, 'utf8'))).toBe(true);
   });
 
   it('rejects with the unavailability the handler answers as the legacy 503', async () => {

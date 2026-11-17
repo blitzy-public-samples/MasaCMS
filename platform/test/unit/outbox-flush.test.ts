@@ -8,6 +8,7 @@ import { rowFromDb } from '../../src/outbox/ddl.js';
 import {
   FLUSH_DEADLINE_MS,
   OutboxNotConfiguredError,
+  PUBLISH_CONCURRENCY,
   createOutbox,
   dropBlockedRows,
   flushAfterCommit,
@@ -16,11 +17,13 @@ import {
   publishPass,
   resetOutboxRuntimes,
   selectPublishable,
+  type OutboxRuntime,
 } from '../../src/outbox/flush.js';
 import { sweepOutbox, type RecoveryContext, type RecoveryHook } from '../../src/outbox/sweep.js';
-import { fixedClock, systemClock } from '../../src/service-kit/index.js';
+import { writeOutbox, type OutboxWriteInput } from '../../src/outbox/writer.js';
+import { fixedClock, newRequestContext, runWithRequestContext, systemClock } from '../../src/service-kit/index.js';
 import { tenantIdForSite } from '../../src/tenancy/tenant-id.js';
-import type { TenantDb, TenantTx } from '../../src/tenancy/transaction.js';
+import type { CommitCallback, TenantDb, TenantTx } from '../../src/tenancy/transaction.js';
 
 const TENANT_A = tenantIdForSite('tenant-a');
 const TENANT_B = tenantIdForSite('tenant-b');
@@ -45,6 +48,12 @@ const LOCK_TIMEOUT_SQL = "SELECT set_config('lock_timeout', $1, true)";
 const TIMED_OUT = { type: 'TimeoutError', message: 'The operation was aborted due to timeout' };
 
 type LogLine = Record<string, unknown>;
+
+/** Settles a publish the test holds open. */
+interface Settle {
+  resolve: (messageId: string) => void;
+  reject: (err: Error) => void;
+}
 
 interface Statement {
   tenantId: string;
@@ -325,7 +334,7 @@ describe('publishLockedRows', () => {
     expect(statements).toEqual([]);
   });
 
-  it('fails the publish pending at the abort, skips every row after it and stamps only the rows published before it', async () => {
+  it('fails the publish pending at the abort, skips the later rows of its key and stamps only the rows other keys published', async () => {
     const { db, tx, statements } = fakeDb();
     const rows = [dbRow('1', 'L'), dbRow('2', 'K'), dbRow('3', 'K'), dbRow('4', 'M')].map(rowFromDb);
     const { runtime, publish, lines } = runtimeWith(db, [], [eventId(2)]);
@@ -333,16 +342,17 @@ describe('publishLockedRows', () => {
 
     const pass = publishLockedRows(tx, runtime, rows, { signal: controller.signal });
     await vi.waitFor(() => {
-      expect(publish).toHaveBeenCalledTimes(2);
+      expect(publish).toHaveBeenCalledTimes(3);
     });
     controller.abort();
 
-    await expect(pass).resolves.toStrictEqual({ published: 1, failed: 1, skipped: 2 });
+    await expect(pass).resolves.toStrictEqual({ published: 2, failed: 1, skipped: 1 });
     expect(publish.mock.calls).toEqual([
       [TOPIC, rows[0]?.envelope],
       [TOPIC, rows[1]?.envelope],
+      [TOPIC, rows[3]?.envelope],
     ]);
-    expect(statements).toEqual([{ tenantId: TENANT_A, sql: STAMP_SQL, values: [STAMP, [eventId(1)]] }]);
+    expect(statements).toEqual([{ tenantId: TENANT_A, sql: STAMP_SQL, values: [STAMP, [eventId(1), eventId(4)]] }]);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({
       severity: 'ERROR',
@@ -351,6 +361,74 @@ describe('publishLockedRows', () => {
       tenantId: TENANT_A,
       error: { type: 'AbortError', message: 'This operation was aborted' },
     });
+  });
+
+  it.each([
+    {
+      outcome: 'is confirmed',
+      settle: (first: Settle) => first.resolve(`msg-${eventId(1)}`),
+      sent: [1, 3, 4, 2],
+      summary: { published: 4, failed: 0, skipped: 0 },
+      stamped: [1, 2, 3, 4],
+      logged: [],
+    },
+    {
+      outcome: 'fails',
+      settle: (first: Settle) => first.reject(new Error(`publish rejected ${eventId(1)}`)),
+      sent: [1, 3, 4],
+      summary: { published: 2, failed: 1, skipped: 1 },
+      stamped: [3, 4],
+      logged: [eventId(1)],
+    },
+  ])(
+    "holds a key's later row behind its pending first publish while other keys publish, then sends or skips it once that publish $outcome",
+    async ({ settle, sent, summary, stamped, logged }) => {
+      const { db, tx, statements } = fakeDb();
+      const rows = [dbRow('1', 'K'), dbRow('2', 'K'), dbRow('3', 'L'), dbRow('4', 'L')].map(rowFromDb);
+      const { runtime, publish, lines } = runtimeWith(db);
+      let first: Settle | undefined;
+      publish.mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve, reject) => {
+            first = { resolve, reject };
+          }),
+      );
+
+      const pass = publishLockedRows(tx, runtime, rows);
+      await vi.waitFor(() => {
+        expect(publish).toHaveBeenCalledTimes(3);
+      });
+      await sleep(20);
+      expect(publish.mock.calls.map(([, envelope]) => envelope.eventId)).toEqual([eventId(1), eventId(3), eventId(4)]);
+      if (first === undefined) throw new Error('the first publish was never sent');
+      settle(first);
+
+      await expect(pass).resolves.toStrictEqual(summary);
+      expect(publish.mock.calls.map(([, envelope]) => envelope.eventId)).toEqual(sent.map(eventId));
+      expect(statements).toEqual([{ tenantId: TENANT_A, sql: STAMP_SQL, values: [STAMP, stamped.map(eventId)] }]);
+      expect(lines.map((line) => [line.severity, line.message, line.eventId])).toEqual(logged.map((id) => ['ERROR', 'outbox publish failed', id]));
+    },
+  );
+
+  it('publishes at most PUBLISH_CONCURRENCY keys at once; at the abort it fails their pending publishes and skips the keys not started', async () => {
+    const { db, tx, statements } = fakeDb();
+    const rows = Array.from({ length: PUBLISH_CONCURRENCY + 1 }, (_, n) => rowFromDb(dbRow(String(n + 1), `K${String(n + 1)}`)));
+    const { runtime, publish, lines } = runtimeWith(db, [], rows.map((row) => row.eventId));
+    const controller = new AbortController();
+
+    const pass = publishLockedRows(tx, runtime, rows, { signal: controller.signal });
+    await vi.waitFor(() => {
+      expect(publish).toHaveBeenCalledTimes(PUBLISH_CONCURRENCY);
+    });
+    await sleep(20);
+    expect(publish).toHaveBeenCalledTimes(PUBLISH_CONCURRENCY);
+    controller.abort();
+
+    await expect(pass).resolves.toStrictEqual({ published: 0, failed: PUBLISH_CONCURRENCY, skipped: 1 });
+    expect(publish.mock.calls.map(([, envelope]) => envelope)).toEqual(rows.slice(0, PUBLISH_CONCURRENCY).map((row) => row.envelope));
+    expect(statements).toEqual([]);
+    expect(lines).toHaveLength(PUBLISH_CONCURRENCY);
+    expect(new Set(lines.map((line) => line.message))).toStrictEqual(new Set(['outbox publish failed']));
   });
 
   class GoogleError extends Error {}
@@ -404,7 +482,7 @@ describe('flushAfterCommit', () => {
     expect(tenants).toEqual([TENANT_A]);
     expect(publish).toHaveBeenCalledTimes(2);
     expect(statements).toEqual([
-      { tenantId: TENANT_A, sql: LOCK_TIMEOUT_SQL, values: ['2000ms'] },
+      { tenantId: TENANT_A, sql: LOCK_TIMEOUT_SQL, values: [`${FLUSH_DEADLINE_MS}ms`] },
       { tenantId: TENANT_A, sql: SELECT_IDS, values: [ids] },
       { tenantId: TENANT_A, sql: BLOCKERS_SQL, values: [['K', 'L'], '2', ['1', '2']] },
       { tenantId: TENANT_A, sql: STAMP_SQL, values: [STAMP, ids] },
@@ -430,27 +508,28 @@ describe('flushAfterCommit', () => {
     expect(lines).toMatchObject([{ severity: 'ERROR', message: 'outbox publish failed', eventId: eventId(1), tenantId: TENANT_A }]);
   });
 
-  it('resolves once FLUSH_DEADLINE_MS passes while a publish never settles, leaving every row unstamped to the sweep with a WARNING', async () => {
-    const { db, statements } = fakeDb([dbRow('1', 'K'), dbRow('2', 'L')]);
-    const { runtime, publish, lines } = runtimeWith(db, [], ids);
+  it("resolves once FLUSH_DEADLINE_MS passes while publishes never settle, failing each key's pending publish with a WARNING and leaving rows to the sweep", async () => {
+    const { db, statements } = fakeDb([dbRow('1', 'K'), dbRow('2', 'L'), dbRow('3', 'K')]);
+    const { runtime, publish, lines } = runtimeWith(db, [], [...ids, eventId(3)]);
     const started = performance.now();
 
-    await expect(flushAfterCommit(runtime, TENANT_A, ids)).resolves.toStrictEqual({ published: 0, failed: 1, skipped: 1 });
+    await expect(flushAfterCommit(runtime, TENANT_A, ids)).resolves.toStrictEqual({ published: 0, failed: 2, skipped: 1 });
 
     const elapsed = performance.now() - started;
     expect(elapsed).toBeGreaterThanOrEqual(FLUSH_DEADLINE_MS - 50);
     expect(elapsed).toBeLessThan(FLUSH_DEADLINE_MS + 500);
-    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls.map(([, envelope]) => envelope.eventId)).toEqual(ids);
     expect(statements.map((s) => s.sql)).toEqual([LOCK_TIMEOUT_SQL, SELECT_IDS, BLOCKERS_SQL]);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({
-      severity: 'WARNING',
-      message: 'outbox publish not confirmed within FLUSH_DEADLINE_MS (2000 ms); left to the sweep',
-      eventId: eventId(1),
-      tenantId: TENANT_A,
-      error: TIMED_OUT,
-    });
-    expect(validateLogRecord(lines[0]).errors).toStrictEqual([]);
+    expect(lines).toMatchObject(
+      ids.map((id) => ({
+        severity: 'WARNING',
+        message: `outbox publish not confirmed within FLUSH_DEADLINE_MS (${FLUSH_DEADLINE_MS} ms); left to the sweep`,
+        eventId: id,
+        tenantId: TENANT_A,
+        error: TIMED_OUT,
+      })),
+    );
+    for (const line of lines) expect(validateLogRecord(line).errors).toStrictEqual([]);
   });
 
   it('opens no transaction for an empty id list', async () => {
@@ -502,11 +581,93 @@ describe('flushAfterCommit', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({
       severity: 'WARNING',
-      message: `outbox flush row locks not granted within FLUSH_DEADLINE_MS (2000 ms); events ${ids.join(',')} left to the sweep`,
+      message: `outbox flush row locks not granted within FLUSH_DEADLINE_MS (${FLUSH_DEADLINE_MS} ms); events ${ids.join(',')} left to the sweep`,
       tenantId: TENANT_A,
       error: { type: 'Error', message: 'PostgreSQL error 55P03' },
     });
     expect(validateLogRecord(lines[0]).errors).toStrictEqual([]);
+  });
+
+  describe('registered by writeOutbox', () => {
+    const NOTE: OutboxWriteInput = { topic: TOPIC, kind: 'state', aggregateType: 'note', aggregateId: 'K', aggregateVersion: 1, payload: { noteId: 'K' } };
+    const REQUEST_ID = 'req-flush';
+    const BOUND = `FLUSH_DEADLINE_MS (${FLUSH_DEADLINE_MS} ms)`;
+
+    /** Writes NOTE in a tenant transaction of `runtime.db`, then runs the commit callbacks it registered, as runTransaction does after COMMIT; returns its event id. */
+    async function commitNote(runtime: OutboxRuntime): Promise<string> {
+      const callbacks: CommitCallback[] = [];
+      const envelope = await runtime.db.withTenant(TENANT_A, (tx) =>
+        writeOutbox({ ...tx, onCommit: (cb: CommitCallback) => void callbacks.push(cb) }, NOTE, runtime),
+      );
+      for (const cb of callbacks) await cb();
+      return String(envelope?.eventId);
+    }
+
+    const INCOMPLETE: {
+      case: string;
+      db: () => TenantDb;
+      failing?: string[];
+      pending?: string[];
+      logged: (written: string) => LogLine[];
+    }[] = [
+      {
+        case: 'its publish is rejected',
+        db: () => fakeDb([dbRow('1', 'K')]).db,
+        failing: [eventId(1)],
+        logged: () => [{ severity: 'ERROR', message: 'outbox publish failed', eventId: eventId(1), tenantId: TENANT_A }],
+      },
+      {
+        case: 'its publish is not confirmed in time',
+        db: () => fakeDb([dbRow('1', 'K')]).db,
+        pending: [eventId(1)],
+        logged: () => [
+          { severity: 'WARNING', message: `outbox publish not confirmed within ${BOUND}; left to the sweep`, eventId: eventId(1), error: TIMED_OUT },
+        ],
+      },
+      {
+        case: 'its row locks are not granted',
+        db: () => fakeDb([dbRow('1', 'K')], { select: pgError('canceling statement due to lock timeout', '55P03') }).db,
+        logged: (written) => [{ severity: 'WARNING', message: `outbox flush row locks not granted within ${BOUND}; events ${written} left to the sweep` }],
+      },
+      {
+        case: 'its flush fails',
+        db: () => fakeDb([dbRow('1', 'K')], { select: pgError('canceling statement due to statement timeout', '57014') }).db,
+        logged: (written) => [{ severity: 'ERROR', message: `outbox flush failed for events ${written}`, tenantId: TENANT_A }],
+      },
+      {
+        case: 'its row is behind a held row of its key',
+        db: () => fakeDb([dbRow('1', 'K')], {}, [{ ordering_key: 'K', seq: '0' }]).db,
+        logged: () => [],
+      },
+    ];
+
+    it.each(INCOMPLETE.flatMap((world) => [true, false].map((inRequest) => ({ ...world, inRequest, where: inRequest ? 'inside' : 'outside' }))))(
+      'when $case $where a request, keeps the commit resolved, records the written id only in a request context and logs with its requestId only there',
+      async ({ db, failing, pending, logged, inRequest }) => {
+        const { runtime, lines } = runtimeWith(db(), failing, pending);
+        const store = newRequestContext({ requestId: REQUEST_ID });
+
+        const written = await (inRequest ? runWithRequestContext(store, () => commitNote(runtime)) : commitNote(runtime));
+
+        expect(store.unpublishedEvents).toStrictEqual(inRequest ? [written] : undefined);
+        expect(lines).toMatchObject(logged(written).map((line) => (inRequest ? { ...line, requestId: REQUEST_ID } : line)));
+        for (const line of lines) {
+          expect(validateLogRecord(line).errors).toStrictEqual([]);
+          if (!inRequest) expect(line).not.toHaveProperty('requestId');
+        }
+      },
+    );
+
+    it('records nothing in the request context when the flush publishes and stamps every row', async () => {
+      const { runtime, publish, lines } = runtimeWith(fakeDb([dbRow('1', 'K')]).db);
+      const store = newRequestContext({ requestId: REQUEST_ID });
+
+      await runWithRequestContext(store, () => commitNote(runtime));
+
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(store.unpublishedEvents).toBeUndefined();
+      expect(lines).toEqual([]);
+    });
   });
 });
 
@@ -600,7 +761,8 @@ describe('sweepOutbox publish bounds', () => {
   });
 
   it('ends a slow sweep at its publish deadline though no single publish stalls, failing only the publish it cut short', async () => {
-    const slowRows = Array.from({ length: 20 }, (_, n) => dbRow(String(n + 1), `K${String(n + 1)}`));
+    // One ordering key, so each page publishes its rows one after another.
+    const slowRows = Array.from({ length: 20 }, (_, n) => dbRow(String(n + 1), 'K'));
     const { db, statements } = pagedDb({ [TENANT_A]: slowRows, [TENANT_B]: rowsB });
     const { runtime, publish, lines } = runtimeWith(db);
     publish.mockImplementation((_topic, sent) => sleep(20).then(() => `msg-${sent.eventId}`));

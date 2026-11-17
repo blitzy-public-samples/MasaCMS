@@ -62,8 +62,7 @@ type Fresh<R> = Omit<R, 'tenant_id'>;
 type KeylessManaged = 'legacy_row_hash' | 'occurrence';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
-// An unset PG_HOST skips the suite without probing the server.
-const PG_READY = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const PG_READY = await pgAvailable();
 const GATE_HOLDER = 'communications-isolation-setup';
 const ALL_PLATFORM_GROUPS = Object.keys(PLATFORM_TABLE_GROUPS) as PlatformTableGroup[];
 const REMINDER_QUEUE = SURVEY_TASK_QUEUES['survey-reminder'];

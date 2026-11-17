@@ -6,7 +6,7 @@ import { parse } from 'yaml';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { INVOCATION_HEADER, collectRouteMatrix, type RouteMatrixEntry } from '@opt2/platform/auth';
 import type { EventEnvelope } from '@opt2/platform/events';
-import { WRITE_POSITION_HEADER, parseWritePosition } from '@opt2/platform/migration-kit';
+import { WRITE_POSITION_HEADER, decodeRow, parseWritePosition, type ExportResponse, type ExportTable } from '@opt2/platform/migration-kit';
 import { QUEUES, taskWireBody, type CreateTaskInput } from '@opt2/platform/tasks';
 import {
   TENANT_A,
@@ -27,6 +27,7 @@ import { LOGIN_MAIL_TOPIC } from '../../src/events/login-mail.js';
 import { SURVEY_SCHEDULED_TOPIC } from '../../src/events/survey-scheduled.js';
 import { ADOPT_PATH, CANCEL_ADOPTED_PATH } from '../../src/routes/adoption.js';
 import { FIXTURE_CATCH_ALL } from '../../src/routes/fixture.js';
+import { SCHEDULED_TASK } from '../../src/repo/tables.js';
 import { SCHEDULED_TASKS_PATH } from '../../src/routes/scheduled-tasks.js';
 import { SURVEY_LAUNCH_DONE_PATH } from '../../src/routes/survey-launch-done.js';
 import { REMINDER_TASK_PATH } from '../../src/tasks/reminder.js';
@@ -368,6 +369,8 @@ const TENANT_A_MESSAGES = `${FIXTURE}/messages?siteid=${SITE_A}`;
 const V1_TEMPLATES = `/v1/templates?siteid=${SITE_A}`;
 const V1_MESSAGES = `/v1/messages?siteid=${SITE_A}`;
 const SCHEDULED_TASKS = `${SCHEDULED_TASKS_PATH}?sourceType=survey&sourceId=${SURVEY_ID}`;
+// The first page's `next`, which the continuation case reads in its own setup.
+let scheduledTaskCursor = '';
 const LAUNCH_DONE = SURVEY_LAUNCH_DONE_PATH.replace(':surveyId', SURVEY_ID);
 // The queue task the seeded schedule's version-1 launch runs under, which surveys reports.
 const LAUNCH_QUEUE_TASK_NAME = portTaskName(LAUNCH_TASK_NAME, 1);
@@ -851,7 +854,7 @@ const CASES: Record<string, Case[]> = {
       seed: ['schedule'],
       status: 200,
       verify: ({ body }) => {
-        expect(record(body)).toMatchObject({ sourceType: 'survey', sourceId: SURVEY_ID, scheduleVersion: 1 });
+        expect(record(body)).toMatchObject({ sourceType: 'survey', sourceId: SURVEY_ID, scheduleVersion: 1, next: null });
         expect((record(body).items as Json[]).map(({ kind, n, queue }) => ({ kind, n, queue }))).toEqual([
           { kind: 'survey-launch', n: null, queue: LAUNCH_QUEUE },
           { kind: 'survey-reminder', n: 1, queue: REMINDER_QUEUE },
@@ -859,12 +862,67 @@ const CASES: Record<string, Case[]> = {
       },
     },
     {
+      name: 'answers one page and the cursor of the next when surveys sends a limit',
+      method: 'GET',
+      url: `${SCHEDULED_TASKS}&limit=1`,
+      headers: () => surveysForwarding(),
+      seed: ['schedule'],
+      status: 200,
+      verify: ({ body }) => {
+        expect(record(body)).toMatchObject({ scheduleVersion: 1, next: expect.stringMatching(/^[A-Za-z0-9_-]+$/) });
+        expect((record(body).items as Json[]).map(({ kind }) => kind)).toEqual(['survey-launch']);
+      },
+    },
+    {
+      name: "continues after the first page's cursor to the last page",
+      method: 'GET',
+      url: () => `${SCHEDULED_TASKS}&after=${scheduledTaskCursor}`,
+      headers: () => surveysForwarding(),
+      seed: ['schedule'],
+      setup: async (ctx) => {
+        const first = await ctx.app.inject({ method: 'GET', url: `${SCHEDULED_TASKS}&limit=1`, headers: await surveysForwarding() });
+        scheduledTaskCursor = String(record(first.json()).next);
+      },
+      status: 200,
+      verify: ({ body }) => {
+        expect(record(body)).toMatchObject({ scheduleVersion: 1, next: null });
+        expect((record(body).items as Json[]).map(({ kind, n }) => ({ kind, n }))).toEqual([{ kind: 'survey-reminder', n: 1 }]);
+      },
+    },
+    {
+      name: 'lists only the tasks surveys names in taskName, one page of them',
+      method: 'GET',
+      url: `${SCHEDULED_TASKS}&taskName=opt2-survey-${SURVEY_ID}-reminder-1&taskName=opt2-survey-${SURVEY_ID}-reminder-2&limit=1000`,
+      headers: () => surveysForwarding(),
+      seed: ['schedule'],
+      status: 200,
+      verify: ({ body }) => {
+        expect(record(body)).toMatchObject({ scheduleVersion: 1, next: null });
+        expect((record(body).items as Json[]).map(({ taskName }) => taskName)).toEqual([`opt2-survey-${SURVEY_ID}-reminder-1`]);
+      },
+    },
+    {
+      name: 'answers a taskName outside ScheduledTaskName as invalidParameters',
+      method: 'GET',
+      url: `${SCHEDULED_TASKS}&taskName=opt2-survey-${SURVEY_ID}-close`,
+      headers: () => surveysForwarding(),
+      status: 400,
+    },
+    {
       name: 'answers a source never scheduled with no items and a null version',
       method: 'GET',
       url: SCHEDULED_TASKS,
       headers: () => surveysForwarding(),
       status: 200,
-      verify: ({ body }) => expect(record(body)).toEqual({ sourceType: 'survey', sourceId: SURVEY_ID, scheduleVersion: null, items: [] }),
+      verify: ({ body }) =>
+        expect(record(body)).toEqual({ sourceType: 'survey', sourceId: SURVEY_ID, scheduleVersion: null, items: [], next: null }),
+    },
+    {
+      name: 'answers an after that is no page cursor as invalidParameters',
+      method: 'GET',
+      url: `${SCHEDULED_TASKS}&after=${Buffer.from('{"offset":1}').toString('base64url')}`,
+      headers: () => surveysForwarding(),
+      status: 400,
     },
     {
       name: 'answers a sourceId that is not a CF UUID as invalidParameters',
@@ -1019,6 +1077,46 @@ const CASES: Record<string, Case[]> = {
       seed: ['template'],
       status: 200,
       verify: ({ body }) => expect(record(body)).toMatchObject({ unit: TEMPLATE_UNIT, tenantId: TENANT_A.tenantId }),
+    },
+    {
+      name: 'exports the seeded schedule tasks of the target-only scheduled-task unit over the table columns',
+      method: 'GET',
+      url: `/internal/v1/migration/export?unit=${SCHEDULED_TASK.unit}&siteId=${SITE_A}`,
+      as: 'service:migration',
+      seed: ['schedule'],
+      status: 200,
+      verify: ({ body }) => {
+        const page = record(body) as unknown as ExportResponse;
+        expect(page).toMatchObject({ unit: SCHEDULED_TASK.unit, tenantId: TENANT_A.tenantId, next: null });
+        expect(page.tables.map(({ unit, legacyTable, targetTable, keyless, columns }) => ({ unit, legacyTable, targetTable, keyless, columns }))).toEqual([
+          {
+            unit: SCHEDULED_TASK.unit,
+            legacyTable: '',
+            targetTable: SCHEDULED_TASK.unit,
+            keyless: false,
+            columns: SCHEDULED_TASK.columns.filter((column) => column.name !== 'tenant_id'),
+          },
+        ]);
+        const [table] = page.tables as [ExportTable];
+        const tasks = table.rows
+          .map(({ row }) => decodeRow(table.columns, row))
+          .map(({ source_type, source_id, schedule_version, task_name, kind, queue, schedule_time, status }) => ({
+            source_type,
+            source_id,
+            schedule_version,
+            task_name,
+            kind,
+            queue,
+            schedule_time,
+            status,
+          }))
+          .sort((a, b) => String(a.task_name).localeCompare(String(b.task_name)));
+        const scheduled = { source_type: 'survey', source_id: SURVEY_ID, schedule_version: '1', status: 'scheduled' };
+        expect(tasks).toEqual([
+          { ...scheduled, task_name: LAUNCH_TASK_NAME, kind: 'survey-launch', queue: LAUNCH_QUEUE, schedule_time: '2026-07-01T09:00:00.000' },
+          { ...scheduled, task_name: `opt2-survey-${SURVEY_ID}-reminder-1`, kind: 'survey-reminder', queue: REMINDER_QUEUE, schedule_time: '2026-07-01T10:00:00.000' },
+        ]);
+      },
     },
     {
       name: 'answers an export without a unit as invalidParameters',

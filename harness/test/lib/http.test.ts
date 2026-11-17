@@ -1,9 +1,14 @@
+import { ADDRCONFIG, type LookupOptions } from 'node:dns';
+import { lookup as systemLookup } from 'node:dns/promises';
 import { readFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { CookieJar } from 'tough-cookie';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createHttpSession,
   HttpRequestError,
+  loopbackLookup,
   type FetchLike,
   type HttpRequest,
   type MultipartFile,
@@ -953,12 +958,129 @@ describe('createHttpSession failures', () => {
 });
 
 describe('createHttpSession default fetch', () => {
-  it('uses the global fetch when none is injected', async () => {
-    const { fetch, calls } = scripted(reply({ body: 'ok' }));
-    vi.stubGlobal('fetch', fetch);
-    const result = await createHttpSession({ baseUrl: BASE }).get('/');
+  it.each([BASE, 'http://localhost:8500/', 'http://notlocalhost:8500/', 'http://localhost.example:8500/'])(
+    'sends %s to the global fetch when none is injected',
+    async (baseUrl) => {
+      const { fetch, calls } = scripted(reply({ body: 'ok' }));
+      vi.stubGlobal('fetch', fetch);
+      const result = await createHttpSession({ baseUrl }).get('/');
 
-    expect(result.text).toBe('ok');
-    expect(calls.map((call) => call.url)).toEqual([BASE]);
+      expect(result.text).toBe('ok');
+      expect(calls.map((call) => call.url)).toEqual([baseUrl]);
+    },
+  );
+});
+
+/** `loopbackLookup`'s answer, shaped as `dns.promises.lookup` gives it for `options`. */
+function lookupVia(hostname: string, options: LookupOptions): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    loopbackLookup(hostname, options, (err, address, family) => {
+      if (err) reject(err);
+      else resolve(typeof address === 'string' ? { address, family } : address);
+    });
+  });
+}
+
+describe('loopbackLookup', () => {
+  const loopback = { address: '127.0.0.1', family: 4 };
+
+  it.each<{ hostname: string; options: LookupOptions; expected: unknown }>([
+    { hostname: 'tenant-a.localhost', options: {}, expected: loopback },
+    { hostname: 'tenant-a.localhost', options: { all: true, hints: ADDRCONFIG }, expected: [loopback] },
+    { hostname: 'TENANT-A.localhost.', options: {}, expected: loopback },
+    { hostname: 'TENANT-A.localhost.', options: { all: true }, expected: [loopback] },
+    { hostname: 'a.b.localhost', options: { all: true }, expected: [loopback] },
+  ])('answers $hostname with 127.0.0.1 for $options', async ({ hostname, options, expected }) => {
+    await expect(lookupVia(hostname, options)).resolves.toEqual(expected);
+  });
+
+  it.each<{ hostname: string; options: LookupOptions }>([
+    { hostname: 'localhost', options: {} },
+    { hostname: 'localhost', options: { all: true } },
+    { hostname: 'localhost.', options: { all: true } },
+    { hostname: '127.0.0.1', options: {} },
+  ])('passes $hostname with $options to the system resolver', async ({ hostname, options }) => {
+    await expect(lookupVia(hostname, options)).resolves.toEqual(await systemLookup(hostname, options));
+  });
+});
+
+describe('createHttpSession on a localhost subdomain without an injected fetch', () => {
+  interface Arrival {
+    host: string | undefined;
+    path: string;
+    cookie: string | undefined;
+    authorization: string | undefined;
+  }
+  const arrivals: Arrival[] = [];
+  let server: Server;
+  let origin: string;
+  let port: number;
+
+  /** Start path whose 302 points at `to`. */
+  const startPath = (to: string): string => `/tenant-a/?${new URLSearchParams({ to }).toString()}`;
+
+  beforeAll(async () => {
+    // 127.0.0.1 answers `?to=` with a 302 there, as legacy does for a site path; the site root redirects to /home/.
+    server = createServer((req, res) => {
+      const { host, cookie, authorization } = req.headers;
+      arrivals.push({ host, path: req.url ?? '', cookie, authorization });
+      const url = new URL(req.url ?? '/', 'http://unused');
+      const to = url.searchParams.get('to');
+      if (to !== null) res.writeHead(302, { location: to, 'set-cookie': 'CFID=loopback-1; Path=/' });
+      else if (url.pathname === '/') res.writeHead(302, { location: '/home/', 'set-cookie': 'SITE=site-1; Path=/' });
+      else res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end(to === null && url.pathname !== '/' ? 'site home' : undefined);
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    port = (server.address() as AddressInfo).port;
+    origin = `http://127.0.0.1:${String(port)}`;
+  });
+
+  afterAll(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  beforeEach(() => {
+    arrivals.length = 0;
+  });
+
+  it.each<{ label: string; location: string; host: string }>([
+    { label: 'the site domain', location: 'tenant-a.localhost', host: 'tenant-a.localhost' },
+    {
+      label: 'an upper-case site domain with a trailing dot',
+      location: 'TENANT-A.localhost.',
+      host: 'tenant-a.localhost.',
+    },
+  ])('follows a 302 from 127.0.0.1 to $label, sending its Host to 127.0.0.1', async ({ location, host }) => {
+    const to = `http://${location}:${String(port)}/`;
+    const site = `http://${host}:${String(port)}`;
+    const result = await createHttpSession({ baseUrl: origin }).get(startPath(to));
+
+    expect(result).toMatchObject({ status: 200, url: `${site}/home/`, text: 'site home' });
+    expect(result.hops.map((hop) => [hop.url, hop.status, hop.location])).toEqual([
+      [`${origin}${startPath(to)}`, 302, to],
+      [`${site}/`, 302, '/home/'],
+      [`${site}/home/`, 200, undefined],
+    ]);
+    expect(arrivals.map((arrival) => [arrival.host, arrival.path])).toEqual([
+      [`127.0.0.1:${String(port)}`, startPath(to)],
+      [`${host}:${String(port)}`, '/'],
+      [`${host}:${String(port)}`, '/home/'],
+    ]);
+  });
+
+  it('sends neither the 127.0.0.1 cookies nor credential headers to the site domain', async () => {
+    const to = `http://tenant-a.localhost:${String(port)}/`;
+    const session = createHttpSession({ baseUrl: origin });
+    await session.jar.setCookie('SEEDED=1; Path=/', origin);
+    await session.get(startPath(to), { headers: { Authorization: 'Basic c2l0ZTpzaXRl' } });
+
+    expect(arrivals.map(({ cookie, authorization }) => [cookie, authorization])).toEqual([
+      ['SEEDED=1', 'Basic c2l0ZTpzaXRl'],
+      [undefined, undefined],
+      ['SITE=site-1', undefined],
+    ]);
+    expect(await session.cookieHeader(origin)).toBe('SEEDED=1; CFID=loopback-1');
   });
 });

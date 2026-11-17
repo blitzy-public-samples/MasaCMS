@@ -46,8 +46,10 @@ type RelayedAction = keyof typeof RAW_ACTION_MODES;
 async function relay(ctx: ScreenContext, action: RelayedAction): Promise<RawBody> {
   // before() runs for every carch action; its rc defaults and session writes stand on the request the handler persists.
   ctx.req = applyCarchDefaults(ctx.req);
-  // AdminRequest carries no method; only a POST carries a body.
-  return relayCarchRaw(ctx, action, ctx.body === undefined ? 'GET' : 'POST');
+  // AdminRequest carries no method; only a POST carries a body. A download is relayed as it arrives.
+  return relayCarchRaw(ctx, action, ctx.body === undefined ? 'GET' : 'POST', {
+    stream: RAW_ACTION_MODES[action] === 'download',
+  });
 }
 
 /** The relayed definition of `action` in its response `mode`. */

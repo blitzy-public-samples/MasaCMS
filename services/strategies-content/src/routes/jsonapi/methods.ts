@@ -20,6 +20,7 @@ import {
   LegacyJsonSerializer,
   LegacyServiceUnavailableError,
 } from '@opt2/platform/legacy-compat';
+import { throwIfRequestAborted } from '@opt2/platform/service-kit';
 import { categoryCrumbs, newCategoryBean, readCategory } from '../../domain/categories.js';
 import { getCrumbList, getHistoryWindow, readContent, type ContentBean } from '../../domain/content-tree.js';
 import type { Actor, SiteContentSettings } from '../../domain/context.js';
@@ -535,6 +536,7 @@ const findRelatedContent: MethodHandler = async (ctx, call) => {
     for (const set of sets) assertContentSet(set.entityType);
     const sources: RelatedContentSetSource[] = [];
     for (const set of sets) {
+      throwIfRequestAborted();
       const source = await relatedSource(ctx, call, item, { ...args, relatedContentSetId: set.relatedContentSetId, name: set.name });
       sources.push({ ...source, name: set.name, entityType: set.entityType, relatedContentSetId: set.relatedContentSetId });
     }
@@ -668,6 +670,7 @@ const findCalendarItems: MethodHandler = async (ctx, call) => {
   const allowable: string[] = [];
   let applyPermFilter = false;
   for (const id of cfListToArray(calendarId)) {
+    throwIfRequestAborted();
     const bean = await readContent(ctx.domain, reader, { contentId: id, siteId: call.siteId });
     // `siteConfig('extranet') == 1 && setRestriction(crumbs).restrict`, reassigned per id so the last one decides.
     if (isTrue(site.extranet)) applyPermFilter = (await setRestriction(ctx.domain, reader, await beanCrumbs(ctx, reader, bean))).restrict;

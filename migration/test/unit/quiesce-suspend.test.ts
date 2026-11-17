@@ -169,6 +169,26 @@ const quietBarrierLog = (producers: readonly QueueTarget[], sweeps: readonly Que
 ];
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
+/** A published event of the fake owners; its seq is its 1-based position in its owner's list. */
+type ListedEvent = Omit<PublishedEvent, 'seq'>;
+
+/** The complete page of `listed`'s events of `topics` after `after`, as an owner pages its outbox. */
+function publishedPage(
+  listed: readonly ListedEvent[],
+  topics: readonly string[],
+  after: string,
+): Pick<PositionResponse, 'published' | 'publishedNext' | 'publishedComplete' | 'publishedFrontier' | 'publishedUpTo'> {
+  const all = listed.map((event, index): PublishedEvent => ({ ...event, seq: String(index + 1) })).filter(({ topic }) => topics.includes(topic));
+  const later = all.filter(({ seq }) => BigInt(seq) > BigInt(after));
+  return {
+    published: later,
+    publishedNext: later.at(-1)?.seq ?? after,
+    publishedComplete: true,
+    publishedFrontier: all.at(-1)?.seq ?? after,
+    publishedUpTo: all.length - later.length,
+  };
+}
+
 /** Port that fails the test when any member is read; drain-and-suspend reaches it only through defaults these tests replace. */
 function untouched<K extends 'catalog' | 'db' | 'bridge' | 'logger'>(port: K): DrainAndSuspendContext[K] {
   return new Proxy({} as DrainAndSuspendContext[K], {
@@ -234,7 +254,7 @@ async function world({ unpublished = {} }: WorldOptions = {}) {
 
   /** Events each owner lists as published and the inbox receipts of each consumer by event id; tests change them during a run. */
   const events = {
-    published: {} as Partial<Record<DataOwner, PublishedEvent[]>>,
+    published: {} as Partial<Record<DataOwner, ListedEvent[]>>,
     receipts: {} as Partial<Record<DataOwner, Record<string, string[]>>>,
   };
   const position = (owner: DataOwner, params?: PositionParams): Promise<PositionResponse> => {
@@ -250,7 +270,7 @@ async function world({ unpublished = {} }: WorldOptions = {}) {
         asked === undefined
           ? null
           : { total: 0, bySubscription: {}, receipts: Object.fromEntries(asked.map((id) => [id, events.receipts[owner]?.[id] ?? []])) },
-      ...(topics === undefined ? {} : { published: (events.published[owner] ?? []).filter(({ topic }) => topics.includes(topic)) }),
+      ...(topics === undefined ? {} : publishedPage(events.published[owner] ?? [], topics, params?.publishedAfter ?? '0')),
     });
   };
   const owners = new Proxy({} as OwnersClient, {
@@ -570,7 +590,7 @@ describe('drainAndSuspend', () => {
     w.settings.onRequest = (request) => {
       if (request.path !== `${QUEUE_CONTROL_PREFIX}/stub-outbox-sweep/ensure`) return;
       w.unpublished.stub = 0;
-      w.events.published.stub = [{ eventId: NOTE_EVENT, topic: NOTE_CREATED, tenantId: TENANT }];
+      w.events.published.stub = [{ eventId: NOTE_EVENT, topic: NOTE_CREATED, tenantId: TENANT, kind: 'state' }];
       w.events.receipts.stub = { [NOTE_EVENT]: [TENANT] };
     };
 
@@ -583,8 +603,9 @@ describe('drainAndSuspend', () => {
     expect(at(`receipts stub ${NOTE_EVENT}`)).toBeLessThan(at(pauseEntry(target('stub', 'stub-outbox-sweep'))));
     expect(at(pauseEntry(target('stub', 'stub-outbox-sweep')))).toBeLessThan(at(`modifyPushConfig ${PEOPLE_GROUP} {}`));
     expect(result.drained).toStrictEqual(DRAINED);
-    expect(result.finalDrained).toMatchObject({ owners: DRAINED.owners, polls: 3 });
-    expect(w.shortSleep.mock.calls).toStrictEqual([[DEFAULT_DRAIN_POLL_MS], [DEFAULT_DRAIN_POLL_MS]]);
+    // The round after the sweep lists the note and proves its receipt.
+    expect(result.finalDrained).toMatchObject({ owners: DRAINED.owners, polls: 2 });
+    expect(w.shortSleep.mock.calls).toStrictEqual([[DEFAULT_DRAIN_POLL_MS]]);
   });
 
   it('waits for the live in-flight writes of the gateway before the final drain', async () => {

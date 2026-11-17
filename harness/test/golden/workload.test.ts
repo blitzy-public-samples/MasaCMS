@@ -29,6 +29,8 @@ const PREPARER = 'fixture.tenant-a.finance.preparer';
 /** CSRF token `admin-login.html` carries. */
 const LOGIN_TOKEN = 'FIXTURECSRFTOKEN0000000000000001';
 const EXPIRES = '260630120000000';
+/** Hidden input the content form carries per pooled category. */
+const CATEGORY_FIELD = 'categoryAssignFIXTURECATEGORY0001';
 const CLOCK = new Date('2026-06-30T12:00:00.000Z');
 const HOME_ID = '00000000000000000000000000000000001';
 const FIXTURE_API = '/legacy-fixtures/cfml/api.cfm/';
@@ -196,11 +198,12 @@ function jsonToken(context: string): string {
   return `FIXTURE-JSON-TOKEN-${context}`;
 }
 
-/** One admin form page serving every probed field empty, so no write reads as applied. */
+/** One admin form page serving every probed field empty, so no write reads as applied, and a category input. */
 function formPage(token: string): Response {
   const inputs = ['jobtitle', 'email', 'contact'].map((name) => `<input name="${name}" type="text" value="">`);
   const hidden = [
     ['contenthistid', 'FIXTURE-HIST-FORM'],
+    [CATEGORY_FIELD, '0'],
     ['csrf_token', token],
     ['csrf_token_expires', EXPIRES],
   ].map(([name, value]) => `<input type="hidden" name="${name}" value="${value}">`);
@@ -359,6 +362,8 @@ describe('buildWorkloadPlan', () => {
     const edits = itemsNamed(plan, /^content-edit-\d+-save$/);
     expect(edits).toHaveLength(WORKLOAD_COUNTS.contentEdits);
     for (const item of edits) expect(item.form).toMatchObject({ siteid: 'tenant-a', type: 'Page' });
+    expect(plan.items.filter((item) => item.mergeHidden !== undefined)).toStrictEqual(edits);
+    for (const item of edits) expect(item).toMatchObject({ csrf: 'fetch-form', mergeHidden: false });
     const pageIds = ELIGIBLE_PAGES.map((row) => row.contentID);
     expect(pageIds).toEqual(expect.arrayContaining(distinct(edits.map((item) => item.form?.contentid))));
 
@@ -471,6 +476,13 @@ describe('runWorkload', () => {
       }
     }
     expect(new URLSearchParams(calls[names.indexOf('admin-login')]?.body).get('csrf_token')).toBe(LOGIN_TOKEN);
+    const posted = (name: string): string[] => [...new URLSearchParams(calls[names.indexOf(name)]?.body).keys()];
+    for (const item of itemsNamed(plan, /^content-edit-\d+-save$/)) {
+      expect(posted(item.name)).toStrictEqual(['csrf_token', 'csrf_token_expires', ...Object.keys(item.form ?? {})]);
+    }
+    for (const item of itemsNamed(plan, /^content-create-\d+-save$/)) {
+      expect(posted(item.name)).toContain(CATEGORY_FIELD);
+    }
 
     const written = journal();
     expect(written).toMatchObject({ planDigest: planDigest(plan), status: 'complete', failures: [] });

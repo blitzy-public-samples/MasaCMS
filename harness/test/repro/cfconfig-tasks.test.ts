@@ -104,10 +104,10 @@ function writeExport(name: string, doc: unknown): string {
   return file;
 }
 
-/** Runs the script with `args`, after the node options `preload`. */
-function runScript(args: string[], preload: string[] = []): Promise<Run> {
+/** Runs the script with `args`, after the node options `preload`, with `env` over this process's environment. */
+function runScript(args: string[], preload: string[] = [], env: NodeJS.ProcessEnv = {}): Promise<Run> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [...preload, SCRIPT, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [...preload, SCRIPT, ...args], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
@@ -198,6 +198,45 @@ describe('cfconfig-tasks.mjs capture', () => {
     expect(JSON.parse(readFileSync(copyFile, 'utf8'))).toEqual(EXPORT);
     expect(JSON.parse(readFileSync(nativeFile, 'utf8'))).toEqual(NATIVE);
     expect(readdirSync(pristine).sort()).toEqual(['native-tasks.cfconfig.json', 'native-tasks.json']);
+  });
+});
+
+/** ONCE start times in the exports below are read in this zone. */
+const UTC = { TZ: 'UTC' };
+
+describe('cfconfig-tasks.mjs unpaused', () => {
+  it.each([
+    { label: 'without --at, every task not paused', at: [], expected: [MONITOR, 'due-24h', 'due-12h', 'later-24h', 'later-12h'] },
+    { label: 'with --at, without the ONCE tasks due by then', at: ['--at', '2026-11-16T19:21:15Z'], expected: [MONITOR, 'later-24h', 'later-12h'] },
+  ])('unpaused lists $label', async ({ at, expected }) => {
+    const once = (startTime: string, status = 'Running') => ({ interval: 'ONCE', startDate: '11/16/2026', startTime, status });
+    const file = writeExport('restart.json', {
+      scheduledTasks: {
+        [`default:${MONITOR}`]: EXPORT.scheduledTasks[`default:${MONITOR}`],
+        'DEFAULT:due-24h': { task: 'due-24h', ...once('19:21:15') },
+        'DEFAULT:due-12h': { task: 'due-12h', ...once('7:21:14 PM') },
+        'DEFAULT:later-24h': { task: 'later-24h', ...once('19:21:16') },
+        'DEFAULT:later-12h': { task: 'later-12h', ...once('7:21:16 PM') },
+        'DEFAULT:paused': { task: 'paused', ...once('11:00:00 PM', 'Paused') },
+      },
+    });
+
+    const run = await runScript(['unpaused', '--in', file, '--json', ...at], [], UTC);
+
+    expect(run).toMatchObject({ code: 0, stderr: '' });
+    expect(JSON.parse(run.stdout)).toEqual(expected);
+  });
+
+  it.each([
+    { label: 'an --at without a zone', task: { interval: 'ONCE', startDate: '11/16/2026', startTime: '19:00:00' }, at: '2026-11-16T19:00:00', code: 2 },
+    { label: 'a ONCE task without a start time', task: { interval: 'once', startDate: '11/16/2026', startTime: '' }, at: '2026-11-16T19:00:00Z', code: 1 },
+  ])('unpaused refuses $label', async ({ task, at, code }) => {
+    const file = writeExport('bad.json', { scheduledTasks: { 'DEFAULT:t': { task: 't', status: 'Running', ...task } } });
+
+    const run = await runScript(['unpaused', '--in', file, '--at', at], [], UTC);
+
+    expect(run.code).toBe(code);
+    expect(run.stdout).toBe('');
   });
 });
 

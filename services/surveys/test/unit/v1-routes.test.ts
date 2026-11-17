@@ -21,15 +21,21 @@ import {
   type TenantFixture,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
+import { TASK_PAGE_MAX } from '../../src/domain/tasks-list.js';
 import type { components } from '../../src/generated/openapi.js';
 import { FIXTURE_ERROR_MAP } from '../../src/legacy/fixture-envelope.js';
+import { TARGET_PAGE_DEFAULT, TARGET_PAGE_MAX } from '../../src/repo/queries.js';
 import { createSurveysRepository } from '../../src/repo/repository.js';
 import { UNITS } from '../../src/repo/tables.js';
 import { registerV1Routes } from '../../src/routes/v1.js';
+import { createClientRecorder, defaultScheduledTasks } from '../helpers/app.js';
 
 type Survey = components['schemas']['Survey'];
 type SurveyResponse = components['schemas']['SurveyResponse'];
+type SurveyTarget = components['schemas']['SurveyTarget'];
 type Page<T> = { data: T[]; total: number };
+type TargetPage = { data: SurveyTarget[]; next: string | null };
+type TaskPage = { data: components['schemas']['ScheduledTaskView'][]; next: string | null };
 
 // js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
 const requireHere = createRequire(import.meta.url);
@@ -64,9 +70,25 @@ const UNANSWERED = cfId(2);
 /** Responses 1 to 7 of survey 1, in creation order. */
 const RESPONSE_IDS = Array.from({ length: RESPONSE_COUNT }, (_, i) => cfId(500 + i + 1));
 const TENANT_B_SURVEY = cfId(900);
+/** Survey 4's targets as [id, site, group]: case variants of one site, NULL and empty groups, inserted out of target order. */
+const TARGETED = cfId(4);
+const TARGETS: readonly (readonly [number, string, string | null])[] = [
+  [301, 'tenant-b', 'Zeta'],
+  [302, 'Tenant-A', null],
+  [303, 'tenant-a', 'beta'],
+  [304, 'tenant-a', null],
+  [305, 'TENANT-A', 'Alpha'],
+  [306, 'tenant-a', ''],
+  [307, 'tenant-b', null],
+];
+/** Survey 4's target ids by lower-cased site, group (a NULL group first) and id. */
+const TARGET_ORDER = [302, 304, 306, 305, 303, 307, 301].map(cfId);
+/** Survey 5 carries one target more than the largest page. */
+const CROWDED = cfId(5);
 
 const SURVEYS = `/v1/surveys?siteid=${TENANT_A.siteId}`;
 const responsesOf = (surveyId: string): string => `/v1/surveys/${surveyId}/responses?siteid=${TENANT_A.siteId}`;
+const targetsOf = (surveyId: string, query = ''): string => `/v1/surveys/${surveyId}/targets?siteid=${TENANT_A.siteId}${query}`;
 
 const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
@@ -74,6 +96,7 @@ describe.skipIf(!available)('surveys /v1 routes', () => {
   let handle: ThrowawaySchema;
   let app: FastifyInstance;
   const statements: string[] = [];
+  let transactions = 0;
 
   /** Wraps `tx` so every statement text it runs is appended to `statements`. */
   function counting(tx: TenantTx): TenantTx {
@@ -123,6 +146,14 @@ describe.skipIf(!available)('surveys /v1 routes', () => {
         });
       }
     }
+    for (const [targetId, siteid, groupName] of TARGETS) {
+      await insert(tx, 'survey_target', { target_id: cfId(targetId), survey_id: TARGETED, siteid, group_name: groupName, created: at(targetId) });
+    }
+    await tx.query(
+      `INSERT INTO ${handle.schema}.survey_target (tenant_id, target_id, survey_id, siteid, group_name, created)
+       SELECT $1, lpad(n::text, 8, '0') || '-EEEE-BBBB-CCCCDDDDEEEEFFFF', $2, $3, 'Group ' || n, $4 FROM generate_series(1, $5::integer) AS n`,
+      [tx.tenantId, CROWDED, TENANT_B.siteId, at(0), TARGET_PAGE_MAX + 1],
+    );
     for (const [i, responseId] of [...RESPONSE_IDS.entries()].reverse()) {
       await insert(tx, 'survey_response', {
         response_id: responseId,
@@ -156,7 +187,10 @@ describe.skipIf(!available)('surveys /v1 routes', () => {
     const clock = fixedClock(T0);
     const db: TenantDb = {
       schema: handle.app.schema,
-      withTenant: (tenantId, fn) => handle.app.withTenant(tenantId, (tx) => fn(counting(tx))),
+      withTenant: (tenantId, fn) => {
+        transactions += 1;
+        return handle.app.withTenant(tenantId, (tx) => fn(counting(tx)));
+      },
       withMetadata: (fn, options) => handle.app.withMetadata(fn, options),
       end: () => handle.app.end(),
     };
@@ -301,13 +335,252 @@ describe.skipIf(!available)('surveys /v1 routes', () => {
     });
   });
 
+  describe('GET /v1/surveys/{surveyId}/targets', () => {
+    /** Every page of `surveyId`'s targets, `limit` at a time, following `next` until it is null. */
+    async function walk(surveyId: string, limit: number): Promise<TargetPage[]> {
+      const pages: TargetPage[] = [];
+      let next: string | null = null;
+      do {
+        const after: string = next === null ? '' : `&after=${encodeURIComponent(next)}`;
+        const res = await get(targetsOf(surveyId, `&limit=${String(limit)}${after}`));
+        expect(res.statusCode, res.body).toBe(200);
+        const page = res.json() as TargetPage;
+        pages.push(page);
+        next = page.next;
+      } while (next !== null);
+      return pages;
+    }
+
+    it('lists every target by lower-cased site, group and id, with a null next, when neither limit nor after is given', async () => {
+      const res = await get(targetsOf(TARGETED));
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as TargetPage;
+      expect(Object.keys(body)).toEqual(['data', 'next']);
+      expect(body.data.map((target) => target.targetId)).toEqual(TARGET_ORDER);
+      expect(body.next).toBeNull();
+      expect(body.data[0]).toEqual({ targetId: cfId(302), surveyId: TARGETED, siteId: 'Tenant-A', groupName: null, created: '2026-06-30T14:02:00.125' });
+    });
+
+    it.each([1, 2, 3, 6, 7, TARGET_PAGE_MAX])('walks pages of %i through next to the same list, each page read in one statement', async (limit) => {
+      statements.length = 0;
+      const pages = await walk(TARGETED, limit);
+
+      expect(pages.flatMap((page) => page.data.map((target) => target.targetId))).toEqual(TARGET_ORDER);
+      expect(pages).toHaveLength(Math.ceil(TARGETS.length / limit));
+      expect(pages.every((page) => page.data.length <= limit)).toBe(true);
+      expect(statements.filter((text) => /\bsurvey_target\b.*\bLIMIT\b/.test(text))).toHaveLength(pages.length);
+    });
+
+    it(`pages ${String(TARGET_PAGE_DEFAULT)} at a time when only after is given`, async () => {
+      const first = (await get(targetsOf(CROWDED, '&limit=1'))).json() as TargetPage;
+      const res = await get(targetsOf(CROWDED, `&after=${encodeURIComponent(first.next ?? '')}`));
+      const whole = (await get(targetsOf(CROWDED))).json() as TargetPage;
+
+      expect(res.statusCode).toBe(200);
+      const page = res.json() as TargetPage;
+      expect(page.data).toEqual(whole.data.slice(1, 1 + TARGET_PAGE_DEFAULT));
+      expect(page.next).toEqual(expect.any(String));
+    });
+
+    it(`lists all ${String(TARGET_PAGE_MAX + 1)} targets of a survey from batches of ${String(TARGET_PAGE_MAX)}`, async () => {
+      statements.length = 0;
+      const res = await get(targetsOf(CROWDED));
+
+      const body = res.json() as TargetPage;
+      expect(body.data).toHaveLength(TARGET_PAGE_MAX + 1);
+      expect(body.next).toBeNull();
+      expect(statements.filter((text) => /\bsurvey_target\b.*\bLIMIT\b/.test(text))).toHaveLength(2);
+    });
+
+    it.each<[string, string, number, number]>([
+      ['a survey without targets', RESPONDED, 0, 1],
+      ['one batch of targets', TARGETED, TARGETS.length, 1],
+      [`${String(TARGET_PAGE_MAX + 1)} targets, two batches`, CROWDED, TARGET_PAGE_MAX + 1, 2],
+    ])('streams every target of %s byte for byte as the buffered answer, one transaction a batch', async (_case, surveyId, count, batches) => {
+      const pages = await walk(surveyId, TARGET_PAGE_MAX);
+      const expected = JSON.stringify({ data: pages.flatMap((page) => page.data), next: null });
+      transactions = 0;
+
+      const res = await get(targetsOf(surveyId));
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toBe('application/json; charset=utf-8');
+      expect(res.headers['content-length']).toBeUndefined();
+      expect(res.rawPayload.equals(Buffer.from(expected, 'utf8'))).toBe(true);
+      expect((res.json() as TargetPage).data).toHaveLength(count);
+      expect(transactions).toBe(batches);
+    });
+
+    it.each([
+      'limit=0',
+      `limit=${String(TARGET_PAGE_MAX + 1)}`,
+      'limit=abc',
+      'limit=1.5',
+      'limit=',
+      'after=',
+      'after=not-a-cursor',
+      `after=${Buffer.from('{"site":"tenant-a"}').toString('base64url')}`,
+      `after=${Buffer.from('["tenant-a",true,"alpha"]').toString('base64url')}`,
+      `after=${Buffer.from('["tenant-a","true","alpha","id"]').toString('base64url')}`,
+      `limit=2&after=${Buffer.from('null').toString('base64url')}`,
+    ])('answers invalidParameters for %s before reading anything', async (query) => {
+      statements.length = 0;
+      const res = await get(targetsOf(TARGETED, `&${query}`));
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ apiversion: 'v1', error: INVALID_PARAMETERS });
+      expect(statements).toEqual([]);
+    });
+
+    it.each([
+      ['an unknown survey', UNKNOWN_ID, ''],
+      ['an unknown survey, paged', UNKNOWN_ID, '&limit=2'],
+      ["another tenant's survey", TENANT_B_SURVEY, '&limit=2'],
+    ])('answers the fixture notFound for %s', async (_case, surveyId, query) => {
+      const res = await get(targetsOf(surveyId, query));
+
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ apiversion: 'v1', method: 'surveys.surveys.targets', error: NOT_FOUND });
+    });
+  });
+
+  it('reads the survey detail without reading its targets', async () => {
+    statements.length = 0;
+    const res = await get(`/v1/surveys/${TARGETED}?siteid=${TENANT_A.siteId}`);
+
+    expect(res.statusCode).toBe(200);
+    expect(statements.filter((text) => /\bsurvey_target\b/.test(text))).toEqual([]);
+  });
+
   it.each([
-    ['the survey detail', `/v1/surveys/${RESPONDED}?siteid=${TENANT_A.siteId}`],
-    ['the survey targets', `/v1/surveys/${RESPONDED}/targets?siteid=${TENANT_A.siteId}`],
-  ])('answers %s as {data} alone', async (_case, url) => {
+    ['the survey detail', `/v1/surveys/${RESPONDED}?siteid=${TENANT_A.siteId}`, ['data']],
+    ['the survey targets', targetsOf(RESPONDED), ['data', 'next']],
+  ])('answers %s with exactly the keys %j', async (_case, url, keys) => {
     const res = await get(url);
 
     expect(res.statusCode).toBe(200);
-    expect(Object.keys(res.json() as object)).toEqual(['data']);
+    expect(Object.keys(res.json() as object)).toEqual(keys);
+  });
+
+  describe('GET /v1/surveys/{surveyId}/tasks', () => {
+    const TASKED = SCHEDULED[0] ?? '';
+    /** A survey communications holds more tasks of than one page of 1000. */
+    const CROWDED_TASKED = SCHEDULED[1] ?? '';
+    const client = createClientRecorder({
+      scheduledTasks: (surveyId) =>
+        surveyId === UNANSWERED ? [] : defaultScheduledTasks(surveyId, { reminders: surveyId === CROWDED_TASKED ? TASK_PAGE_MAX + 500 : 4 }),
+    });
+    const tasksOf = (surveyId: string, query = ''): string => `/v1/surveys/${surveyId}/tasks?siteid=${TENANT_A.siteId}${query}`;
+
+    /** The communications calls made since `before`, by their query. */
+    const callsSince = (before: number) => client.requests.slice(before).map((req) => req.query);
+
+    beforeAll(() => {
+      client.install(app);
+    });
+
+    beforeEach(() => {
+      client.reset();
+    });
+
+    it('lists every task in one bounded communications call, with a null next, when neither limit nor after is given', async () => {
+      const before = client.requests.length;
+      const res = await get(tasksOf(TASKED));
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as TaskPage;
+      expect(Object.keys(body)).toEqual(['data', 'next']);
+      expect(body.data.map((task) => task.taskName)).toEqual(defaultScheduledTasks(TASKED, { reminders: 4 }).map((task) => task.taskName));
+      expect(body.next).toBeNull();
+      expect(callsSince(before)).toEqual([{ sourceType: 'survey', sourceId: TASKED, limit: String(TASK_PAGE_MAX) }]);
+    });
+
+    it.each<[string, string, number, number]>([
+      ['a survey communications holds no task of', UNANSWERED, 0, 1],
+      ['one page of tasks', TASKED, 5, 1],
+      [`${String(TASK_PAGE_MAX + 501)} tasks, two pages`, CROWDED_TASKED, TASK_PAGE_MAX + 501, 2],
+    ])('streams every task of %s byte for byte as the buffered answer, one communications call a page', async (_case, surveyId, count, pages) => {
+      const walked: TaskPage[] = [];
+      let next: string | null = null;
+      do {
+        const res = await get(tasksOf(surveyId, `&limit=${String(TASK_PAGE_MAX)}${next === null ? '' : `&after=${next}`}`));
+        walked.push(res.json() as TaskPage);
+        next = walked.at(-1)?.next ?? null;
+      } while (next !== null && walked.length < 10);
+      const expected = JSON.stringify({ data: walked.flatMap((page) => page.data), next: null });
+      const before = client.requests.length;
+
+      const res = await get(tasksOf(surveyId));
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toBe('application/json; charset=utf-8');
+      expect(res.headers['content-length']).toBeUndefined();
+      expect(res.rawPayload.equals(Buffer.from(expected, 'utf8'))).toBe(true);
+      expect((res.json() as TaskPage).data).toHaveLength(count);
+      expect(callsSince(before)).toEqual(
+        Array.from({ length: pages }, (_, i) => ({ sourceType: 'survey', sourceId: surveyId, limit: String(TASK_PAGE_MAX), ...(i === 0 ? {} : { after: expect.any(String) }) })),
+      );
+    });
+
+    it.each([1, 2, 3, 5])('walks pages of %i through next to the same list, forwarding each page to communications', async (limit) => {
+      const whole = ((await get(tasksOf(TASKED))).json() as TaskPage).data;
+      const before = client.requests.length;
+      const pages: TaskPage[] = [];
+      let next: string | null = null;
+      do {
+        const after: string = next === null ? '' : `&after=${next}`;
+        const res = await get(tasksOf(TASKED, `&limit=${String(limit)}${after}`));
+        expect(res.statusCode, res.body).toBe(200);
+        pages.push(res.json() as TaskPage);
+        next = pages.at(-1)?.next ?? null;
+      } while (next !== null && pages.length < 10);
+
+      expect(pages.flatMap((page) => page.data)).toEqual(whole);
+      expect(pages).toHaveLength(Math.ceil(whole.length / limit));
+      expect(callsSince(before).every((query) => query?.limit === String(limit))).toBe(true);
+    });
+
+    it("pages communications' default when only after is given", async () => {
+      const first = (await get(tasksOf(TASKED, '&limit=1'))).json() as TaskPage;
+      const before = client.requests.length;
+
+      const res = await get(tasksOf(TASKED, `&after=${first.next ?? ''}`));
+
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as TaskPage).data).toHaveLength(4);
+      expect(callsSince(before)).toEqual([{ sourceType: 'survey', sourceId: TASKED, after: first.next }]);
+    });
+
+    it.each(['limit=0', `limit=${String(TASK_PAGE_MAX + 1)}`, 'limit=abc', 'limit=1.5', 'limit=', 'after=', 'after=a%2Bb', 'after=a.b'])(
+      'answers invalidParameters for %s without calling communications',
+      async (query) => {
+        const before = client.requests.length;
+        const res = await get(tasksOf(TASKED, `&${query}`));
+
+        expect(res.statusCode).toBe(400);
+        expect(res.json()).toMatchObject({ apiversion: 'v1', error: INVALID_PARAMETERS });
+        expect(callsSince(before)).toEqual([]);
+      },
+    );
+
+    it('answers invalidParameters for an after cursor communications refuses', async () => {
+      const res = await get(tasksOf(TASKED, `&after=${Buffer.from('not json').toString('base64url')}`));
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ apiversion: 'v1', error: INVALID_PARAMETERS });
+    });
+
+    it.each([
+      ['an unknown survey, paged', UNKNOWN_ID],
+      ["another tenant's survey, paged", TENANT_B_SURVEY],
+    ])('answers the fixture notFound for %s without calling communications', async (_case, surveyId) => {
+      const before = client.requests.length;
+      const res = await get(tasksOf(surveyId, '&limit=2'));
+
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ apiversion: 'v1', method: 'surveys.surveys.tasks', error: NOT_FOUND });
+      expect(callsSince(before)).toEqual([]);
+    });
   });
 });

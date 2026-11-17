@@ -17,6 +17,7 @@ import {
   readLegacyLines,
 } from '@/lib/resource-bundles/properties';
 import {
+  adminRbFor,
   cf2Java,
   createResourceBundles,
   isSupportedLocale,
@@ -444,6 +445,83 @@ describe('rb.ts', () => {
     });
   });
 
+  describe('overridden admin chain (resource_bundles → admin, without core assets)', () => {
+    const categoryBundles: GeneratedBundles = {
+      admin: {
+        dir: 'core/mura/resourceBundle/resources',
+        files: {
+          de: { entries: [['categorymanager', 'Kategorien']] },
+          en: {
+            entries: [
+              ['categorymanager', 'Categories'],
+              ['categorymanager.addnewcategory', 'Add Category'],
+              ['categorymanager.permissions', 'Permissions'],
+              ['user.interests', 'Interests'],
+            ],
+          },
+          fr: { error: MALFORMED_UNICODE },
+        },
+      },
+      coreAssets: {
+        dir: 'core/modules/v1/core_assets/resource_bundles',
+        files: {
+          en: {
+            entries: [
+              ['calendar.agendaweek', 'Agenda Week'],
+              ['user.interests', 'I am interested in'],
+            ],
+          },
+        },
+      },
+      global: {
+        dir: 'resource_bundles',
+        files: {
+          en: {
+            entries: [
+              ['categorymanager', 'Topics'],
+              ['categorymanager.addnewcategory', 'Add Topic'],
+              ['global.mycustomkey', 'success'],
+            ],
+          },
+        },
+      },
+    };
+    const overridden = createResourceBundles(categoryBundles);
+    const withoutGlobal = createResourceBundles({ ...categoryBundles, global: null });
+
+    it.each<[string, string, string, string]>([
+      ['an overridden heading', 'en_US', 'categorymanager', 'Topics'],
+      ['an overridden toolbar label', 'en_US', 'categorymanager.addnewcategory', 'Add Topic'],
+      ['an admin key the overrides lack', 'en_US', 'categorymanager.permissions', 'Permissions'],
+      ['an override-only key', 'en_US', 'global.mycustomkey', 'success'],
+      ['an admin key core assets also hold', 'en_US', 'user.interests', 'Interests'],
+      ['a core-assets-only key', 'en_US', 'calendar.agendaweek', 'calendar.agendaweek_missing'],
+      ['a key no bundle holds', 'en_US', 'no.such.key', 'no.such.key_missing'],
+      ['an admin locale file before the en overrides', 'de_DE', 'categorymanager', 'Kategorien'],
+      ['the admin en_US step before its own', 'de_DE', 'categorymanager.addnewcategory', 'Add Category'],
+      ['an override-only key at its own en_US step', 'de_DE', 'global.mycustomkey', 'success'],
+    ])('reads %s (%s %s) as %j', (_case, locale, key, expected) => {
+      expect(overridden.adminRbFor(locale).rbKey(key)).toBe(expected);
+    });
+
+    it.each<[string, string]>([
+      ['categorymanager', 'Categories'],
+      ['user.interests', 'Interests'],
+      ['global.mycustomkey', 'global.mycustomkey_missing'],
+    ])('without a global layer reads %s as the admin chain does (%j)', (key, expected) => {
+      expect(withoutGlobal.adminRbFor('en_US').rbKey(key)).toBe(expected);
+      expect(withoutGlobal.rbFor('en_US').rbKey(key)).toBe(expected);
+    });
+
+    it('formats through the admin bundle, failing on a broken admin file the overrides lack', () => {
+      const en = overridden.adminRbFor('en_US');
+      expect(en.locale).toBe('en_US');
+      expect(en.messageFormat('[{0}] Last {1} Days', '7')).toBe('[] Last 7 Days');
+      expect(() => overridden.adminRbFor('fr_FR').messageFormat('{1}', 'x')).toThrow(ResourceBundleLoadError);
+      expect(() => overridden.adminRbFor('fr_FR').rbKey('categorymanager')).toThrow(ResourceBundleLoadError);
+    });
+  });
+
   describe('messageFormat (resourceBundle.cfc 164-192)', () => {
     it('prepends a dummy element, so {0} is empty and {1} is the first argument', () => {
       expect(messageFormat('[{0}] Last {1} Days', '7', 'en_US')).toBe('[] Last 7 Days');
@@ -551,5 +629,15 @@ describe('default instance over the generated legacy bundles', () => {
     const expected = legacyValue('resource_bundles/en.properties', 'global.mycustomkey');
     expect(expected).toBe('success');
     expect(siteRbFor('en_US').rbKey('global.mycustomkey')).toBe(expected);
+  });
+
+  it.each<[string, string]>([
+    ['resource_bundles/en.properties', 'global.mycustomkey'],
+    ['core/mura/resourceBundle/resources/en.properties', 'user.interests'],
+    ['core/mura/resourceBundle/resources/en.properties', 'categorymanager.addnewcategory'],
+  ])('adminRbFor(en_US) reads %s for %s, skipping core assets', (file, key) => {
+    const expected = legacyValue(file, key);
+    expect(expected).toBeDefined();
+    expect(adminRbFor('en_US').rbKey(key)).toBe(expected);
   });
 });

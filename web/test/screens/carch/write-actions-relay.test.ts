@@ -1,4 +1,6 @@
 // carch inline writes, raw relays, editLive and lockFile against admin/core/controllers/carch.cfc and the contract.
+import { Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { runGate, secure } from '@/lib/access-gate';
@@ -192,6 +194,13 @@ function screenContext(
   return makeScreenContext({ req, gateway: fakeGatewayClient(routes), body: post ? formBody(rc) : undefined });
 }
 
+/** `result` with a streamed body read to its bytes, checking that only a 2xx download of `action` streamed. */
+async function withBytes(result: RawBody | SubmitResult, action: string): Promise<RawBody | SubmitResult> {
+  if (!('body' in result)) return result;
+  expect(result.body instanceof Readable).toBe(MODES[action] === 'download' && (result.status ?? 200) < 300);
+  return result.body instanceof Readable ? { ...result, body: await buffer(result.body) } : result;
+}
+
 /** The definition's answer, called as its mode's handler calls it. */
 async function invoke(def: ScreenDefinition, ctx: ScreenContext): Promise<RawBody | SubmitResult> {
   switch (def.mode) {
@@ -248,7 +257,7 @@ describe('relayed carch actions', () => {
   it.each(RELAYED)('relays carch.%s over GET with every rc field and the csrf headers', async (action) => {
     const { reply, answer } = RELAYS[relayKind(action)];
     const ctx = screenContext(action, { rc: FIELDS, routes: { [svc('GET', rawPath(action))]: reply } });
-    await expect(invoke(definition(action), ctx)).resolves.toEqual(answer);
+    expect(await withBytes(await invoke(definition(action), ctx), action)).toEqual(answer);
     expect(ctx.gateway.calls).toEqual([
       { service: SERVICE, method: 'GET', path: rawPath(action), query: { ...ctx.req.rc }, headers: SENT_CSRF },
     ]);
@@ -258,7 +267,7 @@ describe('relayed carch actions', () => {
   it.each(RELAYED)('relays a posted carch.%s with siteid in the query and the rc as the form', async (action) => {
     const { reply, answer } = RELAYS[relayKind(action)];
     const ctx = screenContext(action, { rc: FIELDS, post: true, routes: { [svc('POST', rawPath(action))]: reply } });
-    await expect(invoke(definition(action), ctx)).resolves.toEqual(answer);
+    expect(await withBytes(await invoke(definition(action), ctx), action)).toEqual(answer);
     expect(ctx.gateway.calls).toEqual([
       {
         service: SERVICE,
@@ -345,7 +354,7 @@ describe('relayed carch actions', () => {
     'relays carch.%s answering %s with its end-to-end headers and the cflocation headers of a redirect',
     async (action, _name, reply, headers) => {
       const ctx = screenContext(action, { rc: FIELDS, routes: { [svc('GET', rawPath(action))]: reply } });
-      await expect(invoke(definition(action), ctx)).resolves.toEqual({
+      expect(await withBytes(await invoke(definition(action), ctx), action)).toEqual({
         status: reply.status,
         contentType: HTML_TYPE,
         body: Buffer.alloc(0),

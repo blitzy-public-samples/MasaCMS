@@ -94,12 +94,23 @@ const doubles = vi.hoisted(() => {
     getCredentials: vi.fn<() => Promise<{ client_email?: string }>>(),
   };
 
+  /** Keeps each load as a cache entry that close() chains onto without a rejection handler, as Connector.close() does. */
   class FakeConnector {
-    readonly getOptions = cloud.getOptions;
-    readonly close = cloud.close;
+    private readonly loads: Promise<unknown>[] = [];
 
     constructor() {
       cloud.connectors += 1;
+    }
+
+    getOptions(opts: Record<string, unknown>): Promise<Record<string, unknown>> {
+      const load = cloud.getOptions(opts);
+      this.loads.push(load);
+      return load;
+    }
+
+    close(): void {
+      cloud.close();
+      for (const load of this.loads) void load.then(() => undefined);
     }
   }
 
@@ -561,26 +572,44 @@ describe('createPool with Cloud SQL IAM authentication', () => {
     expect(cloud.close).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    [
-      'the connector cannot provide connection options',
-      (): void => {
-        cloud.getOptions.mockRejectedValue(new Error('instance not found'));
-      },
-      'instance not found',
-    ],
-    [
-      'the Google credentials carry no service-account email',
-      (): void => {
-        cloud.getOptions.mockResolvedValue({ stream });
-        cloud.getCredentials.mockResolvedValue({});
-      },
-      'OPT2_DB_AUTH=iam without PG_USER needs a service-account email from Google credentials',
-    ],
-  ])('closes the connector and opens no pool when %s', async (_label, arrange, message) => {
-    arrange();
+  /** Unhandled rejections the process reports while `run` settles and through the next macrotask. */
+  async function unhandledDuring(run: () => Promise<void>): Promise<unknown[]> {
+    const reasons: unknown[] = [];
+    const record = (reason: unknown): void => {
+      reasons.push(reason);
+    };
+    process.on('unhandledRejection', record);
+    try {
+      await run();
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+    return reasons;
+  }
 
-    await expect(createPool({ env: IAM_ENV, schema: 'people' })).rejects.toThrow(message);
+  it('rejects with the connector error, leaving no unhandled rejection, when the instance never loads', async () => {
+    const failure = new Error('instance not found');
+    cloud.getOptions.mockRejectedValue(failure);
+
+    const unhandled = await unhandledDuring(() => expect(createPool({ env: IAM_ENV, schema: 'people' })).rejects.toBe(failure));
+
+    expect(unhandled).toEqual([]);
+    expect(cloud.close).not.toHaveBeenCalled();
+    expect(FakePool.created).toHaveLength(0);
+  });
+
+  it('closes the loaded connector and opens no pool when the Google credentials carry no service-account email', async () => {
+    cloud.getOptions.mockResolvedValue({ stream });
+    cloud.getCredentials.mockResolvedValue({});
+
+    const unhandled = await unhandledDuring(() =>
+      expect(createPool({ env: IAM_ENV, schema: 'people' })).rejects.toThrow(
+        'OPT2_DB_AUTH=iam without PG_USER needs a service-account email from Google credentials',
+      ),
+    );
+
+    expect(unhandled).toEqual([]);
     expect(cloud.close).toHaveBeenCalledOnce();
     expect(FakePool.created).toHaveLength(0);
   });

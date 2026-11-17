@@ -1,4 +1,5 @@
 // Admin screen contracts, the registered screens with their lookups, and the shell hooks screens supply (server-only).
+import type { Readable } from 'node:stream';
 import type { Role } from '@opt2/platform/auth';
 import {
   IMAGE_UPLOAD_CONDITION,
@@ -56,7 +57,7 @@ export interface ScreenContext {
   gateway: GatewayClient;
   /** Renders tokens fetched from identity; never validates. */
   csrf: CsrfRenderer;
-  /** Admin bundle of `session.rb`. */
+  /** Admin bundle of `session.rb` under the `resource_bundles/` overrides. */
   rb: RbLookup;
   /** Lets a view embed a secondary menu at its legacy include point. */
   hooks: ShellHooks;
@@ -78,7 +79,8 @@ export interface RawBody {
   status?: number;
   /** The legacy content type, exactly. */
   contentType: string;
-  body: string | SafeHtml | Uint8Array;
+  /** A `Readable` is a streamed service answer, relayed as it arrives. */
+  body: string | SafeHtml | Uint8Array | Readable;
   /** For example `Content-Disposition` of a download. */
   headers?: Record<string, string>;
   setCookies?: string[];

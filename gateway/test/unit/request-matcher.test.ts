@@ -373,6 +373,24 @@ describe('createMatcher target destinations', () => {
     });
   });
 
+  const FIXTURE = '/legacy-fixtures/cfml/api.cfm';
+  const FIXTURE_INDEX = indexOf([
+    entry('fixture:finance/records@get', 'finance'),
+    entry('fixture:finance/records@post', 'finance'),
+    entry('fixture:finance/records/{id}/submit@post', 'finance'),
+  ]);
+  it.each<[method: string, url: string, route: string, path: string]>([
+    ['GET', `${FIXTURE}/finance/records?siteid=tenant-a`, 'fixture:finance/records@get', `${FIXTURE}/finance/records?siteid=tenant-a`],
+    ['GET', '//legacy-fixtures/cfml/api.cfm/FINANCE/records?siteid=tenant-a', 'fixture:finance/records@get', `${FIXTURE}/finance/records?siteid=tenant-a`],
+    ['GET', `${FIXTURE}/finance%2Frecords?siteid=tenant-a`, 'fixture:finance/records@get', `${FIXTURE}/finance/records?siteid=tenant-a`],
+    ['POST', '/legacy-fixtures//cfml/api.cfm/finance/Records/?siteid=tenant-a&q=a+b%2f', 'fixture:finance/records@post', `${FIXTURE}/finance/records?siteid=tenant-a&q=a+b%2f`],
+    ['POST', `${FIXTURE}/FINANCE/Records/Ab-1/SUBMIT`, 'fixture:finance/records/{id}/submit@post', `${FIXTURE}/finance/records/Ab-1/submit`],
+  ])('sends %s %s to its service on the api.cfm path legacy dispatches, the query as sent', async (method, url, route, path) => {
+    const outcome = await matchOf(matcherWith({ active: () => FIXTURE_INDEX }), url, { method });
+    expect(outcome.entry?.route).toBe(route);
+    expect(outcome.destination).toStrictEqual({ kind: 'target', service: 'finance', serviceUrl: urlOf('finance'), path, isWeb: false });
+  });
+
   it("keys a REST request without a client's consumed-params header, which only the gateway may send", async () => {
     const url = '/_api/rest/v1/default/group?client_id=C1';
     const [request, body] = requestOf(url);
@@ -568,6 +586,65 @@ describe('createMatcher halted requests', () => {
   it('keeps target-only paths, which no legacy scan reads, on their entries', async () => {
     expect((await matchOf(halting(), '/opt2/stub/ping?a-b=one&a.b=two')).destination).toMatchObject({ kind: 'target', service: 'stub' });
     expect((await matchOf(halting(), '/gateway/legacy-bridge/cfml/session.cfm?a-b=one&a.b=two')).destination).toStrictEqual({ kind: 'bare', status: 404 });
+  });
+});
+
+describe('createMatcher reload requests', () => {
+  const CONTENT = 'content.content';
+  const TARGETING = 'content.variation_targeting';
+  const RELOAD: CutoverEntry = { ...entry('reload:application', 'strategies-content', 'legacy'), kind: 'legacy-write', units: [CONTENT] };
+  const TARGETING_SAVE: CutoverEntry = {
+    ...entry('api:variationtargeting.save', 'strategies-content'),
+    kind: 'write',
+    group: `grp:${TARGETING}`,
+    units: [TARGETING],
+  };
+  const TRASH_EMPTY: CutoverEntry = {
+    ...entry('admin:ctrash.empty', 'strategies-content', 'legacy'),
+    kind: 'legacy-write',
+    units: ['content.trash', TARGETING],
+  };
+  const SITE_MONITOR: CutoverEntry = { ...entry('sitemonitor:run', 'programs-sites'), kind: 'job', units: [CONTENT, 'communications.email'] };
+  const GLOBAL_CONFIG: CutoverEntry = entry('admin:home.redirect', 'identity', 'legacy');
+  const RELOAD_INDEX = indexOf([...ENTRIES, RELOAD, TARGETING_SAVE, TRASH_EMPTY, SITE_MONITOR, GLOBAL_CONFIG]);
+  const TARGETING_URL = '/_api/json/v1/default/variationtargeting/';
+  const TARGETING_FORM: Sent = { method: 'POST', contentType: URLENCODED, body: 'contentid=C1&targetingjs=probe' };
+  const reloading = (index: RoutingIndex = RELOAD_INDEX): Matcher => matcherWith({ active: () => index });
+
+  it.each<[string, string, Sent | undefined, CutoverEntry, string[]]>([
+    ['a target write', `${TARGETING_URL}?appreload`, TARGETING_FORM, TARGETING_SAVE, [TARGETING, CONTENT]],
+    ['a legacy-write', '/admin/?muraAction=cTrash.empty&appreload', undefined, TRASH_EMPTY, ['content.trash', TARGETING, CONTENT]],
+    ['a target job sharing a unit with the reload', '/_api/sitemonitor/?appreload', undefined, SITE_MONITOR, [CONTENT, 'communications.email']],
+  ])("serves a reload in front of %s on legacy as that writer's legacy-write over both entries' units", async (_label, url, sent, served, units) => {
+    const outcome = await matchOf(reloading(), url, sent);
+    expect(outcome.result).toMatchObject({ key: 'reload:application', afterReload: { key: served.route } });
+    expect(outcome.entry).toStrictEqual({ ...served, state: 'legacy', kind: 'legacy-write', units });
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
+    expect(outcome).toMatchObject({ holdRoutes: ['reload:application'] });
+  });
+
+  it.each<[string, string, string[]]>([
+    ['the Global Config reload, in front of a legacy read', '/admin/?appreload&reload=appreload', ['admin:home.redirect']],
+    ['a reload in front of a target read', '/_api/json/v1/default/?method=generateCSRFTokens&appreload', ['api:generatecsrftokens']],
+    ['a reload in front of a route no entry names', '/?appreload', []],
+  ])('keeps %s on the reload entry on legacy, held also by any entry behind it', async (_label, url, holdRoutes) => {
+    const outcome = await matchOf(reloading(), url);
+    expect(outcome.result?.key).toBe('reload:application');
+    expect(outcome.entry).toStrictEqual(RELOAD);
+    expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
+    expect(outcome).toMatchObject({ holdRoutes });
+  });
+
+  it("gates only the writer's units when the version has no reload entry, and routes the request without the key by its own entry", async () => {
+    const matcher = reloading(indexOf([...ENTRIES, TARGETING_SAVE]));
+    const reload = await matchOf(matcher, `${TARGETING_URL}?appreload`, TARGETING_FORM);
+    expect(reload.entry).toStrictEqual({ ...TARGETING_SAVE, state: 'legacy', kind: 'legacy-write' });
+    expect(reload.destination).toStrictEqual({ kind: 'legacy' });
+    expect(reload).toMatchObject({ holdRoutes: [] });
+    const plain = await matchOf(matcher, TARGETING_URL, TARGETING_FORM);
+    expect(plain.entry).toStrictEqual(TARGETING_SAVE);
+    expect(plain.destination).toMatchObject({ kind: 'target', service: 'strategies-content', path: TARGETING_URL });
+    expect(plain).not.toHaveProperty('holdRoutes');
   });
 });
 

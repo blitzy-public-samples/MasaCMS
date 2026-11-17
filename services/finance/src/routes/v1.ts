@@ -1,5 +1,6 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** `/v1/finance` routes of the OPT-2 finance screens, and the `/v2/finance` paged reads of record detail, versions, attachments and rollups. */
+import { Readable } from 'node:stream';
 import { AuthDenial, Roles, type Opt2RouteConfig } from '@opt2/platform/auth';
 import {
   LEGACY_ERROR_MAP,
@@ -11,15 +12,20 @@ import {
   type LegacyErrorSpec,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import {
+  RequestAbortedError,
+  abandonOnDisconnect,
   csrfPreHandler,
+  currentRequestContext,
   isUnstorableTextError,
   multipartFilesOf,
   recordOutcomeReason,
   sendLegacyResponse,
   type FastifyInstance,
   type FastifyPluginAsync,
+  type FastifyReply,
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
 import { TransitionRejectedError } from '@opt2/platform/state-machine';
@@ -42,19 +48,18 @@ import { requireProgram, validateRecordInput } from '../legacy/checks.js';
 import { fixtureMethod, fixtureOutcomeReason, logUnavailable } from '../legacy/envelope.js';
 import {
   attachmentRow,
-  recordDetail,
+  recordDetailFrame,
   recordDetailPage,
   recordRow,
   rollupRow,
   versionRow,
   type FixtureAttachment,
   type FixtureRecord,
-  type FixtureRecordDetail,
   type FixtureRecordDetailPage,
   type FixtureRollup,
   type FixtureVersion,
 } from '../legacy/serialize.js';
-import type { Page, RecordPaging } from '../repo/queries.js';
+import { attachmentsAfter, rollupsAfter, versionsAfter, type Page, type RecordPaging } from '../repo/queries.js';
 
 /** Collaborators of the `/v1/finance` routes: the finance domain deps and the finance tenant database. */
 export type FinanceV1Deps = FinanceDomainDeps & { db: TenantDb };
@@ -78,15 +83,17 @@ interface AttachmentParams extends RecordParams {
   aid: string;
 }
 
-/** `listRecords` query; the schema defaults fill `page` and `pageSize`. */
+/** `listRecords` query; `pageIndex` and `itemsPerPage`, the other `/v1` lists' paging names, alias `page` and `pageSize`. */
 interface RecordListQuery {
   state?: FinanceState;
   period?: string;
-  page: number;
-  pageSize: number;
+  page?: number;
+  pageIndex?: number;
+  pageSize?: number;
+  itemsPerPage?: number;
 }
 
-/** Page of a `/v2` list; the schema defaults fill both. */
+/** Page of a list; on `/v2` the schema defaults fill both. */
 interface PageQuery {
   page: number;
   pageSize: number;
@@ -136,6 +143,12 @@ const MAX_PAGE_SIZE = 1000;
 /** Rows per query while a route reads every row: the largest page the fixture paging admits. */
 const SCAN_PAGE_SIZE = MAX_PAGE_SIZE;
 
+/** Content type of a streamed `/v1` list, as Fastify sets it for the same body sent whole. */
+const JSON_CONTENT_TYPE = 'application/json; charset=utf-8';
+
+/** Text chunks a streamed list buffers ahead of its client: one, so a slow reader holds at most a page or so in memory. */
+const STREAM_HIGH_WATER_MARK = 1;
+
 /** The page the `/v2` record detail embeds of its versions and of its attachments. */
 const DETAIL_PAGING: RecordPaging = Object.freeze({ pageIndex: DEFAULT_PAGE, itemsPerPage: DEFAULT_PAGE_SIZE });
 
@@ -165,14 +178,21 @@ const PAGE_QUERY_PROPERTIES = {
 
 const PAGE_QUERY_SCHEMA = { type: 'object', properties: PAGE_QUERY_PROPERTIES } as const;
 
+const RECORD_LIST_PAGE_SCHEMA = { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER } as const;
+const RECORD_LIST_PAGE_SIZE_SCHEMA = { type: 'integer', minimum: 1, maximum: MAX_PAGE_SIZE } as const;
+
+// A query names each paging parameter under one of its two names; `recordListPage` fills the defaults once they resolve.
 const RECORD_LIST_QUERY_SCHEMA = {
   type: 'object',
   properties: {
     state: { type: 'string', enum: FINANCE_STATES },
     period: { type: 'string', pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' },
-    page: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: DEFAULT_PAGE },
-    pageSize: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: DEFAULT_PAGE_SIZE },
+    page: RECORD_LIST_PAGE_SCHEMA,
+    pageIndex: RECORD_LIST_PAGE_SCHEMA,
+    pageSize: RECORD_LIST_PAGE_SIZE_SCHEMA,
+    itemsPerPage: RECORD_LIST_PAGE_SIZE_SCHEMA,
   },
+  allOf: [{ not: { required: ['page', 'pageIndex'] } }, { not: { required: ['pageSize', 'itemsPerPage'] } }],
 } as const;
 
 const ROLLUP_QUERY_SCHEMA = {
@@ -230,20 +250,76 @@ function writeInProgram<T>(deps: FinanceV1Deps, tenantId: string, write: (tx: Te
   });
 }
 
-/** Every row `read` returns, page after page, in its order. */
-async function everyRow<R>(read: (paging: RecordPaging) => Promise<Page<R>>): Promise<R[]> {
-  const rows: R[] = [];
-  for (let pageIndex = 1; ; pageIndex += 1) {
-    const page = await read({ pageIndex, itemsPerPage: SCAN_PAGE_SIZE });
-    rows.push(...page.rows);
-    if (page.rows.length < SCAN_PAGE_SIZE) return rows;
+/** Runs `read` in a transaction of its own. */
+type TenantRead = <T>(read: (tx: TenantTx) => Promise<T>) => Promise<T>;
+
+/**
+ * Readers of `request`'s streamed list in transactions of `tenantId`: `inProgram` for the first read, as `readInProgram`, and `later` for
+ * each later page in its own; once the client disconnects, a read in flight is ended and none starts.
+ */
+function streamReaders(request: FastifyRequest, deps: FinanceV1Deps, tenantId: string): { inProgram: TenantRead; later: TenantRead } {
+  abandonOnDisconnect(request);
+  const signal = currentRequestContext()?.signal;
+  const later: TenantRead = (read) => withTenant(deps.db, tenantId, read, signal === undefined ? undefined : { signal });
+  const inProgram: TenantRead = (read) =>
+    later(async (tx) => {
+      await requireProgram(tx, tenantId);
+      return read(tx);
+    });
+  return { inProgram, later };
+}
+
+/**
+ * The rows of `first`, then of each later page `readAfter` reads after the last row before it, projected by `project` and written as
+ * `JSON.stringify` writes array items; a page shorter than `SCAN_PAGE_SIZE` is the last.
+ */
+async function* itemsText<R>(
+  first: readonly R[],
+  readAfter: (last: R) => Promise<readonly R[]>,
+  project: (row: R) => unknown,
+): AsyncGenerator<string> {
+  let page = first;
+  let separator = '';
+  for (;;) {
+    if (page.length > 0) {
+      yield separator + page.map((row) => JSON.stringify(project(row))).join(',');
+      separator = ',';
+    }
+    const last = page.at(-1);
+    if (page.length < SCAN_PAGE_SIZE || last === undefined) return;
+    page = await readAfter(last);
   }
+}
+
+/**
+ * Answers 200 with `parts` as one JSON body: each string as is, each iterable's text as the client consumes the text before it.
+ * A failed read is logged and cuts the response short, since its status line is already sent.
+ */
+function sendStreamed(request: FastifyRequest, reply: FastifyReply, parts: readonly (string | AsyncIterable<string>)[]): FastifyReply {
+  async function* body(): AsyncGenerator<string> {
+    try {
+      for (const part of parts) {
+        if (typeof part === 'string') yield part;
+        else yield* part;
+      }
+    } catch (error) {
+      // A client that disconnected ends the read; that is no failure of the list.
+      if (!(error instanceof RequestAbortedError)) request.log.error({ error: serializeError(error) }, 'finance list stream failed');
+      throw error;
+    }
+  }
+  return reply.code(200).type(JSON_CONTENT_TYPE).send(Readable.from(body(), { highWaterMark: STREAM_HIGH_WATER_MARK }));
 }
 
 /** The repository paging of a list's `page` and `pageSize`; throws `invalidParameters` for a ±Infinity the schema coercion admits. */
 function pagingOf({ page, pageSize }: PageQuery): RecordPaging {
   if (!Number.isFinite(page) || !Number.isFinite(pageSize)) throw new FinanceDomainError('invalidParameters');
   return { pageIndex: page, itemsPerPage: pageSize };
+}
+
+/** The page and page size a record list query names under either paging name, the fixture defaults filling an absent one. */
+function recordListPage({ page, pageIndex, pageSize, itemsPerPage }: RecordListQuery): PageQuery {
+  return { page: page ?? pageIndex ?? DEFAULT_PAGE, pageSize: pageSize ?? itemsPerPage ?? DEFAULT_PAGE_SIZE };
 }
 
 /** A path id as the stored upper-case CF UUID it names, as SQL Server matches ids ignoring case; the params schema admits either case. */
@@ -351,27 +427,45 @@ export const financeV1Plugin: FastifyPluginAsync<FinanceV1Deps> = async (instanc
     RECORD_LIST_OPTIONS,
     async (request): Promise<{ data: FixtureRecord[]; total: number }> => {
       const { state, period } = request.query;
-      const paging = pagingOf(request.query);
+      const paging = pagingOf(recordListPage(request.query));
       const page = await readInProgram(deps, callerOf(request).tenantId, (tx) => listRecords(tx, paging, { state, period }));
       return listAnswer(page, recordRow);
     },
   );
 
-  instance.get<{ Params: RecordParams }>(RECORD_PATH, RECORD_OPTIONS, async (request): Promise<{ data: FixtureRecordDetail }> => {
+  // The complete `/v1` reads stream their rows: the record check and each list's first page answer before the status line, so their
+  // failures keep the fixture errors; each later page is read by keyset in its own transaction.
+  instance.get<{ Params: RecordParams }>(RECORD_PATH, RECORD_OPTIONS, async (request, reply) => {
     const id = storedId(request.params.id);
-    const detail = await readInProgram(deps, callerOf(request).tenantId, async (tx) => {
+    const { inProgram, later } = streamReaders(request, deps, callerOf(request).tenantId);
+    const first = await inProgram(async (tx) => {
       const record = await getRecord(tx, id);
-      const versions = await everyRow((paging) => listVersions(tx, id, paging));
-      const attachments = await everyRow((paging) => listAttachments(tx, id, paging));
-      return recordDetail(record, versions, attachments);
+      const versions = await versionsAfter(tx, id, undefined, SCAN_PAGE_SIZE);
+      const attachments = await attachmentsAfter(tx, id, undefined, SCAN_PAGE_SIZE);
+      return { record, versions, attachments };
     });
-    return { data: detail };
+    const [beforeVersions, betweenLists, afterAttachments] = recordDetailFrame(first.record);
+    return sendStreamed(request, reply, [
+      `{"data":${beforeVersions}`,
+      itemsText(first.versions, (last) => later((tx) => versionsAfter(tx, id, last, SCAN_PAGE_SIZE)), versionRow),
+      betweenLists,
+      itemsText(first.attachments, (last) => later((tx) => attachmentsAfter(tx, id, last, SCAN_PAGE_SIZE)), attachmentRow),
+      `${afterAttachments}}`,
+    ]);
   });
 
-  instance.get<{ Params: RecordParams }>(VERSIONS_PATH, RECORD_OPTIONS, async (request): Promise<{ data: FixtureVersion[] }> => {
+  instance.get<{ Params: RecordParams }>(VERSIONS_PATH, RECORD_OPTIONS, async (request, reply) => {
     const id = storedId(request.params.id);
-    const versions = await readInProgram(deps, callerOf(request).tenantId, (tx) => everyRow((paging) => listVersions(tx, id, paging)));
-    return { data: versions.map(versionRow) };
+    const { inProgram, later } = streamReaders(request, deps, callerOf(request).tenantId);
+    const first = await inProgram(async (tx) => {
+      await getRecord(tx, id);
+      return versionsAfter(tx, id, undefined, SCAN_PAGE_SIZE);
+    });
+    return sendStreamed(request, reply, [
+      '{"data":[',
+      itemsText(first, (last) => later((tx) => versionsAfter(tx, id, last, SCAN_PAGE_SIZE)), versionRow),
+      ']}',
+    ]);
   });
 
   instance.post<{ Params: TransitionParams }>(TRANSITION_PATH, TRANSITION_OPTIONS, async (request): Promise<{ data: FixtureRecord }> => {
@@ -390,12 +484,18 @@ export const financeV1Plugin: FastifyPluginAsync<FinanceV1Deps> = async (instanc
     return { data: recordRow(record) };
   });
 
-  instance.get<{ Params: RecordParams }>(ATTACHMENTS_PATH, RECORD_OPTIONS, async (request): Promise<{ data: FixtureAttachment[] }> => {
+  instance.get<{ Params: RecordParams }>(ATTACHMENTS_PATH, RECORD_OPTIONS, async (request, reply) => {
     const id = storedId(request.params.id);
-    const attachments = await readInProgram(deps, callerOf(request).tenantId, (tx) =>
-      everyRow((paging) => listAttachments(tx, id, paging)),
-    );
-    return { data: attachments.map(attachmentRow) };
+    const { inProgram, later } = streamReaders(request, deps, callerOf(request).tenantId);
+    const first = await inProgram(async (tx) => {
+      await getRecord(tx, id);
+      return attachmentsAfter(tx, id, undefined, SCAN_PAGE_SIZE);
+    });
+    return sendStreamed(request, reply, [
+      '{"data":[',
+      itemsText(first, (last) => later((tx) => attachmentsAfter(tx, id, last, SCAN_PAGE_SIZE)), attachmentRow),
+      ']}',
+    ]);
   });
 
   instance.post<{ Params: RecordParams }>(ATTACHMENTS_PATH, UPLOAD_OPTIONS, async (request): Promise<{ data: FixtureAttachment }> => {
@@ -421,10 +521,15 @@ export const financeV1Plugin: FastifyPluginAsync<FinanceV1Deps> = async (instanc
     },
   );
 
-  instance.get(ROLLUPS_PATH, ROLLUP_OPTIONS, async (request): Promise<{ data: FixtureRollup[] }> => {
+  instance.get(ROLLUPS_PATH, ROLLUP_OPTIONS, async (request, reply) => {
     // `asOf` is accepted as the contract declares it; stored rollups change only at record writes, so the read takes no date.
-    const rollups = await readInProgram(deps, callerOf(request).tenantId, (tx) => everyRow((paging) => getRollups(tx, { paging })));
-    return { data: rollups.map(rollupRow) };
+    const { inProgram, later } = streamReaders(request, deps, callerOf(request).tenantId);
+    const first = await inProgram((tx) => rollupsAfter(tx, undefined, SCAN_PAGE_SIZE));
+    return sendStreamed(request, reply, [
+      '{"data":[',
+      itemsText(first, (last) => later((tx) => rollupsAfter(tx, last, SCAN_PAGE_SIZE)), rollupRow),
+      ']}',
+    ]);
   });
 
   instance.get<{ Params: RecordParams }>(V2_RECORD_PATH, RECORD_OPTIONS, async (request): Promise<{ data: FixtureRecordDetailPage }> => {

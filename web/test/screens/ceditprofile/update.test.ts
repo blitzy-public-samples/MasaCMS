@@ -9,11 +9,11 @@ import { ceditprofileGate, type ProfileData } from '@/screens/ceditprofile/edit'
 import { updateProfileAction } from '@/screens/ceditprofile/update';
 import { PROFILE_USER_ID, profileData, profileUpdateSuccess } from '../../fixtures/people/profile';
 import { invalidEmailResult, missingEmailResult, passwordMismatchResult } from '../../fixtures/people/validation-errors';
-import { INTEREST_CATEGORY_IDS } from '../../fixtures/strategies-content/categories';
+import { INTEREST_CATEGORY_IDS, interestCategories } from '../../fixtures/strategies-content/categories';
 import { anonymousRequest, makeAdminRequest } from '../../helpers/admin-request';
 import { domModel, fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeReply } from '../../helpers/fake-gateway';
+import { fakeGatewayClient, routeKey, type FakeReply, type FakeRoute } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../helpers/screen-context';
 import { SUBJECTS } from '../../helpers/tokens';
 
@@ -28,6 +28,8 @@ const TENANT_A = SUBJECTS.systemUser.site;
 const UPDATE_PATH = '/v1/profile:update';
 const UPDATE_ROUTE = routeKey('POST', 'people', UPDATE_PATH);
 const PROFILE_ROUTE = routeKey('GET', 'people', '/v1/profile');
+const INTEREST_GROUPS_PATH = `/v1/sites/${TENANT_A}/private-interest-groups` as const;
+const INTEREST_GROUPS_ROUTE = routeKey('GET', 'strategies-content', INTEREST_GROUPS_PATH);
 const CSRF_TOKENS_PATH = '/v1/csrf/tokens';
 const HOME_ADDRESS_ID = profileData.addresses[0]?.addressID ?? '';
 
@@ -64,8 +66,31 @@ const postedFields = Object.freeze({
   categoryID: `${INTEREST_CATEGORY_IDS.newsletter},${INTEREST_CATEGORY_IDS.training}`,
 });
 
-/** The stored profile without interests, which the failed-save view can render with no interest-group read bound. */
+/** The stored profile without interests. */
 const storedWithoutInterests: ProfileData = { ...profileData, categoryIds: [] };
+
+/** strategies-content's answer for a private pool without interest groups. */
+const NO_INTEREST_GROUPS: FakeReply = { status: 200, body: { items: [] } };
+
+type InterestNode = (typeof interestCategories)[number];
+
+/** strategies-content `listPrivateInterestGroups` over the fixture tree: the level `parentid` names, interest groups only. */
+const interestGroupsRoute: FakeRoute = ({ query }) => {
+  const parentId = typeof query['parentid'] === 'string' ? query['parentid'] : '';
+  const levelOf = (nodes: readonly InterestNode[]): readonly InterestNode[] | undefined => {
+    for (const node of nodes) {
+      if (node.categoryID === parentId) return node.children;
+      const nested = levelOf(node.children);
+      if (nested !== undefined) return nested;
+    }
+    return undefined;
+  };
+  const level = parentId === '' ? interestCategories : (levelOf(interestCategories) ?? []);
+  const items = level
+    .filter((node) => Number(node.isInterestGroup) === 1)
+    .map(({ categoryID, name, filename, urltitle, isOpen, hasKids }) => ({ categoryID, name, filename, urltitle, isOpen: Number(isOpen), hasKids }));
+  return { status: 200, body: { items } };
+};
 
 /** `session.mura.editBean` an earlier failed save left. */
 const PRIOR_EDIT_BEAN = Object.freeze({
@@ -112,11 +137,20 @@ const updateRequest = (fields: Fields, muraValues: Readonly<Record<string, unkno
     SUBJECTS.systemUser,
   );
 
-/** A context whose people answers the save with `reply` and `getProfile` with `stored`. */
-const updateContext = (req: AdminRequest, reply: FakeReply, stored: ProfileData = profileData): Context =>
+/** A context whose people answers the save with `reply` and `getProfile` with `stored`, and strategies-content `interestGroups`. */
+const updateContext = (
+  req: AdminRequest,
+  reply: FakeReply,
+  stored: ProfileData = profileData,
+  interestGroups: FakeRoute = NO_INTEREST_GROUPS,
+): Context =>
   makeScreenContext({
     req,
-    gateway: fakeGatewayClient({ [UPDATE_ROUTE]: reply, [PROFILE_ROUTE]: { status: 200, body: stored } }),
+    gateway: fakeGatewayClient({
+      [UPDATE_ROUTE]: reply,
+      [PROFILE_ROUTE]: { status: 200, body: stored },
+      [INTEREST_GROUPS_ROUTE]: interestGroups,
+    }),
   });
 
 /** The `editBean` entry the request queued for the session, and whether it queued one. */
@@ -325,13 +359,43 @@ describe('cEditProfile.update view after a refused save', () => {
     expect(view?.routeId).toBe('editprofile');
   });
 
-  it('fails closed for a save naming interests while no interest-group read is bound, the errored bean kept', async () => {
+  it('re-renders a save naming interests with the posted selections in place of the stored ones and the errored bean', async () => {
+    const fields = { ...profileFields, email: '' };
+    const { newsletter, volunteering, training } = INTEREST_CATEGORY_IDS;
+    const req = updateRequest({ ...fields, categoryID: training });
+    const ctx = updateContext(req, refusal(missingEmailResult, fields), profileData, interestGroupsRoute);
+    expect(profileData.categoryIds).toEqual([newsletter]);
+
+    const page = await renderScreenPage(updateProfileAction, ctx);
+
+    if (page.kind !== 'document') throw new Error(`redirected to ${page.location}`);
+    const $ = cheerio.load(page.html);
+    const controls = fragmentModel($.html($('form[name="form1"]'))).controls;
+    expect(editBeanWrite(req)).toEqual({ present: true, value: { userBean: erroredBean(fields), errors: missingEmailResult.errors } });
+    expect($('.alert-error > span').text().trim()).toBe(messagesOf(missingEmailResult.errors).join(' '));
+    expect(
+      controls.filter(({ name }) => ['fname', 'email', 'tags', 'categoryID'].includes(name)).map((c) => [c.name, c.type, c.value, c.checked]),
+    ).toEqual([
+      ['fname', 'text', fields.fname, false],
+      ['email', 'text', '', false],
+      ['categoryID', 'checkbox', newsletter, false],
+      ['categoryID', 'checkbox', volunteering, false],
+      ['categoryID', 'checkbox', training, true],
+      ['tags', 'text', fields.tags, false],
+    ]);
+    expect(ctx.gateway.calls.filter(({ path }) => path === INTEREST_GROUPS_PATH).map(({ query }) => query)).toEqual([
+      { groupsiteid: TENANT_A, parentid: '' },
+      { groupsiteid: TENANT_A, parentid: INTEREST_CATEGORY_IDS.interests },
+    ]);
+  });
+
+  it('fails closed when strategies-content cannot serve the interest groups, the errored bean kept', async () => {
     const req = updateRequest(postedFields);
-    const ctx = updateContext(req, refusal(missingEmailResult, postedFields));
+    const ctx = updateContext(req, refusal(missingEmailResult, postedFields), profileData, { status: 503, body: { error: 'down' } });
 
     await expect(renderScreenPage(updateProfileAction, ctx)).rejects.toMatchObject({
-      name: 'LegacyServiceUnavailableError',
-      reason: 'profile-interests',
+      name: 'GatewayUnavailableError',
+      service: 'strategies-content',
     });
     expect(editBeanWrite(req)).toEqual({
       present: true,

@@ -501,6 +501,18 @@ describe('createOwnersClient', () => {
       answer: POSITION_ANSWER,
     },
     {
+      name: 'position sends the published page cursor, limit and frontier in decimal',
+      call: (owners) => owners.position('people', { publishedTopics: TOPICS, publishedAfter: '41', publishedLimit: 500, publishedThrough: '900' }),
+      request: {
+        service: 'people',
+        method: 'GET',
+        path: '/internal/v1/migration/position',
+        query: { publishedTopics: TOPICS.join(','), publishedAfter: '41', publishedLimit: '500', publishedThrough: '900' },
+        userToken: null,
+      },
+      answer: POSITION_ANSWER,
+    },
+    {
       name: 'position without event ids or topics sends none',
       call: (owners) => owners.position('people'),
       request: { service: 'people', method: 'GET', path: '/internal/v1/migration/position', query: {}, userToken: null },

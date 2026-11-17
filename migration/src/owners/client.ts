@@ -92,10 +92,16 @@ export interface ChangesParams {
   limit?: number;
 }
 
-/** Query of a position read: which tenants' inboxes hold `eventIds`, and the published events of `publishedTopics`. */
+/** Query of a position read: which tenants' inboxes hold `eventIds`, and the published events of `publishedTopics`, one page when paged. */
 export interface PositionParams {
   eventIds?: readonly string[];
   publishedTopics?: readonly string[];
+  /** Outbox `seq` the page starts after: the previous answer's `publishedNext`; `0` when absent. */
+  publishedAfter?: string;
+  /** Page size, at most `MAX_PUBLISHED_LIMIT`; the owner's maximum when absent. Without it, `publishedAfter` and `publishedThrough`, the read lists every event unpaged. */
+  publishedLimit?: number;
+  /** Outbox `seq` the page ends at: an earlier answer's `publishedFrontier`; later rows are neither listed nor blocking. */
+  publishedThrough?: string;
 }
 
 /** A watermark to store: a `POST /watermark` body, or a stored record whose null sequence or LSN is sent as absent. */
@@ -313,7 +319,13 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
     },
 
     async position(owner, params = {}, options = {}) {
-      const query = { eventIds: params.eventIds?.join(','), publishedTopics: params.publishedTopics?.join(',') };
+      const query = {
+        eventIds: params.eventIds?.join(','),
+        publishedTopics: params.publishedTopics?.join(','),
+        publishedAfter: params.publishedAfter,
+        publishedLimit: decimal(params.publishedLimit),
+        publishedThrough: params.publishedThrough,
+      };
       return (await call<PositionResponse>(owner, 'GET', POSITION_PATH, { query, timeoutMs: options.timeoutMs })).body;
     },
 

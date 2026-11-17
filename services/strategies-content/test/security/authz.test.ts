@@ -532,6 +532,14 @@ const FAMILIES: readonly Family[] = [
     siteScoped: true,
   },
   {
+    family: 'private interest groups',
+    match: [at('GET', '/v1/sites/:siteid/private-interest-groups')],
+    transport: 'service',
+    declared: requiring(Roles.s2, Roles.siteAdmin, Roles.systemUser, Roles.member),
+    allow: (roles) => hasAnyRole(roles, [Roles.s2, Roles.siteAdmin, Roles.systemUser, Roles.member]),
+    siteScoped: true,
+  },
+  {
     family: 'content links',
     match: [at('POST', '/internal/v1/content::links')],
     transport: 'service',
@@ -905,6 +913,7 @@ const PROBE_OVERRIDES: Readonly<Record<string, (site: string) => Probe>> = {
     postJson(PUBLISH_SCHEDULED_CHANGESETS_PATH, siteMonitorTask('content-scheduled-publish', 'publishScheduledChangesets')),
   'POST /internal/v1/jobs/feed-auto-import': (site) => postJson(`${FEED_AUTO_IMPORT_PATH}?siteid=${site}`, siteMonitorTask('content-feed-import', 'feedAutoImport')),
   'GET /v1/sites/:siteid/content': (site) => get(`/v1/sites/${site}/content?keywords=Page`),
+  'GET /v1/sites/:siteid/private-interest-groups': (site) => get(`/v1/sites/${site}/private-interest-groups?groupsiteid=${site}`),
   'GET /v1/sites/:siteid/variation-targeting': (site) => get(`/v1/sites/${site}/variation-targeting?remoteid=authz-probe`),
   'POST /v1/sites/:siteid/variation-targeting': (site) => postForm(`/v1/sites/${site}/variation-targeting`, `remoteid=authz-probe&${CSRF_FIELDS}`),
   'POST /v1/sites/:siteid/changesets': (site) =>
@@ -1167,6 +1176,8 @@ const HANDLER_ANSWERS: readonly HandlerAnswer[] = [
     [
       [rawRoutes('carch', 'draftpromptdata'), "TypeError: Cannot read properties of undefined (reading 'getTime')"],
       [rawRoutes('carch', 'loadsiteflat'), 'SyntaxError: Cannot convert NaN0 to a BigInt'],
+      // The batched crumb walk keeps only rows matching each related row's id, which RecordingDb's alias-less answers never carry, so the crumbs read empty.
+      [rawRoutes('carch', 'loadselectedrelatedcontent'), 'RangeError: The element at position 1 cannot be found.'],
       [rawRoutes('carch', 'loadtagarray'), 'TypeError: text is not iterable'],
       [['GET /v1/sites/:siteid/approval-chains/:chainid/pending'], "TypeError: Cannot read properties of undefined (reading 'toUpperCase')"],
       [['GET /v1/sites/:siteid/content'], "TypeError: Cannot read properties of null (reading 'toLowerCase')"],

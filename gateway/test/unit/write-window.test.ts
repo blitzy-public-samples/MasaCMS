@@ -35,6 +35,21 @@ const TABLE = cutoverTable({
 /** Form of a rating POST; the inventory scopes `page:saverate` writes by siteid, userid and contentid. */
 const RATE_FORM = { doaction: 'saveRate', siteid: 'tenant-a', contentid: 'C1', userid: 'U1', rate: '5' };
 
+const CONTENT_UNIT = 'content.content';
+const TARGETING_UNIT = 'content.variation_targeting';
+const TARGETING_SAVE = 'api:variationtargeting.save';
+
+/** TABLE plus the reload entry and a target write, every unit of them target-authoritative. */
+const RELOAD_TABLE = cutoverTable({
+  tableVersion: 'v0102',
+  entries: [
+    ...TABLE.entries,
+    entry({ route: 'reload:application', owningService: 'strategies-content', kind: 'legacy-write', units: [CONTENT_UNIT], disposition: 'legacy-served' }),
+    entry({ route: TARGETING_SAVE, owningService: 'strategies-content', state: 'target', kind: 'write', units: [TARGETING_UNIT] }),
+  ],
+  groupAuthority: { ...TABLE.groupAuthority, [`grp:${CONTENT_UNIT}`]: 'target', [`grp:${TARGETING_UNIT}`]: 'target' },
+});
+
 const ADMIN_503 = adminUnavailableResponse();
 
 let gateway: TestGateway | undefined;
@@ -45,7 +60,7 @@ afterEach(async () => {
   gateway = undefined;
 });
 
-async function start(opts: Pick<TestGatewayOptions, 'legacy' | 'migration'> = {}): Promise<TestGateway> {
+async function start(opts: Pick<TestGatewayOptions, 'legacy' | 'migration' | 'version'> = {}): Promise<TestGateway> {
   gateway = await buildTestGateway({ version: TABLE, services: [], ...opts });
   return gateway;
 }
@@ -238,4 +253,35 @@ describe('legacy-write dispatch through the gateway', () => {
     ]);
     expect(inflightRows(gw)).toEqual([]);
   });
+
+  it.each<[string, string, Record<string, string>, string, string[]]>([
+    ['a target write', '/_api/json/v1/default/variationtargeting/?appreload', { contentid: 'C1', targetingjs: 'probe' }, TARGETING_SAVE, [TARGETING_UNIT, CONTENT_UNIT]],
+    ['a request-scoped legacy-write', '/index.cfm?appreload', RATE_FORM, SAVE_RATE, [RATING_UNIT, CONTENT_UNIT]],
+  ])(
+    'runs a reload in front of %s on legacy in one table-wide window over its units and the reload units, in flight as its route',
+    async (_label, url, form, route, units) => {
+      const gw = await start({ version: RELOAD_TABLE });
+      let duringLegacy: InflightRowRecord[] = [];
+      gw.legacy.setResponse(() => {
+        duringLegacy = inflightRows(gw);
+        return { status: 200, body: 'reloaded' };
+      });
+
+      const res = await gw.app.inject({
+        method: 'POST',
+        url,
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-request-id': 'req-reload' },
+        payload: new URLSearchParams(form).toString(),
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toBe('reloaded');
+      expect(gw.legacy.requests.map((req) => req.url)).toEqual([url]);
+      expect(gw.migration.windows).toEqual([
+        expect.objectContaining({ routeKey: route, units, scope: { table: true }, requestId: 'req-reload', completion: { forwarded: true, legacyStatus: 200 } }),
+      ]);
+      expect(duringLegacy).toEqual([expect.objectContaining({ request_id: 'req-reload', route, side: 'legacy' })]);
+      expect(inflightRows(gw)).toEqual([]);
+    },
+  );
 });

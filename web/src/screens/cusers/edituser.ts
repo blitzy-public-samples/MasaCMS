@@ -14,6 +14,7 @@ import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw } from '@/lib/html';
 import { relayFields, siteDataOf, urlEncodedFormat, type SiteData } from '@/lib/request-context';
 import { buildUrl } from '@/lib/urls';
+import { privateInterestGroups, type PrivateInterestGroupRow } from '../ceditprofile/edit';
 import type { PageScreen, ScreenContext } from '../registry';
 import { renderUserCategoriesNest, type InterestCategoryLoader, type InterestCategoryRow } from './dsp_categories_nest';
 import { displayErrors, editGroupHtmlHead, jsStringFormat, themeAssetPath } from './editgroup';
@@ -88,20 +89,52 @@ export interface WebServiceToken {
 /** `getFeed('oauthtoken')` of the user's `refresh_token` grants, in iterator order. */
 export type WebServiceTokenLoader = (ctx: ScreenContext, userId: string) => Promise<readonly WebServiceToken[]>;
 
-/** Reads the view takes from services no contract serves yet. */
+/** Reads the view takes from owner contracts, the web-service tokens from none yet. */
 export interface EditUserSources {
   readonly interestCategories: InterestCategoryLoader;
   readonly webServiceTokens: WebServiceTokenLoader;
 }
 
-// Identity's contract lists OAuth clients but no user's tokens, and strategies-content's contract has no interest
-// category read, so the registered screen renders as legacy does for a user without web-service connections in a pool
-// without interest categories until such reads exist.
-/** The sources of the registered screen: no web-service tokens and no interest categories. */
-export const UNSERVED_EDIT_USER_SOURCES: EditUserSources = Object.freeze({
-  interestCategories: () => Promise.resolve([]),
-  webServiceTokens: () => Promise.resolve([]),
-});
+/**
+ * The `getPrivateInterestGroups(siteId, parentId)` levels `<cf_dsp_categories_nest>` reads, one strategies-content call
+ * per level as legacy recurses on `hasKids`, labelled with the request's site name.
+ * @throws LegacyServiceUnavailableError When a top-level row is another site's, whose name no owner contract serves.
+ * @throws GatewayUnavailableError When strategies-content is unavailable or halts a level holding several sites' rows.
+ * @throws GatewayDenialError When strategies-content refuses a read (401 or 403).
+ */
+async function interestForest(ctx: ScreenContext, siteId: string): Promise<readonly InterestCategoryRow[]> {
+  const { site } = ctx.req;
+  const roots = await privateInterestGroups(ctx, siteId, '');
+  if (roots.some((row) => site === undefined || !cfEq(row.siteID, site.siteid))) {
+    throw new LegacyServiceUnavailableError(
+      `cUsers.editUser needs the name of a site in the private user pool of ${siteId}, which no owner contract serves (EX-PROFILE-INTEREST-SITES)`,
+      'admin',
+      'interest-site-unserved',
+    );
+  }
+  // strategies-content answers each level with one site's rows, and only the top level prints that site's name.
+  const siteName = site?.site ?? null;
+  const withKids = async (rows: readonly PrivateInterestGroupRow[], parentID: string | null): Promise<InterestCategoryRow[]> =>
+    (
+      await Promise.all(
+        rows.map(async ({ categoryID, name, isOpen, hasKids }) => [
+          { site: siteName, categoryID, parentID, name, isOpen, hasKids },
+          ...(hasKids ? await withKids(await privateInterestGroups(ctx, siteId, categoryID), categoryID) : []),
+        ]),
+      )
+    ).flat();
+  return withKids(roots, null);
+}
+
+// Identity's contract lists OAuth clients but no user's tokens, so the registered screen renders as legacy does for a
+// user without web-service connections.
+/** The sources of the registered screen for the request of `ctx`. */
+export function editUserSources(ctx: ScreenContext): EditUserSources {
+  return Object.freeze({
+    interestCategories: (siteId: string) => interestForest(ctx, siteId),
+    webServiceTokens: () => Promise.resolve([]),
+  });
+}
 
 /** Everything the view reads after `editUser()` and the view's own set-up. */
 export interface EditUserData {
@@ -327,14 +360,14 @@ async function photoSiteOf(ctx: ScreenContext, site: SiteData, bean: EditUserBea
 /**
  * The view's data: `editUser()`'s bean, user type, groups and sites from people, and the view set-up's user pool,
  * subtypes and strike block; issues the form's CSRF pairs. Gateway unavailability propagates.
- * @throws GatewayDenialError When people or programs-sites refuses a read (401 or 403).
- * @throws LegacyServiceUnavailableError When an owner is unavailable, a photo file name is unserved, or a pooled user's photo
- * site is not served by programs-sites.
+ * @throws GatewayDenialError When people, programs-sites or strategies-content refuses a read (401 or 403).
+ * @throws LegacyServiceUnavailableError When an owner is unavailable, a photo file name is unserved, a pooled user's photo
+ * site is not served by programs-sites, or the interest groups are another site's.
  * @throws TypeError When the request carries no site data, or a preserved bean is malformed.
  */
 export async function loadEditUser(
   ctx: ScreenContext,
-  sources: EditUserSources = UNSERVED_EDIT_USER_SOURCES,
+  sources: EditUserSources = editUserSources(ctx),
 ): Promise<EditUserData> {
   const rc = normaliseCusersRc(ctx.req);
   const { site } = ctx.req;

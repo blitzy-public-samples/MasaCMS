@@ -1,3 +1,6 @@
+import { lookup as dnsLookup } from 'node:dns';
+import type { LookupFunction } from 'node:net';
+import { createSignalBoundFetch } from '@opt2/platform/service-kit';
 import { CookieJar } from 'tough-cookie';
 
 /** Fetch-compatible function the session calls once per hop. */
@@ -70,6 +73,7 @@ export interface HttpSession {
 /** Options for {@link createHttpSession}. */
 export interface HttpSessionOptions {
   baseUrl: string;
+  /** Defaults to {@link defaultFetch}. */
   fetch?: FetchLike;
   jar?: CookieJar;
   defaultHeaders?: Record<string, string>;
@@ -101,6 +105,37 @@ export class HttpRequestError extends Error {
     this.status = status;
   }
 }
+
+const LOCALHOST_SUFFIX = '.localhost';
+const LOOPBACK_ADDRESS = '127.0.0.1';
+
+/** True for a name strictly under `localhost`, ignoring case and a trailing dot. */
+function isLocalhostSubdomain(hostname: string): boolean {
+  const name = hostname.toLowerCase().replace(/\.$/, '');
+  return name.length > LOCALHOST_SUFFIX.length && name.endsWith(LOCALHOST_SUFFIX);
+}
+
+/** `net` lookup resolving names under `localhost` to 127.0.0.1 (RFC 6761) and other names through `dns.lookup`. */
+export const loopbackLookup: LookupFunction = (hostname, options, callback) => {
+  if (!isLocalhostSubdomain(hostname)) {
+    dnsLookup(hostname, options, callback);
+    return;
+  }
+  // Answered on a later tick, as dns.lookup does.
+  process.nextTick(() => {
+    if (options.all === true) callback(null, [{ address: LOOPBACK_ADDRESS, family: 4 }]);
+    else callback(null, LOOPBACK_ADDRESS, 4);
+  });
+};
+
+let loopbackFetch: FetchLike | undefined;
+
+/** Fetch sending `localhost` subdomain URLs to 127.0.0.1 through {@link loopbackLookup}, others to the global fetch. */
+export const defaultFetch: FetchLike = (input, init) => {
+  if (!isLocalhostSubdomain(new URL(input).hostname)) return globalThis.fetch(input, init);
+  loopbackFetch ??= createSignalBoundFetch({ connect: { lookup: loopbackLookup } });
+  return loopbackFetch(input, init);
+};
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const BODY_KINDS = ['form', 'json', 'multipart', 'body'] as const;
@@ -247,7 +282,7 @@ function withoutHeaders(headers: Record<string, string>, names: readonly string[
 export function createHttpSession(options: HttpSessionOptions): HttpSession {
   const { baseUrl, defaultHeaders = {}, maxRedirects = 20 } = options;
   const sessionTimeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const fetchImpl: FetchLike = options.fetch ?? globalThis.fetch;
+  const fetchImpl: FetchLike = options.fetch ?? defaultFetch;
   const jar =
     options.jar ??
     new CookieJar(undefined, { looseMode: true, rejectPublicSuffixes: false, allowSpecialUseDomain: true });

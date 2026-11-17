@@ -1,4 +1,4 @@
-// Unit tests for the static migration configuration, its owner lookups and the migration environment schema.
+// Unit tests for the static migration configuration, its owner lookups and the migration environment schemas.
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { SERVICE_ACCOUNT_PREFIX, serviceAccountEmail } from '@opt2/platform/auth';
+import { serializeError } from '@opt2/platform/logging';
 import { EnvValidationError } from '@opt2/platform/service-kit';
 import { iamDbUser } from '@opt2/platform/tenancy';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -24,6 +25,7 @@ import {
   UnsupportedLegacyDatabaseError,
   assertSqlServerSource,
   loadMigrationEnv,
+  loadMigrationServerEnv,
   migrationEnvSchema,
 } from '../../src/env.js';
 import { CONFIG_PATH } from '../../src/paths.js';
@@ -68,6 +70,16 @@ const FAULTS = [
   'forced-reinit',
 ];
 
+/** Local password login to the `migration` schema; placeholders only. */
+const DATABASE_ENV: NodeJS.ProcessEnv = {
+  OPT2_DB_AUTH: 'password',
+  PG_HOST: '127.0.0.1',
+  PG_PORT: '5432',
+  PG_DATABASE: 'masa_services_unit',
+  PG_USER: 'migration_app',
+  PG_PASSWORD: 'not-a-secret',
+};
+
 /** Placeholder environment of the migration service; no value is a real credential. */
 const ENV: NodeJS.ProcessEnv = {
   PORT: '8102',
@@ -85,6 +97,7 @@ const ENV: NodeJS.ProcessEnv = {
   MURA_DBPASSWORD: 'not-a-secret',
   LEGACY_ORIGIN: 'http://localhost:8080/',
   OPT2_BRIDGE_HMAC_KEY: 'not-a-key',
+  ...DATABASE_ENV,
 };
 
 const rawConfig = (): MigrationConfig => migrationConfigSchema.parse(structuredClone(RAW));
@@ -470,6 +483,10 @@ describe('migration environment', () => {
     ['MURA_DATABASE', 'blank'],
     ['OPT2_BRIDGE_HMAC_KEY', 'unset'],
     ['OPT2_BRIDGE_HMAC_KEY', 'blank'],
+    ['OPT2_DB_AUTH', 'unset'],
+    ['OPT2_DB_AUTH', 'blank'],
+    ['PG_DATABASE', 'unset'],
+    ['PG_DATABASE', 'blank'],
   ])('rejects an environment with %s %s as missing', (key, state) => {
     const source = without(key, state);
     const error = thrownBy(() => loadMigrationEnv(source));
@@ -495,8 +512,10 @@ describe('migration environment', () => {
   });
 
   it('parses a cloud environment without PUBSUB_EMULATOR_HOST and rejects one with it', () => {
-    const withoutEmulator = { ...without('PUBSUB_EMULATOR_HOST', 'unset'), OPT2_ENV: 'cloud' };
-    const error = thrownBy(() => loadMigrationEnv({ ...ENV, OPT2_ENV: 'cloud' }));
+    // Cloud SQL IAM login, as the cloud requires.
+    const cloud = { OPT2_ENV: 'cloud', OPT2_DB_AUTH: 'iam', CLOUD_SQL_INSTANCE: 'opt2-unit:us-central1:opt2', PG_PASSWORD: undefined };
+    const withoutEmulator = { ...without('PUBSUB_EMULATOR_HOST', 'unset'), ...cloud };
+    const error = thrownBy(() => loadMigrationEnv({ ...ENV, ...cloud }));
 
     expect(loadMigrationEnv(withoutEmulator)).toMatchObject({ OPT2_ENV: 'cloud', GOOGLE_CLOUD_PROJECT: 'opt2-unit' });
     expect(error).toBeInstanceOf(EnvValidationError);
@@ -526,6 +545,54 @@ describe('migration environment', () => {
     expect(error).toMatchObject({ name: 'UnsupportedLegacyDatabaseError', dbType: 'mysql' });
     expect((error as Error).message).toMatch(
       /^MURA_DBTYPE=mysql is not supported: SQL Server is the only supported legacy source\./,
+    );
+  });
+
+  it('accepts any service name and no callee URL, as the CLIs run under their caller', () => {
+    expect(loadMigrationEnv({ ...ENV, OPT2_SERVICE_NAME: 'opt2-cli' })).toMatchObject({ OPT2_SERVICE_NAME: 'opt2-cli', OPT2_SERVICE_URLS: {} });
+  });
+});
+
+describe('migration service environment', () => {
+  /** The gateway and every configured data owner: the services the migration service calls. */
+  const callees = ['gateway', ...loadConfig().dataOwners];
+  const urlsWithout = (...names: string[]): string =>
+    JSON.stringify(Object.fromEntries(callees.filter((name) => !names.includes(name)).map((name) => [name, 'http://127.0.0.1:9'])));
+  const SERVER_ENV: NodeJS.ProcessEnv = { ...ENV, OPT2_SERVICE_URLS: urlsWithout() };
+
+  /** The issues `loadMigrationServerEnv` refuses `source` with; none when it parses. */
+  function serverIssues(source: NodeJS.ProcessEnv): string[] {
+    try {
+      loadMigrationServerEnv(source);
+      return [];
+    } catch (error) {
+      expect(error).toBeInstanceOf(EnvValidationError);
+      return (error as EnvValidationError).issues;
+    }
+  }
+
+  it.each<[string, NodeJS.ProcessEnv, string[]]>([
+    ['its own name and every callee', {}, []],
+    ['OPT2_SERVICE_NAME=web', { OPT2_SERVICE_NAME: 'web' }, ['OPT2_SERVICE_NAME: must be migration']],
+    ['OPT2_SERVICE_NAME=opt2-cli', { OPT2_SERVICE_NAME: 'opt2-cli' }, ['OPT2_SERVICE_NAME: must be migration']],
+    ['the gateway from OPT2_GATEWAY_URL', { OPT2_SERVICE_URLS: urlsWithout('gateway'), OPT2_GATEWAY_URL: 'http://127.0.0.1:9' }, []],
+    ['no gateway URL', { OPT2_SERVICE_URLS: urlsWithout('gateway') }, ['OPT2_GATEWAY_URL: is required (or OPT2_SERVICE_URLS.gateway)']],
+    ['no OPT2_DB_AUTH', { OPT2_DB_AUTH: undefined }, ['OPT2_DB_AUTH: is required']],
+    ['no PG_DATABASE', { PG_DATABASE: undefined }, ['PG_DATABASE: is required']],
+  ])('checks an environment with %s', (_case, overrides, issues) => {
+    expect(serverIssues({ ...SERVER_ENV, ...overrides })).toEqual(issues);
+  });
+
+  it.each(loadConfig().dataOwners)('refuses a service map without the data owner %s', (owner) => {
+    expect(serverIssues({ ...SERVER_ENV, OPT2_SERVICE_URLS: urlsWithout(owner) })).toEqual([`OPT2_SERVICE_URLS.${owner}: is required`]);
+  });
+
+  it('logs a refusal naming every missing callee with its reason and no value', () => {
+    const error = thrownBy(() => loadMigrationServerEnv({ ...SERVER_ENV, OPT2_SERVICE_URLS: undefined }));
+    const owners = loadConfig().dataOwners.map((owner) => `OPT2_SERVICE_URLS.${owner}: is required`);
+
+    expect(serializeError(error).message).toBe(
+      `migration: invalid environment (${['OPT2_GATEWAY_URL: is required (or OPT2_SERVICE_URLS.gateway)', ...owners].join('; ')})`,
     );
   });
 });

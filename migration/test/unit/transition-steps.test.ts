@@ -1,18 +1,23 @@
 // Unit tests of the transition step engine over fakes and the committed cut-over versions.
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
-import { GatewayCallError, GatewayWaitTimeoutError, currentAuthority, loadGroups, loadVersion, type CutoverStatus } from '../../src/cutover/index.js';
+import { CutoverDataError, GatewayCallError, GatewayWaitTimeoutError, currentAuthority, loadGroups, loadVersion, type Authority, type CutoverStatus } from '../../src/cutover/index.js';
 import type { MigrationContext } from '../../src/context.js';
 import { GateConflict, UnknownLegacyTableError, loadUnitCatalog, type UnitCatalog } from '../../src/owners/index.js';
-import { DrainTimeoutError } from '../../src/quiesce/index.js';
+import { DeadLetteredProcessEventError, DrainTimeoutError, type DeadLetteredDelivery } from '../../src/quiesce/index.js';
 import { DIFFERENCE_LIMIT } from '../../src/reconcile/index.js';
 import { TRANSITION_STEP_NAMES } from '../../src/reports/index.js';
 import { ProjectionTimeoutError } from '../../src/reverse/index.js';
+import { computeRollbackSet } from '../../src/rollback/index.js';
 import { SnapshotBlockedError } from '../../src/snapshot/index.js';
 import { LeaseUnavailableError, WindowImportError, WindowNotFoundError, contentUnits } from '../../src/windows/index.js';
 import type { FrozenRoutes } from '../../src/windows/reload.js';
-import { LegacyRestartError, StartupGuardFrozenError } from '../../src/legacy/index.js';
+import { CLUSTER_COMMANDS_COUNT_SQL, LegacyRestartError, StartupGuardFrozenError, environmentRecordPath } from '../../src/legacy/index.js';
 import { TransitionClaimLostError, claimFences, type ClaimFence } from '../../src/transition/claim.js';
 import {
   TERMINAL_TRANSITION_STATES,
@@ -113,15 +118,49 @@ const v2 = loadVersion(config.paths.cutoverDir, 'v0002');
 const v3 = loadVersion(config.paths.cutoverDir, 'v0003');
 // Free text no redaction pattern masks, so it reaches a log only if interpolated there.
 const FREE_TEXT = ['Jane', 'Doe', 'salary', '91250'].join(' ');
+/** A person-archive event timesheets dead-lettered without applying its blackouts. */
+const DEAD_LETTERED: DeadLetteredDelivery = {
+  eventId: 'de391048-ceeb-4696-98f5-e2f9df258e18',
+  topic: 'people.person.archived.v1',
+  tenantId: '0b0c4f7e-3f7a-4c1e-9a55-1d2b3c4d5e6f',
+  consumer: 'timesheets',
+  subscription: 'timesheets.people.person.archived.v1',
+};
 const SERVICE_URLS = Object.fromEntries(
   ['identity', 'people', 'programs-sites', 'strategies-content', 'communications', 'reporting', 'surveys', 'timesheets', 'finance', 'e-signature'].map(
     (s, i) => [s, `http://127.0.0.1:${String(26211 + i)}`],
   ),
 );
+const STATE_ROOT = mkdtempSync(path.join(tmpdir(), 'opt2-transition-steps-'));
+afterAll(() => rmSync(STATE_ROOT, { recursive: true, force: true }));
+
+/** A new state directory holding `record` as its environment record; none without `record`. */
+function stateDirWith(record?: string): string {
+  const dir = mkdtempSync(path.join(STATE_ROOT, 'state-'));
+  if (record !== undefined) {
+    const file = environmentRecordPath(dir);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, record);
+  }
+  return dir;
+}
+
+/** An environment record as `environment.ts --phase services` writes it, with `cluster` as its cluster settings. */
+const clusterRecord = (cluster: Record<string, unknown>): string => JSON.stringify({ local: null, services: null, settings: { cluster } });
+const SAFE_CLUSTER = { broadcastClusterCommands: false, peerCount: 2, tclustercommandsCount: 0, broadcastingOff: true, noPeers: false, clusterSafe: true };
+/** State directory of a stack meeting the start-up guard, which every harness uses unless told otherwise. */
+const SAFE_STATE_DIR = stateDirWith(clusterRecord(SAFE_CLUSTER));
 
 type Call = [string, ...unknown[]];
 
-function harness(opts: { active: string; restartCmd?: string; inflight?: CutoverStatus['inflight']; instances?: CutoverStatus['instances'] }) {
+function harness(opts: {
+  active: string;
+  restartCmd?: string;
+  inflight?: CutoverStatus['inflight'];
+  instances?: CutoverStatus['instances'];
+  stateDir?: string;
+  clusterCommands?: number;
+}) {
   const calls: Call[] = [];
   let now = Date.parse('2026-06-30T12:00:00.000Z');
   const status: CutoverStatus = {
@@ -188,6 +227,7 @@ function harness(opts: { active: string; restartCmd?: string; inflight?: Cutover
     request: () => ({
       query: vi.fn(async (sql: string) => {
         if (sql.includes('OBJECT_ID')) return { recordset: [{ present: 1 }] };
+        if (sql === CLUSTER_COMMANDS_COUNT_SQL) return { recordset: [{ n: opts.clusterCommands ?? 0 }] };
         const next = exportJobs.shift() ?? [];
         return { recordset: next.map((job_id) => ({ job_id })) };
       }),
@@ -195,7 +235,7 @@ function harness(opts: { active: string; restartCmd?: string; inflight?: Cutover
   };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   const ctx = {
-    env: { OPT2_SERVICE_URLS: SERVICE_URLS, OPT2_LEGACY_RESTART_CMD: opts.restartCmd, MURA_DATABASE: 'muradb_c62' },
+    env: { OPT2_SERVICE_URLS: SERVICE_URLS, OPT2_LEGACY_RESTART_CMD: opts.restartCmd, MURA_DATABASE: 'muradb_c62', OPT2_STATE_DIR: opts.stateDir ?? SAFE_STATE_DIR },
     config,
     clock: { now: () => new Date(now) },
     logger,
@@ -385,6 +425,7 @@ describe('deriveTransitionPlan', () => {
     expect(plan.from).toBe('v0001');
     expect(plan.to).toBe('v0002');
     expect(plan.toLegacy).toEqual([]);
+    expect(plan.heldLegacy).toEqual([]);
     expect(plan.setT).toEqual(plan.toTarget);
     expect(plan.setT).toContain('people.person_archive');
     expect(plan.setT).toContain('timesheets.blackout');
@@ -399,16 +440,39 @@ describe('deriveTransitionPlan', () => {
     expect(plan.owners).toEqual([...new Set(plan.setT.map((u) => catalog.ownerOf(u)))].sort());
   });
 
-  it('v0002 -> v0003 returns the roster set R to legacy', () => {
+  it('v0002 -> v0003 takes every unit of R as T, holding legacy the units of the R groups v0002 already keeps legacy', () => {
     const plan = deriveTransitionPlan(v2, v3, groups, catalog);
-    expect(plan.setT).toEqual(['people.person_archive', 'timesheets.blackout']);
-    expect(plan.toLegacy).toEqual(plan.setT);
+    const R = computeRollbackSet({ config });
+    expect(plan.setT).toEqual(R.units);
+    const groupOf = (unit: string): string => groups.groups.find((g) => g.units.includes(unit))!.id;
+    const targetInV2 = (unit: string): boolean => v2.groupAuthority[groupOf(unit)] === 'target';
+    expect(plan.toLegacy).toEqual(R.units.filter(targetInV2));
+    expect(plan.toLegacy).toEqual(expect.arrayContaining(['people.person_archive', 'timesheets.blackout']));
     expect(plan.toTarget).toEqual([]);
+    expect(plan.heldLegacy).toEqual(R.units.filter((u) => !targetInV2(u)));
     expect(plan.returnsToLegacy).toBe(true);
-    expect(plan.owners).toEqual(['people', 'timesheets']);
+    expect(plan.owners).toEqual([...new Set(R.units.map((u) => catalog.ownerOf(u)))].sort());
     expect(plan.siteMonitorEntryMoves).toBe(false);
     expect(plan.exportJobsWriteT).toBe(false);
     expect(plan.entriesChanged.every((e) => e.entry.units.some((u) => plan.setT.includes(u)) || e.entry.kind !== 'write')).toBe(true);
+    // Every write entry of R's groups and every legacy-write entry meeting T is frozen, so no writer of R's units runs.
+    const rWrites = v2.entries.filter((e) => e.kind === 'write' && R.groups.includes(e.group ?? '')).map((e) => e.route);
+    const legacyWrites = v3.entries.filter((e) => e.kind === 'legacy-write' && e.units.some((u) => R.units.includes(u))).map((e) => e.route).sort();
+    expect(rWrites.length).toBeGreaterThan(2);
+    expect(plan.legacyWriteEntries).toEqual(legacyWrites);
+    const activeRoutes = new Set(v2.entries.map((e) => e.route));
+    expect(plan.frozenRoutes).toEqual(expect.arrayContaining([...rWrites, ...legacyWrites.filter((r) => activeRoutes.has(r))]));
+    expect(plan.frozenRoutes).toEqual([...new Set(plan.frozenRoutes)].sort());
+  });
+
+  const badRollbackRefs: { name: string; named: string[]; authority: Record<string, Authority>; message: string }[] = [
+    { name: 'a group the groups file lacks', named: ['grp:none'], authority: {}, message: 'v0003 rollbackRefs name groups missing from the groups file: grp:none, so the roster group set R is unknown' },
+    { name: 'a group it keeps target', named: ['grp:people.person_archive'], authority: { 'grp:people.person_archive': 'target' as const }, message: 'v0003 rollbackRefs name groups it does not hold legacy-authoritative: grp:people.person_archive' },
+  ];
+
+  it.each(badRollbackRefs)('refuses a version whose rollbackRefs name $name', ({ named, authority, message }) => {
+    const proposed = { ...v3, groupAuthority: { ...v3.groupAuthority, ...authority }, rollbackRefs: [{ ...v3.rollbackRefs[0]!, groups: named }] };
+    expect(() => deriveTransitionPlan(v2, proposed, groups, catalog)).toThrow(new CutoverDataError(message));
   });
 
   it('treats a table the catalog does not list as feeding no unit', () => {
@@ -455,6 +519,40 @@ describe('planTransition preconditions', () => {
     const plan = await planTransition(h.ctx, 'v0003');
     expect(plan.toLegacy.length).toBe(2);
   });
+
+  const UNSAFE_CLUSTER = { ...SAFE_CLUSTER, broadcastClusterCommands: true, broadcastingOff: false, clusterSafe: false };
+  const RECORD_COMMAND = 'run harness/src/baseline/environment.ts --phase services';
+  it.each([
+    { name: 'a safe record and an empty tclustercommands', to: 'v0002', record: clusterRecord(SAFE_CLUSTER), commands: 0, refusal: null },
+    {
+      name: 'a record with clusterSafe=false',
+      to: 'v0002',
+      record: clusterRecord(UNSAFE_CLUSTER),
+      commands: 0,
+      refusal: 'clusterSafe=false (broadcastClusterCommands=true, peerCount=2, tclustercommands=0)',
+    },
+    { name: 'commands queued after the record', to: 'v0002', record: clusterRecord(SAFE_CLUSTER), commands: 2, refusal: 'the legacy database holds 2 tclustercommands rows' },
+    { name: 'no record', to: 'v0002', record: undefined, commands: 0, refusal: `does not exist; ${RECORD_COMMAND}` },
+    { name: 'a record without the services phase', to: 'v0002', record: JSON.stringify({ local: {}, services: null, settings: null }), commands: 0, refusal: `holds no settings.cluster.clusterSafe verdict; ${RECORD_COMMAND}` },
+    { name: 'a record that is not JSON', to: 'v0002', record: '{"settings":', commands: 0, refusal: 'cannot be read (' },
+    { name: 'no content unit moving to target, whatever the cluster', to: 'v0003', record: undefined, commands: 3, refusal: null },
+  ])('cluster start-up guard with $name', async ({ to, record, commands, refusal }) => {
+    const from = to === 'v0002' ? 'v0001' : 'v0002';
+    const h = harness({ active: from, stateDir: stateDirWith(record), clusterCommands: commands });
+    if (refusal === null) {
+      await expect(planTransition(h.ctx, to)).resolves.toMatchObject({ from, to });
+      return;
+    }
+    const error = await planTransition(h.ctx, to).catch((e: unknown) => e);
+    expect(error).toMatchObject({ name: 'TransitionPreconditionError', code: 'cluster-unsafe', statusCode: 409 });
+    const { message } = error as Error;
+    expect(message).toMatch(/^content\.variation_targeting cannot become target-authoritative while cluster reload commands may reach legacy: /);
+    expect(message).toContain(refusal);
+    // Step 1 refuses the same way, before it takes any lease.
+    const stepOne = await runTransitionStep(h.deps, newRecord(from, to), 1).catch((e: unknown) => e);
+    expect(stepOne).toMatchObject({ name: 'TransitionPreconditionError', code: 'cluster-unsafe', statusCode: 409, message });
+    expect(m.acquireLeases).not.toHaveBeenCalled();
+  });
 });
 
 describe('full run v0002 -> v0003', () => {
@@ -464,7 +562,7 @@ describe('full run v0002 -> v0003', () => {
     const names = h.calls.map((c) => c[0]);
     const idx = (n: string) => names.indexOf(n);
     expect(idx('pauseFor')).toBeLessThan(idx('freeze'));
-    expect(m.awaitDrained).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ owners: ['people', 'timesheets'], consumersWriting: record.plan?.setT }));
+    expect(m.awaitDrained).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ owners: ['identity', 'people', 'timesheets'], consumersWriting: record.plan?.setT }));
     const gateCalls = h.calls.filter((c) => c[0] === 'gate');
     expect(gateCalls.slice(0, 2).map((c) => c[2])).toEqual(['close', 'close']);
     expect(gateCalls.slice(0, 2).map((c) => c[4])).toEqual([null, null]);
@@ -475,8 +573,7 @@ describe('full run v0002 -> v0003', () => {
     expect(persistedBefore(idx('gate')).closedGates.map((g) => g.unit)).toContain((gateCalls[0]?.[3] as string[])[0]);
     expect(idx('awaitProjection')).toBeLessThan(idx('activate'));
     expect(h.calls.find((c) => c[0] === 'awaitProjection')?.[1]).toMatchObject({ owners: ['people', 'timesheets'], timeoutMs: config.projection.defaultAwaitTimeoutMs });
-    expect(m.reconcileUnits).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ point: 'rollback-before', legacySource: 'live', database: 'muradb_c62', units: ['people.person_archive', 'timesheets.blackout'] }));
-    expect(m.takeSnapshot).not.toHaveBeenCalled();
+    expect(m.reconcileUnits).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ point: 'rollback-before', legacySource: 'live', database: 'muradb_c62', units: record.plan?.setT }));
     const opens = gateCalls.filter((c) => c[2] === 'open');
     expect(opens.map((c) => c[4])).toEqual(['legacy', 'legacy']);
     expect(names.lastIndexOf('gate')).toBeGreaterThan(idx('activate'));
@@ -494,6 +591,71 @@ describe('full run v0002 -> v0003', () => {
     await runTransitionStep(h.deps, { ...record, lastStep: 7 }, 8);
     expect(h.gateway.unfreeze.mock.calls.length).toBe(unfreezes);
     expect(h.scheduler.restoreToLegacy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('units of R legacy-authoritative in both versions', () => {
+  const HELD_GROUP = 'grp:identity.credential';
+  // The create/edit group of R held legacy by the active version, whatever v0002 commits for it.
+  const heldActive = {
+    ...v2,
+    groupAuthority: { ...v2.groupAuthority, [HELD_GROUP]: 'legacy' as const },
+    entries: v2.entries.map((e) => (e.group === HELD_GROUP ? { ...e, state: 'legacy' as const } : e)),
+  };
+  const held = groups.groups.find((g) => g.id === HELD_GROUP)!.units;
+  const first = (fn: { mock: { invocationCallOrder: number[] } }): number => fn.mock.invocationCallOrder[0] ?? 0;
+  type Run = { h: ReturnType<typeof harness>; record: TransitionRecord };
+  const behaviours: { name: string; check(run: Run): void }[] = [
+    {
+      name: "step 2 freezes their groups' write entries and the legacy-write entries meeting them until step 8 unfreezes",
+      check: ({ h, record }) => {
+        const frozen = h.gateway.freeze.mock.calls[0]?.[0];
+        expect(frozen).toEqual(record.plan?.frozenRoutes);
+        expect(frozen).toEqual(expect.arrayContaining(['admin:clogin.login', 'admin:cusers.update{type=2,action=add}', 'admin:cusers.update{type=2,action=update}']));
+        expect(h.gateway.unfreeze).toHaveBeenLastCalledWith(frozen);
+      },
+    },
+    {
+      name: 'step 2 pauses their tasks and step 4 drains their consumers',
+      check: ({ h }) => {
+        expect(h.scheduler.pauseFor).toHaveBeenCalledWith(expect.arrayContaining(held), expect.anything());
+        expect(m.awaitDrained).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ owners: ['identity', 'people', 'timesheets'], consumersWriting: expect.arrayContaining(held) }));
+      },
+    },
+    {
+      name: 'steps 5 and 8 leave their legacy gates alone and gate only the units returning to legacy',
+      check: ({ h, record }) => {
+        const gated = h.owners.gate.mock.calls.flatMap(([, req]) => req.units);
+        expect([...new Set(gated)].sort()).toEqual(record.plan?.toLegacy);
+      },
+    },
+    {
+      name: 'step 6 brings them to the final snapshot through the forward feed after the gates close and before reconciling',
+      check: ({ h, record }) => {
+        expect(m.takeSnapshot).toHaveBeenCalledWith(h.ctx, { kind: 'transition', holderId: record.transitionId });
+        expect(m.restartFeedFor).toHaveBeenCalledWith(h.ctx, { units: held, snapshotSeq: 7 });
+        const closes = h.owners.gate.mock.invocationCallOrder.filter((_, i) => h.owners.gate.mock.calls[i]?.[1].op === 'close');
+        expect(Math.max(...closes)).toBeLessThan(first(m.takeSnapshot));
+        expect(first(m.takeSnapshot)).toBeLessThan(first(m.restartFeedFor));
+        expect(first(m.restartFeedFor)).toBeLessThan(first(m.reconcileUnits));
+      },
+    },
+    {
+      name: 'step 6 reconciles them with the rest of T into rollback-before.json at the final snapshot',
+      check: ({ h, record }) => {
+        expect(m.reconcileUnits).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ point: 'rollback-before', units: record.plan?.setT, snapshotSeq: 7 }));
+        expect(record.progress.reconciliation?.point).toBe('rollback-before');
+      },
+    },
+  ];
+
+  it.each(behaviours)('$name', async ({ check }) => {
+    const h = harness({ active: 'v0002' });
+    const plan = deriveTransitionPlan(heldActive, v3, groups, catalog);
+    expect(plan.heldLegacy).toEqual(held);
+    expect(plan.setT).toEqual(computeRollbackSet({ config }).units);
+    const record = await runAll(h, { ...newRecord('v0002', 'v0003'), plan, lastStep: 1 });
+    check({ h, record });
   });
 });
 
@@ -722,6 +884,36 @@ describe('aborts', () => {
     await expect(abortTransition(h.deps, record)).rejects.toThrow('down');
   });
 
+  it.each([
+    {
+      failing: 'the legacy task resume',
+      arrange: (h: ReturnType<typeof harness>) => h.scheduler.resumePaused.mockRejectedValueOnce(new Error('legacy bridge scheduler.resume failed with 500')),
+      kept: { pausedQueues: [] },
+    },
+    {
+      failing: 'a queue resume',
+      arrange: (h: ReturnType<typeof harness>) => h.client.request.mockRejectedValueOnce(new Error('queue control unreachable')),
+      kept: { pausedQueues: expect.arrayContaining([expect.objectContaining({ queue: expect.any(String) })]) },
+    },
+  ])('releases the leases once gates and freeze are undone though $failing fails, and a retry finishes the undo', async ({ arrange, kept }) => {
+    const h = harness({ active: 'v0001' });
+    const record = await runAll(h, newRecord('v0001', 'v0002'), 5);
+    expect(record.progress.closedGates).not.toEqual([]);
+    arrange(h);
+
+    await expect(abortTransition(h.deps, record)).rejects.toThrow();
+    const left = h.persisted.at(-1)!;
+    expect(left).toMatchObject({ ...kept, closedGates: [], freezeRequested: false, extraLeasedUnits: [], schedulerPause: { siteMonitor: ['monitor'] } });
+    const released = m.releaseLeases.mock.invocationCallOrder[0]!;
+    expect(released).toBeGreaterThan(h.owners.gate.mock.invocationCallOrder.at(-1)!);
+    expect(released).toBeGreaterThan(h.gateway.unfreeze.mock.invocationCallOrder.at(-1)!);
+
+    const cleaned = await abortTransition(h.deps, { ...record, progress: left });
+    expect(cleaned).toMatchObject({ pausedQueues: [], closedGates: [], extraLeasedUnits: [] });
+    expect(cleaned.schedulerPause).toBeUndefined();
+    expect(m.releaseLeases).toHaveBeenCalledTimes(2);
+  });
+
   it('logs the abort as a fixed line naming the transition and its version, never the reason', async () => {
     const h = harness({ active: 'v0001' });
     const record = await runAll(h, newRecord('v0001', 'v0002'), 5);
@@ -763,6 +955,7 @@ describe('aborts', () => {
     { name: 'epoch ack', from: 'v0002', to: 'v0003', step: 2, target: (h) => h.gateway.awaitEpoch, blocker: () => new GatewayWaitTimeoutError({ kind: 'epoch', epoch: 11, lagging: [] }) },
     { name: 'in-flight drain', from: 'v0002', to: 'v0003', step: 3, target: (h) => h.gateway.awaitInflightDrained, blocker: () => new GatewayWaitTimeoutError({ kind: 'inflight', pending: [] }) },
     { name: 'effect drain', from: 'v0002', to: 'v0003', step: 4, target: () => m.awaitDrained, blocker: () => new DrainTimeoutError(5, []) },
+    { name: 'dead-lettered process event', from: 'v0002', to: 'v0003', step: 4, target: () => m.awaitDrained, blocker: () => new DeadLetteredProcessEventError([DEAD_LETTERED]) },
     { name: 'gate holder', from: 'v0002', to: 'v0003', step: 5, target: (h) => h.owners.gate, blocker: () => new GateConflict('people', { error: 'gate-conflict', units: ['people.person_archive'] }) },
     { name: 'projection', from: 'v0002', to: 'v0003', step: 6, target: (h) => h.projector.awaitProjection, blocker: () => new ProjectionTimeoutError([], 5000) },
     { name: 'snapshot lease', from: 'v0001', to: 'v0002', step: 6, target: () => m.takeSnapshot, blocker: () => new SnapshotBlockedError([{ holderId: 'W', kind: 'window', units: ['x'] }]) },
@@ -779,6 +972,18 @@ describe('aborts', () => {
     const { h, record } = await before(from, to, step);
     target(h).mockRejectedValueOnce(blocker());
     await expect(runTransitionStep(h.deps, record, step)).rejects.toMatchObject({ name: 'TransitionAbortedError', step });
+  });
+
+  it('step 4 aborts naming the dead-lettered process event and records it in the details', async () => {
+    const { h, record } = await before('v0002', 'v0003', 4);
+    m.awaitDrained.mockRejectedValueOnce(new DeadLetteredProcessEventError([DEAD_LETTERED]));
+
+    const failure = (await runTransitionStep(h.deps, record, 4).catch((error: unknown) => error)) as TransitionAbortedError;
+
+    expect(failure).toMatchObject({ name: 'TransitionAbortedError', step: 4, details: { deadLettered: [DEAD_LETTERED] } });
+    expect(failure.reason).toBe(
+      `Effects did not drain: process events dead-lettered without a receipt: ${DEAD_LETTERED.eventId} (${DEAD_LETTERED.topic}) on ${DEAD_LETTERED.subscription}`,
+    );
   });
 
   it.each(blockers)('step $step passes any other $name failure through unchanged', async ({ from, to, step, target }) => {
@@ -824,7 +1029,7 @@ describe('orphans and export jobs', () => {
     expect(record.progress.targetOrphans).toHaveLength(1);
     const after5 = await runAll(h, record, 5);
     const targetClear = h.calls.find((c) => c[0] === 'clearOrphans' && c[1] === 'target')?.[2];
-    expect(targetClear).toMatchObject({ evidence: { kind: 'gates-closed', units: plan.setT } });
+    expect(targetClear).toMatchObject({ evidence: { kind: 'gates-closed', units: plan.setT.filter((unit) => !plan.heldLegacy.includes(unit)) } });
     expect(after5.progress.targetOrphansCleared).toBe(1);
     const names = h.calls.map((c) => c[0]);
     expect(names.lastIndexOf('gate')).toBeLessThan(names.lastIndexOf('clearOrphans'));

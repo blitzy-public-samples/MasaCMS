@@ -8,7 +8,7 @@ import { fastifyLoggerOptions } from '../../src/logging/fastify.js';
 import type { LogFields } from '../../src/logging/fields.js';
 import { createLogger, serializeError, type Logger } from '../../src/logging/logger.js';
 import { REDACTED } from '../../src/logging/redact.js';
-import { isSafeErrorText, SAFE_ERROR_TEXT, safeErrorMessage, safeErrorStack, safeStackText } from '../../src/logging/safe-error.js';
+import { envIssueReason, isSafeErrorText, SAFE_ERROR_TEXT, safeErrorMessage, safeErrorStack, safeStackText } from '../../src/logging/safe-error.js';
 import { validateLogRecord } from '../../src/logging/validate.js';
 import {
   GateClosedError,
@@ -19,6 +19,7 @@ import {
   UnitReadBlockedError,
 } from '../../src/migration-kit/gates.js';
 import { ServiceUnavailableError, UnknownServiceError } from '../../src/service-kit/client.js';
+import { UnpublishedEventsError } from '../../src/service-kit/context.js';
 import { RecurringSlotsTombstonedError, SuccessorCreationError } from '../../src/tasks/recurring.js';
 import { startSpan } from '../../src/tracing/propagation.js';
 import { RedactingSpanExporter } from '../../src/tracing/redact.js';
@@ -166,6 +167,7 @@ describe('safeErrorMessage', () => {
     ['a Node error', Object.assign(new TypeError(TEXT), { code: 'ERR_INVALID_ARG_TYPE' }), 'ERR_INVALID_ARG_TYPE'],
     ['an SQLSTATE without a severity', Object.assign(new Error(TEXT), { code: '22P02' }), REDACTED],
     ['a system code with a spawn path', Object.assign(new Error(TEXT), { code: 'ENOENT', syscall: `spawn /home/ada/${SECRET}` }), REDACTED],
+    ['a system code without a system call', Object.assign(new Error(TEXT), { code: 'ENOENT' }), REDACTED],
     ['a free-text code', Object.assign(new Error(TEXT), { code: TEXT }), REDACTED],
     ['a numeric code', Object.assign(new Error(TEXT), { code: 42 }), REDACTED],
     ['a plain Error', new Error(TEXT), REDACTED],
@@ -228,6 +230,11 @@ describe('safeErrorMessage', () => {
     ['an error forging a gate text over a name', { [SAFE_ERROR_TEXT]: 'Target is not write-authoritative for Ada Lovelace', message: TEXT }, REDACTED],
     ['an error forging a gate text over an email', { [SAFE_ERROR_TEXT]: 'Unit gate closed for ada@example.com', message: TEXT }, REDACTED],
     ["a SuccessorCreationError, keeping its cause's PostgreSQL text", new SuccessorCreationError(SWEEP, SLOT, pgError()), 'PostgreSQL error 42601'],
+    [
+      'an UnpublishedEventsError, by its event count',
+      new UnpublishedEventsError(['0f7c6a52-0c8e-4d8e-9a43-000000000001', '0f7c6a52-0c8e-4d8e-9a43-000000000002']),
+      'Outbox publish of 2 committed event(s) incomplete before the answer; left to the sweep',
+    ],
   ])('reduces %s to its identifiers', (_, err, expected) => {
     expect(safeErrorMessage(err)).toBe(expected);
     expect(isSafeErrorText(expected)).toBe(true);
@@ -303,6 +310,11 @@ describe('isSafeErrorText', () => {
     [`No live chain task on queue ${SWEEP}: tombstoned slots `, false],
     [`No live chain task on queue ${SWEEP}: tombstoned slots ${SWEEP}`, false],
     [`No live chain task on queue ${SWEEP}: tombstoned slots ${SLOT},${NEXT_SLOT}`, false],
+    ['Outbox publish of 1 committed event(s) incomplete before the answer; left to the sweep', true],
+    ['Outbox publish of 12 committed event(s) incomplete before the answer; left to the sweep', true],
+    ['Outbox publish of 0 committed event(s) incomplete before the answer; left to the sweep', false],
+    ['Outbox publish of Ada committed event(s) incomplete before the answer; left to the sweep', false],
+    ['Outbox publish of 2 committed event(s) incomplete before the answer; left to the sweep for Ada', false],
     ['SMTP STARTTLS ETLS', true],
     ['SMTP AUTH CRAM-MD5 EAUTH', true],
     ['SMTP MAIL FROM EENVELOPE', true],
@@ -312,18 +324,48 @@ describe('isSafeErrorText', () => {
     ['SMTP RCPT TO:<ada@example.com> EENVELOPE', false],
     ['SMTP AUTH EAUTH', false],
     ['SMTP STARTTLS ETLS: 502 5.5.1', false],
-    ['people: invalid environment (PG_PORT, LOG_LEVEL)', true],
-    ['invalid environment (OPT2_SERVICE_URLS)', true],
+    ['people: invalid environment (PG_PORT: expected number; LOG_LEVEL: expected one of fatal|error|warn|info|debug|trace)', true],
+    ['invalid environment (OPT2_SERVICE_URLS: must be a JSON object)', true],
     ['people: invalid environment', true],
-    ['identity: invalid environment (OPT2_SERVICE_URLS.strategies-content, OPT2_GATEWAY_URL)', true],
-    ['people: invalid environment (OPT2_SERVICE_URLS.People)', false],
-    ['people: invalid environment (OPT2_SERVICE_URLS.)', false],
-    ['people: invalid environment (PG_PORT) for Ada', false],
+    ['identity: invalid environment (OPT2_SERVICE_URLS.strategies-content: is required; OPT2_GATEWAY_URL: is required (or OPT2_SERVICE_URLS.gateway))', true],
+    ['stub: invalid environment (TZ: must be an IANA time zone name that this process applies, such as UTC or America/New_York)', true],
+    ['people: invalid environment (PG_PASSWORD: must be unset when OPT2_DB_AUTH=iam; OPT2_TASKS_ADAPTER: must equal OPT2_ENV; PG_HOST: is invalid)', true],
+    ['people: invalid environment (OPT2_ENV: must be local when OPT2_DB_AUTH=password; PG_USER: is required when OPT2_DB_AUTH=password)', true],
+    ['people: invalid environment (PG_PORT: expected number to be at most 65535; OPT2_JWKS_URL: expected an http(s) URL)', true],
+    ['people: invalid environment (PG_PORT, LOG_LEVEL)', false],
+    ['invalid environment (OPT2_SERVICE_URLS)', false],
+    ['people: invalid environment (OPT2_SERVICE_URLS.People: is required)', false],
+    ['people: invalid environment (OPT2_SERVICE_URLS.: is required)', false],
+    ['people: invalid environment (PG_PORT: is invalid) for Ada', false],
     ['people: invalid environment\n  PG_HOST: Ada', false],
-    ['People: invalid environment (PG_PORT)', false],
-    ['people: invalid environment (pg_port)', false],
-    ['people: invalid environment (PG_PORT,LOG_LEVEL)', false],
+    ['People: invalid environment (PG_PORT: is invalid)', false],
+    ['people: invalid environment (pg_port: is invalid)', false],
+    ['people: invalid environment (PG_PORT: is invalid;LOG_LEVEL: is invalid)', false],
+    ['people: invalid environment (PG_PORT: is invalid, LOG_LEVEL: is invalid)', false],
     ['people: invalid environment ()', false],
+    ['people: invalid environment (PG_HOST: )', false],
+    ['people: invalid environment (PG_HOST: Ada Lovelace)', false],
+    ['people: invalid environment (PG_HOST: connect postgres://svc:x@db refused)', false],
+    ['people: invalid environment (PG_HOST: must be ada@example.com)', false],
+    [`people: invalid environment (PG_HOST: must be "${SECRET}")`, false],
+    ['people: invalid environment (PG_HOST: must be key=value)', false],
+    ['people: invalid environment (PG_HOST: is required when OPT2_ENV=Ada Lovelace)', false],
+    ['people: invalid environment (OPT2_GATEWAY_URL: is required (or OPT2_SERVICE_URLS.Gateway))', false],
+    [`people: invalid environment (TZ: must be ${'a'.repeat(161)})`, false],
+    ['stub: cannot read OPT2_STATE_DIR file secrets/token-signing-public.pem (open ENOENT)', true],
+    ['cannot read OPT2_CUTOVER_DIR file versions/v0001.json (open EACCES)', true],
+    ['cannot read OPT2_STATE_DIR file secrets/storage-hmac-key', true],
+    ['cannot read OPT2_STATE_DIR file .opt2/key (read EISDIR)', true],
+    ['cannot read OPT2_STATE_DIR file ../secrets/key (open ENOENT)', false],
+    ['cannot read OPT2_STATE_DIR file secrets/../../etc/passwd', false],
+    ['cannot read OPT2_STATE_DIR file ./secrets/key', false],
+    ['cannot read OPT2_STATE_DIR file /home/ada/secrets/key', false],
+    ['cannot read OPT2_STATE_DIR file secrets//key', false],
+    ['cannot read OPT2_STATE_DIR file secrets/ada lovelace', false],
+    ['cannot read OPT2_STATE_DIR file secrets/key (ENOENT)', false],
+    ['cannot read OPT2_STATE_DIR file secrets/key (open ENOENT) for Ada', false],
+    ['cannot read opt2_state_dir file secrets/key', false],
+    ['Stub: cannot read OPT2_STATE_DIR file secrets/key', false],
     ['identity: invalid configuration file role-map.json', true],
     ['invalid configuration file role-map.json', true],
     ['identity: invalid configuration file config/role-map.json', false],
@@ -333,6 +375,48 @@ describe('isSafeErrorText', () => {
     ['identity: invalid configuration file Role-Map.json', false],
   ])('judges %j as %s', (text, safe) => {
     expect(isSafeErrorText(text)).toBe(safe);
+  });
+});
+
+describe('envIssueReason', () => {
+  it.each<[string, string]>([
+    ['is required', 'is required'],
+    ['is required when OPT2_ENV=local', 'is required when OPT2_ENV=local'],
+    ['is required (or OPT2_SERVICE_URLS.migration)', 'is required (or OPT2_SERVICE_URLS.migration)'],
+    ['must be unset when OPT2_ENV=cloud', 'must be unset when OPT2_ENV=cloud'],
+    ['must equal OPT2_ENV', 'must equal OPT2_ENV'],
+    ['must be web', 'must be web'],
+    ['must be cloud when OPT2_DB_AUTH=iam', 'must be cloud when OPT2_DB_AUTH=iam'],
+    ['must be an absolute path', 'must be an absolute path'],
+    ['must be outside the repository checkout', 'must be outside the repository checkout'],
+    ['OPT2_SERVICE_URLS must be a JSON object', 'must be a JSON object'],
+    ['port must be from 1 to 65535', 'must be a port from 1 to 65535'],
+    ['Invalid input: expected number, received NaN', 'expected number'],
+    ['Invalid input: expected int, received number', 'expected int'],
+    ['Invalid input: expected record, received array', 'expected record'],
+    ['Invalid input: expected "web"', 'expected web'],
+    ['Invalid input: expected true', 'expected true'],
+    ['Invalid option: expected one of "local"|"cloud"', 'expected one of local|cloud'],
+    ['Too big: expected number to be <=65535', 'expected number to be at most 65535'],
+    ['Too small: expected number to be >=1', 'expected number to be at least 1'],
+    ['Too small: expected number to be >0', 'expected number to be above 0'],
+    ['Too big: expected number to be <10', 'expected number to be below 10'],
+    ['Too small: expected string to have >=3 characters', 'expected string to have at least 3 characters'],
+    ['Too big: expected array to have exactly 2 items', 'expected array to have exactly 2 items'],
+    ['Invalid URL', 'expected an http(s) URL'],
+    ['Invalid string: must match pattern /^[a-z][a-z0-9-]*$/', 'expected a string matching the required pattern'],
+    ['Invalid key in record', 'expected valid record keys'],
+    ['Invalid number: must be a multiple of 0.5', 'expected a multiple of 0.5'],
+    ['Invalid input', 'is invalid'],
+    ['Unrecognized key: "ada@example.com"', 'is invalid'],
+    ['Invalid option: expected one of "Ada Lovelace"|"cloud"', 'is invalid'],
+    ['Invalid input: expected "Ada"', 'is invalid'],
+    [`Invalid option: expected one of ${Array.from({ length: 40 }, (_, i) => `"option${String(i)}"`).join('|')}`, 'is invalid'],
+    ['must be blank or a path from / or \\', 'is invalid'],
+    [TEXT, 'is invalid'],
+    ['', 'is invalid'],
+  ])('maps %j to %j', (text, reason) => {
+    expect(envIssueReason(text)).toBe(reason);
   });
 });
 

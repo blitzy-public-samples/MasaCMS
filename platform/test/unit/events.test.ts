@@ -39,7 +39,15 @@ import {
   topicOfSubscription,
   topicSchemaRelativePath,
 } from '../../src/events/naming.js';
-import { EnvelopePublishError, createPublisher, type PublisherOptions, type RawMessage } from '../../src/events/publisher.js';
+import {
+  EnvelopePublishError,
+  MAX_PUBLISHED_ENVELOPE_BYTES,
+  PUBSUB_PUBLISH_LIMIT_BYTES,
+  createPublisher,
+  publishedSize,
+  type PublisherOptions,
+  type RawMessage,
+} from '../../src/events/publisher.js';
 import { buildPushBody, decodePushBody, type DecodedPush, type PushBodyInput } from '../../src/events/push.js';
 import {
   ENVELOPE_SCHEMA_ID,
@@ -883,6 +891,25 @@ function publishSpans() {
   return exporter.getFinishedSpans().filter((span) => span.name === 'outbox.publish');
 }
 
+/** The archive envelope with its `siteId` padded so that it publishes `bytes` bytes. */
+function archivedOfSize(bytes: number): EventEnvelope<ArchivedPayload> {
+  const base = archivedEnvelope();
+  return archivedEnvelope({ payload: { ...base.payload, siteId: base.payload.siteId + 'x'.repeat(bytes - publishedSize(base)) } });
+}
+
+describe('publishedSize', () => {
+  it('counts the UTF-8 bytes of the encoded data, every attribute key and value, and the ordering key', () => {
+    const envelope = archivedEnvelope({
+      payload: { personId: PERSON_ID, siteId: 'zoë-✓', effectiveFrom: '2026-06-30' },
+      trace: { traceparent: TRACEPARENT, tracestate: 'vendor=1' },
+    });
+    // Key plus value bytes of eventId, eventType, schemaVersion, tenantId, aggregateVersion, traceparent and tracestate.
+    const attributes = 7 + 36 + 9 + 22 + 13 + 5 + 8 + 36 + 16 + 1 + 11 + 55 + 10 + 8;
+    expect(publishedSize(envelope)).toBe(Buffer.byteLength(JSON.stringify(envelope), 'utf8') + attributes + PERSON_ID.length);
+    expect([PUBSUB_PUBLISH_LIMIT_BYTES, MAX_PUBLISHED_ENVELOPE_BYTES]).toEqual([10_000_000, 9_995_904]);
+  });
+});
+
 describe('EnvelopePublishError', () => {
   it('is a named Error listing every rejection', () => {
     const error = new EnvelopePublishError(TOPIC, ['/a must be x', '/b must be y']);
@@ -966,12 +993,24 @@ describe('createPublisher', () => {
       envelope: () => archivedEnvelope({ payload: { personId: '', siteId: TENANT_A.siteId } as ArchivedPayload }),
       errors: ["/payload must have required property 'effectiveFrom'", '/payload/personId must NOT have fewer than 1 characters'],
     },
+    {
+      reason: 'an envelope one byte over the publish size limit',
+      topic: TOPIC,
+      envelope: () => archivedOfSize(MAX_PUBLISHED_ENVELOPE_BYTES + 1),
+      errors: ['/ is 9995905 bytes as published, over the 9995904-byte Pub/Sub publish limit'],
+    },
   ])('rejects $reason before publishing', async ({ topic, envelope, errors }) => {
     const { pubsub, publisher } = fakePublisher(new Map([[TOPIC, archivedValidator]]));
     const rejected = await publisher.publish(topic, envelope() as EventEnvelope).catch((error: unknown) => error);
     expect(rejected).toBeInstanceOf(EnvelopePublishError);
     expect((rejected as EnvelopePublishError).errors).toEqual(errors);
     expect(pubsub.topics).toEqual([]);
+  });
+
+  it('publishes an envelope at the publish size limit', async () => {
+    const { pubsub, publisher } = fakePublisher(new Map([[TOPIC, archivedValidator]]));
+    await expect(publisher.publish(TOPIC, archivedOfSize(MAX_PUBLISHED_ENVELOPE_BYTES))).resolves.toBe(`${TOPIC}#1`);
+    expect(pubsub.topics[0]?.published).toHaveLength(1);
   });
 
   it('applies a payload validator only to its own topic', async () => {

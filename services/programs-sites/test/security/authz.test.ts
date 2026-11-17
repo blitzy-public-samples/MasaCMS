@@ -16,7 +16,7 @@ import {
   type Transport,
 } from '@opt2/platform/auth';
 import { buildPushBody, encodeEnvelope, type EventEnvelope } from '@opt2/platform/events';
-import { baseEnvSchema, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { SITEMONITOR_QUEUE, outboxSweepQueue } from '@opt2/platform/tasks';
 import {
   ROLE_SET,
@@ -36,7 +36,7 @@ import {
   type RoleSubject,
   type TenantFixture,
 } from '@opt2/platform/testing';
-import { buildApp } from '../../src/app.js';
+import { buildApp, programsSitesEnvSchema } from '../../src/app.js';
 import { SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
 import {
   TEST_CLOCK,
@@ -873,7 +873,7 @@ describe('deny by default at start-up', () => {
     try {
       await writeTestSecrets(stateDir);
       app = await buildApp({
-        env: loadEnv(baseEnvSchema, testEnv({ OPT2_STATE_DIR: stateDir })),
+        env: loadEnv(programsSitesEnvSchema, testEnv({ OPT2_STATE_DIR: stateDir })),
         clock: TEST_CLOCK,
         verifierOverride: testVerifier(),
         db: createRecordingDb(),

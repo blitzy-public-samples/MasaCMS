@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { INVOCATION_HEADER } from '../../src/auth/index.js';
 import {
+  buildEnvelope,
   createPublisher,
   decodeEnvelopeData,
   eventsSql,
@@ -17,7 +18,9 @@ import {
 import { createLogger } from '../../src/logging/index.js';
 import { parseArgs, runReplay, type ReplayOptions } from '../../src/outbox/cli.js';
 import {
+  PUBLISH_STALL_MS,
   createOutbox,
+  localTimestamp,
   outboxDrainCounts,
   outboxSql,
   outboxTable,
@@ -604,7 +607,8 @@ describe('outbox sweep, drain counts and replay', () => {
     const stalled = await sweepOutbox(runtimeOf(fx, stalledPublisher()), { service: SERVICE, clock: CLOCK, tenantsOf, publishStallMs: 200 });
 
     expect(performance.now() - started).toBeLessThan(2_200);
-    expect(stalled).toMatchObject({ published: 0, failed: 1, tenants: 0 });
+    // Each seeded row has its own ordering key, so all of tenant A's publishes are pending when the first stalls.
+    expect(stalled).toMatchObject({ published: 0, failed: seededA.length, skipped: 0, tenants: 0 });
     expect(await unpublished(fx, TENANT_A.tenantId)).toEqual(expect.arrayContaining(seededA));
     expect(await unpublished(fx, TENANT_B.tenantId)).toEqual(expect.arrayContaining(seededB));
     // NOWAIT fails with 55P03 if the sweep still held a row lock.
@@ -676,6 +680,54 @@ describe('outbox sweep, drain counts and replay', () => {
     expect(received).not.toContain((older[0] as EventEnvelope).eventId);
     expect(received).not.toContain((held[0] as EventEnvelope).eventId);
     expect(await stamps()).toEqual(stampedBefore);
+  });
+
+  it('fails only an oversized row and goes on publishing its tenant and later tenants without ending early', async () => {
+    const tenantsOf = () => Promise.resolve([TENANT_A.tenantId, TENANT_B.tenantId]);
+    // Schema-valid but over the Pub/Sub publish limit, so inserted directly: writeOutbox refuses it.
+    const oversized = buildEnvelope<NotePayload>({
+      topic: fx.topic.name,
+      tenantId: TENANT_A.tenantId,
+      aggregateType: 'note',
+      aggregateId: `note-${randomUUID()}`,
+      aggregateVersion: 1,
+      payload: { value: 'x'.repeat(11_000_000) },
+    });
+    await withTenant(fx.handle.app, TENANT_A.tenantId, (tx) =>
+      tx.query(
+        `INSERT INTO ${outboxTable(fx.handle.schema)} (tenant_id, event_id, topic, kind, ordering_key, envelope, operation_id, held, created_at)` +
+          " VALUES ($1, $2, $3, 'state', $4, $5::jsonb, NULL, false, $6)",
+        [TENANT_A.tenantId, oversized.eventId, fx.topic.name, oversized.aggregateId, JSON.stringify(oversized), localTimestamp(CLOCK.now())],
+      ),
+    );
+    try {
+      const small = [...(await seedUnpublished(fx, TENANT_A.tenantId, 1)), ...(await seedUnpublished(fx, TENANT_B.tenantId, 1))];
+      const lines: Record<string, unknown>[] = [];
+      const logger = createLogger({
+        service: SERVICE,
+        version: '1.0.0',
+        env: 'local',
+        destination: { write: (chunk: string) => void lines.push(JSON.parse(chunk) as Record<string, unknown>) },
+      });
+      const runtime = createOutbox({ service: SERVICE, db: fx.handle.app, publisher: fx.publisher, logger, clock: CLOCK });
+      const started = performance.now();
+
+      const result = await sweepOutbox(runtime, { service: SERVICE, clock: CLOCK, tenantsOf });
+
+      expect(performance.now() - started).toBeLessThan(PUBLISH_STALL_MS);
+      expect(result).toMatchObject({ failed: 1, tenants: 2 });
+      expect(await unpublished(fx, TENANT_A.tenantId)).toEqual([oversized.eventId]);
+      expect(await unpublished(fx, TENANT_B.tenantId)).toEqual([]);
+      expect(ids(await pullUntil(fx.observer, small))).toEqual(expect.arrayContaining(small));
+      expect(lines.filter((line) => line.eventId === oversized.eventId)).toMatchObject([
+        { severity: 'ERROR', message: 'outbox publish failed', error: { type: 'EnvelopePublishError' } },
+      ]);
+      expect(lines.map((line) => String(line.message)).filter((message) => message.startsWith('outbox sweep ended early'))).toEqual([]);
+    } finally {
+      await withTenant(fx.handle.app, TENANT_A.tenantId, (tx) =>
+        tx.query(`DELETE FROM ${outboxTable(fx.handle.schema)} WHERE event_id = $1`, [oversized.eventId]),
+      );
+    }
   });
 });
 

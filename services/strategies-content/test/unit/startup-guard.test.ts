@@ -32,6 +32,7 @@ import type { ContentRow } from '../../src/repo/tables.js';
 import { TEST_CLOCK, createMemoryStorage, createRecordingDb, withPgSchema } from '../helpers/app.js';
 import { IDS, newId, seedAll } from '../helpers/seed.js';
 import { SUBJECT_CLAIMS, SUBJECT_USER_IDS, subjectSessionId } from '../helpers/tokens.js';
+import { uploadedFile } from '../helpers/uploads.js';
 
 const SITE_ID = TENANT_A.siteId;
 const HOME = IDS.content.root;
@@ -94,7 +95,8 @@ const SITE: ContentSaveSite = {
 const row = (overrides: Partial<StartupPredicateRow> = {}): StartupPredicateRow => ({ type: 'File', active: 1, body: null, filename: 'x', ...overrides });
 
 /** A posted non-image file part. */
-const part = (fileName: string, fieldName = 'newfile'): UploadedFile => ({ fieldName, fileName, contentType: 'application/pdf', bytes: Buffer.from(`bytes of ${fileName}`) });
+const part = (fileName: string, fieldName = 'newfile'): UploadedFile =>
+  uploadedFile({ fieldName, fileName, contentType: 'application/pdf' }, Buffer.from(`bytes of ${fileName}`));
 
 describe('violatesStartupPredicate', () => {
   it.each([

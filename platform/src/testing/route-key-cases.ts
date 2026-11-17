@@ -543,6 +543,42 @@ export const routeKeyConflictCases: readonly RouteKeyConflictCase[] = deepFreeze
     'fixture:people/persons/{id}/archive@post',
   ),
   conflict(
+    'fixture-doubled-slash-before-prefix',
+    `${FIXTURE_API}:37-42`,
+    request('POST', '//legacy-fixtures/cfml/api.cfm/finance/records', { query: { siteid: 'tenant-a' } }),
+    'fixture:finance/records@post',
+  ),
+  conflict(
+    'fixture-doubled-slash-inside-prefix',
+    `${FIXTURE_API}:37-42`,
+    request('POST', '/legacy-fixtures//cfml/api.cfm/finance/records', { query: { siteid: 'tenant-a' } }),
+    'fixture:finance/records@post',
+  ),
+  conflict(
+    'fixture-upper-case-module',
+    `${FIXTURE_API}:37-41`,
+    request('GET', '/legacy-fixtures/cfml/api.cfm/FINANCE/records'),
+    'fixture:finance/records@get',
+  ),
+  conflict(
+    'fixture-encoded-slash',
+    `${FIXTURE_API}:37-41`,
+    request('GET', '/legacy-fixtures/cfml/api.cfm/finance%2Frecords'),
+    'fixture:finance/records@get',
+  ),
+  conflict(
+    'fixture-upper-case-directory-is-a-page',
+    `${CONTENT_SERVER}:779-799`,
+    request('GET', '/LEGACY-FIXTURES/cfml/api.cfm/finance/records'),
+    'page:render',
+  ),
+  conflict(
+    'fixture-upper-case-script-is-a-page',
+    `${CONTENT_SERVER}:779-799`,
+    request('GET', '/legacy-fixtures/cfml/API.CFM/finance/records'),
+    'page:render',
+  ),
+  conflict(
     'opt2-stub-namespace',
     'services/stub (OPT-2 namespace; no legacy route)',
     request('GET', '/opt2/stub/notes'),

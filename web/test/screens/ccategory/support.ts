@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-compat';
 import { createCsrfRenderer } from '@/lib/csrf';
 import type { AdminRequest } from '@/lib/request-context';
-import { rbFor } from '@/lib/resource-bundles/rb';
+import { adminRbFor } from '@/lib/resource-bundles/rb';
 import type { ScreenContext } from '@/screens/registry';
 import {
   fakeGatewayClient,
@@ -60,7 +60,7 @@ export function contextFor(
     req,
     gateway,
     csrf: createCsrfRenderer(gateway),
-    rb: rbFor(req.session.rb),
+    rb: adminRbFor(req.session.rb),
     hooks: { secondaryMenus: {} },
     now: new Date('2026-06-30T12:00:00Z'),
   };

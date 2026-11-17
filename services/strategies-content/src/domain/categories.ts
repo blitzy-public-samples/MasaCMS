@@ -1,5 +1,6 @@
 /** Categories and category assignments: categoryManager, categoryDAO, categoryGateway, categoryBean and the ccategory.update controller. */
 import {
+  LegacyServiceUnavailableError,
   cfDateTimeFormat,
   cfEq,
   cfIsDateText,
@@ -17,22 +18,27 @@ import {
 } from '@opt2/platform/legacy-compat';
 import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import type { Clock } from '@opt2/platform/service-kit';
-import { registryEntryForTenant, withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { registryEntries, registryEntryForTenant, withTenant, type TenantRegistryEntry, type TenantTx } from '@opt2/platform/tenancy';
 import { formatFilename, type FilenameRules } from '../legacy/content-urls.js';
+import { rowsById } from '../repo/content-queries.js';
 import type {
   CategoryAssignmentInput,
   CategoryCrumbRow,
+  CategoryDescent,
   CategoryFeatureRow,
   CategoryListRow,
   CategoryLookup,
   CategoryPatch,
   CategoryInput as CategoryRowInput,
+  CategoryTreeRow,
+  CategoryWalkRow,
   ContentRepository,
+  InterestGroupRow,
 } from '../repo/repository.js';
 import type { CategoryAssignRow, CategoryRow, TrashRow } from '../repo/tables.js';
 import { writeContextFor, type Actor, type DomainDeps, type LegacyErrors } from './context.js';
 import { getModulePerm, sitePools } from './permissions.js';
-import { UnregisteredTenantError, contentPoolSites, withGatedPoolTenant, withPoolTenant, type PoolSite } from './pools.js';
+import { UnregisteredTenantError, contentPoolSites, readAcrossContentPool, withGatedPoolTenant, withPoolTenant, type PoolSite } from './pools.js';
 import {
   createTrashCounter,
   deleteMarkerAssignments,
@@ -874,6 +880,38 @@ export function listCategories(deps: CategoryDeps, actor: Actor, args: ListCateg
   return inCategoryPool(deps, actor, (tx, pool) => deps.repository.categories.listCategories(tx, { ...args, siteId: pool.siteId }));
 }
 
+/** The pool's category tree read once: `level(parentId)` is `listCategories({ parentId })`, the top level for '' or none. */
+export interface CategoryTreeLevels {
+  level(parentId?: string): readonly CategoryTreeRow[];
+}
+
+/** categoryGateway.getCategories for every level of the pool's tree, from one read; levels match parent ids as `listCategories` does. */
+export async function readCategoryTree(deps: CategoryDeps, actor: Actor): Promise<CategoryTreeLevels> {
+  const rows = await inCategoryPool(deps, actor, (tx, pool) => deps.repository.categories.categoryTreeRows(tx, { siteId: pool.siteId }));
+  const top = rows.filter((row) => row.parentid === null);
+  const childrenOf = rowsById(rows, (row) => row.parentid);
+  return { level: (parentId = '') => (parentId === '' ? top : childrenOf([parentId])) };
+}
+
+/**
+ * categoryGateway.getCategories for each level the `descend` walk visits, batch by batch in one category-pool transaction until `visit` answers false.
+ * @throws Error Before the first batch, when the walk reaches a category that is its own ancestor, where legacy recursion would not end.
+ */
+export function readCategoryWalkBatches(
+  deps: CategoryDeps,
+  actor: Actor,
+  descend: CategoryDescent,
+  visit: (rows: CategoryWalkRow[]) => Promise<boolean>,
+): Promise<void> {
+  return inCategoryPool(deps, actor, async (tx, pool) => {
+    for await (const rows of deps.repository.categories.categoryWalkBatches(tx, { siteId: pool.siteId, descend })) {
+      const cycle = rows[0]?.cycle ?? null;
+      if (cycle !== null) throw new Error(`Category ${cycle} is its own ancestor`);
+      if (!(await visit(rows))) return;
+    }
+  });
+}
+
 /** categoryGateway.getCategoriesBySiteID, or getInterestGroupsBySiteID with `interestOnly`: every pool category, by name. */
 export function listPoolCategories(
   deps: CategoryDeps,
@@ -984,6 +1022,64 @@ export async function restrictGroups(deps: Pick<DomainDeps, 'db' | 'repository'>
     rows.push(...groups.map((group) => ({ groupname: group.group_name ?? '', userid: javaTrim(group.group_id), ispublic: isPublic })));
   }
   return rows;
+}
+
+/** The tenant of `entry`'s private user pool; a registry entry without one pools its own site, as settingsBean defaults it. */
+function privatePoolTenant(entry: TenantRegistryEntry): string {
+  return entry.privateUserPoolTenant ?? entry.tenantId;
+}
+
+/**
+ * The registered sites sharing `siteId`'s private user pool, when `siteId` is the private user pool site of the token's
+ * site or shares that pool; undefined otherwise.
+ * @throws UnregisteredTenantError When the token's tenant has no registry entry.
+ */
+function privatePoolSites(deps: Pick<DomainDeps, 'db'>, actor: Actor, siteId: string): Promise<PoolSite[] | undefined> {
+  return deps.db.withMetadata(async (tx) => {
+    const entries = await registryEntries(tx);
+    const own = entries.find((entry) => entry.tenantId === actor.tenantId);
+    if (own === undefined) throw new UnregisteredTenantError(actor.tenantId);
+    const target = entries.find((entry) => sameSite(entry.siteId, siteId));
+    const ownPool = privatePoolTenant(own);
+    if (target === undefined || (target.tenantId !== ownPool && privatePoolTenant(target) !== ownPool)) return undefined;
+    const pool = privatePoolTenant(target);
+    return entries.filter((entry) => privatePoolTenant(entry) === pool).map(({ siteId: id, tenantId }) => ({ siteId: id, tenantId }));
+  });
+}
+
+/** The exceptions-list entry of an interest-group level holding rows of several sites. */
+export const PROFILE_INTEREST_SITES_EXCEPTION = 'EX-PROFILE-INTEREST-SITES';
+
+/** A `getPrivateInterestGroups` row with the id of its category's site. */
+export type PrivateInterestGroupRow = InterestGroupRow & { siteid: string };
+
+/**
+ * categoryGateway.getPrivateInterestGroups (categoryGateway.cfc:266-283): one level of the interest groups of every
+ * registered site whose private user pool is `siteId`'s, each site read in its own tenant; `parentId` `''` is the top level.
+ * @returns undefined when `siteId` is outside the token site's private user pool.
+ * @throws LegacyServiceUnavailableError When the level holds rows of more than one site, which legacy orders by site
+ * name, a programs-sites setting the registry does not hold.
+ */
+export async function listPrivateInterestGroups(
+  deps: Pick<DomainDeps, 'db' | 'repository'>,
+  actor: Actor,
+  args: { siteId: string; parentId: string },
+): Promise<PrivateInterestGroupRow[] | undefined> {
+  const sites = await privatePoolSites(deps, actor, args.siteId);
+  if (sites === undefined) return undefined;
+  const rows = await readAcrossContentPool(deps.db, sites, async (tx, site) =>
+    (await deps.repository.categories.privateInterestGroups(tx, { sites: [{ siteId: site.siteId, site: null }], parentId: args.parentId })).map(
+      (row) => ({ tenantId: site.tenantId, row: { ...row, siteid: site.siteId } }),
+    ),
+  );
+  if (new Set(rows.map(({ tenantId }) => tenantId)).size > 1) {
+    throw new LegacyServiceUnavailableError(
+      `getPrivateInterestGroups(${args.siteId}): rows of several sites are ordered by site name, which the registry does not hold (${PROFILE_INTEREST_SITES_EXCEPTION})`,
+      'auto',
+      'private-interest-groups-halted',
+    );
+  }
+  return rows.map(({ row }) => row);
 }
 
 /** The ccategory.update outcome: the list redirect, or the edit form re-rendered with the bean's errors. */

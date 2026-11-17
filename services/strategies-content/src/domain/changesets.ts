@@ -333,6 +333,40 @@ export function assignments(deps: DomainDeps, actor: Actor, args: { changesetId:
   });
 }
 
+/** A module list of cChangesets.assignments after its site list. */
+export type AssignmentList = 'component' | 'form' | 'variation';
+
+/** Takes one batch of a module list's versions, the lists in component, form, variation order, reading on `tx`; false stops the read. */
+export type AssignmentBatchWriter = (list: AssignmentList, rows: ChangesetAssignmentRow[], tx: TenantTx) => Promise<boolean>;
+
+/** `assignments` batch by batch in one tenant transaction: `start` takes the change set and whether a site row exists, and answers the module lists' writer. */
+export function readAssignmentBatches(
+  deps: DomainDeps,
+  actor: Actor,
+  args: { changesetId: string; keywords?: string },
+  start: (changeset: ChangesetBean, hasSiteAssignments: boolean) => AssignmentBatchWriter,
+): Promise<void> {
+  return withTenant(deps.db, actor.tenantId, async (tx) => {
+    const repo = deps.repository;
+    const query = (moduleId: string) => ({ changesetId: args.changesetId, keywords: args.keywords ?? '', moduleId });
+    const sites = repo.changesets.assignmentBatches(tx, query(SITE_TREE_MODULE_ID), 1);
+    const hasSiteAssignments = (await sites.next()).done !== true;
+    await sites.return(undefined);
+    const changeset = await readChangesetInTx(tx, repo, { changesetId: args.changesetId }, actor, deps.clock);
+    const write = start(changeset, hasSiteAssignments);
+    const lists: ReadonlyArray<readonly [AssignmentList, string]> = [
+      ['component', COMPONENT_MODULE_ID],
+      ['form', FORM_MODULE_ID],
+      ...(deps.config.variations ? [['variation', VARIATION_MODULE_ID] as const] : []),
+    ];
+    for (const [list, moduleId] of lists) {
+      for await (const rows of repo.changesets.assignmentBatches(tx, query(moduleId))) {
+        if (!(await write(list, rows, tx))) return;
+      }
+    }
+  });
+}
+
 /** changesetBean.hasPendingApprovals: the count of the change set's versions whose approval request is not Approved. */
 export function pendingApprovalCount(deps: DomainDeps, actor: Actor, changesetId: string): Promise<number> {
   return withTenant(deps.db, actor.tenantId, (tx) => deps.repository.changesets.hasPendingApprovals(tx, { changesetId }));

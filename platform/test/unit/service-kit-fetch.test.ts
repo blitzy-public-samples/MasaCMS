@@ -1,6 +1,6 @@
 // Unit tests for createSignalBoundFetch against a local HTTP server.
 import { createServer, type IncomingHttpHeaders, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, LookupFunction } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createSignalBoundFetch } from '../../src/service-kit/fetch.js';
 
@@ -51,30 +51,41 @@ describe('createSignalBoundFetch past undici default timeouts', () => {
     vi.useRealTimers();
   });
 
-  it("receives headers delayed past undici's default header timeout", async () => {
-    const arrived = nextRequest();
-    const answer = createSignalBoundFetch()(`${origin}/late-headers`);
-    const { res } = await arrived;
+  const agentOptions: [string, Parameters<typeof createSignalBoundFetch>[0]][] = [
+    ['no agent options', undefined],
+    ['agent options setting both timeouts', { headersTimeout: 1_000, bodyTimeout: 1_000 }],
+  ];
 
-    await vi.advanceTimersByTimeAsync(UNDICI_DEFAULT_TIMEOUT_MS + 10_000);
-    res.end('late');
+  it.each(agentOptions)(
+    "receives headers delayed past undici's default header timeout with %s",
+    async (_label, options) => {
+      const arrived = nextRequest();
+      const answer = createSignalBoundFetch(options)(`${origin}/late-headers`);
+      const { res } = await arrived;
 
-    await expect((await answer).text()).resolves.toBe('late');
-  });
+      await vi.advanceTimersByTimeAsync(UNDICI_DEFAULT_TIMEOUT_MS + 10_000);
+      res.end('late');
 
-  it("receives a body stalled past undici's default body timeout", async () => {
-    const arrived = nextRequest();
-    const answer = createSignalBoundFetch()(`${origin}/late-body`);
-    const { res } = await arrived;
-    res.writeHead(200);
-    res.write('la');
-    const text = (await answer).text();
+      await expect((await answer).text()).resolves.toBe('late');
+    },
+  );
 
-    await vi.advanceTimersByTimeAsync(UNDICI_DEFAULT_TIMEOUT_MS + 10_000);
-    res.end('te');
+  it.each(agentOptions)(
+    "receives a body stalled past undici's default body timeout with %s",
+    async (_label, options) => {
+      const arrived = nextRequest();
+      const answer = createSignalBoundFetch(options)(`${origin}/late-body`);
+      const { res } = await arrived;
+      res.writeHead(200);
+      res.write('la');
+      const text = (await answer).text();
 
-    await expect(text).resolves.toBe('late');
-  });
+      await vi.advanceTimersByTimeAsync(UNDICI_DEFAULT_TIMEOUT_MS + 10_000);
+      res.end('te');
+
+      await expect(text).resolves.toBe('late');
+    },
+  );
 });
 
 describe('createSignalBoundFetch', () => {
@@ -103,6 +114,24 @@ describe('createSignalBoundFetch', () => {
     controller.abort(reason);
 
     await expect(text).rejects.toBe(reason);
+  });
+
+  it('connects through the connect.lookup of its agent options', async () => {
+    const { port } = new URL(origin);
+    const lookedUp: string[] = [];
+    const lookup: LookupFunction = (hostname, options, callback) => {
+      lookedUp.push(hostname);
+      if (options.all === true) callback(null, [{ address: '127.0.0.1', family: 4 }]);
+      else callback(null, '127.0.0.1', 4);
+    };
+    const arrived = nextRequest();
+    const answer = createSignalBoundFetch({ connect: { lookup } })(`http://tenant-a.localhost:${port}/lookup`);
+    const received = await arrived;
+    received.res.end('resolved');
+
+    await expect((await answer).text()).resolves.toBe('resolved');
+    expect(lookedUp).toEqual(['tenant-a.localhost']);
+    expect(received.headers.host).toBe(`tenant-a.localhost:${port}`);
   });
 
   it('sends a streamed AsyncIterable body unchunked under its Content-Length', async () => {

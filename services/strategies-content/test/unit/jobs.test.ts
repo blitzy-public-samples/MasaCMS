@@ -5,6 +5,7 @@ import { LEGACY_ERROR_MAP, apiUnavailableResponse } from '@opt2/platform/legacy-
 import { GATE_WAIT_MS } from '@opt2/platform/migration-kit';
 import { queueDefinition, taskWireBody, type TaskWireBody } from '@opt2/platform/tasks';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, type TenantFixture } from '@opt2/platform/testing';
+import { REMOTE_FEED_LIMIT_BYTES } from '../../src/domain/feeds.js';
 import { FEED_AUTO_IMPORT_PATH, PUBLISH_SCHEDULED_CHANGESETS_PATH } from '../../src/jobs/index.js';
 import { CHANGESET, CONTENT } from '../../src/repo/tables.js';
 import { TEST_CLOCK, buildTestApp, type TestApp } from '../helpers/app.js';
@@ -408,6 +409,19 @@ describe(`POST ${FEED_AUTO_IMPORT_PATH}`, () => {
     expect(t.db.statements.filter((statement) => statement.tenantId !== null)).toEqual([]);
     expect(t.db.writes()).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('halts a remote body declared over the limit with the legacy 503, importing nothing', async () => {
+    const headers = { 'content-type': 'application/rss+xml', 'content-length': String(REMOTE_FEED_LIMIT_BYTES + 1) };
+    fetchMock.mockResolvedValueOnce(new Response(RSS, { status: 200, headers }));
+
+    const res = await post(`${FEED_AUTO_IMPORT_PATH}?siteid=${TENANT_A.siteId}`, feedTask());
+
+    expect(res.statusCode).toBe(unavailable.status);
+    expect(res.body).toBe(unavailable.body);
+    expect(res.headers.etag).toBe(unavailable.headers.ETag);
+    expect(fetchedUrls()).toEqual([AUTO_URL]);
+    expect(model.imports).toEqual([]);
   });
 });
 

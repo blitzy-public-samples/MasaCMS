@@ -9,13 +9,14 @@ import { recordedRoutes } from '../../src/auth/hooks.js';
 import { LOCAL_USER_TOKEN, Roles } from '../../src/auth/index.js';
 import { inboxSql } from '../../src/events/index.js';
 import { REDACTED, createLogger, type Logger } from '../../src/logging/index.js';
-import { encodeKey, encodeRow, sha256Hex, type CanonicalColumn } from '../../src/migration-kit/canonical.js';
+import { decodeRow, encodeKey, encodeRow, sha256Hex, type CanonicalColumn } from '../../src/migration-kit/canonical.js';
 import { migrationKitSql } from '../../src/migration-kit/ddl.js';
-import { GATE_WAIT_MS, endOperation, isMigrationAuthority } from '../../src/migration-kit/gates.js';
+import { GATE_WAIT_MS, createMigrationAuthority, endOperation, isMigrationAuthority } from '../../src/migration-kit/gates.js';
 import {
   DEFAULT_EXPORT_LIMIT,
   MAX_EXPORT_KEYS,
   MAX_EXPORT_MATCH_LENGTH,
+  MAX_PUBLISHED_LIMIT,
   MIGRATION_PATH_PREFIX,
   registerMigrationHandlers,
   type AppliedChange,
@@ -208,6 +209,38 @@ const TABLES_SQL = [
   rlsSql(BASE, 'note_log'),
 ].join('\n');
 
+const LEDGER_COLUMNS: CanonicalColumn[] = [
+  { name: 'entry_id', type: 's' },
+  { name: 'kind', type: 's' },
+  { name: 'amount', type: 'd', scale: 2 },
+  { name: 'booked_at', type: 't' },
+  { name: 'seq', type: 'i' },
+];
+
+/** Tables of units with no legacy table, which no mapping covers: a keyed ledger and a keyless ledger log. */
+const LEDGER_TABLES: TableDefinition[] = [
+  { table: 'ledger', unit: 'mk.ledger', key: ['entry_id'], columns: [{ name: 'tenant_id', type: 's' }, ...LEDGER_COLUMNS] },
+  {
+    table: 'ledger_log',
+    unit: 'mk.ledger_log',
+    key: null,
+    columns: [
+      { name: 'tenant_id', type: 's' },
+      { name: 'line', type: 's' },
+      { name: 'legacy_row_hash', type: 's' },
+      { name: 'occurrence', type: 'i' },
+    ],
+  },
+];
+
+const LEDGER_SQL = [
+  `CREATE TABLE ${BASE}.ledger (tenant_id uuid NOT NULL, entry_id text NOT NULL, kind text, amount numeric(9,2), booked_at timestamp(3) without time zone,`,
+  '  seq integer, PRIMARY KEY (tenant_id, entry_id));',
+  rlsSql(BASE, 'ledger'),
+].join('\n');
+
+const LEDGER_REPOSITORY = createRepository({ owner: OWNER, schema: BASE, tables: [...TABLES, ...LEDGER_TABLES] });
+
 type RowOp = 'upsert' | 'insert' | 'delete';
 type LegacyValues = Record<string, string | number | null>;
 
@@ -381,6 +414,21 @@ describe('registerMigrationHandlers registration', () => {
       { db: idleDb, programSiteId: undefined },
       true,
       'Mapping Scores -> mk.score: a Program_<id> tenant needs options.programSiteId',
+    ],
+    ['for a target-only table the repository does not declare', { db: idleDb, targetOnlyTables: ['ghost'] }, true, `ghost: is not a declared table of schema ${BASE}`],
+    ['for a target-only table without a unit', { db: idleDb, targetOnlyTables: ['note_log'] }, true, 'Target-only table note_log: unit undefined is not among the handler units'],
+    [
+      'for a target-only table whose unit is not a handler unit',
+      { db: idleDb, repository: LEDGER_REPOSITORY, targetOnlyTables: ['ledger'] },
+      true,
+      'Target-only table ledger: unit mk.ledger is not among the handler units',
+    ],
+    ['for a target-only table of a mapped unit', { db: idleDb, targetOnlyTables: ['item'] }, true, 'Target-only table item: unit mk.item is also mapped from a legacy table'],
+    [
+      'for a keyless target-only table',
+      { db: idleDb, repository: LEDGER_REPOSITORY, units: [...UNITS, 'mk.ledger_log'], targetOnlyTables: ['ledger_log'] },
+      true,
+      'Target-only table ledger_log: has no key',
     ],
   ] as [string, Partial<MigrationHandlerOptions>, boolean, string][])('throws %s', async (_label, overrides, withHeader, message) => {
     const app = await freshApp(undefined, withHeader);
@@ -1131,38 +1179,185 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     expectRejected(await get('/position', { eventIds: 'not-a-uuid' }));
   });
 
-  it('lists the published events of the asked topics in every registered tenant by tenant, topic and id', async () => {
+  /** Inserts one outbox row of `topic` in `tenantId` and returns it as listed; `publishedAt` null leaves it unpublished. */
+  async function outboxRow(
+    tenantId: string,
+    topic: string,
+    options: { kind?: 'state' | 'process'; held?: boolean; publishedAt?: string | null } = {},
+  ): Promise<PublishedEvent> {
+    const eventId = randomUUID();
+    const kind = options.kind ?? 'state';
+    const { rows } = await handle.app.withTenant(tenantId, (tx) =>
+      tx.query<{ seq: string }>(
+        `INSERT INTO ${handle.schema}.outbox (tenant_id, event_id, topic, kind, ordering_key, envelope, held, created_at, published_at)
+         VALUES ($1, $2, $3, $4, 'k', '{}'::jsonb, $5, localtimestamp(3), $6) RETURNING seq::text AS seq`,
+        [tx.tenantId, eventId, topic, kind, options.held ?? false, options.publishedAt === undefined ? '2026-06-30 12:00:00' : options.publishedAt],
+      ),
+    );
+    return { eventId, topic, tenantId, kind, seq: rows[0]?.seq ?? '' };
+  }
+
+  async function listing(topics: string, after?: string, limit?: number, through?: string): Promise<PositionResponse> {
+    const res = await get('/position', {
+      publishedTopics: topics,
+      ...(after === undefined ? {} : { publishedAfter: after }),
+      ...(limit === undefined ? {} : { publishedLimit: String(limit) }),
+      ...(through === undefined ? {} : { publishedThrough: through }),
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    return res.json<PositionResponse>();
+  }
+
+  it('lists every published event of the asked topics by tenant, topic and id on an unpaged read, past unpublished rows and a page', async () => {
     await seedRegistry(handle.app);
-    const [created, changed, unasked] = ['mk.listed.created.v1', 'mk.listed.changed.v1', 'mk.listed.unasked.v1'];
-    const outbox = `INSERT INTO ${handle.schema}.outbox (tenant_id, event_id, topic, kind, ordering_key, envelope, held, created_at, published_at)
-      VALUES ($1, $2, $3, 'state', 'k', '{}'::jsonb, $4, localtimestamp(3), $5)`;
-    const published = '2026-06-30 12:00:00';
+    const [created, changed, unasked] = ['mk.unpaged.created.v1', 'mk.unpaged.changed.v1', 'mk.unpaged.unasked.v1'];
     const expected: PublishedEvent[] = [];
-    for (const fixture of [TENANT_UMBRELLA, TENANT_B, TENANT_A]) {
-      await handle.app.withTenant(fixture.tenantId, async (tx) => {
-        for (const [topic, held, publishedAt] of [
-          [changed, false, published],
-          [created, false, published],
-          [created, false, published],
-          [created, false, null],
-          [created, true, null],
-          [unasked, false, published],
-        ] as const) {
-          const eventId = randomUUID();
-          await tx.query(outbox, [tx.tenantId, eventId, topic, held, publishedAt]);
-          if (topic !== unasked && publishedAt !== null) expected.push({ eventId, topic, tenantId: tx.tenantId });
-        }
-      });
+    for (const fixture of [TENANT_B, TENANT_A]) {
+      await outboxRow(fixture.tenantId, created, { publishedAt: null });
+      await outboxRow(fixture.tenantId, created, { held: true, publishedAt: null });
+      expected.push(await outboxRow(fixture.tenantId, created, { kind: 'process' }));
+      expected.push(await outboxRow(fixture.tenantId, changed));
+      await outboxRow(fixture.tenantId, unasked);
     }
+    const bulk = await handle.app.withTenant(TENANT_A.tenantId, (tx) =>
+      tx.query<{ event_id: string; seq: string }>(
+        `INSERT INTO ${handle.schema}.outbox (tenant_id, event_id, topic, kind, ordering_key, envelope, held, created_at, published_at)
+         SELECT $1, gen_random_uuid(), $2, 'state', 'k', '{}'::jsonb, false, localtimestamp(3), localtimestamp(3) FROM generate_series(1, $3::int)
+         RETURNING event_id::text AS event_id, seq::text AS seq`,
+        [tx.tenantId, changed, MAX_PUBLISHED_LIMIT],
+      ),
+    );
+    for (const row of bulk.rows) expected.push({ eventId: row.event_id, topic: changed, tenantId: TENANT_A.tenantId, kind: 'state', seq: row.seq });
     const order = (e: PublishedEvent): string => `${e.tenantId} ${e.topic} ${e.eventId}`;
     expected.sort((a, b) => (order(a) < order(b) ? -1 : 1));
 
-    const res = await get('/position', { publishedTopics: ` ${created},${changed}, ` });
-    expect(res.statusCode, res.body).toBe(200);
-    expect(res.json<PositionResponse>().published).toEqual(expected);
-    expect((await get('/position', { publishedTopics: '' })).json<PositionResponse>().published).toEqual([]);
+    const unpaged = await listing(`${created},${changed}`);
+    expect(unpaged.published).toHaveLength(MAX_PUBLISHED_LIMIT + 4);
+    expect(unpaged.published).toEqual(expected);
+    for (const member of ['publishedNext', 'publishedComplete', 'publishedFrontier', 'publishedUpTo']) expect(unpaged).not.toHaveProperty(member);
+    expect((await listing('')).published).toEqual([]);
+    const paged = await listing(changed, '0');
+    expect(paged.published).toHaveLength(MAX_PUBLISHED_LIMIT);
+    expect(paged).toMatchObject({ publishedComplete: false, publishedFrontier: bulk.rows.at(-1)?.seq });
+    expect(paged).not.toHaveProperty('publishedUpTo');
+  });
+
+  it('lists the published events of the asked topics in every registered tenant by seq, with their kind, on a paged read', async () => {
+    await seedRegistry(handle.app);
+    const [created, changed, unasked] = ['mk.listed.created.v1', 'mk.listed.changed.v1', 'mk.listed.unasked.v1'];
+    const expected: PublishedEvent[] = [];
+    for (const fixture of [TENANT_UMBRELLA, TENANT_B, TENANT_A]) {
+      expected.push(await outboxRow(fixture.tenantId, changed));
+      expected.push(await outboxRow(fixture.tenantId, created, { kind: 'process' }));
+      await outboxRow(fixture.tenantId, unasked);
+    }
+
+    const answer = await listing(` ${created},${changed}, `, '0');
+    expect(answer).toMatchObject({
+      published: expected,
+      publishedNext: expected.at(-1)?.seq,
+      publishedComplete: true,
+      publishedFrontier: expected.at(-1)?.seq,
+      publishedUpTo: 0,
+    });
+    const after = expected[2]?.seq ?? '';
+    expect(await listing(`${created},${changed}`, after)).toMatchObject({ published: expected.slice(3), publishedComplete: true, publishedUpTo: 3 });
+    expect(await listing('', '0')).toMatchObject({ published: [], publishedNext: '0', publishedComplete: true, publishedFrontier: '0', publishedUpTo: 0 });
+    expect(await listing(created, '999999999999999999')).toMatchObject({
+      published: [],
+      publishedNext: '999999999999999999',
+      publishedComplete: true,
+      publishedFrontier: expected.filter((listed) => listed.topic === created).at(-1)?.seq,
+    });
     expect((await get('/position')).json<PositionResponse>()).not.toHaveProperty('published');
     expectRejected(await get('/position', { publishedTopics: `${created},mk.listed.created` }));
+  });
+
+  it('pages published events across tenants by seq, never past a tenant whose own page is full', async () => {
+    await seedRegistry(handle.app);
+    const topic = 'mk.paged.created.v1';
+    const rows: PublishedEvent[] = [];
+    for (const tenantId of [TENANT_A.tenantId, TENANT_A.tenantId, TENANT_B.tenantId, TENANT_A.tenantId, TENANT_B.tenantId]) rows.push(await outboxRow(tenantId, topic));
+
+    const first = await listing(topic, undefined, 2);
+    expect(first).toMatchObject({ published: rows.slice(0, 2), publishedNext: rows[1]?.seq, publishedComplete: false, publishedFrontier: rows[4]?.seq });
+    const second = await listing(topic, first.publishedNext, 2);
+    expect(second).toMatchObject({ published: rows.slice(2, 4), publishedNext: rows[3]?.seq, publishedComplete: false });
+    // Only the page that completes the listing counts the rows behind its cursor.
+    for (const page of [first, second]) expect(page).not.toHaveProperty('publishedUpTo');
+    const third = await listing(topic, second.publishedNext, 2);
+    expect(third).toMatchObject({ published: rows.slice(4), publishedNext: rows[4]?.seq, publishedComplete: true, publishedUpTo: 4 });
+  });
+
+  it.each([
+    ['an unpublished row', { publishedAt: null }],
+    ['a held row', { held: true, publishedAt: null }],
+  ])('stops the cursor below %s of the asked topics until it is published', async (_label, blocking) => {
+    await seedRegistry(handle.app);
+    const topic = `mk.blocked${blocking.held === true ? 'held' : 'unpublished'}.created.v1`;
+    const before = await outboxRow(TENANT_A.tenantId, topic);
+    const blocker = await outboxRow(TENANT_B.tenantId, topic, blocking);
+    const after = await outboxRow(TENANT_A.tenantId, topic);
+    await outboxRow(TENANT_A.tenantId, 'mk.blocked.other.v1', { publishedAt: null });
+
+    const blocked = await listing(topic, '0');
+    expect(blocked).toMatchObject({ published: [before], publishedNext: String(BigInt(blocker.seq) - 1n), publishedComplete: false, publishedFrontier: after.seq });
+    expect(await listing(topic, blocked.publishedNext)).toMatchObject({ published: [], publishedNext: blocked.publishedNext, publishedComplete: false });
+
+    await handle.app.withTenant(TENANT_B.tenantId, (tx) =>
+      tx.query(`UPDATE ${handle.schema}.outbox SET held = false, published_at = localtimestamp(3) WHERE event_id = $1`, [blocker.eventId]),
+    );
+    expect(await listing(topic, blocked.publishedNext)).toMatchObject({ published: [blocker, after], publishedNext: after.seq, publishedComplete: true, publishedUpTo: 1 });
+  });
+
+  it('counts a row published behind the cursor in publishedUpTo', async () => {
+    await seedRegistry(handle.app);
+    const topic = 'mk.behind.created.v1';
+    const listed = await outboxRow(TENANT_A.tenantId, topic);
+    const cursor = (await listing(topic, '0')).publishedNext;
+    expect(cursor).toBe(listed.seq);
+    // A row whose seq was assigned before the cursor passed it, committed afterwards.
+    await handle.app.withTenant(TENANT_B.tenantId, (tx) =>
+      tx.query(
+        `INSERT INTO ${handle.schema}.outbox (seq, tenant_id, event_id, topic, kind, ordering_key, envelope, held, created_at, published_at)
+         OVERRIDING SYSTEM VALUE VALUES ($1::bigint - 1, $2, $3, $4, 'process', 'k', '{}'::jsonb, false, localtimestamp(3), localtimestamp(3))`,
+        [listed.seq, tx.tenantId, randomUUID(), topic],
+      ),
+    );
+
+    expect(await listing(topic, cursor)).toMatchObject({ published: [], publishedComplete: true, publishedUpTo: 2 });
+  });
+
+  it('pages through publishedThrough alone, neither listing nor blocking on later rows, and echoes it as publishedFrontier', async () => {
+    await seedRegistry(handle.app);
+    const topic = 'mk.frontier.created.v1';
+    const first = await outboxRow(TENANT_A.tenantId, topic);
+    const second = await outboxRow(TENANT_B.tenantId, topic);
+    const head = await listing(topic, '0', 1);
+    expect(head).toMatchObject({ published: [first], publishedComplete: false, publishedFrontier: second.seq });
+    // Rows after the frontier: one published, one held unpublished; the pass through the frontier sees neither.
+    const later = await outboxRow(TENANT_A.tenantId, topic);
+    const held = await outboxRow(TENANT_B.tenantId, topic, { held: true, publishedAt: null });
+    const frontier = head.publishedFrontier ?? '';
+
+    const through = await listing(topic, head.publishedNext, undefined, frontier);
+    expect(through).toEqual(
+      expect.objectContaining({ published: [second], publishedNext: second.seq, publishedComplete: true, publishedFrontier: frontier, publishedUpTo: 1 }),
+    );
+    const alone = await get('/position', { publishedTopics: topic, publishedThrough: first.seq });
+    expect(alone.json<PositionResponse>()).toMatchObject({ published: [first], publishedComplete: true, publishedFrontier: first.seq, publishedUpTo: 0 });
+    // A page without the frontier reports the new head and stops below the held row.
+    expect(await listing(topic, second.seq)).toMatchObject({ published: [later], publishedNext: later.seq, publishedComplete: false, publishedFrontier: held.seq });
+  });
+
+  it.each([
+    ['a negative cursor', { publishedAfter: '-1' }],
+    ['a cursor beyond bigint', { publishedAfter: '9999999999999999999' }],
+    ['a frontier beyond bigint', { publishedThrough: '9999999999999999999' }],
+    ['a limit of 0', { publishedLimit: '0' }],
+    ['a limit above 1000', { publishedLimit: '1001' }],
+  ])('rejects a published listing with %s as invalidParameters', async (_label, query) => {
+    expectRejected(await get('/position', { publishedTopics: 'mk.listed.created.v1', ...query }));
   });
 
   it('stores watermarks under normalised Program_<id> names and lists them by table and direction', async () => {
@@ -1626,4 +1821,85 @@ describe.skipIf(!available)('migration endpoints of a service paging its object 
     expectRejected(res);
     expect(calls).toEqual([]);
   });
+});
+
+describe.skipIf(!available)('migration endpoints of a service with a target-only table', () => {
+  const SITE = TENANT_A.siteId;
+  const LEDGER_ROWS: LegacyValues[] = [
+    { entry_id: 'e3', kind: 'credit', amount: '7.25', booked_at: '2026-06-30 11:00:00', seq: 3 },
+    { entry_id: 'e1', kind: 'debit', amount: '12.5', booked_at: '2026-06-30 09:30:00.5', seq: 1 },
+    { entry_id: 'e2', kind: null, amount: null, booked_at: null, seq: null },
+  ];
+  let handle: ThrowawaySchema;
+  let app: FastifyInstance;
+  let headers: Record<string, string>;
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: `${OWNER}-target-only`, schemaName: BASE, extraSql: [migrationKitSql(BASE), ITEM_SQL, LEDGER_SQL] });
+    const repository = createRepository({ owner: OWNER, schema: handle.schema, tables: [...TABLES, ...LEDGER_TABLES] });
+    app = await serviceApp(handle.app);
+    registerWritePositionHeader(app);
+    registerMigrationHandlers(app, { owner: OWNER, repository, mappings: [ITEM_MAPPING], units: ['mk.item', 'mk.ledger'], targetOnlyTables: ['ledger'] });
+    await app.ready();
+    headers = await authHeadersFor(subject('service:migration'), { audience: OWNER });
+    await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
+      for (const row of LEDGER_ROWS) await repository.insert(tx, 'ledger', row, { authority: createMigrationAuthority() });
+    });
+  });
+
+  afterAll(async () => {
+    await app?.close();
+    await handle?.drop();
+  });
+
+  async function exportOf(query: Record<string, string>): Promise<ExportResponse> {
+    const res = await app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/export`, headers, query: { unit: 'mk.ledger', siteId: SITE, ...query } });
+    expect(res.statusCode, res.body).toBe(200);
+    return res.json<ExportResponse>();
+  }
+
+  it('exports its rows over its own columns, paged by the keyset cursor and filtered by keys', async () => {
+    const table = { unit: 'mk.ledger', legacyTable: '', targetTable: 'mk.ledger', keyless: false, columns: LEDGER_COLUMNS };
+    const byId = Object.fromEntries(LEDGER_ROWS.map((values) => [String(values.entry_id), exported(LEDGER_COLUMNS, ['entry_id'], values)]));
+    const [e1, e2, e3] = [byId.e1, byId.e2, byId.e3] as ExportRow[];
+
+    const first = await exportOf({ limit: '2' });
+    expect(first).toEqual({ unit: 'mk.ledger', tenantId: TENANT_A.tenantId, tables: [{ ...table, rows: [e1, e2] }], next: cursorText({ table: 'ledger', key: ['e2'] }) });
+    expect(decodeRow(first.tables[0]?.columns ?? [], first.tables[0]?.rows[0]?.row ?? '')).toEqual({
+      entry_id: 'e1',
+      kind: 'debit',
+      amount: '12.50',
+      booked_at: '2026-06-30T09:30:00.500',
+      seq: '1',
+    });
+    expect(await exportOf({ limit: '2', after: first.next as string })).toEqual({ unit: 'mk.ledger', tenantId: TENANT_A.tenantId, tables: [{ ...table, rows: [e3] }], next: null });
+    expect((await exportOf({ keys: encodeKey(LEDGER_COLUMNS, ['entry_id'], { entry_id: 'e3' }) })).tables).toEqual([{ ...table, rows: [e3] }]);
+  });
+
+  it.each([
+    ['its table name', 'ledger'],
+    ['its unit name', 'mk.ledger'],
+  ])('refuses an apply naming %s as invalidParameters, writing nothing', async (_label, legacyTable) => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `${MIGRATION_PATH_PREFIX}/apply`,
+      headers,
+      payload: { batchId: `target-only-${legacyTable}`, origin: 'backfill', legacyTable, siteId: SITE, columns: LEDGER_COLUMNS, rows: rowsOf(LEDGER_COLUMNS, [['upsert', { ...LEDGER_ROWS[0], entry_id: 'e9' }]]) },
+    });
+    expectRejected(res);
+    expect((await exportOf({})).tables.flatMap((table) => table.rows.map((row) => decodeRow(LEDGER_COLUMNS, row.row).entry_id))).toEqual(['e1', 'e2', 'e3']);
+  });
+
+  it('feeds its writes to the change feed without a legacy projection', async () => {
+    const deadline = Date.now() + HORIZON_WAIT_MS;
+    let page: ChangesResponse;
+    for (;;) {
+      const res = await app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/changes`, headers, query: { siteId: SITE } });
+      expect(res.statusCode, res.body).toBe(200);
+      page = res.json<ChangesResponse>();
+      if (page.rows.length >= LEDGER_ROWS.length || Date.now() > deadline) break;
+      await sleep(100);
+    }
+    expect(page.rows.map((row) => [row.table, row.op, row.legacy])).toEqual(LEDGER_ROWS.map(() => ['ledger', 'insert', []]));
+  }, HORIZON_TEST_TIMEOUT_MS);
 });

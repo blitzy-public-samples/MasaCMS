@@ -1,29 +1,33 @@
 /** cchangesets admin routes: change-set list, edit, assignments and actions. */
+import type { Readable } from 'node:stream';
 import { LegacyServiceUnavailableError, cfDateTimeFormat, cfNumberString } from '@opt2/platform/legacy-compat';
 import { legacyParamsOf, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
+import type { TenantTx } from '@opt2/platform/tenancy';
 // The edit and list views print the category tree and the assignments view each row's crumbs, which only these read.
-import { countCategories, listCategories } from '../../domain/categories.js';
+import { countCategories, readCategoryWalkBatches } from '../../domain/categories.js';
 import {
-  assignments,
   changesetTagCloud,
   deleteChangeset,
   listChangesets,
   pendingApprovalCount,
+  readAssignmentBatches,
   readChangeset,
   removeItem,
   rollback,
   saveChangeset,
-  type ChangesetAssignments,
+  type AssignmentList,
   type ChangesetBean,
 } from '../../domain/changesets.js';
-import { getCrumbList } from '../../domain/content-tree.js';
+import { getCrumbListsInTx } from '../../domain/content-tree.js';
 import type { Actor } from '../../domain/context.js';
-import { getCategoryPerm, getNodePerm, loadMemberships, sitePools, type SitePools, type UserMemberships } from '../../domain/permissions.js';
+import { getCategoryPerm, getNodePermsInTx, loadMemberships, sitePools, type UserMemberships } from '../../domain/permissions.js';
 import type { components } from '../../generated/openapi.js';
 import { iconClass } from '../../legacy/admin-markup.js';
 import { renderTagArray, type AdminRenderResult } from '../../legacy/admin-render.js';
+import type { CategoryWalkRow, ChangesetAssignmentRow } from '../../repo/repository.js';
 import type { ContentRouteContext } from '../index.js';
 import { adminCsrf, adminRedirect, circuitRouteConfig, csrfRejected, requireCircuitAccess, type AdminWriteResult } from './access.js';
+import { VIEW_MODEL_CONTENT_TYPE, nestedJson, settled, streamModel } from './streamed-model.js';
 
 /** The contract's screen model: values under their legacy `rc` names. */
 type AdminViewModel = components['schemas']['AdminViewModel'];
@@ -36,7 +40,16 @@ type ChangesetParams = SiteParams & { changesetid: string };
 type ItemParams = ChangesetParams & { contenthistid: string };
 
 /** One assigned version as the assignments iterator returns it. */
-type AssignmentRow = ChangesetAssignments['component'][number];
+type AssignmentRow = ChangesetAssignmentRow;
+
+/** The rc key each module list of the assignments view prints under. */
+const ASSIGNMENT_KEYS = {
+  component: 'componentAssignments',
+  form: 'formAssignments',
+  variation: 'variationAssignments',
+} as const satisfies Record<AssignmentList, string>;
+
+type AssignmentKey = (typeof ASSIGNMENT_KEYS)[AssignmentList];
 
 const CIRCUIT = 'cchangesets';
 const LIST_PATH = '/v1/sites/:siteid/changesets';
@@ -163,41 +176,54 @@ interface CategoryNode {
   children: CategoryNode[];
 }
 
-/** `getCategoryCount(siteid)` and, when non-zero, `cf_dsp_categories_nest parentID=""` (dsp_categories_nest.cfm), level by level. */
-async function categoryTree(ctx: ContentRouteContext, actor: Actor, siteId: string): Promise<{ count: number; nodes: CategoryNode[] }> {
+/** A walked category's checkbox, without its children. */
+type CategoryCheckbox = Omit<CategoryNode, 'children'>;
+
+/** `getCategoryCount(siteid)` and, when non-zero, each walked category's checkbox, its memberships and pools read before the walk's cursor opens. */
+async function categoryCheckboxes(ctx: ContentRouteContext, actor: Actor, siteId: string): Promise<{ count: number; checkboxOf?: (row: CategoryWalkRow) => CategoryCheckbox }> {
   const deps = ctx.domain;
   const count = await countCategories(deps, actor);
-  if (count === 0) return { count, nodes: [] };
-  let viewer: Promise<[UserMemberships, SitePools]> | undefined;
-  const permitted = async (restrictGroups: string): Promise<boolean> => {
-    viewer ??= Promise.all([loadMemberships(deps, actor), sitePools(deps, actor)]);
-    const [memberships, pools] = await viewer;
-    return getCategoryPerm(actor, memberships, restrictGroups, siteId, pools);
+  if (count === 0) return { count };
+  const [memberships, pools] = await Promise.all([loadMemberships(deps, actor), sitePools(deps, actor)]);
+  return {
+    count,
+    checkboxOf: (row) => ({
+      categoryID: row.categoryid,
+      parentID: row.parentid ?? '',
+      name: row.name ?? '',
+      isOpen: row.isopen === 1,
+      permitted: getCategoryPerm(actor, memberships, row.restrictgroups ?? '', siteId, pools),
+    }),
   };
-  const level = async (parentId?: string): Promise<CategoryNode[]> => {
-    const nodes: CategoryNode[] = [];
-    for (const row of await listCategories(deps, actor, parentId === undefined ? {} : { parentId })) {
-      nodes.push({
-        categoryID: row.categoryid,
-        parentID: row.parentid ?? '',
-        name: row.name ?? '',
-        isOpen: row.isopen === 1,
-        permitted: await permitted(row.restrictgroups ?? ''),
-        children: row.haskids > 0 ? await level(row.categoryid) : [],
-      });
-    }
-    return nodes;
-  };
-  return { count, nodes: await level() };
 }
 
-/** The tree's categories as rows, each parent before its children. */
-function categoryRows(nodes: readonly CategoryNode[]): Rc[] {
-  return nodes.flatMap(({ children, ...row }) => [row, ...categoryRows(children)]);
+/**
+ * The model `build` sets from the category count, its `categories` slot printing `cf_dsp_categories_nest parentID=""` batch by batch, nested or, when `flat`, as rows.
+ * @throws Error Before any byte, when a category is its own ancestor, where the legacy walk would never end.
+ */
+function categoryTreeBody(
+  ctx: ContentRouteContext,
+  actor: Actor,
+  siteId: string,
+  flat: boolean,
+  build: (count: number, categories: string) => AdminViewModel | AdminWriteResult,
+): Promise<Readable> {
+  return streamModel(['categories'], async (out) => {
+    const { count, checkboxOf } = await categoryCheckboxes(ctx, actor, siteId);
+    out.head((slot) => build(count, slot.categories));
+    if (checkboxOf === undefined) return;
+    const nest = nestedJson('children');
+    await readCategoryWalkBatches(ctx.domain, actor, 'withKids', (rows) =>
+      flat
+        ? out.batch('categories', rows.map(checkboxOf))
+        : out.text('categories', rows.map((row) => nest.node(row.depth, checkboxOf(row))).join('')),
+    );
+    await out.text('categories', nest.end());
+  });
 }
 
 /** cChangesets.list (cchangesets.cfc:95-139): the page of change sets with the feed iterator's paging, and the category tree. */
-async function listModel(ctx: ContentRouteContext, actor: Actor, rc: Rc): Promise<AdminViewModel> {
+async function listBody(ctx: ContentRouteContext, actor: Actor, rc: Rc): Promise<Readable> {
   const page = await listChangesets(ctx.domain, actor, rc);
   // list.cfm previews an unpublished change set at the home page's complete URL.
   if (page.changesets.some((bean) => !bean.published)) {
@@ -205,8 +231,7 @@ async function listModel(ctx: ContentRouteContext, actor: Actor, rc: Rc): Promis
   }
   const { recordCount, nextN, pageIndex } = page;
   const first = (pageIndex - 1) * nextN;
-  const categories = await categoryTree(ctx, actor, requiredRcText(rc, 'siteid'));
-  return {
+  return categoryTreeBody(ctx, actor, requiredRcText(rc, 'siteid'), false, (count, categories) => ({
     rc: {
       changesets: {
         pageIndex,
@@ -216,57 +241,86 @@ async function listModel(ctx: ContentRouteContext, actor: Actor, rc: Rc): Promis
         lastRecordOnPageIndex: Math.min(first + nextN, recordCount),
         items: page.changesets.map(beanValues),
       },
-      categoryCount: categories.count,
-      categories: categories.nodes,
+      categoryCount: count,
+      categories,
     },
-  };
+  }));
 }
 
-/** What edit.cfm reads besides the menu: the bean, `hasPendingApprovals()` of an unpublished one, and the category rows. */
-async function editModel(ctx: ContentRouteContext, actor: Actor, bean: ChangesetBean, siteId: string): Promise<Rc> {
+/** What edit.cfm reads besides the menu, in the answer `wrap` puts it in: the bean, `hasPendingApprovals()` of an unpublished one, and the category rows. */
+async function editBody(
+  ctx: ContentRouteContext,
+  actor: Actor,
+  bean: ChangesetBean,
+  siteId: string,
+  wrap: (rc: Rc) => AdminViewModel | AdminWriteResult,
+): Promise<Readable> {
   const pending = bean.published ? undefined : await pendingApprovalCount(ctx.domain, actor, bean.changesetid);
-  const categories = await categoryTree(ctx, actor, siteId);
-  return {
-    changeset: beanValues(bean),
-    ...(pending === undefined ? {} : { hasPendingApprovals: pending }),
-    categoryCount: categories.count,
-    categories: categoryRows(categories.nodes),
-  };
+  return categoryTreeBody(ctx, actor, siteId, true, (count, categories) =>
+    wrap({
+      changeset: beanValues(bean),
+      ...(pending === undefined ? {} : { hasPendingApprovals: pending }),
+      categoryCount: count,
+      categories,
+    }),
+  );
 }
 
-/** An assigned version with the `getCrumbList(contentid, rc.siteid, false, path)` crumbs and node verdict the view prints. */
-async function assignmentRow(ctx: ContentRouteContext, actor: Actor, siteId: string, memberships: UserMemberships, row: AssignmentRow): Promise<Rc> {
-  const crumbs = await getCrumbList(ctx.domain, actor, { contentId: row.contentid ?? '', siteId, ...(row.path === null ? {} : { path: row.path }) });
-  return {
+/** Each list's assigned versions with the `getCrumbList(contentid, rc.siteid, false, path)` crumbs and node verdict the view prints, read on `tx` for all lists at once. */
+async function assignmentRows(
+  tx: TenantTx,
+  ctx: ContentRouteContext,
+  actor: Actor,
+  siteId: string,
+  memberships: UserMemberships,
+  lists: readonly (readonly AssignmentRow[])[],
+): Promise<Rc[][]> {
+  const rows = lists.flat();
+  const items = rows.map((row) => ({ contentId: row.contentid ?? '', ...(row.path === null ? {} : { path: row.path }) }));
+  const crumbLists = await getCrumbListsInTx(tx, ctx.domain.repository, { siteId, items });
+  const verdicts = await getNodePermsInTx(tx, ctx.domain, actor, crumbLists, memberships);
+  const out = rows.map((row, at): Rc => ({
     ...rowValues(row),
-    verdict: await getNodePerm(ctx.domain, actor, crumbs, memberships),
-    crumbdata: crumbs.map((crumb) => ({ ...rowValues(crumb), icon: iconClass(NO_CUSTOM_ICONS, crumb) })),
-  };
+    verdict: verdicts[at] ?? 'none',
+    crumbdata: (crumbLists[at] ?? []).map((crumb) => ({ ...rowValues(crumb), icon: iconClass(NO_CUSTOM_ICONS, crumb) })),
+  }));
+  let offset = 0;
+  return lists.map((list) => {
+    offset += list.length;
+    return out.slice(offset - list.length, offset);
+  });
 }
 
-/** cChangesets.assignments (cchangesets.cfc:156-164): the change set and its assigned versions per module. */
-async function assignmentsModel(ctx: ContentRouteContext, actor: Actor, rc: Rc): Promise<AdminViewModel> {
+/** cChangesets.assignments (cchangesets.cfc:156-164): the change set and its assigned versions per module, streamed batch by batch. */
+function assignmentsBody(ctx: ContentRouteContext, actor: Actor, rc: Rc): Promise<Readable> {
   const siteId = requiredRcText(rc, 'siteid');
-  const found = await assignments(ctx.domain, actor, { changesetId: requiredRcText(rc, 'changesetid'), keywords: rcText(rc, 'keywords') });
-  // The menu's change-set preview and every site architecture row's preview print complete content URLs.
-  if (!found.changeset.published || found.site.length > 0) {
-    throw siteSettingsUnavailable('cChangesets.assignments prints preview URLs built from site settings this service does not hold');
-  }
-  const memberships = await loadMemberships(ctx.domain, actor);
-  const rows = async (list: readonly AssignmentRow[]): Promise<Rc[]> => {
-    const out: Rc[] = [];
-    for (const row of list) out.push(await assignmentRow(ctx, actor, siteId, memberships, row));
-    return out;
-  };
-  return {
-    rc: {
-      changeset: beanValues(found.changeset),
-      siteAssignments: [],
-      componentAssignments: await rows(found.component),
-      formAssignments: await rows(found.form),
-      ...(found.variation === undefined ? {} : { variationAssignments: await rows(found.variation) }),
-    },
-  };
+  const args = { changesetId: requiredRcText(rc, 'changesetid'), keywords: rcText(rc, 'keywords') };
+  const variations = ctx.domain.config.variations;
+  const lists: AssignmentKey[] = [ASSIGNMENT_KEYS.component, ASSIGNMENT_KEYS.form, ...(variations ? [ASSIGNMENT_KEYS.variation] : [])];
+  return streamModel(lists, async (out) => {
+    // Read before the cursor's transaction holds a connection; a failure still surfaces after the 503 checks.
+    const viewerMemberships = await settled(loadMemberships(ctx.domain, actor));
+    await readAssignmentBatches(ctx.domain, actor, args, (changeset, hasSiteAssignments) => {
+      // The menu's change-set preview and every site architecture row's preview print complete content URLs.
+      if (!changeset.published || hasSiteAssignments) {
+        throw siteSettingsUnavailable('cChangesets.assignments prints preview URLs built from site settings this service does not hold');
+      }
+      const memberships = viewerMemberships();
+      out.head((slot) => ({
+        rc: {
+          changeset: beanValues(changeset),
+          siteAssignments: [],
+          componentAssignments: slot.componentAssignments,
+          formAssignments: slot.formAssignments,
+          ...(variations ? { variationAssignments: slot.variationAssignments } : {}),
+        },
+      }));
+      return async (list, rows, tx) => {
+        const [values = []] = await assignmentRows(tx, ctx, actor, siteId, memberships, [rows]);
+        return out.batch(ASSIGNMENT_KEYS[list], values);
+      };
+    });
+  });
 }
 
 /** The contract outcome of an action that redirects whether or not it wrote. */
@@ -277,13 +331,14 @@ function redirected(saved: boolean, redirect: AdminWriteResult['redirect']): Adm
 /** Registers the cchangesets operations the contract lists; `cChangesets.publish` is withheld and stays on legacy. */
 export async function registerChangesetRoutes(app: FastifyInstance, ctx: ContentRouteContext): Promise<void> {
   /** cChangesets.list: one page of the site's change sets narrowed by the filters. */
-  app.get<{ Params: SiteParams; Reply: AdminViewModel }>(LIST_PATH, { config: circuitRouteConfig(CIRCUIT) }, async (request) => {
+  app.get<{ Params: SiteParams }>(LIST_PATH, { config: circuitRouteConfig(CIRCUIT) }, async (request, reply) => {
     const actor = await requireCircuitAccess(request, ctx, CIRCUIT, request.params.siteid);
-    return listModel(ctx, actor, requestRc(request, request.params));
+    const body = await listBody(ctx, actor, requestRc(request, request.params));
+    return reply.type(VIEW_MODEL_CONTENT_TYPE).send(body);
   });
 
   /** cChangesets.save: `read(rc.changesetID).set(rc).save()` once the token validates, then the list redirect or the edit view. */
-  app.post<{ Params: SiteParams; Reply: AdminWriteResult }>(LIST_PATH, { config: circuitRouteConfig(CIRCUIT) }, async (request, reply) => {
+  app.post<{ Params: SiteParams }>(LIST_PATH, { config: circuitRouteConfig(CIRCUIT) }, async (request, reply): Promise<AdminWriteResult | FastifyReply> => {
     const actor = await requireCircuitAccess(request, ctx, CIRCUIT, request.params.siteid);
     const rc = requestRc(request, request.params);
     if (!(await changesetTokenValid(request, reply, requiredRcText(rc, 'changesetid')))) {
@@ -296,19 +351,20 @@ export async function registerChangesetRoutes(app: FastifyInstance, ctx: Content
       return { saved: true, errors: {}, redirect: adminRedirect('cChangesets.list', rc, ['changesetID', 'siteID']) };
     }
     // The menu prints nothing for the `save` action, so the re-rendered view needs no preview link.
-    const model = await editModel(ctx, actor, result.changeset, request.params.siteid);
-    return { saved: false, errors: result.errors, redirect: null, data: { rc: model } };
+    const body = await editBody(ctx, actor, result.changeset, request.params.siteid, (model) => ({ saved: false, errors: result.errors, redirect: null, data: { rc: model } }));
+    return reply.type(VIEW_MODEL_CONTENT_TYPE).send(body);
   });
 
   /** cChangesets.edit: `changesetManager.read(rc.changesetID)` and the edit view's data. */
-  app.get<{ Params: ChangesetParams; Reply: AdminViewModel }>(CHANGESET_PATH, { config: circuitRouteConfig(CIRCUIT) }, async (request) => {
+  app.get<{ Params: ChangesetParams }>(CHANGESET_PATH, { config: circuitRouteConfig(CIRCUIT) }, async (request, reply) => {
     const actor = await requireCircuitAccess(request, ctx, CIRCUIT, request.params.siteid);
     const bean = await readChangeset(ctx.domain, actor, request.params.changesetid);
     // The menu previews a stored, unpublished change set at the site's complete web path.
     if (!bean.isnew && !bean.published) {
       throw siteSettingsUnavailable('cChangesets.edit prints a preview URL built from site settings this service does not hold');
     }
-    return { rc: await editModel(ctx, actor, bean, request.params.siteid) };
+    const body = await editBody(ctx, actor, bean, request.params.siteid, (rc) => ({ rc }));
+    return reply.type(VIEW_MODEL_CONTENT_TYPE).send(body);
   });
 
   /** cChangesets.delete: the change set is thrown in the trash and deleted once the token validates; always the list redirect. */
@@ -339,9 +395,10 @@ export async function registerChangesetRoutes(app: FastifyInstance, ctx: Content
   });
 
   /** cChangesets.assignments: the assigned versions per module, narrowed by `rc.keywords`. */
-  app.get<{ Params: ChangesetParams; Reply: AdminViewModel }>(ASSIGNMENTS_PATH, { config: circuitRouteConfig(CIRCUIT) }, async (request) => {
+  app.get<{ Params: ChangesetParams }>(ASSIGNMENTS_PATH, { config: circuitRouteConfig(CIRCUIT) }, async (request, reply) => {
     const actor = await requireCircuitAccess(request, ctx, CIRCUIT, request.params.siteid);
-    return assignmentsModel(ctx, actor, requestRc(request, request.params));
+    const body = await assignmentsBody(ctx, actor, requestRc(request, request.params));
+    return reply.type(VIEW_MODEL_CONTENT_TYPE).send(body);
   });
 
   /** cChangesets.removeitem: detaches the version once the token validates; always the assignments redirect. */

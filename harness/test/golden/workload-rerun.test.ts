@@ -383,16 +383,18 @@ function secretStore(): SecretStore {
   };
 }
 
-/** Rows for the catalogue's seeded references, carrying the fields their `where` placeholders read. */
+/** Rows for the catalogue's seeded references and session sites, carrying the fields their placeholders read. */
 const SEED_STORE: SeedStore = {
   select: (ref) =>
     ref.source === 'reserved'
       ? 'FIXTURE-RESERVED-0001'
-      : {
-          userID: 'FIXTURE-CATALOGUE-USER',
-          timesheet_id: 'FIXTURE-CATALOGUE-SHEET',
-          contentID: 'FIXTURE-CATALOGUE-CONTENT',
-        },
+      : ref.path === 'masa.sites'
+        ? { siteID: 'tenant-a', domain: 'tenant-a.localhost' }
+        : {
+            userID: 'FIXTURE-CATALOGUE-USER',
+            timesheet_id: 'FIXTURE-CATALOGUE-SHEET',
+            contentID: 'FIXTURE-CATALOGUE-CONTENT',
+          },
   businessDate: () => '2026-06-30',
 };
 

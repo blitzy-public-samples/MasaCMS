@@ -11,7 +11,7 @@ import {
 } from '@opt2/platform/migration-kit';
 import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-compat';
 import type { TenantTx } from '@opt2/platform/tenancy';
-import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   DuplicateArchiveError,
   LegacyStorageError,
@@ -126,18 +126,18 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
     return issued;
   }
 
-  /** The JSON plan of the first statement on `table` that `call` issues, planned over filler rows with sequential scans off; nothing persists. */
-  function planOf(call: (tx: TenantTx) => Promise<unknown>, table: string): Promise<string> {
+  /** The JSON plan of the first statement on `table` that `call` issues, with sequential scans off, in tenant A over filler rows or in `analyzedTenant` over its committed ones; nothing persists. */
+  function planOf(call: (tx: TenantTx) => Promise<unknown>, table: string, analyzedTenant?: string): Promise<string> {
     return inTenant(async (tx) => {
       const statement = (await issuedBy(tx, call)).find(([sql]) => sql.includes(`"${handle.schema}"."${table}"`));
       if (statement === undefined) throw new Error(`no statement reads ${table}`);
       await tx.query('SAVEPOINT plan');
-      await tx.query((FILLERS[table] ?? '').replaceAll('<s>', handle.schema), [tx.tenantId]);
+      if (analyzedTenant === undefined) await tx.query((FILLERS[table] ?? '').replaceAll('<s>', handle.schema), [tx.tenantId]);
       await tx.query('SET LOCAL enable_seqscan = off');
       const plan = JSON.stringify((await tx.query(`EXPLAIN (FORMAT JSON) ${statement[0]}`, statement[1])).rows);
       await tx.query('ROLLBACK TO SAVEPOINT plan');
       return plan;
-    });
+    }, analyzedTenant);
   }
 
   function personInput(overrides: Partial<PersonInput> = {}): PersonInput {
@@ -1359,27 +1359,48 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect(none.filter((sql) => sql.includes(`"${handle.schema}"."${table}"`))).toEqual([]);
     });
 
-    it.each<[string, (tx: TenantTx) => Promise<unknown>, string, string, string]>([
-      ['findPerson', (tx) => repo.findPerson(tx, cfUuid()), 'person', 'person_tenant_ci_userid_uidx', 'userid'],
-      ['findPersons', (tx) => repo.findPersons(tx, [cfUuid()]), 'person', 'person_tenant_ci_userid_uidx', 'userid'],
-      ['findAddress', (tx) => repo.findAddress(tx, cfUuid()), 'user_address', 'user_address_tenant_ci_addressid_uidx', 'addressid'],
-      ['listAddresses', (tx) => repo.listAddresses(tx, cfUuid()), 'user_address', 'user_address_tenant_ci_userid_idx', 'userid'],
-      ['listAddressesOf', (tx) => repo.listAddressesOf(tx, [cfUuid()]), 'user_address', 'user_address_tenant_ci_userid_idx', 'userid'],
-      ['listInterestsOf', (tx) => repo.listInterestsOf(tx, [cfUuid()]), 'user_interest', 'user_interest_tenant_ci_key_uidx', 'userid'],
-      ['replaceTags', (tx) => repo.replaceTags(tx, { userId: cfUuid(), siteId: 'tenant-a', tags: null }), 'user_tag', 'user_tag_tenant_ci_userid_idx', 'userid'],
-      ['listFavorites', (tx) => repo.listFavorites(tx, cfUuid()), 'user_favorite', 'user_favorite_tenant_ci_userid_idx', 'userid'],
-      ['listExtendData', (tx) => repo.listExtendData(tx, [cfUuid()]), 'extend_data_user_activity', 'extend_data_user_activity_tenant_ci_baseid_idx', 'baseid'],
-      ['listExtendDataOf', (tx) => repo.listExtendDataOf(tx, [cfUuid()]), 'extend_data_user_activity', 'extend_data_user_activity_tenant_ci_baseid_idx', 'baseid'],
-      ['listExtendSets', (tx) => repo.listExtendSets(tx, [cfUuid()]), 'extend_set', 'extend_set_tenant_ci_subtypeid_idx', 'subtypeid'],
-      ['listExtendAttributes', (tx) => repo.listExtendAttributes(tx, { setIds: [cfUuid()] }), 'extend_attribute', 'extend_attribute_tenant_extendsetid_ci_idx', 'extendsetid'],
-      ['insertTrashIfAbsent', (tx) => repo.insertTrashIfAbsent(tx, { ...trashRow(), objectid: cfUuid() }), 'trash', 'trash_tenant_ci_objectid_uidx', 'objectid'],
-      ['findPersonArchive', (tx) => repo.findPersonArchive(tx, cfUuid()), 'person_archive', 'person_archive_tenant_ci_person_effective_uidx', 'person_id'],
-      ['listGroupNames', (tx) => repo.listGroupNames(tx, [cfUuid()]), 'group_name', 'group_name_tenant_ci_group_id_uidx', 'group_id'],
-      ['personTombstoneVersion', (tx) => repo.personTombstoneVersion(tx, cfUuid()), 'person_tombstone', 'person_tombstone_tenant_ci_userid_uidx', 'userid'],
-      ['countRosterOperations', (tx) => repo.countRosterOperations(tx, [cfUuid()]), 'roster_operation', 'roster_operation_tenant_ci_user_id_idx', 'user_id'],
-    ])('looks %s up through its case-insensitive index', async (_label, call, table, index, column) => {
-      const scan = planNodes(await planOf(call, table)).find((node) => node['Index Name'] === index);
-      expect(scan?.['Index Cond']).toMatch(new RegExp(`\\b${column}\\b`));
+    describe('planned over analyzed filler statistics', () => {
+      // Committed in a tenant no other test reads, then analyzed, so the plans no longer depend on the statistics autovacuum last gathered.
+      const tenant = TENANT_UMBRELLA.tenantId;
+
+      beforeAll(async () => {
+        await inTenant(async (tx) => {
+          for (const sql of Object.values(FILLERS)) await tx.query(sql.replaceAll('<s>', handle.schema), [tx.tenantId]);
+        }, tenant);
+        // Only the table owner may ANALYZE.
+        const client = await handle.migratorPool.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(`SET LOCAL ROLE "${handle.roles.owner}"`);
+          for (const table of Object.keys(FILLERS)) await client.query(`ANALYZE "${handle.schema}".${table}`);
+          await client.query('COMMIT');
+        } finally {
+          client.release();
+        }
+      });
+
+      it.each<[string, (tx: TenantTx) => Promise<unknown>, string, string, string]>([
+        ['findPerson', (tx) => repo.findPerson(tx, cfUuid()), 'person', 'person_tenant_ci_userid_uidx', 'userid'],
+        ['findPersons', (tx) => repo.findPersons(tx, [cfUuid()]), 'person', 'person_tenant_ci_userid_uidx', 'userid'],
+        ['findAddress', (tx) => repo.findAddress(tx, cfUuid()), 'user_address', 'user_address_tenant_ci_addressid_uidx', 'addressid'],
+        ['listAddresses', (tx) => repo.listAddresses(tx, cfUuid()), 'user_address', 'user_address_tenant_ci_userid_idx', 'userid'],
+        ['listAddressesOf', (tx) => repo.listAddressesOf(tx, [cfUuid()]), 'user_address', 'user_address_tenant_ci_userid_idx', 'userid'],
+        ['listInterestsOf', (tx) => repo.listInterestsOf(tx, [cfUuid()]), 'user_interest', 'user_interest_tenant_ci_key_uidx', 'userid'],
+        ['replaceTags', (tx) => repo.replaceTags(tx, { userId: cfUuid(), siteId: 'tenant-a', tags: null }), 'user_tag', 'user_tag_tenant_ci_userid_idx', 'userid'],
+        ['listFavorites', (tx) => repo.listFavorites(tx, cfUuid()), 'user_favorite', 'user_favorite_tenant_ci_userid_idx', 'userid'],
+        ['listExtendData', (tx) => repo.listExtendData(tx, [cfUuid()]), 'extend_data_user_activity', 'extend_data_user_activity_tenant_ci_baseid_idx', 'baseid'],
+        ['listExtendDataOf', (tx) => repo.listExtendDataOf(tx, [cfUuid()]), 'extend_data_user_activity', 'extend_data_user_activity_tenant_ci_baseid_idx', 'baseid'],
+        ['listExtendSets', (tx) => repo.listExtendSets(tx, [cfUuid()]), 'extend_set', 'extend_set_tenant_ci_subtypeid_idx', 'subtypeid'],
+        ['listExtendAttributes', (tx) => repo.listExtendAttributes(tx, { setIds: [cfUuid()] }), 'extend_attribute', 'extend_attribute_tenant_extendsetid_ci_idx', 'extendsetid'],
+        ['insertTrashIfAbsent', (tx) => repo.insertTrashIfAbsent(tx, { ...trashRow(), objectid: cfUuid() }), 'trash', 'trash_tenant_ci_objectid_uidx', 'objectid'],
+        ['findPersonArchive', (tx) => repo.findPersonArchive(tx, cfUuid()), 'person_archive', 'person_archive_tenant_ci_person_effective_uidx', 'person_id'],
+        ['listGroupNames', (tx) => repo.listGroupNames(tx, [cfUuid()]), 'group_name', 'group_name_tenant_ci_group_id_uidx', 'group_id'],
+        ['personTombstoneVersion', (tx) => repo.personTombstoneVersion(tx, cfUuid()), 'person_tombstone', 'person_tombstone_tenant_ci_userid_uidx', 'userid'],
+        ['countRosterOperations', (tx) => repo.countRosterOperations(tx, [cfUuid()]), 'roster_operation', 'roster_operation_tenant_ci_user_id_idx', 'user_id'],
+      ])('looks %s up through its case-insensitive index', async (_label, call, table, index, column) => {
+        const scan = planNodes(await planOf(call, table, tenant)).find((node) => node['Index Name'] === index);
+        expect(scan?.['Index Cond']).toMatch(new RegExp(`\\b${column}\\b`));
+      });
     });
   });
 });

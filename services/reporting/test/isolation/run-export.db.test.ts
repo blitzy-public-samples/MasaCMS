@@ -8,8 +8,7 @@ import type { RunExportResult } from '../../src/domain/run-export.js';
 import { EXPORT_BUCKET } from '../../src/repo/tables.js';
 import { RERUN_AT, defineExportRunTaskCases, defineExportRunnerCases, once, sheetRow, sheetsClient } from '../helpers/run-export-cases.js';
 
-// An unset PG_HOST skips the suite without probing the server.
-const PG_READY = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const PG_READY = await pgAvailable();
 
 /** A source read held open: `hold` signals `started`, then waits until `release` is called. */
 function heldRead(): { started: Promise<void>; hold: () => Promise<void>; release: () => void } {

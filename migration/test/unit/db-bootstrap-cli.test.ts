@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { validateLogRecord } from '@opt2/platform/logging';
 import { pg } from '@opt2/platform/tenancy';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { pgAvailable } from '@opt2/platform/testing';
 
 import type { MigrateIo } from '../../src/cli.js';
 import { loadConfig } from '../../src/config.js';
@@ -228,7 +229,7 @@ describe('main', () => {
   it('fails with one JSON line naming the variable an empty environment lacks, logged as a local record', async () => {
     const io = captureIo();
     expect(await main(['bootstrap', '--target', 'cloud'], io, {})).toBe(1);
-    const error = { type: 'EnvValidationError', message: 'db-bootstrap: invalid environment (OPT2_ENV)' };
+    const error = { type: 'EnvValidationError', message: 'db-bootstrap: invalid environment (OPT2_ENV: is required)' };
     expect(onlyJsonLine(io.out())).toEqual({ command: 'bootstrap', target: 'cloud', ok: false, error });
     const records = logRecords(io.err());
     expect(records).toHaveLength(1);
@@ -251,7 +252,8 @@ describe('main', () => {
     const io = captureIo();
     expect(await main(argv, io, source)).toBe(1);
     const [command, target] = [argv[0], argv[1]?.split('=')[1]];
-    const error = { type: 'BootstrapEnvError', message: `db-bootstrap: invalid environment (${missing})` };
+    const reasons = missing.split(', ').map((name) => `${name}: is required`).join('; ');
+    const error = { type: 'BootstrapEnvError', message: `db-bootstrap: invalid environment (${reasons})` };
     expect(onlyJsonLine(io.out())).toEqual({ command, target, ok: false, error });
     expect(logRecords(io.err())).toMatchObject([{ message: `${command} failed`, env: 'local', error }]);
     expect(`${io.out()}${io.err()}`).not.toContain(SAMPLE_PASSWORD);
@@ -281,7 +283,10 @@ describe('main', () => {
   it('names each badly formatted variable, never its value', async () => {
     const io = captureIo();
     expect(await main(['bootstrap', '--target', 'local'], io, { ...localSource(), PG_PORT: SECRET, OPT2_STATE_DIR: `relative/${SECRET}` })).toBe(1);
-    const error = { type: 'EnvValidationError', message: 'db-bootstrap: invalid environment (PG_PORT, OPT2_STATE_DIR)' };
+    const error = {
+      type: 'EnvValidationError',
+      message: 'db-bootstrap: invalid environment (PG_PORT: expected number; OPT2_STATE_DIR: must be an absolute path)',
+    };
     expect(onlyJsonLine(io.out())).toEqual({ command: 'bootstrap', target: 'local', ok: false, error });
     expect(logRecords(io.err())).toMatchObject([{ message: 'bootstrap failed', error }]);
     expect(`${io.out()}${io.err()}`).not.toContain(SECRET);
@@ -447,19 +452,7 @@ const PG_CONFIG: pg.ClientConfig = {
   connectionTimeoutMillis: 2000,
 };
 
-async function dedicatedPgReachable(): Promise<boolean> {
-  if (process.env.OPT2_DEDICATED_PG !== '1' || !process.env.PG_HOST || !process.env.PG_USER || !process.env.PG_DATABASE) return false;
-  const client = new pg.Client(PG_CONFIG);
-  try {
-    await client.connect();
-  } catch {
-    return false;
-  }
-  await client.end();
-  return true;
-}
-
-const dedicated = await dedicatedPgReachable();
+const dedicated = process.env.OPT2_DEDICATED_PG === '1' && (await pgAvailable());
 
 describe.skipIf(!dedicated)('opt2-db bootstrap against a dedicated PostgreSQL cluster', () => {
   const owners = bootstrapOwners(config, 'local');

@@ -147,7 +147,10 @@ export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepos
   const reminderTable = qualified(schema, SURVEY_REMINDER.table);
   const remindersSql = `SELECT reminder_id FROM ${reminderTable} WHERE survey_id = $1 ORDER BY length(task_name), task_name, reminder_id`;
   const reminderByTaskSql = `SELECT * FROM ${reminderTable} WHERE survey_id = $1 AND task_name = $2`;
-  const targetsSql = `SELECT siteid, group_name FROM ${qualified(schema, SURVEY_TARGET.table)} WHERE survey_id = $1`;
+  const targetTable = qualified(schema, SURVEY_TARGET.table);
+  // $2 holds the collated input sites, so only stored targets an input pair can repeat are read.
+  const targetsAtSitesSql = `SELECT siteid, group_name FROM ${targetTable} WHERE survey_id = $1 AND lower(rtrim(siteid)) = ANY($2::text[])`;
+  const targetCountSql = `SELECT count(*)::integer AS total FROM ${targetTable} WHERE survey_id = $1`;
   // Grant upkeep reads raw, not through base.read: migration applies skip the unit gate, and a gated read would wait out their own window.
   const lockTargetSql = `SELECT survey_id, siteid FROM ${qualified(schema, SURVEY_TARGET.table)} WHERE target_id = $1 FOR UPDATE`;
   const targetSitesSql = `SELECT siteid FROM ${qualified(schema, SURVEY_TARGET.table)} WHERE survey_id = $1`;
@@ -272,11 +275,11 @@ export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepos
   ): Promise<TargetInsertResult> {
     const survey = await lockParent(tx, surveyId, SURVEY_TARGET.table);
     await lockSurveyGrants(tx, [survey.survey_id]);
-    const existing = await base.read(
-      tx,
-      SURVEY_TARGET.unit,
-      async () => (await tx.query<Pick<SurveyTargetRow, 'siteid' | 'group_name'>>(targetsSql, [survey.survey_id])).rows,
-    );
+    const sites = [...new Set(pairs.map(({ siteId }) => collated(siteId)))];
+    const { existing, stored } = await base.read(tx, SURVEY_TARGET.unit, async () => ({
+      existing: (await tx.query<Pick<SurveyTargetRow, 'siteid' | 'group_name'>>(targetsAtSitesSql, [survey.survey_id, sites])).rows,
+      stored: (await tx.query<{ total: number }>(targetCountSql, [survey.survey_id])).rows[0]?.total ?? 0,
+    }));
     const targeted = new Set(existing.map((target) => targetKey(target.siteid, target.group_name)));
     const created = clock.now();
     let inserted = 0;
@@ -296,7 +299,7 @@ export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepos
       await base.insert(tx, SURVEY_TARGET.table, row, ctx);
       inserted += 1;
     }
-    return { inserted, total: existing.length + inserted };
+    return { inserted, total: stored + inserted };
   }
 
   function insertResponse(

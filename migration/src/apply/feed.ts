@@ -39,6 +39,7 @@ import {
   reconcileUnits,
   writeReconciliationReport,
   type ObjectEntry,
+  type ReconcileReport,
   type ReconcileResult,
   type TargetUnitRows,
   type UnitTableShape,
@@ -119,6 +120,11 @@ export type FeedFilesResult =
   | { status: 'skipped-target-authoritative'; units: string[] }
   | { status: 'not-applicable'; reason: string }
   | { status: 'halted'; reason: string };
+
+/** The `feed` block of `reconciliation/after-feed-<n>.json`: when the feed run began; the report's `generatedAt` is when it ended. */
+export interface FeedReportBlock {
+  startedAt: string;
+}
 
 /** Outcome of {@link runFeed}; `bases` holds the base snapshot per table and owner, `exitCode` is 0 only for a zero-difference point. */
 export interface FeedResult {
@@ -591,6 +597,7 @@ function describeResult(result: TableDiffResult): string {
  * @throws FeedBaselineMissingError before any snapshot is taken.
  */
 export async function runFeed(ctx: FeedContext, options: FeedOptions = {}): Promise<FeedResult> {
+  const feed: FeedReportBlock = { startedAt: ctx.clock.now().toISOString() };
   const authority = await currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths });
   const writableUnits = legacyUnits(ctx, authority);
   const resumed = options.snapshotSeq === undefined ? null : await readySnapshot(ctx, options.snapshotSeq);
@@ -621,7 +628,8 @@ export async function runFeed(ctx: FeedContext, options: FeedOptions = {}): Prom
 
   const point = `after-feed-${String(to.seq)}`;
   const report = await reconcileUnits(ctx, { point, units: reconciledUnits(ctx, writableUnits, files), database: to.databaseName, snapshotSeq: to.seq });
-  const reportPath = await writeReconciliationReport(ctx, report);
+  const written: ReconcileReport & { feed: FeedReportBlock } = { ...report, feed };
+  const reportPath = await writeReconciliationReport(ctx, written);
   return {
     snapshotSeq: to.seq,
     tableVersion: authority.tableVersion,

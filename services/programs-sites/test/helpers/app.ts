@@ -32,14 +32,13 @@ import {
 } from '@opt2/platform/tasks';
 import {
   CSRF_CONSUME_PATH,
-  baseEnvSchema,
   loadEnv,
   type Clock,
   type FastifyInstance,
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
-import { buildApp, type BuildAppOptions } from '../../src/app.js';
+import { buildApp, programsSitesEnvSchema, type BuildAppOptions } from '../../src/app.js';
 
 export { fixedClock };
 
@@ -47,7 +46,7 @@ const SERVICE = 'programs-sites';
 const SCHEMA = 'programs_sites';
 const STATE_DIR_PREFIX = 'opt2-programs-sites-';
 
-/** Raw environment that `loadEnv(baseEnvSchema)` accepts in local mode; an override of `undefined` removes the variable. */
+/** Raw environment that `loadEnv(programsSitesEnvSchema)` accepts in local mode; an override of `undefined` removes the variable. */
 export function testEnv(overrides: Readonly<Record<string, string | undefined>> = {}): Record<string, string> {
   const merged: Record<string, string | undefined> = {
     PORT: '8113',
@@ -953,7 +952,7 @@ export async function buildTestApp(
   };
   let app: FastifyInstance | undefined;
   try {
-    const parsed = loadEnv(baseEnvSchema, env);
+    const parsed = loadEnv(programsSitesEnvSchema, env);
     await writeTestSecrets(parsed.OPT2_STATE_DIR);
     const clock = opts.clock ?? TEST_CLOCK;
     let recording: RecordingDb | undefined;

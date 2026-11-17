@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../../src/config.js';
 import type { CutoverStatus, GatewayClient } from '../../src/cutover/gateway-client.js';
 import type { MigrationEnv } from '../../src/env.js';
-import type { DataOwner, OwnersClient } from '../../src/owners/index.js';
+import type { DataOwner, OwnersClient, PositionParams } from '../../src/owners/index.js';
 import { defaultBackgroundRecord, type BackgroundRecord, type BackgroundStateApi } from '../../src/quiesce/background.js';
 import { ResumeReconcileError, resume, type ResumeContext, type ResumeOptions } from '../../src/quiesce/resume.js';
 import {
@@ -194,8 +194,19 @@ async function world(monitor: SiteMonitorRecord | null = null) {
     close: vi.fn<() => Promise<void>>(() => Promise.resolve()),
   } satisfies PubSubLike;
 
-  const position = (owner: string): Promise<PositionResponse> =>
-    Promise.resolve({ owner, position: '4242', outbox: null, inbox: null, published: [] } as PositionResponse);
+  // Every publisher's outbox holds no published event, so each listing is one complete, empty page.
+  const position = (owner: string, params?: PositionParams): Promise<PositionResponse> => {
+    const after = params?.publishedAfter ?? '0';
+    return Promise.resolve({
+      owner,
+      position: '4242',
+      outbox: null,
+      inbox: null,
+      ...(params?.publishedTopics === undefined
+        ? {}
+        : { published: [], publishedNext: after, publishedComplete: true, publishedFrontier: params.publishedThrough ?? after, publishedUpTo: 0 }),
+    });
+  };
   const owners = new Proxy({} as OwnersClient, {
     get(_target, member) {
       if (member !== 'position') throw new Error(`owners.${String(member)} was read`);

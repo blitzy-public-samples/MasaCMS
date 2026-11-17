@@ -12,10 +12,11 @@ import {
 import {
   cfEq,
   cfListToArray,
+  cfcookieNeverCookie,
+  cookieScopeNeverCookie,
   fallbackSiteId,
   parseCookieHeader,
   portcullisScan,
-  setCookieLegacy,
   type PortcullisInput,
   type PortcullisScope,
 } from '@opt2/platform/legacy-compat';
@@ -52,12 +53,16 @@ export interface AdminRequestInput {
   readonly params: { readonly circuit?: string; readonly action?: string };
   /** The query web received; in page mode it holds the original query followed by the posted fields. */
   readonly searchParams: URLSearchParams | Readonly<Record<string, string | readonly string[] | undefined>>;
+  /** Path and query of the request web received; the browser's own on the `/opt2` routes the gateway forwards unchanged. */
+  readonly receivedTarget: string;
   readonly headers: Headers;
   /** The parsed body of redirect and raw requests. */
   readonly form?: FormData | URLSearchParams;
   readonly auth: WebAuth;
   readonly gateway: GatewayClient;
   readonly mode: AdminMode;
+  /** The request's clock; the current time when absent. */
+  readonly now?: Date;
 }
 
 /** FW/1 `request.context`: simple values under case-insensitive keys, read-only. */
@@ -193,6 +198,8 @@ export interface AdminRequest {
   readonly ses: boolean;
   /** `rc.currentURL`: `./` plus the URL scope as `?&name=value…`. */
   readonly currentUrl: string;
+  /** The browser's request target, path and query: {@link ORIGINAL_URL_HEADER} when the gateway sent it, else web's own. */
+  readonly requestTarget: string;
   readonly session: AdminSessionState;
   readonly sessionWrites: Readonly<AdminSessionWrites>;
   /** Undefined when programs-sites does not let this user read the session site. */
@@ -895,17 +902,14 @@ export function urlEncodedFormat(value: string): string {
   return encodeURIComponent(value).replace(/[-_.!~*'()]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
-// ACF 2023 writes `cookie.rb` assignments URL-encoded and with SameSite=Lax; utility.setCookie's cfcookie adds neither.
-const COOKIE_SCOPE_SUFFIX = 'SameSite=Lax;';
-
-/** The `Set-Cookie` values the admin set-up writes, applied to `cookies`, in the order ACF emits them. */
-function adminCookies(cookies: Map<string, string>, rcRb: string): string[] {
-  const config = { secureCookies: legacySettings().secureCookies };
+/** The `Set-Cookie` values the admin set-up writes at `now`, applied to `cookies`, in the order ACF emits them. */
+function adminCookies(cookies: Map<string, string>, rcRb: string, now: Date): string[] {
+  const { secureCookies } = legacySettings();
   const pending: string[] = [];
+  // ACF writes `cookie.rb` assignments URL-encoded, keeping the case of a `param` default and upper-casing the rest.
   const cookieScope = (name: string, value: string, maintainCase: boolean): void => {
     const encoded = urlEncodedFormat(value);
-    const cookie = setCookieLegacy({ name, value: encoded, expires: 'never', httpOnly: true, maintainCase }, config);
-    pending.push(`${cookie}${COOKIE_SCOPE_SUFFIX}`);
+    pending.push(cookieScopeNeverCookie(maintainCase ? name : name.toUpperCase(), encoded, secureCookies, now));
     cookies.set(name, encoded);
   };
   if (!cookies.has('rb')) cookieScope('rb', '', true);
@@ -915,7 +919,7 @@ function adminCookies(cookies: Map<string, string>, rcRb: string): string[] {
     ['ADMINSIDEBAR', 'off'],
   ] as const) {
     if (cookies.has(name)) continue;
-    pending.push(setCookieLegacy({ name, value, expires: 'never', httpOnly: false, maintainCase: true }, config));
+    pending.push(cfcookieNeverCookie(name, value, secureCookies, now));
     cookies.set(name, value);
   }
   return pending;
@@ -1019,7 +1023,7 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
 
   const cookies = parseCookieHeader(headers.get('cookie') ?? undefined);
   const rcRb = rc.get('rb') ?? '';
-  const pendingSetCookies = adminCookies(cookies, rcRb);
+  const pendingSetCookies = adminCookies(cookies, rcRb, input.now ?? new Date());
   if (rcRb !== '') write('rb', rcRb);
   write('dashboardSpan', dashboardSpanFor(settings.sessionHistory));
 
@@ -1078,6 +1082,7 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
     relayScopes,
     ses: scopes.pathInfo.length > 0,
     currentUrl: currentUrlOf(url),
+    requestTarget: headers.get(ORIGINAL_URL_HEADER) ?? input.receivedTarget,
     session: { ...session, dateKey },
     sessionWrites,
     site,

@@ -187,8 +187,23 @@ function installTable(db: RecordingDb, table: string, key: readonly string[], se
   };
   const byKey = (a: Row, b: Row): number => key.map((column) => text(a[column])).join('/').localeCompare(key.map((column) => text(b[column])).join('/'));
   const byName = (a: Row, b: Row): number => text(a.name).toLowerCase().localeCompare(text(b.name).toLowerCase()) || byKey(a, b);
-  db.respond(new RegExp(`^(?:SELECT|INSERT|UPDATE|DELETE)\\b.*"content"\\."${table}"(?: |$)`), (params, sql, ctx) => {
+  /** A category tree walk over `site`'s rows from the top level, each level by name; `withKids` descends only rows with children. */
+  const walked = (rows: readonly Row[], site: readonly Row[], withKids: boolean): Row[] => {
+    const out: Row[] = [];
+    const visit = (parent: Row | null, depth: number): void => {
+      const level = site.filter((row) => (parent === null ? row.parentid === null : row.parentid !== null && sqlEq(row.parentid, parent.categoryid)));
+      for (const row of level.sort(byName)) {
+        const haskids = rows.filter((kid) => kid.parentid !== null && sqlEq(kid.parentid, row.categoryid)).length;
+        out.push({ ...row, haskids, depth, cycle: null });
+        if (!withKids || haskids > 0) visit(row, depth + 1);
+      }
+    };
+    visit(null, 0);
+    return out;
+  };
+  db.respond(new RegExp(`^(?:SELECT|INSERT|UPDATE|DELETE|WITH RECURSIVE)\\b.*"content"\\."${table}"(?: |$)`), (params, sql, ctx) => {
     const rows = tenantRows(ctx.tenantId);
+    if (sql.startsWith('WITH RECURSIVE tree AS ')) return walked(rows, rows.filter((row) => sqlEq(row.siteid, params[1])), sql.includes(' AND w.haskids > 0)'));
     if (sql.startsWith('INSERT ')) {
       const row = insertedRow({ sql, params });
       rows.push(row);

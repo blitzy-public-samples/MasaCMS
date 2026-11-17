@@ -31,8 +31,7 @@ type InboxRow = { event_id: string; status: string };
 
 const POOL_KINDS: readonly PoolKind[] = ['publicUser', 'privateUser', 'category', 'file', 'display'];
 
-// An unset PG_HOST skips the suite without probing the server.
-const pgReady = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const pgReady = await pgAvailable();
 
 /** A site.changed envelope of `fixture`'s site at `version`, carrying its fixture registry payload with `overrides` applied. */
 function siteEnvelope(fixture: TenantFixture, version: number, overrides: Partial<SiteChangedPayload> = {}): EventEnvelope<SiteChangedPayload> {

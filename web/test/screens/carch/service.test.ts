@@ -1,6 +1,8 @@
 // carch strategies-content calls over the tenant-a fixtures: write outcomes, relayed bytes, denials, session effects
 // and trust.
 import { readFileSync } from 'node:fs';
+import { PassThrough, Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { secure } from '@/lib/access-gate';
 import { GatewayUnavailableError, type MultipartBody, type ServicePath } from '@/lib/gateway-client';
@@ -224,6 +226,35 @@ describe('relayCarchRaw', () => {
     expect(ctx.req.sessionWrites).toEqual({});
   });
 
+  it.each<[string, 'GET' | 'POST', FakeReply, RawBody, typeof Readable | typeof Buffer]>([
+    ...(['GET', 'POST'] as const).map((method): [string, 'GET' | 'POST', FakeReply, RawBody, typeof Readable] => [
+      `a ${method} 2xx download as a stream`,
+      method,
+      replyOf(downloaddataRelay),
+      {
+        status: 200,
+        contentType: 'application/msexcel',
+        body: CSV_BYTES,
+        headers: { 'content-disposition': `attachment;filename=${DOWNLOADDATA_FILENAME}`, expires: '0' },
+      },
+      Readable,
+    ]),
+    [
+      'a streamed 404 as its bytes',
+      'GET',
+      { status: 404, headers: { 'content-type': JSON_TYPE }, body: notFound },
+      { status: 404, contentType: JSON_TYPE, body: Buffer.from(notFound) },
+      Buffer,
+    ],
+  ])('relays %s when asked to stream', async (_name, method, reply, expected, bodyType) => {
+    const ctx = carchContext({ [svc(method, rawPath('downloaddata'))]: reply });
+
+    const raw = await relayCarchRaw(ctx, 'downloaddata', method, { stream: true });
+
+    expect(raw).toEqual({ ...expected, body: expect.any(bodyType) });
+    expect(raw.body instanceof Readable ? await buffer(raw.body) : raw.body).toEqual(expected.body);
+  });
+
   it('posts a non-image upload part unchanged', async () => {
     // `%PDF-1.4`, then the binary comment line PDF writers emit.
     const pdf = Uint8Array.from([
@@ -391,6 +422,16 @@ describe('relayed session effects', () => {
     await expect(relayCarchRaw(ctx, 'loadsitesection', 'GET')).rejects.toBeInstanceOf(error);
     expect(ctx.req.session.openSectionList).toBe('');
     expect(ctx.req.sessionWrites).toEqual({});
+  });
+
+  it('destroys a streamed answer whose session values it refuses', async () => {
+    const producer = new PassThrough();
+    producer.write('"a"\r\n');
+    const reply = { status: 200, headers: { 'content-type': 'application/msexcel', [EFFECTS_HEADER]: '[]' }, body: producer };
+    const ctx = carchContext({ [svc('GET', rawPath('downloaddata'))]: reply });
+
+    await expect(relayCarchRaw(ctx, 'downloaddata', 'GET', { stream: true })).rejects.toBeInstanceOf(TypeError);
+    expect(producer.destroyed).toBe(true);
   });
 });
 

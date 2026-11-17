@@ -76,9 +76,9 @@ function codeList(values: readonly string[]): string {
   return sorted(values).map(code).join(', ');
 }
 
-/** Minute `minute` of the rehearsal's hour. */
-function t(minute: number): string {
-  return `2026-06-30T10:${String(minute).padStart(2, '0')}:00.000Z`;
+/** Minute `minute`, second `second` of the rehearsal's hour. */
+function t(minute: number, second = 0): string {
+  return `2026-06-30T10:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}.000Z`;
 }
 
 /** R derived over the configured roster route keys and units. */
@@ -308,6 +308,11 @@ describe('computeRollbackSet', () => {
 
 const FIXTURE_SET = derive(fixtureGroups());
 const LOGIN_SET = derive(rosterWithLogin(), MERGED_FROM, MERGED_TO);
+const LEGACY_LOGIN_SET = derive(
+  rosterWithLogin(),
+  { ...MERGED_FROM, groupAuthority: { ...MERGED_FROM.groupAuthority, [FIXTURE_GROUP_IDS.roster]: 'legacy' } },
+  MERGED_TO,
+);
 const OUTCOME_IDS: string[] = [...REHEARSAL_SCENARIOS, SESSION_SCENARIO];
 const SCENARIO_LABELS: Readonly<Record<string, string>> = {
   'GS-PE-RH-01': 'roster create',
@@ -374,7 +379,6 @@ function completeInput(): RollbackReportInput {
     transition: transition('tr-rollback'),
     rebaseline: REBASELINE,
     reconciliation: { before: reconciliation('before', 'zero-difference'), after: reconciliation('after', 'zero-difference') },
-    parityGeneratedAt: t(25),
     scenarios: REHEARSAL_SCENARIOS.map((id) => outcome(id, 'pass')),
     session: outcome(SESSION_SCENARIO, 'pass'),
     fixtures: { available: true },
@@ -429,10 +433,25 @@ describe('renderRollbackReport', () => {
   it.each([
     { name: 'R without the login group', set: FIXTURE_SET, row: '| target-primary | target-primary | no |' },
     { name: 'R holding the login group', set: LOGIN_SET, row: '| target-primary | legacy-primary | yes |' },
+    {
+      name: 'R holding a login group v0002 already keeps legacy',
+      set: LEGACY_LOGIN_SET,
+      row: '| legacy-primary | legacy-primary | yes; already `legacy` in `v0002`, no mode switch |',
+    },
   ])('renders the session modes before and after the rollback for $name', ({ set, row }) => {
     const lines = renderRollbackReport({ ...completeInput(), set }).markdown.split('\n');
 
-    expect(lines.slice(lines.indexOf('## Session mode'), lines.indexOf('## Steps'))).toContain(row);
+    expect(lines.slice(lines.indexOf('## Session mode'), lines.indexOf('## Steps'))).toEqual([
+      '## Session mode',
+      '',
+      '| Before (`v0002`) | After (`v0003`) | `R` contains the `clogin.login` group |',
+      '|---|---|---|',
+      row,
+      '',
+      'Values are `target-primary` or `legacy-primary`; the mode changes only if `R` contains the group of `clogin.login` ' +
+        'and `v0002` has that group `target`-authoritative.',
+      '',
+    ]);
   });
 
   it.each([
@@ -620,6 +639,51 @@ describe('writeRollbackReport', () => {
         'Fixtures available: the rehearsal covers create, edit and the archive-to-blackout leg (GS-PE-RH-03).',
       ]),
     );
+  });
+
+  it('times the reconciliations, the rehearsal replays and the feed run between them in run order', async () => {
+    const reconciliationFile = (point: string, doc: object) => writeJson(reportFile(`reconciliation/${point}.json`), { result: 'zero-difference', ...doc });
+    const replayFile = (id: string, minute: number, tableVersion = ROLLBACK_VERSION) =>
+      writeJson(path.join(dirs.stateDir, 'golden', 'replay', `${id}.json`), {
+        sourceSha: TEST_SOURCE_SHA,
+        scenarioId: id,
+        replayedAt: t(minute),
+        origin: 'gateway',
+        tableVersion,
+        steps: [],
+        generatedAt: t(minute + 1),
+      });
+    await Promise.all([
+      writeJson(reportFile('transitions.json'), { transitions: [transition('tr-rollback')] }),
+      writeJson(reportFile('parity.json'), { scenarios: OUTCOME_IDS.map((id) => ({ id, result: 'pass' })) }),
+      reconciliationFile('rollback-before', { startedAt: t(5, 30), generatedAt: t(5, 50), tableVersion: ROLLBACK_FROM_VERSION }),
+      reconciliationFile('rollback-after', { startedAt: t(29), generatedAt: t(30), tableVersion: ROLLBACK_VERSION }),
+      reconciliationFile('after-feed-1', { generatedAt: t(26) }),
+      reconciliationFile('after-feed-3', { feed: { startedAt: t(10) }, generatedAt: t(11) }),
+      reconciliationFile('after-feed-43', { feed: { startedAt: t(27) }, generatedAt: t(28) }),
+      reconciliationFile('after-feed-44', { feed: { startedAt: t(31) }, generatedAt: t(32) }),
+      writeJson(rebaselineRecordPath(dirs.stateDir), REBASELINE),
+      ...REHEARSAL_SCENARIOS.map((id, index) => replayFile(id, 23 + index)),
+      replayFile(SESSION_SCENARIO, 2, ROLLBACK_FROM_VERSION),
+    ]);
+
+    const written = await writeRollbackReport(ctx);
+
+    const cells = (await readLines(written.reportPath))
+      .filter((line) => /^\| \d \| /.test(line))
+      .map((line) => line.slice(2, -2).split(' | ').slice(2));
+    expect(cells.slice(2, 4)).toEqual([
+      [t(4), t(5, 30), 'ok'],
+      [t(5, 30), t(5, 50), 'zero-difference'],
+    ]);
+    expect(cells.slice(5)).toEqual([
+      [t(20), t(22), 'ok (snapshot 42)'],
+      [t(23), t(26), 'pass'],
+      [t(27), t(28), 'zero-difference ([reconciliation/after-feed-43.json](reconciliation/after-feed-43.json))'],
+      [t(29), t(30), 'zero-difference'],
+    ]);
+    const times = cells.flatMap(([started = '', finished = '']) => [started, finished]);
+    expect(times).toEqual([...times].sort());
   });
 
   it('states unavailable fixtures and exits 1 when a reconciliation shows a difference', async () => {

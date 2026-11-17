@@ -6,15 +6,20 @@ import { UnitReadBlockedError, ensureUnitGates, withGatedTenant } from '@opt2/pl
 import { OutsideTenantTransactionError, tenantIdForSite, withMetadata, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
+  TARGET_PAGE_MAX,
   findSurvey,
   getSchedule,
   getSurvey,
+  getSurveySummary,
+  listReminderTaskKeys,
   listReminders,
   listResponses,
   listSchedulings,
   listSurveys,
-  listTargets,
+  listTargetPage,
+  targetsSite,
   type SurveyListFilters,
+  type TargetKey,
 } from '../../src/repo/queries.js';
 import { UNITS } from '../../src/repo/tables.js';
 
@@ -395,6 +400,201 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
     expect(await inTenant(tenantA, (tx) => findSurvey(tx, cfId(98)))).toBeNull();
   });
 
+  it('reads the summary as the detail without its targets, and no target row', async () => {
+    const surveyId = cfId(20);
+    await inTenant(tenantA, (tx) => seedDetail(tx, surveyId));
+    const seen: string[] = [];
+
+    const [summary, detail] = await inTenant(tenantA, async (tx) => [await getSurveySummary(recording(tx, seen), surveyId), await getSurvey(tx, surveyId)] as const);
+
+    const { targets: _targets, ...withoutTargets } = detail ?? { targets: [] };
+    expect(summary).toEqual(withoutTargets);
+    expect(seen.filter((text) => /\bsurvey_target\b/.test(text))).toEqual([]);
+    expect(await inTenant(tenantA, (tx) => getSurveySummary(tx, cfId(98)))).toBeNull();
+  });
+
+  describe('target pages', () => {
+    const surveyId = cfId(20);
+    const otherSurvey = cfId(23);
+    /** Targets of `surveyId` as [id, site, group]: case and trailing-space variants of one site, NULL and empty groups, inserted out of order. */
+    const TARGETS: readonly (readonly [number, string, string | null])[] = [
+      [109, 'tenant-b', 'Zeta'],
+      [101, 'tenant-a', 'beta'],
+      [112, 'Tenant-A', null],
+      [103, 'tenant-a', null],
+      [104, 'TENANT-A', 'Alpha'],
+      [113, 'tenant-a', ''],
+      [102, 'tenant-a', 'alpha'],
+      [111, 'tenant-b', null],
+      [105, 'tenant-a ', 'Beta'],
+      [110, 'Tenant-B', 'zeta'],
+      [106, 'tenant-a', 'gamma'],
+      [108, 'TENANT-B', ''],
+      [107, 'tenant-c', 'Board'],
+    ];
+    const isTargetPage = (text: string): boolean => /\bsurvey_target\b.*\bLIMIT\b/.test(text);
+
+    beforeEach(async () => {
+      await inTenant(tenantA, async (tx) => {
+        await insertSurvey(tx, surveyId, 'tenant-a', at(0));
+        await insertSurvey(tx, otherSurvey, 'tenant-a', at(1));
+        for (const [targetId, siteid, groupName] of TARGETS) {
+          await insert(tx, 'survey_target', { target_id: cfId(targetId), survey_id: surveyId, siteid, group_name: groupName, created: at(0) });
+        }
+        await insert(tx, 'survey_target', { target_id: cfId(199), survey_id: otherSurvey, siteid: 'tenant-d', group_name: null, created: at(0) });
+      });
+    });
+
+    /** Target ids of `surveyId` in the fixture's ORDER BY: site and group lower-cased under "C", a NULL group first, then id. */
+    function fixtureOrder(): Promise<string[]> {
+      return inTenant(tenantA, async (tx) =>
+        (
+          await tx.query<{ target_id: string }>(
+            `SELECT target_id FROM ${handle.schema}.survey_target WHERE survey_id = $1
+             ORDER BY lower(siteid) COLLATE "C", lower(group_name) COLLATE "C" NULLS FIRST, target_id`,
+            [surveyId],
+          )
+        ).rows.map((row) => row.target_id),
+      );
+    }
+
+    it.each([1, 2, 3, 6, 12, 13, TARGET_PAGE_MAX])(
+      'walks pages of %i in the fixture order, each page read in one LIMITed statement, the last with no next key',
+      async (limit) => {
+        const seen: string[] = [];
+        const pages = await inTenant(tenantA, async (tx) => {
+          const read: { ids: string[]; next: TargetKey | null }[] = [];
+          let after: TargetKey | undefined;
+          do {
+            const page = await listTargetPage(recording(tx, seen), surveyId, { limit, after });
+            read.push({ ids: page?.rows.map((row) => row.target_id) ?? [], next: page?.next ?? null });
+            after = page?.next ?? undefined;
+          } while (after !== undefined);
+          return read;
+        });
+
+        expect(pages.flatMap((page) => page.ids)).toEqual(await fixtureOrder());
+        expect(pages).toHaveLength(Math.ceil(TARGETS.length / limit));
+        expect(pages.every((page) => page.ids.length <= limit)).toBe(true);
+        expect(pages.map((page) => page.next === null)).toEqual(pages.map((_, i) => i === pages.length - 1));
+        expect(seen.filter(isTargetPage)).toHaveLength(pages.length);
+      },
+    );
+
+    it('lists every target in the fixture order, as the detail embeds them, in the detail columns', async () => {
+      const [page, detail] = await inTenant(
+        tenantA,
+        async (tx) => [await listTargetPage(tx, surveyId, { limit: TARGET_PAGE_MAX }), await getSurvey(tx, surveyId)] as const,
+      );
+
+      expect(page?.rows.map((row) => row.target_id)).toEqual(await fixtureOrder());
+      expect(detail?.targets).toEqual(page?.rows);
+      expect(Object.keys(page?.rows[0] ?? {})).toEqual(['target_id', 'survey_id', 'siteid', 'group_name', 'created']);
+    });
+
+    it('continues after the key of a target deleted since its page was read', async () => {
+      const ids = await fixtureOrder();
+      const first = await inTenant(tenantA, (tx) => listTargetPage(tx, surveyId, { limit: 4 }));
+      const after = first?.next ?? undefined;
+      await inTenant(tenantA, (tx) => tx.query(`DELETE FROM ${handle.schema}.survey_target WHERE target_id = $1`, [ids[3]]));
+
+      const rest = await inTenant(tenantA, (tx) => listTargetPage(tx, surveyId, { limit: TARGET_PAGE_MAX, after }));
+
+      expect(first?.rows.map((row) => row.target_id)).toEqual(ids.slice(0, 4));
+      expect(after?.[3]).toBe(ids[3]);
+      expect(rest?.rows.map((row) => row.target_id)).toEqual(ids.slice(4));
+      expect(rest?.next).toBeNull();
+    });
+
+    it('reads no target after the key of the last one, and null for an unknown survey', async () => {
+      const lastKey: TargetKey = ['tenant-c', true, 'board', cfId(107)];
+
+      expect((await fixtureOrder()).at(-1)).toBe(cfId(107));
+      expect(await inTenant(tenantA, (tx) => listTargetPage(tx, surveyId, { limit: 5, after: lastKey }))).toEqual({ rows: [], next: null });
+      expect(await inTenant(tenantA, (tx) => listTargetPage(tx, cfId(98), { limit: 5 }))).toBeNull();
+    });
+
+    it(`embeds more than ${String(TARGET_PAGE_MAX)} targets in the detail, read in pages of ${String(TARGET_PAGE_MAX)}`, async () => {
+      await inTenant(tenantA, (tx) =>
+        tx.query(
+          `INSERT INTO ${handle.schema}.survey_target (tenant_id, target_id, survey_id, siteid, group_name, created)
+           SELECT $1, lpad(n::text, 8, '0') || '-FFFF-BBBB-CCCCDDDDEEEEFFFF', $2, 'tenant-e', 'Group ' || n, $3 FROM generate_series(1, $4::integer) AS n`,
+          [tx.tenantId, surveyId, at(0), TARGET_PAGE_MAX],
+        ),
+      );
+      const seen: string[] = [];
+
+      const all = (await inTenant(tenantA, (tx) => getSurvey(recording(tx, seen), surveyId)))?.targets;
+
+      expect(all?.map((row) => row.target_id)).toEqual(await fixtureOrder());
+      expect(all).toHaveLength(TARGETS.length + TARGET_PAGE_MAX);
+      expect(seen.filter(isTargetPage)).toHaveLength(2);
+    });
+
+    it.each<[string, string, string, boolean]>([
+      ['its site as stored', surveyId, 'tenant-b', true],
+      ['a site in another case with trailing spaces', surveyId, 'TENANT-C  ', true],
+      ['a site with a leading space', surveyId, ' tenant-b', false],
+      ['a site only another survey targets', surveyId, 'tenant-d', false],
+      ['a site of another survey', otherSurvey, 'tenant-d', true],
+    ])('answers whether the survey targets %s in one EXISTS statement', async (_case, survey, site, expected) => {
+      const seen: string[] = [];
+
+      expect(await inTenant(tenantA, (tx) => targetsSite(recording(tx, seen), survey, site))).toBe(expected);
+      expect(seen.filter((text) => /\bsurvey_target\b/.test(text))).toEqual([expect.stringMatching(/^SELECT EXISTS \(/)]);
+    });
+  });
+
+  it.each([1, 2, 3, 10])('reads the reminder keys by offset, then task name by code unit, in keyset batches of %i', async (limit) => {
+    const surveyId = cfId(20);
+    const reminders: ReadonlyArray<[number, number, number]> = [
+      [61, 10, 30],
+      [62, 2, 30],
+      [63, 1, 600],
+      [64, 3, 0],
+      [65, 11, 30],
+      [66, 4, 0],
+    ];
+    await inTenant(tenantA, async (tx) => {
+      await insertSurvey(tx, surveyId, 'tenant-a', at(0));
+      for (const [reminderId, n, offset] of reminders) {
+        await insert(tx, 'survey_reminder', {
+          reminder_id: cfId(reminderId),
+          survey_id: surveyId,
+          offset_minutes: offset,
+          remind_at: at(offset),
+          task_name: `opt2-survey-${surveyId}-reminder-${n}`,
+          task_token_hash: HASH,
+        });
+      }
+    });
+    const seen: string[] = [];
+
+    const batches = await inTenant(tenantA, async (tx) => {
+      const read: { offset_minutes: number; task_name: string }[][] = [];
+      let after: readonly [number, string] | undefined;
+      do {
+        const batch = await listReminderTaskKeys(recording(tx, seen), surveyId, { limit, after });
+        read.push(batch);
+        const last = batch.at(-1);
+        after = batch.length === limit && last !== undefined ? [last.offset_minutes, last.task_name] : undefined;
+      } while (after !== undefined);
+      return read;
+    });
+
+    expect(batches.flat().map((key) => [key.offset_minutes, key.task_name.slice(key.task_name.lastIndexOf('-') + 1)])).toEqual([
+      [0, '3'],
+      [0, '4'],
+      [30, '10'],
+      [30, '11'],
+      [30, '2'],
+      [600, '1'],
+    ]);
+    expect(batches.every((batch) => batch.length <= limit)).toBe(true);
+    expect(Object.keys(batches[0]?.[0] ?? {}).sort()).toEqual(['offset_minutes', 'task_name']);
+    expect(seen.filter((text) => /\bsurvey_reminder\b.*\bLIMIT\b/.test(text))).toHaveLength(batches.length);
+  });
+
   it('reads the stored schedule, reminders, targets and responses of a survey', async () => {
     const surveyId = cfId(20);
     await inTenant(tenantA, (tx) => seedDetail(tx, surveyId));
@@ -403,15 +603,15 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
       await getSchedule(tx, surveyId),
       await getSchedule(tx, cfId(99)),
       await listReminders(tx, surveyId),
-      await listTargets(tx, surveyId),
+      (await listTargetPage(tx, surveyId, { limit: TARGET_PAGE_MAX }))?.rows,
       await listResponses(tx, surveyId, FULL_PAGE),
     ]);
 
     expect(schedule).toMatchObject({ schedule_id: cfId(21), task_token_hash: HASH, row_version: '2' });
     expect(unscheduled).toBeNull();
     expect(reminders.map((reminder) => reminder.offset_minutes)).toEqual([10, 20, 600]);
-    expect(targets.map((target) => target.target_id)).toEqual([43, 44, 42, 41].map(cfId));
-    expect(targets[0]).toMatchObject({ tenant_id: tenantA, group_name: null });
+    expect(targets?.map((target) => target.target_id)).toEqual([43, 44, 42, 41].map(cfId));
+    expect(targets?.[0]).toEqual({ target_id: cfId(43), survey_id: surveyId, siteid: 'tenant-a', group_name: null, created: at(0) });
     expect(responses.total).toBe(3);
     expect(responses.rows.map((response) => response.response_id)).toEqual([51, 52, 50].map(cfId));
     expect(responses.rows.map((response) => response.answers)).toEqual([ANSWERS, ANSWERS, ANSWERS]);
@@ -427,7 +627,10 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
       await getSchedule(tx, cfId(20)),
       await listReminders(tx, cfId(20)),
       await listSchedulings(tx, [cfId(20)]),
-      await listTargets(tx, cfId(20)),
+      await getSurveySummary(tx, cfId(20)),
+      await listTargetPage(tx, cfId(20), { limit: 10 }),
+      await listReminderTaskKeys(tx, cfId(20), { limit: 10 }),
+      await targetsSite(tx, cfId(20), 'tenant-a'),
       await listResponses(tx, cfId(20), FULL_PAGE),
     ]);
 
@@ -438,7 +641,10 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
       null,
       [],
       new Map([[cfId(20), { schedule: null, reminders: [] }]]),
+      null,
+      null,
       [],
+      false,
       { rows: [], total: 0 },
     ]);
     expect(await inTenant(tenantB, (tx) => findSurvey(tx, cfId(20)))).toMatchObject({ tenant_id: tenantB });
@@ -464,8 +670,14 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
     );
     const budget = { budgetMs: 300 };
 
-    await expect(withGatedTenant(handle.app, tenantA, (tx) => getSurvey(tx, cfId(1)), budget)).rejects.toBeInstanceOf(UnitReadBlockedError);
-    await expect(withGatedTenant(handle.app, tenantA, (tx) => listTargets(tx, cfId(1)), budget)).rejects.toBeInstanceOf(UnitReadBlockedError);
+    for (const read of [
+      (tx: TenantTx): Promise<unknown> => getSurvey(tx, cfId(1)),
+      (tx: TenantTx) => listTargetPage(tx, cfId(1), { limit: 10 }),
+      (tx: TenantTx) => targetsSite(tx, cfId(1), 'tenant-a'),
+    ]) {
+      await expect(withGatedTenant(handle.app, tenantA, read, budget)).rejects.toBeInstanceOf(UnitReadBlockedError);
+    }
+    expect(await withGatedTenant(handle.app, tenantA, (tx) => getSurveySummary(tx, cfId(1)), budget)).toBeNull();
     expect(await withGatedTenant(handle.app, tenantA, (tx) => listSurveys(tx, { siteId: 'tenant-a', ...FULL_PAGE }), budget)).toEqual({
       rows: [],
       total: 0,

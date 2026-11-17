@@ -1,6 +1,9 @@
 // Shared JSON API handler helpers of src/routes/jsonapi/types.ts. Feed cases follow what the Masa 7.6.1 oracle on
 // ACF 2023 answers for non-content entity queries (e.g. `comment?foo=bar` is ignored, `comment?offset=1` is a 500).
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import type { Actor } from '../../src/domain/context.js';
 import { CONTENT_ENTITIES } from '../../src/legacy/jsonapi-entities.js';
@@ -19,8 +22,11 @@ import {
   UnsupportedFeedQueryError,
   type BeanFeedOptions,
   type BeanFeedResult,
+  type BeanFeedSource,
+  type FeedOrderTerm,
   type JsonApiCall,
 } from '../../src/routes/jsonapi/types.js';
+import { scopeRows } from '../helpers/feed.js';
 
 type Row = Record<string, unknown>;
 
@@ -713,12 +719,269 @@ describe('beanFeedQuery', () => {
   });
 });
 
+describe('the scan evaluator of sources without a SQL form', () => {
+  const NAMES = ['alice', 'Alice', 'ÁLICE', 'bob', 'Bob ', 'carol', null, '', 'Йan', 'zed', 'a😀b'];
+
+  /** `count` comment rows whose names, dates and flag counts repeat and hold NULLs; `nan` makes some flag counts NaN. */
+  function rowsOf(count: number, nan = false): Row[] {
+    return Array.from({ length: count }, (_, i) => ({
+      commentid: `S${String(i).padStart(4, '0')}`,
+      name: NAMES[i % NAMES.length] ?? null,
+      entered: i % 13 === 0 ? null : new Date(2026, 0, 1 + (i % 6)),
+      flagcount: nan && i % 9 === 4 ? Number.NaN : i % 7 === 0 ? null : i % 4,
+      isapproved: i % 3,
+      siteid: 'tenant-a',
+      parentid: null,
+    }));
+  }
+
+  /** Comment rows whose names share a 2000-character prefix, so their order keys pass the sort's memory budget; `paired` repeats each name. */
+  function longNameRows(count: number, paired = false): Row[] {
+    return Array.from({ length: count }, (_, i) => ({
+      commentid: `L${String(i).padStart(4, '0')}`,
+      name: `${'n'.repeat(2000)}${String(paired ? Math.floor(i / 2) : (i * 7919) % count).padStart(4, '0')}`,
+      entered: new Date(2026, 0, 1 + (i % 3)),
+      flagcount: i % 5,
+      isapproved: 1,
+      siteid: 'tenant-a',
+      parentid: null,
+    }));
+  }
+
+  /**
+   * Hooks of {@link scanOnly}: a check after each batch, an abort at a batch of a scan, the rows each 1-based scan reads
+   * (a write between scans), and what a revisit answers in place of the rows at its positions.
+   */
+  interface ScanHooks {
+    afterBatch?: () => Promise<void>;
+    abort?: { scan: number; batch: number };
+    read?: (scan: number) => readonly Row[];
+    answer?: (rows: Row[]) => Row[];
+  }
+
+  /** A source over `rows` answering every query by scans only, `batch` rows at a time, as a source without a SQL form does. */
+  function scanOnly(rows: readonly Row[], hooks: ScanHooks = {}, batch = 7): BeanFeedSource<Row> {
+    const memory = rowsSource(rows);
+    let scans = 0;
+    return {
+      columns: memory.columns,
+      isEmpty: () => memory.isEmpty(),
+      filterThrows: () => Promise.resolve(undefined),
+      count: () => Promise.resolve({ kind: 'rows' }),
+      rows: () => Promise.reject(new Error('A scan-only source pages no rows itself')),
+      orders: () => false,
+      scan: async (_request, visit, revisit) => {
+        scans += 1;
+        const held = hooks.read?.(scans) ?? rows;
+        if (visit !== undefined) {
+          for (let from = 0, at = 1; from < held.length; from += batch, at += 1) {
+            if (hooks.abort?.scan === scans && hooks.abort.batch === at) throw new Error('aborted');
+            const more = await visit(held.slice(from, from + batch));
+            await hooks.afterBatch?.();
+            if (!more) break;
+          }
+        }
+        if (revisit === undefined) return [];
+        const found = (await revisit()).flatMap((position) => held.slice(position - 1, position));
+        return hooks.answer?.(found) ?? found;
+      },
+    };
+  }
+
+  /** What beanFeedQuery answers or raises for `raw` over `rows`. */
+  async function outcome(rows: readonly Row[] | BeanFeedSource<Row>, raw: string, options: BeanFeedOptions): Promise<unknown> {
+    const call = callFor({ raw });
+    try {
+      return { value: await beanFeedQuery(rows, call, options), url: { ...call.apiContext.url } };
+    } catch (err) {
+      const error = err as Error & { type?: unknown };
+      return { error: { name: error.constructor.name, message: error.message, type: error.type } };
+    }
+  }
+
+  const VARCHAR_ENTERED: BeanFeedOptions = { ...OPTIONS, hints: Object.fromEntries(Object.entries(COMMENT.hints).filter(([name]) => name !== 'entered')) };
+  const QUERIES = [
+    '', 'itemsPerPage=7', 'itemsPerPage=7&pageIndex=20', 'itemsPerPage=7&pageIndex=43', 'itemsPerPage=*', 'startIndex=5&itemsPerPage=4',
+    'sort=name', 'sort=-name&itemsPerPage=9&pageIndex=5', 'sort=name%2C-flagcount&itemsPerPage=5&pageIndex=9', 'sort=-flagcount%2Cname&itemsPerPage=11&pageIndex=3',
+    'sort=flagcount&itemsPerPage=13&pageIndex=2', 'name=*a*', 'name=*a*&sort=-entered&itemsPerPage=3&pageIndex=4', 'maxitems=10&sort=-name',
+    'countOnly=true', 'countOnly=true&name=*b*', 'name=begins%5E%5Ba-c%5D', 'name=begins%5E%5Ba-c%5D&sort=nope', 'countOnly=true&name=begins%5E%5Ba-c%5D',
+    'entered=x', 'entered=x&name=begins%5E%5Ba-c%5D', 'sort=entered', 'name=bob&sort=entered', 'name=zed&sort=entered%2Cname', 'sort=nope',
+  ];
+  const HINTED: readonly (readonly [string, BeanFeedOptions])[] = [
+    ['date entered', OPTIONS],
+    ['varchar entered', VARCHAR_ENTERED],
+  ];
+  const CASES = [false, true].flatMap((nan) =>
+    HINTED.flatMap(([hinted, options]) =>
+      QUERIES.map((raw): [string, string, string, BeanFeedOptions, boolean] => [nan ? 'NaN counts' : 'finite counts', hinted, raw, options, nan]),
+    ),
+  );
+
+  it.each(CASES)('answers rows with %s and a %s as the in-memory evaluator does: %s', async (_counts, _hinted, raw, options, nan) => {
+    const rows = rowsOf(300, nan);
+    expect(await outcome(scanOnly(rows), raw, options)).toEqual(await outcome(rows, raw, options));
+  });
+
+  it.each([
+    'sort=name&itemsPerPage=9&pageIndex=7', 'name=*a*&itemsPerPage=4&pageIndex=3', 'countOnly=true&name=*o*',
+    'sort=-flagcount%2Cname&itemsPerPage=50&pageIndex=2', 'name=begins%5E%5Ba-c%5D', 'sort=flagcount',
+  ])('merges scan-only sources as their concatenated rows answer: %s', async (raw) => {
+    const rows = rowsOf(300, true);
+    const merged = mergedSource([scanOnly(rows.slice(0, 120)), scanOnly(rows.slice(120))]);
+    expect(await outcome(merged, raw, OPTIONS)).toEqual(await outcome(rows, raw, OPTIONS));
+  });
+
+  /** rowsOf(300, true) with one `entered` value per 120/180-row part, so each part sorts alone but the parts' values compare. */
+  function oneEnteredEach(): Row[] {
+    return rowsOf(300, true).map((row, at) => (at === 17 || at === 211 ? row : { ...row, entered: null }));
+  }
+
+  it.each<[string, Row[], FeedOrderTerm, BeanFeedOptions, string]>([
+    ['complex values in both sources', oneEnteredEach(), { column: 'entered', field: 'entered', desc: true, type: 'varchar' }, VARCHAR_ENTERED, 'sort=-entered%2Cname&itemsPerPage=4&pageIndex=3'],
+    ['complex values in both sources', oneEnteredEach(), { column: 'entered', field: 'entered', desc: false, type: 'varchar' }, VARCHAR_ENTERED, 'sort=entered&itemsPerPage=5&pageIndex=2'],
+    ['NaN counts', rowsOf(300, true), { column: 'flagcount', field: 'flagcount', desc: false, type: 'numeric' }, OPTIONS, 'sort=flagcount&itemsPerPage=6&pageIndex=4'],
+    ['NaN counts', rowsOf(300, true), { column: 'flagcount', field: 'flagcount', desc: true, type: 'numeric' }, OPTIONS, 'sort=-flagcount%2Cname&itemsPerPage=50&pageIndex=2'],
+  ])('merges in-memory sources one sort must order, for %s, as their concatenated rows answer: %s', async (_label, rows, term, options, raw) => {
+    const parts = [rowsSource(rows.slice(0, 120)), rowsSource(rows.slice(120))];
+    // Each part sorts its own rows, but rows across the parts need the scan evaluator's one sort.
+    expect(await mergedSource(parts).count({ order: [term] })).toEqual({ kind: 'rows' });
+    expect(await outcome(mergedSource(parts), raw, options)).toEqual(await outcome(rows, raw, options));
+  });
+
+  describe('a merged page over a source written between its reads', () => {
+    const rows = rowsOf(300);
+    const first = rows.slice(0, 120);
+    const second = rows.slice(120);
+    const RAW = 'name=*a*&sort=name&itemsPerPage=6&pageIndex=2';
+
+    /** The page items beanFeedQuery answers for RAW over `source`. */
+    async function items(source: readonly Row[] | BeanFeedSource<Row>): Promise<Row[]> {
+      return page(await beanFeedQuery(source, callFor({ raw: RAW }), OPTIONS)).items;
+    }
+
+    /** The two parts merged, the second reading what `read` hands each of its scans, which `reads` records. */
+    function merged(read: (scan: number) => readonly Row[], reads: number[], answer?: (rows: Row[]) => Row[]): BeanFeedSource<Row> {
+      const hooks: ScanHooks = {
+        read: (scan) => {
+          reads.push(scan);
+          return read(scan);
+        },
+        ...(answer === undefined ? {} : { answer }),
+      };
+      return mergedSource([scanOnly(first), scanOnly(second, hooks)]);
+    }
+
+    it('ranks a page with rows of both parts once while neither changes', async () => {
+      const answered = await items(rows);
+      expect([answered.some((row) => first.includes(row)), answered.some((row) => second.includes(row))]).toEqual([true, true]);
+      const reads: number[] = [];
+      expect(await outcome(merged(() => second, reads), RAW, OPTIONS)).toEqual(await outcome(rows, RAW, OPTIONS));
+      // The count, the page's ranking, then its revisit.
+      expect(reads).toEqual([1, 2, 3]);
+    });
+
+    it.each<[string, (page: readonly Row[]) => Row[]]>([
+      ['a row the filter skips, inserted ahead of the page', () => [{ ...second[0], commentid: 'X0001', name: 'zed' }, ...second]],
+      ['a row tied with the page rows, inserted ahead of them', (shown) => [{ ...shown.at(-1), commentid: 'X0002' }, ...second]],
+      ['a row deleted ahead of the page', () => second.slice(1)],
+      ['a page row updated', (shown) => second.map((row) => (row === shown.at(-1) ? { ...row, parentid: 'C1' } : row))],
+    ])('ranks the page afresh after %s between the ranking and the revisit', async (_label, change) => {
+      const shown = await items(rows);
+      expect(second).toContain(shown.at(-1));
+      const after = change(shown);
+      const reads: number[] = [];
+      const answered = await items(merged((scan) => (scan < 3 ? second : after), reads));
+      expect(answered).toEqual(await items([...first, ...after]));
+      // The revisit answers rows the ranking did not rank there, so a second ranking and its revisit follow.
+      expect(reads).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it('fails the page closed when the part changes between every ranking and its revisit', async () => {
+      const after = second.map((row) => ({ ...row, parentid: 'C1' }));
+      const reads: number[] = [];
+      await expect(items(merged((scan) => (scan % 2 === 0 ? second : after), reads))).rejects.toMatchObject({
+        constructor: LegacyApiError,
+        type: 'server_error',
+      });
+      expect(reads).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    });
+
+    it.each<[string, (rows: Row[]) => Row[]]>([
+      ['one row short', (found) => found.slice(1)],
+      ['one row over', (found) => [...found, ...found.slice(0, 1)]],
+    ])('fails a page closed whose revisit answers %s of its positions', async (_label, answer) => {
+      const single: number[] = [];
+      const read = (scan: number): readonly Row[] => {
+        single.push(scan);
+        return rows;
+      };
+      const source = scanOnly(rows, { answer, read });
+      await expect(items(source)).rejects.toMatchObject({ constructor: LegacyApiError, type: 'server_error' });
+      // A source whose revisit reads the ranking's own snapshot is ranked once.
+      expect(single).toEqual([1, 2]);
+      const reads: number[] = [];
+      await expect(items(merged(() => second, reads, answer))).rejects.toMatchObject({ constructor: LegacyApiError, type: 'server_error' });
+      expect(reads).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    });
+  });
+
+  describe('order keys past the memory budget', () => {
+    let root: string;
+    let previous: string | undefined;
+
+    beforeEach(async () => {
+      previous = process.env['TMPDIR'];
+      root = await mkdtemp(path.join(tmpdir(), 'scan-evaluator-test-'));
+      process.env['TMPDIR'] = root;
+    });
+
+    afterEach(async () => {
+      if (previous === undefined) delete process.env['TMPDIR'];
+      else process.env['TMPDIR'] = previous;
+      await rm(root, { recursive: true, force: true });
+    });
+
+    const SPILLING: [string, Row[], BeanFeedOptions, string][] = [
+      ['a middle page', longNameRows(2000), OPTIONS, 'sort=name&itemsPerPage=3&pageIndex=300'],
+      ['every row, descending', longNameRows(2000), OPTIONS, 'sort=-name%2Cflagcount&itemsPerPage=*'],
+      ['the complex values a pair of tied names compares', longNameRows(2000, true), VARCHAR_ENTERED, 'sort=name%2Centered&itemsPerPage=1'],
+    ];
+
+    // Merged sources spill their rows' digests with the keys.
+    it.each(
+      ['one source', 'merged sources'].flatMap((kind) =>
+        SPILLING.map(([label, rows, options, raw]): [string, string, Row[], BeanFeedOptions, string] => [label, kind, rows, options, raw]),
+      ),
+    )('answers %s over %s from spilled keys and removes them', async (_label, kind, rows, options, raw) => {
+      let spilled = false;
+      const hooks: ScanHooks = {
+        afterBatch: async () => {
+          spilled ||= (await readdir(root)).length > 0;
+        },
+      };
+      const source = kind === 'one source' ? scanOnly(rows, hooks) : mergedSource([scanOnly(rows.slice(0, 900), hooks), scanOnly(rows.slice(900), hooks)]);
+      expect(await outcome(source, raw, options)).toEqual(await outcome(rows, raw, options));
+      expect(spilled).toBe(true);
+      expect(await readdir(root)).toEqual([]);
+    });
+
+    it.each([
+      ['the count scan', 1],
+      ['the page scan', 2],
+    ])('removes the spilled keys when %s is aborted', async (_label, scan) => {
+      const source = scanOnly(longNameRows(2000), { abort: { scan, batch: 250 } });
+      await expect(beanFeedQuery(source, callFor({ raw: 'sort=name&itemsPerPage=2&pageIndex=40' }), OPTIONS)).rejects.toThrow('aborted');
+      expect(await readdir(root)).toEqual([]);
+    });
+  });
+});
+
 describe('mergedSource', () => {
-  it('reads all rows of sources too large to spread into one call, in source order', async () => {
+  it('scans all rows of sources too large to spread into one call, in source order', async () => {
     const size = 150_000;
     const first: Row[] = Array.from({ length: size }, (_, i) => ({ id: i }));
     const second: Row[] = Array.from({ length: size }, (_, i) => ({ id: size + i }));
-    const rows = await mergedSource([rowsSource(first), rowsSource(second)]).all();
+    const rows = await scopeRows(mergedSource([rowsSource(first), rowsSource(second)]));
     expect(rows).toHaveLength(2 * size);
     expect([0, size - 1, size, 2 * size - 1].map((at) => rows[at]?.['id'])).toEqual([0, size - 1, size, 2 * size - 1]);
     expect(rows.every((row, at) => row['id'] === at)).toBe(true);

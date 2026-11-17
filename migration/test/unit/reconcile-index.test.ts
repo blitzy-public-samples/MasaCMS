@@ -264,7 +264,7 @@ describe('runReconcile', () => {
     const result = await runReconcile(contextOf(), { point: 'post-cutover', units: ['people.person'] }, fakeSources({ legacy: data, target: data }, calls));
 
     expect(result).toMatchObject({ point: 'post-cutover', result: 'zero-difference', exitCode: 0 });
-    expect(result.summary).toEqual({ units: 1, tenants: 1, unitsWithDifferences: 0, differences: 0, orphans: 0, haltedUnits: 0, skippedUnits: 0 });
+    expect(result.summary).toEqual({ units: 1, tenants: 1, unitsWithDifferences: 0, differences: 0, orphans: 0, haltedUnits: 0, skippedUnits: 0, emptyUnits: 0 });
     expect(result.reportPath).toBe(path.join(reportsDir, RECONCILIATION_DIR, 'post-cutover.json'));
     const written = JSON.parse(await readFile(result.reportPath, 'utf8')) as Record<string, unknown>;
     expect(written).toMatchObject({ sourceSha: PIN_SHA, point: 'post-cutover', legacyDatabase: LIVE_DB, legacySource: 'live', snapshotSeq: 0 });
@@ -272,6 +272,26 @@ describe('runReconcile', () => {
     const summary = await readFile(path.join(reportsDir, RECONCILIATION_DIR, 'summary.md'), 'utf8');
     expect(summary).toContain(`Source SHA: ${PIN_SHA}`);
     expect(summary).toContain('| post-cutover | [post-cutover.json](post-cutover.json) | v0002 | 1 | 0 | 0 | zero-difference |');
+  });
+
+  it('records when the comparison began, before the generatedAt of the written report', async () => {
+    const times: string[] = [];
+    const clock = {
+      now: (): Date => {
+        const at = new Date(Date.UTC(2026, 5, 30, 12, 0, times.length));
+        times.push(at.toISOString());
+        return at;
+      },
+    };
+    const data: Data = { [PERSON]: { [A]: [ann] } };
+    const ctx = { ...contextOf(), clock } as ReconcileContext;
+
+    const result = await runReconcile(ctx, { point: 'post-cutover', units: ['people.person'] }, fakeSources({ legacy: data, target: data }, calls));
+
+    const written = JSON.parse(await readFile(result.reportPath, 'utf8')) as { startedAt: string; generatedAt: string };
+    expect(written.startedAt).toBe(times[0]);
+    expect(written.generatedAt).toBe(times.at(-1));
+    expect(Date.parse(written.startedAt)).toBeLessThan(Date.parse(written.generatedAt));
   });
 
   it.each<[string, string, Fakes, object]>([
@@ -450,6 +470,31 @@ describe('reconcileUnits', () => {
     expect(report.units.find((entry) => entry.tenantId === B)?.differences).toEqual([expect.objectContaining({ kind: 'extra-in-target' })]);
     expect(report.units.find((entry) => entry.tenantId === UMBRELLA)).toMatchObject({ orphans: ['s2:U1'], orphanCount: 1, differenceCount: 0 });
     expect(report.summary).toMatchObject({ orphans: 1, unitsWithDifferences: 1 });
+  });
+
+  it('lists the unit tables and file units compared empty on both sides in every tenant and counts them among the units', async () => {
+    const [archiveTable] = realCatalog.legacyTablesOf('people.person_archive');
+    const blackoutTables = realCatalog.legacyTablesOf('timesheets.blackout').filter((table) => realCatalog.isMigratable(table));
+    const archive = `people.person_archive|${archiveTable ?? ''}`;
+    const fakes: Fakes = {
+      legacy: { [archive]: { [A]: [ann] } },
+      target: { [archive]: { [A]: [ann] } },
+      legacyObjects: { status: 'compared', byTenant: new Map() },
+    };
+    const report = await reconcileUnits(
+      contextOf(),
+      { point: 'rollback-before', units: ['timesheets.blackout', 'people.person_archive', FILE_UNIT], database: LIVE_DB },
+      fakeSources(fakes, calls),
+    );
+
+    expect(blackoutTables.length).toBeGreaterThan(0);
+    expect(report.units.map((entry) => `${entry.unit}/${entry.tenantId}`)).toEqual([`people.person_archive/${A}`]);
+    expect(report.emptyUnits).toEqual([
+      { unit: FILE_UNIT, legacyTable: null },
+      ...[...blackoutTables].sort().map((legacyTable) => ({ unit: 'timesheets.blackout', legacyTable })),
+    ]);
+    expect(report.summary).toMatchObject({ units: 3, emptyUnits: 2, unitsWithDifferences: 0, skippedUnits: 0 });
+    expect(report.result).toBe('zero-difference');
   });
 
   it("compares an uncatalogued file unit's objects through the export of the unit fed by tfiles", async () => {

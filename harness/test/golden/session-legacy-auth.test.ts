@@ -606,7 +606,9 @@ describe('jsonApiLogin', () => {
   });
 });
 
-const PUBLIC_LOGIN = '/tenant-a/?display=login';
+// tenant-a's own domain on the legacy port; Masa serves a site's public pages only there.
+const SITE = 'http://tenant-a.localhost:8500';
+const PUBLIC_LOGIN = `${SITE}/?display=login`;
 
 // Masa's login display object: the MFA challenge form, the credentials form, then the send-login form.
 const PUBLIC_LOGIN_PAGE = `
@@ -622,7 +624,7 @@ const PUBLIC_LOGIN_PAGE = `
   <input type="checkbox" id="cbRememberMe" name="rememberMe" value="1">
   <input type="hidden" name="doaction" value="login">
   <input type="hidden" name="linkServID" value="">
-  <input type="hidden" name="returnURL" value="/tenant-a/members/">
+  <input type="hidden" name="returnURL" value="/members/">
   ${csrfInputs()}
 </form>
 <form name="form2" class="mura-send-login" method="post" id="sendLogin" novalidate="novalidate">
@@ -630,14 +632,14 @@ const PUBLIC_LOGIN_PAGE = `
   <input type="hidden" name="doaction" value="sendlogin">
 </form>`;
 
-const FAILED_QUERY = 'rememberMe=0&contentid=&LinkServID=&returnURL=%2Ftenant-a%2Fmembers%2F';
+const FAILED_QUERY = 'rememberMe=0&contentid=&LinkServID=&returnURL=%2Fmembers%2F';
 
-/** Accepted public login: login page, POST redirected to returnURL. */
+/** Accepted public login on the site host: login page, POST redirected to returnURL. */
 function publicAccepted(setCookie: readonly string[] = SESSION_COOKIES): Exchange[] {
   return [
     get(PUBLIC_LOGIN, page(PUBLIC_LOGIN_PAGE, { setCookie })),
-    post(PUBLIC_LOGIN, redirect('/tenant-a/members/')),
-    get('/tenant-a/members/', page('<h1>FIXTURE members</h1>')),
+    post(PUBLIC_LOGIN, redirect('/members/')),
+    get(`${SITE}/members/`, page('<h1>FIXTURE members</h1>')),
   ];
 }
 
@@ -648,8 +650,8 @@ describe('publicLogin', () => {
       outcome: 'redirects with status=failed after other parameters',
       script: (): Exchange[] => [
         get(PUBLIC_LOGIN, page(PUBLIC_LOGIN_PAGE, { setCookie: SESSION_COOKIES })),
-        post(PUBLIC_LOGIN, redirect(`/tenant-a/?display=login&status=failed&${FAILED_QUERY}`)),
-        get(`/tenant-a/?display=login&status=failed&${FAILED_QUERY}`, page(PUBLIC_LOGIN_PAGE)),
+        post(PUBLIC_LOGIN, redirect(`/?display=login&status=failed&${FAILED_QUERY}`)),
+        get(`${SITE}/?display=login&status=failed&${FAILED_QUERY}`, page(PUBLIC_LOGIN_PAGE)),
       ],
       ok: false,
     },
@@ -657,8 +659,8 @@ describe('publicLogin', () => {
       outcome: 'redirects with STATUS=FAILED first',
       script: (): Exchange[] => [
         get(PUBLIC_LOGIN, page(PUBLIC_LOGIN_PAGE, { setCookie: SESSION_COOKIES })),
-        post(PUBLIC_LOGIN, redirect(`/tenant-a/?STATUS=FAILED&${FAILED_QUERY}`)),
-        get(`/tenant-a/?STATUS=FAILED&${FAILED_QUERY}`, page(PUBLIC_LOGIN_PAGE)),
+        post(PUBLIC_LOGIN, redirect(`/?STATUS=FAILED&${FAILED_QUERY}`)),
+        get(`${SITE}/?STATUS=FAILED&${FAILED_QUERY}`, page(PUBLIC_LOGIN_PAGE)),
       ],
       ok: false,
     },
@@ -674,9 +676,9 @@ describe('publicLogin', () => {
     'posts the password form to its own page with hidden fields and CSRF pair; ok is $ok when legacy $outcome',
     async ({ script, ok }) => {
       const fake = fakeLegacy(...script());
-      const s = httpSession(fake);
+      const s = createHttpSession({ baseUrl: SITE, fetch: fake.fetch });
 
-      const login = await publicLogin(s, { site: 'tenant-a', username: MEMBER, password: MEMBER_PASSWORD });
+      const login = await publicLogin(s, { username: MEMBER, password: MEMBER_PASSWORD });
 
       expect(login.ok).toBe(ok);
       const call = fake.calls[1];
@@ -685,7 +687,7 @@ describe('publicLogin', () => {
       expect(formFields(call)).toStrictEqual([
         ['doaction', 'login'],
         ['linkServID', ''],
-        ['returnURL', '/tenant-a/members/'],
+        ['returnURL', '/members/'],
         ['username', MEMBER],
         ['password', MEMBER_PASSWORD],
         ['csrf_token', TOKEN],
@@ -695,17 +697,31 @@ describe('publicLogin', () => {
     },
   );
 
+  it('logs in on the siteUrl host, where its cookies stay, for a session on another host', async () => {
+    const fake = fakeLegacy(...publicAccepted());
+    const s = httpSession(fake);
+
+    const login = await publicLogin(s, { username: MEMBER, password: MEMBER_PASSWORD }, SITE);
+
+    expect(login.ok).toBe(true);
+    expect(fake.calls.map((call) => `${call.method} ${call.url}`)).toStrictEqual([
+      `GET ${PUBLIC_LOGIN}`,
+      `POST ${PUBLIC_LOGIN}`,
+      `GET ${SITE}/members/`,
+    ]);
+    expect(await s.cookieHeader(SITE)).toBe(SESSION_COOKIE_HEADER);
+    expect(await s.cookieHeader()).toBe('');
+  });
+
   it('throws GoldenConfigError without posting when no password form holds csrf_token', async () => {
     const markup = `
 <form id="login" method="post"><input type="text" name="authcode">${csrfInputs(CHALLENGE_TOKEN)}</form>
 <form action="?nocache=1" name="loginForm" method="post"><input type="password" name="password"></form>`;
     const fake = fakeLegacy(get(PUBLIC_LOGIN, page(markup)));
 
-    const err = await configError(
-      publicLogin(httpSession(fake), { site: 'tenant-a', username: MEMBER, password: MEMBER_PASSWORD }),
-    );
+    const err = await configError(publicLogin(httpSession(fake), { username: MEMBER, password: MEMBER_PASSWORD }, SITE));
 
-    expect(err.message).toBe('no form:has(input[name="password"]) with a csrf_token field at /tenant-a/ (status 200)');
+    expect(err.message).toBe('no form:has(input[name="password"]) with a csrf_token field at / (status 200)');
   });
 });
 
@@ -747,9 +763,17 @@ function fakeSecrets(): FakeSecrets {
   };
 }
 
-const NO_SEED: SeedStore = {
+const SITE_ROWS = [
+  { siteID: 'tenant-a', domain: 'tenant-a.localhost' },
+  { siteID: 'tenant-b', domain: 'tenant-b.localhost' },
+];
+
+/** Seed store holding only the `masa.sites` rows of {@link SITE_ROWS}. */
+const SITES_SEED: SeedStore = {
   select: (ref) => {
-    throw new GoldenConfigError(`no seed row for ${ref.as}`);
+    const row = ref.path === 'masa.sites' ? SITE_ROWS.find((site) => site.siteID === ref.where?.siteID) : undefined;
+    if (row === undefined) throw new GoldenConfigError(`no seed row for ${ref.as}`);
+    return row;
   },
   businessDate: () => '2026-01-01',
 };
@@ -763,7 +787,7 @@ function scenarioContext(
   const secrets = fakeSecrets();
   const ctx = createScenarioContext(
     { id: SCENARIO, sessions },
-    { origin: 'legacy', env: { LEGACY_ORIGIN: `${BASE}/`, ...env }, fetch: fake.fetch, secrets, seed: NO_SEED },
+    { origin: 'legacy', env: { LEGACY_ORIGIN: `${BASE}/`, ...env }, fetch: fake.fetch, secrets, seed: SITES_SEED },
   );
   return { ctx, secrets };
 }
@@ -823,19 +847,38 @@ describe('loginSession', () => {
       script: publicAccepted,
       asked: ['user:tenant-a:member', `secret:seed:${MEMBER}`],
     },
-  ])('logs seeded login $spec.login in via $spec.via on the site that stores it', async ({ spec, script, asked }) => {
-    const fake = fakeLegacy(...script());
-    const { ctx, secrets } = scenarioContext(fake, { member: spec });
+    {
+      spec: { login: 'seed:tenant-b:member', via: 'public', site: 'tenant-a' } satisfies SessionSpec,
+      script: publicAccepted,
+      asked: ['user:tenant-b:member', `secret:seed:${MEMBER}`],
+    },
+  ])(
+    'logs seeded login $spec.login in via $spec.via on session site $spec.site, else on the site that stores it',
+    async ({ spec, script, asked }) => {
+      const fake = fakeLegacy(...script());
+      const { ctx, secrets } = scenarioContext(fake, { member: spec });
 
-    await loginSession(ctx, 'member', spec);
+      await loginSession(ctx, 'member', spec);
 
-    expect(formFields(fake.calls[1])).toEqual(
-      expect.arrayContaining([
-        ['username', MEMBER],
-        ['password', MEMBER_PASSWORD],
-      ]),
-    );
-    expect(secrets.asked).toStrictEqual(asked);
+      expect(formFields(fake.calls[1])).toEqual(
+        expect.arrayContaining([
+          ['username', MEMBER],
+          ['password', MEMBER_PASSWORD],
+        ]),
+      );
+      expect(secrets.asked).toStrictEqual(asked);
+    },
+  );
+
+  it('throws GoldenConfigError without a request when a public login site has no seeded domain', async () => {
+    const spec: SessionSpec = { login: 'admin', via: 'public' };
+    const fake = fakeLegacy();
+    const { ctx } = scenarioContext(fake, { member: spec });
+
+    const err = await configError(loginSession(ctx, 'member', spec));
+
+    expect(err.message).toBe(`${SCENARIO}: no seed row for site default`);
+    expect(fake.calls).toStrictEqual([]);
   });
 
   it.each<{ spec: SessionSpec }>([
@@ -876,7 +919,7 @@ describe('loginSession', () => {
         get(PUBLIC_LOGIN, page(PUBLIC_LOGIN_PAGE)),
         post(PUBLIC_LOGIN, page(PUBLIC_LOGIN_PAGE)),
       ],
-      message: `${SCENARIO}: session member could not log in as ${MEMBER} via public (status 200 at /tenant-a/)`,
+      message: `${SCENARIO}: session member could not log in as ${MEMBER} via public (status 200 at /)`,
     },
   ])(
     'throws GoldenConfigError naming session, account and via, never the password, when $spec.via refuses',

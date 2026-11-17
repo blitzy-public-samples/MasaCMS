@@ -3,10 +3,12 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import {
   EXCEPTIONS_LIST_PATH,
@@ -50,6 +52,8 @@ const EXCEPTIONS_SAMPLE = fixture('inventory/mini-exceptions-list.json');
 
 const SHA = pinnedSha();
 const GATEWAY = 'http://127.0.0.1:8100';
+/** The gateway addressed by tenant-a's seeded domain, as a session with `site: tenant-a` reaches it. */
+const SITE_GATEWAY = 'http://tenant-a.localhost:8100';
 const MIGRATION = DEFAULT_MIGRATION_URL;
 const PEOPLE = 'http://127.0.0.1:8112';
 const MAILPIT = 'http://127.0.0.1:8025';
@@ -180,7 +184,7 @@ function fakeStack(opts: StackOptions = {}): FakeStack {
       const status = request.method === 'PUT' ? (opts.faultSetStatus ?? 204) : 204;
       return new Response(null, { status });
     }
-    if (url.origin !== GATEWAY) throw new Error(`unexpected request to ${url.href}`);
+    if (url.origin !== GATEWAY && url.origin !== SITE_GATEWAY) throw new Error(`unexpected request to ${url.href}`);
     if (url.pathname === CUTOVER_STATUS_PATH) {
       return json({ tableVersion: opts.tableVersion === undefined ? 'v0002' : opts.tableVersion, epoch: 7 }, opts.statusCode);
     }
@@ -190,7 +194,8 @@ function fakeStack(opts: StackOptions = {}): FakeStack {
     if (url.pathname.startsWith('/admin/')) return adminResponse(url);
     return new Response('not found', { status: 404 });
   };
-  const steps = (): Sent[] => sent.filter((s) => s.url.origin === GATEWAY && s.url.pathname !== CUTOVER_STATUS_PATH);
+  const steps = (): Sent[] =>
+    sent.filter((s) => (s.url.origin === GATEWAY || s.url.origin === SITE_GATEWAY) && s.url.pathname !== CUTOVER_STATUS_PATH);
   return { fetch, sent, steps };
 }
 
@@ -219,7 +224,10 @@ const secrets: SecretStore = {
 };
 
 const seed: SeedStore = {
-  select: () => ({ contentid: CONTENT_ID, siteID: 'tenant-a', type: 'Page' }),
+  select: (ref) =>
+    ref.path === 'masa.sites'
+      ? { siteID: 'tenant-a', domain: new URL(SITE_GATEWAY).hostname }
+      : { contentid: CONTENT_ID, siteID: 'tenant-a', type: 'Page' },
   businessDate: () => '2026-06-30',
 };
 
@@ -285,8 +293,8 @@ function contentScenario(id: string, steps: Record<string, unknown>[], over: Rec
   };
 }
 
-/** Catalogue documents in capture order; GS-CO-04 is impossible to replay as `halt` describes. */
-function catalogueScenarios(halt: HaltVariant): Record<string, unknown>[] {
+/** Catalogue documents in capture order; GS-CO-04 is impossible to replay as `halt` describes, GS-ID-09 on `site`. */
+function catalogueScenarios(halt: HaltVariant, site?: string): Record<string, unknown>[] {
   const probe =
     halt === 'gap'
       ? contentStep('probe', 'step=probe', {
@@ -313,7 +321,7 @@ function catalogueScenarios(halt: HaltVariant): Record<string, unknown>[] {
       title: 'Session carried across the cut-over transition',
       service: 'identity',
       role: 'admin',
-      sessions: { admin: { login: 'none', via: 'admin' } },
+      sessions: { admin: { login: 'none', via: 'admin', ...(site === undefined ? {} : { site }) } },
       seedRefs: [],
       steps: [
         { name: 'opened', method: 'GET', route: '/admin/?muraAction=cDashboard.main', as: 'admin' },
@@ -332,8 +340,8 @@ function catalogueScenarios(halt: HaltVariant): Record<string, unknown>[] {
 }
 
 /** Writes the catalogue as JSON, which the YAML loader reads unchanged. */
-async function writeCatalogue(halt: HaltVariant = 'gap'): Promise<void> {
-  await writeFile(catalogueFile, JSON.stringify({ sourceSha: SHA, scenarios: catalogueScenarios(halt) }));
+async function writeCatalogue(halt: HaltVariant = 'gap', site?: string): Promise<void> {
+  await writeFile(catalogueFile, JSON.stringify({ sourceSha: SHA, scenarios: catalogueScenarios(halt, site) }));
 }
 
 function scenarioOf(id: string, halt: HaltVariant = 'gap'): Scenario {
@@ -446,6 +454,51 @@ describe('replayScenario', () => {
       ['probe', 1],
       ['after', undefined],
     ]);
+  });
+});
+
+describe('replayScenario without an injected fetch', () => {
+  const siteArrivals: string[] = [];
+  let site: Server;
+
+  beforeAll(async () => {
+    site = createServer((req, res) => {
+      siteArrivals.push(`${req.headers.host ?? ''} ${req.url ?? ''}`);
+      const answer = contentResponse();
+      res.writeHead(answer.status, Object.fromEntries(answer.headers));
+      void answer.text().then((body) => res.end(body));
+    });
+    await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
+  });
+
+  afterAll(async () => {
+    site.closeAllConnections();
+    await new Promise<void>((resolve) => site.close(() => resolve()));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('follows a gateway redirect to the tenant-a.localhost site domain over loopback', async () => {
+    const siteHost = `tenant-a.localhost:${String((site.address() as AddressInfo).port)}`;
+    const stack = fakeStack({
+      gateway: (sent) =>
+        sent.url.pathname === CONTENT_PATH
+          ? new Response(null, { status: 302, headers: { location: `http://${siteHost}${CONTENT_PATH}` } })
+          : undefined,
+    });
+    vi.stubGlobal('fetch', stack.fetch);
+    const deps = await replayDeps(stack, { fetch: undefined, readGolden: (id) => readGoldenSet(id, GOLDEN_SAMPLE) });
+
+    const result = await replayScenario(catalogueFixtureCo05, deps);
+
+    expect(result.status).toBe('replayed');
+    const output = await readOutput('GS-CO-05');
+    expect(output.error).toBeUndefined();
+    expect(output.steps.map((step) => step.response.status)).toEqual([200]);
+    expect(stack.steps().map((s) => s.url.pathname)).toEqual([CONTENT_PATH]);
+    expect(siteArrivals).toEqual([`${siteHost} ${CONTENT_PATH}`]);
   });
 });
 
@@ -664,7 +717,11 @@ describe('main flags', () => {
     expect((await readOutput('GS-PE-RH-01')).tableVersion).toBe('v0003');
   });
 
-  it('saves the jars of an acrossTransition scenario before its transition step and resumes them after it', async () => {
+  it.each([
+    { site: undefined, origin: GATEWAY },
+    { site: 'tenant-a', origin: SITE_GATEWAY },
+  ])('saves the jars of an acrossTransition scenario and resumes them on $origin after its transition', async ({ site, origin }) => {
+    await writeCatalogue('gap', site);
     const invoker = await operatorInvoker();
     const argv = (phase: string): string[] => ['--phase', phase, '--only', 'GS-ID-09', '--catalogue', catalogueFile];
     const before = fakeStack({ tableVersion: 'v0001' });
@@ -672,7 +729,7 @@ describe('main flags', () => {
     const paused = await main(argv('pre-transition'), env, mainDeps(before, invoker));
 
     expect(paused).toEqual({ code: 0, summary: summaryOf({ paused: 1, tableVersion: 'v0001' }) });
-    expect(before.steps().map((s) => s.url.search)).toEqual(['?muraAction=cDashboard.main']);
+    expect(before.steps().map((s) => `${s.url.origin}${s.url.search}`)).toEqual([`${origin}?muraAction=cDashboard.main`]);
     const file = sessionStatePath('GS-ID-09', env);
     expect(file).toBe(path.join(root, 'state', 'golden', 'sessions', 'GS-ID-09.json'));
     expect((await stat(file)).mode & 0o777).toBe(0o600);
@@ -687,7 +744,7 @@ describe('main flags', () => {
 
     expect(resumed).toEqual({ code: 0, summary: summaryOf({ replayed: 1 }) });
     const resumedSteps = after.steps();
-    expect(resumedSteps.map((s) => s.url.search)).toEqual(['?muraAction=cUsers.list']);
+    expect(resumedSteps.map((s) => `${s.url.origin}${s.url.search}`)).toEqual([`${origin}?muraAction=cUsers.list`]);
     expect(resumedSteps[0]?.headers.get('cookie')).toBe(SESSION_COOKIE);
     const output = await readOutput('GS-ID-09');
     expect(output.steps.map((step) => [step.name, step.normalised.status])).toEqual([

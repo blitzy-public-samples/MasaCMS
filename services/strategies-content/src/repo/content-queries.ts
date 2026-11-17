@@ -1575,33 +1575,37 @@ export async function kids(tx: TenantTx, args: KidsArgs): Promise<KidsRow[]> {
 }
 
 
+/** The arguments of contentGateway.getKidsCount. */
+export interface KidsCountArgs {
+  siteId: string;
+  parentId: string;
+  today: Date;
+  liveOnly?: boolean;
+  type?: string;
+  preview?: ChangesetPreview | null;
+  mobile?: boolean;
+}
+
+/** getKidsCount's conditions after its site and parent filters, bound into `p`. */
+function kidsLiveClause(p: SqlParams, args: Omit<KidsCountArgs, 'siteId' | 'parentId'>): string {
+  const { today } = args;
+  const menuDate = new Date(today.getFullYear(), today.getMonth(), today.getDate(), today.getHours(), today.getMinutes(), 0);
+  // Legacy renders the menu clause without parentheses, so an OR in it splits the WHERE clause exactly as here.
+  return args.liveOnly === false
+    ? ' AND tcontent.active = 1'
+    : ` AND ${p.include(activeClause('tcontent', args.preview, { offset: p.next }))} AND isnav = 1` +
+        ` AND ${p.include(menuTypeClause('tcontent', args.type ?? 'default', menuDate, { offset: p.next }))}` +
+        ` AND ${mobileClause('tcontent', args.mobile)}`;
+}
+
 /**
  * contentGateway.getKidsCount: the children of `parentId`, live and navigable in the `type` window (default `default`)
  * at the caller's clock `today` to the minute, or merely active when `liveOnly` is false.
  */
-export async function kidsCount(
-  tx: TenantTx,
-  args: {
-    siteId: string;
-    parentId: string;
-    today: Date;
-    liveOnly?: boolean;
-    type?: string;
-    preview?: ChangesetPreview | null;
-    mobile?: boolean;
-  },
-): Promise<number> {
+export async function kidsCount(tx: TenantTx, args: KidsCountArgs): Promise<number> {
   await readable(tx, 'content');
   const p = new SqlParams();
-  const { today } = args;
-  const menuDate = new Date(today.getFullYear(), today.getMonth(), today.getDate(), today.getHours(), today.getMinutes(), 0);
-  // Legacy renders the menu clause without parentheses, so an OR in it splits the WHERE clause exactly as here.
-  const live =
-    args.liveOnly === false
-      ? ' AND tcontent.active = 1'
-      : ` AND ${p.include(activeClause('tcontent', args.preview, { offset: p.next }))} AND isnav = 1` +
-        ` AND ${p.include(menuTypeClause('tcontent', args.type ?? 'default', menuDate, { offset: p.next }))}` +
-        ` AND ${mobileClause('tcontent', args.mobile)}`;
+  const live = kidsLiveClause(p, args);
   const rows = await run<{ kids: number }>(
     tx,
     `SELECT count(tcontent.parentid)::integer AS kids FROM ${qualified(tx.schema, CONTENT.table)} tcontent` +
@@ -1609,6 +1613,27 @@ export async function kidsCount(
     p.values,
   );
   return rows[0]?.kids ?? 0;
+}
+
+/** `kidsCount` of each `(parentId, siteId)` of `parents`, in order, in one statement: kidsCount's own count, once per parent. */
+export async function kidsCounts(
+  tx: TenantTx,
+  args: Omit<KidsCountArgs, 'siteId' | 'parentId'> & { parents: readonly { parentId: string; siteId: string }[] },
+): Promise<number[]> {
+  await readable(tx, 'content');
+  const p = new SqlParams();
+  const live = kidsLiveClause(p, args);
+  const { parents } = args;
+  const list = (form: (id: string) => string): string => `${p.add(parents.map(({ parentId }) => form(parentId)))}::text[]`;
+  const rows = await run<{ kids: number }>(
+    tx,
+    `SELECT (SELECT count(tcontent.parentid)::integer FROM ${qualified(tx.schema, CONTENT.table)} tcontent` +
+      ` WHERE tcontent.siteid = kid.siteid AND tcontent.parentid = ANY(ARRAY[kid.id, kid.upperid, kid.lowerid]::bpchar[])${live}) AS kids` +
+      ` FROM unnest(${p.add(parents.map(({ siteId }) => siteId))}::text[], ${list((id) => id)}, ${list((id) => id.toUpperCase())},` +
+      ` ${list((id) => id.toLowerCase())}) WITH ORDINALITY AS kid(siteid, id, upperid, lowerid, ord) ORDER BY kid.ord`,
+    p.values,
+  );
+  return parents.map((_parent, at) => rows[at]?.kids ?? 0);
 }
 
 const NEST_FIELDS = [
@@ -1678,8 +1703,8 @@ export interface NestQuery {
   aggregation?: boolean;
 }
 
-/** The getNest statement bound into `p`: select list, FROM … GROUP BY body (without the `haskids` join when `counting`) and total order. */
-async function nestStatement(tx: TenantTx, args: NestQuery, p: SqlParams, counting: boolean): Promise<{ select: string; from: string; order: string }> {
+/** The getNest statement bound into `p`: select list, FROM … GROUP BY body and total order. */
+async function nestStatement(tx: TenantTx, args: NestQuery, p: SqlParams): Promise<{ select: string; from: string; order: string }> {
   const sortBy = args.sortBy ?? 'orderno';
   const direction = sortDirectionOf(args.sortDirection);
   const aggregation = args.aggregation !== false;
@@ -1694,7 +1719,6 @@ async function nestStatement(tx: TenantTx, args: NestQuery, p: SqlParams, counti
     'tcontentstats.lockid, tcontentstats.locktype, tcontentstats.rating, tcontentstats.totalvotes, tcontentstats.comments',
   ];
   const joins = [
-    aggregation && !counting ? `LEFT JOIN ${t.content} tcontent2 ON (tcontent.contentid = tcontent2.parentid)` : '',
     `LEFT JOIN ${t.file} tfiles ON (tcontent.fileid = tfiles.fileid AND tcontent.siteid = tfiles.siteid)`,
     `LEFT JOIN ${t.stats} tcontentstats ON (tcontent.contentid = tcontentstats.contentid AND tcontent.siteid = tcontentstats.siteid)`,
     `LEFT JOIN ${t.fileMetadata} tcontentfilemetadata ON (tcontent.fileid = tcontentfilemetadata.fileid` +
@@ -1708,10 +1732,13 @@ async function nestStatement(tx: TenantTx, args: NestQuery, p: SqlParams, counti
   const groupBy = aggregation
     ? ` GROUP BY ${grouped.join(', ')}, tcontent.created, tfiles.filename, tcontentfilemetadata.alttext${extended ? ', qextendedsort.extendedsort' : ''}`
     : '';
+  // Legacy's count(tcontent2.parentid) over `LEFT JOIN tcontent tcontent2 ON (tcontent.contentid = tcontent2.parentid)` is
+  // a group's row count times its content id's child versions; as a select-list subquery it is read for the returned rows only.
+  const hasKids = `(count(*) * (SELECT count(*) FROM ${t.content} tcontent2 WHERE tcontent2.parentid = tcontent.contentid))::integer AS haskids`;
   return {
     select:
       `SELECT ${grouped.join(', ')}, tfiles.filename AS assocfilename, tcontentfilemetadata.alttext AS filealttext` +
-      `${aggregation ? ', count(tcontent2.parentid)::integer AS haskids' : ''}`,
+      `${aggregation ? `, ${hasKids}` : ''}`,
     from:
       ` FROM ${t.content} tcontent ${joins.filter((join) => join !== '').join(' ')}` +
       ` WHERE tcontent.siteid = ${p.add(args.siteId)} AND ${idEq(p, 'tcontent.parentid', args.parentId)}` +
@@ -1728,16 +1755,16 @@ async function nestStatement(tx: TenantTx, args: NestQuery, p: SqlParams, counti
  */
 export async function nest(tx: TenantTx, args: NestQuery & { offset?: number; limit?: number }): Promise<NestRow[]> {
   const p = new SqlParams();
-  const { select, from, order } = await nestStatement(tx, args, p, false);
+  const { select, from, order } = await nestStatement(tx, args, p);
   const limit = args.limit === undefined ? '' : ` LIMIT ${p.add(args.limit)}`;
   const offset = args.offset === undefined ? '' : ` OFFSET ${p.add(args.offset)}`;
   return run(tx, `${select}${from}${order}${limit}${offset}`, p.values);
 }
 
-/** The number of rows `nest` reads for `args` without bounds; the `haskids` join adds rows to groups but no group. */
+/** The number of rows `nest` reads for `args` without bounds. */
 export async function nestCount(tx: TenantTx, args: NestQuery): Promise<number> {
   const p = new SqlParams();
-  const { from } = await nestStatement(tx, args, p, true);
+  const { from } = await nestStatement(tx, args, p);
   const [row] = await run<{ total: number }>(tx, `SELECT count(*)::integer AS total FROM (SELECT 1${from}) q`, p.values);
   return row?.total ?? 0;
 }
@@ -2213,14 +2240,69 @@ export interface DraftListPaging {
   sortDirection?: string;
 }
 
+/** A list read's SELECT without its ORDER BY and LIMIT, the ORDER BY clause, and the bound values. */
+export interface ListSelect {
+  readonly select: string;
+  readonly order: string;
+  readonly values: readonly unknown[];
+}
+
+/** The CF query-of-queries `select distinct contentid` row count of `select`: case-sensitive, NULL counted once. */
+async function distinctContentIdCount(tx: TenantTx, select: string, values: readonly unknown[]): Promise<number> {
+  const rows = await run<{ total: number }>(
+    tx,
+    `SELECT (count(DISTINCT q.contentid) + (count(*) > count(q.contentid))::integer)::integer AS total FROM (${select}) q`,
+    values,
+  );
+  return rows[0]?.total ?? 0;
+}
+
+/** The rows of `built` in its order, the first `limit` (truncated) of them when given. */
+function runListSelect<R extends Record<string, unknown>>(tx: TenantTx, built: ListSelect, limit: number | undefined): Promise<R[]> {
+  if (limit === undefined) return run<R>(tx, `${built.select} ${built.order}`, built.values);
+  return run<R>(tx, `${built.select} ${built.order} LIMIT $${built.values.length + 1}`, [...built.values, Math.trunc(limit)]);
+}
+
+/** The tables getDraftList reads. */
+export const DRAFT_LIST_TABLES = ['content', 'content_assignment', 'file', 'content_stats', 'approval_request'] as const;
+
+/** The outer SELECT list of `columns` of a list read's `d` rows. */
+function listColumns(columns: readonly string[]): string {
+  return columns.map((column) => `d.${column}`).join(', ');
+}
+
 /**
  * contentGateway.getDraftList: the drafts assigned to or saved by `userId` that are newer than, or replace, the
  * active version, outside change sets and approval requests. Versions select the draft's or the active version's
  * columns exactly as each of legacy's four queries does; file columns as for `readVersion`.
  */
 export async function draftList(tx: TenantTx, args: DraftListPaging & { siteId: string; userId: string }): Promise<DraftListRow[]> {
+  const built = draftListSelect(tx, args);
+  await readable(tx, ...DRAFT_LIST_TABLES);
+  return runListSelect(tx, built, args.limit);
+}
+
+/** getDraftList's distinct content ids, counted as getMyDraftsCount counts them; `limit` and the sort are not applied. */
+export async function draftCount(tx: TenantTx, args: Pick<DraftListPaging, 'startDate' | 'stopDate'> & { siteId: string; userId: string }): Promise<number> {
+  const built = draftListSelect(tx, args);
+  await readable(tx, ...DRAFT_LIST_TABLES);
+  return distinctContentIdCount(tx, built.select, built.values);
+}
+
+/** draftList narrowed to `columns`: the same rows in the same order. */
+export async function draftListColumns<K extends keyof DraftListRow>(
+  tx: TenantTx,
+  args: DraftListPaging & { siteId: string; userId: string },
+  columns: readonly [K, ...K[]],
+): Promise<Pick<DraftListRow, K>[]> {
+  const built = draftListSelect(tx, args, listColumns(columns));
+  await readable(tx, ...DRAFT_LIST_TABLES);
+  return runListSelect(tx, built, args.limit);
+}
+
+/** draftList's SELECT of `columns` (every one by default), ORDER BY and bound values without its LIMIT; read it after `readable` of DRAFT_LIST_TABLES. */
+export function draftListSelect(tx: TenantTx, args: DraftListPaging & { siteId: string; userId: string }, columns = '*'): ListSelect {
   const order = resultOrder(args.sortBy ?? 'lastUpdate', sortDirectionOf(args.sortDirection, 'desc'), DRAFT_LIST_FIELDS);
-  await readable(tx, 'content', 'content_assignment', 'file', 'content_stats', 'approval_request');
   const t = tablesFor(tx.schema);
   const p = new SqlParams();
   const select = (source: 'active' | 'draft'): string =>
@@ -2255,8 +2337,7 @@ export async function draftList(tx: TenantTx, args: DraftListPaging & { siteId: 
     `${newerDraft('')} AND ${ciEq(p, 'draft.lastupdatebyid', args.userId)}${dayBounds(p, 'draft.lastupdate', args)}${sites(true)}`,
     `${unpublished('')} AND ${ciEq(p, 'draft.lastupdatebyid', args.userId)}${dayBounds(p, 'draft.lastupdate', args)}${sites(false)}`,
   ];
-  const limit = args.limit !== undefined ? ` LIMIT ${p.add(Math.trunc(args.limit))}` : '';
-  return run(tx, `SELECT * FROM (${queries.join(' UNION ')}) d ORDER BY ${order}${limit}`, p.values);
+  return { select: `SELECT ${columns} FROM (${queries.join(' UNION ')}) d`, order: `ORDER BY ${order}`, values: p.values };
 }
 
 const APPROVAL_LIST_FIELDS = [...DRAFT_LIST_FIELDS, 'approvalstatus', 'displaystart', 'publishdate'] as const;
@@ -2268,14 +2349,41 @@ export type ApprovalListRow = DraftListRow & {
   publishdate: Date | null;
 };
 
+const PENDING_REQUEST_TABLES = ['content', 'file', 'content_stats', 'changeset', 'approval_request'] as const;
+
 /** The pending approval requests of `siteId` that `requester` narrows, as getApprovals and getSubmissions read them. */
 async function pendingRequests(
   tx: TenantTx,
   args: DraftListPaging & { siteId: string },
   requester: (p: SqlParams) => string,
 ): Promise<ApprovalListRow[]> {
+  const built = pendingRequestsSelect(tx, args, requester);
+  await readable(tx, ...PENDING_REQUEST_TABLES);
+  return runListSelect(tx, built, args.limit);
+}
+
+/** The distinct content ids of `pendingRequests`, counted as getMyApprovalsCount and getMySubmissionsCount count them. */
+async function pendingRequestCount(tx: TenantTx, args: { siteId: string }, requester: (p: SqlParams) => string): Promise<number> {
+  const built = pendingRequestsSelect(tx, args, requester);
+  await readable(tx, ...PENDING_REQUEST_TABLES);
+  return distinctContentIdCount(tx, built.select, built.values);
+}
+
+/** pendingRequests narrowed to `columns`: the same rows in the same order. */
+async function pendingRequestColumns<K extends keyof ApprovalListRow>(
+  tx: TenantTx,
+  args: DraftListPaging & { siteId: string },
+  requester: (p: SqlParams) => string,
+  columns: readonly [K, ...K[]],
+): Promise<Pick<ApprovalListRow, K>[]> {
+  const built = pendingRequestsSelect(tx, args, requester, listColumns(columns));
+  await readable(tx, ...PENDING_REQUEST_TABLES);
+  return runListSelect(tx, built, args.limit);
+}
+
+/** pendingRequests' SELECT of `columns` (every one by default), ORDER BY and bound values without its LIMIT. */
+function pendingRequestsSelect(tx: TenantTx, args: DraftListPaging & { siteId: string }, requester: (p: SqlParams) => string, columns = '*'): ListSelect {
   const order = resultOrder(args.sortBy ?? 'lastUpdate', args.sortDirection ?? 'desc', APPROVAL_LIST_FIELDS);
-  await readable(tx, 'content', 'file', 'content_stats', 'changeset', 'approval_request');
   const t = tablesFor(tx.schema);
   const p = new SqlParams();
   const selected =
@@ -2297,9 +2405,20 @@ async function pendingRequests(
     ` WHERE draft.siteid = ${p.add(args.siteId)} AND (draft.active = 0 OR draft.active = 1 AND draft.approved = 0)` +
     ` AND ${ciLiterals('tapprovalrequests.status', ['Pending'])}${requester(p)}${dayBounds(p, 'active.lastupdate', args)}` +
     ` GROUP BY ${selected}, draft.isnav, module.siteid`;
-  const limit = args.limit !== undefined ? ` LIMIT ${p.add(Math.trunc(args.limit))}` : '';
-  return run(tx, `SELECT * FROM (${query}) d ORDER BY ${order}${limit}`, p.values);
+  return { select: `SELECT ${columns} FROM (${query}) d`, order: `ORDER BY ${order}`, values: p.values };
 }
+
+/** getApprovals' narrowing to requests of `groupIds`; null lifts it. */
+const approverGroups =
+  (groupIds: readonly string[] | null) =>
+  (p: SqlParams): string =>
+    groupIds === null ? '' : ` AND ${idIn(p, 'tapprovalrequests.groupid', groupIds)}`;
+
+/** getSubmissions' narrowing to requests `userId` submitted. */
+const submitter =
+  (userId: string) =>
+  (p: SqlParams): string =>
+    ` AND ${idEq(p, 'tapprovalrequests.userid', userId)}`;
 
 /**
  * contentGateway.getApprovals: the pending approval requests of a site, limited to requests of `groupIds` (the
@@ -2309,34 +2428,74 @@ export function approvalsQuery(
   tx: TenantTx,
   args: DraftListPaging & { siteId: string; groupIds: readonly string[] | null },
 ): Promise<ApprovalListRow[]> {
-  const { groupIds } = args;
-  return pendingRequests(tx, args, (p) => (groupIds === null ? '' : ` AND ${idIn(p, 'tapprovalrequests.groupid', groupIds)}`));
+  return pendingRequests(tx, args, approverGroups(args.groupIds));
+}
+
+/** approvalsQuery narrowed to `columns`: the same rows in the same order. */
+export function approvalsQueryColumns<K extends keyof ApprovalListRow>(
+  tx: TenantTx,
+  args: DraftListPaging & { siteId: string; groupIds: readonly string[] | null },
+  columns: readonly [K, ...K[]],
+): Promise<Pick<ApprovalListRow, K>[]> {
+  return pendingRequestColumns(tx, args, approverGroups(args.groupIds), columns);
+}
+
+/** getApprovals' distinct content ids, counted as getMyApprovalsCount counts them; `groupIds` as for approvalsQuery. */
+export function approvalsCount(tx: TenantTx, args: { siteId: string; groupIds: readonly string[] | null }): Promise<number> {
+  return pendingRequestCount(tx, args, approverGroups(args.groupIds));
 }
 
 /** contentGateway.getSubmissions: the pending approval requests `userId` submitted in a site. */
 export function submissionsQuery(tx: TenantTx, args: DraftListPaging & { siteId: string; userId: string }): Promise<ApprovalListRow[]> {
-  return pendingRequests(tx, args, (p) => ` AND ${idEq(p, 'tapprovalrequests.userid', args.userId)}`);
+  return pendingRequests(tx, args, submitter(args.userId));
 }
+
+/** submissionsQuery narrowed to `columns`: the same rows in the same order. */
+export function submissionsQueryColumns<K extends keyof ApprovalListRow>(
+  tx: TenantTx,
+  args: DraftListPaging & { siteId: string; userId: string },
+  columns: readonly [K, ...K[]],
+): Promise<Pick<ApprovalListRow, K>[]> {
+  return pendingRequestColumns(tx, args, submitter(args.userId), columns);
+}
+
+/** getSubmissions' distinct content ids, counted as getMySubmissionsCount counts them. */
+export function submissionsCount(tx: TenantTx, args: { siteId: string; userId: string }): Promise<number> {
+  return pendingRequestCount(tx, args, submitter(args.userId));
+}
+
+const EXPIRING_TABLES = ['content', 'content_assignment'] as const;
 
 /** contentGateway.getExpiringContent: content `userId` updated or is notified about that expires within a month or expired within a year of `today`. */
 export async function expiringContent(
   tx: TenantTx,
   args: { siteId: string; userId: string; today: Date },
 ): Promise<{ contentid: string | null }[]> {
-  await readable(tx, 'content', 'content_assignment');
+  await readable(tx, ...EXPIRING_TABLES);
+  const { sql, params } = expiringSelect(tx, args);
+  return run(tx, sql, params);
+}
+
+/** getExpiringContent's distinct content ids among its LEGACY_MAX_ROWS rows, counted as getMyExpiresCount counts them. */
+export async function expiringCount(tx: TenantTx, args: { siteId: string; userId: string; today: Date }): Promise<number> {
+  await readable(tx, ...EXPIRING_TABLES);
+  const { sql, params } = expiringSelect(tx, args);
+  return distinctContentIdCount(tx, sql, params);
+}
+
+/** getExpiringContent's statement, limited to LEGACY_MAX_ROWS rows in `contentid` order. */
+function expiringSelect(tx: TenantTx, args: { siteId: string; userId: string; today: Date }): SqlFragment {
   const t = tablesFor(tx.schema);
   const p = new SqlParams();
   const window = (column: string): string =>
     `${column} <= ${p.add(addMonths(args.today, 1))} AND ${column} > ${p.add(addMonths(args.today, -12))}`;
-  return run(
-    tx,
+  return p.fragment(
     `SELECT contentid FROM ${t.content} WHERE ${ciEq(p, 'lastupdatebyid', args.userId)} AND active = 1 AND siteid = ${p.add(args.siteId)}` +
       ` AND ${window('expires')}` +
       ` UNION SELECT tcontent.contentid FROM ${t.content} tcontent INNER JOIN ${t.assignment} tcontentassignments` +
       ` ON (tcontent.contenthistid = tcontentassignments.contenthistid AND ${ciLiterals('tcontentassignments.type', ['expire'])})` +
       ` WHERE tcontent.active = 1 AND tcontent.siteid = ${p.add(args.siteId)} AND ${idEq(p, 'tcontentassignments.userid', args.userId)}` +
       ` AND ${window('tcontent.expires')} ORDER BY contentid LIMIT ${LEGACY_MAX_ROWS}`,
-    p.values,
   );
 }
 

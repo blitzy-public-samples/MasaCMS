@@ -165,10 +165,13 @@ interface Call {
   readonly target?: string;
   /** The query web received; defaults to the target's query. */
   readonly received?: AdminRequestInput['searchParams'];
+  /** Path and query web received; defaults to the page-mode path with the target's query. */
+  readonly receivedTarget?: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly form?: FormData | URLSearchParams;
   readonly mode?: AdminMode;
   readonly routes?: FakeRouteTable;
+  readonly now?: Date;
 }
 
 /** `buildAdminRequest` over an in-memory gateway, with the gateway's recorded calls. */
@@ -185,11 +188,13 @@ async function build(call: Call = {}): Promise<{ request: AdminRequest; gateway:
   const request = await buildAdminRequest({
     params: { circuit: 'cusers', action: 'list' },
     searchParams: call.received ?? new URLSearchParams(query),
+    receivedTarget: call.receivedTarget ?? `/admin/cusers/list${query === '' ? '' : `?${query}`}`,
     headers,
     form: call.form,
     auth,
     gateway,
     mode: call.mode ?? 'page',
+    now: call.now,
   });
   return { request, gateway };
 }
@@ -197,9 +202,16 @@ async function build(call: Call = {}): Promise<{ request: AdminRequest; gateway:
 const callsOf = (gateway: FakeGatewayClient): string[] =>
   gateway.calls.map(({ service, path }) => `${service} ${path}`);
 
-/** A `Set-Cookie` value as `setCookieLegacy` writes it with `expires=never`, then `flags`. */
-const setCookie = (pair: string, flags: string): RegExp =>
-  new RegExp(`^${pair};expires=\\w{3}, \\d{2}-\\w{3}-\\d{4} \\d{2}:\\d{2}:\\d{2} GMT;path=/;${flags}$`);
+/** The request clock of the cookie cases: when legacy's admin set-up cookies below were captured. */
+const COOKIE_NOW = new Date('2026-11-16T18:57:12Z');
+
+/** A `cookie.rb` struct assignment as legacy ACF wrote it at {@link COOKIE_NOW}, `secure` before HttpOnly. */
+const scopeCookie = (pair: string, secure = ''): string =>
+  `${pair}; Max-Age=946080000; Expires=Wed, 08-Nov-2056 06:57:12 GMT; Path=/; ${secure}HttpOnly; SameSite=Lax`;
+
+/** A utility.setCookie `<cfcookie>` as legacy ACF wrote it at {@link COOKIE_NOW}, `secure` after the path. */
+const cfCookie = (pair: string, secure = ''): string =>
+  `${pair}; path=/; ${secure}Max-Age=946080000; Expires=Wed, 08-Nov-2056 18:57:12 GMT`;
 
 /** Replaces every `MURA_` variable with `vars`. */
 function useSettings(vars: Readonly<Record<string, string>> = {}): void {
@@ -537,6 +549,23 @@ describe('buildAdminRequest', () => {
 
       expect(request.action).toBe('core:carch.list');
       expect(request.currentUrl).toBe('./?&siteid=default');
+    });
+
+    it.each<[string, Call, string]>([
+      [
+        'the original URL',
+        { target: '/admin/?muraAction=cUsers.list', receivedTarget: '/admin/cusers/list?muraAction=cUsers.list' },
+        '/admin/?muraAction=cUsers.list',
+      ],
+      [
+        'the received target without one',
+        { mode: 'opt2', received: new URLSearchParams('id=R1'), receivedTarget: '/opt2/admin/finance/record?id=R1' },
+        '/opt2/admin/finance/record?id=R1',
+      ],
+    ])('takes the request target from %s', async (_label, call, requestTarget) => {
+      const { request } = await build(call);
+
+      expect(request.requestTarget).toBe(requestTarget);
     });
 
     it('keeps the rc values the request supplies over the cfparam defaults', async () => {
@@ -1018,6 +1047,7 @@ describe('buildAdminRequest', () => {
         buildAdminRequest({
           params: {},
           searchParams: {},
+          receivedTarget: '/admin/home/redirect',
           headers: new Headers({ [ORIGINAL_URL_HEADER]: '/admin/' }),
           auth,
           gateway,
@@ -1383,15 +1413,15 @@ describe('buildAdminRequest', () => {
     });
 
     it('takes session.rb from rc.rb', async () => {
-      const { request } = await build({ subject: 'qaEditor', target: '/admin/?rb=pt_BR' });
+      const { request } = await build({ subject: 'qaEditor', target: '/admin/?rb=pt_BR', now: COOKIE_NOW });
 
       expect(request.session.rb).toBe('pt_BR');
       expect(request.sessionWrites.rb).toBe('pt_BR');
       expect(request.pendingSetCookies).toEqual([
-        expect.stringMatching(setCookie('rb=', 'HttpOnly;SameSite=Lax;')),
-        expect.stringMatching(setCookie('RB=pt%5FBR', 'HttpOnly;SameSite=Lax;')),
-        expect.stringMatching(setCookie('ADMINCONTROLWIDTH=300', '')),
-        expect.stringMatching(setCookie('ADMINSIDEBAR=off', '')),
+        scopeCookie('rb='),
+        scopeCookie('RB=pt%5FBR'),
+        cfCookie('ADMINCONTROLWIDTH=300'),
+        cfCookie('ADMINSIDEBAR=off'),
       ]);
       expect(request.cookies.get('RB')).toBe('pt%5FBR');
     });
@@ -1413,23 +1443,22 @@ describe('buildAdminRequest', () => {
         subject: 'qaEditor',
         target: '/admin/',
         headers: cookie === undefined ? {} : { cookie },
+        now: COOKIE_NOW,
       });
 
-      expect(request.pendingSetCookies).toEqual(
-        pairs.map((pair) => expect.stringMatching(setCookie(pair, pair === 'rb=' ? 'HttpOnly;SameSite=Lax;' : ''))),
-      );
+      expect(request.pendingSetCookies).toEqual(pairs.map((pair) => (pair === 'rb=' ? scopeCookie(pair) : cfCookie(pair))));
       for (const [name, value] of Object.entries(values)) expect(request.cookies.get(name)).toBe(value);
     });
 
     it('marks them secure under secureCookies', async () => {
       useSettings({ MURA_SECURECOOKIES: 'true' });
 
-      const { request } = await build({ subject: 'qaEditor', target: '/admin/' });
+      const { request } = await build({ subject: 'qaEditor', target: '/admin/', now: COOKIE_NOW });
 
       expect(request.pendingSetCookies).toEqual([
-        expect.stringMatching(setCookie('rb=', 'secure;HttpOnly;SameSite=Lax;')),
-        expect.stringMatching(setCookie('ADMINCONTROLWIDTH=300', 'secure;')),
-        expect.stringMatching(setCookie('ADMINSIDEBAR=off', 'secure;')),
+        scopeCookie('rb=', 'Secure; '),
+        cfCookie('ADMINCONTROLWIDTH=300', 'secure; '),
+        cfCookie('ADMINSIDEBAR=off', 'secure; '),
       ]);
     });
   });

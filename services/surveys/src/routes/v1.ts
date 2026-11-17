@@ -1,9 +1,12 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** `/v1/surveys` routes of the OPT-2 surveys screens: list, detail, schedule, targets, bulk targeting, responses and tasks. */
+import { Readable } from 'node:stream';
 import { AuthDenial, Roles, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import { LegacyApiError, cfDateTimeFormat } from '@opt2/platform/legacy-compat';
 import {
+  JSON_CONTENT_TYPE,
   csrfPreHandler,
+  jsonListStream,
   legacyParamsOf,
   sendLegacyResponse,
   z,
@@ -14,20 +17,21 @@ import {
 import { applyBulkTarget, type BulkTargetInputItem } from '../domain/bulk-target.js';
 import { listResponsePage } from '../domain/responses.js';
 import { scheduleSurvey } from '../domain/schedule.js';
-import { getSurvey, type DomainDeps } from '../domain/surveys.js';
-import { listSurveyTaskViews } from '../domain/tasks-list.js';
+import { getSurveySummary, listSurveyTargets, type DomainDeps } from '../domain/surveys.js';
+import { TASK_PAGE_MAX, listSurveyTaskViewBatches, listSurveyTaskViews } from '../domain/tasks-list.js';
 import type { components, operations } from '../generated/openapi.js';
 import { FixtureApiError, fixtureErrorResponse, fixtureMethod, fixturePage } from '../legacy/fixture-envelope.js';
 import * as queries from '../repo/queries.js';
 
 type SurveyList = operations['listSurveys']['responses'][200]['content']['application/json'];
 type SurveyResponseList = operations['listSurveyResponses']['responses'][200]['content']['application/json'];
+type SurveyTargetList = operations['listSurveyTargets']['responses'][200]['content']['application/json'];
 type Survey = components['schemas']['Survey'];
 type SurveySchedule = components['schemas']['SurveySchedule'];
 type SurveyReminder = components['schemas']['SurveyReminder'];
 type SurveyTarget = components['schemas']['SurveyTarget'];
 type SurveyResponse = components['schemas']['SurveyResponse'];
-type ScheduledTaskView = components['schemas']['ScheduledTaskView'];
+type SurveyTaskList = operations['listSurveyTasks']['responses'][200]['content']['application/json'];
 type ScheduleRequest = components['schemas']['ScheduleRequest'];
 type BulkTargetRequest = components['schemas']['BulkTargetRequest'];
 type BulkTargetResult = components['schemas']['BulkTargetResult'];
@@ -47,8 +51,21 @@ interface SurveyParams {
   surveyId: string;
 }
 
+interface TargetsQuery extends SiteQuery {
+  limit?: number;
+  after?: string;
+}
+
 type ListRequest = FastifyRequest<{ Querystring: SiteQuery }>;
 type SurveyRequest = FastifyRequest<{ Params: SurveyParams; Querystring: SiteQuery }>;
+type TargetsRequest = FastifyRequest<{ Params: SurveyParams; Querystring: TargetsQuery }>;
+
+interface TasksQuery extends SiteQuery {
+  limit?: number;
+  after?: string;
+}
+
+type TasksRequest = FastifyRequest<{ Params: SurveyParams; Querystring: TasksQuery }>;
 
 const SURVEYS_PATH = '/v1/surveys';
 const SURVEY_PATH = `${SURVEYS_PATH}/:surveyId`;
@@ -72,8 +89,31 @@ const SURVEY_PARAMS_SCHEMA = {
   properties: { surveyId: { type: 'string', pattern: '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$' } },
 } as const;
 
+// `SiteIdQuery` plus `TargetPageLimit` and `TargetPageAfter`, whose cursor `targetKeyOf` reads.
+const TARGETS_QUERY_SCHEMA = {
+  ...SITE_QUERY_SCHEMA,
+  properties: {
+    ...SITE_QUERY_SCHEMA.properties,
+    limit: { type: 'integer', minimum: 1, maximum: queries.TARGET_PAGE_MAX },
+    after: { type: 'string', minLength: 1 },
+  },
+} as const;
+
 const LIST_OPTIONS = { config: { opt2: MANAGER_AUTH }, schema: { querystring: SITE_QUERY_SCHEMA } };
 const SURVEY_OPTIONS = { config: { opt2: MANAGER_AUTH }, schema: { params: SURVEY_PARAMS_SCHEMA, querystring: SITE_QUERY_SCHEMA } };
+const TARGETS_OPTIONS = { config: { opt2: MANAGER_AUTH }, schema: { params: SURVEY_PARAMS_SCHEMA, querystring: TARGETS_QUERY_SCHEMA } };
+
+// `SiteIdQuery` plus the page `limit` and opaque `after` cursor the tasks route forwards to communications.
+const TASKS_QUERY_SCHEMA = {
+  ...SITE_QUERY_SCHEMA,
+  properties: {
+    ...SITE_QUERY_SCHEMA.properties,
+    limit: { type: 'integer', minimum: 1, maximum: TASK_PAGE_MAX },
+    after: { type: 'string', minLength: 1, pattern: '^[A-Za-z0-9_-]+$' },
+  },
+} as const;
+
+const TASKS_OPTIONS = { config: { opt2: MANAGER_AUTH }, schema: { params: SURVEY_PARAMS_SCHEMA, querystring: TASKS_QUERY_SCHEMA } };
 
 // As surveys.cfc requireAny does, identity consumes the write's token for the survey id as sent before the body is read.
 const SURVEY_WRITE_OPTIONS = {
@@ -90,6 +130,8 @@ const scheduleBodySchema = z.strictObject({
 const bulkTargetBodySchema = z.strictObject({
   targets: z.array(z.strictObject({ siteId: z.string(), groupName: z.string().nullable().optional() })),
 }) satisfies z.ZodType<BulkTargetRequest>;
+
+const targetKeySchema = z.tuple([z.string(), z.boolean(), z.string(), z.string()]) satisfies z.ZodType<queries.TargetKey>;
 
 const SURVEY_METHOD = fixtureMethod('surveys');
 const SCHEDULE_METHOD = fixtureMethod('surveys', 'schedule');
@@ -195,14 +237,59 @@ function parseBody<T>(schema: z.ZodType<T>, request: FastifyRequest): T {
   return body.data;
 }
 
-/** Handler sending `fn`'s result as the body; a `FixtureApiError` answers in the fixture error envelope of `method`, other errors propagate. */
+/** The opaque `next` cursor of a target key: its JSON as base64url. */
+function targetCursor(key: queries.TargetKey): string {
+  return Buffer.from(JSON.stringify(key)).toString('base64url');
+}
+
+/** The target key an `after` cursor carries; any other text answers `invalidParameters`. */
+function targetKeyOf(cursor: string): queries.TargetKey {
+  let value: unknown;
+  try {
+    value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+  } catch {
+    throw new LegacyApiError('invalidParameters');
+  }
+  const key = targetKeySchema.safeParse(value);
+  if (!key.success) {
+    throw new LegacyApiError('invalidParameters');
+  }
+  return key.data;
+}
+
+/** The target page a query asks for; none when it names neither `limit` nor `after`, which lists every target. */
+function targetPageOf({ limit, after }: TargetsQuery): queries.TargetPageRequest | undefined {
+  if (limit === undefined && after === undefined) {
+    return undefined;
+  }
+  return { limit: limit ?? queries.TARGET_PAGE_DEFAULT, after: after === undefined ? undefined : targetKeyOf(after) };
+}
+
+/** The targets of `first` and of every page after it, each later page read in its own tenant transaction. */
+async function* targetBatches(
+  deps: V1RouteDeps,
+  query: { tenantId: string; surveyId: string },
+  first: queries.SurveyTargetPage,
+): AsyncGenerator<SurveyTarget[]> {
+  let page = first;
+  yield page.rows.map(toTarget);
+  while (page.next !== null) {
+    page = await listSurveyTargets(deps, { ...query, page: { limit: queries.TARGET_PAGE_MAX, after: page.next } });
+    yield page.rows.map(toTarget);
+  }
+}
+
+/** Handler sending `fn`'s result as the body, a stream as a streamed JSON body; a `FixtureApiError` answers in the fixture error envelope of `method`, other errors propagate. */
 function v1BodyHandler<R extends FastifyRequest, B>(
   method: string,
-  fn: (request: R, user: UserClaims) => Promise<B>,
+  fn: (request: R, user: UserClaims) => Promise<B | Readable>,
 ): (request: R, reply: FastifyReply) => Promise<FastifyReply> {
   return async (request, reply) => {
     try {
       const body = await fn(request, userOf(request));
+      if (body instanceof Readable) {
+        return reply.code(200).type(JSON_CONTENT_TYPE).send(body);
+      }
       return reply.code(200).send(body);
     } catch (error) {
       if (!(error instanceof FixtureApiError)) {
@@ -245,8 +332,8 @@ export async function registerV1Routes(app: FastifyInstance, deps: V1RouteDeps):
     SURVEY_PATH,
     SURVEY_OPTIONS,
     v1Handler(SURVEY_METHOD, async (request: SurveyRequest, user): Promise<Survey> => {
-      const detail = await getSurvey(deps, { tenantId: user.tid, surveyId: request.params.surveyId });
-      return toSurvey(detail.survey, detail.schedule, detail.reminders);
+      const { survey, schedule, reminders } = await getSurveySummary(deps, { tenantId: user.tid, surveyId: request.params.surveyId });
+      return toSurvey(survey, schedule, reminders);
     }),
   );
 
@@ -269,10 +356,17 @@ export async function registerV1Routes(app: FastifyInstance, deps: V1RouteDeps):
 
   app.get(
     `${SURVEY_PATH}/targets`,
-    SURVEY_OPTIONS,
-    v1Handler(TARGETS_METHOD, async (request: SurveyRequest, user): Promise<SurveyTarget[]> => {
-      const detail = await getSurvey(deps, { tenantId: user.tid, surveyId: request.params.surveyId });
-      return detail.targets.map(toTarget);
+    TARGETS_OPTIONS,
+    v1BodyHandler(TARGETS_METHOD, async (request: TargetsRequest, user): Promise<SurveyTargetList | Readable> => {
+      const page = targetPageOf(request.query);
+      const query = { tenantId: user.tid, surveyId: request.params.surveyId };
+      if (page === undefined) {
+        // The first batch, and with it the survey check, is read before the answer starts.
+        const first = await listSurveyTargets(deps, { ...query, page: { limit: queries.TARGET_PAGE_MAX } });
+        return jsonListStream({}, 'data', targetBatches(deps, query, first), { next: null });
+      }
+      const { rows, next } = await listSurveyTargets(deps, { ...query, page });
+      return { data: rows.map(toTarget), next: next === null ? null : targetCursor(next) };
     }),
   );
 
@@ -300,11 +394,15 @@ export async function registerV1Routes(app: FastifyInstance, deps: V1RouteDeps):
 
   app.get(
     `${SURVEY_PATH}/tasks`,
-    SURVEY_OPTIONS,
-    v1Handler(
-      TASKS_METHOD,
-      async (request: SurveyRequest, user): Promise<ScheduledTaskView[]> =>
-        listSurveyTaskViews(app, { tenantId: user.tid, surveyId: request.params.surveyId }),
-    ),
+    TASKS_OPTIONS,
+    v1BodyHandler(TASKS_METHOD, async (request: TasksRequest, user): Promise<SurveyTaskList | Readable> => {
+      const { limit, after } = request.query;
+      const query = { tenantId: user.tid, surveyId: request.params.surveyId };
+      if (limit === undefined && after === undefined) {
+        return jsonListStream({}, 'data', await listSurveyTaskViewBatches(app, query), { next: null });
+      }
+      const { items, next } = await listSurveyTaskViews(app, query, { limit, after });
+      return { data: items, next };
+    }),
   );
 }

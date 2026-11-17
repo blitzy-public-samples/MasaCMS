@@ -24,9 +24,10 @@ import {
   testVerifier,
   type OperationMatch,
 } from '@opt2/platform/testing';
-import { FIXTURE_TASK_STATUS, toFixtureTaskList, type ScheduledTaskRecord } from '../../src/legacy/tasks-view.js';
+import { FIXTURE_TASK_STATUS, type ScheduledTaskRecord } from '../../src/legacy/tasks-view.js';
 import { FIXTURE_BASE } from '../../src/routes/fixture.js';
 import { buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
+import { referenceFixtureTaskList } from '../helpers/fixture-tasks.js';
 
 type Json = Record<string, unknown>;
 
@@ -299,6 +300,40 @@ const MUTATIONS: Mutation[] = [
     },
     /required property 'tenantId'/,
   ],
+  [
+    'the page limit no longer declared',
+    (doc, { operation }) => {
+      const parameters: unknown[] = Array.isArray(operation.parameters) ? operation.parameters : [];
+      operation.parameters = parameters.filter((parameter) => (deref(doc, parameter) as ParameterObject).name !== 'limit');
+    },
+    /must NOT have additional properties/,
+  ],
+  [
+    'the task name filter no longer declared',
+    (doc, { operation }) => {
+      const parameters: unknown[] = Array.isArray(operation.parameters) ? operation.parameters : [];
+      operation.parameters = parameters.filter((parameter) => (deref(doc, parameter) as ParameterObject).name !== 'taskName');
+    },
+    /must NOT have additional properties/,
+  ],
+  [
+    'the task name filter holding fewer names than a batch',
+    (doc, match) => {
+      for (const parameter of queryParametersOf(doc, match)) {
+        if (parameter.name === 'taskName') parameter.schema = { ...(parameter.schema as Json), maxItems: 2 };
+      }
+    },
+    /taskName must NOT have more than 2 items/,
+  ],
+  [
+    'the next cursor no longer declared',
+    (doc, match) => {
+      const list = okSchemaOf(doc, match);
+      delete (list.properties as Json).next;
+      list.required = (list.required as string[]).filter((name) => name !== 'next');
+    },
+    /must NOT have additional properties/,
+  ],
 ];
 
 describe('surveys as a consumer of communications scheduled tasks', () => {
@@ -353,14 +388,35 @@ describe('surveys as a consumer of communications scheduled tasks', () => {
       expect(req).toMatchObject({ service: COMMUNICATIONS, method: 'GET' });
       expect(match.template).toBe(req.path);
       assertQueryMatches(commsDoc, match, req);
-      expect(req.query).toEqual({ sourceType: 'survey', sourceId: scheduled.survey_id });
+      expect(req.query).toEqual({
+        sourceType: 'survey',
+        sourceId: scheduled.survey_id,
+        limit: '1000',
+        taskName: [scheduled.schedule.task_name, ...scheduled.reminders.map((reminder) => reminder.task_name)],
+      });
       const sourceType = queryParametersOf(commsDoc, match).find((parameter) => parameter.name === 'sourceType');
       const allowed = isRecord(sourceType?.schema) ? sourceType.schema.enum : undefined;
       expect(Array.isArray(allowed) ? allowed : ['survey']).toContain('survey');
     });
 
-    it('both task lists send the same request', () => {
-      expect(onlyCall(v1).req).toEqual(onlyCall(fixture).req);
+    it("both task lists send the same request, the fixture list naming the survey's own tasks", () => {
+      const { taskName, ...unnamed } = onlyCall(fixture).req.query ?? {};
+
+      expect(taskName).toHaveLength(1 + scheduled.reminders.length);
+      expect(onlyCall(v1).req).toEqual({ ...onlyCall(fixture).req, query: unnamed });
+      assertCallMatches(commsDoc, onlyCall(v1), roles);
+    });
+
+    it("a paged /v1 task list forwards its limit, then communications' next cursor as after, as the contract declares them", async () => {
+      const first = await inject('GET', `/v1/surveys/${scheduled.survey_id}/tasks?siteid=${SITE}&limit=1`);
+      const next = (first.response.json() as { next: string | null }).next;
+      const second = await inject('GET', `/v1/surveys/${scheduled.survey_id}/tasks?siteid=${SITE}&limit=2&after=${next ?? ''}`);
+
+      expect(onlyCall(first).req.query).toEqual({ sourceType: 'survey', sourceId: scheduled.survey_id, limit: '1' });
+      expect(next).toBe((onlyCall(first).res.body as { next: string | null }).next);
+      expect(onlyCall(second).req.query).toEqual({ sourceType: 'survey', sourceId: scheduled.survey_id, limit: '2', after: next });
+      for (const injected of [first, second]) assertCallMatches(commsDoc, onlyCall(injected), roles);
+      expect([...recordsOf(onlyCall(first)), ...recordsOf(onlyCall(second))]).toEqual(recordsOf(onlyCall(v1)));
     });
 
     it("forwards the caller's user token with surveys' invocation credential, which communications admits", () => {
@@ -409,7 +465,7 @@ describe('surveys as a consumer of communications scheduled tasks', () => {
         ...scheduled.reminders.map((reminder): [string, number] => [reminder.task_name, reminder.offset_minutes]),
       ]);
       const listed = records.filter((record) => FIXTURE_TASK_STATUS[record.status] === 'listed' && offsets.has(record.taskName));
-      const items = toFixtureTaskList(records, { surveyId: scheduled.survey_id, schedule: scheduled.schedule, reminders: scheduled.reminders });
+      const items = referenceFixtureTaskList(records, { surveyId: scheduled.survey_id, schedule: scheduled.schedule, reminders: scheduled.reminders });
 
       expect(listed).toHaveLength(records.length);
       expect(items).toHaveLength(listed.length);
@@ -459,7 +515,7 @@ describe('surveys as a consumer of communications scheduled tasks', () => {
       for (const value of statuses) {
         const record: ScheduledTaskRecord = { ...launch, status: value };
         assertReplyMatches(commsDoc, { ...call, res: { ...call.res, body: { ...(call.res.body as Json), items: [record] } } });
-        const items = toFixtureTaskList([record], { surveyId: scheduled.survey_id, schedule: scheduled.schedule, reminders: [] });
+        const items = referenceFixtureTaskList([record], { surveyId: scheduled.survey_id, schedule: scheduled.schedule, reminders: [] });
 
         expect(items, value).toHaveLength(FIXTURE_TASK_STATUS[value] === 'listed' ? 1 : 0);
       }

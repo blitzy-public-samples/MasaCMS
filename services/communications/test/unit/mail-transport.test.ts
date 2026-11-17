@@ -1,5 +1,7 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { serializeError } from '@opt2/platform/logging';
+import { EnvValidationError } from '@opt2/platform/service-kit';
 import {
   MESSAGE_ID_DOMAIN,
   type OutgoingMail,
@@ -20,6 +22,7 @@ const mailer = vi.hoisted(() => {
 vi.mock('nodemailer', () => ({ default: { createTransport: mailer.createTransport } }));
 
 const MESSAGE_ID = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+const MALFORMED_CREDENTIAL = 'SMTP_CREDENTIAL: must be JSON with a non-empty user and pass';
 
 const mail: OutgoingMail = {
   to: 'a@example.com,b@example.com',
@@ -107,7 +110,7 @@ describe('createSmtpTransport', () => {
   });
 
   it.each(['not json', '[]', 'null', '42', '{"user":"u"}', '{"user":"","pass":"p"}', '{"user":"u","pass":7}'])(
-    'rejects the malformed secret %j without echoing it',
+    'rejects the malformed secret %j, naming SMTP_CREDENTIAL without echoing it',
     (credential) => {
       let failure: unknown;
       try {
@@ -116,10 +119,9 @@ describe('createSmtpTransport', () => {
         failure = error;
       }
 
-      expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toBe(
-        'communications-smtp secret must be JSON {"user":"<non-empty string>","pass":"<non-empty string>"}',
-      );
+      expect(failure).toBeInstanceOf(EnvValidationError);
+      expect((failure as EnvValidationError).issues).toStrictEqual([MALFORMED_CREDENTIAL]);
+      expect(serializeError(failure).message).toBe(`communications: invalid environment (${MALFORMED_CREDENTIAL})`);
       expect((failure as Error).message).not.toContain(credential);
       expect((failure as Error).cause).toBeUndefined();
       expect(mailer.createTransport).not.toHaveBeenCalled();

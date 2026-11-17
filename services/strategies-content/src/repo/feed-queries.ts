@@ -54,6 +54,7 @@ import {
   timespanInterval,
   type ChangesetPreview,
   type ExtendedCastColumn,
+  type ListSelect,
   type SortDirection,
 } from './content-queries.js';
 
@@ -703,23 +704,32 @@ function feedColumns(alias: string): string {
   return FEED_FIELDS.map((name) => `${alias}.${name}`).join(', ');
 }
 
+/** The SELECT of `columns` of the feeds matching `where`, its legacy `order by name` with ties in clustered (feedid) order, and the values. */
+function feedsSelect(tx: TenantTx, p: SqlParams, where: string, columns: string = feedColumns('tcontentfeeds')): ListSelect {
+  return {
+    select: `SELECT ${columns} FROM ${qualified(tx.schema, FEED.table)} tcontentfeeds WHERE ${where}`,
+    order: `ORDER BY ${orderKey('lower(tcontentfeeds.name)', 'asc')}, tcontentfeeds.feedid`,
+    values: p.values,
+  };
+}
+
 /** Feeds of `siteId` matching `where`, in legacy `order by name` with ties in clustered (feedid) order. */
 async function feedsWhere(tx: TenantTx, p: SqlParams, where: string): Promise<FeedFields[]> {
   await readable(tx, [FEED.unit]);
-  return run(
-    tx,
-    `SELECT ${feedColumns('tcontentfeeds')} FROM ${qualified(tx.schema, FEED.table)} tcontentfeeds` +
-      ` WHERE ${where} ORDER BY ${orderKey('lower(tcontentfeeds.name)', 'asc')}, tcontentfeeds.feedid`,
-    p.values,
-  );
+  const built = feedsSelect(tx, p, where);
+  return run(tx, `${built.select} ${built.order}`, built.values);
 }
 
-/** feedGateway.getFeeds: the feeds of a site and type, optionally public or active only. */
-export function listFeeds(
-  tx: TenantTx,
-  args: { siteId: string; type: string; publicOnly?: boolean; activeOnly?: boolean },
-): Promise<FeedFields[]> {
-  const p = new SqlParams();
+/** Arguments of feedGateway.getFeeds. */
+export interface FeedListArgs {
+  siteId: string;
+  type: string;
+  publicOnly?: boolean;
+  activeOnly?: boolean;
+}
+
+/** The WHERE of feedGateway.getFeeds over `p`. */
+function feedListWhere(p: SqlParams, args: FeedListArgs): string {
   const where = [`tcontentfeeds.siteid = ${p.add(args.siteId)}`, ciEq(p, 'tcontentfeeds.type', args.type)];
   if (args.publicOnly === true) {
     where.push('tcontentfeeds.ispublic = 1');
@@ -727,7 +737,27 @@ export function listFeeds(
   if (args.activeOnly === true) {
     where.push('tcontentfeeds.isactive = 1');
   }
-  return feedsWhere(tx, p, where.join(' AND '));
+  return where.join(' AND ');
+}
+
+/** feedGateway.getFeeds: the feeds of a site and type, optionally public or active only. */
+export function listFeeds(tx: TenantTx, args: FeedListArgs): Promise<FeedFields[]> {
+  const p = new SqlParams();
+  return feedsWhere(tx, p, feedListWhere(p, args));
+}
+
+/** listFeeds' SELECT, ORDER BY and bound values; read it after awaiting the feed unit's readability. */
+export function listFeedsSelect(tx: TenantTx, args: FeedListArgs): ListSelect {
+  const p = new SqlParams();
+  return feedsSelect(tx, p, feedListWhere(p, args));
+}
+
+/** listFeeds' rows narrowed to `feedid` and `name`, in its order. */
+export async function listFeedNames(tx: TenantTx, args: FeedListArgs): Promise<Pick<FeedFields, 'feedid' | 'name'>[]> {
+  await readable(tx, [FEED.unit]);
+  const p = new SqlParams();
+  const built = feedsSelect(tx, p, feedListWhere(p, args), 'tcontentfeeds.feedid, tcontentfeeds.name');
+  return run(tx, `${built.select} ${built.order}`, built.values);
 }
 
 /** feedGateway.getDefaultFeeds: the default feeds of a site. */

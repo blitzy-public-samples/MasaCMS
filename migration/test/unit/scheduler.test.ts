@@ -1,6 +1,7 @@
 // Scheduler capture parsing, import and hand-off order over the bridge, owner and gateway doubles and a throwaway migration schema.
 import { writeFile } from 'node:fs/promises';
 
+import { cfDateTimeFormat } from '@opt2/platform/legacy-compat';
 import { SITEMONITOR_DEADLINE_S, SITEMONITOR_QUEUE } from '@opt2/platform/tasks';
 import { TENANT_A } from '@opt2/platform/testing';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
@@ -70,6 +71,26 @@ function taskNamed(name: string): NativeTask {
   return task;
 }
 
+/** `task` as `scheduler.describe` lists it while it waits: not expired. */
+function described(task: NativeTask): NativeTask {
+  return { ...task, expired: false };
+}
+
+/** A survey launch due a month before the test clock, which ColdFusion holds expired. */
+const EXPIRED_TASK: NativeTask = { ...taskNamed(LAUNCH_TASK), task: `${SURVEY_TASK_PREFIX}E0000000-0000-0000-0000000000000001-launch`, startDate: '06/01/2026' };
+/** A local time after the launch task's start and before the reminder's. */
+const LAUNCH_PASSED = new Date(2026, 6, 1, 12, 0, 0);
+
+function byTask(a: NativeTask, b: NativeTask): number {
+  return a.task < b.task ? -1 : a.task > b.task ? 1 : 0;
+}
+
+/** The start the bridge gives a past-due task it moves to now: 10 s ahead of the harness clock. */
+function dueNow(h: { tc: TestContext }): Pick<NativeTask, 'startDate' | 'startTime'> {
+  const runAt = new Date(h.tc.clock.now().getTime() + 10_000);
+  return { startDate: cfDateTimeFormat(runAt, 'mm/dd/yyyy'), startTime: cfDateTimeFormat(runAt, 'HH:nn:ss') };
+}
+
 /** `task` as the bridge recreates it with `repoint`: the gateway origin's scheme and host in the URL, its port in `port`. */
 function repointed(task: NativeTask): NativeTask {
   const origin = new URL(FIXTURE_GATEWAY_ORIGIN);
@@ -133,7 +154,7 @@ afterAll(async () => {
   await schema?.drop();
 });
 
-/** `title`, with the skip reason appended when PostgreSQL is unreachable. */
+/** `title`, with the skip reason appended when PG_HOST is unset. */
 const pgTitle = (title: string): string => (schema === null ? `${title} (skipped: ${MIGRATION_SCHEMA_SKIP_REASON})` : title);
 
 const QUEUE_ROUTE = /^\/internal\/v1\/task-queues\/(?<queue>[^/]+)\/(?<op>pause|resume|ensure)$/;
@@ -450,7 +471,7 @@ describe.skipIf(schema === null)(pgTitle('survey task hand-off and restoration t
     expect([...h.bridge.tasks.keys()]).toEqual([SITE_MONITOR_TASK]);
     const { surveyTasks } = await h.stored();
     expect(surveyTasks).toMatchObject({ state: 'adopted', adoptedNames: SURVEY_NAMES, paused: null, adoptedAt: h.tc.clock.now().toISOString() });
-    expect(surveyTasks.definitions).toEqual(SURVEY_TASKS);
+    expect(surveyTasks.definitions).toEqual(SURVEY_TASKS.map(described));
 
     h.tc.log.clear();
     expect(await h.svc.handOffSurveysToTarget()).toEqual({ adopted: SURVEY_NAMES, deleted: [] });
@@ -502,7 +523,7 @@ describe.skipIf(schema === null)(pgTitle('survey task hand-off and restoration t
     expect(formatWireTime(h.bridge.cursor.lastMonitored)).toBe(TARGET_CURSOR);
     expect(h.bodies('scheduler.restore')).toEqual([
       { tasks: [MONITOR], repoint: true, paused: false },
-      { tasks: SURVEY_TASKS, repoint: true, paused: false },
+      { tasks: SURVEY_TASKS.map(described), repoint: true, paused: false },
     ]);
     expect(bridgeTasks(h)).toEqual(NATIVE_TASKS_SAMPLE.tasks.map(repointed));
 
@@ -513,6 +534,41 @@ describe.skipIf(schema === null)(pgTitle('survey task hand-off and restoration t
       sitemonitor: { state: 'legacy', nativePaused: null, targetTriggerDisabled: true },
       surveyTasks: { state: 'legacy', adoptedNames: [], paused: null },
     });
+  });
+
+  it('resumes after an aborted transition a survey task whose start passed during the pause at once, and never one ColdFusion held expired', async () => {
+    const h = await openHarness({ tasks: [...NATIVE_TASKS_SAMPLE.tasks, EXPIRED_TASK] });
+    await h.importCapture(NATIVE_TASKS_SAMPLE);
+
+    expect(await h.svc.pauseFor([...JOB_UNITS, SURVEY_SCHEDULE_UNIT], MONITOR_MOVES)).toEqual({ siteMonitor: [SITE_MONITOR_TASK], surveys: SURVEY_NAMES });
+    expect((await h.stored()).surveyTasks.definitions.find((task) => task.task === EXPIRED_TASK.task)).toMatchObject({ expired: true });
+    h.tc.clock.set(LAUNCH_PASSED);
+
+    expect(await h.svc.resumePaused()).toEqual({ siteMonitor: [SITE_MONITOR_TASK], surveys: SURVEY_NAMES });
+    expect(h.bodies('scheduler.resume').at(-1)).toEqual({ tasks: SURVEY_NAMES });
+    expect(h.bridge.tasks.get(LAUNCH_TASK)).toMatchObject({ paused: false, ...dueNow(h) });
+    expect(h.bridge.tasks.get(REMINDER_TASK)).toEqual(taskNamed(REMINDER_TASK));
+    expect(h.bridge.tasks.get(EXPIRED_TASK.task)).toEqual(EXPIRED_TASK);
+  });
+
+  it('adopts no survey task ColdFusion held expired, and restores it expired beside one moved to now', async () => {
+    const h = await openHarness({ tasks: [...NATIVE_TASKS_SAMPLE.tasks, EXPIRED_TASK] });
+    await pausedAndActivated(h);
+
+    expect(await h.svc.handOffSurveysToTarget()).toEqual({ adopted: SURVEY_NAMES, deleted: [...SURVEY_NAMES, EXPIRED_TASK.task].sort() });
+    expect([...h.owners.owner('communications').adoptedTasks.values()]).toEqual(ADOPTED);
+    h.tc.clock.set(LAUNCH_PASSED);
+
+    expect((await h.svc.restoreToLegacy([SURVEY_SCHEDULE_UNIT], { siteMonitorUnits: JOB_UNITS, siteMonitorEntryMoves: false })).surveys).toEqual(
+      [...SURVEY_NAMES, EXPIRED_TASK.task].sort(),
+    );
+    expect(h.bodies('scheduler.restore')).toEqual([
+      { tasks: [...SURVEY_TASKS.map(described), { ...EXPIRED_TASK, expired: true }].sort(byTask), repoint: true, paused: false },
+    ]);
+    const live = (await h.tc.ctx.bridge.schedulerDescribe()).tasks;
+    expect(live.find((task) => task.task === LAUNCH_TASK)).toMatchObject({ paused: false, expired: false, ...dueNow(h) });
+    expect(live.find((task) => task.task === REMINDER_TASK)).toMatchObject({ paused: false, expired: false, startDate: '07/02/2026' });
+    expect(live.find((task) => task.task === EXPIRED_TASK.task)).toMatchObject({ paused: false, expired: true, startDate: EXPIRED_TASK.startDate });
   });
 
   it('pauseAll pauses every native and fixture task and restoreAll recreates them, persisting each pause', async () => {

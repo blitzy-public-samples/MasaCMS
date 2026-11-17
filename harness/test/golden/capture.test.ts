@@ -642,6 +642,45 @@ describe('skipped scenarios and Mailpit resets', () => {
     expect(await readdir(redirect.setsDir)).toStrictEqual(['GS-TS-01.json']);
     await expect(readGoldenSet('GS-TS-01')).resolves.toMatchObject({ skipped: FIXTURES_UNAVAILABLE, steps: [] });
   });
+
+  it.each([
+    { label: 'every scenario', only: [], order: ['GS-TS-04', 'GS-TS-01', 'GS-PE-RH-03', 'GS-PE-RH-01'] },
+    {
+      label: 'an --only selection',
+      only: ['--only', 'GS-PE-RH-01,GS-TS-01,GS-PE-RH-03'],
+      order: ['GS-TS-01', 'GS-PE-RH-03', 'GS-PE-RH-01'],
+    },
+  ])('captures $label in replay order, the rehearsal scenarios last', async ({ only, order }) => {
+    const rehearsal = { ...FIXTURE_SCENARIO, service: 'people', role: 'site-admin', tableVersion: 'v0003' };
+    const catalogue = path.join(stateDir, 'catalogue.yaml');
+    await writeFile(
+      catalogue,
+      JSON.stringify({
+        sourceSha: SHA,
+        scenarios: [
+          { ...rehearsal, id: 'GS-PE-RH-03' },
+          { ...FIXTURE_SCENARIO, id: 'GS-TS-04' },
+          { ...rehearsal, id: 'GS-PE-RH-01' },
+          FIXTURE_SCENARIO,
+        ],
+      }),
+    );
+    await copyFile(FIXTURES_UNAVAILABLE_FILE, path.join(stateDir, 'fixtures.json'));
+    const fake = fakeLegacy();
+    const logs: string[] = [];
+    const outcome = await main([...only, '--catalogue', catalogue], envFor(stateDir), {
+      fetch: fake.fetch,
+      logger: messageLogger(logs),
+    });
+
+    expect(outcome).toStrictEqual({
+      code: 0,
+      summary: { captured: 0, skipped: order.length, browser: 0, gaps: [], failed: [] },
+    });
+    expect(logs).toStrictEqual(order.map((id) => `${id}: ${FIXTURES_UNAVAILABLE}`));
+    expect(fake.events).toStrictEqual([RESET]);
+    expect((await readdir(redirect.setsDir)).sort()).toStrictEqual(order.map((id) => `${id}.json`).sort());
+  });
 });
 
 const CONTENT_LIST = '/_api/json/v1/tenant-a/content/';

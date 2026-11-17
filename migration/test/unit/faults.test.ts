@@ -104,6 +104,7 @@ interface Doubles {
 function zeroDifference(ctx: Context, options: ReconcileUnitsOptions): ReconcileReport {
   return buildReport({
     point: resolvePoint(ctx.config, options.point),
+    startedAt: ctx.clock.now().toISOString(),
     legacySource: options.legacySource,
     tableVersion: 'v0001',
     snapshotSeq: options.snapshotSeq ?? null,

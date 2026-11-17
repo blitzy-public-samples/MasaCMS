@@ -86,7 +86,7 @@ Paths below are under `/legacy-fixtures/cfml/api.cfm/surveys/surveys`. Each answ
 | `POST` | `/{id}/targets/bulk` | `surveys.surveys.targets.bulk` | `surveys.manager` | Adds the missing `targets` and returns `{inserted, total}` |
 | `GET` | `/{id}/responses` | `surveys.surveys.responses` | `surveys.manager` | One page of the survey's responses |
 | `POST` | `/{id}/responses` | `surveys.surveys.responses` | Site member: S2, `system-user` or `member` | Stores `answers` ([below](#multi-site-responses)) |
-| `GET` | `/{id}/tasks` | `surveys.surveys.tasks` | `surveys.manager` | Launch and reminder tasks with kind, callback route and offset |
+| `GET` | `/{id}/tasks` | `surveys.surveys.tasks` | `surveys.manager` | Launch and reminder tasks with kind, callback route and offset; read from communications by up to 100 of the survey's own task names a call, keeping only the requested page |
 | `GET`, `POST` | `/{id}/launch` | `surveys.surveys.launch` | Task token `opt2TaskToken` | Launch callback: marks the survey `LAUNCHED` once |
 | `GET`, `POST` | `/{id}/remind` | `surveys.surveys.remind` | Task token `opt2TaskToken` | Reminder callback for `reminder=<n>`: stamps its `sent_at` once |
 
@@ -99,10 +99,10 @@ Used by the OPT-2 screens at `/opt2/admin/surveys/*`, which `web/` renders. Tran
 | `GET` | `/v1/surveys` | One page of the site's surveys with their schedules |
 | `GET` | `/v1/surveys/{surveyId}` | One survey with its schedule |
 | `POST` | `/v1/surveys/{surveyId}/schedule` | Replaces the launch time and reminders, marks the survey `SCHEDULED` and announces the new schedule version |
-| `GET` | `/v1/surveys/{surveyId}/targets` | The survey's site and group targets |
+| `GET` | `/v1/surveys/{surveyId}/targets` | The survey's site and group targets with a null `next`, streamed from batches of 1000 each read in its own transaction; with `limit` (1 to 1000, default 100) or `after` (the previous page's `next`), one page of them and the cursor of the next |
 | `POST` | `/v1/surveys/{surveyId}/targets/bulk` | Adds the missing targets and grants each targeted site its responses |
 | `GET` | `/v1/surveys/{surveyId}/responses` | One page of the survey's responses from every responding site |
-| `GET` | `/v1/surveys/{surveyId}/tasks` | The tasks of the current schedule version, as communications holds them (`GET /internal/v1/scheduled-tasks`) |
+| `GET` | `/v1/surveys/{surveyId}/tasks` | The tasks of the current schedule version, as communications holds them (`GET /internal/v1/scheduled-tasks`, streamed as its pages of 1000 arrive), with a null `next`; with `limit` (1 to 1000, default 100) or `after` (the previous page's `next`), one page of them and the cursor of the next |
 
 ### Internal and managed routes
 
@@ -157,8 +157,8 @@ npm run test:security
 
 `test/unit` and `test/contract` need nothing external. The isolation and event suites need PostgreSQL 16 through `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`, plus `PUBSUB_EMULATOR_HOST`, and create a throwaway schema and roles per run through `@opt2/platform/testing`.
 
-- **Local.** `harness/repro/up.sh` starts the service natively on port 8117 (`harness/repro/ports.env`), with `PORT=8117` and `PG_USER=surveys_app`. It reads `baseEnvSchema` of `@opt2/platform/service-kit` (details in [`platform/README.md`](../../platform/README.md#configuration)): `PORT`, `OPT2_SERVICE_NAME`, `OPT2_ENV`, `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`, `OPT2_DB_AUTH`, `CLOUD_SQL_INSTANCE`, `PUBSUB_EMULATOR_HOST`, `GOOGLE_CLOUD_PROJECT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OPT2_JWKS_URL`, `OPT2_TOKEN_ISSUER`, `OPT2_TOKEN_AUDIENCE`, `OPT2_GATEWAY_URL`, `OPT2_MIGRATION_URL`, `OPT2_SERVICE_URLS`, `OPT2_STATE_DIR`, `OPT2_TASKS_ADAPTER`, `OPT2_STORAGE_ADAPTER`, `TZ`.
-- **`OPT2_SERVICE_URLS`** must contain `communications` (task list, launch-done report), `identity` (CSRF checks of fixture and `/v1` writes) and `surveys` itself (target of its own sweep chain).
+- **Local.** `harness/repro/up.sh` starts the service natively on port 8117 (`harness/repro/ports.env`), with `PORT=8117` and `PG_USER=surveys_app`. It reads `surveysEnvSchema` (`src/app.ts`): `baseEnvSchema` of `@opt2/platform/service-kit` (details in [`platform/README.md`](../../platform/README.md#configuration)) with `OPT2_SERVICE_NAME=surveys`, `OPT2_DB_AUTH` and `PG_DATABASE` required: `PORT`, `OPT2_SERVICE_NAME`, `OPT2_ENV`, `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`, `OPT2_DB_AUTH`, `CLOUD_SQL_INSTANCE`, `PUBSUB_EMULATOR_HOST`, `GOOGLE_CLOUD_PROJECT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OPT2_JWKS_URL`, `OPT2_TOKEN_ISSUER`, `OPT2_TOKEN_AUDIENCE`, `OPT2_GATEWAY_URL`, `OPT2_MIGRATION_URL`, `OPT2_SERVICE_URLS`, `OPT2_STATE_DIR`, `OPT2_TASKS_ADAPTER`, `OPT2_STORAGE_ADAPTER`, `TZ`.
+- **`OPT2_SERVICE_URLS`** must contain `communications` (task list, launch-done report), `identity` (CSRF checks of fixture and `/v1` writes) and `surveys` itself (target of its own sweep chain); start-up refuses an environment that misses any of these, naming each.
 - **Cloud.** Cloud Run with `min_instance_count = 0`, internal-only ingress, Cloud SQL IAM database authentication (`OPT2_DB_AUTH=iam`) as a member of `surveys_app`, and the OpenTelemetry Collector sidecar (`infra/terraform/`, plan only).
 
 ## Parity evidence

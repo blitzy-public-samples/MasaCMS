@@ -57,7 +57,7 @@ export interface NativeTasksRecord {
 /** Hand-off state of the fixture `opt2-survey-*` tasks (key `surveyTasks`). */
 export interface SurveyTasksRecord {
   state: 'legacy' | 'adopted';
-  /** Definitions captured at pause time, each with its `paused` flag as it was before pausing. */
+  /** Definitions captured at pause time, each with its `paused` and `expired` flags as they were before pausing. */
   definitions: NativeTask[];
   paused: PauseReason | null;
   adoptedNames: string[];
@@ -101,6 +101,7 @@ export const nativeTaskSchema = z.object({
   requestTimeOut: z.string(),
   operation: z.string(),
   paused: z.boolean(),
+  expired: z.boolean().optional(),
 }) satisfies z.ZodType<NativeTask>;
 
 /** Schema of the `sitemonitor` record. */

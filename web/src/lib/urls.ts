@@ -255,11 +255,11 @@ export interface AdminPathOptions {
   readonly httpHost?: string;
 }
 
-/** configBean `getAdminPath`: `[<scheme>:]//<domain><port><context><adminDir>`, or `<context><adminDir>` without a domain. */
-export function adminPath({ useProtocol = true, domain, https, httpHost }: AdminPathOptions): string {
-  const { context, adminDir, adminDomain, adminSSL, serverPort } = legacySettings();
+/** {@link adminPath} without `<context><adminDir>`: `[<scheme>:]//<domain><port>`, or `''` without a domain. */
+export function adminOrigin({ useProtocol = true, domain, https, httpHost }: AdminPathOptions): string {
+  const { adminDomain, adminSSL, serverPort } = legacySettings();
   const requested = domain ?? adminDomain;
-  if (requested === '') return context + adminDir;
+  if (requested === '') return '';
   let host = requested;
   if (cfEq(requested, adminDomain)) {
     const currentHost = httpHost ?? requested;
@@ -267,7 +267,13 @@ export function adminPath({ useProtocol = true, domain, https, httpHost }: Admin
     host = listHasNoCase(adminDomain, hostName) ? hostName : currentHost;
   }
   const scheme = useProtocol ? `${adminSSL || https ? 'https' : 'http'}:` : '';
-  return `${scheme}//${host}${serverPort}${context}${adminDir}`;
+  return `${scheme}//${host}${serverPort}`;
+}
+
+/** configBean `getAdminPath`: `[<scheme>:]//<domain><port><context><adminDir>`, or `<context><adminDir>` without a domain. */
+export function adminPath(options: AdminPathOptions): string {
+  const { context, adminDir } = legacySettings();
+  return adminOrigin(options) + context + adminDir;
 }
 
 /** Site-registry data, supplied by the caller, that {@link sanitizeHref} checks absolute URLs against. */

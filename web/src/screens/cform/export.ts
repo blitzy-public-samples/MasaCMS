@@ -8,10 +8,13 @@ const OPERATION = 'GET /v1/raw/cform/export';
 // The handler sends these from `contentType` and `setCookies`; every other header goes through `headers`.
 const OWN_FIELDS: ReadonlySet<string> = new Set(['content-type', 'set-cookie']);
 
-/** The service's `cform.export` answer: status, zip bytes and headers as received; `contentid` sent when present. */
+/**
+ * The service's `cform.export` answer: status, zip bytes and headers as received, a 2xx zip relayed as it arrives;
+ * `contentid` sent when present.
+ */
 export async function exportForm(ctx: ScreenContext): Promise<RawBody> {
   // An absent contentid stays absent, so the service answers legacy's undefined-element error itself.
-  const response = await ctx.gateway.strategiesContent.raw('get', '/v1/raw/cform/export', {
+  const response = await ctx.gateway.strategiesContent.stream('get', '/v1/raw/cform/export', {
     query: { ...relayField(ctx.req, 'siteid'), params: relayField(ctx.req, 'contentid') },
   });
   assertNotDenied(response, 'strategies-content', OPERATION);

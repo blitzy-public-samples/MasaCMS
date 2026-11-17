@@ -82,7 +82,7 @@ import {
 } from './steps.js';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
 import { safeDiagnostic } from '../lib/diagnostics.js';
-import { createHttpSession, type FetchLike, type HttpResult } from '../lib/http.js';
+import { createHttpSession, defaultFetch, type FetchLike, type HttpResult } from '../lib/http.js';
 import { createHarnessInvoker, type HarnessInvoker } from '../lib/invocation.js';
 import { createHarnessLogger } from '../lib/logger.js';
 import { repoPath, stateDir, type EnvLike } from '../lib/paths.js';
@@ -620,7 +620,7 @@ function observingFetch(base: FetchLike | undefined): ObservedFetch {
     lastStatus: undefined,
     lastRequest: undefined,
     fetch: async (input, init) => {
-      const response = await (base ?? globalThis.fetch)(input, init);
+      const response = await (base ?? defaultFetch)(input, init);
       observed.lastStatus = response.status;
       observed.lastRequest = { url: input, init };
       return response;
@@ -783,14 +783,15 @@ async function saveSessions(
   return file;
 }
 
-/** Replaces `ctx`'s fresh sessions with the saved jars and restores the saved bindings. */
+/** Replaces `ctx`'s fresh sessions with the saved jars on the same base URLs and restores the saved bindings. */
 async function restoreSessions(ctx: ScenarioContext, state: SessionState, fetch: FetchLike | undefined): Promise<void> {
   for (const [name, serialized] of Object.entries(state.jars)) {
-    if (!ctx.sessions.has(name)) {
+    const fresh = ctx.sessions.get(name);
+    if (fresh === undefined) {
       throw new GoldenConfigError(`${ctx.scenarioId}: saved session ${name} is not a session the scenario declares`);
     }
     const jar = await CookieJar.deserialize(serialized);
-    ctx.sessions.set(name, createHttpSession({ baseUrl: ctx.baseUrl, fetch, jar }));
+    ctx.sessions.set(name, createHttpSession({ baseUrl: fresh.baseUrl, fetch, jar }));
   }
   for (const [key, value] of state.bindings) ctx.bindings.set(key, value);
 }

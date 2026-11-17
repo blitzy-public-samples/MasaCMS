@@ -93,7 +93,7 @@ export OPT2_SERVICE_URLS='{"stub":"http://127.0.0.1:8199"}'        # target of t
 npm start         # node dist/main.js
 ```
 
-The environment is `baseEnvSchema` of `@opt2/platform/service-kit` (see [Configuration](../../platform/README.md#configuration)); locally it also needs `PUBSUB_EMULATOR_HOST`. `harness/repro/up.sh` sets all of it.
+The environment is `stubEnvSchema` (`src/app.ts`): `baseEnvSchema` of `@opt2/platform/service-kit` (see [Configuration](../../platform/README.md#configuration)) with `OPT2_SERVICE_NAME=stub`, `OPT2_DB_AUTH`, `PG_DATABASE` and the `stub` entry of `OPT2_SERVICE_URLS` required; start-up refuses an environment that misses any of these, naming each. Locally it also needs `PUBSUB_EMULATOR_HOST`. `harness/repro/up.sh` sets all of it.
 
 | Command | Runs |
 |---|---|
@@ -101,4 +101,4 @@ The environment is `baseEnvSchema` of `@opt2/platform/service-kit` (see [Configu
 | `npm run test:contract` | Responses and events against the contracts |
 | `npm run test:security` | The route × role matrix through `app.inject` |
 
-`harness/repro/test-all.sh` stage 2 runs `npm test` here. A full run needs PostgreSQL (`PG_HOST`, `PG_USER`, `PG_PASSWORD`, `PG_DATABASE`; `PG_PORT` defaults to 5432) and the Pub/Sub emulator (`PUBSUB_EMULATOR_HOST`), which `test-all.sh` and CI provide. The PostgreSQL cases in `test/unit/app.test.ts`, `test/unit/repository.test.ts`, `test/isolation/rls.test.ts`, `test/events/delivery.test.ts` and `test/events/outbox.test.ts` skip when `PG_HOST` is unset or the server cannot be reached. With `PG_HOST` set, a missing setting, an invalid `PG_PORT` or a refused login fails those files with an error naming the cause. The emulator round trip in `test/events/outbox.test.ts` skips when `PUBSUB_EMULATOR_HOST` is unset or unreachable.
+`harness/repro/test-all.sh` stage 2 runs `npm test` here. A full run needs PostgreSQL (`PG_HOST`, `PG_USER`, `PG_PASSWORD`, `PG_DATABASE`; `PG_PORT` defaults to 5432) and the Pub/Sub emulator (`PUBSUB_EMULATOR_HOST`), which `test-all.sh` and CI provide. The PostgreSQL cases in `test/unit/app.test.ts`, `test/unit/repository.test.ts`, `test/isolation/rls.test.ts`, `test/events/delivery.test.ts` and `test/events/outbox.test.ts` skip when `PG_HOST` is unset. With `PG_HOST` set, a missing setting, an invalid `PG_PORT`, a refused login or a server that does not answer within 10 s fails those files with an error naming the cause. The emulator round trip in `test/events/outbox.test.ts` skips when `PUBSUB_EMULATOR_HOST` is unset; an emulator that does not answer fails the file.

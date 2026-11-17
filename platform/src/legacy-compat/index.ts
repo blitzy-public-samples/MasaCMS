@@ -10,6 +10,7 @@ export * from './request-head.js';
 export * from './envelope.js';
 export * from './errors.js';
 export * from './cookies.js';
+export * from './acf-cookies.js';
 export * from './csrf.js';
 export * from './bridge-assertion.js';
 export * from './csv.js';

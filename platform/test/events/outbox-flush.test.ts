@@ -34,7 +34,7 @@ import {
   type OutboxRuntime,
   type OutboxWriteInput,
 } from '../../src/outbox/index.js';
-import { createService, loadEnv } from '../../src/service-kit/index.js';
+import { createService, loadEnv, type FastifyInstance } from '../../src/service-kit/index.js';
 import { scheduledTaskQueueSql } from '../../src/tasks/index.js';
 import { rlsSql, tenantRegistrySql, withTenant, type TenantTx } from '../../src/tenancy/index.js';
 import {
@@ -67,6 +67,9 @@ const logger = createLogger({ service: SERVICE, version: '1.0.0', env: 'local', 
 const UNREACHABLE_PUBSUB_HOST = '127.0.0.1:9';
 // Room for the flush's own statements beyond its deadline.
 const FLUSH_MARGIN_MS = 1_000;
+const ABANDONED = 'request abandoned: outbox publish of its committed events incomplete';
+// Rows in one backfill apply batch, which one owner request writes and flushes.
+const BACKFILL_BATCH_EVENTS = 1_000;
 
 interface NotePayload {
   noteId: string;
@@ -240,6 +243,24 @@ function serviceEnv() {
   });
 }
 
+/** A ready stub service whose POST NOTES_ROUTE saves `input` in the verified tenant's transaction, pushing its envelope to `written`. */
+async function notesApp(input: OutboxWriteInput<NotePayload>, written: EventEnvelope<NotePayload>[], log: Logger = logger): Promise<FastifyInstance> {
+  const app = await createService({ name: SERVICE, version: '1.0.0', env: serviceEnv(), verifierOverride: testVerifier(SERVICE), logger: log });
+  app.post(NOTES_ROUTE, { config: { opt2: { requires: ['s2'] } } }, async (request) => {
+    const envelope = await withTenant(handle.app, request.opt2.tenantId ?? '', (tx) => saveNote(tx, input));
+    if (envelope !== null) written.push(envelope);
+    return { eventId: envelope?.eventId };
+  });
+  await app.ready();
+  return app;
+}
+
+/** POSTs NOTES_ROUTE to `app` as an s2 user of TENANT_A with request id `requestId`. */
+async function postNote(app: FastifyInstance, requestId: string) {
+  const headers = await authHeadersFor(subject('s2'), { audience: SERVICE, site: TENANT_A.siteId });
+  return app.inject({ method: 'POST', url: NOTES_ROUTE, headers: { ...headers, 'x-request-id': requestId } });
+}
+
 /** Creates an emulator topic with one pull subscription, both deleted after the suite. */
 async function topicWithSubscription(): Promise<{ topic: string; subscription: TestSubscription }> {
   const topic = await createTestTopic(SERVICE);
@@ -326,6 +347,43 @@ describe('outbox writer and in-request flush against PostgreSQL and the Pub/Sub 
         orderingKey: aggregateId,
         attributes: { eventId, tenantId: TENANT_A.tenantId, aggregateVersion: '1' },
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('answers a write of one backfill batch of events, each with its own ordering key, after publishing and stamping all of them within FLUSH_DEADLINE_MS', async () => {
+    outboxWith(emulator);
+    const app = await createService({ name: SERVICE, version: '1.0.0', env: serviceEnv(), verifierOverride: testVerifier(SERVICE), logger });
+    const written = new Set<string>();
+    let committing = 0;
+    try {
+      app.post(NOTES_ROUTE, { config: { opt2: { requires: ['s2'] } } }, async (request) => {
+        await withTenant(handle.app, request.opt2.tenantId ?? '', async (tx) => {
+          for (let n = 0; n < BACKFILL_BATCH_EVENTS; n += 1) {
+            written.add(String((await saveNote(tx, noteEvent(stateTopic, randomUUID())))?.eventId));
+          }
+          committing = performance.now();
+        });
+        return { written: written.size };
+      });
+      await app.ready();
+
+      const status = await postNote(app, 'req-batch').then(
+        (res) => res.statusCode,
+        (err: unknown) => (err as { code?: unknown }).code,
+      );
+      const flushMs = Math.round(performance.now() - committing);
+      const stamped = (await outboxRows(TENANT_A.tenantId)).filter((row) => written.has(row.eventId) && row.publishedAt === STAMP);
+
+      expect({ status, stamped: stamped.length, inTime: flushMs < FLUSH_DEADLINE_MS }, `answered ${String(flushMs)} ms after commit`).toStrictEqual({
+        status: 200,
+        stamped: BACKFILL_BATCH_EVENTS,
+        inTime: true,
+      });
+      const received = (await pullUntil(stateSub, [...written], 30_000)).filter((message) => written.has(message.envelope.eventId));
+      expect(new Set(received.map((message) => message.envelope.eventId)).size).toBe(BACKFILL_BATCH_EVENTS);
+      expect(received.filter((message) => message.orderingKey !== message.envelope.aggregateId)).toEqual([]);
     } finally {
       await app.close();
     }
@@ -505,13 +563,22 @@ describe('outbox writer and in-request flush against PostgreSQL and the Pub/Sub 
     expect(withEventId(await pullUntil(processSub, [eventId]), eventId)).toHaveLength(1);
   });
 
-  it('leaves a row whose flush publish failed to the next sweep, which publishes it once', async () => {
+  it('abandons a write whose flush publish failed without an answer, leaving its committed row to the next sweep, which publishes it once', async () => {
     const { runtime, capture } = capturingOutbox();
     capture.failNext(1);
-    const envelope = await withTenant(handle.app, TENANT_A.tenantId, (tx) => saveNote(tx, noteEvent(stateTopic, randomUUID())));
+    const aggregateId = randomUUID();
+    const written: EventEnvelope<NotePayload>[] = [];
+    const app = await notesApp(noteEvent(stateTopic, aggregateId), written);
+    try {
+      await expect(postNote(app, 'req-publish-failed')).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
+    } finally {
+      await app.close();
+    }
+    const [envelope] = written;
     const eventId = String(envelope?.eventId);
 
     expect(await rowsFor(TENANT_A.tenantId, eventId)).toMatchObject([{ held: false, publishedAt: null }]);
+    expect(await aggregateCount(TENANT_A.tenantId, aggregateId)).toBe(1);
     expect(capturedFor(capture, eventId)).toEqual([]);
 
     await expect(sweepOutbox(runtime, { service: SERVICE, clock })).resolves.toMatchObject({ failed: 0, tenants: 3 });
@@ -522,26 +589,36 @@ describe('outbox writer and in-request flush against PostgreSQL and the Pub/Sub 
     expect(capturedFor(capture, eventId)).toHaveLength(1);
   });
 
-  it('answers a write within the flush deadline while Pub/Sub is unreachable and leaves its row to the sweep, which publishes it once', async () => {
+  it('abandons a write at the flush deadline while Pub/Sub is unreachable, leaving its committed row to the sweep, which publishes it once', async () => {
     const unreachable = createPublisher({ projectId: process.env.GOOGLE_CLOUD_PROJECT ?? 'opt2-local', emulatorHost: UNREACHABLE_PUBSUB_HOST });
     // close() first flushes the publish the client still retries, so it is bounded rather than awaited.
     cleanups.push(() => Promise.race([unreachable.close(), sleep(1_000)]));
     const { log, lines } = capturingLogger();
     outboxWith(unreachable, log);
-
-    const started = performance.now();
-    const envelope = await withTenant(handle.app, TENANT_A.tenantId, (tx) => saveNote(tx, noteEvent(stateTopic, randomUUID())));
-    expect(performance.now() - started).toBeLessThan(FLUSH_DEADLINE_MS + FLUSH_MARGIN_MS);
+    const aggregateId = randomUUID();
+    const written: EventEnvelope<NotePayload>[] = [];
+    const app = await notesApp(noteEvent(stateTopic, aggregateId), written, log);
+    try {
+      const started = performance.now();
+      await expect(postNote(app, 'req-unreachable')).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
+      expect(performance.now() - started).toBeLessThan(FLUSH_DEADLINE_MS + FLUSH_MARGIN_MS);
+    } finally {
+      await app.close();
+    }
+    const [envelope] = written;
     const eventId = String(envelope?.eventId);
     expect(await rowsFor(TENANT_A.tenantId, eventId)).toMatchObject([{ held: false, publishedAt: null }]);
-    expect(lines).toMatchObject([
+    expect(await aggregateCount(TENANT_A.tenantId, aggregateId)).toBe(1);
+    expect(lines.filter((line) => line.severity !== 'INFO')).toMatchObject([
       {
         severity: 'WARNING',
-        message: 'outbox publish not confirmed within FLUSH_DEADLINE_MS (2000 ms); left to the sweep',
+        message: `outbox publish not confirmed within FLUSH_DEADLINE_MS (${FLUSH_DEADLINE_MS} ms); left to the sweep`,
         eventId,
         tenantId: TENANT_A.tenantId,
+        requestId: 'req-unreachable',
         error: { type: 'TimeoutError' },
       },
+      { severity: 'WARNING', message: ABANDONED, requestId: 'req-unreachable', route: NOTES_ROUTE, tenantId: TENANT_A.tenantId },
     ]);
 
     const { runtime, capture } = capturingOutbox();
@@ -553,13 +630,16 @@ describe('outbox writer and in-request flush against PostgreSQL and the Pub/Sub 
     expect(capturedFor(capture, eventId)).toHaveLength(1);
   });
 
-  it("answers a write within the flush deadline while another transaction locks its key's earlier row, then the sweep publishes both in seq order", async () => {
+  it("abandons a write at the flush deadline while another transaction locks its key's earlier row, then the sweep publishes both in seq order", async () => {
     const { log, lines } = capturingLogger();
     const { runtime, capture } = capturingOutbox(log);
     const aggregateId = randomUUID();
     capture.failNext(1);
     const first = await withTenant(handle.app, TENANT_A.tenantId, (tx) => saveNote(tx, noteEvent(stateTopic, aggregateId)));
     expect(lines).toMatchObject([{ severity: 'ERROR', message: 'outbox publish failed', eventId: first?.eventId }]);
+    expect(lines[0]).not.toHaveProperty('requestId');
+    const written: EventEnvelope<NotePayload>[] = [];
+    const app = await notesApp(noteEvent(stateTopic, aggregateId, { aggregateVersion: 2 }), written, log);
 
     let release = (): void => undefined;
     const released = new Promise<void>((resolve) => {
@@ -577,17 +657,18 @@ describe('outbox writer and in-request flush against PostgreSQL and the Pub/Sub 
       expect((await locked).map((row) => row.eventId)).toContain(first?.eventId);
 
       const started = performance.now();
-      const second = await withTenant(handle.app, TENANT_A.tenantId, (tx) =>
-        saveNote(tx, noteEvent(stateTopic, aggregateId, { aggregateVersion: 2 })),
-      );
+      await expect(postNote(app, 'req-locked')).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
       expect(performance.now() - started).toBeLessThan(FLUSH_DEADLINE_MS + FLUSH_MARGIN_MS);
-      expect(lines.slice(1)).toMatchObject([
+      const [second] = written;
+      expect(lines.slice(1).filter((line) => line.severity !== 'INFO')).toMatchObject([
         {
           severity: 'WARNING',
-          message: `outbox flush row locks not granted within FLUSH_DEADLINE_MS (2000 ms); events ${String(second?.eventId)} left to the sweep`,
+          message: `outbox flush row locks not granted within FLUSH_DEADLINE_MS (${FLUSH_DEADLINE_MS} ms); events ${String(second?.eventId)} left to the sweep`,
           tenantId: TENANT_A.tenantId,
+          requestId: 'req-locked',
           error: { message: 'PostgreSQL error 55P03' },
         },
+        { severity: 'WARNING', message: ABANDONED, requestId: 'req-locked', route: NOTES_ROUTE, tenantId: TENANT_A.tenantId },
       ]);
       const unpublished = (await outboxRows(TENANT_A.tenantId)).filter((row) => row.orderingKey === aggregateId);
       expect(unpublished.map((row) => [row.eventId, row.publishedAt])).toEqual([
@@ -607,6 +688,7 @@ describe('outbox writer and in-request flush against PostgreSQL and the Pub/Sub 
     } finally {
       release();
       await holder;
+      await app.close();
     }
   });
 

@@ -1,10 +1,12 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 import type { AuthOverrides } from '@opt2/platform/auth';
 import { createPublisher, registerConsumers, type EventPublisher, type TopicValidator } from '@opt2/platform/events';
+import { serializeError } from '@opt2/platform/logging';
 import { registerMigrationHandlers, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import { createOutbox, registerOutboxSweep } from '@opt2/platform/outbox';
 import {
   baseEnvSchema,
+  checkProcessEnv,
   createService,
   envPort,
   envUrl,
@@ -21,14 +23,19 @@ import { ensureOwnRecurring, registerQueueControl, type TaskPort } from '@opt2/p
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { createMailpitDeliveryStatus, type DeliveryStatusSource } from './domain/delivery-status.js';
 import { loginMailRecovery } from './domain/login-mail.js';
-import { createSmtpTransport, type MailTransport } from './domain/mail-transport.js';
+import {
+  SMTP_CREDENTIAL_REASON,
+  createSmtpTransport,
+  smtpCredentialOf,
+  type MailTransport,
+} from './domain/mail-transport.js';
 import { createSenderAddressSource, type SenderAddressSource } from './domain/sender-address.js';
 import { scheduledTaskRecovery } from './domain/survey-schedule.js';
 import { buildConsumers } from './events/consumers.js';
 import { DELIVERY_STATUS_CHANGED_TOPIC, deliveryStatusChangedValidator } from './events/delivery-status-changed.js';
 import { MAPPINGS } from './migration/mappings/index.js';
 import { OWNER, SCHEMA, createCommunicationsRepository } from './repo/repository.js';
-import { UNITS } from './repo/tables.js';
+import { SCHEDULED_TASK, UNITS } from './repo/tables.js';
 import { registerRoutes } from './routes/index.js';
 import { createCommunicationsTaskPort } from './tasks/port.js';
 import { registerReminderTaskRoute } from './tasks/reminder.js';
@@ -42,7 +49,10 @@ export const SERVICE_VERSION = '1.0.0';
 // Project of the harness's local Pub/Sub topology; OPT2_ENV=cloud makes GOOGLE_CLOUD_PROJECT required.
 const LOCAL_PROJECT_ID = 'opt2-local';
 
-/** Base variables plus the SMTP relay address, the cloud relay credential and the Mailpit API origin of delivery confirmation. */
+/** Callees: itself (reminder tasks, sweep chain), identity (CSRF consumption) and surveys (launch tasks, reminder-sent calls). */
+const CALLEES: readonly string[] = [SERVICE_NAME, 'identity', 'surveys'];
+
+/** Base variables plus the SMTP relay, its cloud credential and the Mailpit API origin; requires its own name, callees and database. */
 export const communicationsEnvSchema = baseEnvSchema
   .extend({
     SMTP_HOST: requiredEnvString(),
@@ -55,8 +65,12 @@ export const communicationsEnvSchema = baseEnvSchema
       if (env.OPT2_ENV === 'cloud' && env.SMTP_CREDENTIAL === undefined) {
         ctx.addIssue({ code: 'custom', path: ['SMTP_CREDENTIAL'], message: 'is required when OPT2_ENV=cloud' });
       }
+      if (env.SMTP_CREDENTIAL !== undefined && smtpCredentialOf(env.SMTP_CREDENTIAL) === undefined) {
+        ctx.addIssue({ code: 'custom', path: ['SMTP_CREDENTIAL'], message: SMTP_CREDENTIAL_REASON });
+      }
+      checkProcessEnv(env, ctx, { service: SERVICE_NAME, callees: CALLEES, database: true });
     },
-    // Runs even when other variables failed, so loadEnv lists this issue with theirs.
+    // Runs even when other variables failed, so loadEnv lists these issues with theirs.
     { when: () => true },
   );
 
@@ -96,68 +110,88 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     // createService takes an injected pool or the schema whose pool it opens, never both.
     ...(options.db === undefined ? { schema: SCHEMA } : { pool: options.db }),
   });
-  const { db, logger } = app.opt2;
-  if (db === undefined) throw new Error(`${SERVICE_NAME}: createService opened no database`);
-  const serviceUrls = env.OPT2_SERVICE_URLS;
-
-  const payloadValidators = new Map<string, TopicValidator>([
-    [DELIVERY_STATUS_CHANGED_TOPIC, deliveryStatusChangedValidator],
-  ]);
-  const publisher =
-    options.publisher ??
-    createPublisher({
-      projectId: env.GOOGLE_CLOUD_PROJECT ?? LOCAL_PROJECT_ID,
-      emulatorHost,
-      payloadValidators,
-    });
-  const outbox = createOutbox({ service: SERVICE_NAME, db, publisher, logger, clock, payloadValidators });
-
-  const taskPort = options.taskPort ?? (await createCommunicationsTaskPort(env, { db, clock, logger }));
-
-  // An injected throwaway pool names its own schema; the service's own pool names `communications`.
-  const repository = createCommunicationsRepository({ clock, schema: db.schema });
-  const deliveryStatus = options.deliveryStatus ?? createMailpitDeliveryStatus({ baseUrl: env.MAILPIT_API_URL });
-  const senderAddress = options.senderAddress ?? createSenderAddressSource({ db });
-
-  // Must precede the routes, so its onSend hook covers every write, and registerMigrationHandlers, which refuses to register without it.
-  registerWritePositionHeader(app);
-
-  await registerRoutes(app, { db, repository, clock, env, mail, deliveryStatus, senderAddress, taskPort });
-  registerMigrationHandlers(app, { owner: OWNER, repository, mappings: MAPPINGS, units: UNITS, db });
-  registerConsumers(app, {
-    service: SERVICE_NAME,
-    consumers: buildConsumers({ db, repository, mail, deliveryStatus, senderAddress, taskPort, clock, env, logger }),
-    publisher,
-    db,
-  });
-  registerOutboxSweep(app, {
-    service: SERVICE_NAME,
-    port: taskPort,
-    runtime: outbox,
-    serviceUrls,
-    clock,
-    recoveryHooks: [
-      loginMailRecovery({ db, repository, clock, logger, transport: mail, deliveryStatus, senderAddress }),
-      scheduledTaskRecovery({ db, repository, clock, logger, taskPort, serviceUrls }),
-    ],
-  });
-  registerReminderTaskRoute(app, { db, repository, clock });
-  registerQueueControl(app, { port: taskPort, service: SERVICE_NAME, serviceUrls, clock });
-
-  app.addHook('onReady', async () => {
-    await ensureOwnRecurring(taskPort, { service: SERVICE_NAME, serviceUrls, clock });
-  });
   // The task port, publisher and mail transport close with the app whether built here or injected; the pool is service-kit's.
+  const closing: { taskPort?: TaskPort; publisher?: EventPublisher } = {
+    taskPort: options.taskPort,
+    publisher: options.publisher,
+  };
   app.addHook('onClose', async () => {
     try {
-      await taskPort.close();
+      await closing.taskPort?.close();
     } finally {
       try {
-        await publisher.close();
+        await closing.publisher?.close();
       } finally {
         await mail.close();
       }
     }
   });
-  return app;
+
+  try {
+    const { db, logger } = app.opt2;
+    if (db === undefined) throw new Error(`${SERVICE_NAME}: createService opened no database`);
+    const serviceUrls = env.OPT2_SERVICE_URLS;
+
+    const payloadValidators = new Map<string, TopicValidator>([
+      [DELIVERY_STATUS_CHANGED_TOPIC, deliveryStatusChangedValidator],
+    ]);
+    const publisher = (closing.publisher ??= createPublisher({
+      projectId: env.GOOGLE_CLOUD_PROJECT ?? LOCAL_PROJECT_ID,
+      emulatorHost,
+      payloadValidators,
+    }));
+    const outbox = createOutbox({ service: SERVICE_NAME, db, publisher, logger, clock, payloadValidators });
+
+    const taskPort = (closing.taskPort ??= await createCommunicationsTaskPort(env, { db, clock, logger }));
+
+    // An injected throwaway pool names its own schema; the service's own pool names `communications`.
+    const repository = createCommunicationsRepository({ clock, schema: db.schema });
+    const deliveryStatus = options.deliveryStatus ?? createMailpitDeliveryStatus({ baseUrl: env.MAILPIT_API_URL });
+    const senderAddress = options.senderAddress ?? createSenderAddressSource({ db });
+
+    // Must precede the routes, so its onSend hook covers every write, and registerMigrationHandlers, which refuses to register without it.
+    registerWritePositionHeader(app);
+
+    await registerRoutes(app, { db, repository, clock, env, mail, deliveryStatus, senderAddress, taskPort });
+    registerMigrationHandlers(app, { owner: OWNER, repository, mappings: MAPPINGS, units: UNITS, targetOnlyTables: [SCHEDULED_TASK.table], db });
+    registerConsumers(app, {
+      service: SERVICE_NAME,
+      consumers: buildConsumers({ db, repository, mail, deliveryStatus, senderAddress, taskPort, clock, env, logger }),
+      publisher,
+      db,
+    });
+    registerOutboxSweep(app, {
+      service: SERVICE_NAME,
+      port: taskPort,
+      runtime: outbox,
+      serviceUrls,
+      clock,
+      recoveryHooks: [
+        loginMailRecovery({ db, repository, clock, logger, transport: mail, deliveryStatus, senderAddress }),
+        scheduledTaskRecovery({ db, repository, clock, logger, taskPort, serviceUrls }),
+      ],
+    });
+    registerReminderTaskRoute(app, { db, repository, clock });
+    registerQueueControl(app, { port: taskPort, service: SERVICE_NAME, serviceUrls, clock });
+
+    app.addHook('onReady', async () => {
+      await ensureOwnRecurring(taskPort, { service: SERVICE_NAME, serviceUrls, clock });
+    });
+    return app;
+  } catch (err) {
+    await closePartialApp(app, options.db === undefined);
+    throw err;
+  }
+}
+
+/** Closes a failed build's app with its task port, publisher and mail transport, its service client and, when `ownsPool`, its pool; failures are logged. */
+async function closePartialApp(app: FastifyInstance, ownsPool: boolean): Promise<void> {
+  const { client, db, logger } = app.opt2;
+  for (const step of [() => app.close(), () => client.close(), () => (ownsPool ? db?.end() : undefined)]) {
+    try {
+      await step();
+    } catch (err) {
+      logger.error({ error: serializeError(err) }, 'start-up cleanup failed');
+    }
+  }
 }

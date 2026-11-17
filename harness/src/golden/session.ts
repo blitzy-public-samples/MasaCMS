@@ -36,6 +36,12 @@ export const SEED_CONFIG_PATH: string = repoPath('legacy-fixtures', 'seed', 'see
 /** Admin login page. */
 export const ADMIN_LOGIN_PATH = '/admin/?muraAction=clogin.main';
 
+/** Front-end login page, on a site's own domain. */
+export const PUBLIC_LOGIN_PATH = '/?display=login';
+
+/** Dataset list of the seeded sites, each with its `siteID` and `domain`. */
+const SITES_PATH = 'masa.sites';
+
 /** CSRF context every legacy login form and the JSON API `login` method validate. */
 export const LOGIN_CSRF_CONTEXT = 'login';
 
@@ -221,9 +227,31 @@ function inScenario<T>(ctx: Pick<ScenarioContext, 'scenarioId' | 'secrets'>, fn:
 }
 
 /**
- * Context with one fresh, logged-out session per declared name (`default` when none is declared) and every
- * seedRef resolved in declaration order, so a later ref's `where` may read an earlier one. Logins are separate:
- * {@link loginSessions}.
+ * Base URL of seeded site `site` on `ctx`'s origin: its scheme and port, with the site's dataset `domain` as host.
+ * Throws GoldenConfigError for a site the dataset lacks or one without a usable domain.
+ */
+export function siteBaseUrl(
+  ctx: Pick<ScenarioContext, 'baseUrl' | 'scenarioId' | 'secrets' | 'seed'>,
+  site: string,
+): string {
+  return inScenario(ctx, () => {
+    const row = ctx.seed.select({ as: `site ${site}`, source: 'dataset', path: SITES_PATH, where: { siteID: site } });
+    const domain = ownString(asRecord(row), 'domain');
+    if (domain === undefined) throw new GoldenConfigError(`site ${site} has no domain in ${SITES_PATH}`);
+    const url = new URL(ctx.baseUrl);
+    url.hostname = domain;
+    // The hostname setter ignores a value that is not a host, which would leave the origin's own host in place.
+    if (url.hostname !== domain.toLowerCase()) {
+      throw new GoldenConfigError(`site ${site} domain ${domain} in ${SITES_PATH} is not a host name`);
+    }
+    return trimSlash(url.href);
+  });
+}
+
+/**
+ * Context with one fresh, logged-out session per declared name (`default` when none is declared), each on the
+ * origin or, for a session with `site`, on {@link siteBaseUrl}, and every seedRef resolved in declaration order, so
+ * a later ref's `where` may read an earlier one. Logins are separate: {@link loginSessions}.
  */
 export function createScenarioContext(scenario: ScenarioInput, opts: ScenarioContextOptions): ScenarioContext {
   const env = opts.env ?? process.env;
@@ -234,13 +262,18 @@ export function createScenarioContext(scenario: ScenarioInput, opts: ScenarioCon
     origin: opts.origin,
     baseUrl,
     scenarioId: scenario.id,
-    sessions: new Map(names.map((name) => [name, createHttpSession({ baseUrl, fetch: opts.fetch })])),
+    sessions: new Map(),
     bindings: new Map(),
     seedRows: new Map(),
     secrets: opts.secrets ?? loadSecretStore(env),
     seed: opts.seed ?? loadSeedStore(env),
     env,
   };
+  for (const name of names) {
+    const site = scenario.sessions?.[name]?.site;
+    const sessionBase = site === undefined ? baseUrl : siteBaseUrl(ctx, site);
+    ctx.sessions.set(name, createHttpSession({ baseUrl: sessionBase, fetch: opts.fetch }));
+  }
   for (const ref of scenario.seedRefs ?? []) {
     const where = ref.where === undefined ? undefined : resolvePlaceholders(ref.where, ctx);
     ctx.seedRows.set(ref.as, inScenario(ctx, () => ctx.seed.select({ ...ref, where })));
@@ -893,11 +926,16 @@ export async function jsonApiLogin(
 }
 
 /**
- * Front-end `doaction=login` through the login form of `/<site>/?display=login`. `ok` when legacy redirected
- * without `status=failed`: it redirects on success and on rejected credentials, and renders in place otherwise.
+ * Front-end `doaction=login` through the login form of {@link PUBLIC_LOGIN_PATH} on `siteUrl`, the base URL of the
+ * site's own domain (default the session's). `ok` when legacy redirected without `status=failed`: it redirects on
+ * success and on rejected credentials, and renders in place otherwise.
  */
-export async function publicLogin(s: HttpSession, a: LoginCredentials & { site: string }): Promise<LoginResult> {
-  const form = await fetchFormTokens(s, `/${encodeURIComponent(a.site)}/?display=login`, PUBLIC_LOGIN_FORM);
+export async function publicLogin(
+  s: HttpSession,
+  a: LoginCredentials,
+  siteUrl: string = s.baseUrl,
+): Promise<LoginResult> {
+  const form = await fetchFormTokens(s, new URL(PUBLIC_LOGIN_PATH, siteUrl).href, PUBLIC_LOGIN_FORM);
   const result = await s.post(form.action, {
     form: {
       ...form.fields,
@@ -933,8 +971,9 @@ function loginAccount(
 
 /**
  * Logs session `name` in as `spec` declares: `admin` through {@link adminLogin}, `jsonapi` through
- * {@link jsonApiLogin}, `public` through {@link publicLogin}. `login: none`, `rest-basic` and `client-credentials`
- * sessions send nothing: their steps carry their own credentials. Throws GoldenConfigError when legacy refuses.
+ * {@link jsonApiLogin}, `public` through {@link publicLogin} on the session's site host, else on that of the site
+ * storing the account. `login: none`, `rest-basic` and `client-credentials` sessions send nothing: their steps carry
+ * their own credentials. Throws GoldenConfigError when legacy refuses.
  */
 export async function loginSession(ctx: ScenarioContext, name: string, spec: SessionSpec): Promise<void> {
   const { login, via } = spec;
@@ -942,7 +981,11 @@ export async function loginSession(ctx: ScenarioContext, name: string, spec: Ses
   const s = session(ctx, name);
   const account = loginAccount(ctx, login);
   const attempt =
-    via === 'admin' ? adminLogin(s, account) : via === 'jsonapi' ? jsonApiLogin(s, account) : publicLogin(s, account);
+    via === 'admin'
+      ? adminLogin(s, account)
+      : via === 'jsonapi'
+        ? jsonApiLogin(s, account)
+        : publicLogin(s, account, spec.site === undefined ? siteBaseUrl(ctx, account.site) : s.baseUrl);
   const { result, ok } = await attempt;
   if (!ok) {
     throw new GoldenConfigError(

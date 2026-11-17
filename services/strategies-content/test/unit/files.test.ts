@@ -1,10 +1,12 @@
 /** `domain/files` over a throwaway `content` schema, the seeded registry and local storage: image halts, restricted files, pooled uploads, failed-upload cleanup, deletes, metadata and render resolution. */
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { once } from 'node:events';
+import { createReadStream, type ReadStream } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { UnitNotAuthoritativeError, closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createLocalStorageAdapter, type LocalStorageAdapter } from '@opt2/platform/storage';
@@ -34,6 +36,7 @@ import { CONTENT_FILES_BUCKET, createExportObjects } from '../../src/migration/o
 import { StagedObjectsPendingError, recoverStagedObjects } from '../../src/migration/staged-objects.js';
 import { createContentRepository, type ContentRepository, type FileInput } from '../../src/repo/repository.js';
 import { CONTENT_UNITS, type FileRow } from '../../src/repo/tables.js';
+import { uploadedFile } from '../helpers/uploads.js';
 
 const NOW = new Date(2026, 5, 30, 10, 15, 42, 123);
 const HOLDER = 'domain-files-test';
@@ -58,7 +61,7 @@ function actorOf(siteId: string): Actor {
 
 /** A posted part of `fileName`. */
 function upload(fileName: string, contentType = 'application/pdf', bytes = Buffer.from(`bytes of ${fileName}`)): UploadedFile {
-  return { fieldName: 'newfile', fileName, contentType, bytes };
+  return uploadedFile({ fieldName: 'newfile', fileName, contentType }, bytes);
 }
 
 describe('image upload extensions', () => {
@@ -156,7 +159,8 @@ describe.skipIf(!(await pgAvailable()))('domain/files', () => {
 
   describe('storeUploadedFile', () => {
     it('stores a non-image upload in the site file pool tenant with matching row, object and manifest', async () => {
-      const file = upload('Quarterly Report.PDF');
+      const bytes = Buffer.from('bytes of Quarterly Report.PDF');
+      const file = upload('Quarterly Report.PDF', 'application/pdf', bytes);
       const stored = await storeUploadedFile(deps, actorOf(TENANT_A.siteId), { file, contentId: cfId('C', 1), caption: 'Q2' });
       if (stored.kind !== 'stored') throw new Error('expected a stored upload');
 
@@ -168,16 +172,17 @@ describe.skipIf(!(await pgAvailable()))('domain/files', () => {
         variant: '',
         ext: 'pdf',
         object_key: `${UMBRELLA}/${stored.fileid}.pdf`,
-        size: String(file.bytes.length),
-        sha256: sha256(file.bytes),
+        size: String(bytes.length),
+        sha256: sha256(bytes),
         content_type: 'application/pdf',
         orphan: false,
       });
       expect(await storage.head(CONTENT_FILES_BUCKET, stored.object.object_key)).toEqual({
-        size: file.bytes.length,
-        sha256: sha256(file.bytes),
+        size: bytes.length,
+        sha256: sha256(bytes),
         contentType: 'application/pdf',
       });
+      expect(await storage.get(CONTENT_FILES_BUCKET, stored.object.object_key)).toEqual(bytes);
       expect(await read(UMBRELLA, (tx) => repo.files.readFileAll(tx, stored.fileid))).toMatchObject({
         fileid: stored.fileid,
         contentid: cfId('C', 1),
@@ -187,7 +192,7 @@ describe.skipIf(!(await pgAvailable()))('domain/files', () => {
         image: null,
         imagesmall: null,
         imagemedium: null,
-        filesize: file.bytes.length,
+        filesize: bytes.length,
         contenttype: 'application',
         contentsubtype: 'pdf',
         fileext: 'pdf',
@@ -215,24 +220,29 @@ describe.skipIf(!(await pgAvailable()))('domain/files', () => {
       });
     });
 
-    it.each(['Photo.JPG', 'banner.png', 'clip.flv'])('refuses the image upload %s before storing anything', async (fileName) => {
-      await expect(storeUploadedFile(deps, actorOf(TENANT_A.siteId), { file: upload(fileName, 'image/jpeg') })).rejects.toBeInstanceOf(
-        ImageUploadHaltedError,
-      );
+    it.each(['Photo.JPG', 'banner.png', 'clip.flv'])('refuses the image upload %s before storing anything or opening its part', async (fileName) => {
+      const file = upload(fileName, 'image/jpeg');
+      const stream = vi.spyOn(file, 'stream');
+      await expect(storeUploadedFile(deps, actorOf(TENANT_A.siteId), { file })).rejects.toBeInstanceOf(ImageUploadHaltedError);
+      expect(stream).not.toHaveBeenCalled();
     });
 
-    it('answers an extension outside fmAllowedExtensions as fileBean does, with a fresh id and no row or object', async () => {
-      const stored = await storeUploadedFile({ ...deps, config: { ...CONTENT_CONFIG_DEFAULTS, fmAllowedExtensions: 'pdf' } }, actorOf(TENANT_A.siteId), {
-        file: upload('notes.txt', 'text/plain'),
-      });
+    it('answers an extension outside fmAllowedExtensions as fileBean does, with a fresh id, no row or object and its part unopened', async () => {
+      const file = upload('notes.txt', 'text/plain');
+      const stream = vi.spyOn(file, 'stream');
+      const stored = await storeUploadedFile({ ...deps, config: { ...CONTENT_CONFIG_DEFAULTS, fmAllowedExtensions: 'pdf' } }, actorOf(TENANT_A.siteId), { file });
+      expect(stream).not.toHaveBeenCalled();
       expect(stored).toEqual({ kind: 'rejected', fileid: expect.any(String), filename: 'Invalid file type .TXT' });
       expect(isCfUuid(stored.fileid)).toBe(true);
       expect(await read(UMBRELLA, (tx) => repo.files.readFileAll(tx, stored.fileid))).toBeNull();
       expect(await storage.head(CONTENT_FILES_BUCKET, `${UMBRELLA}/${stored.fileid}.txt`)).toBeNull();
     });
 
-    it('raises UnregisteredTenantError for a token tenant without a registry entry', async () => {
-      await expect(storeUploadedFile(deps, actorOf('nowhere'), { file: upload('a.pdf') })).rejects.toBeInstanceOf(UnregisteredTenantError);
+    it('raises UnregisteredTenantError for a token tenant without a registry entry, leaving its part unopened', async () => {
+      const file = upload('a.pdf');
+      const stream = vi.spyOn(file, 'stream');
+      await expect(storeUploadedFile(deps, actorOf('nowhere'), { file })).rejects.toBeInstanceOf(UnregisteredTenantError);
+      expect(stream).not.toHaveBeenCalled();
     });
 
     it('links a stored file to its content item', async () => {
@@ -295,6 +305,15 @@ describe.skipIf(!(await pgAvailable()))('domain/files', () => {
           committed: false,
         },
         {
+          name: 'a put that fails before reading the part',
+          gate: 'open',
+          rig: (d) => ({ ...d, storage: { ...d.storage, put: () => Promise.reject(failure) } }),
+          error: failure,
+          put: true,
+          kept: false,
+          committed: false,
+        },
+        {
           name: 'a failing object row write',
           gate: 'open',
           rig: (d) => withFiles(d, { upsertFileObject: () => Promise.reject(failure) }),
@@ -352,7 +371,7 @@ describe.skipIf(!(await pgAvailable()))('domain/files', () => {
           kept: true,
           committed: true,
         },
-      ])('$name rejects the upload; bytes put: $put, object kept: $kept, rows committed: $committed', async (c) => {
+      ])('$name rejects the upload; bytes put: $put, object kept: $kept, rows committed: $committed; any part it opened is closed', async (c) => {
         const rigged = c.rig(deps);
         const fileIds: string[] = [];
         const putKeys: string[] = [];
@@ -371,20 +390,37 @@ describe.skipIf(!(await pgAvailable()))('domain/files', () => {
             },
           },
         };
-        const file = upload('failed.pdf');
+        // The part is a spooled file, as a multipart request's is, so an unclosed stream would hold its descriptor.
+        const bytes = Buffer.from('bytes of failed.pdf');
+        const spoolDir = await mkdtemp(path.join(tmpdir(), 'opt2-strategies-content-spool-'));
+        const spooled = path.join(spoolDir, 'failed.pdf');
+        await writeFile(spooled, bytes);
+        const streams: ReadStream[] = [];
+        const file: UploadedFile = {
+          ...upload('failed.pdf', 'application/pdf', bytes),
+          stream: () => {
+            const stream = createReadStream(spooled);
+            streams.push(stream);
+            return stream;
+          },
+        };
 
         await setFileGate(c.gate);
         try {
           await expect(storeUploadedFile(recording, actorOf(TENANT_A.siteId), { file })).rejects.toThrow(c.error);
+          expect(streams).toHaveLength(c.put ? 1 : 0);
+          expect(streams.map((stream) => stream.destroyed)).toEqual(streams.map(() => true));
+          await Promise.all(streams.filter((stream) => !stream.closed).map((stream) => once(stream, 'close')));
         } finally {
           await setFileGate('open');
+          await rm(spoolDir, { recursive: true, force: true });
         }
 
         expect(fileIds).toHaveLength(1);
         const objectKey = `${UMBRELLA}/${fileIds[0]}.pdf`;
         expect(putKeys).toEqual(c.put ? [objectKey] : []);
         expect(await storage.head(CONTENT_FILES_BUCKET, objectKey)).toEqual(
-          c.kept ? { size: file.bytes.length, sha256: sha256(file.bytes), contentType: 'application/pdf' } : null,
+          c.kept ? { size: bytes.length, sha256: sha256(bytes), contentType: 'application/pdf' } : null,
         );
         expect((await read(UMBRELLA, (tx) => repo.files.readFileAll(tx, fileIds[0] ?? ''))) !== null).toBe(c.committed);
         expect((await read(UMBRELLA, (tx) => repo.files.findFileObjectBySha(tx, objectKey))) !== null).toBe(c.committed);

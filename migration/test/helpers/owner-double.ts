@@ -10,6 +10,7 @@ import {
   DEFAULT_EXPORT_LIMIT,
   MAX_CHANGES_LIMIT,
   MAX_EXPORT_LIMIT,
+  MAX_PUBLISHED_LIMIT,
   MIGRATION_PATH_PREFIX,
   InvalidCursorError,
   compareEncodings,
@@ -184,6 +185,9 @@ export interface EffectEvent {
   tenantId: string;
 }
 
+/** A published event of an owner double; `seq` defaults to the event's 1-based position in `published`. */
+export type DoublePublishedEvent = Omit<PublishedEvent, 'seq'> & { seq?: string };
+
 /** Recorded state and controls of one owner double. */
 export interface OwnerDoubleState {
   readonly name: string;
@@ -200,8 +204,8 @@ export interface OwnerDoubleState {
   readonly changesCalls: ChangesParams[];
   positionScript: PositionScript | undefined;
   readonly positionCalls: number;
-  /** Events this owner reports as published to a `publishedTopics` ask. */
-  readonly published: PublishedEvent[];
+  /** Events this owner reports as published to a `publishedTopics` ask; one without `seq` takes its 1-based position. */
+  readonly published: DoublePublishedEvent[];
   /** Inbox receipts: lower-case event id to the lower-case tenants that applied it. */
   readonly receipts: Map<string, Set<string>>;
   /** Watermarks keyed `<legacyTable>|<direction>`. */
@@ -414,7 +418,7 @@ class OwnerDouble implements OwnerDoubleState {
   readonly changesScript = new Map<string, ScriptedChangesPage[]>();
   readonly changesCalls: ChangesParams[] = [];
   positionScript: PositionScript | undefined;
-  readonly published: PublishedEvent[] = [];
+  readonly published: DoublePublishedEvent[] = [];
   readonly receipts = new Map<string, Set<string>>();
   readonly watermarks = new Map<string, WatermarkRecord>();
   readonly gates = new Map<string, OwnerGate>();
@@ -820,11 +824,38 @@ class OwnerDouble implements OwnerDoubleState {
       outbox: script.outbox === false ? null : { tenants: [], unpublished: script.unpublished ?? 0, held: script.held ?? 0 },
       inbox: script.inbox === false ? null : this.#inbox(params.eventIds),
     };
-    if (params.publishedTopics !== undefined) {
-      const topics = new Set(params.publishedTopics);
-      answer.published = answer.outbox === null ? [] : this.published.filter((event) => topics.has(event.topic)).map((event) => ({ ...event }));
-    }
+    if (params.publishedTopics !== undefined) Object.assign(answer, this.#publishedPage(params, answer.outbox !== null));
     return answer;
+  }
+
+  /**
+   * One page of the published events of the asked topics after `publishedAfter` and through `publishedThrough`, as an owner pages its
+   * outbox by `seq`; the count at or below the cursor only on a complete page.
+   */
+  #publishedPage(
+    params: PositionParams,
+    hasOutbox: boolean,
+  ): Pick<PositionResponse, 'published' | 'publishedNext' | 'publishedComplete' | 'publishedFrontier' | 'publishedUpTo'> {
+    const after = BigInt(params.publishedAfter ?? '0');
+    const through = params.publishedThrough === undefined ? undefined : BigInt(params.publishedThrough);
+    const topics = new Set(params.publishedTopics);
+    const events = hasOutbox
+      ? this.published
+          .map((event, index): PublishedEvent => ({ ...event, seq: event.seq ?? String(index + 1) }))
+          .filter((event) => topics.has(event.topic) && (through === undefined || BigInt(event.seq) <= through))
+          .sort((a, b) => (BigInt(a.seq) < BigInt(b.seq) ? -1 : BigInt(a.seq) > BigInt(b.seq) ? 1 : 0))
+      : [];
+    const later = events.filter((event) => BigInt(event.seq) > after);
+    const published = later.slice(0, params.publishedLimit ?? MAX_PUBLISHED_LIMIT);
+    const complete = published.length === later.length;
+    const highest = events.at(-1)?.seq;
+    return {
+      published,
+      publishedNext: published.at(-1)?.seq ?? after.toString(),
+      publishedComplete: complete,
+      publishedFrontier: params.publishedThrough ?? highest ?? after.toString(),
+      ...(complete ? { publishedUpTo: events.length - later.length } : {}),
+    };
   }
 
   /** `GET /watermark` of one legacy table and direction. */

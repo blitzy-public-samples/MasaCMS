@@ -34,6 +34,7 @@ const BLOCK_END = '\n</div>\n';
 const USER_EDIT_ROUTE = routeKey('GET', 'people', '/v1/users/edit');
 const CSRF_ROUTE = routeKey('POST', 'identity', '/v1/csrf/tokens');
 const POOL_SITES_ROUTE = routeKey('GET', 'programs-sites', '/v1/sites/default/user-pool-sites');
+const INTEREST_GROUPS_ROUTE = routeKey('GET', 'strategies-content', '/v1/sites/default/private-interest-groups');
 
 /** The seeded person: a public user of `siteId` with a JPG photo. */
 const person = (siteId: string): PersonRecord => ({
@@ -91,11 +92,15 @@ function issueTokens(request: RecordedRequest): FakeReply {
   return { status: 200, body: { tokens } };
 }
 
-/** A gateway answering people's edit read, identity's tokens and, when given, programs-sites' user pool sites. */
+/**
+ * A gateway answering people's edit read, identity's tokens, an empty interest-group pool and, when given,
+ * programs-sites' user pool sites.
+ */
 function gatewayFor(user: PersonRecord, poolSites?: FakeReply): FakeGatewayClient {
   return fakeGatewayClient({
     [USER_EDIT_ROUTE]: { status: 200, body: userEdit(user) },
     [CSRF_ROUTE]: issueTokens,
+    [INTEREST_GROUPS_ROUTE]: { status: 200, body: { items: [] } },
     ...(poolSites === undefined ? {} : { [POOL_SITES_ROUTE]: poolSites }),
   });
 }

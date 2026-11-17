@@ -1,7 +1,7 @@
-/** Outbox input written by the `programs-sites.site.changed.v1` producer. */
+/** Outbox input and own-registry apply of the `programs-sites.site.changed.v1` producer. */
 import type { EventEnvelope } from '@opt2/platform/events';
 import { writeOutbox, type OutboxOrigin } from '@opt2/platform/outbox';
-import { SITE_CHANGED_TOPIC, tenantIdForSite, type SiteChangedPayload, type TenantTx } from '@opt2/platform/tenancy';
+import { SITE_CHANGED_TOPIC, tenantIdForSite, tenantRegistryConsumer, type SiteChangedPayload, type TenantTx } from '@opt2/platform/tenancy';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TOPIC, writeSiteChanged, type SiteChangedArgs } from '../../src/events/site-changed.js';
 
@@ -42,7 +42,9 @@ function writtenInput(): Parameters<typeof writeOutbox>[1] {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   vi.mocked(writeOutbox).mockReset().mockReturnValue(Promise.resolve(stored));
+  vi.spyOn(tenantRegistryConsumer, 'apply').mockResolvedValue(undefined);
 });
 
 describe('site.changed producer', () => {
@@ -51,7 +53,7 @@ describe('site.changed producer', () => {
     expect(TOPIC).toBe('programs-sites.site.changed.v1');
   });
 
-  it('writes one state outbox row for the site in the caller transaction and returns its result', async () => {
+  it('writes one state outbox row for the site in the caller transaction, then applies it to the registry there, and returns its result', async () => {
     const tx = tenantTx();
     const payload = sitePayload();
 
@@ -70,6 +72,23 @@ describe('site.changed producer', () => {
     const [calledTx, input] = vi.mocked(writeOutbox).mock.calls[0] ?? [];
     expect(calledTx).toBe(tx);
     expect(input?.payload).toBe(payload);
+    expect(tenantRegistryConsumer.apply).toHaveBeenCalledExactlyOnceWith(tx, stored);
+    expect(vi.mocked(tenantRegistryConsumer.apply)).toHaveBeenCalledAfter(vi.mocked(writeOutbox));
+  });
+
+  it('applies nothing to the registry when the outbox stores no envelope', async () => {
+    vi.mocked(writeOutbox).mockResolvedValue(null);
+
+    await expect(writeSiteChanged(tenantTx(), siteArgs())).resolves.toBeNull();
+
+    expect(tenantRegistryConsumer.apply).not.toHaveBeenCalled();
+  });
+
+  it('rejects with the registry apply failure, so the caller transaction rolls back', async () => {
+    const failure = new Error('registry apply failed');
+    vi.mocked(tenantRegistryConsumer.apply).mockRejectedValue(failure);
+
+    await expect(writeSiteChanged(tenantTx(), siteArgs())).rejects.toBe(failure);
   });
 
   it.each<{ rowVersion: bigint | number; aggregateVersion: number }>([

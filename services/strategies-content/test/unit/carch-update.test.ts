@@ -13,6 +13,7 @@ import {
 } from '../../src/domain/content.js';
 import type { Actor } from '../../src/domain/context.js';
 import { ADMIN, END, HOME, NOBODY, SITE, SITE_ID, SITE_TREE, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
+import { uploadedFile } from '../helpers/uploads.js';
 
 describe.skipIf(!(await pgAvailable()))('carch.update', () => {
   let fx: ContentFixture;
@@ -146,7 +147,7 @@ describe.skipIf(!(await pgAvailable()))('carch.update', () => {
 
   describe('multi-file upload', () => {
     const upload = { parentid: HOME, action: 'multifileupload', subtype: 'Default', approved: 1 };
-    const files = [{ fieldName: 'files', fileName: 'notes.txt', contentType: 'text/plain', bytes: Buffer.from('n') }];
+    const files = [uploadedFile({ fieldName: 'files', fileName: 'notes.txt', contentType: 'text/plain' }, Buffer.from('n'))];
 
     it('aborts without a part and records the sticky session flag', async () => {
       expect(await carch(upload)).toEqual({ outcome: { kind: 'abort' }, sessionEffects: [{ kind: 'multiFileUpload', value: true }] });

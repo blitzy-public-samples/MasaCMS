@@ -4,7 +4,7 @@ import { isCompactDisplay, scanCompactDisplay } from '@/lib/cfml';
 import type { CsrfRenderer } from '@/lib/csrf';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw, type SafeHtml } from '@/lib/html';
 import type { AdminRequest, RequestContext } from '@/lib/request-context';
-import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
+import { adminRbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import { relativeAdminUrl, type RelativeAdminPrefix, type RelativeAdminUrlOptions } from '@/lib/urls';
 import type { ShellHooks } from '@/shell/types';
 import {
@@ -619,6 +619,6 @@ const NO_TOKENS: Pick<CsrfRenderer, 'render'> = {
 export const carchSecondaryMenu: NonNullable<ShellHooks['secondaryMenus']['carch']> = (req) => {
   const bound = BOUND_MENUS.get(req);
   return bound === undefined
-    ? renderCarchSecondaryMenu({ req, rb: rbFor(req.session.rb), csrf: NO_TOKENS }, {})
+    ? renderCarchSecondaryMenu({ req, rb: adminRbFor(req.session.rb), csrf: NO_TOKENS }, {})
     : renderCarchSecondaryMenu(bound.ctx, bound.input);
 };

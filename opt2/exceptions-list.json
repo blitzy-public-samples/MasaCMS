@@ -343,6 +343,24 @@
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     },
     {
+      "id": "EX-PROFILE-INTEREST-SITES",
+      "scenario": "GS-PE-04",
+      "routeKey": "admin:ceditprofile.edit",
+      "appliesTo": [
+        "admin:ceditprofile.update",
+        "admin:cusers.edituser"
+      ],
+      "difference": "Legacy `cEditProfile.edit` prints the Interests tab as the name of the profile user's site, `getSite(rc.userBean.getSiteID()).getSite()`, over that site's `cf_dsp_categories_nest` tree, then loops over `application.settingsManager.getSites()` and prints the name and tree of the first site whose private user pool is `rc.siteID`'s and not yet matched, the matched list starting with the user's site id (admin/core/views/ceditprofile/edit.cfm:255-275). Legacy `cUsers.editUser` prints its Interests tab as `cf_dsp_categories_nest` for `rc.siteID`, whose top level prints the `tsettings.Site` name of each site its rows belong to over that site's list (admin/core/views/cusers/edituser.cfm:619-624; admin/core/views/cusers/dsp_categories_nest.cfm:94-105), and a failed `cUsers.update` re-renders that form through `cUsers.editUser` (admin/core/controllers/cusers.cfc:351). Each tree level is `getPrivateInterestGroups`, which reads the interest groups of every site sharing that site's private user pool `ORDER BY tsettings.Site, tcontentcategories.name` (core/mura/category/categoryGateway.cfc:266-283; admin/core/views/ceditprofile/dsp_categories_nest.cfm:91; admin/core/views/cusers/dsp_categories_nest.cfm:94). `cEditProfile.update` renders the same tab after a failed save, with `rc.siteid` set to the user's site (admin/core/controllers/ceditprofile.cfc:129). Site names and the `getSites()` list with its pools are programs-sites settings no verified contract gives the target: programs-sites `getUserPoolSites` answers only a site's pool sites themselves, and `listSites` answers only `s2` callers (services/programs-sites/contracts/openapi.yaml). Three cases therefore fail closed. (a) strategies-content answers `listPrivateInterestGroups` with the legacy-shaped 503 `private-interest-groups-halted` naming this entry for a level holding rows of more than one site (services/strategies-content/src/domain/categories.ts), which web answers with the legacy admin 503. (b) web answers the legacy admin 503 `profile-pool-sites` naming this entry when `rc.siteid`'s private user pool is not the profile user's site (`poolSiteOf` in web/src/screens/ceditprofile/edit.ts). (c) web answers the legacy admin 503 `interest-site-unserved` naming this entry when a top-level row of the Edit User tree belongs to a site other than the request's, whose name the label would print; strategies-content gives each row its `siteID` (`interestForest` in web/src/screens/cusers/edituser.ts). A profile whose pool's interest groups belong to one site, viewed under a site whose private user pool is the user's site, is served, and so is an Edit User tree whose top level is the request site's.",
+      "decision": "preserve",
+      "reason": "Whether a private user pool spans several sites is stored configuration, so no request-decidable variant can keep the case on legacy, and halting would turn the carried write `admin:ceditprofile.edit` into a `legacy-write` entry in every cut-over version, sending every profile there. The oracle and seed give every site its own private user pool (tenant-a's `privateUserPoolID` is `tenant-a`, legacy-fixtures/seed/test/masa.test.ts:51-54), so GS-PE-04's profile is served, as is an Edit User tree of a site's own interest groups. The target fails closed until it reads site names and pool membership through a programs-sites contract or projection, and the entry then closes.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-PE-04.json",
+        "replay": "opt2/reports/parity.json#GS-PE-04"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
       "id": "EX-USER-EDIT-SITE",
       "scenario": "GS-ID-05",
       "routeKey": "admin:cusers.edituser",
@@ -672,6 +690,21 @@
       "evidence": {
         "golden": "harness/golden/sets/GS-CO-05.json",
         "replay": "opt2/reports/parity.json#GS-CO-05"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-FEED-REMOTE-OVERSIZE",
+      "scenario": "GS-CO-13",
+      "routeKey": "admin:cfeed.import1",
+      "appliesTo": [],
+      "difference": "Legacy `cfeed.import1` reads the remote feed's body whole with `cfhttp` and then parses it (admin/core/views/cfeed/import1.cfm:106-107), as `feedUtility.doImport` does behind the site-monitor feed import (core/mura/content/feed/feedUtility.cfc:116-123), whatever the body's size. strategies-content reads at most 100 MiB of the body, counted after decompression, and answers a larger one with the legacy-shaped 503.",
+      "decision": "preserve",
+      "reason": "Equivalence is impossible within bounded memory: legacy holds a body of any size whole. strategies-content reads at most the platform's `LEGACY_POST_LIMIT_BYTES`, 100 MiB after decompression (platform/src/service-kit/create-service.ts), cancels the response once the body passes it rather than buffering or truncating it, and fails closed with the legacy-shaped 503 naming the halt reason `feed-remote-oversize-halted`. `admin:cfeed.import1` stays `legacy` in every cut-over version, and the feed-auto-import step runs on legacy this run (services/programs-sites/src/jobs/steps.ts). Every feed within the bound is reproduced.",
+      "status": "halted",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-13.json",
+        "replay": "opt2/reports/parity.json#GS-CO-13"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }

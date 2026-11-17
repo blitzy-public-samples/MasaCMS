@@ -1,4 +1,5 @@
 // Users CSV of `cusers/inc/dsp_download.cfm`: the owning service builds the file; web relays its bytes (server-only).
+import type { Readable } from 'node:stream';
 import type { GatewayResponse } from '@/lib/gateway-client';
 import { HTML_CONTENT_TYPE } from '@/lib/responses';
 import type { RawBody } from '../../registry';
@@ -11,8 +12,11 @@ export type UsersCsvSource =
 const firstValue = (value: string | string[] | undefined): string | undefined =>
   Array.isArray(value) ? value[0] : value;
 
-/** The service's users CSV answer as a bare body: status, content type, disposition, cookies and bytes as received. */
-export function relayUsersCsv(serviceResponse: GatewayResponse<Buffer>): RawBody {
+/**
+ * The service's users CSV answer as a bare body: status, content type, disposition, cookies and bytes as received, a
+ * streamed body relayed as it arrives.
+ */
+export function relayUsersCsv(serviceResponse: GatewayResponse<Buffer | Readable>): RawBody {
   const { status, headers, body, setCookies } = serviceResponse;
   const disposition = firstValue(headers['content-disposition']);
   return {

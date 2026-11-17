@@ -5,7 +5,7 @@ import { setServiceClientForTests } from '@/lib/gateway-client';
 import { handleAdminAction, handleAdminPage, handleAdminRaw } from '@/lib/handlers';
 import { siteRecordFor } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
-import { routeKey, startFakeGateway, type FakeGateway, type FakeReply, type FakeRouteTable } from '../../helpers/fake-gateway';
+import { inMemoryGateway, routeKey, type FakeReply, type FakeRouteTable, type InMemoryGateway } from '../../helpers/fake-gateway';
 import { adminRequest, type AdminRequestOptions } from '../../helpers/requests';
 import { FIXED_CSRF, shellRoutes } from '../../helpers/screen-context';
 import { SUBJECTS } from '../../helpers/tokens';
@@ -60,24 +60,23 @@ function sessionRoutes(routes: FakeRouteTable): FakeRouteTable {
   });
 }
 
-let fake: FakeGateway;
+let fake: InMemoryGateway;
 let restoreEnv: () => void;
 let restoreClient: () => void;
 
-// The loopback gateway web's relay calls; each test adds the routes it answers.
-beforeEach(async () => {
-  fake = await startFakeGateway();
-  restoreEnv = useTestEnv({ OPT2_GATEWAY_URL: fake.url });
-  restoreClient = setServiceClientForTests(undefined);
+// The in-memory gateway web's relay calls; each test adds the routes it answers.
+beforeEach(() => {
+  fake = inMemoryGateway();
+  restoreEnv = useTestEnv();
+  restoreClient = setServiceClientForTests(fake.client);
 });
 
-afterEach(async () => {
+afterEach(() => {
   restoreClient();
   restoreEnv();
-  await fake.close();
 });
 
-/** Answers the session, shell and `routes` calls on the loopback gateway. */
+/** Answers the session, shell and `routes` calls on the in-memory gateway. */
 function serve(routes: FakeRouteTable = {}): void {
   for (const [key, route] of Object.entries(sessionRoutes(routes))) fake.setRoute(key, route);
 }

@@ -38,7 +38,7 @@ import {
 } from '../legacy/envelope.js';
 import { dayActionResult, sheetRow, statusRow, type FixtureDaySource } from '../legacy/serialize.js';
 import { PROGRAM_SITES } from '../migration/mappings/index.js';
-import type { TimesheetsRepository } from '../repo/repository.js';
+import type { SheetWithDayStates, TimesheetsRepository } from '../repo/repository.js';
 import type { TimesheetDayRow, TimesheetRow } from '../repo/tables.js';
 
 /** Options of the fixture plugin; `routes/index.ts` passes its `TimesheetsDeps`, which has the same shape. */
@@ -256,6 +256,14 @@ function statusOf(sheet: TimesheetRow, days: readonly FixtureDaySource[], asOf: 
   );
 }
 
+/** A listed sheet's `usp_timesheet_status` row as of `asOf`, from its day states. */
+export function listedSheetStatus({ sheet, days }: SheetWithDayStates, asOf: string): SheetStatusResult {
+  return deriveSheetStatus(
+    days.map(({ state, blackout }) => ({ state: state as TimesheetState, blackout })),
+    { dueDate: sheet.due_date, asOf },
+  );
+}
+
 /** Reads one sheet of the site with its days and status as of `asOf`, in timesheets.cfc's order: existence, then `asOf`. */
 async function sheetDetail(
   tx: TenantTx,
@@ -321,13 +329,8 @@ export const timesheetsFixturePlugin: FastifyPluginAsync<FixtureRouteDeps> = asy
     const asOf = requireAsOf(ctx.params, clock);
     const paging = fixturePaging(ctx.params);
     const { total, items } = await withTenant(db, claims.tid, async (tx) => {
-      const page = await repository.listSheets(tx, { siteid: siteId, ...paging });
-      const sheets = await sheetsWithDays(tx, repository, page.rows);
-      const blackedOut = await blackedOutIds(tx, repository, sheets.flatMap(({ rows }) => rows));
-      return {
-        total: page.total,
-        items: sheets.map(({ sheet, rows }) => statusRow({ sheet, status: statusOf(sheet, withBlackouts(rows, blackedOut), asOf) })),
-      };
+      const page = await repository.listSheetsWithDayStates(tx, { siteid: siteId, ...paging });
+      return { total: page.total, items: page.sheets.map((read) => statusRow({ sheet: read.sheet, status: listedSheetStatus(read, asOf) })) };
     });
     return sendLegacyResponse(reply, fixtureList(ctx, items, { total, ...paging }));
   });

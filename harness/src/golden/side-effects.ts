@@ -120,13 +120,13 @@ export interface FileVariant {
   size: number;
 }
 
-/** Side effects of one scenario run; `rows` is the origin's own snapshot (target on the gateway). */
+/** Side effects of one scenario run; `rows` holds each unit's snapshot from its writer of record. */
 export interface SideEffects {
   mail: MailMessage[];
   rows: Record<string, RowSnapshot>;
   tasks: TaskRecord[];
   files: FileVariant[];
-  /** Gateway origin only: legacy rows after replay, which the reverse projector writes once a unit cuts over. */
+  /** Gateway origin only: every unit's legacy rows after replay. */
   legacyRows?: Record<string, RowSnapshot>;
 }
 
@@ -1277,8 +1277,8 @@ async function awaitSeam(rt: Runtime, topic: string | undefined, timeoutMs: numb
 
 const groupAuthoritySchema = z.object({ groupAuthority: z.record(z.string(), z.enum(['legacy', 'target'])) });
 
-/** Owners of the units in the groups the gateway's active cut-over version makes `target`-authoritative. */
-async function projectedOwners(rt: Runtime, gatewayUrl: string): Promise<Set<string>> {
+/** Units of the groups the gateway's active cut-over version makes `target`-authoritative, each mapped to its group id. */
+async function targetAuthoritativeUnits(rt: Runtime, gatewayUrl: string): Promise<Map<string, string>> {
   const invoker = await rt.invoker();
   const status = await cutoverStatus({ gatewayUrl, env: rt.env, invoker, fetch: rt.fetch }).catch((err: unknown) => {
     if (err instanceof CutoverRequestFailed) {
@@ -1293,18 +1293,27 @@ async function projectedOwners(rt: Runtime, gatewayUrl: string): Promise<Set<str
       .filter(([, authority]) => authority === 'target')
       .map(([id]) => id),
   );
-  const owners = new Set<string>();
-  if (targetGroups.size === 0) return owners;
-  const [groups, ownership] = await Promise.all([rt.groups(), rt.ownership()]);
-  for (const group of groups.groups) {
+  const units = new Map<string, string>();
+  if (targetGroups.size === 0) return units;
+  for (const group of (await rt.groups()).groups) {
     if (!targetGroups.has(group.id)) continue;
-    for (const unit of group.units) {
-      const owner = ownership.units.find((u) => u.unit === unit)?.owner;
-      if (owner === undefined) {
-        throw new GoldenConfigError(`settle projection: unit ${unit} of group ${group.id} is not in opt2/table-ownership.json`);
-      }
-      owners.add(owner);
+    for (const unit of group.units) if (!units.has(unit)) units.set(unit, group.id);
+  }
+  return units;
+}
+
+/** Owners of the units in the groups the gateway's active cut-over version makes `target`-authoritative. */
+async function projectedOwners(rt: Runtime, gatewayUrl: string): Promise<Set<string>> {
+  const units = await targetAuthoritativeUnits(rt, gatewayUrl);
+  const owners = new Set<string>();
+  if (units.size === 0) return owners;
+  const ownership = await rt.ownership();
+  for (const [unit, group] of units) {
+    const owner = ownership.units.find((u) => u.unit === unit)?.owner;
+    if (owner === undefined) {
+      throw new GoldenConfigError(`settle projection: unit ${unit} of group ${group} is not in opt2/table-ownership.json`);
     }
+    owners.add(owner);
   }
   return owners;
 }
@@ -1430,7 +1439,8 @@ function mergeSnapshots(snapshots: readonly RowSnapshot[]): Record<string, RowSn
 
 /**
  * Side effects of a finished scenario run on `origin`, computing only the kinds in `scenario.compare`. Rows are the
- * legacy snapshot on legacy; on the gateway they are the target export, with the legacy rows after replay in `legacyRows`.
+ * legacy snapshot on legacy; on the gateway each unit's rows come from its writer of record in the active cut-over
+ * version (the target export when `target`-authoritative, else legacy), with every unit's legacy rows in `legacyRows`.
  * On legacy, a row scope holding fewer rows than its `minRows` throws MissingRowsError.
  */
 export async function collectSideEffects(
@@ -1457,7 +1467,7 @@ export async function collectSideEffects(
       const specs = (scenario.rows ?? []).map((spec) => resolveRowSpec(spec, ctx));
       const mssql = await rt.mssql();
       const ownership = await rt.ownership();
-      const legacy: RowSnapshot[] = [];
+      const scans: { spec: ResolvedRowSpec; snapshots: RowSnapshot[] }[] = [];
       for (const spec of specs) {
         const { snapshots, matched } = await scanLegacyRows(spec, { mssql, ownership });
         if (origin === 'legacy' && spec.minRows !== undefined && matched < spec.minRows) {
@@ -1466,15 +1476,25 @@ export async function collectSideEffects(
               `fewer than its minRows ${spec.minRows}`,
           );
         }
-        legacy.push(...snapshots);
+        scans.push({ spec, snapshots });
       }
+      const legacy = scans.flatMap((scan) => scan.snapshots);
       if (origin === 'legacy') {
         effects.rows = mergeSnapshots(legacy);
       } else {
+        const authoritative = await targetAuthoritativeUnits(rt, ctx.baseUrl);
         const rowDeps: TargetRowDeps = { env: ctx.env, config, mssql, ownership, invoker: await rt.invoker(), fetch: deps.fetch };
-        const target: RowSnapshot[] = [];
-        for (const spec of specs) target.push(...(await targetRows(spec, rowDeps)));
-        effects.rows = mergeSnapshots(target);
+        const rows: RowSnapshot[] = [];
+        for (const { spec, snapshots } of scans) {
+          const exported = new Map<string, RowSnapshot>();
+          if (snapshots.some((snapshot) => authoritative.has(snapshot.unit))) {
+            for (const snapshot of await targetRows(spec, rowDeps)) {
+              if (authoritative.has(snapshot.unit)) exported.set(snapshot.unit, snapshot);
+            }
+          }
+          rows.push(...snapshots.map((snapshot) => exported.get(snapshot.unit) ?? snapshot));
+        }
+        effects.rows = mergeSnapshots(rows);
         effects.legacyRows = mergeSnapshots(legacy);
       }
     }

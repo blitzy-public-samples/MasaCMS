@@ -246,14 +246,21 @@ function monitorNames(live: SchedulerDescription): string[] {
   return uniqueSorted(live.tasks.filter((task) => isSiteMonitorTask(task, live.siteMonitorTask)).map((task) => task.task));
 }
 
-/** Live and stored definitions by name; the stored `paused` flag, captured before pausing, wins. */
+/** Live and stored definitions by name; the stored `paused` and `expired` flags, captured before pausing, win. */
 function mergeDefinitions(live: readonly NativeTask[], stored: readonly NativeTask[]): NativeTask[] {
   const merged = new Map(live.map((task) => [task.task, task]));
   for (const task of stored) {
     const current = merged.get(task.task);
-    merged.set(task.task, current === undefined ? task : { ...current, paused: task.paused });
+    // A restart imports every task paused, so a live task captured expired may now be listed paused.
+    const expired = task.expired === true || current?.expired === true;
+    merged.set(task.task, current === undefined ? task : { ...current, paused: task.paused, ...(expired ? { expired } : {}) });
   }
   return [...merged.values()].sort(byName);
+}
+
+/** Captured definitions ACF held expired: each has had its run or never runs, so none is resumed or adopted. */
+function isExpired(task: NativeTask): boolean {
+  return task.expired === true;
 }
 
 /** The live survey definitions, merged with the stored ones only when those were captured by a pause still in force. */
@@ -321,8 +328,8 @@ export function createSchedulerService(ctx: SchedulerContext, options: Scheduler
       return definitions.length === 0 ? current : { ...current, definitions, paused: current.paused ?? reason };
     });
     if (definitions.length === 0) return [];
-    const { tasks } = await step('pause', () => ctx.bridge.schedulerPause({ prefix: SURVEY_TASK_PREFIX }));
-    log(`pause survey tasks (${reason})`, nameList(tasks));
+    const { tasks, expired = [] } = await step('pause', () => ctx.bridge.schedulerPause({ prefix: SURVEY_TASK_PREFIX }));
+    log(`pause survey tasks (${reason})`, `${nameList(tasks)}; expired, left as they are: ${nameList(expired)}`);
     return tasks;
   }
 
@@ -359,15 +366,22 @@ export function createSchedulerService(ctx: SchedulerContext, options: Scheduler
     };
   }
 
-  /** Recreates survey definitions re-pointed at the gateway, keeping the paused flag each had before it was paused. */
-  async function restoreSurveyDefinitions(definitions: readonly NativeTask[]): Promise<string[]> {
+  /**
+   * Recreates survey definitions re-pointed at the gateway, keeping the paused flag each had before it was paused; one
+   * captured expired stays expired, and one whose run fell due while held runs at once.
+   * @returns the restored names and those ColdFusion holds expired.
+   */
+  async function restoreSurveyDefinitions(definitions: readonly NativeTask[]): Promise<{ restored: string[]; expired: string[] }> {
     const restored: string[] = [];
+    const expired: string[] = [];
     for (const paused of [false, true]) {
       const tasks = definitions.filter((task) => task.paused === paused);
       if (tasks.length === 0) continue;
-      restored.push(...(await step('restore', () => ctx.bridge.schedulerRestore({ tasks, repoint: true, paused }))).tasks);
+      const result = await step('restore', () => ctx.bridge.schedulerRestore({ tasks, repoint: true, paused }));
+      restored.push(...result.tasks);
+      expired.push(...(result.expired ?? []));
     }
-    return restored;
+    return { restored, expired };
   }
 
   // SiteMonitorState reports no run in progress, so a run dispatched before the pause is awaited until its queue deadline.
@@ -421,9 +435,9 @@ export function createSchedulerService(ctx: SchedulerContext, options: Scheduler
     const { definitions } = current;
     log('cancel adopted survey tasks', `pending ${nameList(definitions.map((task) => task.task))}`);
 
-    const restored = await restoreSurveyDefinitions(definitions);
+    const { restored, expired } = await restoreSurveyDefinitions(definitions);
     await updateSurveys((stateNow) => ({ ...stateNow, state: 'legacy', definitions, adoptedNames: [], paused: null }));
-    log('restore survey tasks', nameList(restored));
+    log('restore survey tasks', `${nameList(restored)}; expired: ${nameList(expired)}`);
     return restored;
   }
 
@@ -523,11 +537,16 @@ export function createSchedulerService(ctx: SchedulerContext, options: Scheduler
         definitions = capturedSurveyDefinitions(live, current);
         return { ...current, definitions, paused: current.paused ?? 'transition' };
       });
-      const adopted = definitions.map((task) => task.task);
-      if (definitions.length > 0) {
-        const request = await adoptRequest(definitions);
+      // Legacy never runs an expired task again, so the target gets none; its definition stays for a restoration.
+      const adoptable = definitions.filter((task) => !isExpired(task));
+      const adopted = adoptable.map((task) => task.task);
+      if (adoptable.length > 0) {
+        const request = await adoptRequest(adoptable);
         await step('adopt', () => ctx.owners.adoptScheduledTasks(request));
         log('adopt survey tasks', nameList(adopted));
+      }
+      if (adoptable.length < definitions.length) {
+        log('skip expired survey tasks', nameList(definitions.filter(isExpired).map((task) => task.task)));
       }
 
       const { tasks: deleted } = await step('delete', () => ctx.bridge.schedulerDelete({ prefix: SURVEY_TASK_PREFIX }));
@@ -564,10 +583,12 @@ export function createSchedulerService(ctx: SchedulerContext, options: Scheduler
 
       let surveys: string[] = [];
       if (surveyTasks.state === 'legacy' && surveyTasks.paused === 'transition') {
-        const names = surveyTasks.definitions.filter((task) => !task.paused).map((task) => task.task);
-        if (names.length > 0) surveys = (await step('resume', () => ctx.bridge.schedulerResume({ tasks: names }))).tasks;
+        // Only tasks that waited when paused are resumed; the bridge runs at once one whose start passed meanwhile.
+        const names = surveyTasks.definitions.filter((task) => !task.paused && !isExpired(task)).map((task) => task.task);
+        let expired: string[] = [];
+        if (names.length > 0) ({ tasks: surveys, expired = [] } = await step('resume', () => ctx.bridge.schedulerResume({ tasks: names })));
         await updateSurveys((current) => (current.paused === 'transition' ? { ...current, paused: null } : current));
-        log('resume survey tasks', nameList(surveys));
+        log('resume survey tasks', `${nameList(surveys)}; expired, left as they are: ${nameList(expired)}`);
       }
       return { siteMonitor, surveys };
     },
@@ -593,9 +614,10 @@ export function createSchedulerService(ctx: SchedulerContext, options: Scheduler
       // Only definitions captured by a pause still in force are current; older ones would overwrite rescheduled tasks.
       let surveys: string[] = [];
       if (surveyTasks.state === 'legacy' && surveyTasks.paused !== null) {
-        surveys = await restoreSurveyDefinitions(surveyTasks.definitions);
+        const { restored, expired } = await restoreSurveyDefinitions(surveyTasks.definitions);
+        surveys = restored;
         await updateSurveys((current) => ({ ...current, paused: null }));
-        log('restore survey tasks', nameList(surveys));
+        log('restore survey tasks', `${nameList(surveys)}; expired: ${nameList(expired)}`);
       }
       return { siteMonitor, surveys };
     },

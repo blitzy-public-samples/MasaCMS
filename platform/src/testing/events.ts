@@ -288,17 +288,26 @@ export function isAck(response: { statusCode: number }): boolean {
 /** gRPC status of a deleted or never-created resource. */
 const GRPC_NOT_FOUND = 5;
 
-/** Resolves true only when `PUBSUB_EMULATOR_HOST` is set and the emulator answers `GET /` within 2 s. */
+/** True when the emulator at `PUBSUB_EMULATOR_HOST` answers `GET /` OK within 10 s; false only when the host is unset and OPT2_TEST_REQUIRE_PUBSUB is not `1`; otherwise rejects. */
 export async function pubsubEmulatorAvailable(): Promise<boolean> {
   const host = process.env.PUBSUB_EMULATOR_HOST;
-  if (!host) return false;
-  try {
-    const response = await fetch(`http://${host}/`, { signal: AbortSignal.timeout(2_000) });
-    await response.body?.cancel();
-    return response.ok;
-  } catch {
+  if (!host) {
+    if (process.env.OPT2_TEST_REQUIRE_PUBSUB === '1') {
+      throw new Error('The event suites require the Pub/Sub emulator (OPT2_TEST_REQUIRE_PUBSUB=1), but PUBSUB_EMULATOR_HOST is unset');
+    }
     return false;
   }
+  let response: Response;
+  try {
+    response = await fetch(`http://${host}/`, { signal: AbortSignal.timeout(10_000) });
+  } catch (error) {
+    throw new Error(`The Pub/Sub emulator at PUBSUB_EMULATOR_HOST=${host} is unreachable`, { cause: error });
+  }
+  await response.body?.cancel();
+  if (!response.ok) {
+    throw new Error(`The Pub/Sub emulator at PUBSUB_EMULATOR_HOST=${host} answered GET / with ${String(response.status)}`);
+  }
+  return true;
 }
 
 // Imported lazily so this module adds no static dependency on the Pub/Sub client; a client exists only once an emulator helper runs.

@@ -12,6 +12,8 @@ import {
   SURVEY_STATUSES,
   createSurvey,
   getSurvey,
+  getSurveySummary,
+  listSurveyTargets,
   listSurveys,
   requireSurvey,
   type CreateSurveyInput,
@@ -96,6 +98,15 @@ describe.skipIf(!available)('surveys domain against PostgreSQL', () => {
     expect(created).toMatchObject({ schedule: null, reminders: [], targets: [] });
     await expect(getSurvey(deps, { tenantId: tenantA, surveyId: created.survey.survey_id })).resolves.toEqual(created);
     await expect(handle.app.withTenant(tenantA, (tx) => requireSurvey(tx, created.survey.survey_id))).resolves.toEqual(created.survey);
+    await expect(getSurveySummary(deps, { tenantId: tenantA, surveyId: created.survey.survey_id })).resolves.toEqual({
+      survey: created.survey,
+      schedule: null,
+      reminders: [],
+    });
+    await expect(listSurveyTargets(deps, { tenantId: tenantA, surveyId: created.survey.survey_id, page: { limit: 1 } })).resolves.toEqual({
+      rows: [],
+      next: null,
+    });
   });
 
   it.each([
@@ -133,6 +144,8 @@ describe.skipIf(!available)('surveys domain against PostgreSQL', () => {
     ] as const) {
       for (const attempt of [
         () => getSurvey(deps, { tenantId, surveyId }),
+        () => getSurveySummary(deps, { tenantId, surveyId }),
+        () => listSurveyTargets(deps, { tenantId, surveyId, page: { limit: 1 } }),
         () => handle.app.withTenant(tenantId, (tx) => requireSurvey(tx, surveyId)),
       ]) {
         const error = await attempt().catch((e: unknown) => e);

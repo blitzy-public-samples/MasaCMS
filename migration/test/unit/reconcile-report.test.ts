@@ -30,6 +30,7 @@ import {
 const PIN_SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const PLACEHOLDER_DIR = fileURLToPath(new URL('../../../opt2/reports/reconciliation/', import.meta.url));
 const FIXED_AT = '2026-06-30T12:00:00.000Z';
+const STARTED_AT = '2026-06-30T11:59:00.000Z';
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
 const TENANT_A = '3f1c2d4e-5a6b-5c7d-8e9f-0a1b2c3d4e5f';
@@ -53,7 +54,7 @@ function entry(unit: string, tenantId: string, over: Partial<RowComparison> = {}
 }
 
 function reportFor(point: string, units: readonly UnitReport[], tableVersion: string | null = 'v0001') {
-  return buildReport({ point: resolvePoint(config, point), tableVersion, snapshotSeq: 1, legacyDatabase: 'muradb_opt2_snap_1', units, fileStore: NOT_APPLICABLE });
+  return buildReport({ point: resolvePoint(config, point), startedAt: STARTED_AT, tableVersion, snapshotSeq: 1, legacyDatabase: 'muradb_opt2_snap_1', units, fileStore: NOT_APPLICABLE });
 }
 
 describe('resolvePoint', () => {
@@ -172,6 +173,7 @@ describe('buildReport', () => {
     ]);
     expect(report).toMatchObject({
       point: 'after-backfill',
+      startedAt: STARTED_AT,
       expectedTableVersion: 'v0001',
       tableVersion: 'v0001',
       tableVersionMatches: true,
@@ -200,6 +202,7 @@ describe('buildReport', () => {
     const fileStore: FileStoreReport = { store: 's3', status: 'halted', reason: 'file store is s3, not fileDir', haltedUnits: ['content.file_object'] };
     const report = buildReport({
       point: resolvePoint(config, 'post-cutover'),
+      startedAt: STARTED_AT,
       legacySource: 'snapshot',
       tableVersion: 'v0001',
       snapshotSeq: null,
@@ -221,7 +224,7 @@ describe('buildReport', () => {
       { unit: 'finance.split', legacyTable: 'synthetic.a', reason },
     ];
     const build = (units: readonly UnitReport[]) =>
-      buildReport({ point: resolvePoint(config, 'rollback-before'), tableVersion: 'v0002', snapshotSeq: null, legacyDatabase: 'muradb', units, skippedUnits, fileStore: NOT_APPLICABLE });
+      buildReport({ point: resolvePoint(config, 'rollback-before'), startedAt: STARTED_AT, tableVersion: 'v0002', snapshotSeq: null, legacyDatabase: 'muradb', units, skippedUnits, fileStore: NOT_APPLICABLE });
 
     const report = build([entry('people.person', TENANT_A)]);
 
@@ -232,10 +235,36 @@ describe('buildReport', () => {
       'timesheets.blackout|Program_N.blackout',
     ]);
     expect(report.skippedUnits[0]).not.toBe(skippedUnits[3]);
-    expect(report.summary).toEqual({ units: 1, tenants: 1, unitsWithDifferences: 0, differences: 0, orphans: 0, haltedUnits: 0, skippedUnits: 3 });
+    expect(report.summary).toEqual({ units: 1, tenants: 1, unitsWithDifferences: 0, differences: 0, orphans: 0, haltedUnits: 0, skippedUnits: 3, emptyUnits: 0 });
     expect(report.result).toBe('zero-difference');
     expect(build([entry('people.person', TENANT_A, { targetCount: 1 })]).result).toBe('difference');
     expect(reportFor('post-cutover', []).skippedUnits).toEqual([]);
+  });
+
+  it('lists unit tables compared empty, sorted by unit and table, counts them among the units and leaves the result to the entries', () => {
+    const emptyUnits = [
+      { unit: 'timesheets.blackout', legacyTable: 'Program_N.blackout' },
+      { unit: 'content.file_object', legacyTable: null },
+      { unit: 'finance.split', legacyTable: 'synthetic.b' },
+      { unit: 'finance.split', legacyTable: 'synthetic.a' },
+    ];
+    const build = (units: readonly UnitReport[]) =>
+      buildReport({ point: resolvePoint(config, 'rollback-before'), startedAt: STARTED_AT, tableVersion: 'v0002', snapshotSeq: null, legacyDatabase: 'muradb', units, emptyUnits, fileStore: NOT_APPLICABLE });
+
+    const report = build([entry('people.person_archive', TENANT_A)]);
+
+    expect(report.emptyUnits).toEqual([
+      { unit: 'content.file_object', legacyTable: null },
+      { unit: 'finance.split', legacyTable: 'synthetic.a' },
+      { unit: 'finance.split', legacyTable: 'synthetic.b' },
+      { unit: 'timesheets.blackout', legacyTable: 'Program_N.blackout' },
+    ]);
+    expect(report.emptyUnits[0]).not.toBe(emptyUnits[1]);
+    expect(report.summary).toEqual({ units: 4, tenants: 1, unitsWithDifferences: 0, differences: 0, orphans: 0, haltedUnits: 0, skippedUnits: 0, emptyUnits: 3 });
+    expect(report.result).toBe('zero-difference');
+    expect(build([entry('people.person_archive', TENANT_A, { targetCount: 1 })]).result).toBe('difference');
+    expect(build([entry('finance.split', TENANT_A)]).summary.units).toBe(3);
+    expect(reportFor('post-cutover', [])).toMatchObject({ emptyUnits: [], summary: { units: 0, emptyUnits: 0 } });
   });
 });
 
@@ -264,10 +293,10 @@ describe('writing reports', () => {
 
     const written = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
     expect(Object.keys(written)).toEqual([
-      'sourceSha', 'generatedBy', 'generatedAt', 'status', 'point', 'expectedTableVersion', 'tableVersion', 'tableVersionMatches',
-      'snapshotSeq', 'legacySource', 'legacyDatabase', 'tolerance', 'measures', 'units', 'skippedUnits', 'summary', 'fileStore', 'result',
+      'sourceSha', 'generatedBy', 'generatedAt', 'status', 'point', 'startedAt', 'expectedTableVersion', 'tableVersion', 'tableVersionMatches',
+      'snapshotSeq', 'legacySource', 'legacyDatabase', 'tolerance', 'measures', 'units', 'skippedUnits', 'emptyUnits', 'summary', 'fileStore', 'result',
     ]);
-    expect(written).toMatchObject({ sourceSha: PIN_SHA, generatedBy: GENERATED_BY, generatedAt: FIXED_AT, status: 'generated', result: 'zero-difference' });
+    expect(written).toMatchObject({ sourceSha: PIN_SHA, generatedBy: GENERATED_BY, generatedAt: FIXED_AT, startedAt: STARTED_AT, status: 'generated', result: 'zero-difference' });
     expect(written.units).toEqual(report.units);
 
     const summary = await readFile(path.join(reportsDir, RECONCILIATION_DIR, 'summary.md'), 'utf8');

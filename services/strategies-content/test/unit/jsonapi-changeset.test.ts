@@ -33,6 +33,7 @@ import {
   type JsonApiCall,
   type JsonApiResult,
 } from '../../src/routes/jsonapi/types.js';
+import { scopeRows } from '../helpers/feed.js';
 
 type Struct = Record<string, unknown>;
 type Op = 'findOne' | 'findMany' | 'findAll' | 'findQuery' | 'findNew' | 'findProperties' | 'findPermissions' | 'save' | 'delete';
@@ -769,7 +770,7 @@ describe.skipIf(!(await pgAvailable()))('JSON API changeset and changesetCategor
 
     it('scopes both feeds to the rows, values and order of the whole-site reads', async () => {
       const all = (spec: FeedTableSpec): Promise<Struct[]> =>
-        withTenant(handle.app, SITE.tenantId, (tx) => deps.repository.beanFeed.source<Struct>((fn) => fn(tx), spec).all());
+        withTenant(handle.app, SITE.tenantId, (tx) => scopeRows(deps.repository.beanFeed.source<Struct>((fn) => fn(tx), spec)));
       expect(whole.changesets).toHaveLength(11);
       expect(whole.assignments).toHaveLength(7);
       const changesets = await all(deps.repository.changesets.siteChangesetsFeed({ siteId: SITE.siteId }));

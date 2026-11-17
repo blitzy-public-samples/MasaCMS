@@ -58,6 +58,8 @@ jobs:
       PG_DATABASE: opt2_test
       PUBSUB_EMULATOR_HOST: localhost:8085
       GOOGLE_CLOUD_PROJECT: opt2-ci
+      OPT2_TEST_REQUIRE_PG: '1'
+      OPT2_TEST_REQUIRE_PUBSUB: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1

@@ -43,8 +43,7 @@ function failureRecordingDb(db: TenantDb, failures: unknown[]): TenantDb {
   };
 }
 
-// An unset PG_HOST skips the suite without probing the server.
-const pgReady = process.env.PG_HOST === undefined ? false : await pgAvailable();
+const pgReady = await pgAvailable();
 
 describe.skipIf(!pgReady)('claim uniqueness in PostgreSQL', () => {
   const SECRET = 'K0000000-0000-0000-0000000000000001';

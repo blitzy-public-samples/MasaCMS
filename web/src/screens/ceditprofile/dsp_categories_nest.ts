@@ -2,20 +2,18 @@
 import { encodeHtml, html, raw, type SafeHtml } from '@/lib/html';
 import type { ScreenContext } from '../registry';
 
-/** One `categoryGateway.getPrivateInterestGroups` row: an interest category of a site sharing the user pool. */
+/** One `categoryGateway.getPrivateInterestGroups` row the tree prints: an interest category of a site sharing the user pool. */
 export interface ProfileInterestCategoryRow {
   readonly categoryID: string;
   readonly name: string;
-  /** `tsettings.Site`, the category's site name. */
-  readonly site: string;
   /** The checkbox renders only when it equals 1. */
   readonly isOpen: number | boolean;
   /** Child count over every category, so a level holding only non-interest children renders nothing. */
   readonly hasKids: number;
 }
 
-// The strategies-content contract defines no interest-group listing, so the caller binds this query to the
-// gateway; web passes only the site and parent ids, and the service resolves the user pool from its registry.
+// strategies-content `listPrivateInterestGroups` serves this query; web passes only the site and parent ids, and the
+// service resolves the user pool from its registry.
 /** `getPrivateInterestGroups(siteId, parentId)`: one level, ordered by site then name; `''` selects the root. */
 export type ProfileInterestCategoryLoader = (
   siteId: string,

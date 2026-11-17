@@ -10,6 +10,7 @@ import {
   getMessageDetail,
   listAdoptedScheduledTasks,
   listMessages,
+  listScheduledTaskPage,
   listTemplates,
   queuedLoginMailOlderThan,
   unstampedScheduledTasksOlderThan,
@@ -85,6 +86,9 @@ const PAGE = { siteId: 'Tenant-A', pageIndex: 2, itemsPerPage: 20 } as const;
 const CUTOFF = new Date(2026, 5, 30, 12, 0, 0);
 const AFTER = { limit: 25, after: { at: new Date(2026, 5, 30, 9, 30, 0), id: '00000120-AAAA-BBBB-CCCCDDDDEEEEFFFF' } };
 const ADOPTED_NAMES = ['opt2-survey-S3-launch', 'opt2-survey-S9-launch'];
+const TASK_SOURCE = { sourceType: 'survey', sourceId: '00000005-AAAA-BBBB-CCCCDDDDEEEEFFFF' } as const;
+const TASK_PAGE_AFTER = { version: 1, at: new Date(2026, 5, 30, 9, 5, 0), kind: 'survey-launch', n: null, id: TASK_SOURCE.sourceId } as const;
+const TASK_NAMES = ['opt2-survey-S5-launch', 'opt2-survey-S5-reminder-1'];
 const MESSAGE_CURSOR = 'ROW(created, message_id) >';
 const TASK_CURSOR = 'ROW(created_at, scheduled_task_id) >';
 
@@ -175,6 +179,23 @@ const CASES: readonly PlanCase[] = [
         },
       ]),
   },
+  ...([
+    ['first page', undefined, undefined],
+    ['page after a key', TASK_PAGE_AFTER, undefined],
+    ['first page by name', undefined, TASK_NAMES],
+    ['page by name after a key', TASK_PAGE_AFTER, TASK_NAMES],
+  ] as const).map(
+    ([page, after, taskNames]): PlanCase => ({
+      read: `current scheduled-task list ${page}`,
+      table: 'scheduled_task',
+      nth: 0,
+      // One source's rows of every schedule version, sorted for the page.
+      index: 'scheduled_task_source_idx',
+      ordered: false,
+      cond: 'source_id',
+      run: (tx) => listScheduledTaskPage(tx, TASK_SOURCE, { limit: 25, after, taskNames }),
+    }),
+  ),
   {
     read: 'cancelled adoptions awaiting a dequeue, by name',
     table: 'scheduled_task',

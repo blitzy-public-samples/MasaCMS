@@ -212,9 +212,9 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
     repository = createTimesheetsRepository({ clock: CLOCK, schema: handle.schema });
     const routeRepository: TimesheetsRepository = {
       ...repository,
-      async listSheets(tx, filter) {
+      async listSheetsWithDayStates(tx, filter) {
         if (filter.pageIndex === failingSheetPage) await tx.query('SELECT 1 / 0');
-        return repository.listSheets(tx, filter);
+        return repository.listSheetsWithDayStates(tx, filter);
       },
     };
     await app.register(timesheetsV1Plugin, { db: recordingDb(handle.app, statements), repository: routeRepository, clock: CLOCK });
@@ -790,15 +790,17 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
     it.each<[string, string, string, readonly string[], number, [number, number]]>([
       ['the sheet list of tenant-a', SHEETS, TENANT_A.siteId, PRIMARY, 6, [1, 1]],
       ['a full sheet list page', `${SHEETS}?itemsPerPage=1000`, TENANT_UMBRELLA.siteId, PRIMARY, 1000, [1, 1]],
-      ['a sheet list page past the end', `${SHEETS}?pageIndex=2`, TENANT_A.siteId, PRIMARY, 0, [0, 0]],
+      ['a sheet list page past the end', `${SHEETS}?pageIndex=2`, TENANT_A.siteId, PRIMARY, 0, [0, 1]],
       ['the sheet status of tenant-a', SHEET_STATUS, TENANT_A.siteId, EXPORTER, 6, [1, 1]],
       ['a full sheet status page', `${SHEET_STATUS}?itemsPerPage=1000`, TENANT_UMBRELLA.siteId, EXPORTER, 1000, [1, 1]],
       ['each page of the unpaged sheet status of a tenant spanning two pages', SHEET_STATUS, TENANT_UMBRELLA.siteId, EXPORTER, PAGED_SHEETS, [2, 2]],
-    ])('reads the days and then the blackouts of %s in at most one query each', async (_case, url, site, roles, items, [dayReads, blackoutReads]) => {
+    ])('reads the days of %s with their blackout flags in at most one query per page, after one gate fence', async (_case, url, site, roles, items, [dayReads, fences]) => {
       statements.length = 0;
       const res = await call<{ items: unknown[] }>('GET', url, { site, roles });
       expect([res.status, res.body.items.length]).toEqual([200, items]);
-      expect([statementsOn(statements, 'timesheet_day'), statementsOn(statements, 'blackout')]).toEqual([dayReads, blackoutReads]);
+      const dayStatements = statements.filter((text) => text.includes('."timesheet_day"'));
+      expect([dayStatements.length, statementsOn(statements, 'blackout'), statementsOn(statements, 'unit_gate')]).toEqual([dayReads, dayReads, fences]);
+      expect(dayStatements.every((text) => text.includes('."blackout"'))).toBe(true);
     });
   });
 

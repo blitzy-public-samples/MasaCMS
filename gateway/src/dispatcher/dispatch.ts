@@ -21,7 +21,7 @@ import {
 } from '@opt2/platform/service-kit';
 import type { InflightSide, InflightStore } from '../cutover/inflight.js';
 import type { CutoverState } from '../cutover/state.js';
-import type { CutoverEntry, EntryKind, InventoryFacts, RoutingIndex } from '../cutover/types.js';
+import type { CutoverEntry, InventoryFacts, RoutingIndex } from '../cutover/types.js';
 import type { CsrfContinuity, CsrfHandle } from '../session/csrf.js';
 import type { Hydrator } from '../session/hydration.js';
 import type { IdentityClient } from '../session/identity-client.js';
@@ -57,6 +57,7 @@ import {
 import { forwardToTarget } from './forward-target.js';
 import {
   RELAY_ALIAS_PREFIX,
+  WRITE_KINDS,
   type LegacyDestination,
   type MatchOutcome,
   type Matcher,
@@ -84,9 +85,6 @@ const EDGE_ROUTE_CONFIG: Opt2RouteConfig = Object.freeze({ public: true, edge: t
 
 /** Namespace of the gateway's own routes; the edge dispatches nothing under it. */
 const INTERNAL_NAMESPACE = '/internal/v1';
-
-/** Entry kinds whose requests read the epoch and register in `gateway.inflight` before they are routed. */
-const WRITE_KINDS: ReadonlySet<EntryKind> = new Set<EntryKind>(['write', 'legacy-write', 'job']);
 
 /** Collaborators of the dispatcher; `app.ts` builds each once. */
 export interface DispatcherDeps {
@@ -357,6 +355,10 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     return remaining > 0 && (await state.waitUnfrozen(route, remaining));
   };
 
+  /** The first frozen route holding a request: its entry's `route`, then the routes its outcome holds it by. */
+  const frozenHold = (outcome: RoutedOutcome, route: string | undefined): string | undefined =>
+    [...(route === undefined ? [] : [route]), ...(outcome.holdRoutes ?? [])].find((held) => state.isFrozen(held));
+
   /** Web's service call through the relay alias: only web's verified invocation credential opens it; a user token is optional. */
   const relay = async (request: FastifyRequest, reply: FastifyReply, destination: RelayDestination): Promise<FastifyReply> => {
     let verified: AuthResult;
@@ -380,7 +382,9 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     entry: CutoverEntry,
     units: string[],
   ): Promise<WindowAttempt> => {
-    const scope = windows.scope(entry.route, outcome.result.params, { siteid: outcome.result.siteId });
+    // Masa's start-up rewrites `tcontent` rows across the table, so a reload's window takes the reload key's scope.
+    const scopeKey = outcome.result.family === 'reload' ? outcome.result.baseKey : entry.route;
+    const scope = windows.scope(scopeKey, outcome.result.params, { siteid: outcome.result.siteId });
     const { windowId } = await windows.open({ routeKey: entry.route, units, scope, requestId: ex.requestId });
     ex.windowId = windowId;
     // The store has no upsert, so the row is inserted again with the window and routing re-read after it, as after a freeze.
@@ -391,7 +395,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       isForwarded(current) &&
       current.destination.kind === 'legacy' &&
       current.entry?.route === entry.route &&
-      !state.isFrozen(entry.route) &&
+      frozenHold(current, entry.route) === undefined &&
       sameUnits(windowUnits(current, index), units)
     ) {
       return { ready: true, route: { outcome: current, index } };
@@ -419,9 +423,9 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       const entry = writeEntryOf(outcome);
       if (entry === undefined) {
         await ex.dropRow();
-        const route = outcome.entry?.route;
-        if (route === undefined || !state.isFrozen(route)) return { outcome, index };
-        if (!(await unfrozenBy(route, deadline))) {
+        const frozen = frozenHold(outcome, outcome.entry?.route);
+        if (frozen === undefined) return { outcome, index };
+        if (!(await unfrozenBy(frozen, deadline))) {
           failClosed(ex.reply, outcome.failContext, frozenCause(outcome.failContext));
           return undefined;
         }
@@ -438,9 +442,10 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         outcome = current;
         continue;
       }
-      if (state.isFrozen(entry.route)) {
+      const frozen = frozenHold(current, entry.route);
+      if (frozen !== undefined) {
         await ex.dropRow();
-        if (!(await unfrozenBy(entry.route, deadline))) {
+        if (!(await unfrozenBy(frozen, deadline))) {
           failClosed(ex.reply, current.failContext, frozenCause(current.failContext));
           return undefined;
         }

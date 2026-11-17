@@ -565,6 +565,42 @@ describe.skipIf(!PG)('write windows (skipped without PostgreSQL: PG_* unset)', (
     });
   });
 
+  describe('an import retried while one owner is unreachable', () => {
+    it('counts and persists every attempt, marks the reachable owner import-pending, then closes once the owner answers', async () => {
+      const { t, service } = await harness();
+      const warn = vi.spyOn(t.ctx.logger, 'warn');
+      const opened = await service.open(rosterRequest());
+      await writeLegacyFname(t, ANA, 'Anabel');
+      // identity sorts before people, so a phase change stopping at the first failing owner would never reach people.
+      const identity = ownerOf(t, ACCOUNT);
+      identity.failAlways('gate', 'down');
+
+      await expect(service.complete(opened.windowId, { forwarded: true, legacyStatus: 302 })).resolves.toEqual({ state: 'import-pending' });
+      for (const attempt of [1, 2, 3]) {
+        if (attempt > 1) await service.runRecoveryPass();
+        expect(await storedWindow(opened.windowId)).toEqual(
+          expect.objectContaining({ state: 'import-pending', phase: 'import-pending', attempts: attempt, error: expect.objectContaining({ kind: 'import-failed', attempt }) }),
+        );
+        expect(warn).toHaveBeenLastCalledWith(expect.anything(), `Window ${opened.windowId} import attempt ${String(attempt)} failed and is retried`);
+        expect(warn).toHaveBeenCalledWith(
+          { error: expect.objectContaining({ message: expect.stringContaining('identity') }) },
+          `Window ${opened.windowId} could not mark its gates import-pending; they stay closed`,
+        );
+        expect(gate(t, PERSON)).toEqual({ state: 'closed', holderId: opened.windowId, phase: 'import-pending' });
+        expect(gate(t, ACCOUNT)).toEqual({ state: 'closed', holderId: opened.windowId, phase: 'executing' });
+      }
+      expect(ownerOf(t, PERSON).batches).toEqual([]);
+
+      identity.clearFailures();
+      await service.runRecoveryPass();
+
+      expect(await storedWindow(opened.windowId)).toEqual(expect.objectContaining({ state: 'closed', outcome: 'imported', attempts: 4, rows_imported: 1 }));
+      for (const unit of ROSTER_UNITS) expect(gate(t, unit)).toEqual({ state: 'open', holderId: null, phase: 'quiet' });
+      expect(ownerOf(t, PERSON).batches.map((batch) => batch.batchId)).toEqual([windowBatchId(opened.windowId, 4, 'people', 'tusers', 0)]);
+      expect(await allLeases()).toEqual([]);
+    });
+  });
+
   describe('a gateway lost mid-window', () => {
     const MINUTE = 60_000;
 
@@ -693,19 +729,25 @@ describe.skipIf(!PG)('write windows (skipped without PostgreSQL: PG_* unset)', (
   });
 
   describe('the windows.json run log', () => {
-    it('records each window once, with its route, units, scope, phase times, rows imported and outcome', async () => {
+    it('is written only when the service stops, recording each window once with its route, units, scope, phase times, rows imported and outcome', async () => {
       const { t, service, sleep } = await harness();
       const closed = await service.open(rosterRequest());
       await writeLegacyFname(t, ANA, 'Anabel');
       const refused = await refusalOf(sleep.drive(service.open(rosterRequest())));
       await service.complete(closed.windowId, { forwarded: true, legacyStatus: 302 });
+      await expect(readFile(path.join(t.dirs.reportsDir, 'windows.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+
+      await service.stop();
 
       const entries = await readLogEntries<WindowLogEntry>(t.dirs.reportsDir, 'windows.json');
-      expect(entries.map((entry) => [entry.windowId, entry.outcome])).toEqual([
+      const outcomes = new Map([
         [closed.windowId, 'closed'],
         [refused.windowId, 'aborted-503'],
       ]);
-      const [done, aborted] = entries;
+      // Row order: opened_at, then window_id.
+      expect(entries.map((entry) => [entry.windowId, entry.outcome])).toEqual((await storedWindows()).map((row) => [row.window_id, outcomes.get(row.window_id)]));
+      const done = entries.find((entry) => entry.windowId === closed.windowId);
+      const aborted = entries.find((entry) => entry.windowId === refused.windowId);
       expect(done).toEqual(
         expect.objectContaining({ kind: 'request', routeKey: ROUTE, units: ROSTER_UNITS, scope: { userid: ANA }, rowsImported: { people: 1 }, durationMs: expect.any(Number) }),
       );

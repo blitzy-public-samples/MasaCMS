@@ -1,5 +1,5 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
-import { ServiceUnavailableError, UnknownServiceError } from '@opt2/platform/service-kit';
+import { EnvFileError, ServiceUnavailableError, UnknownServiceError } from '@opt2/platform/service-kit';
 import { describe, expect, it } from 'vitest';
 import { failureText, idText, nameText, parseJson, printable, printableMessage } from '../src/errors.js';
 
@@ -10,6 +10,11 @@ describe('failureText', () => {
     ['a printable error on one line', printable(new RangeError('Site tenant-b\n  needs 10 groups')), 'Site tenant-b needs 10 groups'],
     ['a usage error with the help pointer', printable(new Error('seed.config.json is not valid JSON'), { usage: true }), 'seed.config.json is not valid JSON (see --help)'],
     ['a Node system error', Object.assign(new Error("ENOENT: no such file or directory, open '/x'"), { code: 'ENOENT', syscall: 'open', errno: -2 }), "ENOENT: no such file or directory, open '/x'"],
+    [
+      'an EnvFileError of a Node system error',
+      new EnvFileError('OPT2_STATE_DIR', 'secrets/x', Object.assign(new Error("ENOENT: no such file or directory, open '/s/secrets/x'"), { code: 'ENOENT', syscall: 'open', errno: -2 })),
+      "ENOENT: no such file or directory, open '/s/secrets/x'",
+    ],
     ['an unknown service', new UnknownServiceError('people'), 'No URL is configured for service people'],
     ['an unavailable service', new ServiceUnavailableError('people', Object.assign(new Error(SENTINEL), { code: 'ECONNRESET' })), 'Service people unavailable (ECONNRESET)'],
     ['an unmarked error as its class', new TypeError(SENTINEL), 'TypeError'],
@@ -23,7 +28,11 @@ describe('failureText', () => {
   });
 
   it('withholds the message of anything unmarked from printableMessage', () => {
-    expect([printableMessage(new Error(SENTINEL)), printableMessage(SENTINEL)]).toEqual([undefined, undefined]);
+    expect([
+      printableMessage(new Error(SENTINEL)),
+      printableMessage(SENTINEL),
+      printableMessage(new EnvFileError('OPT2_STATE_DIR', 'secrets/x', new Error(SENTINEL))),
+    ]).toEqual([undefined, undefined, undefined]);
   });
 
   it('keeps the class, message and equality of a marked error', () => {

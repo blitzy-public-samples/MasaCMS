@@ -1,11 +1,13 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Composition root of the timesheets service. */
 import { createPublisher, registerConsumers, type EventPublisher } from '@opt2/platform/events';
+import { serializeError } from '@opt2/platform/logging';
 import { registerMigrationHandlers, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import {
   baseEnvSchema,
   createService,
   loadEnv,
+  processEnvSchema,
   publisherEmulatorHost,
   systemClock,
   type BaseEnv,
@@ -32,20 +34,8 @@ const LOCAL_PROJECT_ID = 'opt2-local';
 /** Services timesheets calls through `OPT2_SERVICE_URLS`: identity (CSRF checks) and reporting (export scope checks). */
 const REQUIRED_SERVICES: readonly string[] = ['identity', 'reporting'];
 
-/** Base variables with every callee's URL required. */
-export const timesheetsEnvSchema = baseEnvSchema.superRefine(
-  (env, ctx) => {
-    // Failed fields keep their raw values here; a map that failed as a whole carries its own issue.
-    const urls: unknown = env.OPT2_SERVICE_URLS;
-    const mapFailed = ctx.issues.some((issue) => issue.path?.length === 1 && issue.path[0] === 'OPT2_SERVICE_URLS');
-    if (mapFailed || typeof urls !== 'object' || urls === null) return;
-    for (const name of REQUIRED_SERVICES.filter((service) => !Object.hasOwn(urls, service))) {
-      ctx.addIssue({ code: 'custom', path: ['OPT2_SERVICE_URLS', name], message: 'is required' });
-    }
-  },
-  // Runs even when other variables failed, so loadEnv lists every missing callee at once.
-  { when: () => true },
-);
+/** Base variables with timesheets' own name, every callee's URL and its database required. */
+export const timesheetsEnvSchema = processEnvSchema(baseEnvSchema, { service: SERVICE_NAME, callees: REQUIRED_SERVICES, database: true });
 
 /** Dependencies `buildApp` uses instead of building its own from the environment. */
 export interface BuildAppOptions {
@@ -73,24 +63,42 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     // createService takes an injected pool or the schema whose pool it opens, never both.
     ...(options.db === undefined ? { schema: TIMESHEETS_SCHEMA } : { pool: options.db }),
   });
-  const db = app.opt2.db;
-  if (db === undefined) throw new Error(`${SERVICE_NAME} requires a database`);
 
-  // An injected throwaway pool names its own schema; the service's own pool names `timesheets`.
-  const repository = createTimesheetsRepository({ clock, schema: db.schema });
+  try {
+    const db = app.opt2.db;
+    if (db === undefined) throw new Error(`${SERVICE_NAME} requires a database`);
 
-  const publisher = options.publisher ?? createPublisher({ projectId: env.GOOGLE_CLOUD_PROJECT ?? LOCAL_PROJECT_ID, emulatorHost });
-  // Only a publisher built here closes with the app; an injected one belongs to the caller.
-  if (options.publisher === undefined) {
-    app.addHook('onClose', async () => {
-      await publisher.close();
-    });
+    // An injected throwaway pool names its own schema; the service's own pool names `timesheets`.
+    const repository = createTimesheetsRepository({ clock, schema: db.schema });
+
+    const publisher = options.publisher ?? createPublisher({ projectId: env.GOOGLE_CLOUD_PROJECT ?? LOCAL_PROJECT_ID, emulatorHost });
+    // Only a publisher built here closes with the app; an injected one belongs to the caller.
+    if (options.publisher === undefined) {
+      app.addHook('onClose', async () => {
+        await publisher.close();
+      });
+    }
+
+    // Precedes the routes, so its onSend hook covers the root-level export read too; registerMigrationHandlers requires it.
+    registerWritePositionHeader(app);
+    registerRoutes(app, { db, repository, clock });
+    registerMigrationHandlers(app, { owner: SERVICE_NAME, repository, mappings, units, db, programSiteId: (programId) => PROGRAM_SITES[programId] });
+    registerConsumers(app, { service: SERVICE_NAME, consumers: createConsumers({ repository }), publisher, db });
+    return app;
+  } catch (err) {
+    await closePartialApp(app, options.db === undefined);
+    throw err;
   }
+}
 
-  // Precedes the routes, so its onSend hook covers the root-level export read too; registerMigrationHandlers requires it.
-  registerWritePositionHeader(app);
-  registerRoutes(app, { db, repository, clock });
-  registerMigrationHandlers(app, { owner: SERVICE_NAME, repository, mappings, units, db, programSiteId: (programId) => PROGRAM_SITES[programId] });
-  registerConsumers(app, { service: SERVICE_NAME, consumers: createConsumers({ repository }), publisher, db });
-  return app;
+/** Closes a failed build's app with its own publisher, its service client and, when `ownsPool`, its pool; failures are logged. */
+async function closePartialApp(app: FastifyInstance, ownsPool: boolean): Promise<void> {
+  const { client, db, logger } = app.opt2;
+  for (const step of [() => app.close(), () => client.close(), () => (ownsPool ? db?.end() : undefined)]) {
+    try {
+      await step();
+    } catch (err) {
+      logger.error({ error: serializeError(err) }, 'start-up cleanup failed');
+    }
+  }
 }

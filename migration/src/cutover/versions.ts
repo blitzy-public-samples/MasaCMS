@@ -209,6 +209,27 @@ export function loginGroup(groups: GroupsFile): CutoverGroup | undefined {
   return groups.groups.find((group) => group.writeEntries.some((route) => normaliseRouteKey(route) === login));
 }
 
+/**
+ * Groups the rollbackRefs of `version` name, the rollback group set R, sorted by id; none without rollbackRefs.
+ * @param source names the groups file in the error.
+ * @throws CutoverDataError naming the groups `groups` lacks.
+ */
+export function rollbackRefGroups(
+  version: Pick<CutoverVersion, 'tableVersion' | 'rollbackRefs'>,
+  groups: GroupsFile,
+  source = 'the groups file',
+): CutoverGroup[] {
+  const byId = new Map(groups.groups.map((group) => [group.id, group]));
+  const named = [...new Set(version.rollbackRefs.flatMap((ref) => ref.groups))].sort();
+  const missing = named.filter((id) => !byId.has(id));
+  if (missing.length > 0) {
+    throw new CutoverDataError(
+      `${version.tableVersion} rollbackRefs name groups missing from ${source}: ${missing.join(', ')}, so the roster group set R is unknown`,
+    );
+  }
+  return named.flatMap((id) => byId.get(id) ?? []);
+}
+
 /** Units, entries and `legacy-write` entries a transition from `active` to `proposed` changes. */
 export function diffVersions(active: CutoverVersion, proposed: CutoverVersion, groups: GroupsFile): VersionDiff {
   const before = unitAuthority(active, groups);

@@ -12,6 +12,8 @@ import {
   listSubscriptionIds,
   listTopicIds,
   openMessageLease,
+  PEEK_MAX_MESSAGES,
+  PubSubTimeoutError,
   peekBacklog,
   peekDeadLetterEventIds,
   readPushConfig,
@@ -22,7 +24,7 @@ import {
   witnessName,
   witnessPrefix,
 } from '../../src/quiesce/subscriptions.js';
-import type { MessageLease, PubSubLike, SavedPushConfig, SubscriptionLike } from '../../src/quiesce/subscriptions.js';
+import type { MessageLease, PeekOptions, PubSubCallOptions, PubSubLike, SavedPushConfig, SubscriptionLike } from '../../src/quiesce/subscriptions.js';
 
 type PullRequest = { subscription: string; maxMessages: number; returnImmediately: boolean };
 interface PulledMessage {
@@ -41,6 +43,10 @@ type SubscriptionMetadata = Awaited<ReturnType<SubscriptionLike['getMetadata']>>
 
 const subscriber = vi.hoisted(() => ({
   created: [] as unknown[],
+  /** Call options of each pull that passed any. */
+  pullOptions: [] as unknown[],
+  /** Call options of each release that passed any. */
+  releaseOptions: [] as unknown[],
   pull: vi.fn<(request: PullRequest) => Promise<[PullResponse]>>(),
   modifyAckDeadline: vi.fn<(request: ModifyAckDeadlineRequest) => Promise<unknown[]>>(() => Promise.resolve([{}])),
   acknowledge: vi.fn<(request: AcknowledgeRequest) => Promise<unknown[]>>(() => Promise.resolve([{}])),
@@ -54,10 +60,12 @@ vi.mock('@opt2/platform/events', async (importOriginal) => {
     constructor(options: unknown) {
       subscriber.created.push(options);
     }
-    pull(request: PullRequest): Promise<[PullResponse]> {
+    pull(request: PullRequest, options?: unknown): Promise<[PullResponse]> {
+      if (options !== undefined) subscriber.pullOptions.push(options);
       return subscriber.pull(request);
     }
-    modifyAckDeadline(request: ModifyAckDeadlineRequest): Promise<unknown[]> {
+    modifyAckDeadline(request: ModifyAckDeadlineRequest, options?: unknown): Promise<unknown[]> {
+      if (options !== undefined) subscriber.releaseOptions.push(options);
       return subscriber.modifyAckDeadline(request);
     }
     acknowledge(request: AcknowledgeRequest): Promise<unknown[]> {
@@ -96,6 +104,8 @@ const EVENT_A = 'a0000000-0000-4000-8000-00000000000a';
 const EVENT_B = 'b0000000-0000-4000-8000-00000000000b';
 
 const fullName = (id: string): string => `projects/${PROJECT}/subscriptions/${id}`;
+/** Waits `ms` on the real timers. */
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A pulled dead letter whose event id travels in its `eventId` attribute or only in its envelope data. */
 function pulled(ackId: string, messageId: string, eventId: { attribute?: string; data?: string } = {}): { ackId: string; message: PulledMessage } {
@@ -107,7 +117,7 @@ function pulled(ackId: string, messageId: string, eventId: { attribute?: string;
 function fakeSubscription(name: string, metadata: SubscriptionMetadata = {}) {
   return {
     name,
-    getMetadata: vi.fn<() => Promise<[SubscriptionMetadata]>>(() => Promise.resolve([metadata])),
+    getMetadata: vi.fn<(gaxOpts?: PubSubCallOptions) => Promise<[SubscriptionMetadata]>>(() => Promise.resolve([metadata])),
     modifyPushConfig: vi.fn<(config: SavedPushConfig) => Promise<unknown>>(() => Promise.resolve([{}])),
     seek: vi.fn<(time: Date) => Promise<unknown>>(() => Promise.resolve([{}])),
   } satisfies SubscriptionLike;
@@ -117,7 +127,7 @@ function fakeSubscription(name: string, metadata: SubscriptionMetadata = {}) {
 function fakePubSub(
   subscriptions: SubscriptionLike[],
   pullOnce?: (fullName: string) => Promise<number>,
-  peekEventIds?: (fullName: string) => Promise<string[]>,
+  peekEventIds?: (fullName: string, options?: PeekOptions) => Promise<string[]>,
   leaseMessages?: (fullName: string) => Promise<MessageLease>,
   extra: Pick<PubSubLike, 'topicIds' | 'createWitness' | 'deleteSubscription'> = {},
 ): PubSubLike {
@@ -181,6 +191,43 @@ describe('listOpt2Subscriptions', () => {
     });
 
     await expect(listOpt2Subscriptions(fakePubSub([fakeSubscription(fullName(TIMESHEETS_ARCHIVED))]))).rejects.toBe(failure);
+  });
+
+  it('passes each call a gax timeout within timeoutMs, and none without it', async () => {
+    const timesheets = fakeSubscription(fullName(TIMESHEETS_ARCHIVED));
+    const pubsub = fakePubSub([timesheets]);
+    const listed = vi.spyOn(pubsub, 'getSubscriptions');
+
+    expect(await listOpt2Subscriptions(pubsub, { timeoutMs: 5000 })).toHaveLength(1);
+    await listOpt2Subscriptions(pubsub);
+
+    const bounds = [listed.mock.calls[0]?.[0]?.gaxOpts?.timeout, timesheets.getMetadata.mock.calls[0]?.[0]?.timeout];
+    for (const bound of bounds) expect(bound).toBeGreaterThan(0);
+    for (const bound of bounds) expect(bound).toBeLessThanOrEqual(5000);
+    expect([listed.mock.calls[1], timesheets.getMetadata.mock.calls[1]]).toStrictEqual([[], []]);
+  });
+
+  it.each<[string, (pubsub: PubSubLike, subscription: ReturnType<typeof fakeSubscription>) => void]>([
+    ['the listing outlasts it', (pubsub) => vi.spyOn(pubsub, 'getSubscriptions').mockImplementation(() => wait(200).then((): [SubscriptionLike[]] => [[]]))],
+    ['a metadata read outlasts it', (_pubsub, subscription) => subscription.getMetadata.mockImplementation(() => wait(200).then((): [SubscriptionMetadata] => [{}]))],
+    [
+      'a call ends at its gax timeout',
+      (pubsub) => vi.spyOn(pubsub, 'getSubscriptions').mockRejectedValue(Object.assign(new Error('4 DEADLINE_EXCEEDED: Deadline exceeded'), { code: 4 })),
+    ],
+  ])('rejects with PubSubTimeoutError within timeoutMs when %s', async (_label, slow) => {
+    const subscription = fakeSubscription(fullName(TIMESHEETS_ARCHIVED));
+    const pubsub = fakePubSub([subscription]);
+    slow(pubsub, subscription);
+    const started = Date.now();
+
+    const failure = await listOpt2Subscriptions(pubsub, { timeoutMs: 20 }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(PubSubTimeoutError);
+    expect(failure).toMatchObject({ name: 'PubSubTimeoutError', timeoutMs: 20, message: 'Pub/Sub subscription listing exceeded its 20 ms budget' });
+    expect(Date.now() - started).toBeLessThan(200);
   });
 });
 
@@ -277,11 +324,14 @@ describe('peekBacklog with an injected client', () => {
 });
 
 describe('peekDeadLetterEventIds with an injected client', () => {
-  it('resolves to the event ids peekEventIds reads from the fully qualified DLQ replay subscription', async () => {
-    const peekEventIds = vi.fn<(fullName: string) => Promise<string[]>>(() => Promise.resolve([EVENT_A]));
+  it.each<[string, PeekOptions | undefined]>([
+    ['without bounds', undefined],
+    ['with the sought ids and budget it is given', { eventIds: [EVENT_A], timeoutMs: 1500 }],
+  ])('resolves to the event ids peekEventIds reads from the fully qualified DLQ replay subscription %s', async (_label, options) => {
+    const peekEventIds = vi.fn<(fullName: string, options?: PeekOptions) => Promise<string[]>>(() => Promise.resolve([EVENT_A]));
 
-    expect(await peekDeadLetterEventIds(fakePubSub([], undefined, peekEventIds), TIMESHEETS_ARCHIVED)).toStrictEqual([EVENT_A]);
-    expect(peekEventIds).toHaveBeenCalledExactlyOnceWith(fullName(DLQ_REPLAY));
+    expect(await peekDeadLetterEventIds(fakePubSub([], undefined, peekEventIds), TIMESHEETS_ARCHIVED, options)).toStrictEqual([EVENT_A]);
+    expect(peekEventIds.mock.calls).toStrictEqual([[fullName(DLQ_REPLAY), options]]);
   });
 
   it('rejects with a TypeError when the client has no peekEventIds', async () => {
@@ -376,10 +426,16 @@ describe('createPubSub', () => {
   afterEach(async () => {
     await Promise.all(clients.splice(0).map((client) => client.close()));
     subscriber.created.length = 0;
+    subscriber.pullOptions.length = 0;
+    subscriber.releaseOptions.length = 0;
     subscriber.pull.mockReset();
+    subscriber.modifyAckDeadline.mockReset();
+    subscriber.modifyAckDeadline.mockImplementation(() => Promise.resolve([{}]));
+    vi.useRealTimers();
     subscriber.modifyAckDeadline.mockClear();
     subscriber.acknowledge.mockClear();
-    subscriber.close.mockClear();
+    subscriber.close.mockReset();
+    subscriber.close.mockImplementation(() => Promise.resolve());
   });
 
   it('returns a client for GOOGLE_CLOUD_PROJECT exposing every PubSubLike member', () => {
@@ -602,6 +658,128 @@ describe('createPubSub', () => {
 
     expect(subscriber.acknowledge).not.toHaveBeenCalled();
     expect(subscriber.modifyAckDeadline).not.toHaveBeenCalled();
+  });
+
+  it('peekEventIds stops once every sought event id is found, in any case, and returns only those', async () => {
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    subscriber.pull
+      .mockResolvedValueOnce([{ receivedMessages: [pulled('ack-1', 'm-1', { attribute: EVENT_B }), pulled('ack-2', 'm-2', { attribute: 'c0000000-0000-4000-8000-00000000000c' })] }])
+      .mockResolvedValueOnce([{ receivedMessages: [pulled('ack-3', 'm-3', { data: JSON.stringify({ eventId: EVENT_A.toUpperCase() }) })] }]);
+
+    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [EVENT_A, EVENT_B.toUpperCase()] })).toStrictEqual([EVENT_A.toUpperCase(), EVENT_B]);
+
+    expect(subscriber.pull).toHaveBeenCalledTimes(2);
+    expect(subscriber.modifyAckDeadline.mock.calls).toStrictEqual([
+      [{ subscription: fullName(DLQ_REPLAY), ackIds: ['ack-1', 'ack-2'], ackDeadlineSeconds: 0 }],
+      [{ subscription: fullName(DLQ_REPLAY), ackIds: ['ack-3'], ackDeadlineSeconds: 0 }],
+    ]);
+    expect(subscriber.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('peekEventIds opens no subscriber and pulls nothing when no event id is sought or the budget is spent', async () => {
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+
+    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [] })).toStrictEqual([]);
+    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [EVENT_A], timeoutMs: 0 })).toStrictEqual([]);
+
+    expect(subscriber.created).toStrictEqual([]);
+    expect(subscriber.pull).not.toHaveBeenCalled();
+    expect(subscriber.close).not.toHaveBeenCalled();
+  });
+
+  it('peekEventIds ends with no event ids and opens no subscriber when its client setup outlasts the budget', async () => {
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    vi.spyOn(client, 'getClientConfig').mockImplementation(() => wait(200).then(() => client.options));
+    const started = Date.now();
+
+    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [EVENT_A], timeoutMs: 20 })).toStrictEqual([]);
+
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(subscriber.created).toStrictEqual([]);
+    expect(subscriber.pull).not.toHaveBeenCalled();
+  });
+
+  it('peekEventIds leaves a lease the budget has no time for to its ack deadline and returns without waiting for a slow close', async () => {
+    vi.useFakeTimers({ now: Date.parse('2026-06-30T12:00:00Z'), toFake: ['Date'] });
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    subscriber.pull.mockImplementationOnce(() => {
+      vi.setSystemTime(Date.now() + 2500);
+      return Promise.resolve([{ receivedMessages: [pulled('ack-1', 'm-1', { attribute: EVENT_A })] }]);
+    });
+    subscriber.close.mockImplementation(() => new Promise<void>(() => undefined));
+
+    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [EVENT_A, EVENT_B], timeoutMs: 2000 })).toStrictEqual([EVENT_A]);
+
+    expect(subscriber.pull).toHaveBeenCalledTimes(1);
+    expect(subscriber.modifyAckDeadline).not.toHaveBeenCalled();
+    expect(subscriber.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('peekEventIds reads at most PEEK_MAX_MESSAGES messages, asking each pull for no more than are left', async () => {
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    let next = 0;
+    subscriber.pull.mockImplementation((request) => {
+      const received = Array.from({ length: Math.min(request.maxMessages, 700) }, () => {
+        next += 1;
+        return pulled(`ack-${String(next)}`, `m-${String(next)}`, { attribute: `e0000000-0000-4000-8000-${String(next).padStart(12, '0')}` });
+      });
+      return Promise.resolve([{ receivedMessages: received }]);
+    });
+
+    const found = await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [EVENT_A] });
+
+    expect(PEEK_MAX_MESSAGES).toBe(10_000);
+    expect(found).toStrictEqual([]);
+    const asked = subscriber.pull.mock.calls.map(([request]) => request.maxMessages);
+    expect(asked.reduce((sum, count) => sum + Math.min(count, 700), 0)).toBe(PEEK_MAX_MESSAGES);
+    expect(asked.at(-1)).toBe(PEEK_MAX_MESSAGES % 700);
+    expect(subscriber.modifyAckDeadline.mock.calls.flatMap(([request]) => request.ackIds)).toHaveLength(PEEK_MAX_MESSAGES);
+  });
+
+  it('peekEventIds bounds its pulls by the budget less a fifth kept for releasing, each release by what is left, and ends with what it read', async () => {
+    vi.useFakeTimers({ now: Date.parse('2026-06-30T12:00:00Z'), toFake: ['Date'] });
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    subscriber.pull
+      .mockImplementationOnce(() => {
+        vi.setSystemTime(Date.now() + 1500);
+        return Promise.resolve([{ receivedMessages: [pulled('ack-1', 'm-1', { attribute: EVENT_A })] }]);
+      })
+      .mockRejectedValueOnce(Object.assign(new Error('4 DEADLINE_EXCEEDED: Deadline exceeded'), { code: 4 }));
+
+    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [EVENT_A, EVENT_B], timeoutMs: 2000 })).toStrictEqual([EVENT_A]);
+
+    expect(subscriber.pullOptions).toStrictEqual([{ timeout: 1600 }, { timeout: 100 }]);
+    expect(subscriber.modifyAckDeadline).toHaveBeenCalledExactlyOnceWith({ subscription: fullName(DLQ_REPLAY), ackIds: ['ack-1'], ackDeadlineSeconds: 0 });
+    expect(subscriber.releaseOptions).toStrictEqual([{ timeout: 500 }]);
+    expect(subscriber.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('peekEventIds ends a bounded peek with what it read when the budget cuts off a release, leaving that lease to the ack deadline', async () => {
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    subscriber.pull
+      .mockResolvedValueOnce([{ receivedMessages: [pulled('ack-1', 'm-1', { attribute: EVENT_A })] }])
+      .mockResolvedValueOnce([{ receivedMessages: [pulled('ack-2', 'm-2', { attribute: EVENT_B })] }])
+      .mockResolvedValueOnce([{ receivedMessages: [] }]);
+    subscriber.modifyAckDeadline.mockRejectedValueOnce(Object.assign(new Error('4 DEADLINE_EXCEEDED: Deadline exceeded'), { code: 4 }));
+
+    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { timeoutMs: 2000 })).toStrictEqual([EVENT_A, EVENT_B].sort());
+
+    expect(subscriber.modifyAckDeadline.mock.calls.map(([request]) => request.ackIds)).toStrictEqual([['ack-1'], ['ack-2']]);
+    expect(subscriber.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('peekEventIds releases every lease batch and closes the client when releasing one fails, then propagates that failure', async () => {
+    const failure = Object.assign(new Error('14 UNAVAILABLE: No connection established'), { code: 14 });
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    subscriber.pull
+      .mockResolvedValueOnce([{ receivedMessages: [pulled('ack-1', 'm-1', { attribute: EVENT_A })] }])
+      .mockResolvedValueOnce([{ receivedMessages: [pulled('ack-2', 'm-2', { attribute: EVENT_B })] }])
+      .mockResolvedValueOnce([{ receivedMessages: [] }]);
+    subscriber.modifyAckDeadline.mockRejectedValueOnce(failure);
+
+    await expect(peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED)).rejects.toBe(failure);
+    expect(subscriber.modifyAckDeadline.mock.calls.map(([request]) => request.ackIds)).toStrictEqual([['ack-1'], ['ack-2']]);
+    expect(subscriber.close).toHaveBeenCalledTimes(1);
   });
 
   it('peekEventIds propagates another pull failure after releasing the leases it holds and closing the client', async () => {

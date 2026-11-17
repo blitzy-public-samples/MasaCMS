@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Roles, moduleRole } from '@opt2/platform/auth';
-import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-compat';
+import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { components } from '@/generated/clients/people';
@@ -11,7 +11,6 @@ import { rbFor } from '@/lib/resource-bundles/rb';
 import type { CategoryTreeNode } from '@/screens/ccategory/dsp-nest';
 import { renderUserCategoriesNest, type InterestCategoryRow } from '@/screens/cusers/dsp_categories_nest';
 import {
-  UNSERVED_EDIT_USER_SOURCES,
   editUserScreen,
   loadEditUser,
   renderEditUser,
@@ -28,7 +27,7 @@ import { INTEREST_CATEGORY_IDS, interestCategories } from '../../fixtures/strate
 import { adminS2Request, editorRequest, siteAdminRequest } from '../../helpers/admin-request';
 import { fragmentModel, type DomControl, type DomModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
-import { fakeGatewayClient, routeKey, type FakeRouteTable, type RecordedRequest } from '../../helpers/fake-gateway';
+import { fakeGatewayClient, routeKey, type FakeRoute, type FakeRouteTable, type RecordedRequest } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenModel, renderScreenPage } from '../../helpers/screen-context';
 
 type UserEditData = components['schemas']['UserEditData'];
@@ -73,10 +72,21 @@ function issueTokens(request: RecordedRequest) {
   })) } };
 }
 
-/** The screen's gateway: people's edit read answering `edit`, and identity's CSRF pairs. */
-const routes = (edit: UserEditData): FakeRouteTable => ({
+/** The path of strategies-content's interest-group levels under the token site `tokenSite`. */
+const interestGroupsPath = (tokenSite: string) => `/v1/sites/${tokenSite}/private-interest-groups` as const;
+
+/** An interest-group level of a pool without interest groups. */
+const NO_INTEREST_GROUPS: FakeRoute = { status: 200, body: { items: [] } };
+
+/**
+ * The screen's gateway: people's edit read answering `edit`, identity's CSRF pairs, and strategies-content answering
+ * the interest-group levels of the `default` and tenant-a tokens with `interests`.
+ */
+const routes = (edit: UserEditData, interests: FakeRoute = NO_INTEREST_GROUPS): FakeRouteTable => ({
   [routeKey('GET', 'people', '/v1/users/edit')]: { status: 200, body: edit },
   [routeKey('POST', 'identity', '/v1/csrf/tokens')]: issueTokens,
+  [routeKey('GET', 'strategies-content', interestGroupsPath('default'))]: interests,
+  [routeKey('GET', 'strategies-content', interestGroupsPath('tenant-a'))]: interests,
 });
 
 /** Loads and renders Edit User with the owner's block answer. */
@@ -136,10 +146,10 @@ function forestOf(nodes: readonly CategoryTreeNode[], site: string): InterestCat
   ]);
 }
 
-/** The umbrella pool's interest categories in place of the unserved read. */
+/** The umbrella pool's interest categories in place of strategies-content's read. */
 const POOL_INTERESTS: EditUserSources = {
-  ...UNSERVED_EDIT_USER_SOURCES,
   interestCategories: () => Promise.resolve(forestOf(interestCategories, siteUmbrella.Site)),
+  webServiceTokens: () => Promise.resolve([]),
 };
 
 /** The registered screen, its loader reading `sources`. */
@@ -431,6 +441,87 @@ describe('cusers.edituser failed save', () => {
     if (page.kind !== 'document') throw new Error(`Redirected to ${page.location}`);
     expect(page.html).toContain(`<div class="alert alert-error"><span> ${messages.join(' <br> ')} </span></div>`);
     expect(valuesOf(model, ['usernameNoCache', 'email'])).toEqual({ usernameNoCache: userBean.UserName, email: userBean.Email });
+  });
+});
+
+describe('cusers.edituser interests from strategies-content', () => {
+  /** strategies-content's levels of the fixture interest tree by `parentid`, every row of the site `siteID`. */
+  const interestLevels = (siteID: string): FakeRoute => ({ query }) => ({
+    status: 200,
+    body: {
+      items: forestOf(interestCategories, '')
+        .filter(({ parentID }) => (parentID ?? '') === query['parentid'])
+        .map(({ categoryID, name, isOpen, hasKids }) => ({ siteID, categoryID, name, filename: '', urltitle: '', isOpen, hasKids })),
+    },
+  });
+
+  /** The registered screen's context for the tenant-a site admin, strategies-content answering `interests`. */
+  const registeredContext = (interests: FakeRoute) =>
+    makeScreenContext({ req: siteAdmin(), gateway: fakeGatewayClient(routes(existingUserEditData, interests)) });
+
+  /** The registered screen's page, with its cheerio document and its interest-group reads. */
+  async function registeredPage(interests: FakeRoute) {
+    const ctx = registeredContext(interests);
+    const page = await renderScreenPage(editUserScreen, ctx);
+    if (page.kind !== 'document') throw new Error(`Redirected to ${page.location}`);
+    const calls = ctx.gateway.calls
+      .filter(({ service, path }) => service === 'strategies-content' && path === interestGroupsPath('tenant-a'))
+      .map(({ path, query }) => ({ path, query }));
+    return { $: cheerio.load(page.html), calls };
+  }
+
+  const level = (parentid: string) => ({ path: interestGroupsPath('tenant-a'), query: { groupsiteid: 'tenant-a', parentid } });
+
+  it.each(['tenant-a', 'TENANT-A'])(
+    "nests the tree one level per read under the request site's name, checking the person's interests (rows of %s)",
+    async (siteID) => {
+      const { $, calls } = await registeredPage(interestLevels(siteID));
+      const { $: forest } = await renderPage(siteAdmin(), existingUserEditData, {
+        ...POOL_INTERESTS,
+        interestCategories: () => Promise.resolve(forestOf(interestCategories, 'Tenant A')),
+      });
+
+      const interests = fragmentModel($.html($('#tabInterests')));
+
+      expect($('#tabInterests').html()).toBe(forest('#tabInterests').html());
+      expect(interests.labels).toEqual(['Tenant A']);
+      expect($('#tabInterests ul.checkboxTree > li > ul > li').toArray().map((li) => collapse($(li).text())))
+        .toEqual(['Newsletter', 'Outreach Volunteering', 'Skills Training']);
+      expect(interests.controls).toEqual([
+        categoryBox(INTEREST_CATEGORY_IDS.newsletter, true),
+        categoryBox(INTEREST_CATEGORY_IDS.volunteering, true),
+        categoryBox(INTEREST_CATEGORY_IDS.training, false),
+      ]);
+      expect(calls).toEqual([level(''), level(INTEREST_CATEGORY_IDS.interests)]);
+    },
+  );
+
+  it("prints user.nointerestcategories for a pool without interest groups, reading only the top level", async () => {
+    const { $, calls } = await registeredPage(NO_INTEREST_GROUPS);
+
+    expect($('#mura-list-tree').children().toArray().map((child) => $.html(child))).toEqual([
+      '<div class="help-block-empty">There are currently no interest groups.</div>',
+    ]);
+    expect($('#tabInterests input[name="categoryID"]')).toHaveLength(0);
+    expect(calls).toEqual([level('')]);
+  });
+
+  it.each<[string, FakeRoute, Record<string, unknown>]>([
+    [
+      'strategies-content is unavailable or halts a level of several sites',
+      { status: 503, body: { error: 'unavailable' } },
+      { name: 'GatewayUnavailableError', surface: 'admin', service: 'strategies-content', status: 503 },
+    ],
+    [
+      "the top level is another site's, whose name no owner serves",
+      interestLevels('umbrella'),
+      { surface: 'admin', reason: 'interest-site-unserved', message: expect.stringContaining('(EX-PROFILE-INTEREST-SITES)') },
+    ],
+  ])('fails closed when %s', async (_label, interests, fields) => {
+    const loaded = editUserScreen.load!(registeredContext(interests));
+
+    await expect(loaded).rejects.toBeInstanceOf(LegacyServiceUnavailableError);
+    await expect(loaded).rejects.toMatchObject(fields);
   });
 });
 

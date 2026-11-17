@@ -37,7 +37,7 @@ import { TEST_CLOCK, buildDbApp, createFakeTaskPort, headersFor, type FakeTaskPo
 type OutboxRow = { event_id: string; topic: string; ordering_key: string; published_at: Date | null };
 type ProjectionRow = { note_id: string; apply_count: number };
 
-const pg = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const pg = await pgAvailable();
 const emulator = await pubsubEmulatorAvailable();
 
 const SERVICE = 'stub';
@@ -86,16 +86,16 @@ describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
     });
   }
 
-  /** Creates a note as a tenant-A system user; resolves to the status and, on 200, the created note id. */
-  async function createNote(title: string): Promise<{ statusCode: number; noteId: string }> {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/opt2/stub/notes',
-      headers: await headersFor('system-user', { site: TENANT_A.siteId }),
-      payload: { title, body: '' },
+  /** Creates a note as a tenant-A system user while its in-request flush fails, which abandons the request unanswered; resolves to the note id its committed outbox row carries. */
+  async function createUnflushedNote(title: string): Promise<string> {
+    capturing.failNext();
+    const headers = await headersFor('system-user', { site: TENANT_A.siteId });
+    await expect(app.inject({ method: 'POST', url: '/opt2/stub/notes', headers, payload: { title, body: '' } })).rejects.toMatchObject({
+      code: 'LIGHT_ECONNRESET',
     });
-    const noteId = res.statusCode === 200 ? res.json<{ data: { noteid: string } }>().data.noteid : '';
-    return { statusCode: res.statusCode, noteId };
+    const rows = (await outboxRows(TENANT_A.tenantId)).filter((row) => row.topic === NOTE_CREATED_TOPIC);
+    expect(rows).toHaveLength(1);
+    return rows[0]?.ordering_key ?? '';
   }
 
   /** Delivers the recorded sweep chain task of `slotS` as Cloud Tasks would, `retry` being its prior failed attempts. */
@@ -119,19 +119,17 @@ describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
   }
 
   it('failed in-request flush leaves the row unpublished', async () => {
-    capturing.failNext();
-    const { statusCode, noteId } = await createNote('swept');
-    expect(statusCode).toBe(200);
+    const noteId = await createUnflushedNote('swept');
 
     const rows = (await outboxRows(TENANT_A.tenantId)).filter((row) => row.ordering_key === noteId);
     expect(rows).toEqual([expect.objectContaining({ topic: NOTE_CREATED_TOPIC, published_at: null })]);
     expect(capturing.published).toEqual([]);
+    const note = await app.inject({ method: 'GET', url: `/opt2/stub/notes/${noteId}`, headers: await headersFor('system-user', { site: TENANT_A.siteId }) });
+    expect(note.statusCode).toBe(200);
   });
 
   it('sweep publishes the row once and schedules its successor', async () => {
-    capturing.failNext();
-    const { statusCode, noteId } = await createNote('swept');
-    expect(statusCode).toBe(200);
+    const noteId = await createUnflushedNote('swept');
     const seeded = (await outboxRows(TENANT_A.tenantId)).filter((row) => row.ordering_key === noteId);
     expect(seeded).toEqual([expect.objectContaining({ topic: NOTE_CREATED_TOPIC, published_at: null })]);
     const eventId = seeded[0]?.event_id;
@@ -162,9 +160,7 @@ describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
   });
 
   it('sweep answers 503 when the successor cannot be created', async () => {
-    capturing.failNext();
-    const { statusCode, noteId } = await createNote('held back');
-    expect(statusCode).toBe(200);
+    const noteId = await createUnflushedNote('held back');
     const unpublished = async (): Promise<OutboxRow[]> =>
       (await outboxRows(TENANT_A.tenantId)).filter((row) => row.ordering_key === noteId && row.published_at === null);
     expect(await unpublished()).toHaveLength(1);

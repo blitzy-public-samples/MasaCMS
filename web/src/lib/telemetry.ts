@@ -11,6 +11,7 @@ import {
 } from '@opt2/platform/tracing';
 import { WEB_VERSION, claimRequestLine, currentRequestScope } from '../server/shared';
 import { webEnv } from './env';
+import type { StreamedCall } from './gateway-client';
 
 export { WEB_VERSION };
 
@@ -74,6 +75,25 @@ export function logRequest(fields: RequestLogFields): void {
     return;
   }
   webLogger().info(requestFields, 'request');
+}
+
+/** How a relayed stream ended before its last byte: its upstream failed, or its consumer cancelled it. */
+export type TransferEnd = { readonly kind: 'failed'; readonly error: unknown } | { readonly kind: 'cancelled' };
+
+/** Fields of a handed-over answer's transfer line; `latencyMs` runs to the end of the transfer. */
+export type TransferLogFields = Omit<RequestLogFields, 'denial' | 'error'>;
+
+/**
+ * Writes the line of a handed-over answer whose streamed body ended early, naming the service call it relays:
+ * `warn` `download failed` with the error when the upstream failed, else `info` `download abandoned`.
+ */
+export function logTransferEnd(fields: TransferLogFields, callee: StreamedCall | undefined, end: TransferEnd): void {
+  const call = callee === undefined ? '' : `: ${callee.service} ${callee.operation}`;
+  if (end.kind === 'failed') {
+    webLogger().warn({ ...fields, error: serializeError(end.error) }, `download failed${call}`);
+    return;
+  }
+  webLogger().info(fields, `download abandoned${call}`);
 }
 
 /** Starts the platform tracing SDK for web once per process; later calls await the same start. */

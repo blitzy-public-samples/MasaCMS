@@ -59,8 +59,7 @@ import {
 
 type Row = Record<string, unknown>;
 
-// An unset PG_HOST skips the suite without probing the server.
-const PG_READY = Boolean(process.env.PG_HOST) && (await pgAvailable());
+const PG_READY = await pgAvailable();
 const PLATFORM_GROUPS: readonly PlatformTableGroup[] = ['tenancy', 'migrationKit', 'events', 'outbox', 'tasks'];
 const EXPORTER = Roles.reportingExporter;
 const V1_EXPORTS = '/v1/reporting/exports';

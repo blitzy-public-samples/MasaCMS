@@ -32,9 +32,8 @@ interface PortTask {
 }
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
-const PG_CONFIGURED = Boolean(process.env.PG_HOST);
-const available = PG_CONFIGURED && (await pgAvailable());
-const SKIP_REASON = PG_CONFIGURED ? 'requires PostgreSQL: server unreachable' : 'requires PostgreSQL: PG_HOST not set';
+const available = await pgAvailable();
+const SKIP_REASON = 'requires PostgreSQL: PG_HOST not set';
 
 // One survey per case, so the cases share the schema and the task port.
 const SURVEYS = Object.freeze({
